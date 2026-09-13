@@ -3554,7 +3554,6 @@ public final class ConcolicRegionRuntime {
                     exactFieldPath, leafFieldSignature)) {
                 return;
             }
-            if (refuseCutPortMint(active, action)) return;
             JsonElement expression;
             if (value != null && value != MissingValue.INSTANCE
                     && containerValue(value)) {
@@ -3654,7 +3653,6 @@ public final class ConcolicRegionRuntime {
                 action.symbol, exactPath, fieldSignature)) {
             return concrete;
         }
-        if (refuseCutPortMint(active, action)) return concrete;
         ModelAssignment assignment = active.assignment(action, path);
         ModelAssignment applied = null;
         Object modeled = concrete;
@@ -4039,7 +4037,6 @@ public final class ConcolicRegionRuntime {
                     action.symbol, Collections.<String>emptyList(), "")) {
                 return;
             }
-            if (refuseCutPortMint(active, action)) return;
             if (containerValue(value)) {
                 if (!trackContainerOrObserveConcrete(active, api, value,
                         action)) {
@@ -4070,13 +4067,74 @@ public final class ConcolicRegionRuntime {
             ActiveRegion active, SymbolizeAction action, Object value,
             JsonElement expression, String requestedSymbol,
             List<String> fieldPath, String fieldSignature) {
-        if (!carriesInputAuthority(action, expression)) return false;
+        if (!carriesInputAuthority(action, expression)) {
+            return observeWithoutMinting(active, action, value);
+        }
         ensurePathRecordingStarted(active);
         if (value != null && !value.getClass().isArray()) {
             active.recordSymbolizedInputPort(action.symbol, value);
         }
         active.recordManualSymbolization(action, requestedSymbol, fieldPath,
                 fieldSignature, expression, false, true);
+        return true;
+    }
+
+    /**
+     * The one thing a tracked carrier does when nothing propagated into it.
+     *
+     * <p>Every caller of {@link #retainPropagatedInput} treats {@code false}
+     * as permission to mint.  Two kinds of action must not take it.</p>
+     *
+     * <p>The first is an action the plan tracked but did not make
+     * mint-eligible: the experiment declared where the search starts, and
+     * this read is not it.</p>
+     *
+     * <p>The second is a declared communication cut port, whatever the plan
+     * says about mint eligibility -- including a plan with no selection file
+     * at all, where every action is eligible by default.  The value at such
+     * a port is produced on the other side of the wire, and the instrumented
+     * frame installs the producer's expression with
+     * {@link #attachCommunicationLeaf} <em>after</em> this hook runs: the
+     * handoff pass and the materialization pass both insert after the cut
+     * statement, so the later pass lands closer to it and nothing symbolic
+     * has reached the local yet when the hook asks.  Minting there creates a
+     * free variable the attach immediately overwrites -- the program uses
+     * the producer's value while the formula keeps an existential root
+     * nothing constrains, which is how HDFS-17899 bug3 acquired four of them
+     * on {@code PBHelper.convert(BlockKeyProto)} and lost its reach
+     * condition to {@code true}.  A flow whose value never arrives is
+     * already named three times over, by {@link #attachCommunicationLeaf}'s
+     * own handoff gap, by {@code SymbolicPropagationClosure
+     * .RPC_ATTACH_SENDER_EXPRESSION_MISSING} and by {@code ConcolicSmtComposer
+     * .WIRE_FLOW_VALUE_UNBOUND}; a mint hid all three behind a root that
+     * answered to nothing.</p>
+     *
+     * <p>Either way: open path recording and publish the port at its
+     * recorded value -- the same two steps a selected shared read already
+     * takes -- so the VM still resolves the writer and creates the read
+     * boundary, and return {@code true} to say the caller has nothing left
+     * to do.</p>
+     *
+     * <p>A container is the exception and falls through: tracking one
+     * publishes the versions of a shared state, which is what a carrier
+     * exists to do, and mints no scalar the solver can move.</p>
+     */
+    private static boolean observeWithoutMinting(
+            ActiveRegion active, SymbolizeAction action, Object value) {
+        if (action == null || containerValue(value)) return false;
+        boolean cutPort = declaredCommunicationCutPort(action);
+        if (action.mintEligible && !cutPort) return false;
+        if (cutPort) {
+            diag(DECLARED_CUT_PORT_MINT_REFUSED, "port="
+                    + safe(action.symbol) + " occurrence="
+                    + (active == null ? ""
+                    : safe(active.activation.occurrenceId)));
+        }
+        ensurePathRecordingStarted(active);
+        if (value != null && value != MissingValue.INSTANCE
+                && !value.getClass().isArray()) {
+            active.recordSymbolizedInputPort(action.symbol, value);
+        }
         return true;
     }
 
@@ -4152,10 +4210,11 @@ public final class ConcolicRegionRuntime {
      * declared, on either side of the wire.
      *
      * <p>The finalizer stamps the classification on {@code sourceKind} when
-     * it mints the port; the scheduler restates it as the selection verdict
-     * {@code DECLARED_COMMUNICATION_CUT_PORT}.  Either spelling is the same
-     * fact, and a plan frozen before the verdict existed carries only the
-     * first, so both are read.</p>
+     * it mints the port, and that is what both stages read:
+     * {@code ConcolicScheduler.SymbolicInputSelection.declaredCutPort} asks
+     * the same question of the same field at plan time.  The second spelling
+     * is read only for a plan frozen by the build that briefly wrote the
+     * verdict into {@code symbolicDemand}.</p>
      */
     static boolean declaredCommunicationCutPort(SymbolizeAction action) {
         return action != null
@@ -4163,40 +4222,6 @@ public final class ConcolicRegionRuntime {
                 .equals(action.sourceKind)
                 || InputActionCatalog.DECLARED_COMMUNICATION_CUT_PORT
                 .equals(action.symbolicDemand));
-    }
-
-    /**
-     * Refuses to mint a root at a declared communication cut port.
-     *
-     * <p>The value at such a port is produced on the other side of the wire.
-     * The instrumented frame installs the producer's expression with
-     * {@link #attachCommunicationLeaf} <em>after</em> this materialization
-     * hook runs -- the handoff pass and the materialization pass both insert
-     * after the cut statement, so the later pass lands closer to it -- which
-     * means nothing symbolic has reached the local yet when the hook asks.
-     * Minting there creates a free variable that the attach then overwrites:
-     * the value the program goes on to use is the producer's, while the
-     * formula gains an existential root nothing constrains, and a reach
-     * condition with enough of those degenerates to {@code true}.</p>
-     *
-     * <p>So the port reuses the attached expression or it carries a concrete
-     * value, and never a root of its own.  A flow whose value never arrives
-     * is already named as a gap three times over -- by
-     * {@link #attachCommunicationLeaf}'s own handoff gap, by
-     * {@code SymbolicPropagationClosure.RPC_ATTACH_SENDER_EXPRESSION_MISSING}
-     * and by {@code ConcolicSmtComposer.WIRE_FLOW_VALUE_UNBOUND} -- and a
-     * mint here would hide all three behind a root that answers to nothing.
-     * </p>
-     *
-     * @return whether the caller must leave the value alone
-     */
-    private static boolean refuseCutPortMint(ActiveRegion active,
-                                             SymbolizeAction action) {
-        if (!declaredCommunicationCutPort(action)) return false;
-        diag(DECLARED_CUT_PORT_MINT_REFUSED, "port=" + safe(action.symbol)
-                + " occurrence=" + (active == null ? ""
-                : safe(active.activation.occurrenceId)));
-        return true;
     }
 
     /** Diagnostic name of one refused mint at a declared cut port. */
@@ -5077,6 +5102,25 @@ public final class ConcolicRegionRuntime {
     }
 
     static final class ActiveRegion {
+        /**
+         * When this activation started, and how long it ran.
+         *
+         * <p>A campaign's only per-unit timings used to be the stage totals
+         * and the final solver's own attempt rows, so a replay that took
+         * three minutes and a replay that took three seconds were
+         * indistinguishable after the fact.  These two are published on the
+         * activation's result row; they are telemetry the importer does not
+         * read, so no summary identity, local case id or replay match
+         * depends on them.</p>
+         */
+        final long startedAtMillis = System.currentTimeMillis();
+        private final long startedAtNanos = System.nanoTime();
+
+        long elapsedMillis() {
+            return Math.max(0L,
+                    (System.nanoTime() - startedAtNanos) / 1_000_000L);
+        }
+
         final long token;
         /** The one task whose region-local path this activation records. */
         final RuntimeTask activation;
@@ -5242,6 +5286,8 @@ public final class ConcolicRegionRuntime {
          * answer, and the row says which containers it is honest about.
          */
         final List<JsonObject> initialSnapshotSkips = new ArrayList<>();
+        /** Whole-state carriers whose initial content this run did state. */
+        final List<JsonObject> initialSnapshotStates = new ArrayList<>();
 
         /** Read-out batch every record of this activation is stamped with. */
         private long evidenceSnapshot;
@@ -6103,6 +6149,19 @@ public final class ConcolicRegionRuntime {
         final String sourceKind;
         /** The selection file named this input by hand: mint, do not reuse. */
         final boolean declaredSymbolicRoot;
+        /**
+         * Whether this input may become a fresh root at all.
+         *
+         * <p>The scheduler tracks every carrier -- so the VM keeps
+         * publishing its {@code ReadFrom} candidates and container versions
+         * -- while reserving the mint for the three declaring authorities.
+         * A tracked carrier that no propagated expression reached is simply
+         * read at its recorded value; falling through to a mint would put a
+         * free root exactly where the experiment said there is none.
+         * Absent from a plan row it defaults to {@code true}, which is the
+         * unnarrowed behaviour of a campaign with no selection file.</p>
+         */
+        final boolean mintEligible;
         final String rootKind;
         final List<String> fieldPath;
         final String javaType;
@@ -6160,6 +6219,7 @@ public final class ConcolicRegionRuntime {
             this.sourceKind = optionalString(json, "sourceKind");
             this.declaredSymbolicRoot = optionalBool(json,
                     InputActionCatalog.DECLARED_SYMBOLIC_ROOT, false);
+            this.mintEligible = optionalBool(json, "mintEligible", true);
             this.rootKind = optionalString(json, "rootKind");
             String explicitLeafSignature = firstNonBlank(
                     optionalString(json, "leafFieldSignature"),

@@ -286,4 +286,76 @@ public class InitialContainerSnapshotCallerTest {
         assertFalse(outcome.installed);
         assertEquals(InitialContainerSnapshot.VM_DECLINED, outcome.reason);
     }
+    /**
+     * An accepted offer says so, with its member count and the bound in
+     * force.
+     *
+     * <p>Only refusals used to be recorded, so a corpus could not tell a
+     * campaign that snapshotted everything from one that snapshotted nothing:
+     * both published no row. Establishing which of the two had happened on a
+     * recorded 17960 run meant scanning 644 shared-state version rows for an
+     * absent field.</p>
+     */
+    @Test
+    public void anAcceptedOfferIsRecordedWithItsEntryCount() {
+        FakeVm vm = new FakeVm();
+        List<Object> list = new ArrayList<Object>(Arrays.asList("a", "b",
+                "c"));
+        InitialContainerSnapshot.Outcome outcome =
+                InitialContainerSnapshot.install(vm, list, null, true);
+
+        assertTrue(outcome.installed);
+        assertFalse(outcome.declined());
+        JsonObject row = InitialContainerSnapshot.statedRow(outcome,
+                "LIST fixture#members");
+        assertEquals(InitialContainerSnapshot.STATED_EVENT,
+                row.get("kind").getAsString());
+        assertEquals(3, row.get("entries").getAsInt());
+        assertEquals("LIST fixture#members",
+                row.get("carrier").getAsString());
+        assertEquals(InitialContainerSnapshot.DEFAULT_MAX_ENTRIES,
+                row.get("maxEntries").getAsInt());
+        assertEquals("java.util.ArrayList", row.get("detail").getAsString());
+    }
+
+    /**
+     * The bound both sides read is the same property, and a raised one
+     * admits a container the default would have refused.
+     *
+     * <p>The VM resolves {@code causynth.concolic.initial.snapshot.max}
+     * itself, with the same default and the same upper cap, so the two can
+     * never disagree about which containers were stated.</p>
+     */
+    @Test
+    public void aRaisedBoundAdmitsAContainerTheDefaultRefuses() {
+        List<Object> list = new ArrayList<Object>();
+        for (int index = 0;
+             index <= InitialContainerSnapshot.DEFAULT_MAX_ENTRIES; index++) {
+            list.add(Integer.valueOf(index));
+        }
+
+        FakeVm refused = new FakeVm();
+        InitialContainerSnapshot.Outcome overBound =
+                InitialContainerSnapshot.install(refused, list, null, true);
+        assertFalse(overBound.installed);
+        assertEquals(InitialContainerSnapshot.OVER_BOUND, overBound.reason);
+        assertEquals(list.size(), overBound.entries);
+        assertEquals(0, refused.calls);
+
+        InitialContainerSnapshot.forgetOfferedContainers();
+        System.setProperty(InitialContainerSnapshot.BOUND_PROPERTY, "4096");
+        try {
+            assertEquals(4096, InitialContainerSnapshot.maxEntries());
+            FakeVm admitted = new FakeVm();
+            InitialContainerSnapshot.Outcome stated =
+                    InitialContainerSnapshot.install(admitted, list, null,
+                            true);
+            assertTrue(stated.installed);
+            assertEquals(list.size(), stated.entries);
+            assertEquals(1, admitted.calls);
+        } finally {
+            System.clearProperty(InitialContainerSnapshot.BOUND_PROPERTY);
+        }
+    }
+
 }

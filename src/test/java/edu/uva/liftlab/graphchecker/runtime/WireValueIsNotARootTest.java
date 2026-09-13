@@ -24,9 +24,10 @@ import static org.junit.Assert.assertTrue;
  * formula a free existential per port per consumer that the attach then
  * overwrites: four extra roots on the two DataNodes, a reach condition that
  * degenerates to {@code true}, and both fault valuations sat.  The reference
- * corpus never minted there -- it recorded the port as reused 57 times -- and
- * only because a neighbouring accessor read happened to leave an expression
- * on the getter's return.  This pins the policy instead of the luck.</p>
+ * corpus never minted there -- it recorded the port as reused 57 times --
+ * and only because a neighbouring accessor read happened to leave an
+ * expression on the getter's return.  This pins the policy instead of the
+ * luck.</p>
  */
 public class WireValueIsNotARootTest {
 
@@ -46,9 +47,9 @@ public class WireValueIsNotARootTest {
                 cutPort(KEY_ID_PORT, "int", true, false)));
     }
 
-    /** A plan frozen before the selection verdict carries only sourceKind. */
+    /** A plan frozen by the build that wrote the verdict into the demand. */
     @Test
-    public void theSchedulerVerdictAloneAlsoNamesACutPort() {
+    public void theWrittenDemandAloneAlsoNamesACutPort() {
         assertTrue(ConcolicRegionRuntime.declaredCommunicationCutPort(
                 cutPort(EXPIRY_PORT, "long", false, true)));
     }
@@ -64,11 +65,12 @@ public class WireValueIsNotARootTest {
     /**
      * The mint the bug produced: the consumer's copy carried nothing yet.
      *
-     * <p>{@code carriesInputAuthority} answering false is what used to send
-     * the caller into {@code api.symbolizeField(fresh, "value", ...)}.  It
+     * <p>{@code carriesInputAuthority} answering false is what sends the
+     * caller towards {@code api.symbolizeField(fresh, "value", ...)}.  It
      * still answers false -- there really is nothing to reuse at that
      * instant -- so the refusal has to be the second half of the decision,
-     * which is what {@code declaredCommunicationCutPort} supplies.</p>
+     * which is what {@code declaredCommunicationCutPort} supplies inside
+     * {@code observeWithoutMinting}.</p>
      */
     @Test
     public void aCutPortWithNothingPropagatedStillRefusesToMint() {
@@ -78,6 +80,26 @@ public class WireValueIsNotARootTest {
         assertFalse("nothing has reached the local yet",
                 ConcolicRegionRuntime.carriesInputAuthority(port, null));
         assertTrue("so the caller must leave it to the attach",
+                ConcolicRegionRuntime.declaredCommunicationCutPort(port));
+    }
+
+    /**
+     * Mint eligibility does not rescue the port, and cannot be relied on.
+     *
+     * <p>A plan the selection file narrowed already marks a cut port
+     * {@code mintEligible: false}, so the carrier rule alone would cover
+     * this case.  A campaign with no {@code symbolic-inputs.jsonl} -- and
+     * every plan frozen before the field existed -- defaults the flag to
+     * {@code true}, which is the state this asserts: the port must still
+     * mint nothing.</p>
+     */
+    @Test
+    public void aCutPortInAnUnnarrowedPlanIsStillNotAMintSite() {
+        ConcolicRegionRuntime.SymbolizeAction port =
+                cutPort(KEY_ID_PORT, "int", true, false);
+
+        assertTrue("no selection file narrowed this plan", port.mintEligible);
+        assertTrue("the port's own kind is what decides",
                 ConcolicRegionRuntime.declaredCommunicationCutPort(port));
     }
 
@@ -100,14 +122,14 @@ public class WireValueIsNotARootTest {
 
     private static ConcolicRegionRuntime.SymbolizeAction cutPort(
             String portId, String javaType, boolean stampedByFinalizer,
-            boolean stampedByScheduler) {
+            boolean demandWritten) {
         return new ConcolicRegionRuntime.SymbolizeAction(portJson(
-                portId, javaType, stampedByFinalizer, stampedByScheduler));
+                portId, javaType, stampedByFinalizer, demandWritten));
     }
 
     private static JsonObject portJson(String portId, String javaType,
                                        boolean stampedByFinalizer,
-                                       boolean stampedByScheduler) {
+                                       boolean demandWritten) {
         JsonObject json = new JsonObject();
         json.addProperty("symbol", portId);
         json.addProperty("portId", portId);
@@ -117,8 +139,8 @@ public class WireValueIsNotARootTest {
         if (stampedByFinalizer) {
             json.addProperty("sourceKind", "COMMUNICATION_SITE_PORT");
         }
-        if (stampedByScheduler) {
-            json.addProperty(InputActionCatalog.SYMBOLIC_DEMAND,
+        if (demandWritten) {
+            json.addProperty("symbolicDemand",
                     InputActionCatalog.DECLARED_COMMUNICATION_CUT_PORT);
         }
         return json;

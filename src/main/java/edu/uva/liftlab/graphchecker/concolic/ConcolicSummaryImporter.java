@@ -546,12 +546,20 @@ public final class ConcolicSummaryImporter {
      * OCC-1: the activations each task published, counted once over the whole
      * results file.
      *
-     * <p>Two findings are task-level and cannot be made while importing a
+     * <p>Three findings are task-level and cannot be made while importing a
      * single row: an ordinal published twice (the runtime's activation
-     * counter is not a counter), and a target task none of whose activations
-     * reached the target.  Both are named here and both stay refusals -- the
-     * rows themselves are still imported, so a reader can see what the
+     * counter is not a counter), a target task none of whose activations
+     * reached the target, and a planned task the run left no row for at all.
+     * All three are named here and all three stay refusals -- the rows
+     * themselves are still imported, so a reader can see what the
      * activations did instead of being handed an empty member set.</p>
+     *
+     * <p>The third is only answerable against the plan: a task whose region
+     * was skipped still publishes a row and is named by that row's own
+     * diagnostic, but a task that published nothing at all appears nowhere
+     * in the results and would otherwise leave the selected case set short
+     * one region in silence.  A later stage then meets that hole as an
+     * unresolvable writer case rather than as a named coverage gap.</p>
      */
     private static final class ActivationCensus {
         private final Map<String, Set<Integer>> ordinalsByTask =
@@ -559,10 +567,16 @@ public final class ConcolicSummaryImporter {
         private final Map<String, List<Integer>> duplicatesByTask =
                 new LinkedHashMap<>();
         private final Set<String> targetReachedTasks = new LinkedHashSet<>();
+        private final Set<String> tasksWithRows = new LinkedHashSet<>();
 
         private static ActivationCensus of(List<JsonObject> rawResults) {
             ActivationCensus census = new ActivationCensus();
             for (JsonObject raw : rawResults) {
+                // Every row this run published for a task answers for it,
+                // whatever the row says happened: a skipped region names
+                // itself through its own row-level diagnostic.
+                String rowTaskId = optionalString(raw, "taskId");
+                if (!rowTaskId.isEmpty()) census.tasksWithRows.add(rowTaskId);
                 if (!"CONCOLIC_REGION_RESULT".equals(optionalString(raw, "event"))) {
                     continue;
                 }
@@ -584,6 +598,19 @@ public final class ConcolicSummaryImporter {
 
         private void refusals(Map<String, ExecutionTask> tasks,
                               List<JsonObject> diagnostics) {
+            for (Map.Entry<String, ExecutionTask> entry : tasks.entrySet()) {
+                ExecutionTask task = entry.getValue();
+                if (task == null || !task.executable()
+                        || tasksWithRows.contains(entry.getKey())) {
+                    continue;
+                }
+                diagnostics.add(taskDiagnostic(entry.getKey(),
+                        "REGION_TASK_NO_PUBLISHED_ACTIVATION",
+                        "this planned task published no activation and no "
+                        + "skip, so its region contributes no case to the "
+                        + "selected path set; its anchor names "
+                        + task.occurrenceId()));
+            }
             for (Map.Entry<String, List<Integer>> entry
                     : duplicatesByTask.entrySet()) {
                 diagnostics.add(taskDiagnostic(entry.getKey(),

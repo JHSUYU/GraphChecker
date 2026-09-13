@@ -1432,11 +1432,19 @@ public final class SymbolicPropagationClosure {
             if (readIdentity.isEmpty()) return;
             Map<String, Integer> duplicates = new LinkedHashMap<>();
             JsonArray selectors = new JsonArray();
+            List<String> uncovered = new ArrayList<>();
             for (JsonElement encoded : array(read, "candidates")) {
                 if (!encoded.isJsonObject()) continue;
                 JsonObject candidate = encoded.getAsJsonObject();
                 String owner = optionalString(candidate, WRITER_CASE_OWNER);
-                if (owner.isEmpty()) continue;
+                if (owner.isEmpty()) {
+                    // Say which recorded write the cover is short of: the
+                    // composer only sees the short array and can name no
+                    // more than the read itself.
+                    uncovered.add("writer=" + optionalLongInteger(
+                            candidate, "fieldVersionId", -1L));
+                    continue;
+                }
                 String base = owner + "\n" + optionalString(candidate, "versionKind")
                         + "\n" + semanticIdentity(candidate.get("expression"),
                         owner) + "\n" + semanticIdentity(
@@ -1455,7 +1463,8 @@ public final class SymbolicPropagationClosure {
             }
             if (selectors.size() != array(read, "candidates").size()) {
                 gap("READ_FROM_CANDIDATE_IDENTITY_MISSING", readIdentity,
-                        "not every candidate has a stable writer case");
+                        "not every candidate has a stable writer case: "
+                                + uncovered);
             }
             read.add("exactlyOne", selectors);
         }

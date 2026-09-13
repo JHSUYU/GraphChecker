@@ -206,7 +206,15 @@ final class SharedStateCapture {
         } catch (Throwable unavailable) {
             outcome = null;
         }
-        if (outcome == null || !outcome.declined()) return;
+        if (outcome == null) return;
+        if (outcome.installed) {
+            JsonObject stated = InitialContainerSnapshot.statedRow(outcome,
+                    carrier.describe());
+            diag(InitialContainerSnapshot.STATED_EVENT, stated.toString());
+            if (active != null) active.initialSnapshotStates.add(stated);
+            return;
+        }
+        if (!outcome.declined()) return;
         JsonObject row = InitialContainerSnapshot.skipRow(outcome,
                 carrier.describe());
         diag(InitialContainerSnapshot.SKIPPED_EVENT, row.toString());

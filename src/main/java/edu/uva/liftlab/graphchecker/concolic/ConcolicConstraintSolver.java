@@ -305,7 +305,7 @@ public final class ConcolicConstraintSolver {
         }
     }
 
-    private static final class Encoder implements VmTermLowering.Policy {
+    private static final class Encoder extends VmLoweringCore {
         private static final String SHARED_TERM_PREFIX = "container_dag__";
         private final SmtSymbolTable smtSymbols = new SmtSymbolTable();
         private final Map<String, Sort> declarations = new LinkedHashMap<>();
@@ -404,6 +404,79 @@ public final class ConcolicConstraintSolver {
         }
 
         @Override
+        Sort sortOfJavaType(String javaType) {
+            return sortOfJava(javaType);
+        }
+
+        /**
+         * A flip query is one path's conjunction, so every operand on it is
+         * evaluated: its definedness is stated outright rather than carried
+         * on the term the way final composition carries it.
+         */
+        @Override
+        Term definedResult(String text, Sort sort, IntegralWidth width,
+                           String definedness, Term... inputs) {
+            if (!"true".equals(definedness)) assertions.add(definedness);
+            return Term.vm(text, sort, width);
+        }
+
+        /**
+         * Every term here carries the definedness "true", so a short
+         * circuit has no operand obligation to guard and states nothing.
+         */
+        @Override
+        Term shortCircuit(String text, Term left, Term right,
+                          boolean conjunction) {
+            return Term.vm(text, Sort.BOOL);
+        }
+
+        /**
+         * Evaluation of an instance String operation proves its receiver was
+         * non-null, so the query may assert it; unknown nullability refuses.
+         */
+        @Override
+        String stringDefinedness(String origin, String operation,
+                                 List<Term> dereferenced,
+                                 List<Term> evaluated) {
+            for (int index = 0; index < dereferenced.size(); index++) {
+                Term value = dereferenced.get(index);
+                if (value == null || value.stringNullness.isEmpty()) {
+                    unsupported.add(origin + ":STRING_"
+                            + operation.toUpperCase(java.util.Locale.ROOT)
+                            + "_NULLABILITY_UNKNOWN:" + index);
+                    return null;
+                }
+                if (!"false".equals(value.stringNullness)) {
+                    requireUnderCurrentGuard(
+                            "(not " + value.stringNullness + ")");
+                }
+            }
+            return "true";
+        }
+
+        @Override
+        void assertJavaIntegralDomain(String term, Sort sort,
+                                      String javaType, String identity) {
+            if (sort != Sort.INT) return;
+            JavaPrimitiveSmtSemantics.IntegralDomain domain =
+                    JavaPrimitiveSmtSemantics.domainOfJavaType(javaType);
+            if (domain == null || term == null || term.isEmpty()) return;
+            assertions.add(VmTermLowering.integralRange(domain.lower, term,
+                    domain.upper));
+        }
+
+        @Override
+        void noteJavaIntToString() {
+            usesJavaIntString = true;
+        }
+
+        /** One recorded String.split prefix the codec could not close. */
+        private Term splitElementGap(String gap) {
+            return VmTermLowering.codecGap(this,
+                    "java/lang/String.splitElement", gap, "", null);
+        }
+
+        @Override
         public VmTermLowering.RenderedInteger renderedInteger(
                 JsonElement element, String origin) {
             SplitPrefix match = exactSplitPrefix(element);
@@ -447,64 +520,29 @@ public final class ConcolicConstraintSolver {
 
         private Term term(JsonElement expression, Sort expected,
                           String origin) {
-            if (expression == null || expression.isJsonNull()
-                    || !expression.isJsonObject()) {
-                unsupported.add(origin + ":MISSING_OR_NON_OBJECT_EXPRESSION");
-                return null;
-            }
-            JsonObject object = expression.getAsJsonObject();
-            String type = optionalString(object, "_type");
-            if ("SymbolExpression".equals(type)) {
-                return symbol(object, origin);
-            }
-            if (ContainerSmtCodec.constantKind(type)) {
-                return constant(object, expected, origin);
-            }
-            if ("PlaceholderExpression".equals(type)) {
-                return placeholder(object, origin);
-            }
-            if ("BinaryExpression".equals(type)) {
-                return binary(object, origin);
-            }
-            if ("OpStrExpression".equals(type)) {
-                return stringOperation(object, origin);
-            }
-            if ("NotExpression".equals(type)) {
-                Term operand = term(object.get("_operand"), Sort.BOOL,
-                        origin + ":not");
-                if (operand == null || operand.sort != Sort.BOOL) {
-                    unsupported.add(origin + ":MALFORMED_NOT");
-                    return null;
-                }
-                return Term.vm("(not " + operand.text + ")", Sort.BOOL);
-            }
-            if ("TypeCastExpression".equals(type)) {
-                return VmTermLowering.typeCast(this, object,
-                        origin);
-            }
-            if ("MethodExpression".equals(type)) {
-                return methodTerm(object, origin);
-            }
-            if (SharedStateEvidence.GUARDED_READ_TYPE.equals(type)) {
-                return guardedReadTerm(object, expected, origin);
-            }
-            if (SymbolicPropagationClosure.ITE_TYPE.equals(type)) {
-                return consumerCaseMergeTerm(object, expected, origin);
-            }
-            if (VmExpressionIr.CONSUMER_BOUNDARY_TYPE.equals(type)
-                    || VmExpressionIr.CONSUMER_BOUNDARY_REFERENCE_TYPE
-                    .equals(type)) {
-                return term(object.get(VmExpressionIr.EXPRESSION), expected,
-                        origin + ":consumer-boundary");
-            }
-            if (ContainerSmtCodec.handles(object)) {
-                return containerTerm(object, origin);
-            }
-            if (ContainerSmtCodec.handlesField(object)) {
-                return containerFieldTerm(object, origin);
-            }
-            unsupported.add(origin + ":TYPE:" + firstNonBlank(type,
-                    "MISSING"));
+            return dispatch(expression, expected, origin);
+        }
+
+        @Override
+        Term symbolTerm(JsonObject expression, Sort expected,
+                        String origin) {
+            return symbol(expression, origin);
+        }
+
+        @Override
+        Term placeholderTerm(JsonObject expression, String origin) {
+            return placeholder(expression, origin);
+        }
+
+        @Override
+        Term caseMergeTerm(JsonObject expression, Sort expected,
+                           String origin) {
+            return consumerCaseMergeTerm(expression, expected, origin);
+        }
+
+        /** A refused call yields no term, so no sort is needed for it. */
+        @Override
+        Sort methodResultSort(JsonObject expression, String origin) {
             return null;
         }
 
@@ -995,8 +1033,9 @@ public final class ConcolicConstraintSolver {
         }
 
         /** Lowers the VM's read-time candidate snapshot directly. */
-        private Term guardedReadTerm(JsonObject read, Sort expected,
-                                     String origin) {
+        @Override
+        Term guardedReadTerm(JsonObject read, Sort expected,
+                             String origin) {
             boolean targetMapRead = captureTargetContainerReads
                     && guardedReadDepth == 0
                     && SharedStateEvidence.LOCATION_KIND_MAP_STATE.equals(
@@ -1337,10 +1376,15 @@ public final class ConcolicConstraintSolver {
                     + predicate + ")");
         }
 
-        private Term containerTerm(JsonObject expression, String origin) {
-            ContainerSmtCodec.Term result = ContainerSmtCodec.term(
-                    expression, containerHost(origin));
-            Term value = fromContainerTerm(result, origin);
+        @Override
+        Term containerTerm(JsonObject expression, boolean field,
+                           String origin) {
+            if (field) {
+                return fromContainerTerm(ContainerSmtCodec.field(
+                        expression, containerHost(origin)), origin);
+            }
+            Term value = fromContainerTerm(ContainerSmtCodec.term(
+                    expression, containerHost(origin)), origin);
             if (captureTargetContainerReads && guardedReadDepth == 0
                     && value != null) {
                 InitialContainerObservation.Read read =
@@ -1357,12 +1401,6 @@ public final class ConcolicConstraintSolver {
                 }
             }
             return value;
-        }
-
-        private Term containerFieldTerm(
-                JsonObject expression, String origin) {
-            return fromContainerTerm(ContainerSmtCodec.field(
-                    expression, containerHost(origin)), origin);
         }
 
         private ContainerSmtCodec.Host containerHost(final String origin) {
@@ -1397,11 +1435,7 @@ public final class ConcolicConstraintSolver {
                         unsupported("ContainerStateIdentity:" + shape);
                         return null;
                     }
-                    return new ContainerSmtCodec.Term(
-                            (shape == ContainerSmtCodec.Sort.INDEXED
-                                    ? "(indexed_state_of "
-                                    : "(assoc_state_of ")
-                                    + reference.text + ")", shape);
+                    return stateOfReference(reference.text, shape);
                 }
 
                 @Override
@@ -1424,18 +1458,8 @@ public final class ConcolicConstraintSolver {
                         return shareTerm(ContainerSmtCodec.field(
                                 expression.getAsJsonObject(), this));
                     }
-                    Sort nativeExpected = expected == ContainerSmtCodec.Sort.INT
-                            ? Sort.INT
-                            : expected == ContainerSmtCodec.Sort.BOOL
-                            ? Sort.BOOL
-                            : expected == ContainerSmtCodec.Sort.REF
-                            ? Sort.REF
-                            : expected == ContainerSmtCodec.Sort.INDEXED
-                            ? Sort.ARRAY_VALUE
-                            : expected == ContainerSmtCodec.Sort.ASSOCIATIVE
-                            ? Sort.MAP : null;
                     return shareTerm(toContainerTerm(term(expression,
-                            nativeExpected,
+                            nativeSortOf(expected),
                             origin + ":container-operand")));
                 }
 
@@ -1450,47 +1474,19 @@ public final class ConcolicConstraintSolver {
                     Term value = term(expression, null,
                             origin + ":container-value");
                     if (value == null) return null;
+                    // A String box reads its nullness companion, so it is
+                    // spelled out; every other value goes in as its alias.
                     String valueText = value.text;
                     if (value.sort != Sort.STRING) {
                         ContainerSmtCodec.Term shared = shareTerm(
                                 toContainerTerm(value));
                         if (shared != null) valueText = shared.text;
                     }
-                    String integralValue = value.sort == Sort.INT
-                            ? ContainerSmtCodec.boxIntegral(valueText,
-                            VmTermLowering.expressionJavaType(expression)) : "";
-                    String stringValue = "";
-                    if (value.sort == Sort.STRING) {
-                        if (value.stringNullness.isEmpty()) {
-                            unsupported("ContainerStringNullness");
-                            return null;
-                        }
-                        stringValue = "false".equals(
-                                value.stringNullness)
-                                ? "(VString " + value.text + ")"
-                                : "(ite " + value.stringNullness
-                                + " (VRef nullRef) (VString "
-                                + value.text + "))";
-                    }
-                    String boxed = value.sort == Sort.INT
-                            ? firstNonBlank(integralValue,
-                            "(VInt " + valueText + ")")
-                            : value.sort == Sort.BOOL
-                            ? "(VBool " + valueText + ")"
-                            : value.sort == Sort.REF
-                            ? "(VRef " + valueText + ")"
-                            : value.sort == Sort.STRING
-                            ? stringValue
-                            : value.sort == Sort.FLOAT32
-                            ? "(VFloat " + valueText + ")"
-                            : value.sort == Sort.FLOAT64
-                            ? "(VDouble " + valueText + ")" : "";
-                    if (boxed.isEmpty()) {
-                        unsupported("ContainerBox:" + value.sort);
-                        return null;
-                    }
-                    return shareTerm(new ContainerSmtCodec.Term(boxed,
-                            ContainerSmtCodec.Sort.VALUE));
+                    Term boxed = asValue(value,
+                            VmTermLowering.expressionJavaType(expression),
+                            valueText, origin);
+                    return boxed == null ? null
+                            : shareTerm(toContainerTerm(boxed));
                 }
 
                 @Override
@@ -1786,561 +1782,7 @@ public final class ConcolicConstraintSolver {
             return Term.vm(name, Sort.INT, IntegralWidth.JAVA_LONG);
         }
 
-        private Term constant(JsonObject expression, Sort expected,
-                              String origin) {
-            String raw = optionalString(expression, "_exp");
-            String payload = constantPayload(raw);
-            Sort sort = sortOfJava(optionalString(expression, "_java_type"));
-            if (expected == Sort.BOOL && (sort == Sort.INT
-                    || sort == Sort.BOOL)) {
-                return Term.vm("0".equals(payload) ? "false" : "true",
-                        Sort.BOOL);
-            }
-            if (expected == Sort.REF && ("0".equals(payload)
-                    || VmExpressionIr.SYMBOLIC_NULL.equals(raw))) {
-                return Term.vm("nullRef", Sort.REF);
-            }
-            if (sort == Sort.BOOL) {
-                return Term.vm("0".equals(payload) ? "false" : "true",
-                        Sort.BOOL);
-            }
-            if (sort == Sort.INT) {
-                String literal = SmtModelValueCodec.integerLiteral(payload);
-                if (literal == null) {
-                    unsupported.add(origin + ":INVALID_INTEGER_LITERAL:"
-                            + firstNonBlank(raw, "MISSING"));
-                    return null;
-                }
-                return Term.vm(literal, Sort.INT,
-                        JavaPrimitiveSmtSemantics.widthOfJavaType(
-                                optionalString(expression, "_java_type")));
-            }
-            if (sort.floating()) {
-                FloatingKind kind = floatingKind(sort);
-                String literal = JavaPrimitiveSmtSemantics.floatingLiteral(
-                        payload, kind);
-                if (literal == null) {
-                    unsupported.add(origin + ":INVALID_FLOATING_LITERAL:"
-                            + firstNonBlank(raw, "MISSING"));
-                    return null;
-                }
-                return Term.vm(literal, sort);
-            }
-            if (sort == Sort.STRING) {
-                return Term.nonNullString(quote(payload), "true");
-            }
-            if (VmExpressionIr.SYMBOLIC_NULL.equals(raw)) {
-                return Term.vm("nullRef", Sort.REF);
-            }
-            unsupported.add(origin + ":UNSUPPORTED_CONSTANT_TYPE:"
-                    + firstNonBlank(optionalString(expression, "_java_type"),
-                    "MISSING"));
-            return null;
-        }
-
         /** Lowers only casts whose value relation the SMT sorts preserve. */
-
-        private Term binary(JsonObject expression, String origin) {
-            String operator = JavaPrimitiveSmtSemantics.canonicalVmOperator(
-                    optionalString(expression, "_op"));
-            JsonElement leftExpression = expression.get("_left");
-            if (leftExpression == null || leftExpression.isJsonNull()) {
-                Term operand = term(expression.get("_right"), null,
-                        origin + ":operand");
-                if ("-".equals(operator) && operand != null
-                        && numeric(operand.sort)) {
-                    if (operand.sort.floating()) {
-                        return Term.vm(JavaPrimitiveSmtSemantics
-                                .floatingNegate(operand.text), operand.sort);
-                    }
-                    if (operand.integralWidth != IntegralWidth.NONE) {
-                        return Term.vm(JavaPrimitiveSmtSemantics.wrap(
-                                "(- " + operand.text + ")",
-                                operand.integralWidth), Sort.INT,
-                                operand.integralWidth);
-                    }
-                    unsupported.add(origin
-                            + ":AMBIGUOUS_JAVA_INTEGRAL_UNARY_WIDTH");
-                    return null;
-                }
-                if ("~".equals(operator) && operand != null
-                        && operand.sort == Sort.INT
-                        && operand.integralWidth != IntegralWidth.NONE) {
-                    return Term.vm(JavaPrimitiveSmtSemantics.complement(
-                            operand.text, operand.integralWidth), Sort.INT,
-                            operand.integralWidth);
-                }
-                unsupported.add(origin + ":NON_NUMERIC_OR_UNKNOWN_UNARY:"
-                        + firstNonBlank(operator, "MISSING"));
-                return null;
-            }
-            Term left = term(expression.get("_left"), null,
-                    origin + ":left");
-            Term right = term(expression.get("_right"),
-                    left == null ? null : left.sort, origin + ":right");
-            if (left == null || right == null) return null;
-            if (left.sort != right.sort && right.isZero()
-                    && left.sort == Sort.REF) {
-                right = Term.vm("nullRef", Sort.REF);
-            } else if (left.sort != right.sort && left.isZero()
-                    && right.sort == Sort.REF) {
-                left = Term.vm("nullRef", Sort.REF);
-            }
-            if ("--".equals(operator)) {
-                if (left.sort == Sort.INT && right.sort == Sort.INT
-                        && left.integralWidth == IntegralWidth.JAVA_LONG
-                        && right.integralWidth == IntegralWidth.JAVA_LONG) {
-                    return Term.vm(JavaPrimitiveSmtSemantics
-                            .integralCompareResult(left.text, right.text),
-                            Sort.INT, IntegralWidth.JAVA_INT);
-                }
-                unsupported.add(origin + ":MALFORMED_JVM_LCMP_OPERANDS:"
-                        + left.sort + ":" + left.integralWidth + ":"
-                        + right.sort + ":" + right.integralWidth);
-                return null;
-            }
-            if ("--l".equals(operator) || "--g".equals(operator)) {
-                if (left.sort == right.sort && left.sort.floating()) {
-                    return Term.vm(JavaPrimitiveSmtSemantics
-                            .floatingCompareResult(left.text, right.text,
-                                    "--g".equals(operator)), Sort.INT,
-                            IntegralWidth.JAVA_INT);
-                }
-                unsupported.add(origin + ":MALFORMED_JVM_FP_CMP_OPERANDS:"
-                        + operator + ":" + left.sort + ":" + right.sort);
-                return null;
-            }
-            if (left.sort != right.sort && numeric(left.sort)
-                    && numeric(right.sort)
-                    && (left.sort.floating() || right.sort.floating())) {
-                Sort promoted = left.sort == Sort.FLOAT64
-                        || right.sort == Sort.FLOAT64
-                        ? Sort.FLOAT64 : Sort.FLOAT32;
-                left = VmTermLowering.floatingPromotion(this, left,
-                        promoted, origin + ":left");
-                right = VmTermLowering.floatingPromotion(this, right,
-                        promoted, origin + ":right");
-                if (left == null || right == null) return null;
-            }
-            if ("==".equals(operator) || "!=".equals(operator)) {
-                Term stringNullComparison = stringNullComparison(
-                        left, right, operator);
-                if (stringNullComparison != null) {
-                    return stringNullComparison;
-                }
-                if (left.sort == Sort.STRING && right.sort == Sort.STRING) {
-                    if (ContainerSmtCodec.handlesFieldBinding(expression)) {
-                        Term symbol = ContainerSmtCodec.handlesField(
-                                expression.get("_left")) ? right : left;
-                        String materialization = ContainerSmtCodec
-                                .materializedStringEquality(left.text,
-                                right.text, symbol.stringNullness);
-                        if (materialization.isEmpty()) {
-                            unsupported.add(origin
-                                    + ":STRING_MATERIALIZATION_NULLNESS");
-                            return null;
-                        }
-                        return Term.vm(materialization, Sort.BOOL);
-                    }
-                    if (!left.stringReferenceOrigin.isEmpty()
-                            && left.stringReferenceOrigin.equals(
-                            right.stringReferenceOrigin)) {
-                        return Term.vm("==".equals(operator)
-                                ? "true" : "false", Sort.BOOL);
-                    }
-                    // A BinaryExpression over Java Strings comes from JVM
-                    // reference comparison.  SMT string equality is content
-                    unsupported.add(origin
-                            + ":JAVA_STRING_REFERENCE_IDENTITY_"
-                            + "MATERIALIZATION_UNMODELED");
-                    return null;
-                }
-                if (left.sort != right.sort) {
-                    unsupported.add(origin + ":SORT_MISMATCH:" + left.sort
-                            + ":" + right.sort);
-                    return null;
-                }
-                if (left.sort.floating()) {
-                    return Term.vm(JavaPrimitiveSmtSemantics
-                            .floatingComparison(operator, left.text,
-                                    right.text), Sort.BOOL);
-                }
-                String equals = "(= " + left.text + " " + right.text + ")";
-                return Term.vm("!=".equals(operator)
-                        ? "(not " + equals + ")" : equals, Sort.BOOL);
-            }
-            if ("&&".equals(operator) || "||".equals(operator)) {
-                if (left.sort != Sort.BOOL || right.sort != Sort.BOOL) {
-                    unsupported.add(origin + ":NON_BOOLEAN_LOGIC");
-                    return null;
-                }
-                return Term.vm("(" + ("&&".equals(operator) ? "and" : "or")
-                        + " " + left.text + " " + right.text + ")",
-                        Sort.BOOL);
-            }
-            String comparison = comparison(operator);
-            if (!comparison.isEmpty()) {
-                if (!numeric(left.sort) || !numeric(right.sort)) {
-                    unsupported.add(origin + ":NON_NUMERIC_COMPARISON");
-                    return null;
-                }
-                if (left.sort != right.sort) {
-                    unsupported.add(origin + ":NUMERIC_SORT_MISMATCH:"
-                            + left.sort + ":" + right.sort);
-                    return null;
-                }
-                if (left.sort.floating()) {
-                    return Term.vm(JavaPrimitiveSmtSemantics
-                            .floatingComparison(operator, left.text,
-                                    right.text), Sort.BOOL);
-                }
-                return Term.vm("(" + comparison + " " + left.text + " "
-                        + right.text + ")", Sort.BOOL);
-            }
-            if (bitwiseOperator(operator)) {
-                if (left.sort != Sort.INT || right.sort != Sort.INT) {
-                    unsupported.add(origin + ":NON_INTEGRAL_BITWISE");
-                    return null;
-                }
-                IntegralWidth width = JavaPrimitiveSmtSemantics.promote(
-                        left.integralWidth, right.integralWidth);
-                if (width == IntegralWidth.NONE) {
-                    unsupported.add(origin
-                            + ":AMBIGUOUS_JAVA_INTEGRAL_BITWISE_WIDTH:"
-                            + operator + ":" + left.integralWidth + ":"
-                            + right.integralWidth);
-                    return null;
-                }
-                return Term.vm(JavaPrimitiveSmtSemantics.bitwise(operator,
-                        left.text, right.text, width), Sort.INT, width);
-            }
-            if (shiftOperator(operator)) {
-                if (left.sort != Sort.INT || right.sort != Sort.INT
-                        || left.integralWidth == IntegralWidth.NONE) {
-                    unsupported.add(origin
-                            + ":AMBIGUOUS_JAVA_INTEGRAL_SHIFT:"
-                            + operator + ":" + left.integralWidth + ":"
-                            + right.integralWidth);
-                    return null;
-                }
-                return Term.vm(JavaPrimitiveSmtSemantics.shift(operator,
-                        left.text, right.text, left.integralWidth), Sort.INT,
-                        left.integralWidth);
-            }
-            if (arithmeticOperator(operator)) {
-                if (!numeric(left.sort) || !numeric(right.sort)) {
-                    unsupported.add(origin + ":NON_NUMERIC_ARITHMETIC");
-                    return null;
-                }
-                if (left.sort != right.sort) {
-                    unsupported.add(origin + ":NUMERIC_SORT_MISMATCH:"
-                            + left.sort + ":" + right.sort);
-                    return null;
-                }
-                Sort result = left.sort;
-                if ("%".equals(operator)) {
-                    if (result.floating()) {
-                        unsupported.add(origin
-                                + ":JAVA_FLOATING_REMAINDER_UNMODELED");
-                        return null;
-                    }
-                    IntegralWidth resultWidth = JavaPrimitiveSmtSemantics
-                            .promote(left.integralWidth,
-                                    right.integralWidth);
-                    if (resultWidth == IntegralWidth.NONE) {
-                        unsupported.add(origin
-                                + ":AMBIGUOUS_JAVA_INTEGRAL_BINARY_WIDTH:"
-                                + operator + ":" + left.integralWidth + ":"
-                                + right.integralWidth);
-                        return null;
-                    }
-                    assertions.add(JavaPrimitiveSmtSemantics
-                            .integralDivisorDefined(right.text));
-                    return Term.vm(JavaPrimitiveSmtSemantics
-                            .integralRemainder(left.text, right.text,
-                                    resultWidth), Sort.INT, resultWidth);
-                }
-                if (result.floating()) {
-                    String arithmetic = JavaPrimitiveSmtSemantics
-                            .floatingArithmetic(operator, left.text,
-                                    right.text);
-                    if (arithmetic != null) {
-                        return Term.vm(arithmetic, result);
-                    }
-                    unsupported.add(origin
-                            + ":JAVA_FLOATING_OPERATOR_UNMODELED:"
-                            + operator);
-                    return null;
-                }
-                if ("@".equals(operator) || "/".equals(operator)) {
-                    unsupported.add(origin
-                            + ":JAVA_INTEGRAL_DIVISION_UNMODELED");
-                    return null;
-                }
-                String arithmetic = arithmetic(operator);
-                String arithmeticExpression = "(" + arithmetic + " "
-                        + left.text + " " + right.text + ")";
-                IntegralWidth resultWidth = JavaPrimitiveSmtSemantics
-                        .promote(left.integralWidth, right.integralWidth);
-                if (resultWidth == IntegralWidth.NONE) {
-                    unsupported.add(origin
-                            + ":AMBIGUOUS_JAVA_INTEGRAL_BINARY_WIDTH:"
-                            + operator + ":" + left.integralWidth + ":"
-                            + right.integralWidth);
-                    return null;
-                }
-                return Term.vm(JavaPrimitiveSmtSemantics.wrap(
-                        arithmeticExpression, resultWidth), Sort.INT,
-                        resultWidth);
-            }
-            unsupported.add(origin + ":BINARY_OPERATOR:" + operator);
-            return null;
-        }
-
-        /**
-         * Lowers the Java reference-null view of a String without confusing
-         * it with the empty string.
-         */
-        private Term stringNullComparison(Term left, Term right,
-                                          String operator) {
-            Term string = null;
-            if (left.sort == Sort.STRING && right.isNullReference()) {
-                string = left;
-            } else if (right.sort == Sort.STRING
-                    && left.isNullReference()) {
-                string = right;
-            }
-            if (string == null || string.stringNullness.isEmpty()) {
-                return null;
-            }
-            String isNull = string.stringNullness;
-            return Term.vm("!=".equals(operator)
-                    ? "(not " + isNull + ")" : isNull, Sort.BOOL);
-        }
-
-        private Term stringOperation(JsonObject expression, String origin) {
-            String operation = optionalString(expression, "_name");
-            JsonArray parameters = array(expression, "_param_list");
-            boolean negated = optionalBool(expression, "_is_not", false);
-            if ("isEmpty".equals(operation)) {
-                List<Term> strings = stringParameters(parameters, 1, origin,
-                        operation);
-                if (strings == null) return null;
-                Term receiver = strings.get(0);
-                if (!requireNonNullStrings(strings, origin, operation)) {
-                    return null;
-                }
-                return booleanStringResult("(= (str.len " + receiver.text
-                        + ") 0)", negated);
-            }
-            if ("length".equals(operation)) {
-                if (negated) {
-                    unsupported.add(origin + ":NEGATED_STRING_VALUE_"
-                            + "OPERATION:length");
-                    return null;
-                }
-                List<Term> strings = stringParameters(parameters, 1, origin,
-                        operation);
-                if (strings == null) return null;
-                if (!requireNonNullStrings(strings, origin, operation)) {
-                    return null;
-                }
-                Term length = Term.vm("(str.len "
-                        + strings.get(0).text + ")", Sort.INT,
-                        IntegralWidth.JAVA_INT);
-                JavaPrimitiveSmtSemantics.IntegralDomain intDomain =
-                        JavaPrimitiveSmtSemantics.domainOfJavaType("I");
-                assertions.add("(and (<= " + intDomain.lower + " "
-                        + length.text + ") (<= " + length.text + " "
-                        + intDomain.upper + "))");
-                return length;
-            }
-            if ("concat".equals(operation)) {
-                if (negated) {
-                    unsupported.add(origin + ":NEGATED_STRING_VALUE_"
-                            + "OPERATION:concat");
-                    return null;
-                }
-                if (parameters.size() < 1) {
-                    unsupported.add(origin + ":STRING_CONCAT_ARITY:"
-                            + parameters.size());
-                    return null;
-                }
-                List<Term> strings = stringParameters(parameters,
-                        parameters.size(), origin, operation);
-                if (strings == null) return null;
-                if (!requireNonNullStrings(strings, origin, operation)) {
-                    return null;
-                }
-                if (strings.size() == 1) {
-                    return Term.nonNullString(strings.get(0).text, "true");
-                }
-                StringBuilder result = new StringBuilder("(str.++");
-                for (Term value : strings) {
-                    result.append(' ').append(value.text);
-                }
-                return Term.nonNullString(result.append(')').toString(),
-                        "true");
-            }
-            if ("toString".equals(operation)) {
-                if (negated) {
-                    return codecGap("OpStrExpression.toString",
-                            "NEGATED_VALUE_OPERATION", origin);
-                }
-                if (parameters.size() != 1
-                        || !isPrimitiveIntExpression(parameters.get(0))) {
-                    return codecGap("OpStrExpression.toString",
-                            "REQUIRES_ONE_PRIMITIVE_INT", origin);
-                }
-                Term integer = term(parameters.get(0), Sort.INT,
-                        origin + ":toString");
-                if (integer == null || integer.sort != Sort.INT) {
-                    return codecGap("OpStrExpression.toString",
-                            "NON_INT_TERM", origin);
-                }
-                assertJavaIntRange(integer);
-                return javaIntString(integer);
-            }
-            if ("equals".equals(operation)) {
-                return stringEquals(parameters, origin, negated);
-            }
-            if (!("contains".equals(operation)
-                    || "startsWith".equals(operation)
-                    || "endsWith".equals(operation))) {
-                unsupported.add(origin + ":OP_STRING_OPERATOR:"
-                        + firstNonBlank(operation, "MISSING"));
-                return null;
-            }
-            List<Term> strings = stringParameters(parameters, 2, origin,
-                    operation);
-            if (strings == null) return null;
-            if (!requireNonNullStrings(strings, origin, operation)) {
-                return null;
-            }
-            Term receiver = strings.get(0);
-            Term argument = strings.get(1);
-            String predicate;
-            if ("contains".equals(operation)) {
-                predicate = "(str.contains " + receiver.text + " "
-                        + argument.text + ")";
-            } else if ("startsWith".equals(operation)) {
-                predicate = "(str.prefixof " + argument.text + " "
-                        + receiver.text + ")";
-            } else {
-                predicate = "(str.suffixof " + argument.text + " "
-                        + receiver.text + ")";
-            }
-            return booleanStringResult(predicate, negated);
-        }
-
-        /** Java String.equals requires a non-null receiver but accepts null. */
-        private Term stringEquals(JsonArray parameters, String origin,
-                                  boolean negated) {
-            if (parameters.size() != 2) {
-                unsupported.add(origin + ":STRING_EQUALS_ARITY:"
-                        + parameters.size());
-                return null;
-            }
-            Term receiver = term(parameters.get(0), null,
-                    origin + ":equals:parameter0");
-            Term argument = term(parameters.get(1), null,
-                    origin + ":equals:parameter1");
-            if (receiver == null || argument == null) return null;
-            if (receiver.sort != Sort.STRING) {
-                unsupported.add(origin
-                        + ":STRING_EQUALS_SORT_MISMATCH:0:"
-                        + receiver.sort);
-                return null;
-            }
-            if (!requireNonNullString(receiver, origin, "equals", 0)) {
-                return null;
-            }
-            String predicate;
-            if (argument.isNullReference()) {
-                predicate = "false";
-            } else if (argument.sort == Sort.STRING) {
-                if (argument.stringNullness.isEmpty()) {
-                    unsupported.add(origin
-                            + ":STRING_EQUALS_NULLABILITY_UNKNOWN:1");
-                    return null;
-                }
-                String contentEquals = "(= " + receiver.text + " "
-                        + argument.text + ")";
-                predicate = "false".equals(argument.stringNullness)
-                        ? contentEquals : "(and (not "
-                        + argument.stringNullness + ") "
-                        + contentEquals + ")";
-            } else {
-                unsupported.add(origin
-                        + ":STRING_EQUALS_SORT_MISMATCH:1:"
-                        + argument.sort);
-                return null;
-            }
-            return booleanStringResult(predicate, negated);
-        }
-
-        private List<Term> stringParameters(JsonArray parameters,
-                                            int expectedArity,
-                                            String origin,
-                                            String operation) {
-            if (parameters.size() != expectedArity) {
-                unsupported.add(origin + ":STRING_"
-                        + operation.toUpperCase(java.util.Locale.ROOT)
-                        + "_ARITY:" + parameters.size());
-                return null;
-            }
-            List<Term> result = new ArrayList<>();
-            for (int index = 0; index < parameters.size(); index++) {
-                // Do not pass STRING as an expected sort here. Symbol terms
-                // use that hint when choosing their declaration sort, which
-                Term value = term(parameters.get(index), null,
-                        origin + ":" + operation + ":parameter" + index);
-                if (value == null) return null;
-                if (value.sort != Sort.STRING) {
-                    unsupported.add(origin + ":STRING_"
-                            + operation.toUpperCase(java.util.Locale.ROOT)
-                            + "_SORT_MISMATCH:" + index + ":" + value.sort);
-                    return null;
-                }
-                result.add(value);
-            }
-            return result;
-        }
-
-        private boolean requireNonNullStrings(List<Term> strings,
-                                              String origin,
-                                              String operation) {
-            for (int index = 0; index < strings.size(); index++) {
-                if (!requireNonNullString(strings.get(index), origin,
-                        operation, index)) return false;
-            }
-            return true;
-        }
-
-        /**
-         * Evaluation of an instance String operation proves its receiver was
-         * non-null, so the query may assert it; unknown nullability refuses.
-         */
-        private boolean requireNonNullString(Term value, String origin,
-                                             String operation, int index) {
-            if (value.stringNullness.isEmpty()) {
-                unsupported.add(origin + ":STRING_"
-                        + operation.toUpperCase(java.util.Locale.ROOT)
-                        + "_NULLABILITY_UNKNOWN:" + index);
-                return false;
-            }
-            if (!"false".equals(value.stringNullness)) {
-                requireUnderCurrentGuard(
-                        "(not " + value.stringNullness + ")");
-            }
-            return true;
-        }
-
-        private Term booleanStringResult(String predicate,
-                                         boolean negated) {
-            return Term.vm(negated ? "(not " + predicate + ")" : predicate,
-                    Sort.BOOL);
-        }
 
         private String methodConstraint(JsonObject expression,
                                         String origin) {
@@ -2356,44 +1798,22 @@ public final class ConcolicConstraintSolver {
             return "(= " + result.text + " " + call.text + ")";
         }
 
-        private Term methodTerm(JsonObject expression, String origin) {
-            String method = firstNonBlank(optionalString(expression, "_name"),
-                    "unknown_method");
-            // splitElement and parseInt carry the same structural round-trip
-            // semantics the composition encoder proves; this mirrors
-            if (isJavaParseInt(method)) {
-                return VmTermLowering.parseIntTerm(this, expression,
-                        origin);
-            }
-            if (isJavaSplitElement(method)) {
-                return splitElementTerm(expression, origin);
-            }
-            unsupported.add(origin + ":METHOD_SEMANTICS_MISSING:" + method);
-            return null;
-        }
-
         /** Mirror of {@link ConcolicSmtComposer}'s {@code parseIntTerm}. */
 
         /** Mirror of {@link ConcolicSmtComposer}'s {@code splitElementTerm}. */
-        private Term splitElementTerm(JsonObject expression, String origin) {
+        @Override
+        Term splitElementTerm(JsonObject expression, String origin) {
             SplitPrefix match = exactSplitPrefix(expression);
             if (!match.complete()) {
-                return codecGap("java/lang/String.splitElement", match.gap,
-                        origin);
+                return splitElementGap(match.gap);
             }
             Term integer = term(match.integerExpression, Sort.INT,
                     origin + ":splitElement");
             if (integer == null || integer.sort != Sort.INT) {
-                return codecGap("java/lang/String.splitElement",
-                        "ROUNDTRIP_SOURCE_NOT_INT", origin);
+                return splitElementGap("ROUNDTRIP_SOURCE_NOT_INT");
             }
             assertJavaIntRange(integer);
             return javaIntString(integer);
-        }
-
-        private Term codecGap(String operation, String gap, String origin) {
-            return VmTermLowering.codecGap(this, operation, gap, origin,
-                    null);
         }
 
         /**
@@ -2418,7 +1838,7 @@ public final class ConcolicConstraintSolver {
             }
             String delimiter = VmExpressionIr.exactStringLiteral(
                     params.get(1), STRING_TYPED);
-            String delimiterGap = decimalDelimiterGap(delimiter);
+            String delimiterGap = delimiterGap(delimiter, true);
             if (!delimiterGap.isEmpty()) return SplitPrefix.gap(delimiterGap);
             if (params.size() == 4) {
                 Integer limit = exactIntLiteral(params.get(2));
@@ -2469,28 +1889,6 @@ public final class ConcolicConstraintSolver {
                 }
             }
             return SplitPrefix.complete(toStringParams.get(0));
-        }
-
-        private String decimalDelimiterGap(String value) {
-            if (value == null || value.length() != 1) {
-                return "REGEX_NOT_SAFE_SINGLE_LITERAL";
-            }
-            char delimiter = value.charAt(0);
-            if (Character.isISOControl(delimiter)) {
-                return "REGEX_NOT_SAFE_SINGLE_LITERAL";
-            }
-            if ("\\.^$|?*+()[]{}".indexOf(delimiter) >= 0) {
-                return "REGEX_NOT_SAFE_SINGLE_LITERAL";
-            }
-            if (Character.isDigit(delimiter) || delimiter == '-') {
-                return "DELIMITER_OCCURS_IN_JAVA_INT_TEXT";
-            }
-            return "";
-        }
-
-        private Term javaIntString(Term integer) {
-            usesJavaIntString = true;
-            return VmTermLowering.javaIntString(integer);
         }
 
         @Override

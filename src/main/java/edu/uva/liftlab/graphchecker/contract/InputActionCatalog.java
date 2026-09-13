@@ -22,20 +22,19 @@ public final class InputActionCatalog {
     public static final String DECLARED_SYMBOLIC_ROOT =
             "declaredSymbolicRoot";
     /**
-     * The scheduler's selection verdict for one symbolic input.
-     *
-     * <p>Written by the planner and read by the replay; a row without one
-     * was never narrowed by a selection file.</p>
-     */
-    public static final String SYMBOLIC_DEMAND = "symbolicDemand";
-    /**
-     * The demand of a port {@code communication-mappings.jsonl} declared.
+     * The verdict of a port {@code communication-mappings.jsonl} declared.
      *
      * <p>Such a port is a wire handoff, never a mint: the value it names is
      * produced on the other side of the wire, and the consumer's copy is a
-     * carrier of the producer's expression.  Both the planner (which exempts
-     * the port from the root allowlist) and the replay (which refuses to mint
-     * at it) answer to this one name, so the policy is stated once.</p>
+     * carrier of the producer's expression.  The planner stamps it as this
+     * action's {@code SYMBOLIC_ROOT_DECISION} verdict and never makes it
+     * mint-eligible; the replay refuses to mint there.  Both stages read the
+     * port off {@code sourceKind}, so the name is one vocabulary rather than
+     * a marker the plan has to carry.</p>
+     *
+     * <p>A plan frozen by the build that briefly wrote this string into
+     * {@code symbolicDemand} is still recognised by the replay, which is why
+     * the name has to outlive that build.</p>
      */
     public static final String DECLARED_COMMUNICATION_CUT_PORT =
             "DECLARED_COMMUNICATION_CUT_PORT";

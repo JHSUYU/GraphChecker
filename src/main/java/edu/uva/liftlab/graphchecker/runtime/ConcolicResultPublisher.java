@@ -501,6 +501,13 @@ final class ConcolicResultPublisher {
             result.add("initialSnapshotSkips",
                     stamped(active.initialSnapshotSkips, identity));
         }
+        // The other half: which containers this run did state, and with how
+        // many members.  Without it an absent snapshot and a snapshot that
+        // was never offered read alike.
+        if (!active.initialSnapshotStates.isEmpty()) {
+            result.add("initialSnapshotStates",
+                    stamped(active.initialSnapshotStates, identity));
+        }
     }
 
     static void addResultIdentity(
@@ -519,6 +526,11 @@ final class ConcolicResultPublisher {
         result.addProperty("plannedOccurrenceId", task.occurrenceId);
         result.addProperty("occurrenceId", active.occurrenceId());
         result.addProperty("activationOrdinal", active.activationOrdinal);
+        // Telemetry only: which activation cost the wall clock.  The importer
+        // builds its summary from a named field list, so nothing downstream
+        // hashes these and no replay match can turn on them.
+        result.addProperty("startedAtMillis", active.startedAtMillis);
+        result.addProperty("elapsedMillis", active.elapsedMillis());
         if (task.capturesTargetReach) {
             // Only a target-reach address selects on this.
             result.addProperty("targetReached",
