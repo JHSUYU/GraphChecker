@@ -133,6 +133,48 @@ public class SharedCarrierReceiverIdentityTest {
                         != second.plannedReceiverObjectId());
     }
 
+    /**
+     * One map has one identity, however the activation reached it.
+     *
+     * <p>The region entry names a carrier nothing else can name.  It must
+     * not compete with an access: a map reached by an access in one
+     * activation and selected at entry in another would take an access name
+     * once and an entry name the next time, and the two halves of one
+     * location would never join.</p>
+     */
+    @Test
+    public void anAccessOutranksTheRegionEntry() {
+        SharedCarrier byAccessThenEntry = SharedCarrier.field(new Object(),
+                "a.Key", "unplannedField", "J");
+        byAccessThenEntry.recordConsumerAccess(
+                new ConsumerAccessAnchor("<a.Key: long get()>", 1));
+        byAccessThenEntry.recordEntryAnchor(
+                new ConsumerAccessAnchor("<a.Manager: void sweep()>", 1));
+        SharedCarrier byAccessOnly = SharedCarrier.field(new Object(),
+                "a.Key", "unplannedField", "J");
+        byAccessOnly.recordConsumerAccess(
+                new ConsumerAccessAnchor("<a.Key: long get()>", 1));
+
+        byAccessThenEntry.bindPlannedReceiver(task());
+        byAccessOnly.bindPlannedReceiver(task());
+
+        assertEquals("the entry must not rename an accessed location",
+                byAccessOnly.plannedReceiverObjectId(),
+                byAccessThenEntry.plannedReceiverObjectId());
+    }
+
+    /** With no access at all the entry still names it. */
+    @Test
+    public void theEntryNamesWhatNothingElseNames() {
+        SharedCarrier carrier = SharedCarrier.field(new Object(),
+                "a.Key", "unplannedField", "J");
+        carrier.recordEntryAnchor(
+                new ConsumerAccessAnchor("<a.Manager: void sweep()>", 1));
+        carrier.bindPlannedReceiver(task());
+
+        assertTrue(carrier.plannedReceiverObjectId() > 0L);
+    }
+
     // ---------- plan and carrier harness ----------
 
     private static SharedCarrier carrier(Object owner, String site,

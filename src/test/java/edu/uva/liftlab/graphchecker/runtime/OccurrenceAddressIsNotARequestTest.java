@@ -161,6 +161,32 @@ public class OccurrenceAddressIsNotARequestTest {
                 task.acceptsRootInvocation(2, false));
     }
 
+    /**
+     * The window opens when the workload names its first source.
+     *
+     * <p>A workload starts its cluster, names its sources, then does the
+     * thing being recorded.  The plan counts what the recording saw; a
+     * replay that counts what the process did beforehand numbers a
+     * different population.  On hdfs-17960 the first saveNamespace runs 38
+     * seconds before the workload begins -- the recording never saw it, but
+     * the replay counted it as activation 1 and the checkpoint activation
+     * the plan means became 2.</p>
+     *
+     * <p>Only the opening direction is asserted.  The registry is process
+     * global and has no reset, so "closed before" holds in a fresh replay
+     * JVM but not in a suite where another test has already registered
+     * something; asserting it here would pin test order rather than
+     * behaviour.</p>
+     */
+    @Test
+    public void theWindowOpensWhenTheWorkloadNamesItsFirstSource() {
+        RuntimeTraceContext.registerSource(new Object(),
+                new SourceRef("CLUSTER_NODE", "NAMENODE", "hdfs/nn0", 0L));
+
+        assertTrue("a named source is a recording window",
+                RuntimeTraceContext.recordingWindowOpen());
+    }
+
     private static ConcolicTaskPlan.RuntimeTask task() {
         return new ConcolicTaskPlan.RuntimeTask(ExecutionTask.decode(
                 row("plans/hdfs-17899-bug3-loop-body-producer.json")));
