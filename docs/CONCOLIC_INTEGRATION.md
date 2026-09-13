@@ -646,6 +646,24 @@ The manifest's `deadCaseLemmas` ledger lists every probe with its status and
 elapsed time, and every lemma with the partition it decides. Without `--z3` the
 formula is untouched and the ledger says `skipped: NO_SOLVER`.
 
+The formula is asked before any arm is. Every arm of an unsatisfiable formula
+answers `unsat`, so on such a formula the pass "refutes" all of them --
+including both arms of one exactly-one partition, which is a statement about
+the composition and not about any arm. HDFS-17899 bug3 met exactly that under
+the replay-group identity axiom: 8 probes, 8 lemmas, and a core naming the
+lemmas rather than the contradiction that produced them. `formula` alone is
+therefore probed first under the same `rlimit`; on `unsat` no lemma is emitted,
+the ledger says `skipped: FORMULA_UNSAT` with the probe under `formulaProbe`,
+and `rows` carries `DEAD_CASE_LEMMAS_SKIPPED_FORMULA_UNSAT`. The same shape is
+caught from the other side after probing: lemmas that would refute *every* arm
+of one partition are dropped (`droppedLemmas`, row
+`DEAD_CASE_LEMMAS_PARTITION_FULLY_REFUTED`) rather than asserted, since they
+say either that the formula is unsatisfiable after all or that the partition's
+arms are not the ones the formula's own exactly-one constraint ranges over.
+Dropping only weakens what is emitted: each remaining lemma was proven against
+the formula, and a lemma carried into a later probe stays a theorem whether or
+not it is asserted in the end.
+
 **Unnamed elements.** `P_L'<class>'_` is the VM's placeholder for an operand
 oop no shadow names: `MethodSymbolizerHandle` observes an argument without
 allocating anything, so a reference that never carried a symbolic value
@@ -768,6 +786,7 @@ else is `INCONCLUSIVE_PARTIAL` and every reason is one row of `blockers`
 | `SOLVER_UNDECIDED_VALUATIONS` | the solver returned neither sat nor unsat on an enumerated valuation |
 | `UNSAT_CLOSURE_INCOMPLETE` | an `UNREACHABLE` result without closed selected-path authority |
 | `NO_EXACT_REACHABILITY` | the solver stage reached no exact reachability decision |
+| `COMPOSED_BODY_UNSATISFIABLE` | the composer's own probe found the composed formula unsatisfiable before any root polarity was asserted, so every valuation restates that one contradiction and the reachability answer is about the model rather than the target |
 
 A witness is evidence only if the target predicate depends on a symbolic root.
 Two enumerated valuations that differ in exactly one Boolean root and disagree

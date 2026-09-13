@@ -63,6 +63,48 @@ public class ClaimPolicyTest {
         assertEquals(0, claim.getAsJsonArray("blockers").size());
     }
 
+    /**
+     * A refutation of the model is not a refutation of the target: where the
+     * composer's own probe found the body unsatisfiable before any polarity,
+     * the closed UNSAT reading is withheld and named.
+     */
+    @Test
+    public void unsatisfiableComposedBodyIsNotAClosedRefutation() {
+        JsonObject manifest = manifest();
+        manifest.add(DeadCaseLemmas.MANIFEST_FIELD, parse("{\"kind\":\""
+                + DeadCaseLemmas.KIND + "\",\"skipped\":\""
+                + DeadCaseLemmas.SKIPPED_FORMULA_UNSAT + "\","
+                + "\"probedArms\":0,\"lemmas\":[],\"rows\":[{\"kind\":\""
+                + DeadCaseLemmas.FORMULA_UNSAT_ROW + "\"}]}"));
+
+        JsonObject claim = ClaimPolicy.decide(manifest, refutation(true),
+                noFlows());
+
+        assertEquals(ClaimPolicy.INCONCLUSIVE_PARTIAL, claim.get("claim")
+                .getAsString());
+        assertEquals(codes(ClaimPolicy.COMPOSED_BODY_UNSATISFIABLE),
+                codes(claim));
+        assertTrue(claim.get("whyNotAccepted").getAsString(),
+                claim.get("whyNotAccepted").getAsString()
+                        .contains("unsatisfiable before any root polarity"));
+    }
+
+    /** A ledger that never asked the question does not answer it. */
+    @Test
+    public void aDeadCaseLedgerWithoutASolverBlocksNothing() {
+        JsonObject manifest = manifest();
+        manifest.add(DeadCaseLemmas.MANIFEST_FIELD, parse("{\"kind\":\""
+                + DeadCaseLemmas.KIND
+                + "\",\"skipped\":\"NO_SOLVER\",\"probedArms\":0}"));
+
+        JsonObject claim = ClaimPolicy.decide(manifest, refutation(true),
+                noFlows());
+
+        assertEquals(ClaimPolicy.UNSAT_CLOSED, claim.get("claim")
+                .getAsString());
+        assertEquals(0, claim.getAsJsonArray("blockers").size());
+    }
+
     @Test
     public void openRefutationIsWithheldAsUnsatClosureIncomplete() {
         JsonObject claim = ClaimPolicy.decide(manifest(), refutation(false),

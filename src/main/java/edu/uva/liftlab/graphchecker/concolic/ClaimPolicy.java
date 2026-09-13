@@ -102,6 +102,23 @@ public final class ClaimPolicy {
             "SOLVER_UNDECIDED_VALUATIONS";
     /** An UNSAT result without closed selected-path authority is not closed. */
     static final String UNSAT_CLOSURE_INCOMPLETE = "UNSAT_CLOSURE_INCOMPLETE";
+    /**
+     * The composed body is unsatisfiable before any polarity is asserted.
+     *
+     * <p>Every valuation of such a composition answers {@code unsat}, so the
+     * solver stage reports {@code UNREACHABLE} and the claim reads as a
+     * refutation of the target -- when what was refuted is the model. The
+     * composer's own formula probe is the only place that distinction is
+     * made ({@link DeadCaseLemmas}, published as
+     * {@value DeadCaseLemmas#FORMULA_UNSAT_ROW}), and it is read here so the
+     * verdict layer states it rather than inheriting a
+     * {@link #UNSAT_CLOSED} from a contradiction. HDFS-17899 bug3 met this
+     * under the replay-group identity axiom: all four marker valuations
+     * unsat, no composition gap, and the contradiction two commits
+     * upstream.</p>
+     */
+    static final String COMPOSED_BODY_UNSATISFIABLE =
+            "COMPOSED_BODY_UNSATISFIABLE";
     /** The solver stage reached no exact reachability decision. */
     static final String NO_EXACT_REACHABILITY = "NO_EXACT_REACHABILITY";
     /**
@@ -727,6 +744,20 @@ public final class ClaimPolicy {
             regions.add(matcher.group());
         }
         return regions;
+    }
+
+    /**
+     * Whether the composer's own probe found the composed body
+     * unsatisfiable before any case arm or root polarity was asserted.
+     *
+     * <p>Only the dead-case pass asks that question, and only when it was
+     * given a solver; every other reading of the ledger -- no solver, a
+     * disabled budget, a fail-closed formula -- leaves it unasked, and an
+     * unasked question is not an answer.</p>
+     */
+    static boolean composedBodyUnsatisfiable(JsonObject manifest) {
+        return DeadCaseLemmas.SKIPPED_FORMULA_UNSAT.equals(optionalString(
+                object(manifest, DeadCaseLemmas.MANIFEST_FIELD), "skipped"));
     }
 
     /**
@@ -1995,6 +2026,22 @@ public final class ClaimPolicy {
                     String.valueOf(undecidedRows),
                     "the solver returned neither sat nor unsat on "
                             + undecidedRows + " enumerated valuation(s)"));
+        }
+
+        // An unsatisfiable body makes every polarity unsat and every
+        // enumerated valuation a restatement of the same contradiction. The
+        // reachability answer is then about the composition and not about
+        // the target, so it is named here instead of being read as a
+        // refutation of the program.
+        if (composedBodyUnsatisfiable(manifest)) {
+            blockers.add(blocker(COMPOSED_BODY_UNSATISFIABLE,
+                    DeadCaseLemmas.SKIPPED_FORMULA_UNSAT,
+                    "the composer's own probe found the composed formula"
+                            + " unsatisfiable before any root polarity was"
+                            + " asserted: every valuation below is that one"
+                            + " contradiction and reachability="
+                            + reachability + " says nothing about the"
+                            + " target"));
         }
 
         // Closure is required for a closed refutation and for nothing else:
