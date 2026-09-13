@@ -179,6 +179,23 @@ public final class ClaimPolicy {
      */
     static final String UNPLANTED_ROOT_MOVED = "UNPLANTED_ROOT_MOVED";
     /**
+     * A declared flow counted realized because the field its consumer assigns
+     * to is read -- but read only on a node the wire never delivered to.
+     *
+     * <p>A wire value may leave the wire on arrival and be read downstream,
+     * so a read outside the consumer's own region still carries it.  It
+     * cannot leave the node.  hdfs-17897 declares
+     * {@code namenode-data-encryption-key-id} from the NameNode to the
+     * client, and the only read of {@code DataEncryptionKey#keyId} in the
+     * composition is on the DataNode, which that hop never fed: the client's
+     * cached key is not in the formula, and the key id the target looks up is
+     * a block key the DataNode converted.  Reported rather than blocking,
+     * because the route it questions is the one a legitimate downstream read
+     * uses.</p>
+     */
+    static final String CONSUMER_FIELD_READ_OFF_RECEIVER_NODE =
+            "CONSUMER_FIELD_READ_OFF_RECEIVER_NODE";
+    /**
      * Where the initial-state evidence names the arms that are both selected
      * by the model and the untouched initial content of a truncated carrier.
      */
@@ -481,7 +498,7 @@ public final class ClaimPolicy {
          * term carried the wire's value.</p>
          */
         List<String> unrealized(List<BoundFamily> ledger,
-                                Set<String> readFields) {
+                                Map<String, Set<String>> readFields) {
             List<String> missing = new ArrayList<>();
             for (String flow : declared) {
                 if (realizedBy(flow, ledger, readFields).isEmpty()) {
@@ -505,15 +522,53 @@ public final class ClaimPolicy {
          * hold, because it is the stronger statement.</p>
          */
         String realizedBy(String flow, List<BoundFamily> ledger,
-                          Set<String> readFields) {
+                          Map<String, Set<String>> readFields) {
             for (BoundFamily family : ledger) {
                 if (family.bound && namesFlow(family.portId, flow)) {
                     return PORT_FAMILY;
                 }
             }
             String field = consumerFields.get(flow);
-            return field != null && !field.isEmpty() && readFields.contains(field)
+            return field != null && !field.isEmpty()
+                    && readFields.containsKey(field)
                     ? CONSUMER_FIELD_READ : "";
+        }
+
+        /**
+         * The nodes on which this flow's value is read off the field its
+         * consumer assigned it to.
+         *
+         * <p>The value may leave the wire on arrival and be read downstream,
+         * which is why a read outside the consumer's own region still counts.
+         * It cannot leave the node, though: another node reading the same
+         * field is reading a value some other write put there.  hdfs-17897
+         * reads {@code DataEncryptionKey#keyId} on the DataNode that mints
+         * the key as well as on the client that cached it, and the
+         * NameNode-to-client hop was called realized on the strength of the
+         * DataNode's read, which that hop never fed.</p>
+         */
+        Set<String> fieldReadNodes(String flow,
+                                   Map<String, Set<String>> readFields) {
+            String field = consumerFields.get(flow);
+            Set<String> nodes = field == null ? null : readFields.get(field);
+            return nodes == null ? Collections.<String>emptySet() : nodes;
+        }
+
+        /** The nodes this flow's boundary families delivered to. */
+        Set<String> receiverNodes(String flow, List<BoundFamily> ledger) {
+            Set<String> nodes = new LinkedHashSet<>();
+            for (BoundFamily family : ledger) {
+                if (!namesFlow(family.portId, flow)) continue;
+                Matcher matcher = SOURCE_KEY.matcher(family.receiver);
+                while (matcher.find()) nodes.add(matcher.group());
+            }
+            return nodes;
+        }
+
+        private static JsonArray names(Set<String> values) {
+            JsonArray array = new JsonArray();
+            for (String value : values) array.add(value);
+            return array;
         }
 
         /** The field a flow's consumer declares, for the Composer's join. */
@@ -531,7 +586,8 @@ public final class ClaimPolicy {
         }
 
         /** The per-flow realization rows the claim publishes as evidence. */
-        JsonArray report(List<BoundFamily> ledger, Set<String> readFields) {
+        JsonArray report(List<BoundFamily> ledger,
+                         Map<String, Set<String>> readFields) {
             JsonArray rows = new JsonArray();
             for (String flow : declared) {
                 JsonObject row = new JsonObject();
@@ -557,6 +613,16 @@ public final class ClaimPolicy {
                         producers == null ? 0 : producers.size());
                 row.addProperty("familiesObserved", families);
                 row.addProperty("familiesBound", bound);
+                Set<String> receiverNodes = receiverNodes(flow, ledger);
+                Set<String> readNodes = fieldReadNodes(flow, readFields);
+                row.add("receiverNodes", names(receiverNodes));
+                row.add("consumerFieldReadNodes", names(readNodes));
+                row.addProperty("consumerFieldReadOffReceiverNode",
+                        CONSUMER_FIELD_READ.equals(route)
+                                && !receiverNodes.isEmpty()
+                                && !readNodes.isEmpty()
+                                && Collections.disjoint(receiverNodes,
+                                        readNodes));
                 rows.add(row);
             }
             return rows;
@@ -568,6 +634,8 @@ public final class ClaimPolicy {
     static final class BoundFamily {
         private final String portId;
         private final boolean bound;
+        /** The occurrence the wire delivered to, as the manifest names it. */
+        private String receiver = "";
 
         private BoundFamily(String portId, boolean bound) {
             this.portId = portId;
@@ -591,8 +659,10 @@ public final class ClaimPolicy {
             JsonObject row = element.getAsJsonObject();
             String port = optionalString(row, "portId");
             if (port.isEmpty()) continue;
-            ledger.add(new BoundFamily(port,
-                    optionalBool(row, "valueBound", false)));
+            BoundFamily family = new BoundFamily(port,
+                    optionalBool(row, "valueBound", false));
+            family.receiver = optionalString(row, "receiverOccurrenceId");
+            ledger.add(family);
         }
         return ledger;
     }
@@ -604,20 +674,44 @@ public final class ClaimPolicy {
      * field named in it is a field some term in the formula depends on. That
      * is the evidence a flow needs when its value left the wire on arrival.
      */
-    static Set<String> guardedReadFields(JsonObject manifest) {
-        Set<String> fields = new LinkedHashSet<>();
+    static Map<String, Set<String>> guardedReadFields(JsonObject manifest) {
+        Map<String, Set<String>> fields = new LinkedHashMap<>();
         for (JsonElement read
                 : array(object(manifest, "guardedReadModel"), "reads")) {
             if (!read.isJsonObject()) continue;
             for (JsonElement element : array(read.getAsJsonObject(), "arms")) {
                 if (!element.isJsonObject()) continue;
-                String field = optionalString(element.getAsJsonObject(),
-                        "declaredField");
-                if (!field.isEmpty()) fields.add(field);
+                JsonObject arm = element.getAsJsonObject();
+                String field = optionalString(arm, "declaredField");
+                if (field.isEmpty()) continue;
+                Set<String> regions = fields.get(field);
+                if (regions == null) {
+                    regions = new LinkedHashSet<>();
+                    fields.put(field, regions);
+                }
+                regions.addAll(armSources(arm));
             }
         }
         return fields;
     }
+
+    /** Every node a lowered read arm names, as its location spells it. */
+    private static Set<String> armSources(JsonObject arm) {
+        Set<String> sources = new LinkedHashSet<>();
+        Matcher matcher = SOURCE_KEY.matcher(
+                optionalString(arm, "locationKey") + " "
+                        + optionalString(arm, "writerCaseOwner"));
+        while (matcher.find()) sources.add(matcher.group());
+        return sources;
+    }
+
+    /**
+     * A node as every identity in the composition spells it:
+     * {@code <instance>/<node>#epoch<n>}, the prefix of an occurrence id and
+     * of a location key alike.
+     */
+    private static final Pattern SOURCE_KEY = Pattern.compile(
+            "[A-Za-z0-9_.+-]+/[A-Za-z0-9_.+-]+#epoch[0-9]+");
 
     /**
      * Every region identity the composition drew a case, a read or a witness
@@ -1533,6 +1627,9 @@ public final class ClaimPolicy {
         result.addProperty("clockOnlyExperiment", clockOnly);
         result.add("clockDecisionsOutsideWindow",
                 clockDecisionsOutsideWindow(reach));
+        result.add("clockDecisionsRefusedWithoutWindow",
+                clockDecisionsWithCode(reach, BooleanReachConditionExtractor
+                        .CLOCK_DECISION_REFUSED_WITHOUT_WINDOW));
         // Which valuation the acceptance rests on, so a probe can assert that
         // marker assignment rather than guess one.
         // A run with no planted marker rests on the witness it explained,
@@ -1583,14 +1680,20 @@ public final class ClaimPolicy {
      * clock window, as the reach report published them.
      */
     private static JsonArray clockDecisionsOutsideWindow(JsonObject reach) {
+        return clockDecisionsWithCode(reach, BooleanReachConditionExtractor
+                .CLOCK_DECISION_OUTSIDE_WINDOW);
+    }
+
+    /** The probed clock comparisons the solver stage gave this code. */
+    private static JsonArray clockDecisionsWithCode(JsonObject reach,
+                                                    String code) {
         JsonArray rows = new JsonArray();
         for (JsonElement element : array(object(reach,
                 BooleanReachConditionExtractor.CLOCK_DECISIONS),
                 "decisions")) {
             if (!element.isJsonObject()) continue;
             JsonObject row = element.getAsJsonObject();
-            if (BooleanReachConditionExtractor.CLOCK_DECISION_OUTSIDE_WINDOW
-                    .equals(optionalString(row, "code"))) {
+            if (code.equals(optionalString(row, "code"))) {
                 rows.add(row.deepCopy());
             }
         }
@@ -1605,7 +1708,8 @@ public final class ClaimPolicy {
         JsonObject probe = object(reach,
                 BooleanReachConditionExtractor.CLOCK_DECISIONS);
         JsonArray outside = clockDecisionsOutsideWindow(reach);
-        if (outside.size() == 0) return "";
+        String refusedNote = clockDecisionRefusedNote(reach);
+        if (outside.size() == 0) return refusedNote;
         StringBuilder note = new StringBuilder("; ")
                 .append(outside.size())
                 .append(" clock comparison(s) on the slice are decidable")
@@ -1636,6 +1740,40 @@ public final class ClaimPolicy {
                         .append("ms");
             }
             note.append(';');
+        }
+        note.append(refusedNote);
+        return note.toString();
+    }
+
+    /**
+     * The comparisons no window admits: asked with the clock left unbounded
+     * the blocked polarity is still unsat, so the skew the physics allows is
+     * not what refuses it.  What refuses it is the rest of the composition --
+     * in practice the recorded case path condition, which replays the
+     * observed outcome of the branch the clock decides.  Saying "widen the
+     * window" there would send a reader after the wrong thing.
+     */
+    private static String clockDecisionRefusedNote(JsonObject reach) {
+        JsonArray refused = clockDecisionsWithCode(reach,
+                BooleanReachConditionExtractor
+                        .CLOCK_DECISION_REFUSED_WITHOUT_WINDOW);
+        if (refused.size() == 0) return "";
+        StringBuilder note = new StringBuilder("; ")
+                .append(refused.size())
+                .append(" clock comparison(s) on the slice refuse one")
+                .append(" polarity with the clock left unbounded, so no")
+                .append(" window admits them and the recorded case path")
+                .append(" condition is what pins them (")
+                .append(BooleanReachConditionExtractor
+                        .CLOCK_DECISION_REFUSED_WITHOUT_WINDOW)
+                .append("):");
+        for (JsonElement element : refused) {
+            JsonObject row = element.getAsJsonObject();
+            note.append(' ');
+            JsonArray sites = array(row, "sites");
+            note.append(sites.size() > 0 ? sites.get(0).getAsString()
+                    : optionalString(row, "atom"));
+            note.append(" has no observed case taking the other branch;");
         }
         return note.toString();
     }
@@ -1701,7 +1839,8 @@ public final class ClaimPolicy {
                 "constrainsRootSpace", false);
         int boundaryFamilies = consumerBoundaryFamilies(manifest);
         List<BoundFamily> wireFlowLedger = wireFlowLedger(manifest);
-        Set<String> readFields = guardedReadFields(manifest);
+        Map<String, Set<String>> readFields =
+                guardedReadFields(manifest);
         List<String> unrealizedFlows = flows.unrealized(wireFlowLedger,
                 readFields);
 
@@ -1899,8 +2038,8 @@ public final class ClaimPolicy {
         rootSpace.addProperty("declaredWireFlows", flows.declaredCount());
         rootSpace.addProperty("unrealizedWireFlows",
                 String.join(",", unrealizedFlows));
-        rootSpace.add("wireFlows", flows.report(wireFlowLedger,
-                readFields));
+        JsonArray wireFlowRows = flows.report(wireFlowLedger, readFields);
+        rootSpace.add("wireFlows", wireFlowRows);
         rootSpace.addProperty("consumerBoundaryFamilies", boundaryFamilies);
         rootSpace.addProperty("consumerBoundaryArms",
                 consumerBoundaryArms(manifest));
@@ -1939,6 +2078,24 @@ public final class ClaimPolicy {
         // one.
         for (JsonObject row : notAMechanismFindings(faultMarkers)) {
             reportedFindings.add(row);
+        }
+        for (JsonElement element : wireFlowRows) {
+            JsonObject row = element.getAsJsonObject();
+            if (!optionalBool(row, "consumerFieldReadOffReceiverNode",
+                    false)) {
+                continue;
+            }
+            reportedFindings.add(blocker(
+                    CONSUMER_FIELD_READ_OFF_RECEIVER_NODE,
+                    optionalString(row, "flow"),
+                    "the flow counts as realized through a read of "
+                            + optionalString(row, "consumerField")
+                            + ", but that field is read only on "
+                            + row.getAsJsonArray("consumerFieldReadNodes")
+                            + " while the wire delivered to "
+                            + row.getAsJsonArray("receiverNodes")
+                            + ": the value the formula uses is not the value"
+                            + " this wire carried"));
         }
         rootSpace.add("reportedFindings", reportedFindings);
         // Which valuation the acceptance rests on, so a probe asserting the

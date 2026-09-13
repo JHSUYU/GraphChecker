@@ -296,9 +296,11 @@ public final class ConcolicSmtComposer {
      * which is not a state any execution was ever in.</p>
      *
      * <p>The gate compares the literal each group recorded at one
-     * group-independent identity and refuses when they differ.  Agreement is
-     * what makes the merge harmless, so a workload pinned to one value per
-     * location passes; a value that is genuinely per-execution -- a wall
+     * group-independent identity and refuses when they differ <em>and</em>
+     * the fatal read's value is built from that location (see {@link
+     * #REACHES_FATAL_READ}); off that slice the row is telemetry.  Agreement
+     * is what makes the merge harmless, so a workload pinned to one value
+     * per location passes; a value that is genuinely per-execution -- a wall
      * clock, a fresh random -- has to enter as a symbolic root instead, and a
      * root the experiment declared but the composition never minted shows up
      * here as its constants.</p>
@@ -307,6 +309,16 @@ public final class ConcolicSmtComposer {
     /** One row per identity whose recorded values diverge across groups. */
     public static final String EXECUTION_DIVERGENCE_FIELD =
             "executionDivergence";
+    /**
+     * Whether the fatal read's value is built from the diverging location.
+     *
+     * <p>Divergence off that slice is real and recorded, but it cannot
+     * change what the target observes, so it is telemetry: refusing it would
+     * refuse every composition of a workload whose replays differ anywhere
+     * at all, which is every multi-run corpus.  On the slice the same fact
+     * decides the verdict, and the composition fails closed.</p>
+     */
+    public static final String REACHES_FATAL_READ = "reachesFatalRead";
     /**
      * A case of a writer occurrence that recorded a write to a read's
      * location and owns no arm of that read.
@@ -440,7 +452,7 @@ public final class ConcolicSmtComposer {
                 ClaimPolicy.WireFlowEvidence.read(arguments.mappings, "")
                         .consumerFieldsByPortSuffix(),
                 ClaimPolicy.guardedReadFields(guardedReadCarrier(
-                        guardedReads)));
+                        guardedReads)).keySet());
         emitter.finish();
         String composedSmt = emitter.render();
         // An arm the formula itself refutes is stated up front, so a solver
@@ -1448,6 +1460,10 @@ public final class ConcolicSmtComposer {
         }
     }
 
+    /** One SMT identifier, as this composer mints them. */
+    private static final Pattern SMT_IDENTIFIER =
+            Pattern.compile("[A-Za-z_][A-Za-z0-9_]*");
+
     private static final Pattern LITERAL_TERM = Pattern.compile(
             "-?[0-9]+|\\(- [0-9]+\\)|true|false|\"(?:[^\"]|\"\")*\"|"
                     + "\\(V(?:Int|Long|Bool|Str) (?:-?[0-9]+|\\(- [0-9]+\\)"
@@ -2047,7 +2063,7 @@ public final class ConcolicSmtComposer {
         }
     }
 
-    private static final class Emitter extends VmLoweringCore {
+    static final class Emitter extends VmLoweringCore {
         private final SmtSymbolTable smtSymbols = new SmtSymbolTable();
         private final List<String> preamble = new ArrayList<>();
         private final Map<String, String> declarations =
@@ -2085,6 +2101,13 @@ public final class ConcolicSmtComposer {
                 new LinkedHashMap<>();
         /** One row per identity whose groups disagree; see finish(). */
         private final JsonArray executionDivergence = new JsonArray();
+        /** Symbol -> the text its value is read back from, for the slice. */
+        private final Map<String, StringBuilder> valueDependencyText =
+                new LinkedHashMap<>();
+        /** The fatal predicate, as lowered; the slice's seed. */
+        private String fatalPathTerm = "";
+        /** Memoized {@link #fatalValueSlice()}. */
+        private Set<String> fatalSlice;
         /** INITIAL arm selector -> activations whose entry took its snapshot. */
         private final Map<String, Set<InvocationKey>> guardedReadInitialHosts =
                 new LinkedHashMap<>();
@@ -2587,6 +2610,62 @@ public final class ConcolicSmtComposer {
         }
 
         /**
+         * Every symbol whose value the fatal predicate can be read back
+         * from.
+         *
+         * <p>A backward walk over the value graph this composition emitted:
+         * a defined constant depends on the symbols of its definition, and a
+         * guarded read's value depends on each arm's term and the selector
+         * that chooses it.  Nothing else is followed -- a case partition, a
+         * domain bound or an order axiom constrains a symbol without ever
+         * carrying a value into the target -- so a symbol outside the walk
+         * cannot change what the fatal read observes, whatever else it may
+         * decide.</p>
+         */
+        private Set<String> fatalValueSlice() {
+            if (fatalSlice != null) return fatalSlice;
+            Set<String> known = new LinkedHashSet<>(definitions.keySet());
+            for (String key : declarations.keySet()) {
+                if (key.startsWith("const:")) known.add(key.substring(6));
+            }
+            Map<String, Set<String>> edges = new LinkedHashMap<>();
+            for (Map.Entry<String, Term> entry : definitions.entrySet()) {
+                edges.computeIfAbsent(entry.getKey(),
+                        ignored -> new LinkedHashSet<>()).addAll(
+                        symbolsIn(entry.getValue().text, known));
+            }
+            for (Map.Entry<String, StringBuilder> entry
+                    : valueDependencyText.entrySet()) {
+                edges.computeIfAbsent(entry.getKey(),
+                        ignored -> new LinkedHashSet<>()).addAll(
+                        symbolsIn(entry.getValue().toString(), known));
+            }
+            Set<String> reached = new LinkedHashSet<>(
+                    symbolsIn(fatalPathTerm, known));
+            Deque<String> pending = new ArrayDeque<>(reached);
+            while (!pending.isEmpty()) {
+                for (String next : edges.getOrDefault(pending.removeFirst(),
+                        Collections.<String>emptySet())) {
+                    if (reached.add(next)) pending.addLast(next);
+                }
+            }
+            fatalSlice = Collections.unmodifiableSet(reached);
+            return fatalSlice;
+        }
+
+        /** The declared or defined names one lowered term mentions. */
+        static Set<String> symbolsIn(String text, Set<String> known) {
+            Set<String> found = new LinkedHashSet<>();
+            if (text == null || text.isEmpty()) return found;
+            Matcher matcher = SMT_IDENTIFIER.matcher(text);
+            while (matcher.find()) {
+                String name = matcher.group();
+                if (known.contains(name)) found.add(name);
+            }
+            return found;
+        }
+
+        /**
          * Refuses every identity whose replay groups recorded different
          * literals; see {@link ConcolicSmtComposer#EXECUTION_DIVERGENCE}.
          */
@@ -2611,17 +2690,28 @@ public final class ConcolicSmtComposer {
                     narrated.add(scopeToken(scope.getKey()) + "="
                             + scope.getValue());
                 }
+                Set<String> slice = fatalValueSlice();
+                boolean reaches = false;
+                for (Set<String> selectors
+                        : recording.selectorsByScope.values()) {
+                    for (String selector : selectors) {
+                        if (slice.contains(selector)) reaches = true;
+                    }
+                }
                 JsonObject row = new JsonObject();
-                row.addProperty("schemaVersion", 1);
+                row.addProperty("schemaVersion", 2);
                 row.addProperty("kind", EXECUTION_DIVERGENCE);
                 row.addProperty("identity", entry.getKey());
                 row.addProperty("subject", recording.subject);
+                row.addProperty(REACHES_FATAL_READ, reaches);
                 row.add("groups", groups);
                 executionDivergence.add(row);
+                if (!reaches) continue;
                 refuse(EXECUTION_DIVERGENCE + "[" + recording.subject + "]",
                         "the replay executions merged into this formula"
                                 + " recorded different values for one"
-                                + " location and nothing ties the group a"
+                                + " location the fatal read's value is built"
+                                + " from, and nothing ties the group a"
                                 + " witness picks here to the one it picks"
                                 + " elsewhere, so the merged arms describe no"
                                 + " single execution: " + String.join("; ",
@@ -3845,7 +3935,18 @@ public final class ConcolicSmtComposer {
         }
 
         private void bindFatalPathAssertion(String pathTerm) {
+            fatalPathTerm = pathTerm;
             assertNamed("fatal_path", pathTerm);
+        }
+
+        /** Notes that {@code name}'s value is read back from {@code text}. */
+        private void noteValueDependency(String name, String text) {
+            if (name == null || name.isEmpty() || text == null
+                    || text.isEmpty()) {
+                return;
+            }
+            valueDependencyText.computeIfAbsent(name,
+                    ignored -> new StringBuilder()).append(' ').append(text);
         }
 
         /**
@@ -4772,6 +4873,7 @@ public final class ConcolicSmtComposer {
             // Nested reads in the writer guard above must observe every use,
             // even though this stable arm's value semantics emit only once.
             if (!emittedGuardedReadArms.add(emittedKey)) return;
+            noteValueDependency(value, arm.term.text + " " + arm.selector);
             String valueAssertion = assertWithoutCurrentGuard(
                     smtSymbols.mint("guarded_read_value__", emittedKey, 16),
                     "(=> " + arm.selector + " "

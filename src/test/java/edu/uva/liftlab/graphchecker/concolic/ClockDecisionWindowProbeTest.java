@@ -43,6 +43,70 @@ public class ClockDecisionWindowProbeTest {
                 smt, Arrays.asList(CLOCK), 8).isEmpty());
     }
 
+    /**
+     * HDFS-17897: a two-node mechanism needs one decision per node, and the
+     * first node's reads alone can fill the budget.  The NameNode clock is
+     * read eight times on that slice and the DataNode clock once; taking the
+     * clocks in order probed the NameNode eight times and never asked about
+     * the DataNode's removal at all.
+     */
+    @Test
+    public void everyClockIsAskedAboutBeforeAnyClockIsAskedTwice() {
+        String other = "manual__MANUAL_dn";
+        StringBuilder smt = new StringBuilder();
+        for (int index = 0; index < 6; index++) {
+            smt.append("(assert (< nn").append(index).append(' ')
+                    .append(CLOCK).append("))\n");
+        }
+        smt.append("(assert (< dn0 ").append(other).append("))\n");
+        List<String> atoms = BooleanReachConditionExtractor
+                .clockComparisonAtoms(smt.toString(),
+                        Arrays.asList(CLOCK, other), 4);
+
+        assertEquals(4, atoms.size());
+        assertTrue(atoms.contains("(< dn0 " + other + ")"));
+        assertEquals("(< nn0 " + CLOCK + ")", atoms.get(0));
+        assertEquals("(< dn0 " + other + ")", atoms.get(1));
+    }
+
+    /**
+     * The clock's own domain, window and order are not program decisions.
+     * Probing them asks whether a long can leave its range, and the refusal
+     * that comes back reads as a decision the composition pinned.
+     */
+    @Test
+    public void theClocksOwnPhysicsIsNotAProgramDecision() {
+        String smt = "(assert (! (and (<= (- 9223372036854775808) " + CLOCK
+                + ") (<= " + CLOCK + " 9223372036854775807))"
+                + " :named java_integral_domain_1_x))\n"
+                + "(assert (! (and (>= " + CLOCK + " 5) (<= " + CLOCK
+                + " 9)) :named clock_window__a))\n"
+                + "(assert (! (<= " + CLOCK + " other) :named"
+                + " clock_monotonic__b))\n"
+                + "(assert (= dag (< expiry " + CLOCK + ")))\n";
+
+        assertEquals(Arrays.asList("(< expiry " + CLOCK + ")"),
+                BooleanReachConditionExtractor.clockComparisonAtoms(
+                        smt, Arrays.asList(CLOCK), 8));
+    }
+
+    /** Dropping leaves the clock unbounded, which widening never does. */
+    @Test
+    public void droppingRemovesTheWindowAltogether() {
+        Map<String, JsonObject> clocks = new LinkedHashMap<>();
+        JsonObject read = new JsonObject();
+        read.addProperty("recordedValue", 1000L);
+        clocks.put(CLOCK, read);
+        String base = "(assert (! " + ClockRootPhysics.window(CLOCK, 1000L,
+                300L) + " :named clock_window__x))\n";
+
+        String dropped = BooleanReachConditionExtractor.dropClockWindows(
+                base, clocks, 300L);
+
+        assertTrue(dropped.contains("(! true :named clock_window__x)"));
+        assertFalse(dropped.contains(CLOCK));
+    }
+
     /** Widening rewrites exactly the window the composer emitted. */
     @Test
     public void wideningReplacesTheEmittedWindowBody() {
