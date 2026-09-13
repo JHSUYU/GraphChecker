@@ -649,9 +649,14 @@ public final class BranchReplayContract {
      * keeps the exact source-level occurrence address.
      */
     public static final class ReplayProgress {
+        /** The replay has not yet seen any event of the required prefix. */
+        static final String PREFIX_UNOBSERVED = "prefix not yet observed";
+        /** The replay is mid-prefix: some required event is outstanding. */
+        static final String PREFIX_INCOMPLETE = "prefix not yet complete";
+
         private final List<ReplayEvent> expected = new ArrayList<>();
         private final LoopMembership actualLoops;
-        private String failure = "prefix not yet observed";
+        private String failure = PREFIX_UNOBSERVED;
         private boolean contradiction;
 
         public ReplayProgress(RuntimeSchedule contract) {
@@ -750,7 +755,7 @@ public final class BranchReplayContract {
                     }
                 }
             }
-            failure = complete() ? "" : "prefix not yet complete";
+            failure = complete() ? "" : incomplete();
             return wanted.source;
         }
 
@@ -786,10 +791,44 @@ public final class BranchReplayContract {
             return true;
         }
 
+        /**
+         * What the prefix is still waiting for, as a reader can act on.
+         *
+         * <p>Every shortfall used to publish the bare words {@code prefix
+         * not yet complete}, which the runtime forwards verbatim into
+         * {@code REGION_REPLAY_PREFIX_UNMATCHED} and the campaign into a
+         * {@code PATH_FLIP_REPLAY_NOT_ADMITTED} gap.  Ten abandoned
+         * obligations then carry ten identical strings, and nothing says
+         * whether the replay stopped short of the flipped decision, took a
+         * different route to it, or reached it and left an earlier recorded
+         * decision behind -- which are three different defects with three
+         * different fixes.  The expected list is right here, so name how
+         * much of it was observed and the first event still outstanding.
+         * The sentence still begins with the original words, so anything
+         * matching on that prefix keeps working.</p>
+         */
+        private String incomplete() {
+            int observed = 0;
+            ReplayEvent outstanding = null;
+            for (ReplayEvent event : expected) {
+                if (event.consumed) {
+                    observed++;
+                } else if (outstanding == null) {
+                    outstanding = event;
+                }
+            }
+            if (outstanding == null) return PREFIX_INCOMPLETE;
+            return PREFIX_INCOMPLETE + ": observed " + observed + " of "
+                    + expected.size() + ", still waiting for "
+                    + outstanding.siteId + '#' + outstanding.occurrence
+                    + (outstanding.source
+                    ? " (the flipped source decision)" : "");
+        }
+
         public boolean failed() {
             return contradiction || !complete()
-                    && !"prefix not yet observed".equals(failure)
-                    && !"prefix not yet complete".equals(failure);
+                    && !failure.startsWith(PREFIX_UNOBSERVED)
+                    && !failure.startsWith(PREFIX_INCOMPLETE);
         }
 
         public String failure() { return failure; }

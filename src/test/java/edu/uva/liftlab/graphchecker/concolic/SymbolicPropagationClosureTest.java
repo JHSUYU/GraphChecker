@@ -1062,6 +1062,49 @@ public class SymbolicPropagationClosureTest {
                 && SymbolicPropagationClosure.ITE_TYPE.equals(type);
     }
 
+    /**
+     * A boundary with no family says what was missing, not where to look.
+     *
+     * <p>A field-read family is minted only where a version-store envelope
+     * claims the read event, so a boundary with no family is a read the
+     * replay published and no envelope claimed.  Reporting that as "no exact
+     * stable-family join" sent the reader into this closure looking for a
+     * join that was never possible; the shortfall is in what the replay
+     * recorded, and recomposing the same corpus can never repair it.</p>
+     *
+     * <p>The count is taken inside the boundary's own scope, because a VM
+     * event id is session-local: the same number in another replay group is
+     * a different event and proves nothing about this one.  A positive count
+     * is one read going unclaimed among neighbours that were fine, which is
+     * the shape hdfs-17899-bug3 lands in -- two guarded reads of
+     * {@code DelegationKey#keyId} unclaimed in scopes where ninety-odd other
+     * reads were claimed.  Zero is a scope nothing indexed at all, a
+     * different defect with a different fix.</p>
+     */
+    @Test
+    public void aBoundaryWithNoFamilySaysWhichEvidenceWasMissing() {
+        String oneReadShort = SymbolicPropagationClosure
+                .boundaryFamilyShortfall(96);
+        assertTrue(oneReadShort, oneReadShort.startsWith(
+                "no version-store envelope claimed this read event"));
+        assertTrue(oneReadShort,
+                oneReadShort.contains("96 other event(s) in this scope"));
+        assertFalse(oneReadShort,
+                oneReadShort.contains("claimed any read event"));
+    }
+
+    /** A scope nothing claimed reads differently from one read going short. */
+    @Test
+    public void aScopeThatClaimedNothingSaysSo() {
+        for (int claimed : new int[] {0, -1}) {
+            String unindexed = SymbolicPropagationClosure
+                    .boundaryFamilyShortfall(claimed);
+            assertTrue(unindexed, unindexed.contains(
+                    "claimed any read event"));
+            assertFalse(unindexed, unindexed.contains("other event(s)"));
+        }
+    }
+
     private static boolean containsReason(JsonArray rows, String reason) {
         for (JsonElement encoded : rows) {
             JsonObject row = encoded.getAsJsonObject();
