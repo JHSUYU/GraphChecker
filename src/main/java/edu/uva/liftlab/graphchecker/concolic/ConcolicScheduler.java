@@ -117,19 +117,17 @@ public final class ConcolicScheduler {
     private static Result scheduleLoaded(
             Arguments arguments, LoadedInputs loaded)
             throws IOException {
+        // One slice for the whole schedule: which locations this campaign's
+        // manual roots can still reach.  Seeded from the raw proposals, so
+        // it is already answerable when materializationPlan asks whether a
+        // structure carrier is on the root's forward slice -- and every
+        // region afterwards narrows against the same answer.
+        loaded.symbolicInputs.seedCarrierSlice(loaded.refinedGraph,
+                rawProposals(loaded.regionPlans));
         List<Candidate> candidates = candidates(arguments,
                 loaded.regionPlans, loaded.regionIndex,
-                loaded.definitions);
+                loaded.definitions, loaded.symbolicInputs.carrierSlice());
         Collections.sort(candidates, Candidate.ORDER);
-        // One slice for the whole schedule: which locations this campaign's
-        // manual roots can still reach.  Seeded before any select() so
-        // every region narrows against the same answer.
-        List<Map.Entry<String, JsonArray>> proposals = new ArrayList<>();
-        for (Candidate candidate : candidates) {
-            proposals.add(new AbstractMap.SimpleImmutableEntry<>(
-                    candidate.goal.plan().regionId(), candidate.inputActions));
-        }
-        loaded.symbolicInputs.seedCarrierSlice(loaded.refinedGraph, proposals);
 
         LoopBoundPolicy loopBound = declaredLoopBounds(
                 arguments.maxLoopIterations, loaded.regionPlans);
@@ -475,11 +473,26 @@ public final class ConcolicScheduler {
         return result;
     }
 
+    /** Every action the region plan proposes, before materialization
+     *  narrows any of them, keyed by the region that proposes it. */
+    private static List<Map.Entry<String, JsonArray>> rawProposals(
+            List<RegionInstancePlan> regionPlans) {
+        List<Map.Entry<String, JsonArray>> proposals = new ArrayList<>();
+        for (RegionInstancePlan plan : regionPlans) {
+            for (Goal goal : plan.goals()) {
+                proposals.add(new AbstractMap.SimpleImmutableEntry<>(
+                        plan.regionId(), goal.symbolize()));
+            }
+        }
+        return proposals;
+    }
+
     private static List<Candidate> candidates(Arguments arguments,
                                               List<RegionInstancePlan>
                                                       regionPlans,
                                               Map<String, Region> regions,
-                                              DefinitionIndex definitions)
+                                              DefinitionIndex definitions,
+                                              RootDependenceSlice slice)
             throws IOException {
         List<Candidate> result = new ArrayList<>();
         for (RegionInstancePlan plan : regionPlans) {
@@ -505,7 +518,7 @@ public final class ConcolicScheduler {
                     continue;
                 }
                 appendGoalCandidates(arguments, result, goal,
-                        definitions);
+                        definitions, slice);
             }
         }
         return result;
@@ -541,7 +554,7 @@ public final class ConcolicScheduler {
 
     private static void appendGoalCandidates(
             Arguments arguments, List<Candidate> result, Goal goal,
-            DefinitionIndex definitions)
+            DefinitionIndex definitions, RootDependenceSlice slice)
             throws IOException {
             Set<String> definitionMethods =
                     goal.runtimeDefinitionMethods();
@@ -549,7 +562,7 @@ public final class ConcolicScheduler {
                 JsonArray branches = goal.branches();
                 JsonArray inputActions = materializationPlan(
                         goal, goal.symbolize(), definitions, definitionMethods,
-                        branches);
+                        branches, slice);
                 result.add(new Candidate(goal, branches,
                         TargetBranch.regionPath(), true,
                         inputActions,
@@ -590,7 +603,7 @@ public final class ConcolicScheduler {
             // guarded throw.
             JsonArray targetSourceFrontier = materializationPlan(goal,
                     goal.symbolize(), definitions, definitionMethods,
-                    branches);
+                    branches, slice);
             for (int index = 0; index < branches.size(); index++) {
                 JsonElement element = branches.get(index);
                 if (!element.isJsonObject()) {
@@ -623,7 +636,7 @@ public final class ConcolicScheduler {
                         target);
                 JsonArray inputActions = materializationPlan(goal,
                         goal.symbolize(), definitions,
-                        definitionMethods, reachSlice);
+                        definitionMethods, reachSlice, slice);
                 inputActions = targetSymbolicFrontier(inputActions);
                 inputActions = mergeSymbolicFrontier(inputActions,
                         targetSourceFrontier);
@@ -774,11 +787,13 @@ public final class ConcolicScheduler {
         return result;
     }
 
-    private static JsonArray materializationPlan(
+    /** Package-visible for the structure-carrier admission contract. */
+    static JsonArray materializationPlan(
             Goal goal, JsonArray sourceActions,
             DefinitionIndex definitions,
             Set<String> regionMethods,
-            JsonArray demandedBranches) {
+            JsonArray demandedBranches,
+            RootDependenceSlice slice) {
         JsonArray result = new JsonArray();
         Set<String> represented = new LinkedHashSet<>();
         // The frame the root-entry hooks are injected into.
@@ -808,12 +823,30 @@ public final class ConcolicScheduler {
                 binding.addProperty("symbolicDemand",
                         "BOUNDED_CONTAINER_STATE");
             }
+            // A CONCRETE_STRUCTURE_CARRIER role says "this port names a
+            // structural owner, not a value the solver moves".  That is the
+            // right default and the wrong answer inside the root slice: the
+            // reference itself is then shared state whose writers a root
+            // decides, and the read arms over which of them wrote it.  In
+            // HDFS-17899 bug3 the wire key id is currentKey.keyId read at
+            // BlockTokenSecretManager:538 on the source DataNode, and
+            // currentKey's writers (updateKeys / setKeys) are root-dependent,
+            // so refusing the role outright loses that guarded read.  Outside
+            // the slice the role still decides, because a structural owner no
+            // root reaches is a constant for this failure.
+            boolean rootDependentStructureCarrier =
+                    !DependencyRole.VALUE_FRONTIER.equals(dependencyRole)
+                            && slice != null && slice.usable()
+                            && slice.carries(action);
             if (concreteOnlyInput(binding)
-                    || !DependencyRole.VALUE_FRONTIER.equals(
-                    dependencyRole)) {
+                    || (!DependencyRole.VALUE_FRONTIER.equals(dependencyRole)
+                    && !rootDependentStructureCarrier)) {
                 addConcreteInputAction(result, represented, binding,
                         concreteOnlyInputReason(action, dependencyRole));
                 continue;
+            }
+            if (rootDependentStructureCarrier) {
+                binding.addProperty("rootDependentStructureCarrier", true);
             }
             boolean boundedContainerState =
                     supportedBoundedContainerState(binding, location);
@@ -1569,13 +1602,13 @@ public final class ConcolicScheduler {
     }
 
     /** Exact Jimple definitions for live-in locals, recovered from the static graph. */
-    private static final class DefinitionIndex {
+    static final class DefinitionIndex {
         private final Map<String, List<JsonObject>> byCallReturn =
                 new LinkedHashMap<>();
         private final Map<String, List<String>> transferSources =
                 new LinkedHashMap<>();
         private final Set<String> transferCells = new LinkedHashSet<>();
-        private static DefinitionIndex from(List<JsonObject> edges) {
+        static DefinitionIndex from(List<JsonObject> edges) {
             DefinitionIndex result = new DefinitionIndex();
             Set<String> seenCallReturns = new LinkedHashSet<>();
             for (JsonObject edge : edges) {
