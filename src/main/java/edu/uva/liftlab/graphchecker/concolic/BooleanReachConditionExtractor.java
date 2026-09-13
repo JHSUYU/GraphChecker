@@ -95,7 +95,7 @@ public final class BooleanReachConditionExtractor {
                 arguments.workers);
         JsonObject report = extract(smt, manifest, solver,
                 arguments.maxInputs, arguments.maxValuations,
-                ClaimPolicy.WireFlowEvidence.read(arguments.mappings,
+                ClaimPolicy.PlannedSymbolicRoots.read(
                         arguments.runtimePlan.toString()));
         report.add("solverAttempts", solver.attempts());
         ArtifactIO.replace(arguments.output, GSON.toJson(report)
@@ -111,7 +111,7 @@ public final class BooleanReachConditionExtractor {
                               int maxInputs, int maxValuations)
             throws IOException, InterruptedException {
         return extract(composedSmt, manifest, solver, maxInputs,
-                maxValuations, ClaimPolicy.WireFlowEvidence.none());
+                maxValuations, ClaimPolicy.PlannedSymbolicRoots.none());
     }
 
     /**
@@ -123,7 +123,7 @@ public final class BooleanReachConditionExtractor {
     static JsonObject extract(String composedSmt, JsonObject manifest,
                               Z3Solver solver,
                               int maxInputs, int maxValuations,
-                              ClaimPolicy.WireFlowEvidence flows)
+                              ClaimPolicy.PlannedSymbolicRoots flows)
             throws IOException, InterruptedException {
         JsonObject report = reachReport(composedSmt, manifest, solver,
                 maxInputs, maxValuations);
@@ -2840,7 +2840,6 @@ public final class BooleanReachConditionExtractor {
         private int maxInputs = 12;
         private int maxValuations = 4096;
         private int workers = 8;
-        private String mappings = "";
 
         private static Arguments parse(String[] argv) {
             Map<String, String> values = new LinkedHashMap<>();
@@ -2875,7 +2874,6 @@ public final class BooleanReachConditionExtractor {
             result.maxValuations = positiveInt(values.get(
                     "max-valuations"), 4096);
             result.workers = positiveInt(values.get("workers"), 8);
-            result.mappings = firstNonBlank(values.get("mappings"));
             return result;
         }
 
@@ -2886,8 +2884,7 @@ public final class BooleanReachConditionExtractor {
                     || "timeout-ms".equals(key)
                     || "max-inputs".equals(key)
                     || "max-valuations".equals(key)
-                    || "workers".equals(key)
-                    || "mappings".equals(key);
+                    || "workers".equals(key);
         }
 
         private static Path required(Map<String, String> values,

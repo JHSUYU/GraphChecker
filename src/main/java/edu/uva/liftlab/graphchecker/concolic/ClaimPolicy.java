@@ -55,7 +55,6 @@ public final class ClaimPolicy {
     public static final String CLAIM = "campaignClaim";
     static final String KIND = "CAMPAIGN_CLAIM";
     /** The {@code kind} the communication mappings declare each flow with. */
-    private static final String WIRE_FLOW_KIND = "WIRE_FLOW";
     /** The {@code kind} the Composer names a consumer boundary family with. */
     private static final String CONSUMER_BOUNDARY_KIND =
             "CONSUMER_BOUNDARY_CASE_DEPENDENCY";
@@ -90,11 +89,9 @@ public final class ClaimPolicy {
      * composition reported it could not reconstruct.
      */
     /** The mapping field naming where a flow's value lands on arrival. */
-    public static final String CONSUMER_FIELD = "consumerField";
     /** The wire's own boundary family reached a term. */
     static final String PORT_FAMILY = "PORT_FAMILY";
     /** The field the consumer assigned it to is read in the formula. */
-    static final String CONSUMER_FIELD_READ = "CONSUMER_FIELD_READ";
     /** The solver returned neither sat nor unsat on an enumerated valuation. */
     static final String SOLVER_UNDECIDED_VALUATIONS =
             "SOLVER_UNDECIDED_VALUATIONS";
@@ -279,7 +276,7 @@ public final class ClaimPolicy {
             }
             String key = option.substring(2);
             if (!"manifest".equals(key) && !"reach".equals(key)
-                    && !"mappings".equals(key) && !"plan".equals(key)) {
+                    && !"plan".equals(key)) {
                 throw new IllegalArgumentException(
                         "Unknown claim option: --" + key);
             }
@@ -296,7 +293,7 @@ public final class ClaimPolicy {
                     "path");
         }
         JsonObject claim = decide(manifest, reach,
-                WireFlowEvidence.read(values.get("mappings"), plan));
+                PlannedSymbolicRoots.read(plan));
         System.out.println(GSON.toJson(claim));
         if (!accepted(optionalString(claim, "claim"))) {
             System.exit(2);
@@ -316,59 +313,29 @@ public final class ClaimPolicy {
     }
 
     /**
-     * What the experiment declares and where the plan bound each declared
-     * flow, so a composition can be asked which flows it realized rather
-     * than only how many exist.
+     * What the plan recorded at each symbolized port.
      *
-     * <p>The plan binds a flow's {@code XCH.<site>.<req|resp>.<flow>} ports
-     * to one producer region and one consumer region; the regions are kept
-     * here so a report can say what the plan expected. Whether the flow is
-     * <em>realized</em> is decided elsewhere and by one thing only: whether
-     * the composition lowered the value of a boundary family sitting on one
-     * of those ports into a term. Deciding it from the regions instead --
-     * asking whether either endpoint's id occurs in the manifest -- accepts a
-     * mention in place of a constraint.</p>
+     * <p>Every {@code symbolize} row in the runtime plan carries the {@code
+     * primitiveValue} the call returned and the {@code siteId} it returned it
+     * at.  The Composer copies both into the manifest's recorded-root ledger,
+     * but only for ports whose manual root it managed to name, so a manifest
+     * can carry a Boolean root with no recorded value while the plan that
+     * produced it says plainly that the call returned {@code false}.  A gate
+     * that reads only the manifest then has to guess the recorded polarity,
+     * and guessing it inverts every statement about which marker is the
+     * mechanism.</p>
+     *
+     * <p>This used to also carry the experiment's declared wire flows and the
+     * regions the plan bound each one's ports to, so a report could say how
+     * many flows exist and which regions they were expected to join.  Nothing
+     * decided anything on them -- whether a flow is realized is decided by
+     * whether the composition lowered a boundary value into a term -- and a
+     * wire flow is runtime attach, published by the replay that made it.</p>
      */
-    public static final class WireFlowEvidence {
-        private final List<String> declared;
-        private final Map<String, Set<String>> consumerRegions;
-        private final Map<String, Set<String>> producerRegions;
-        /** The field each flow's consumer assigns what it received to. */
-        private final Map<String, String> consumerFields;
-        /**
-         * What each symbolized port actually returned in the recording, by
-         * port id.
-         *
-         * <p>The plan is where the recording states this first: every
-         * {@code symbolize} row carries the {@code primitiveValue} the call
-         * returned and the {@code siteId} it returned it at. The Composer
-         * normally copies both into the manifest's recorded-root ledger, but
-         * only for ports whose manual root it managed to name, so a manifest
-         * can carry a Boolean root with no recorded value while the plan that
-         * produced it says plainly that the call returned {@code false}. A
-         * campaign gate that reads only the manifest then has to guess the
-         * recorded polarity, and guessing it inverts every statement about
-         * which marker is the mechanism.</p>
-         */
+    public static final class PlannedSymbolicRoots {
         private final Map<String, JsonObject> plannedRoots;
 
-        private WireFlowEvidence(List<String> declared,
-                                 Map<String, Set<String>> consumerRegions,
-                                 Map<String, Set<String>> producerRegions) {
-            this(declared, consumerRegions, producerRegions,
-                    new LinkedHashMap<String, String>(),
-                    new LinkedHashMap<String, JsonObject>());
-        }
-
-        private WireFlowEvidence(List<String> declared,
-                                 Map<String, Set<String>> consumerRegions,
-                                 Map<String, Set<String>> producerRegions,
-                                 Map<String, String> consumerFields,
-                                 Map<String, JsonObject> plannedRoots) {
-            this.declared = Collections.unmodifiableList(declared);
-            this.consumerRegions = consumerRegions;
-            this.producerRegions = producerRegions;
-            this.consumerFields = consumerFields;
+        private PlannedSymbolicRoots(Map<String, JsonObject> plannedRoots) {
             this.plannedRoots = plannedRoots;
         }
 
@@ -377,47 +344,26 @@ public final class ClaimPolicy {
             return portId == null ? null : plannedRoots.get(portId);
         }
 
-        /** An experiment that declares no cross-node flow. */
-        public static WireFlowEvidence none() {
-            return new WireFlowEvidence(new ArrayList<String>(),
-                    new LinkedHashMap<String, Set<String>>(),
-                    new LinkedHashMap<String, Set<String>>());
+        /** No plan to read, so no port has a recorded value. */
+        public static PlannedSymbolicRoots none() {
+            return new PlannedSymbolicRoots(
+                    new LinkedHashMap<String, JsonObject>());
         }
 
-
-        /**
-         * Reads the declared flows from the communication mappings and their
-         * planned exchange ports from the runtime plan. A blank or absent
-         * mapping path is an experiment that declares none, which is a
-         * single-node experiment rather than an unrealized flow; a blank or
-         * absent plan leaves the declared flows without port evidence.
-         */
-        public static WireFlowEvidence read(String mappings, String plan)
+        /** Reads every symbolized port the runtime plan records a value for. */
+        public static PlannedSymbolicRoots read(String plan)
                 throws IOException {
-            List<String> declared = new ArrayList<>();
-            Map<String, String> fields = new LinkedHashMap<>();
-            for (JsonObject row : rows(mappings)) {
-                String id = optionalString(row, "id");
-                if (!WIRE_FLOW_KIND.equals(optionalString(row, "kind"))
-                        || id.isEmpty()) {
-                    continue;
-                }
-                if (!declared.contains(id)) declared.add(id);
-                String field = consumerField(row);
-                if (!field.isEmpty()) fields.putIfAbsent(id, field);
-            }
-            Map<String, Set<String>> consumers = new LinkedHashMap<>();
-            Map<String, Set<String>> producers = new LinkedHashMap<>();
             Map<String, JsonObject> planned = new LinkedHashMap<>();
-            for (JsonObject row : rows(plan)) {
-                collectHandoffs(row, "", consumers, producers);
-                collectSymbolizedRoots(row, planned);
+            if (plan != null && !plan.trim().isEmpty()
+                    && Files.isRegularFile(Paths.get(plan.trim()))) {
+                for (JsonObject row : ArtifactIO.readJsonl(
+                        Paths.get(plan.trim()))) {
+                    collectSymbolizedRoots(row, planned);
+                }
             }
-            return new WireFlowEvidence(declared, consumers, producers,
-                    fields, planned);
+            return new PlannedSymbolicRoots(planned);
         }
 
-        /** Every symbolized port the plan states a recorded value for. */
         private static void collectSymbolizedRoots(
                 JsonObject plan, Map<String, JsonObject> planned) {
             for (JsonElement goal : array(plan, "closureGoals")) {
@@ -439,108 +385,6 @@ public final class ClaimPolicy {
                     planned.putIfAbsent(port, row);
                 }
             }
-        }
-
-        /**
-         * The field this flow's consumer assigns the received value to.
-         *
-         * <p>Declared on the mapping's consumer, because only the experiment
-         * knows it: a wire value does not have to stay a wire value once it
-         * lands. {@code PBHelper.convert(BlockKeyProto)} reads the expiry
-         * date off the proto and hands it to a {@code BlockKey}, after which
-         * the DataNode reads {@code DelegationKey#expiryDate} and never the
-         * port again. The field is named as the guarded-read model names it,
-         * by the class that declares it.</p>
-         */
-        private static String consumerField(JsonObject flow) {
-            String direct = optionalString(flow, CONSUMER_FIELD);
-            return direct.isEmpty()
-                    ? optionalString(object(flow, "consumer"), "field")
-                    : direct;
-        }
-
-        private static List<JsonObject> rows(String path) throws IOException {
-            if (path == null || path.trim().isEmpty()
-                    || !Files.isRegularFile(Paths.get(path.trim()))) {
-                return new ArrayList<>();
-            }
-            return ArtifactIO.readJsonl(Paths.get(path.trim()));
-        }
-
-        /**
-         * Walks a plan row for {@code communicationHandoffs} and records, per
-         * declared flow, the regions the plan bound its consumer ({@code IN})
-         * and producer ({@code OUT}) ports to. The flow name is the last
-         * segment of the port id.
-         */
-        private static void collectHandoffs(
-                JsonElement element, String regionId,
-                Map<String, Set<String>> consumers,
-                Map<String, Set<String>> producers) {
-            if (element == null || element.isJsonNull()) {
-                return;
-            }
-            if (element.isJsonArray()) {
-                for (JsonElement member : element.getAsJsonArray()) {
-                    collectHandoffs(member, regionId, consumers, producers);
-                }
-                return;
-            }
-            if (!element.isJsonObject()) {
-                return;
-            }
-            JsonObject row = element.getAsJsonObject();
-            String region = optionalString(row, "regionId");
-            String scope = region.isEmpty() ? regionId : region;
-            for (JsonElement handoff : array(row, "communicationHandoffs")) {
-                if (!handoff.isJsonObject() || scope.isEmpty()) {
-                    continue;
-                }
-                JsonObject port = handoff.getAsJsonObject();
-                String portId = optionalString(port, "portId");
-                int separator = portId.lastIndexOf('.');
-                if (separator < 0 || separator + 1 >= portId.length()) {
-                    continue;
-                }
-                String flow = portId.substring(separator + 1);
-                String side = optionalString(port, "side");
-                if ("IN".equals(side)) {
-                    add(consumers, flow, scope);
-                } else if ("OUT".equals(side)) {
-                    add(producers, flow, scope);
-                }
-            }
-            for (Map.Entry<String, JsonElement> member : row.entrySet()) {
-                if ("communicationHandoffs".equals(member.getKey())) {
-                    continue;
-                }
-                collectHandoffs(member.getValue(), scope, consumers,
-                        producers);
-            }
-        }
-
-        private static void add(Map<String, Set<String>> index, String key,
-                                String value) {
-            Set<String> values = index.get(key);
-            if (values == null) {
-                values = new LinkedHashSet<>();
-                index.put(key, values);
-            }
-            values.add(value);
-        }
-
-        public int declaredCount() {
-            return declared.size();
-        }
-
-
-
-
-
-        private static JsonArray names(Set<String> values) {
-            JsonArray array = new JsonArray();
-            for (String value : values) array.add(value);
-            return array;
         }
 
 
@@ -824,7 +668,7 @@ public final class ClaimPolicy {
      */
     static List<Marker> declaredMarkers(JsonObject manifest,
                                         JsonObject reach) {
-        return declaredMarkers(manifest, reach, WireFlowEvidence.none());
+        return declaredMarkers(manifest, reach, PlannedSymbolicRoots.none());
     }
 
     /**
@@ -850,7 +694,7 @@ public final class ClaimPolicy {
      */
     static List<Marker> declaredMarkers(JsonObject manifest,
                                         JsonObject reach,
-                                        WireFlowEvidence flows) {
+                                        PlannedSymbolicRoots flows) {
         // Per root: every distinct value some source observed, in the order
         // the sources were read, each tagged with the source that said it.
         Map<String, Map<String, String>> observed = new LinkedHashMap<>();
@@ -1091,7 +935,7 @@ public final class ClaimPolicy {
      */
     static JsonObject faultMarkerEvidence(JsonObject manifest,
                                           JsonObject reach,
-                                          WireFlowEvidence flows) {
+                                          PlannedSymbolicRoots flows) {
         List<Marker> markers = declaredMarkers(manifest, reach, flows);
         JsonObject evidence = new JsonObject();
         evidence.addProperty("declaredMarkers", markers.size());
@@ -1385,7 +1229,7 @@ public final class ClaimPolicy {
     private static JsonObject witnessLegitimacy(
             JsonObject manifest, JsonObject reach, JsonArray valuations,
             String degeneracy,
-            List<String> unrealizedFlows, WireFlowEvidence flows) {
+            List<String> unrealizedFlows, PlannedSymbolicRoots flows) {
         long window = Math.max(0L, ClockRootPhysics.skewOf(manifest));
         List<WitnessLegitimacy.Freedom> composition =
                 WitnessLegitimacy.compositionFreedoms(degeneracy);
@@ -1771,7 +1615,7 @@ public final class ClaimPolicy {
      * @param flows what the experiment declares and where the plan bound it
      */
     public static JsonObject decide(JsonObject manifest, JsonObject reach,
-                                    WireFlowEvidence flows) {
+                                    PlannedSymbolicRoots flows) {
         JsonObject reachCondition = object(reach, "reachCondition");
         String reachability = firstNonEmpty(
                 optionalString(reachCondition, "reachability"), "UNKNOWN");
@@ -2028,7 +1872,6 @@ public final class ClaimPolicy {
         rootSpace.addProperty("degeneracyCheck", degeneracy);
         rootSpace.addProperty("faultSensitive",
                 faultSensitive(valuations, probeConstrains));
-        rootSpace.addProperty("declaredWireFlows", flows.declaredCount());
         rootSpace.addProperty("consumerBoundaryFamilies", boundaryFamilies);
         rootSpace.addProperty("consumerBoundaryArms",
                 consumerBoundaryArms(manifest));

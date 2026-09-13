@@ -102,8 +102,8 @@ emit_fixture() {
       claim: "SAT_CANDIDATE",
       claimReason: "a valuation satisfies the target predicate inside the recorded model and a symbolic root flips it",
       blockers: [], blockerCount: 0, whyNotAccepted: "",
-      rootSpace: {consumerBoundaryFamilies: 1, consumerBoundaryArms: 2,
-                  declaredWireFlows: 0, wireFlows: []}}}' \
+      rootSpace: {consumerBoundaryFamilies: 1,
+                  consumerBoundaryArms: 2}}}' \
     >"${reach_report}"
   printf '%s\n' \
     '{"schemaVersion":1,"kind":"REGION_PATH_WORKLIST","coverageGaps":[{"kind":"PATH_FLIP_REPLAY_NOT_ADMITTED","queryKey":"flip","reason":"UNEXPLORED"},{"kind":"PATH_FLIP_SOLVER_TIMEOUT","queryKey":"slow-flip","reason":"SOLVER_TIMEOUT"}]}' \
@@ -153,7 +153,7 @@ emit_fixture_undecided_roots() {
                  {values: [true], status: "sat"}],
     campaignClaim: {schemaVersion: 1, kind: "CAMPAIGN_CLAIM",
       claim: "INCONCLUSIVE_PARTIAL",
-      claimReason: "3 blocker(s) withhold an accepted claim from a REACHABLE solver result: UNDECIDED_ROOT_SPACE,TARGET_UNCONSTRAINED_BY_ROOTS,DECLARED_WIRE_FLOWS_UNREALIZED",
+      claimReason: "3 blocker(s) withhold an accepted claim from a REACHABLE solver result: UNDECIDED_ROOT_SPACE,TARGET_UNCONSTRAINED_BY_ROOTS,FINDING_MECHANISM_UNNAMED",
       blockerCount: 3,
       blockers: [
         {code: "UNDECIDED_ROOT_SPACE",
@@ -161,18 +161,11 @@ emit_fixture_undecided_roots() {
          detail: "the degeneracy question was not decided"},
         {code: "TARGET_UNCONSTRAINED_BY_ROOTS", subject: "",
          detail: "no symbolic root flips the target predicate"},
-        {code: "DECLARED_WIRE_FLOWS_UNREALIZED", subject: "block-key-id",
-         detail: "the composition realized neither side of 1 of 2 declared WIRE_FLOW(s): block-key-id"}],
-      whyNotAccepted: ("claim=INCONCLUSIVE_PARTIAL: 3 blocker(s) withhold acceptance\n  UNDECIDED_ROOT_SPACE [UNDECIDED_UNENUMERATED_EXISTENTIAL_ROOTS:9]: the degeneracy question was not decided\n  TARGET_UNCONSTRAINED_BY_ROOTS: no symbolic root flips the target predicate\n  DECLARED_WIRE_FLOWS_UNREALIZED [block-key-id]: the composition realized neither side of 1 of 2 declared WIRE_FLOW(s): block-key-id"),
-      rootSpace: {consumerBoundaryFamilies: 99, consumerBoundaryArms: 240,
-                  declaredWireFlows: 2,
-                  wireFlows: [
-                    {flow: "block-key-id", realized: false,
-                     mechanism: "EXCHANGE_PORT_PAIR",
-                     consumerRealized: true, producerRealized: false},
-                    {flow: "data-encryption-key-id", realized: true,
-                     mechanism: "EXCHANGE_PORT_PAIR",
-                     consumerRealized: true, producerRealized: true}]}}}' \
+        {code: "FINDING_MECHANISM_UNNAMED", subject: "NO_MECHANISM",
+         detail: "no satisfying witness names a mechanism"}],
+      whyNotAccepted: ("claim=INCONCLUSIVE_PARTIAL: 3 blocker(s) withhold acceptance\n  UNDECIDED_ROOT_SPACE [UNDECIDED_UNENUMERATED_EXISTENTIAL_ROOTS:9]: the degeneracy question was not decided\n  TARGET_UNCONSTRAINED_BY_ROOTS: no symbolic root flips the target predicate\n  FINDING_MECHANISM_UNNAMED [NO_MECHANISM]: no satisfying witness names a mechanism"),
+      rootSpace: {consumerBoundaryFamilies: 99,
+                  consumerBoundaryArms: 240}}}' \
     >"${reach_report}"
 }
 
@@ -369,29 +362,25 @@ $(<"${emit_root}/emit.log")"
     == INCONCLUSIVE_PARTIAL ]] \
   || fail "the undecided root space did not publish INCONCLUSIVE_PARTIAL"
 jq -e '[.blockers[].code] == ["UNDECIDED_ROOT_SPACE",
-    "TARGET_UNCONSTRAINED_BY_ROOTS", "DECLARED_WIRE_FLOWS_UNREALIZED"]
+    "TARGET_UNCONSTRAINED_BY_ROOTS", "FINDING_MECHANISM_UNNAMED"]
   and .blockerCount == 3' \
   "${campaign_final}/result.json" >/dev/null \
   || fail "the result did not publish the named blockers: \
 $(jq -c '.blockers' "${campaign_final}/result.json")"
-# The unrealized flow is named, not counted: an owner acts on the name.
-jq -e '[.blockers[] | select(.code == "DECLARED_WIRE_FLOWS_UNREALIZED")
-    | .subject] == ["block-key-id"]' \
+# A blocker is named, not counted: an owner acts on the name.
+jq -e '[.blockers[] | select(.code == "FINDING_MECHANISM_UNNAMED")
+    | .subject] == ["NO_MECHANISM"]' \
   "${campaign_final}/result.json" >/dev/null \
-  || fail "the wire-flow blocker did not name the unrealized flow"
-# The per-flow realization rows are published with the claim, so the realized
-# flow is visible next to the one that blocked it.
-jq -e '.evidence.declaredWireFlows == 2
-  and .evidence.consumerBoundaryFamilies == 99
-  and ([.evidence.wireFlows[] | select(.realized)] | length) == 1' \
+  || fail "the mechanism blocker did not name its subject"
+jq -e '.evidence.consumerBoundaryFamilies == 99' \
   "${campaign_final}/result.json" >/dev/null \
-  || fail "the result lost its per-flow realization evidence: \
+  || fail "the result lost its root-space evidence: \
 $(jq -c '.evidence' "${campaign_final}/result.json")"
 # The one view: a header plus one line per blocker, printed and recorded.
 [[ $(jq -r '.whyNotAccepted' "${campaign_final}/result.json" \
       | wc -l) -eq 4 ]] \
   || fail "whyNotAccepted does not name one blocker per line"
-grep -q 'DECLARED_WIRE_FLOWS_UNREALIZED' "${emit_root}/emit.log" \
+grep -q 'FINDING_MECHANISM_UNNAMED' "${emit_root}/emit.log" \
   || fail "EMIT did not print the blocker summary"
 # A stage-local FINAL_READY with zero aggregate gaps is exactly the state the
 # jq gate accepted. EMIT publishes the policy's claim over it.
