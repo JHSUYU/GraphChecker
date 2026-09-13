@@ -48,7 +48,6 @@ import edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.SymbolizeActio
 
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.DEFAULT_EXECUTOR_THREAD_NAME;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.DEFAULT_OBJECT_IDENTITY_THREAD_NAME;
-import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.REPLAY_GROUP_ENV;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.ROOT_ARGUMENT_PREDICATE_KIND;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.SKIP_ANCHOR_SOURCE_NEVER_EXISTED;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.SKIP_CAUSAL_ANCHOR_NOT_OBSERVED;
@@ -1148,15 +1147,13 @@ final class ConcolicTaskPlan {
             this.guardedReadAssignments = new ArrayList<>();
             this.capturesTargetReach =
                     task.goalKind().capturesTargetReach();
-            // The driver refuses a plan whose members name different
-            // groups and then exports that same one id, so the two can only
-            // disagree when the task states none: a seed plan, whose group
-            // the invocation names.
-            String plannedReplayGroup = optionalString(task.json(),
+            // The plan names the propagation ledger every task of this
+            // invocation shares: ConcolicScheduler stamps the seed replay,
+            // PathReplayTaskFactory stamps each flip bundle. A row that
+            // names none is a plan no scheduler wrote, and the importer
+            // refuses its results by name (CONCOLIC_RESULT_REPLAY_GROUP_MISSING).
+            this.replayGroupId = optionalString(task.json(),
                     "linkedReplayGroupId");
-            this.replayGroupId = plannedReplayGroup.isEmpty()
-                    ? safe(System.getenv(REPLAY_GROUP_ENV))
-                    : plannedReplayGroup;
             this.linkedReplayRole = optionalString(task.json(),
                     "linkedReplayRole");
             this.familySnapshotDigest = optionalString(task.json(),

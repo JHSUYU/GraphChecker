@@ -167,9 +167,6 @@ public final class ConcolicRegionRuntime {
     /** Emits one line per replay milestone to stderr. */
     static final String DIAGNOSTICS_PROPERTY =
             "causynth.concolic.diagnostics";
-    /** One workload invocation's symbolic-propagation closure identity. */
-    static final String REPLAY_GROUP_ENV =
-            "CAUSYNTH_CONCOLIC_REPLAY_GROUP_ID";
     private static volatile Boolean diagnostics;
     static final Map<Long, ActiveRegion> ACTIVE = new ConcurrentHashMap<>();
     /**
