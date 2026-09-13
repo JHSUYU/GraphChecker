@@ -287,11 +287,31 @@ public final class PathMergeComposer {
             JsonObject declared = roots.byRawSymbol.get(used.getValue());
             JsonObject rootRow = roots.materialization(declared,
                     used.getKey());
+            if (optionalString(rootRow,
+                    ComposedManifest.RECORDED_SOURCE_VALUE).isEmpty()) {
+                // The replay that minted this root states the value it read;
+                // a replay that was handed a model assignment for it does
+                // not, and a run whose only admitted path is such a replay
+                // would have no recorded value at all.  The plan states it
+                // too, on the symbolize row that named the access, and that
+                // is the same recording speaking -- so it is read before the
+                // gate refuses, exactly as the claim policy reads it.
+                String planned = plannedRecordedValue(regionPlans, rootRow);
+                if (!planned.isEmpty()) {
+                    rootRow.addProperty(
+                            ComposedManifest.RECORDED_SOURCE_VALUE, planned);
+                }
+            }
             rootRows.add(rootRow);
-            if (optionalString(rootRow, "recordedValue").isEmpty()) {
+            if (optionalString(rootRow,
+                    ComposedManifest.RECORDED_SOURCE_VALUE).isEmpty()) {
                 gate(gates, RECORDED_ROOT_VALUE_UNSTATED,
-                        "root " + used.getKey()
-                                + " states no recorded value");
+                        "root " + roots.name(used.getValue())
+                                + " as " + used.getKey()
+                                + " states no recorded value: neither the"
+                                + " replay that minted it nor the plan's"
+                                + " symbolize row says what the program"
+                                + " read there");
             }
         }
 
@@ -448,6 +468,50 @@ public final class PathMergeComposer {
         return decisions;
     }
 
+    /**
+     * What the plan says the program read at this root's access.
+     *
+     * <p>Every {@code symbolize} row of the runtime plan carries the
+     * {@code primitiveValue} the access returned.  It is matched on the
+     * declared field the root names, or on the port when the root is a
+     * wire cut, because those are the two names a symbolize row and a
+     * materialization share.  Two rows that disagree state nothing: the
+     * recording is then not one answer, and a gate is the honest reading.</p>
+     */
+    private static String plannedRecordedValue(
+            List<RegionInstancePlan> regionPlans, JsonObject rootRow) {
+        String field = optionalString(rootRow, "fieldSignature");
+        String port = optionalString(rootRow, "portId");
+        if (field.isEmpty() && port.isEmpty()) return "";
+        String held = "";
+        for (RegionInstancePlan plan : regionPlans == null
+                ? Collections.<RegionInstancePlan>emptyList() : regionPlans) {
+            for (JsonElement goal : array(plan.json(), "closureGoals")) {
+                if (!goal.isJsonObject()) continue;
+                for (JsonElement element
+                        : array(goal.getAsJsonObject(), "symbolize")) {
+                    if (!element.isJsonObject()) continue;
+                    JsonObject row = element.getAsJsonObject();
+                    boolean names = !field.isEmpty()
+                            && (field.equals(optionalString(row,
+                            "leafFieldSignature"))
+                            || field.equals(optionalString(row,
+                            "accessFieldSignature")))
+                            || !port.isEmpty()
+                            && port.equals(optionalString(row, "portId"));
+                    String value = optionalString(row, "primitiveValue");
+                    if (!names || value.isEmpty()) continue;
+                    if (held.isEmpty()) {
+                        held = value;
+                    } else if (!held.equals(value)) {
+                        return "";
+                    }
+                }
+            }
+        }
+        return held;
+    }
+
     /** Whether one expression names a root the recording minted. */
     private static boolean mentionsRoot(JsonElement expression,
                                         Set<String> rootSymbols) {
@@ -563,6 +627,9 @@ public final class PathMergeComposer {
         /** Raw symbol -> the node and epoch whose recording minted it. */
         private final Map<String, String> sourceKeys = new LinkedHashMap<>();
         private final Map<String, String> recorded = new LinkedHashMap<>();
+        /** Every distinct value some replay read at this root. */
+        private final Map<String, Set<String>> readings =
+                new LinkedHashMap<>();
         private final Set<String> disagreed = new LinkedHashSet<>();
 
         static RootInventory of(Collection<JsonObject> summaries) {
@@ -578,6 +645,8 @@ public final class PathMergeComposer {
                     String value = SymbolicSourceEvidence
                             .recordedValueOf(event);
                     if (value.isEmpty()) continue;
+                    inventory.readings.computeIfAbsent(raw,
+                            ignored -> new LinkedHashSet<>()).add(value);
                     String held = inventory.recorded.get(raw);
                     if (held == null) {
                         inventory.recorded.put(raw, value);
@@ -639,8 +708,17 @@ public final class PathMergeComposer {
             row.addProperty(ComposedManifest.RECORDED_SOURCE_VALUE,
                     disagreed.contains(raw) ? ""
                             : firstNonBlank(recorded.get(raw)));
+            // The contract here is a LIST, comma separated: the readings two
+            // mints of one source disagreed on.  Publishing the boolean flag
+            // instead made a run with no conflict at all state the string
+            // "false" as a reading, which then disagreed with the value the
+            // recording actually held -- a root that agreed with itself was
+            // refused for contradicting itself.
             row.addProperty(ComposedManifest.RECORDED_VALUE_CONFLICT,
-                    disagreed.contains(raw));
+                    disagreed.contains(raw)
+                            ? String.join(",", readings.getOrDefault(raw,
+                            Collections.<String>emptySet()))
+                            : "");
             return row;
         }
     }

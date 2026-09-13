@@ -94,7 +94,7 @@ def page(case):
             short(root.get("fieldSignature")
                   or root.get("portId")
                   or root.get("rawSymbol", ""), 46),
-            root.get("recordedSourceValue", "") or "<unstated>",
+            root.get("recordedValue", "") or "<unstated>",
             root.get("solverTerm", "")))
 
     rule("PATHS MERGED  anchor %s#%s" % (
@@ -149,7 +149,8 @@ def page(case):
             text = handle.read()
         print("  bytes          %d" % len(text))
         print("  asserts        %d" % text.count("(assert"))
-        print("  declarations   %d" % text.count("(declare-fun"))
+        print("  declarations   %d" % (text.count("(declare-fun")
+                                        + text.count("(declare-const")))
     else:
         print("  no composed formula")
 
