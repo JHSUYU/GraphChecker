@@ -43,6 +43,37 @@ public class DeadCaseLemmasTest {
     private static final List<List<String>> PARTITIONS = Arrays.asList(
             Arrays.asList("case_selector__a", "case_selector__b"),
             Collections.singletonList("case_selector__c"));
+    /**
+     * The same formula with a body no model satisfies. Every arm of it
+     * answers {@code unsat}, including both arms of {@code r_1}.
+     */
+    private static final String UNSAT_FORMULA = FORMULA.replace(
+            "(assert (< x 0))",
+            "(assert (< x 0))" + NL + "(assert (> x 10))");
+    /**
+     * A satisfiable body whose exactly-one partition ranges over three arms,
+     * two of which are dead. A caller that declares only those two declares a
+     * partition the formula does not have -- and refuting both would leave
+     * the partition it does declare no arm at all.
+     */
+    private static final String THREE_ARM_FORMULA = String.join(NL,
+            "(set-option :smt.arith.solver 2)",
+            "(declare-const case_selector__a Bool)",
+            "(declare-const case_selector__b Bool)",
+            "(declare-const case_selector__c Bool)",
+            "(declare-const x Int)",
+            "(assert (! (= (+ (ite case_selector__a 1 0)"
+                    + " (ite case_selector__b 1 0)"
+                    + " (ite case_selector__c 1 0)) 1)"
+                    + " :named region_case_selector_partition_r_1))",
+            "(assert (! (=> case_selector__a (> x 5))"
+                    + " :named case_selector_definition_a))",
+            "(assert (! (=> case_selector__b (> x 7))"
+                    + " :named case_selector_definition_b))",
+            "(assert (! (=> case_selector__c (< x 3))"
+                    + " :named case_selector_definition_c))",
+            "(assert (< x 0))",
+            "(check-sat)") + NL;
 
     @Test
     public void aRefutedArmBecomesANamedLemmaAndNothingElseChanges()
@@ -79,12 +110,91 @@ public class DeadCaseLemmasTest {
         assertEquals(2, probes.size());
         assertEquals("sat", status(probes, "case_selector__a"));
         assertEquals("unsat", status(probes, "case_selector__b"));
+        // The arms were probed because the formula itself answered first.
+        assertEquals("sat", ledger.getAsJsonObject("formulaProbe")
+                .get("status").getAsString());
+        assertEquals(0, ledger.getAsJsonArray("rows").size());
+        assertEquals(0, ledger.get("droppedLemmas").getAsInt());
 
         // The lemma preserves the model set: the formula is still sat, and
         // the arm it names is still refuted.
         assertEquals("sat", check(result.smtLib));
         assertEquals("unsat", check(result.smtLib.replace("(check-sat)",
                 "(assert case_selector__b)" + NL + "(check-sat)")));
+    }
+
+    /**
+     * On an unsatisfiable body every probe answers {@code unsat}, so every
+     * arm of every partition would be "refuted" and both arms of {@code r_1}
+     * would carry a lemma. The pass cannot tell a dead arm from a dead
+     * formula there, so it emits nothing and says which it found.
+     */
+    @Test
+    public void anUnsatisfiableFormulaEmitsNoLemmaAndSaysSo() throws Exception {
+        Assume.assumeTrue(z3Available());
+        assertEquals("unsat", check(UNSAT_FORMULA));
+
+        DeadCaseLemmas.Result result = DeadCaseLemmas.prove(UNSAT_FORMULA,
+                PARTITIONS, Paths.get("z3"),
+                DeadCaseLemmas.DEFAULT_ARM_RLIMIT);
+
+        assertSame(UNSAT_FORMULA, result.smtLib);
+        assertFalse(result.smtLib.contains(DeadCaseLemmas.LEMMA_PREFIX));
+        JsonObject ledger = result.ledger;
+        assertEquals(DeadCaseLemmas.SKIPPED_FORMULA_UNSAT,
+                ledger.get("skipped").getAsString());
+        assertEquals("unsat", ledger.getAsJsonObject("formulaProbe")
+                .get("status").getAsString());
+        assertEquals(0, ledger.get("probedArms").getAsInt());
+        assertEquals(0, ledger.getAsJsonArray("probes").size());
+        assertEquals(0, ledger.getAsJsonArray("lemmas").size());
+        JsonArray rows = ledger.getAsJsonArray("rows");
+        assertEquals(1, rows.size());
+        assertEquals(DeadCaseLemmas.FORMULA_UNSAT_ROW,
+                rows.get(0).getAsJsonObject().get("kind").getAsString());
+        assertTrue(rows.get(0).getAsJsonObject().get("detail").getAsString(),
+                rows.get(0).getAsJsonObject().get("detail").getAsString()
+                        .contains("unsatisfiable before any case arm"));
+    }
+
+    /**
+     * A partition every arm of which is refuted leaves that partition no arm
+     * to select. Under a satisfiable body that says the declared arms are not
+     * the ones the formula's own exactly-one ranges over, so the lemmas are
+     * dropped rather than asserted and the partition is published.
+     */
+    @Test
+    public void lemmasThatWouldEmptyOnePartitionAreDropped() throws Exception {
+        Assume.assumeTrue(z3Available());
+        assertEquals("sat", check(THREE_ARM_FORMULA));
+
+        DeadCaseLemmas.Result result = DeadCaseLemmas.prove(THREE_ARM_FORMULA,
+                Collections.singletonList(Arrays.asList("case_selector__a",
+                        "case_selector__b")),
+                Paths.get("z3"), DeadCaseLemmas.DEFAULT_ARM_RLIMIT);
+
+        assertSame(THREE_ARM_FORMULA, result.smtLib);
+        assertFalse(result.smtLib.contains(DeadCaseLemmas.LEMMA_PREFIX));
+        JsonObject ledger = result.ledger;
+        assertEquals("", ledger.get("skipped").getAsString());
+        assertEquals("sat", ledger.getAsJsonObject("formulaProbe")
+                .get("status").getAsString());
+        // Both arms really were refuted: the telemetry states that, and the
+        // lemmas are withheld anyway.
+        JsonArray probes = ledger.getAsJsonArray("probes");
+        assertEquals(2, probes.size());
+        assertEquals("unsat", status(probes, "case_selector__a"));
+        assertEquals("unsat", status(probes, "case_selector__b"));
+        assertEquals(2, ledger.get("probedArms").getAsInt());
+        assertEquals(2, ledger.get("droppedLemmas").getAsInt());
+        assertEquals(0, ledger.getAsJsonArray("lemmas").size());
+        JsonArray rows = ledger.getAsJsonArray("rows");
+        assertEquals(1, rows.size());
+        JsonObject row = rows.get(0).getAsJsonObject();
+        assertEquals(DeadCaseLemmas.PARTITION_FULLY_REFUTED_ROW,
+                row.get("kind").getAsString());
+        assertEquals("case_selector__a,case_selector__b",
+                row.get("subject").getAsString());
     }
 
     @Test
