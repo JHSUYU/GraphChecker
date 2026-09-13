@@ -371,6 +371,16 @@ public final class ConcolicSmtComposer {
      * had not written -- while its own evidence says it did.  The gate names
      * that case instead of letting the default stand in for its write.</p>
      *
+     * <p>Each row carries {@code writerCaseWrite} when the writer case
+     * published a version of the location in its own summary -- the kind,
+     * the field version id, and whether the write's expression came with it.
+     * A row with {@code expressionPublished: true} is a gap the composer
+     * could close on evidence it already holds: the reader's arms are built
+     * from its own replay's read-time candidates, so a case the reader never
+     * ran alongside contributes none, even though that case published the
+     * write.  The arm the model wants is one per writer case, valued by that
+     * case's own write expression.</p>
+     *
      * <p>A read the writer region performs on itself is the exception: it is
      * lowered once per local case and merged over the occurrence's
      * exactly-one partition, so it does not exist under its own siblings and
@@ -2368,6 +2378,9 @@ public final class ConcolicSmtComposer {
         /** Base case selector -> content-addressed locations it wrote. */
         private final Map<String, Set<String>> writtenLocationsByCase =
                 new LinkedHashMap<>();
+        /** (case selector, location) -> the write that case published. */
+        private final Map<String, JsonObject> caseWriteEvidence =
+                new LinkedHashMap<>();
         /** One row per (read, writer case with no arm); see finish(). */
         private final JsonArray unlinkedWriterCases = new JsonArray();
         /** Read identity -> the declared field that read observes. */
@@ -2809,6 +2822,24 @@ public final class ConcolicSmtComposer {
                     }
                     writtenLocationsByCase.computeIfAbsent(selector,
                             ignored -> new LinkedHashSet<>()).add(location);
+                    // The write this case published, kept so the
+                    // unlinked-writer ledger can say whether the arm the
+                    // reader is missing could be built from evidence that
+                    // already exists.
+                    JsonObject evidence = new JsonObject();
+                    evidence.addProperty("versionKind",
+                            optionalString(version, "versionKind"));
+                    evidence.addProperty("fieldVersionId",
+                            optionalString(version, "fieldVersionId"));
+                    evidence.addProperty("writerOccurrenceId",
+                            optionalString(version, SharedStateEvidence
+                                    .WRITER_OCCURRENCE_ID));
+                    evidence.addProperty("expressionPublished",
+                            version.has(VmExpressionIr.EXPRESSION)
+                                    && !version.get(VmExpressionIr.EXPRESSION)
+                                    .isJsonNull());
+                    caseWriteEvidence.put(selector + "\u0000" + location,
+                            evidence);
                     break;
                 }
             }
@@ -3027,6 +3058,11 @@ public final class ConcolicSmtComposer {
                                 GSON.toJsonTree(linked));
                         row.add("readActivationCases",
                                 GSON.toJsonTree(readCases));
+                        JsonObject published = caseWriteEvidence.get(
+                                caseSelector + "\u0000" + location);
+                        if (published != null) {
+                            row.add("writerCaseWrite", published.deepCopy());
+                        }
                         row.addProperty("refused", !exclusive);
                         unlinkedWriterCases.add(row);
                         if (exclusive) continue;
@@ -3038,7 +3074,14 @@ public final class ConcolicSmtComposer {
                                         + " but owns no arm of this read, so"
                                         + " selecting it would let the read"
                                         + " fall to INITIAL as if the case"
-                                        + " had not written");
+                                        + " had not written"
+                                        + (published != null
+                                        && published.get("expressionPublished")
+                                        .getAsBoolean()
+                                        ? "; the case published that write"
+                                        + " with its expression, so the arm"
+                                        + " is missing from the read, not"
+                                        + " from the evidence" : ""));
                     }
                 }
             }
