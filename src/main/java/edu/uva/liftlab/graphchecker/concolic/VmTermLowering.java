@@ -138,7 +138,46 @@ final class VmTermLowering {
         JAVA_CAST_SOURCE_SORT_CONFLICT("JavaCastSourceSortConflict", false),
         UNSUPPORTED_JAVA_CAST("MODEL_SEMANTICS_MISSING:TypeCastExpression",
                 false),
-        MODEL_SEMANTICS_MISSING("MODEL_SEMANTICS_MISSING", false);
+        MODEL_SEMANTICS_MISSING("MODEL_SEMANTICS_MISSING", false),
+
+        // Binary operators.
+        AMBIGUOUS_JAVA_INTEGRAL_UNARY_WIDTH(
+                "AmbiguousJavaIntegralUnaryWidth", false),
+        NON_NUMERIC_OR_UNKNOWN_UNARY("NonNumericOrUnknownUnary", false),
+        MALFORMED_JVM_LCMP_OPERANDS("MalformedJvmLcmpOperands", false),
+        MALFORMED_JVM_FLOATING_COMPARE_OPERANDS(
+                "MalformedJvmFloatingCompareOperands", false),
+        NON_BOOLEAN_LOGIC("NonBooleanLogic", false),
+        BINARY_SORT_CONFLICT("BinarySortConflict", false),
+        NON_NUMERIC_COMPARISON("NonNumericComparison", false),
+        AMBIGUOUS_JAVA_INTEGRAL_BITWISE_WIDTH(
+                "AmbiguousJavaIntegralBitwiseWidth", false),
+        AMBIGUOUS_JAVA_INTEGRAL_SHIFT("AmbiguousJavaIntegralShift", false),
+        NON_NUMERIC_ARITHMETIC("NonNumericArithmetic", false),
+        JAVA_FLOATING_REMAINDER_UNMODELED(
+                "JavaFloatingRemainderUnmodeled", false),
+        JAVA_FLOATING_OPERATOR_UNMODELED(
+                "JavaFloatingOperatorUnmodeled", false),
+        AMBIGUOUS_JAVA_INTEGRAL_BINARY_WIDTH(
+                "AmbiguousJavaIntegralBinaryWidth", false),
+        BINARY_OPERATOR("BinaryOperator", false),
+
+        // Constants.
+        INVALID_JAVA_BOOLEAN_LITERAL("InvalidJavaBooleanLiteral", false),
+        INVALID_NUMERIC_LITERAL("InvalidNumericLiteral", false),
+        UNSUPPORTED_CONSTANT_TYPE("UnsupportedConstantType", false),
+
+        /** A String whose Java nullness this lowering does not know. */
+        JAVA_STRING_NULLNESS_UNKNOWN("JavaStringNullnessUnknown", false),
+
+        /** A term no container cell can carry. */
+        CANNOT_BOX("CannotBox", false),
+
+        // Expression dispatch.
+        ABSENT_EXPRESSION("ABSENT_EXPRESSION", false),
+        MALFORMED_NOT("MalformedNot", false),
+        /** The composer names the type alone; the solver names it too. */
+        UNKNOWN_EXPRESSION_TYPE("", false);
 
         private final String composed;
         private final boolean composedNamesOrigin;
@@ -336,6 +375,35 @@ final class VmTermLowering {
         }
         policy.assertJavaIntRange(integer);
         return integer;
+    }
+
+    /** The conjunction of these predicates, with the trivial ones and the
+     *  outer parentheses of a one-element conjunction removed. */
+    static String and(List<String> terms) {
+        return booleanNary(terms, true);
+    }
+
+    /** The disjunction of these predicates, likewise flattened. */
+    static String or(List<String> terms) {
+        return booleanNary(terms, false);
+    }
+
+    private static String booleanNary(List<String> terms,
+                                      boolean conjunction) {
+        List<String> filtered = new ArrayList<>();
+        for (String term : terms) {
+            String value = term == null ? "" : term.trim();
+            if (value.isEmpty()
+                    || (conjunction ? "true" : "false").equals(value)) continue;
+            if ((conjunction ? "false" : "true").equals(value)) return value;
+            filtered.add(term);
+        }
+        if (filtered.isEmpty()) return conjunction ? "true" : "false";
+        if (filtered.size() == 1) return filtered.get(0);
+        StringBuilder result = new StringBuilder(conjunction
+                ? "(and" : "(or");
+        for (String term : filtered) result.append(' ').append(term);
+        return result.append(')').toString();
     }
 
     /** One lowered value's Java integral domain, as an SMT predicate. */
