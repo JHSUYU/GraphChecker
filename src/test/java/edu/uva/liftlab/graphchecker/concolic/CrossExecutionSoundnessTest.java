@@ -118,6 +118,107 @@ public class CrossExecutionSoundnessTest {
         assertFalse(ConcolicSmtComposer.isLiteralTerm(""));
     }
 
+    /**
+     * A case-private read is not missing its own siblings' writes.
+     *
+     * <p>The nn0 {@code updateKeys()} occurrence is lowered as three local
+     * cases -- the recorded one and the two the clock-root flips produced --
+     * and each of its reads of {@code serialNo} / {@code currentKey} /
+     * {@code nextKey} is lowered inside one of them, with that case as its
+     * activation guard; the consumer merges the three per-case reads over the
+     * occurrence's exactly-one partition.  Asked per read, the gate used to
+     * name the other two cases of every one of the 21 such reads: 42 refusals
+     * of a composition in which each case reads exactly what it wrote.</p>
+     *
+     * <p>The fatal read is the shape the gate is for.  It lives in the target
+     * DataNode's {@code retrieveDataEncryptionKey}, is demanded whichever case
+     * of the target's {@code addKeys} runs, and carries arms from only one of
+     * them -- so the other two really would leave it at its INITIAL map.</p>
+     */
+    @Test
+    public void siblingCasesOfACasePrivateReadAreNotUnlinked() {
+        Set<String> updateKeys = new LinkedHashSet<>(Arrays.asList(
+                "case_selector__c69de9c3", "case_selector__a7c0aa52",
+                "case_selector__dc645336"));
+
+        // The serialNo read lowered inside the recorded case: its siblings
+        // cannot be selected while it is demanded.
+        Set<String> recordedCaseRead = Collections.singleton(
+                "case_selector__c69de9c3");
+        assertTrue(ConcolicSmtComposer.writerCaseExclusiveOfRead(
+                updateKeys, recordedCaseRead, "case_selector__a7c0aa52"));
+        assertTrue(ConcolicSmtComposer.writerCaseExclusiveOfRead(
+                updateKeys, recordedCaseRead, "case_selector__dc645336"));
+
+        // ... and the same read under each flip case.
+        assertTrue(ConcolicSmtComposer.writerCaseExclusiveOfRead(updateKeys,
+                Collections.singleton("case_selector__a7c0aa52"),
+                "case_selector__c69de9c3"));
+        assertTrue(ConcolicSmtComposer.writerCaseExclusiveOfRead(updateKeys,
+                Collections.singleton("case_selector__dc645336"),
+                "case_selector__c69de9c3"));
+
+        // The case that owns the read is never excluded by itself.
+        assertFalse(ConcolicSmtComposer.writerCaseExclusiveOfRead(
+                updateKeys, recordedCaseRead, "case_selector__c69de9c3"));
+
+        // The fatal read: owned by a case of another occurrence, so every
+        // addKeys case has to own an arm of it.
+        Set<String> addKeys = new LinkedHashSet<>(Arrays.asList(
+                "case_selector__6e03d61d", "case_selector__33f0a2fe",
+                "case_selector__385409e3"));
+        assertFalse(ConcolicSmtComposer.writerCaseExclusiveOfRead(addKeys,
+                Collections.singleton("case_selector__44b881f9"),
+                "case_selector__33f0a2fe"));
+
+        // A read demanded under a case of this partition and one outside it
+        // is not private to the partition either.
+        assertFalse(ConcolicSmtComposer.writerCaseExclusiveOfRead(updateKeys,
+                new LinkedHashSet<>(Arrays.asList("case_selector__c69de9c3",
+                        "case_selector__44b881f9")),
+                "case_selector__a7c0aa52"));
+
+        // A read no case claims says nothing, so nothing is excluded: the
+        // fatal read is guarded by a target-path case this map never sees.
+        assertFalse(ConcolicSmtComposer.writerCaseExclusiveOfRead(
+                updateKeys, Collections.<String>emptySet(),
+                "case_selector__a7c0aa52"));
+        assertFalse(ConcolicSmtComposer.writerCaseExclusiveOfRead(
+                updateKeys, null, "case_selector__a7c0aa52"));
+        assertFalse(ConcolicSmtComposer.writerCaseExclusiveOfRead(
+                null, recordedCaseRead, "case_selector__a7c0aa52"));
+    }
+
+    /**
+     * A guard names its case however the case was spelled.
+     *
+     * <p>A case observed in one replay is guarded by its own selector; one
+     * whose observations were kept apart is guarded by each observation, and
+     * a read's guard pairs either with the read selector that reached it.
+     * All three spellings have to answer with the case.</p>
+     */
+    @Test
+    public void everySpellingOfAGuardNamesItsCase() {
+        assertEquals(Collections.singleton("case_selector__a7c0aa52"),
+                ConcolicSmtComposer.caseGuardsIn("case_selector__a7c0aa52"));
+        assertEquals(Collections.singleton("case_observation__66a048ca"),
+                ConcolicSmtComposer.caseGuardsIn(
+                        "case_observation__66a048ca"));
+        assertEquals(Collections.singleton("case_observation__66a048ca"),
+                ConcolicSmtComposer.caseGuardsIn(
+                        "(and case_observation__66a048ca"
+                                + " read_selector__7e4fb6f2)"));
+        assertEquals(new LinkedHashSet<>(Arrays.asList(
+                        "case_selector__a7c0aa52",
+                        "case_observation__66a048ca")),
+                ConcolicSmtComposer.caseGuardsIn(
+                        "(or case_selector__a7c0aa52"
+                                + " case_observation__66a048ca)"));
+        assertTrue(ConcolicSmtComposer.caseGuardsIn(
+                "read_selector__7e4fb6f2").isEmpty());
+        assertTrue(ConcolicSmtComposer.caseGuardsIn(null).isEmpty());
+    }
+
     /** The node an occurrence names is the side of the wire it sits on. */
     @Test
     public void occurrenceNamesItsNode() {

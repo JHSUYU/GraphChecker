@@ -353,10 +353,20 @@ public final class ConcolicSmtComposer {
      * every writer arm inactive and the read falls to INITIAL as if that case
      * had not written -- while its own evidence says it did.  The gate names
      * that case instead of letting the default stand in for its write.</p>
+     *
+     * <p>A read the writer region performs on itself is the exception: it is
+     * lowered once per local case and merged over the occurrence's
+     * exactly-one partition, so it does not exist under its own siblings and
+     * no sibling can leave it at INITIAL.  {@link
+     * #writerCaseExclusiveOfRead} decides that, and such a row is recorded
+     * with {@code refused: false} rather than refused.</p>
      */
     public static final String GUARDED_READ_WRITER_CASE_UNLINKED =
             "GUARDED_READ_WRITER_CASE_UNLINKED";
-    /** One row per (read, unlinked writer case). */
+    /**
+     * One row per (read, unlinked writer case); {@code refused} says whether
+     * the row also refused the composition.
+     */
     public static final String UNLINKED_WRITER_CASES_FIELD =
             "unlinkedWriterCases";
     public static final String PATH_SET_COMPLETE = "pathSetComplete";
@@ -1249,6 +1259,38 @@ public final class ConcolicSmtComposer {
     }
 
     /**
+     * Whether one writer case can never be selected while a read is demanded.
+     *
+     * <p>A region case is lowered once per local case, and a read the region
+     * itself performs is lowered inside that case: it gets its own read
+     * identity, its own arms and an activation guard that is the case it
+     * belongs to, and the consumer merges the per-case reads with an
+     * {@code ite} over the occurrence's exactly-one partition. Such a read
+     * does not exist under its partition siblings, so a sibling that wrote the
+     * location cannot leave <em>this</em> read at INITIAL -- selecting the
+     * sibling selects the sibling's own read of the same location, which does
+     * carry the write. Asking the unlinked-writer question per read rather
+     * than per case therefore names every sibling of every case-private read,
+     * which is the whole partition minus one, and refuses a composition that
+     * represents each case correctly.</p>
+     *
+     * <p>The exclusion holds only when the read belongs to this partition and
+     * to nothing else. A read of the same location from another region -- the
+     * fatal read over a map another occurrence fills, say -- is demanded no
+     * matter which case of the writer runs, so every case of that partition
+     * has to own an arm of it and a missing one is a real gap.</p>
+     */
+    static boolean writerCaseExclusiveOfRead(Collection<String> partition,
+                                             Collection<String> readCases,
+                                             String caseSelector) {
+        if (partition == null || readCases == null || readCases.isEmpty()) {
+            return false;
+        }
+        return partition.containsAll(readCases)
+                && !readCases.contains(caseSelector);
+    }
+
+    /**
      * The declared ports whose flow reached no term, over a whole ledger.
      *
      * <p>The ledger has one row per boundary family and a flow has as many
@@ -1731,6 +1773,29 @@ public final class ConcolicSmtComposer {
     /** Every case selector a request-fault control assertion names. */
     private static final Pattern CASE_SELECTOR_SYMBOL =
             Pattern.compile("case_selector__[A-Za-z0-9_]+");
+
+    /** Every case name a guard can be written in terms of. */
+    private static final Pattern CASE_GUARD_SYMBOL = Pattern.compile(
+            "case_(?:selector|observation)__[A-Za-z0-9_]+");
+
+    /**
+     * The case names one activation guard is written in terms of.
+     *
+     * <p>A guard is either a case name on its own or a conjunction of one
+     * with the read selector that reached it, so the names are read out of
+     * the text rather than tracked alongside it.</p>
+     *
+     * Pure encoding shared by final composition and focused regression tests.
+     */
+    static Set<String> caseGuardsIn(String activation) {
+        Set<String> names = new LinkedHashSet<>();
+        if (activation == null) return names;
+        Matcher matcher = CASE_GUARD_SYMBOL.matcher(activation);
+        while (matcher.find()) {
+            names.add(matcher.group());
+        }
+        return names;
+    }
 
     /**
      * The case selectors this formula lets a fault marker decide.
@@ -2818,11 +2883,39 @@ public final class ConcolicSmtComposer {
         }
 
         /**
+         * The region cases one read is activated under, as base cases.
+         *
+         * <p>A read lowered inside a local case is guarded by that case, or
+         * -- where the case was observed in several replays and kept its
+         * per-observation guards -- by each of that case's observations.
+         * Both spellings answer the same question, so the observations are
+         * folded back onto the case they belong to.</p>
+         */
+        private Set<String> readActivationCases(
+                String read, Map<String, String> baseCaseByObservation) {
+            Set<String> cases = new LinkedHashSet<>();
+            for (String activation : guardedReadActivations.getOrDefault(
+                    read, Collections.<String>emptySet())) {
+                for (String name : caseGuardsIn(activation)) {
+                    cases.add(baseCaseByObservation.getOrDefault(name, name));
+                }
+            }
+            return cases;
+        }
+
+        /**
          * Refuses every writer case that recorded a write to a read's
          * location and owns no arm of the read; see {@link
          * ConcolicSmtComposer#GUARDED_READ_WRITER_CASE_UNLINKED}.
          */
         private void checkUnlinkedWriterCases() {
+            Map<String, String> baseCaseByObservation = new LinkedHashMap<>();
+            for (Map.Entry<String, Set<String>> entry
+                    : observationsByBaseCase.entrySet()) {
+                for (String observation : entry.getValue()) {
+                    baseCaseByObservation.put(observation, entry.getKey());
+                }
+            }
             for (Map.Entry<String, Set<InvocationKey>> entry
                     : guardedReadWriterInvocations.entrySet()) {
                 String read = entry.getKey();
@@ -2830,6 +2923,8 @@ public final class ConcolicSmtComposer {
                 if (location.isEmpty()) continue;
                 Set<String> linked = guardedReadWriterSelectors.getOrDefault(
                         read, Collections.emptySet());
+                Set<String> readCases = readActivationCases(read,
+                        baseCaseByObservation);
                 for (InvocationKey writer : entry.getValue()) {
                     Set<String> partition = casePartitions.get(writer);
                     if (partition == null) continue;
@@ -2840,8 +2935,10 @@ public final class ConcolicSmtComposer {
                         if (written == null || !written.contains(location)) {
                             continue;
                         }
+                        boolean exclusive = writerCaseExclusiveOfRead(
+                                partition, readCases, caseSelector);
                         JsonObject row = new JsonObject();
-                        row.addProperty("schemaVersion", 1);
+                        row.addProperty("schemaVersion", 2);
                         row.addProperty("kind",
                                 GUARDED_READ_WRITER_CASE_UNLINKED);
                         row.addProperty("readIdentity", read);
@@ -2852,7 +2949,11 @@ public final class ConcolicSmtComposer {
                         row.addProperty("caseSelector", caseSelector);
                         row.add("linkedCaseSelectors",
                                 GSON.toJsonTree(linked));
+                        row.add("readActivationCases",
+                                GSON.toJsonTree(readCases));
+                        row.addProperty("refused", !exclusive);
                         unlinkedWriterCases.add(row);
+                        if (exclusive) continue;
                         refuse(GUARDED_READ_WRITER_CASE_UNLINKED + "["
                                         + read + ":" + caseSelector + "]",
                                 "case " + caseSelector + " of writer "
