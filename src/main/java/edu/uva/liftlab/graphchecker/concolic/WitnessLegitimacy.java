@@ -102,6 +102,55 @@ public final class WitnessLegitimacy {
      * satisfied by something else and the clock is along for the ride.
      */
     public static final String CLOCK_NOT_NECESSARY = "CLOCK_NOT_NECESSARY";
+    /**
+     * A wall clock moved and no probe said whether the move was needed.
+     *
+     * <p>Necessity is the whole content of a clock mechanism: an
+     * unconstrained clock differs from its recording under every model, so
+     * "it moved" is a property of the solver rather than of the program.
+     * A probe that never ran leaves that question open, and an open question
+     * is not a mechanism.  This is the freedom that used to be spent as one:
+     * {@code ClockNecessity.UNKNOWN} was accepted, and on hdfs-17899-bug3
+     * forty clock moves -- the largest 294,961ms against a 300,000ms
+     * window -- were published as the witness's mechanism with no probe
+     * behind any of them.</p>
+     */
+    public static final String CLOCK_NECESSITY_UNKNOWN =
+            "CLOCK_NECESSITY_UNKNOWN";
+
+    /**
+     * The four shapes a satisfying witness may be a finding in.
+     *
+     * <p>A witness is a finding only where it names one of these, and it
+     * names exactly one: the mechanism list may hold several rows, but the
+     * claim the campaign publishes is one sentence about one mechanism, and
+     * an empty list is not a finding at all.</p>
+     *
+     * <ul>
+     *   <li>{@link #MARKER_FLIPPED} -- a Boolean root moved off the value it
+     *   recorded and the fatal predicate is satisfied there.</li>
+     *   <li>{@link #ROTATION_RACE} -- the recorded write order states the
+     *   race, as {@link RecordedOrderRace} defines it.</li>
+     *   <li>{@link #CLOCK_SKEW} -- a wall clock moved inside the declared
+     *   window <em>and</em> the necessity probe showed the target does not
+     *   reach with the clocks back on record.</li>
+     *   <li>{@link #RECORDED_FAILURE_EXPLAINED} -- the fatal predicate is
+     *   satisfied with every declared root at the value it recorded, and the
+     *   other polarity of each Boolean root is unsat: the recording is the
+     *   failing run and the chain shows it is root-determined.  HDFS-17960
+     *   is this shape.</li>
+     * </ul>
+     *
+     * <p>Where two apply the first of that list is published, because a
+     * flipped marker is a stronger statement than a clock that accompanied
+     * it; every mechanism the witness named stays on the row beside it.</p>
+     */
+    public static final String ROTATION_RACE = RecordedOrderRace.KIND;
+    /** The recorded valuation is the failing one, and the flip is unsat. */
+    public static final String RECORDED_FAILURE_EXPLAINED =
+            "RECORDED_FAILURE_EXPLAINED";
+    /** Where a classified witness publishes which of the four it is. */
+    public static final String FINDING_KIND = "findingKind";
 
     /** What the necessity probe said about this witness's clock group. */
     public enum ClockNecessity {
@@ -225,7 +274,7 @@ public final class WitnessLegitimacy {
                                       List<Freedom> composition,
                                       JsonArray markerAssignment) {
         return classify(valuation, ordinal, windowMillis, composition,
-                markerAssignment, ClockNecessity.UNKNOWN);
+                markerAssignment, ClockNecessity.UNKNOWN, false);
     }
 
     /**
@@ -246,6 +295,30 @@ public final class WitnessLegitimacy {
                                       List<Freedom> composition,
                                       JsonArray markerAssignment,
                                       ClockNecessity clockNecessity) {
+        return classify(valuation, ordinal, windowMillis, composition,
+                markerAssignment, clockNecessity, false);
+    }
+
+    /**
+     * Reads one valuation's witness against the legitimate set.
+     *
+     * @param recordedFailureExplained whether the composition showed this
+     *                                 run's recorded valuation is the failing
+     *                                 one -- satisfied with every declared
+     *                                 root where the recording left it, and
+     *                                 unsat under every enumerated flip of
+     *                                 one.  It is a fact about the run and
+     *                                 not about this row, so it is decided
+     *                                 once by {@link ClaimPolicy} and handed
+     *                                 down; a row that moved nothing is the
+     *                                 only one it applies to.
+     */
+    public static JsonObject classify(JsonObject valuation, int ordinal,
+                                      long windowMillis,
+                                      List<Freedom> composition,
+                                      JsonArray markerAssignment,
+                                      ClockNecessity clockNecessity,
+                                      boolean recordedFailureExplained) {
         JsonObject row = new JsonObject();
         row.addProperty("schemaVersion", 1);
         row.addProperty("kind", KIND);
@@ -289,8 +362,12 @@ public final class WitnessLegitimacy {
             row.addProperty("verdict", EXPLAINED);
             row.add("mechanisms", legitimate);
             row.add("freedoms", new JsonArray());
+            // Only a satisfying valuation can be a finding, so the kind is
+            // stated empty rather than left off: an absent field would read
+            // as an artifact nobody classified.
+            row.addProperty(FINDING_KIND, "");
             row.addProperty("narrative", markerPrefix(flipped, assignment)
-                    + narrative(status, legitimate, freedoms));
+                    + narrative(status, legitimate, freedoms, ""));
             return row;
         }
         freedoms.addAll(composition == null
@@ -327,9 +404,51 @@ public final class WitnessLegitimacy {
             freedomRows.add(freedom.toJson());
         }
         row.add("freedoms", freedomRows);
+        String kind = findingKind(legitimate, flipped, assignment,
+                recordedFailureExplained);
+        row.addProperty(FINDING_KIND, kind);
         row.addProperty("narrative", markerPrefix(flipped, assignment)
-                + narrative(status, legitimate, freedoms));
+                + narrative(status, legitimate, freedoms, kind));
         return row;
+    }
+
+    /**
+     * Which of the four shapes this satisfying witness is, or {@code ""}.
+     *
+     * <p>Only a mechanism that survived {@link #refuse} counts, so a clock
+     * the necessity probe did not answer for is not a {@link #CLOCK_SKEW}
+     * finding and a flip measured against a value nobody recorded is not a
+     * {@link #MARKER_FLIPPED} one -- an unstated marker never reaches
+     * {@code flipped} at all.  An empty answer is the refusal: the witness
+     * satisfies the formula and names nothing the world does.</p>
+     */
+    private static String findingKind(JsonArray legitimate, JsonArray flipped,
+                                      JsonArray assignment,
+                                      boolean recordedFailureExplained) {
+        if (flipped.size() > 0 && namesKind(legitimate, MARKER_FLIPPED)) {
+            return MARKER_FLIPPED;
+        }
+        if (namesKind(legitimate, ROTATION_RACE)) {
+            return ROTATION_RACE;
+        }
+        if (namesKind(legitimate, CLOCK_SKEW)) {
+            return CLOCK_SKEW;
+        }
+        if (recordedFailureExplained && flipped.size() == 0
+                && everyRecordedPolarityStated(assignment)) {
+            return RECORDED_FAILURE_EXPLAINED;
+        }
+        return "";
+    }
+
+    private static boolean namesKind(JsonArray mechanisms, String kind) {
+        for (JsonElement element : mechanisms) {
+            if (element.isJsonObject() && kind.equals(optionalString(
+                    element.getAsJsonObject(), "kind"))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** Whether every marker here was compared against a recorded value. */
@@ -375,17 +494,6 @@ public final class WitnessLegitimacy {
             if (!occurrence.isEmpty()) {
                 text.append(" at ").append(occurrence);
             }
-            // A flip is a comparison, and a comparison against a value
-            // nobody recorded is a guess. Said here rather than left for a
-            // reader to find in the marker row.
-            if (!marker.has("recordedPolarityStated")
-                    || !marker.get("recordedPolarityStated").getAsBoolean()) {
-                text.append(" off an unstated recorded value (assumed ")
-                        .append(!marker.has("recordedPolarity")
-                                || marker.get("recordedPolarity")
-                                .getAsBoolean())
-                        .append(")");
-            }
         }
         return text.append("; ").toString();
     }
@@ -402,7 +510,7 @@ public final class WitnessLegitimacy {
      */
     private static String recordedPrefix(JsonArray assignment) {
         if (!everyRecordedPolarityStated(assignment)) {
-            return "";
+            return unstatedPrefix(assignment);
         }
         StringBuilder text = new StringBuilder(
                 "every declared root at its recorded value (");
@@ -416,6 +524,33 @@ public final class WitnessLegitimacy {
                             && marker.get("value").getAsBoolean());
         }
         return text.append("); ").toString();
+    }
+
+    /**
+     * The front of a narrative no recorded value can be read against.
+     *
+     * <p>Saying nothing here is what let a run whose roots nobody recorded
+     * read exactly like a run that reproduced its recording.  The roots are
+     * named instead, and nothing is assumed about what they held.</p>
+     */
+    private static String unstatedPrefix(JsonArray assignment) {
+        List<String> unstated = new ArrayList<>();
+        for (JsonElement element : assignment) {
+            if (!element.isJsonObject()) {
+                continue;
+            }
+            JsonObject marker = element.getAsJsonObject();
+            if (!marker.has("recordedPolarityStated")
+                    || !marker.get("recordedPolarityStated").getAsBoolean()) {
+                unstated.add(name(marker));
+            }
+        }
+        if (unstated.isEmpty()) {
+            return "";
+        }
+        return "no recorded value is stated for " + unstated.size()
+                + " declared root(s) (" + String.join(", ", unstated)
+                + "), so nothing here is a flip or a reproduction; ";
     }
 
     /** How a marker row names itself. */
@@ -478,6 +613,18 @@ public final class WitnessLegitimacy {
                                 + " move is in no conjunct this witness"
                                 + " needs");
             }
+            // No probe answered.  "It moved" is then all that is known, and
+            // that much is true of every unconstrained clock under every
+            // model: nothing here says the program could have done it.
+            if (clockNecessity != ClockNecessity.NECESSARY) {
+                return new Freedom(CLOCK_NECESSITY_UNKNOWN, where,
+                        "a clock read " + optionalString(mechanism,
+                                "witnessValue") + " where it recorded "
+                                + optionalString(mechanism, "recordedValue")
+                                + ", and no necessity probe answered for this"
+                                + " witness's clock group, so nothing shows"
+                                + " the target needed the move");
+            }
             return null;
         }
         return new Freedom(UNEXPLAINED_ROOT_MOVE, where,
@@ -509,7 +656,8 @@ public final class WitnessLegitimacy {
 
     /** One sentence a reader can put in a report. */
     private static String narrative(String status, JsonArray legitimate,
-                                    List<Freedom> freedoms) {
+                                    List<Freedom> freedoms,
+                                    String findingKind) {
         if (!"sat".equals(status)) {
             return "unsat".equals(status)
                     ? "no witness: the target is unreachable under this"
@@ -519,7 +667,12 @@ public final class WitnessLegitimacy {
         }
         StringBuilder text = new StringBuilder();
         if (legitimate.size() == 0) {
-            text.append("sat with no root moved off its recorded value");
+            // "No root moved off its recorded value" is a claim about the
+            // recording, and a witness whose roots nobody recorded cannot
+            // make it; the prefix above has already named those roots.
+            text.append(RECORDED_FAILURE_EXPLAINED.equals(findingKind)
+                    ? "sat with every root at the value it recorded"
+                    : "sat with no mechanism named");
         } else {
             // Named once each, with a count: a witness that moved ten clocks
             // on one node is one statement about that node, and repeating the
@@ -558,7 +711,13 @@ public final class WitnessLegitimacy {
             }
         }
         if (freedoms.isEmpty()) {
-            text.append("; finding");
+            // A finding is a finding of something.  An explained witness
+            // that names no kind is the case the ruling refuses, and the
+            // narrative says which of the two it is rather than printing
+            // "finding" over an empty mechanism list.
+            text.append(findingKind == null || findingKind.isEmpty()
+                    ? "; no named mechanism, so not a finding"
+                    : "; finding: " + findingKind);
         } else {
             text.append("; unexplained freedom: ");
             for (int index = 0; index < freedoms.size(); index++) {

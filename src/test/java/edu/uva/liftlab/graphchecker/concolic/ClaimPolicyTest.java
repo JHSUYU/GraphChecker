@@ -198,7 +198,9 @@ public class ClaimPolicyTest {
         JsonObject claim = ClaimPolicy.decide(manifest(), reach, noFlows());
 
         assertEquals(codes(ClaimPolicy.TARGET_UNCONSTRAINED_BY_ROOTS,
-                ClaimPolicy.WITNESS_FREEDOM_UNEXPLAINED), codes(claim));
+                ClaimPolicy.FAULT_MARKER_NOT_DETERMINING,
+                ClaimPolicy.WITNESS_FREEDOM_UNEXPLAINED,
+                ClaimPolicy.FINDING_MECHANISM_UNNAMED), codes(claim));
         assertFalse(claim.getAsJsonObject("rootSpace").get("faultSensitive")
                 .getAsBoolean());
         assertEquals(WitnessLegitimacy.UNEXPLAINED_ROOT_MOVE,
@@ -207,15 +209,17 @@ public class ClaimPolicyTest {
     }
 
     /**
-     * The same shape with nothing unexplained in it is a finding.
+     * A witness with nothing unexplained in it, and nothing named either.
      *
-     * <p>No root flips the target, so the campaign cannot say the fault
-     * decided it -- but the witness moved nothing the recording does not
-     * allow, and withholding it discards a real statement about the program.
-     * The row is reported under its own name instead of blocking.</p>
+     * <p>No root flips the target and the witness names no mechanism, so
+     * there is no way the program could have done it to report: the
+     * valuation is satisfiable and that is all it is. "Nothing unexplained"
+     * used to be enough to publish it as a finding, which is how a sat
+     * answer with an empty mechanism list became an accepted claim. The
+     * freedom findings are still reported; the claim is not.</p>
      */
     @Test
-    public void anExplainedWitnessWithNoRootFlipIsAFinding() {
+    public void anExplainedWitnessThatNamesNoMechanismIsNotAFinding() {
         JsonObject reach = reach();
         reach.add("valuations", parseArray(
                 "[{\"values\":[false],\"status\":\"sat\"},"
@@ -223,8 +227,13 @@ public class ClaimPolicyTest {
 
         JsonObject claim = ClaimPolicy.decide(manifest(), reach, noFlows());
 
-        assertEquals(ClaimPolicy.SAT_CANDIDATE,
+        assertEquals(ClaimPolicy.INCONCLUSIVE_PARTIAL,
                 claim.get("claim").getAsString());
+        assertEquals("NO_MECHANISM",
+                blocker(claim, ClaimPolicy.FINDING_MECHANISM_UNNAMED)
+                        .get("subject").getAsString());
+        assertEquals("", claim.getAsJsonObject("rootSpace")
+                .get("acceptedFindingKind").getAsString());
         assertEquals(ClaimPolicy.TARGET_UNCONSTRAINED_BY_ROOTS,
                 finding(claim, ClaimPolicy.TARGET_UNCONSTRAINED_BY_ROOTS)
                         .get("code").getAsString());
@@ -236,8 +245,14 @@ public class ClaimPolicyTest {
     @Test
     public void rejectedPerturbationMakesTheWitnessFaultSensitive() {
         JsonObject reach = reach();
+        // Both polarities sat, so the recorded valuation is not the finding;
+        // the race the recorded write order states is what this witness
+        // names, and a witness has to name something to be a finding.
         reach.add("valuations", parseArray(
-                "[{\"values\":[false],\"status\":\"sat\"},"
+                "[{\"values\":[false],\"status\":\"sat\","
+                        + "\"witnessMechanisms\":[{"
+                        + "\"kind\":\"ROTATION_RACE\","
+                        + "\"sessionLocationKey\":\"MAP_STATE/100#-3\"}]},"
                         + "{\"values\":[true],\"status\":\"sat\"}]"));
         reach.add("existentialRootProbe", parse(
                 "{\"constrainsRootSpace\":true}"));
@@ -468,8 +483,8 @@ public class ClaimPolicyTest {
 
         JsonObject claim = ClaimPolicy.decide(manifest(), reach, noFlows());
 
-        assertEquals(codes(ClaimPolicy.SOLVER_UNDECIDED_VALUATIONS),
-                codes(claim));
+        assertEquals(codes(ClaimPolicy.FINDING_MECHANISM_UNNAMED,
+                ClaimPolicy.SOLVER_UNDECIDED_VALUATIONS), codes(claim));
         assertEquals("1", blocker(claim,
                 ClaimPolicy.SOLVER_UNDECIDED_VALUATIONS).get("subject")
                 .getAsString());
@@ -509,14 +524,18 @@ public class ClaimPolicyTest {
                 .getAsString());
         assertEquals(codes(ClaimPolicy.UNDECIDED_ROOT_SPACE,
                 ClaimPolicy.TARGET_UNCONSTRAINED_BY_ROOTS,
-                ClaimPolicy.DECLARED_WIRE_FLOWS_UNREALIZED), codes(claim));
-        assertEquals(4, lines.length);
-        assertTrue(lines[0].contains("3 blocker(s) withhold acceptance"));
+                ClaimPolicy.DECLARED_WIRE_FLOWS_UNREALIZED,
+                ClaimPolicy.FAULT_MARKER_NOT_DETERMINING,
+                ClaimPolicy.FINDING_MECHANISM_UNNAMED), codes(claim));
+        assertEquals(6, lines.length);
+        assertTrue(lines[0].contains("5 blocker(s) withhold acceptance"));
         assertTrue(lines[1].contains(ClaimPolicy.UNDECIDED_ROOT_SPACE));
         assertTrue(lines[2].contains(
                 ClaimPolicy.TARGET_UNCONSTRAINED_BY_ROOTS));
         assertTrue(lines[3].contains(
                 ClaimPolicy.DECLARED_WIRE_FLOWS_UNREALIZED));
+        assertTrue(lines[5].contains(
+                ClaimPolicy.FINDING_MECHANISM_UNNAMED));
     }
 
     /** Only WIRE_FLOW rows are declared flows; no mapping file is none. */
@@ -730,8 +749,26 @@ public class ClaimPolicyTest {
                 + "\"valuations\":[{\"values\":[],\"status\":\"sat\"}]}");
     }
 
+    /** The root the base fixture enumerates, and what it recorded. */
+    private static final String BASE_TERM = "sym__base__1";
+    private static final String BASE_SOURCE = "HDFS.CONFIG.BASE";
+    private static final String BASE_FIELD =
+            "<org.apache.hadoop.Base: boolean enabled>";
+
+    /**
+     * A composition whose one declared root states what it recorded.
+     *
+     * <p>The base fixture used to enumerate a {@code values} vector with no
+     * {@code roots.booleanInputs} behind it, so every test written on it
+     * asked the gate about a witness over roots the report never declared.
+     * That is not a shape a run has: the extractor builds the vector from
+     * the root list. Declaring the root -- a configured source, recorded
+     * {@code false}, the HDFS-17960 shape -- is what makes the fixture the
+     * run it claims to be, and it is what lets the base case name a finding
+     * kind at all.</p>
+     */
     private static JsonObject manifest() {
-        return parse("{\"schemaVersion\":2,"
+        JsonObject manifest = parse("{\"schemaVersion\":2,"
                 + "\"kind\":\"CONCOLIC_COMPOSED_SMT\","
                 + "\"state\":\"CANDIDATE_READY\","
                 + "\"finalStatus\":\"FINAL_READY\","
@@ -740,11 +777,17 @@ public class ClaimPolicyTest {
                 + "\"casePathConditionDependencies\":[],"
                 + "\"guardedReadModelComplete\":true,"
                 + "\"gaps\":[]}");
+        manifest.add(ConcolicSmtComposer.RECORDED_ROOT_VALUES, parseArray(
+                "[{\"solverTerm\":\"" + BASE_TERM + "\","
+                + "\"sourceId\":\"" + BASE_SOURCE + "\","
+                + "\"siteId\":\"" + BASE_FIELD + "\","
+                + "\"recordedValue\":\"false\",\"wallClock\":false}]"));
+        return manifest;
     }
 
     /** A REACHABLE report whose single Boolean root decides the target. */
     private static JsonObject reach() {
-        return parse("{\"schemaVersion\":4,"
+        JsonObject reach = parse("{\"schemaVersion\":4,"
                 + "\"kind\":\"BOOLEAN_REACH_CONDITION_REPORT\","
                 + "\"state\":\"CANDIDATE_READY\","
                 + "\"unsatClosureComplete\":true,"
@@ -755,6 +798,15 @@ public class ClaimPolicyTest {
                 + "\"valuations\":["
                 + "{\"values\":[false],\"status\":\"sat\"},"
                 + "{\"values\":[true],\"status\":\"unsat\"}]}");
+        reach.add("roots", parse(
+                "{\"booleanInputs\":["
+                + "{\"inputKind\":\"CONFIGURED_SOURCE_FIELD\","
+                + "\"sourceId\":\"" + BASE_SOURCE + "\","
+                + "\"fieldSignature\":\"" + BASE_FIELD + "\","
+                + "\"javaTypeDescriptor\":\"Z\","
+                + "\"solverTerm\":\"" + BASE_TERM + "\"}],"
+                + "\"existentialInputs\":[]}"));
+        return reach;
     }
 
     private static JsonObject refutation(boolean closed) {
@@ -965,6 +1017,9 @@ public class ClaimPolicyTest {
                         .contains("CLOCK_SKEW"));
         assertEquals(WitnessLegitimacy.EXPLAINED,
                 witnessFinding(claim, 0).get("verdict").getAsString());
+        assertEquals(WitnessLegitimacy.CLOCK_SKEW,
+                witnessFinding(claim, 0).get(WitnessLegitimacy.FINDING_KIND)
+                        .getAsString());
     }
 
     /**
@@ -1112,7 +1167,7 @@ public class ClaimPolicyTest {
      * decides nothing.</p>
      */
     @Test
-    public void interiorClockSkewOnTheOtherPolarityIsALegitimateFinding() {
+    public void interiorClockSkewShownNecessaryIsALegitimateFinding() {
         JsonObject claim = ClaimPolicy.decide(markerManifest(),
                 markerReach(true, "245021"), noFlows());
 
@@ -1120,11 +1175,64 @@ public class ClaimPolicyTest {
                 claim.get("claim").getAsString());
         assertEquals(1, markerRow(claim)
                 .getAsJsonArray("otherPolarityMechanisms").size());
-        assertEquals("no necessity row is needed to accept the run",
-                0, markerRow(claim).getAsJsonArray("necessaryMechanisms")
-                        .size());
         assertEquals(WitnessLegitimacy.EXPLAINED,
                 witnessFinding(claim, 0).get("verdict").getAsString());
+        assertEquals(WitnessLegitimacy.CLOCK_SKEW,
+                witnessFinding(claim, 0).get(WitnessLegitimacy.FINDING_KIND)
+                        .getAsString());
+    }
+
+    /**
+     * The same skew with the probe saying the target reaches without it.
+     *
+     * <p>Every unconstrained clock differs from its recording under every
+     * model: a solver parks a free root wherever the window lets it. The
+     * mechanism is the move being <em>needed</em>, and a probe that says it
+     * was not turns the move back into freedom.</p>
+     */
+    @Test
+    public void aClockTheTargetReachesWithoutIsNotAMechanism() {
+        JsonObject reach = markerReach(true, "245021");
+        reach.add(BooleanReachConditionExtractor.MECHANISM_NECESSITY,
+                clockNecessity(0, false));
+
+        JsonObject claim = ClaimPolicy.decide(markerManifest(), reach,
+                noFlows());
+
+        assertEquals(ClaimPolicy.INCONCLUSIVE_PARTIAL,
+                claim.get("claim").getAsString());
+        assertEquals(WitnessLegitimacy.CLOCK_NOT_NECESSARY,
+                blocker(claim, ClaimPolicy.WITNESS_FREEDOM_UNEXPLAINED)
+                        .get("subject").getAsString());
+        assertEquals(WitnessLegitimacy.UNEXPLAINED,
+                witnessFinding(claim, 0).get("verdict").getAsString());
+        assertEquals("", witnessFinding(claim, 0)
+                .get(WitnessLegitimacy.FINDING_KIND).getAsString());
+    }
+
+    /**
+     * A clock nobody probed is not a mechanism either.
+     *
+     * <p>The probe used to publish its rows without a {@code
+     * valuationOrdinal}, so the map keyed by ordinal was always empty and
+     * every clock group read as {@code UNKNOWN} -- which was accepted.
+     * hdfs-17899-bug3 published forty clock moves as its witness's mechanism
+     * that way, the largest 294,961ms against a 300,000ms window, with the
+     * probe's own answers sitting unread in the report.</p>
+     */
+    @Test
+    public void aClockNobodyProbedIsNotAMechanism() {
+        JsonObject reach = markerReach(true, "245021");
+        reach.remove(BooleanReachConditionExtractor.MECHANISM_NECESSITY);
+
+        JsonObject claim = ClaimPolicy.decide(markerManifest(), reach,
+                noFlows());
+
+        assertEquals(ClaimPolicy.INCONCLUSIVE_PARTIAL,
+                claim.get("claim").getAsString());
+        assertEquals(WitnessLegitimacy.CLOCK_NECESSITY_UNKNOWN,
+                blocker(claim, ClaimPolicy.WITNESS_FREEDOM_UNEXPLAINED)
+                        .get("subject").getAsString());
     }
 
     /** The necessity probe is still published, for a reader to weigh. */
@@ -1137,6 +1245,7 @@ public class ClaimPolicyTest {
                 + "\"authority\":\"RECORDED_ROOT_PIN_V1\","
                 + "\"mechanisms\":[{\"marker\":\"manual__fault\","
                 + "\"polarity\":false,\"mechanism\":\"CLOCK_SKEW\","
+                + "\"valuationOrdinal\":0,"
                 + "\"pinnedRoots\":4,\"status\":\"unsat\","
                 + "\"necessary\":true}]}"));
 
@@ -1482,19 +1591,31 @@ public class ClaimPolicyTest {
                 .getAsBoolean());
     }
 
-    /** A manifest that does state one is the authority; the plan is backup. */
+    /** A plan that agrees with the manifest states the same one reading. */
     @Test
-    public void theManifestsRecordedValueWinsOverThePlans() throws IOException {
+    public void aManifestAndPlanAgreementIsOneReading() throws IOException {
         JsonObject claim = ClaimPolicy.decide(markerManifest(),
-                markerReach(true, "-300000"), planWith("true"));
+                markerReach(true, "-300000"), planWith("false"));
+        JsonObject marker = markerRow(claim);
 
-        assertFalse("the manifest says false",
-                markerRow(claim).get("recordedPolarity").getAsBoolean());
+        assertTrue(marker.get("recordedPolarityStated").getAsBoolean());
+        assertFalse("both say false",
+                marker.get("recordedPolarity").getAsBoolean());
+        assertEquals("false", marker.get("recordedValue").getAsString());
     }
 
-    /** With neither stating one, the polarity reads as true and says so. */
+    /**
+     * With nothing stating one, there is no polarity and the run says so.
+     *
+     * <p>The default this replaced read an unstated root as {@code true},
+     * which made every witness at {@code false} a flip -- and that is the
+     * whole of HDFS-17960's accepted finding on the laneX artifact: an
+     * empty {@code recordedRootValues}, {@code recordedPolarityStated:false},
+     * a witness value of {@code false}, {@code flipped:true}, and an empty
+     * mechanism list under the reason "a symbolic root flips it".</p>
+     */
     @Test
-    public void anUnstatedRecordedValueIsMarkedAsUnstated() {
+    public void anUnstatedRecordedValueBlocksTheClaim() {
         JsonObject manifest = markerManifest();
         manifest.add(ConcolicSmtComposer.RECORDED_ROOT_VALUES,
                 new JsonArray());
@@ -1503,8 +1624,21 @@ public class ClaimPolicyTest {
                 markerReach(true, "-300000"), noFlows());
 
         JsonObject marker = markerRow(claim);
-        assertTrue(marker.get("recordedPolarity").getAsBoolean());
+        assertEquals(ClaimPolicy.INCONCLUSIVE_PARTIAL,
+                claim.get("claim").getAsString());
         assertFalse(marker.get("recordedPolarityStated").getAsBoolean());
+        assertFalse("no polarity is invented",
+                marker.has("recordedPolarity"));
+        assertEquals("MANUAL.fault", blocker(claim,
+                ClaimPolicy.RECORDED_ROOT_VALUE_UNSTATED)
+                .get("subject").getAsString());
+        for (JsonElement element
+                : claim.getAsJsonArray(WitnessLegitimacy.FINDINGS)) {
+            assertFalse("nothing is a flip against a value nobody stated",
+                    element.getAsJsonObject().getAsJsonArray(
+                            "markerAssignment").get(0).getAsJsonObject()
+                            .has("flipped"));
+        }
     }
 
     // ---------------------------------------------------------------
@@ -1546,19 +1680,58 @@ public class ClaimPolicyTest {
                 marker.get("occurrenceId").getAsString());
     }
 
-    /** The recorded-root ledger stays the authority where it states one. */
+    /**
+     * Two sources naming different values state no value at all.
+     *
+     * <p>The ledger used to outrank the materialization row, so a
+     * contradiction between them was published as one of the two readings
+     * and the other vanished. Neither is a reading of the recording once
+     * they disagree: the run says so, names both, and withholds the claim.
+     * </p>
+     */
     @Test
-    public void theRecordedRootLedgerOutranksTheMaterializationRow() {
+    public void aLedgerAndMaterializationDisagreementIsABlocker() {
         JsonObject manifest = orderedManifest("false");
         manifest.add(ConcolicSmtComposer.RECORDED_ROOT_VALUES, parseArray(
                 "[{\"solverTerm\":\"" + ORDERED_TERM + "\","
                 + "\"recordedValue\":\"true\",\"wallClock\":false,"
                 + "\"siteId\":\"" + ORDERED_FIELD + "\"}]"));
 
-        assertTrue("the ledger says true",
-                markerRow(ClaimPolicy.decide(manifest,
-                        orderedReach("sat", "unsat"), noFlows()))
-                        .get("recordedPolarity").getAsBoolean());
+        JsonObject claim = ClaimPolicy.decide(manifest,
+                orderedReach("sat", "unsat"), noFlows());
+        JsonObject marker = markerRow(claim);
+
+        assertEquals(ClaimPolicy.INCONCLUSIVE_PARTIAL,
+                claim.get("claim").getAsString());
+        assertFalse("a disagreement is not a reading",
+                marker.get("recordedPolarityStated").getAsBoolean());
+        assertFalse("and no polarity is invented from it",
+                marker.has("recordedPolarity"));
+        String detail = blocker(claim,
+                ClaimPolicy.RECORDED_ROOT_VALUE_DISAGREEMENT)
+                .get("detail").getAsString();
+        assertTrue(detail, detail.contains("true ("
+                + ConcolicSmtComposer.RECORDED_ROOT_VALUES + ")"));
+        assertTrue(detail, detail.contains("false ("
+                + ConcolicSmtComposer
+                        .CONFIGURED_SOURCE_MATERIALIZATION_FIELD + ")"));
+        assertTrue(detail, detail.contains(ORDERED_SOURCE));
+    }
+
+    /** The plan and the manifest disagreeing is the same refusal. */
+    @Test
+    public void aManifestAndPlanDisagreementIsABlocker() throws IOException {
+        JsonObject claim = ClaimPolicy.decide(markerManifest(),
+                markerReach(true, "-300000"), planWith("true"));
+
+        assertEquals(ClaimPolicy.INCONCLUSIVE_PARTIAL,
+                claim.get("claim").getAsString());
+        String detail = blocker(claim,
+                ClaimPolicy.RECORDED_ROOT_VALUE_DISAGREEMENT)
+                .get("detail").getAsString();
+        assertTrue(detail, detail.contains("false ("
+                + ConcolicSmtComposer.RECORDED_ROOT_VALUES + ")"));
+        assertTrue(detail, detail.contains("true (runtimePlan.symbolize)"));
     }
 
     /**
@@ -1652,7 +1825,9 @@ public class ClaimPolicyTest {
                 + ORDERED_FIELD + ") = false)"));
         assertTrue(reason, reason.contains("reproduces the recorded case"
                 + " rather than a counterfactual"));
-        assertTrue(reason, reason.contains("no named mechanism was needed"));
+        assertTrue(reason, reason.contains("a "
+                + WitnessLegitimacy.RECORDED_FAILURE_EXPLAINED
+                + " finding"));
         assertTrue(reason, reason.contains(ORDERED_SOURCE
                 + " reaches the target at its recorded value and at no"
                 + " other"));
@@ -1660,27 +1835,42 @@ public class ClaimPolicyTest {
                 reason.contains("flips"));
     }
 
-    /** With nothing stating a recorded value, the reason says it guessed. */
+    /**
+     * With nothing stating a recorded value, the run refuses and names it.
+     *
+     * <p>This is the laneX artifact's exact shape -- one configured source,
+     * no {@code recordedValue} anywhere, the satisfying valuation at
+     * {@code false} and the other one unsat. The old reading called it a
+     * flip; this one calls it an unanswered question about the recording,
+     * and the narrative names the root rather than asserting anything about
+     * what it held.</p>
+     */
     @Test
-    public void theClaimReasonSaysWhenAPolarityWasNotRecorded() {
+    public void anUnrecordedConfiguredSourceIsRefusedAndNamed() {
         JsonObject claim = ClaimPolicy.decide(orderedManifest(""),
                 orderedReach("sat", "unsat"), noFlows());
 
         JsonObject marker = markerRow(claim);
-        assertTrue("defaulted, because nothing recorded it",
-                marker.get("recordedPolarity").getAsBoolean());
+        assertEquals(ClaimPolicy.INCONCLUSIVE_PARTIAL,
+                claim.get("claim").getAsString());
         assertFalse(marker.get("recordedPolarityStated").getAsBoolean());
+        assertFalse("nothing recorded it, so nothing states a polarity",
+                marker.has("recordedPolarity"));
+        assertEquals(ORDERED_SOURCE, blocker(claim,
+                ClaimPolicy.RECORDED_ROOT_VALUE_UNSTATED)
+                .get("subject").getAsString());
         String reason = claim.get("claimReason").getAsString();
         assertTrue(reason, reason.contains(
-                "[recorded value unstated, assumed true]"));
+                ClaimPolicy.RECORDED_ROOT_VALUE_UNSTATED));
         String narrative = witnessFinding(claim, 0).get("narrative")
                 .getAsString();
         assertTrue(narrative, narrative.contains(
-                "off an unstated recorded value (assumed true)"));
-        assertEquals("moved against a default is neither of the other two",
-                ClaimPolicy.UNPLANTED_ROOT_MOVED,
-                claim.getAsJsonObject("rootSpace")
-                        .get("acceptedWitnessKind").getAsString());
+                "no recorded value is stated for 1 declared root(s) ("
+                + ORDERED_SOURCE + ")"));
+        assertTrue(narrative, narrative.contains(
+                "so nothing here is a flip or a reproduction"));
+        assertEquals("", claim.getAsJsonObject("rootSpace")
+                .get("acceptedFindingKind").getAsString());
     }
 
     /** The reason for a flipped planted marker names the flip and why. */
@@ -1829,7 +2019,30 @@ public class ClaimPolicyTest {
                 + "{\"values\":[true],\"status\":\"sat\","
                 + "\"witnessMechanisms\":[{\"kind\":\"MARKER_FLIPPED\","
                 + "\"siteId\":\"Client$Connection.sendRpcRequest#u17\"}]}]"));
+        reach.add(BooleanReachConditionExtractor.MECHANISM_NECESSITY,
+                clockNecessity(0, true));
         return reach;
+    }
+
+    /**
+     * The probe's answer about one valuation's clock group.
+     *
+     * <p>Keyed by the valuation, because "these clocks disagreed" is a claim
+     * about one witness and asking it one root at a time asks about a skew
+     * nobody made. Every fixture that expects a clock to be a mechanism
+     * carries one: a clock that moved and nothing shows was needed is not a
+     * mechanism, and a clock nobody asked about is not one either.</p>
+     */
+    private static JsonObject clockNecessity(int ordinal, boolean necessary) {
+        return parse("{\"schemaVersion\":1,"
+                + "\"kind\":\"WITNESS_MECHANISM_NECESSITY\","
+                + "\"authority\":\"RECORDED_ROOT_PIN_V1\","
+                + "\"mechanisms\":[{\"marker\":\"\","
+                + "\"sourceIdentity\":\"\",\"polarity\":true,"
+                + "\"valuationOrdinal\":" + ordinal + ","
+                + "\"mechanism\":\"CLOCK_SKEW\",\"pinnedRoots\":1,"
+                + "\"status\":\"" + (necessary ? "unsat" : "sat") + "\","
+                + "\"necessary\":" + necessary + "}]}");
     }
 
 
