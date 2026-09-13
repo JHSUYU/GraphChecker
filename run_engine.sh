@@ -2320,13 +2320,25 @@ campaign_publish_wave() {
         "the obligation published no unique terminal status"
     fi
     case "${record_status}" in
-      UNSAT|UNSUPPORTED|MATERIALIZATION_GAP|SOLVER_TIMEOUT|REPLAY_NOT_ADMITTED|BUNDLE_TOPOLOGY_DIVERGENCE)
-        # Companion summaries from a linked replay whose primary prefix did
-        # not match are not a causal observation. Publishing them used to
-        # leave propagated boundary values without the primary producer case.
-        # Solver-terminal and topology-terminal outcomes likewise contribute
-        # only their exploration record; they did not admit a new path case.
+      BUNDLE_TOPOLOGY_DIVERGENCE)
+        # This replay left the frozen topology epoch, so its rows are about a
+        # different arrangement of the system than the one being composed.
         continue
+        ;;
+      UNSAT|UNSUPPORTED|MATERIALIZATION_GAP|SOLVER_TIMEOUT|REPLAY_NOT_ADMITTED)
+        # A solver-terminal obligation ran no replay and has no rows; the
+        # emptiness guards below drop it.
+        #
+        # REPLAY_NOT_ADMITTED does have rows, and they are published.  The
+        # status says the obligation's own flip did not materialize its
+        # primary case -- which is a fact about that obligation, not about
+        # the execution.  The replay ran, and every region it did execute
+        # published what it observed.  Dropping all of it used to be
+        # necessary because a companion's propagated boundary value was an
+        # arm that needed its producer's case to mean anything; a replay's
+        # values are resolved inside that replay now, so a row from it says
+        # what it says on its own.  Dropping them threw away the anchored
+        # target rows of exactly the replays a flip was cut to produce.
         ;;
       VALIDATED_FRESH_REGION_PATH_FLIP_REPLAY)
         ;;
