@@ -47,7 +47,7 @@ public class ExportPortConsumerOccurrencesTest {
         SymbolicMessageEnvelope.clear();
     }
 
-    /** bug3: one heartbeat answer, four per-key consumer occurrences. */
+    /** bug3: one heartbeat answer frame, four per-key consumer occurrences. */
     @Test
     public void oneHeartbeatAnswerAddressesEveryPerKeyConsumer() {
         ConcolicTaskPlan.RuntimeTask task = task(
@@ -60,6 +60,10 @@ public class ExportPortConsumerOccurrencesTest {
                 task.exportConsumerOccurrences(KEY_ID_PORT));
         assertEquals(consumers("hdfs-17899/target-dn", 2, 3, 4, 5),
                 task.exportConsumerOccurrences(EXPIRY_PORT));
+        // One response frame carrying four keys, not four responses.
+        assertEquals(1, exchangeLegs(
+                row("plans/hdfs-17899-bug3-loop-body-producer.json"),
+                KEY_ID_PORT).size());
     }
 
     /** 17897: one refresh answer on one exchange leg, five consumers. */
