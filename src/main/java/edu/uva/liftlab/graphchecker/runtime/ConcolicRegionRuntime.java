@@ -1320,12 +1320,22 @@ public final class ConcolicRegionRuntime {
      * {@code boolean}: the marker stands at a call site the program is about
      * to branch on, so there is no third value to return and no point at
      * which the replay can stop.  What it must not do is let the
-     * {@code false} it returns pass for an answer.  A marker this plan does
-     * control, asked at a firing the plan cannot answer, is exactly the
-     * question the search exists to decide, and pinning it to the polarity
-     * the search wants to flip is a fabricated chain element -- so the value
-     * stays concrete and the activation is flagged, which refuses the
-     * summary at import.</p>
+     * {@code false} it returns pass for an answer.</p>
+     *
+     * <p>There are two answers, and a firing is unanswered only when it has
+     * neither.  A flip replay answers from its model assignment.  A seed
+     * replay has no model by construction -- it reproduces the recording --
+     * and answers from the recording's own polarity, which the plan states as
+     * the action's {@code primitiveValue} gated on {@code observed}.  Reading
+     * "no model" alone as "unanswered" refused every seed summary that
+     * touches a declared marker and took the DEPENDENCY worklist with it
+     * ({@code NO_OBSERVED_PATH_SEED}); the recorded value is what
+     * distinguishes an answer from the default that used to stand here.</p>
+     *
+     * <p>With neither, the question the search exists to decide has no
+     * answer, and pinning the marker to the polarity the search wants to flip
+     * would be a fabricated chain element -- so the value stays concrete and
+     * the activation is flagged, which refuses the summary at import.</p>
      *
      * <p>A marker this plan does not control at all is a different thing: no
      * question was put to the replay, the recording ran the same hook to the
@@ -1334,6 +1344,9 @@ public final class ConcolicRegionRuntime {
      * grepped for them.</p>
      */
     static final String FAULT_IDLE_UNANSWERED = "FAULT_IDLE_UNANSWERED";
+
+    /** One fault firing answered from the recording rather than a model. */
+    static final String RECORDED_FAULT_ANSWER = "RECORDED_FAULT_ANSWER";
 
     /**
      * The name one unwitnessed target link answers to.
@@ -1345,6 +1358,23 @@ public final class ConcolicRegionRuntime {
      */
     static final String TARGET_REACH_NOT_OBSERVED =
             "TARGET_REACH_NOT_OBSERVED";
+
+    /**
+     * The polarity the recording gave one fault marker, or null.
+     *
+     * <p>{@code recordedPrimitiveValue} is already gated on the action's
+     * {@code observed} flag, so a value here is one the mint actually saw.
+     * Anything that is not a boolean literal states nothing: a marker is a
+     * {@code boolean} and a value that cannot be read as one is not the
+     * recording's answer to it.</p>
+     */
+    static Boolean recordedFaultPolarity(SymbolizeAction action) {
+        String recorded = action == null ? ""
+                : safe(action.recordedPrimitiveValue).trim();
+        if ("true".equalsIgnoreCase(recorded)) return Boolean.TRUE;
+        if ("false".equalsIgnoreCase(recorded)) return Boolean.FALSE;
+        return null;
+    }
 
     /** Whether this activation's plan controls the named fault marker. */
     static boolean declaresExplicitFault(
@@ -1389,9 +1419,21 @@ public final class ConcolicRegionRuntime {
         SymbolizeAction selected = candidates.get(0);
         ModelAssignment assignment = active.assignment(selected, null);
         if (assignment == null) {
-            active.noteFaultIdle(name, occurrence, controlled,
-                    "NO_MODEL_ASSIGNMENT");
-            return false;
+            // A seed replay has no model by construction: it reproduces the
+            // recording, and the recording's own polarity is the answer.  The
+            // plan states it as this action's primitiveValue, gated on
+            // observed, so it is a value the mint witnessed and not a default
+            // chosen here -- which is the whole difference between answering
+            // the marker and pinning it.  Only a firing with neither a model
+            // nor a recorded value is unanswered.
+            Boolean recorded = recordedFaultPolarity(selected);
+            if (recorded == null) {
+                active.noteFaultIdle(name, occurrence, controlled,
+                        "NO_MODEL_ASSIGNMENT_AND_NO_RECORDED_VALUE");
+                return false;
+            }
+            active.noteRecordedFaultAnswer(name, occurrence, recorded);
+            return recorded;
         }
         Object value = coerceModelValue(assignment.valueType,
                 assignment.value, Boolean.class);
@@ -6003,6 +6045,23 @@ public final class ConcolicRegionRuntime {
          * one the search exists to flip.  A marker the plan never declared
          * put no question to this replay.</p>
          */
+        /**
+         * Records that one firing was answered from the recording, not from
+         * a model.
+         *
+         * <p>It is not a gap -- the question has an answer -- but a witness
+         * that moves nothing has to be distinguishable from one that moved a
+         * marker the solver chose, so which firings the seed answered is
+         * stated rather than left to be inferred from an absent
+         * assignment.</p>
+         */
+        void noteRecordedFaultAnswer(String name, int occurrence,
+                                     boolean recorded) {
+            diag(RECORDED_FAULT_ANSWER, "marker=" + safe(name) + "#"
+                    + occurrence + " recorded=" + recorded
+                    + " occurrence=" + safe(activation.occurrenceId));
+        }
+
         void noteFaultIdle(String name, int occurrence, boolean controlled,
                            String reason) {
             String subject = "marker=" + safe(name) + "#" + occurrence

@@ -135,6 +135,99 @@ public class NoFabricatedChainElementTest {
     }
 
     /**
+     * A seed replay answers a controlled marker from the recording.
+     *
+     * <p>A seed has no model by construction -- it reproduces the recording
+     * -- so reading "no model assignment" as "unanswered" refused every seed
+     * summary that touches a declared marker, and with it the DEPENDENCY
+     * worklist ({@code NO_OBSERVED_PATH_SEED / REGION_PATH_SEED_REQUIRED}),
+     * which is a campaign that dies before it composes anything.  The
+     * recording's polarity is stated on the action as {@code primitiveValue}
+     * gated on {@code observed}, i.e. a value the mint witnessed.</p>
+     */
+    @Test
+    public void aSeedReplayAnswersAControlledMarkerFromTheRecording()
+            throws Exception {
+        ConcolicRegionRuntime.ActiveRegion recordedFalse = region(false,
+                recordedFaultAction(MARKER, 1, "false"));
+        assertFalse(ConcolicRegionRuntime.materializeSymbolicBoolean(MARKER));
+        assertTrue("a recorded answer is not a gap",
+                unresolved(recordedFalse).isEmpty());
+
+        // And the recorded value is read, not assumed: a marker the
+        // recording saw fire comes back true from the same seed path.
+        ConcolicRegionRuntime.ActiveRegion recordedTrue = region(false,
+                recordedFaultAction(MARKER, 1, "true"));
+        assertTrue(ConcolicRegionRuntime.materializeSymbolicBoolean(MARKER));
+        assertTrue(unresolved(recordedTrue).isEmpty());
+    }
+
+    /** A value the mint did not witness is not the recording's answer. */
+    @Test
+    public void anUnobservedPrimitiveValueIsNotARecordedAnswer()
+            throws Exception {
+        JsonObject unobserved = recordedFaultAction(MARKER, 1, "true");
+        unobserved.addProperty("observed", false);
+        ConcolicRegionRuntime.ActiveRegion active = region(false, unobserved);
+
+        assertFalse(ConcolicRegionRuntime.materializeSymbolicBoolean(MARKER));
+        String row = only(unresolved(active));
+        assertTrue(row, row.startsWith(
+                ConcolicRegionRuntime.FAULT_IDLE_UNANSWERED));
+        assertTrue(row, row.contains(
+                "reason=NO_MODEL_ASSIGNMENT_AND_NO_RECORDED_VALUE"));
+    }
+
+    /**
+     * A flip replay answers from its model, and the model outranks the
+     * recorded value -- moving the marker off what the recording saw is the
+     * entire point of the flip.
+     */
+    @Test
+    public void aFlipReplayAnswersAControlledMarkerFromItsModel()
+            throws Exception {
+        JsonObject action = recordedFaultAction(MARKER, 1, "false");
+        ConcolicRegionRuntime.ActiveRegion active = region(false,
+                Collections.singletonList(action),
+                modelAssignment(action.get("symbol").getAsString(), "true"));
+
+        assertTrue("the model decides a flip",
+                ConcolicRegionRuntime.materializeSymbolicBoolean(MARKER));
+        assertTrue(unresolved(active).isEmpty());
+    }
+
+    /** Neither a model nor a recorded value is the unanswered case. */
+    @Test
+    public void neitherAModelNorARecordedValueStillBlocks()
+            throws Exception {
+        ConcolicRegionRuntime.ActiveRegion active = region(false,
+                faultAction(MARKER, 1));
+        assertFalse(ConcolicRegionRuntime.materializeSymbolicBoolean(MARKER));
+        String row = only(unresolved(active));
+        assertTrue(row, row.startsWith(
+                ConcolicRegionRuntime.FAULT_IDLE_UNANSWERED));
+        assertTrue(row, row.contains(
+                "reason=NO_MODEL_ASSIGNMENT_AND_NO_RECORDED_VALUE"));
+    }
+
+    /** The recorded polarity is read strictly: only a boolean literal. */
+    @Test
+    public void onlyABooleanLiteralIsARecordedPolarity() {
+        assertEquals(Boolean.FALSE, ConcolicRegionRuntime
+                .recordedFaultPolarity(action(
+                        recordedFaultAction(MARKER, 1, "false"))));
+        assertEquals(Boolean.TRUE, ConcolicRegionRuntime
+                .recordedFaultPolarity(action(
+                        recordedFaultAction(MARKER, 1, "true"))));
+        assertNull("a marker is a boolean, and 1 is not one",
+                ConcolicRegionRuntime.recordedFaultPolarity(action(
+                        recordedFaultAction(MARKER, 1, "1"))));
+        assertNull(ConcolicRegionRuntime.recordedFaultPolarity(action(
+                recordedFaultAction(MARKER, 1, ""))));
+        assertNull(ConcolicRegionRuntime.recordedFaultPolarity(null));
+    }
+
+    /**
      * A marker no plan row declares put no question to this replay, so
      * there is nothing to refuse and the ledger stays empty.
      */
@@ -339,6 +432,30 @@ public class NoFabricatedChainElementTest {
                 seq, seq, SITE, "", -1, "", 0, "", outcome, null, "", "");
     }
 
+    /** The same action with the polarity the recording observed. */
+    private static JsonObject recordedFaultAction(
+            String name, int replayOccurrence, String primitiveValue) {
+        JsonObject json = faultAction(name, replayOccurrence);
+        json.addProperty("observed", true);
+        json.addProperty("primitiveValue", primitiveValue);
+        return json;
+    }
+
+    private static ConcolicRegionRuntime.SymbolizeAction action(
+            JsonObject json) {
+        return new ConcolicRegionRuntime.SymbolizeAction(json);
+    }
+
+    private static JsonObject modelAssignment(String inputSymbol,
+                                              String value) {
+        JsonObject json = new JsonObject();
+        json.addProperty("inputSymbol", inputSymbol);
+        json.addProperty("engineSymbol", inputSymbol);
+        json.addProperty("valueType", "BOOL");
+        json.addProperty("value", value);
+        return json;
+    }
+
     private static JsonObject faultAction(String name,
                                           int replayOccurrence) {
         JsonObject json = faultJson(name, replayOccurrence);
@@ -407,11 +524,28 @@ public class NoFabricatedChainElementTest {
     }
 
     private ConcolicRegionRuntime.ActiveRegion region(
+            boolean addressesTarget,
+            java.util.List<JsonObject> actions, JsonObject... assignments)
+            throws Exception {
+        ExecutionTask encoded = task(addressesTarget,
+                actions.toArray(new JsonObject[0]));
+        JsonArray models = new JsonArray();
+        for (JsonObject assignment : assignments) models.add(assignment);
+        JsonObject json = encoded.json().deepCopy();
+        json.add("modelAssignments", models);
+        return open(ExecutionTask.decode(json));
+    }
+
+    private ConcolicRegionRuntime.ActiveRegion region(
             boolean addressesTarget, JsonObject... actions)
             throws Exception {
+        return open(task(addressesTarget, actions));
+    }
+
+    private ConcolicRegionRuntime.ActiveRegion open(ExecutionTask encoded)
+            throws Exception {
         ConcolicTaskPlan.RuntimeTask runtime =
-                new ConcolicTaskPlan.RuntimeTask(
-                        task(addressesTarget, actions));
+                new ConcolicTaskPlan.RuntimeTask(encoded);
         long token = 910000L + opened.size() + 1;
         ConcolicRegionRuntime.ActiveRegion active =
                 new ConcolicRegionRuntime.ActiveRegion(token, runtime, null,
