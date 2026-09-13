@@ -538,10 +538,11 @@ for config_row in "${workflow_config_keys[@]}"; do
       || fail "internal key ${config_key} is loadable from a config file"
   fi
 done
-# 40 again: `replay_task_budget` joined the table in bef2db898 without this
-# count being raised, and has now been deleted -- it capped nothing, no
-# experiment set it, and its own test asserted it dropped no task.
-[[ "$(print_normalized_config | wc -l)" -eq 40 ]] \
+# 41: `replay_task_budget` joined the table in bef2db898 without this count
+# being raised and has since been deleted -- it capped nothing, no experiment
+# set it, and its own test asserted it dropped no task.  `composer` joined it
+# when the composition became selectable.
+[[ "$(print_normalized_config | wc -l)" -eq 41 ]] \
   || fail "config prints a different number of keys than it used to: \
 $(print_normalized_config | wc -l)"
 
