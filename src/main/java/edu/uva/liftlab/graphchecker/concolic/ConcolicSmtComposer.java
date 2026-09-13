@@ -144,6 +144,32 @@ public final class ConcolicSmtComposer {
     public static final String CONSUMER_BOUNDARY_FAMILY_UNREFERENCED =
             "CONSUMER_BOUNDARY_FAMILY_UNREFERENCED";
     /**
+     * One merged consumer boundary whose case dispatch is not total: the
+     * arms it carries are not covered by any partition this formula asserts
+     * unconditionally, so a model may satisfy none of them and the merged
+     * value falls through to a term nothing binds.
+     *
+     * <p>This is the shape that let an HDFS-17897 witness index a DataNode's
+     * key map with a key id no node ever held: the dispatch was read as
+     * "one of these observations", the last arm stood in as an unguarded
+     * default, and the value it carried was pinned only under a read
+     * selector the model left false.</p>
+     */
+    public static final String UNBOUND_WIRE_VALUE = "UNBOUND_WIRE_VALUE";
+    /** Prefix of the term a non-total boundary dispatch falls through to. */
+    static final String UNBOUND_BOUNDARY_PREFIX = "unbound_boundary__";
+    /** One row per merged consumer boundary: is its case dispatch total? */
+    public static final String BOUNDARY_DISPATCH_TOTALITY =
+            "boundaryDispatchTotality";
+    /**
+     * One row per associative read that can answer null because the key it
+     * was made with is in no PUT of the chain and in none of the state the
+     * chain starts from.
+     */
+    public static final String ABSENT_KEY_DEFAULTS = "absentKeyDefaults";
+    /** Prefix of the Boolean term that says one read took that default. */
+    static final String ABSENT_KEY_DEFAULT_PREFIX = "absent_key_default__";
+    /**
      * Case partitions the formula asserts only under a condition, so a
      * consumer must not pin them: doing so decides the condition silently.
      */
@@ -331,6 +357,9 @@ public final class ConcolicSmtComposer {
         manifest.add("guardedReadModel", guardedReads);
         manifest.add(ClockRootPhysics.MANIFEST_FIELD, clockPhysics);
         manifest.add(WIRE_FLOW_BINDINGS, wireFlowBindings);
+        manifest.add(BOUNDARY_DISPATCH_TOTALITY,
+                emitter.boundaryDispatchTotality);
+        manifest.add(ABSENT_KEY_DEFAULTS, emitter.absentKeyDefaults);
         manifest.add(RECORDED_ROOT_VALUES,
                 emitter.recordedRootLedger(runtimePlan.plans()));
         JsonArray gaps = new JsonArray();
@@ -1854,6 +1883,15 @@ public final class ConcolicSmtComposer {
         /** Base case selector -> its replay-specific PC observations. */
         private final Map<String, Set<String>> observationsByBaseCase =
                 new LinkedHashMap<>();
+        /** Every merged consumer boundary this composition dispatched. */
+        private final List<BoundaryDispatch> boundaryDispatches =
+                new ArrayList<>();
+        /** One row per dispatch: whether a partition makes it total. */
+        private final JsonArray boundaryDispatchTotality = new JsonArray();
+        /** One row per associative read that can fall to an absent key. */
+        private final JsonArray absentKeyDefaults = new JsonArray();
+        private final Set<String> absentKeyDefaultKeys =
+                new LinkedHashSet<>();
 
         /** Exact runtime target events and the fatal case that owns each. */
         private final JsonArray targetReachEvents = new JsonArray();
@@ -4294,10 +4332,23 @@ public final class ConcolicSmtComposer {
                             + value.precondition + ")");
                 }
                 defined.add(or(selectors));
-                String value = values.get(values.size() - 1).text;
-                String nullness = sort == Sort.STRING
-                        ? values.get(values.size() - 1).stringNullness : "";
-                for (int index = values.size() - 2; index >= 0; index--) {
+                // Every arm carries its own guard, including the last: an
+                // unguarded final arm makes the merge take that arm's value
+                // whenever no observation of the family holds at all, which
+                // reads as "the wire carried this" while nothing said so.
+                // The fall-through is a named unbound term instead, and
+                // whether it is reachable is decided structurally in
+                // requireTotalBoundaryDispatch().
+                String unbound = smtSymbols.mint(UNBOUND_BOUNDARY_PREFIX,
+                        projectionIdentity, 20);
+                declare(unbound, sort);
+                String value = unbound;
+                String nullness = "";
+                if (sort == Sort.STRING) {
+                    nullness = unbound + "__unbound_is_null";
+                    declare(nullness, Sort.BOOL);
+                }
+                for (int index = values.size() - 1; index >= 0; index--) {
                     value = "(ite " + selectors.get(index) + " "
                             + values.get(index).text + " " + value + ")";
                     if (sort == Sort.STRING) {
@@ -4308,6 +4359,8 @@ public final class ConcolicSmtComposer {
                 }
                 String name = smtSymbols.mint("merged_boundary__",
                         projectionIdentity, 20);
+                boundaryDispatches.add(new BoundaryDispatch(mergeId,
+                        familyKey, name, unbound, selectors));
                 if (!familyKey.isEmpty()) {
                     loweredBoundaryFamilies.put(familyKey, name);
                 }
@@ -4403,6 +4456,12 @@ public final class ConcolicSmtComposer {
                         ContainerSmtCodec.Sort expected) {
                     return ContainerSmtCodec
                             .evidencedContainerIdentity(expression);
+                }
+
+                @Override
+                public void noteAbsentKeyDefault(String keyTerm,
+                                                 String absentCondition) {
+                    recordAbsentKeyDefault(keyTerm, absentCondition);
                 }
 
                 @Override
@@ -5471,6 +5530,146 @@ public final class ConcolicSmtComposer {
             return smtName(value) + "__" + encoded;
         }
 
+        /** One lowered merged consumer boundary and the arms it dispatches. */
+        private static final class BoundaryDispatch {
+            private final String mergeId;
+            private final String familyKey;
+            private final String mergedTerm;
+            private final String unboundTerm;
+            private final List<String> selectors;
+
+            private BoundaryDispatch(String mergeId, String familyKey,
+                                     String mergedTerm, String unboundTerm,
+                                     List<String> selectors) {
+                this.mergeId = mergeId;
+                this.familyKey = familyKey;
+                this.mergedTerm = mergedTerm;
+                this.unboundTerm = unboundTerm;
+                this.selectors = new ArrayList<>(selectors);
+            }
+        }
+
+        /**
+         * Refuses a merged consumer boundary whose dispatch is not total.
+         *
+         * <p>A merge is total when this formula already forbids every arm
+         * being false at once.  Two partitions say that unconditionally: a
+         * region's case-observation partition, whose observations sum to its
+         * base case selector, and a region instance's case-selector
+         * partition, which sums to one.  A merge whose arms all sit inside
+         * one of those cannot fall through -- the arm the model picks is an
+         * arm the recording observed, and the value it carries is the value
+         * the wire carried under that observation.</p>
+         *
+         * <p>A merge whose arms sit in neither is a wire the composition
+         * cannot bind: the model may satisfy no arm and read the
+         * fall-through term, which nothing pins.  Reporting the value
+         * anyway is how a witness came to rest on a key id that never
+         * existed, so this fails closed instead.</p>
+         */
+        private void requireTotalBoundaryDispatch() {
+            List<Set<String>> partitions = new ArrayList<>();
+            for (Map.Entry<InvocationKey, Set<String>> entry
+                    : casePartitions.entrySet()) {
+                if (!entry.getValue().isEmpty()
+                        && !faultControlledInstances.contains(
+                                entry.getKey())) {
+                    partitions.add(entry.getValue());
+                }
+            }
+            for (BoundaryDispatch dispatch : boundaryDispatches) {
+                Set<String> arms = new LinkedHashSet<>(dispatch.selectors);
+                boolean total = false;
+                for (Set<String> partition : partitions) {
+                    if (dispatchIsTotalOver(arms, partition)) {
+                        total = true;
+                        break;
+                    }
+                }
+                boundaryDispatchTotality.add(dispatchRow(dispatch, total));
+            }
+        }
+
+        /**
+         * Whether one case partition forces some arm of this dispatch true.
+         *
+         * <p>Exactly one case of the partition runs.  For that case the
+         * dispatch has to carry an arm: either the case selector itself, or
+         * -- when the composition split the case into replay-specific path
+         * observations, whose indicators sum to the case selector's -- every
+         * one of those observations.  A dispatch that carries only some of a
+         * case's observations, or nothing for one case of the partition, is
+         * satisfied by no arm whenever that case is the one that ran.</p>
+         */
+        private boolean dispatchIsTotalOver(Set<String> arms,
+                                            Set<String> partition) {
+            for (String caseSelector : partition) {
+                if (arms.contains(caseSelector)) continue;
+                Set<String> observations = observationsByBaseCase.get(
+                        caseSelector);
+                if (observations == null || observations.isEmpty()
+                        || !arms.containsAll(observations)) {
+                    return false;
+                }
+            }
+            return !partition.isEmpty();
+        }
+
+        /**
+         * Names the condition under which one associative read's null is the
+         * untouched map's answer for a key nothing put.
+         *
+         * <p>Published as a Boolean definition so a witness reader asks the
+         * solver rather than re-deriving the mutation chain: the solver
+         * stage reads the term's value out of the model it already has.</p>
+         */
+        private void recordAbsentKeyDefault(String keyTerm,
+                                            String absentCondition) {
+            if (keyTerm == null || keyTerm.isEmpty()
+                    || absentCondition == null
+                    || absentCondition.isEmpty()) {
+                return;
+            }
+            String identity = keyTerm + "\n" + absentCondition;
+            if (!absentKeyDefaultKeys.add(identity)) return;
+            String name = smtSymbols.mint(ABSENT_KEY_DEFAULT_PREFIX,
+                    identity, 16);
+            defineConstant(name, Sort.BOOL, absentCondition);
+            JsonObject row = new JsonObject();
+            row.addProperty("solverTerm", name);
+            row.addProperty("keyTerm", keyTerm);
+            // Which read this chain belongs to: a reader of a witness cares
+            // about the read the target predicate tests, not about every
+            // lookup in the slice that happens to miss.
+            row.addProperty("readIdentity", readFromContext.isEmpty() ? ""
+                    : readFromContext.peek());
+            // The guard this chain was lowered under.  A container read
+            // reached through a guarded read's arm is lowered with that arm's
+            // selector in the guard, which is how a reader of a witness ties
+            // the row to the read the target predicate tests when the read
+            // identity itself was not in scope.
+            row.addProperty("guard", currentGuard);
+            absentKeyDefaults.add(row);
+        }
+
+        private JsonObject dispatchRow(BoundaryDispatch dispatch,
+                                       boolean total) {
+            JsonObject row = new JsonObject();
+            row.addProperty("familyKey", dispatch.familyKey);
+            row.addProperty("mergeId", dispatch.mergeId);
+            row.addProperty("solverTerm", dispatch.mergedTerm);
+            row.addProperty("unboundTerm", dispatch.unboundTerm);
+            row.addProperty("armCount", dispatch.selectors.size());
+            row.addProperty("totalDispatch", total);
+            if (!total) {
+                // The arms a reader of a witness has to evaluate: a model
+                // that satisfies none of them read the unbound term, and
+                // that is the wire value nothing bound.
+                row.add("armSelectors", GSON.toJsonTree(dispatch.selectors));
+            }
+            return row;
+        }
+
         private void finish() {
             for (Map.Entry<String, Set<String>> entry
                     : observationsByBaseCase.entrySet()) {
@@ -5487,6 +5686,7 @@ public final class ConcolicSmtComposer {
                         sum.toString());
             }
             emitRequestFaultControl();
+            requireTotalBoundaryDispatch();
             for (Map.Entry<InvocationKey, Set<String>> entry
                     : casePartitions.entrySet()) {
                 if (entry.getValue().isEmpty()) continue;

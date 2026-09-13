@@ -72,6 +72,16 @@ public final class WitnessLegitimacy {
             "UNENUMERATED_EXISTENTIAL_ROOT";
     /** A declared wire carried a value the composition never bound. */
     public static final String UNBOUND_WIRE_VALUE = "UNBOUND_WIRE_VALUE";
+    /**
+     * This model read a merged wire boundary through a consumer it left
+     * active while satisfying none of the boundary's case arms: the value
+     * the consumer took is the boundary's fall-through, which nothing
+     * binds.  Distinct from {@link #UNBOUND_WIRE_VALUE}, which the
+     * composition states about a declared flow and withholds under its own
+     * blocker; this one is a property of one model.
+     */
+    public static final String UNBOUND_WIRE_VALUE_TAKEN =
+            "UNBOUND_WIRE_VALUE_TAKEN";
     /** A clock left the window the recording anchors it in. */
     public static final String CLOCK_OUTSIDE_WINDOW = "CLOCK_OUTSIDE_WINDOW";
     /** A wall clock at a value no wall clock returns. */
@@ -79,6 +89,29 @@ public final class WitnessLegitimacy {
     /** A root moved and no named mechanism says what moved it. */
     public static final String UNEXPLAINED_ROOT_MOVE =
             "UNEXPLAINED_ROOT_MOVE";
+    /**
+     * The witness read an associative container's absent-key default: the
+     * key it asked with is in no PUT of the chain and in none of the state
+     * the chain was reconstructed from, so the null it got is the empty
+     * map's answer and names nothing the program did.
+     */
+    public static final String ABSENT_KEY_DEFAULT = "ABSENT_KEY_DEFAULT";
+    /**
+     * A wall clock moved, and the target reaches with every clock back on
+     * the value it recorded.  The move is then decoration: the witness is
+     * satisfied by something else and the clock is along for the ride.
+     */
+    public static final String CLOCK_NOT_NECESSARY = "CLOCK_NOT_NECESSARY";
+
+    /** What the necessity probe said about this witness's clock group. */
+    public enum ClockNecessity {
+        /** No probe ran, so nothing is claimed either way. */
+        UNKNOWN,
+        /** The target is unreachable with the clocks back on record. */
+        NECESSARY,
+        /** The target still reaches with the clocks back on record. */
+        NOT_NECESSARY
+    }
 
     /**
      * The degeneracy verdict that says the existential root space is open.
@@ -191,6 +224,28 @@ public final class WitnessLegitimacy {
                                       long windowMillis,
                                       List<Freedom> composition,
                                       JsonArray markerAssignment) {
+        return classify(valuation, ordinal, windowMillis, composition,
+                markerAssignment, ClockNecessity.UNKNOWN);
+    }
+
+    /**
+     * Reads one valuation's witness against the legitimate set.
+     *
+     * @param clockNecessity what the necessity probe said about this
+     *                       witness's clock group.  A clock that moved and
+     *                       was shown not to be needed is not the mechanism
+     *                       of anything: the target reaches without it, so
+     *                       naming it {@code CLOCK_SKEW} states a cause the
+     *                       formula does not have.  That is how nine roots
+     *                       parked on their window boundaries, none of them
+     *                       in any satisfied conjunct, were reported as
+     *                       "sat via CLOCK_SKEW x9".
+     */
+    public static JsonObject classify(JsonObject valuation, int ordinal,
+                                      long windowMillis,
+                                      List<Freedom> composition,
+                                      JsonArray markerAssignment,
+                                      ClockNecessity clockNecessity) {
         JsonObject row = new JsonObject();
         row.addProperty("schemaVersion", 1);
         row.addProperty("kind", KIND);
@@ -240,12 +295,24 @@ public final class WitnessLegitimacy {
                 continue;
             }
             JsonObject mechanism = element.getAsJsonObject();
-            Freedom refusal = refuse(mechanism, windowMillis);
+            Freedom refusal = refuse(mechanism, windowMillis,
+                    clockNecessity);
             if (refusal == null) {
                 legitimate.add(mechanism);
             } else {
                 freedoms.add(refusal);
             }
+        }
+        // Freedom the solver stage decided from this model rather than from
+        // the formula: a wire boundary no arm of which the model satisfied,
+        // and a read that answered out of an absent-key default.
+        for (JsonElement element : array(valuation,
+                "witnessFreedoms")) {
+            if (!element.isJsonObject()) continue;
+            JsonObject decided = element.getAsJsonObject();
+            freedoms.add(new Freedom(optionalString(decided, "code"),
+                    optionalString(decided, "subject"),
+                    optionalString(decided, "detail")));
         }
         row.addProperty("verdict", freedoms.isEmpty() ? EXPLAINED
                 : UNEXPLAINED);
@@ -304,7 +371,8 @@ public final class WitnessLegitimacy {
      * nothing constrains it. Anything else the witness moved has no named
      * mechanism behind it, and an unnamed move is freedom.</p>
      */
-    private static Freedom refuse(JsonObject mechanism, long windowMillis) {
+    private static Freedom refuse(JsonObject mechanism, long windowMillis,
+                                  ClockNecessity clockNecessity) {
         String kind = optionalString(mechanism, "kind");
         String where = firstNonEmpty(optionalString(mechanism, "siteId"),
                 firstNonEmpty(optionalString(mechanism, "sourceKey"),
@@ -330,6 +398,21 @@ public final class WitnessLegitimacy {
                         "a clock moved " + skew + "ms, outside the configured"
                                 + " +/-" + windowMillis + "ms window the"
                                 + " recording anchors it in");
+            }
+            // A value that differs from the recording is not yet a
+            // mechanism.  Every unconstrained clock differs from it: a
+            // solver parks a free root wherever its window lets it, and
+            // nothing about the target followed from the move.  The
+            // mechanism is the move being needed.
+            if (clockNecessity == ClockNecessity.NOT_NECESSARY) {
+                return new Freedom(CLOCK_NOT_NECESSARY, where,
+                        "a clock read " + optionalString(mechanism,
+                                "witnessValue") + " where it recorded "
+                                + optionalString(mechanism, "recordedValue")
+                                + ", and the target still reaches with every"
+                                + " clock back on its recorded value, so the"
+                                + " move is in no conjunct this witness"
+                                + " needs");
             }
             return null;
         }

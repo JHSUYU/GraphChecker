@@ -25,6 +25,7 @@ import java.math.BigInteger;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -55,9 +56,17 @@ public final class BooleanReachConditionExtractor {
     private static final Pattern MERGED_BOUNDARY_SYMBOL =
             Pattern.compile("merged_boundary__[A-Za-z0-9_]+");
     /** The one equality that binds a boundary constant to a read's value. */
+    /**
+     * A merged boundary bound to one guarded read's value: either the plain
+     * equality, or the single-arm dispatch every merge is emitted as now
+     * that its one arm carries its own guard and the fall-through is the
+     * named unbound term.
+     */
     private static final Pattern BOUNDARY_VALUE_BINDING = Pattern.compile(
-            "^\\(assert \\(= (merged_boundary__[A-Za-z0-9_]+)"
-            + " (rf_value__[A-Za-z0-9_]+)\\)\\)$");
+            "^\\(assert \\(= (merged_boundary__[A-Za-z0-9_]+) "
+            + "(?:(rf_value__[A-Za-z0-9_]+)"
+            + "|\\(ite [A-Za-z0-9_]+ (rf_value__[A-Za-z0-9_]+)"
+            + " unbound_boundary__[A-Za-z0-9_]+\\))\\)\\)$");
     /**
      * An unsat every probed attempt owed to the driver's own frontier.
      *
@@ -228,6 +237,32 @@ public final class BooleanReachConditionExtractor {
         for (JsonObject arm : fatalArms) {
             fatalArmSelectors.add(optionalString(arm, "selector"));
         }
+        // Two shapes a witness can rest on that no root move names, both
+        // decided by the model rather than by the formula: a merged wire
+        // boundary none of whose arms the model satisfied, and an
+        // associative read whose key nothing ever put.
+        List<String> witnessFreedomSymbols = new ArrayList<>();
+        Map<String, List<String>> boundaryConsumers =
+                boundaryConsumers(composedSmt, manifest);
+        for (JsonElement element
+                : array(manifest,
+                        ConcolicSmtComposer.BOUNDARY_DISPATCH_TOTALITY)) {
+            if (!element.isJsonObject()) continue;
+            JsonObject dispatch = element.getAsJsonObject();
+            for (JsonElement arm : array(dispatch, "armSelectors")) {
+                if (arm.isJsonPrimitive()) {
+                    witnessFreedomSymbols.add(arm.getAsString());
+                }
+            }
+            List<String> consumers = boundaryConsumers.get(
+                    optionalString(dispatch, "solverTerm"));
+            if (consumers != null) witnessFreedomSymbols.addAll(consumers);
+        }
+        Set<String> fatalAbsentKeyTerms = fatalAbsentKeyTerms(manifest,
+                fatalArms);
+        witnessFreedomSymbols.addAll(fatalAbsentKeyTerms);
+        List<String> modelSymbols = new ArrayList<>(fatalArmSelectors);
+        modelSymbols.addAll(witnessFreedomSymbols);
         report.add(FATAL_STATE_SELECTION, asEvidence(fatalStateSelection(
                 fatalArms, Collections.<String, String>emptyMap()),
                 evidenceOnly));
@@ -242,7 +277,7 @@ public final class BooleanReachConditionExtractor {
             boolean[] values = valuation(ordinal, inputs.size());
             String query = valuationQuery(base, inputs, values,
                     discovery.existentialNonBooleanRootInputs,
-                    fatalArmSelectors);
+                    modelSymbols);
             ConcolicConstraintSolver.SolverOutput result =
                     solver.check(query);
             String status = solver.lastStatus();
@@ -286,6 +321,11 @@ public final class BooleanReachConditionExtractor {
                 if (mechanisms.size() > 0) {
                     row.add("witnessMechanisms", mechanisms);
                 }
+                JsonArray witnessFreedoms = witnessFreedoms(manifest, model,
+                        boundaryConsumers, fatalAbsentKeyTerms);
+                if (witnessFreedoms.size() > 0) {
+                    row.add(WITNESS_FREEDOMS, witnessFreedoms);
+                }
                 if (witness.size() > 0) {
                     if (!existentialProbeAttempted) {
                         existentialProbeAttempted = true;
@@ -322,9 +362,11 @@ public final class BooleanReachConditionExtractor {
         }
 
         report.add("valuations", valuationRows);
-        report.add(MECHANISM_NECESSITY, asEvidence(mechanismNecessity(
-                solver, base, manifest, inputs, valuationRows),
-                evidenceOnly));
+        JsonObject necessity = mechanismNecessity(solver, base, manifest,
+                inputs, valuationRows);
+        report.add(MECHANISM_NECESSITY, asEvidence(necessity, evidenceOnly));
+        report.add(CLOCK_DECISIONS, asEvidence(clockDecisionWindow(solver,
+                base, manifest, clockNecessary(necessity)), evidenceOnly));
         if (existentialPerturbations.size() > 0) {
             JsonObject probe = new JsonObject();
             probe.addProperty("authority",
@@ -1854,6 +1896,525 @@ public final class BooleanReachConditionExtractor {
      * by itself -- "these nodes' clocks disagreed" is the mechanism -- so
      * pinning them one at a time would ask about a skew nobody claimed.</p>
      */
+    /** Where the model-decided freedom of one valuation is published. */
+    public static final String WITNESS_FREEDOMS = "witnessFreedoms";
+
+    /**
+     * What this model was free to choose that no mechanism accounts for.
+     *
+     * <p>Neither shape is visible in the root witness, because neither moves
+     * a root.  A merged consumer boundary whose dispatch no partition makes
+     * total takes its unbound fall-through whenever the model satisfies none
+     * of its arms: the value the wire carried is then whatever the solver
+     * liked.  An associative read whose key matched no {@code PUT} of its
+     * mutation chain, over a state reconstructed from a snapshot, answers
+     * null because the map never held that key -- a statement about the
+     * query, not about the program.</p>
+     */
+    private static JsonArray witnessFreedoms(
+            JsonObject manifest, Map<String, String> model,
+            Map<String, List<String>> boundaryConsumers,
+            Set<String> fatalAbsentKeyTerms) {
+        JsonArray rows = new JsonArray();
+        for (JsonElement element
+                : array(manifest,
+                        ConcolicSmtComposer.BOUNDARY_DISPATCH_TOTALITY)) {
+            if (!element.isJsonObject()) continue;
+            JsonObject dispatch = element.getAsJsonObject();
+            JsonArray arms = array(dispatch, "armSelectors");
+            if (arms.size() == 0) continue;
+            boolean anySatisfied = false;
+            boolean everyArmKnown = true;
+            for (JsonElement arm : arms) {
+                String value = model.get(arm.getAsString());
+                if (value == null) {
+                    everyArmKnown = false;
+                } else if ("true".equals(value)) {
+                    anySatisfied = true;
+                }
+            }
+            if (anySatisfied || !everyArmKnown) continue;
+            // No arm held.  That alone is not freedom: a boundary whose
+            // consumer never ran in this model is not read, and the merge
+            // carries its own definedness -- one arm must hold -- wherever
+            // composition threads it.  The freedom is the fall-through being
+            // read: some consumer of the merged term is active.
+            String merged = optionalString(dispatch, "solverTerm");
+            List<String> consumers = boundaryConsumers.get(merged);
+            String activeConsumer = "";
+            for (String consumer : consumers == null
+                    ? Collections.<String>emptyList() : consumers) {
+                if ("true".equals(model.get(consumer))) {
+                    activeConsumer = consumer;
+                    break;
+                }
+            }
+            if (activeConsumer.isEmpty()) continue;
+            JsonObject row = new JsonObject();
+            row.addProperty("code",
+                    WitnessLegitimacy.UNBOUND_WIRE_VALUE_TAKEN);
+            row.addProperty("subject", firstNonEmptyText(
+                    optionalString(dispatch, "familyKey"), merged));
+            row.addProperty("consumer", activeConsumer);
+            row.addProperty("detail",
+                    "this model satisfies none of the " + arms.size()
+                            + " case arm(s) of a merged consumer boundary"
+                            + " while its consumer " + activeConsumer
+                            + " is active, so " + merged
+                            + " was read as the unbound fall-through "
+                            + optionalString(dispatch, "unboundTerm"));
+            rows.add(row);
+        }
+        for (JsonElement element
+                : array(manifest, ConcolicSmtComposer.ABSENT_KEY_DEFAULTS)) {
+            if (!element.isJsonObject()) continue;
+            JsonObject absent = element.getAsJsonObject();
+            String term = optionalString(absent, "solverTerm");
+            // Only the reads whose value the target predicate tests were
+            // asked for above; anything else has no value in this model.
+            if (!fatalAbsentKeyTerms.contains(term)
+                    || !"true".equals(model.get(term))) {
+                continue;
+            }
+            JsonObject row = new JsonObject();
+            row.addProperty("code", WitnessLegitimacy.ABSENT_KEY_DEFAULT);
+            row.addProperty("subject", term);
+            row.addProperty("detail",
+                    "an associative read the target predicate tests answered"
+                            + " out of the absent-key default: its key "
+                            + optionalString(absent, "keyTerm")
+                            + " matched no PUT of the chain and the"
+                            + " reconstructed initial state does not hold"
+                            + " it, so the null is the empty map's answer"
+                            + " rather than anything the program did");
+            rows.add(row);
+        }
+        return rows;
+    }
+
+    /**
+     * The absent-key terms that belong to the read the target predicate
+     * tests.
+     *
+     * <p>A row is the fatal read's when it names that read's identity, or
+     * when the guard it was lowered under carries one of the fatal read's
+     * arm selectors -- the container chain of a state read is lowered inside
+     * the arm that selects the state, so the arm is what the row records
+     * when the read identity itself was not in scope.</p>
+     */
+    private static Set<String> fatalAbsentKeyTerms(JsonObject manifest,
+                                                   List<JsonObject> fatalArms) {
+        Set<String> identities = new LinkedHashSet<>();
+        Set<String> selectors = new LinkedHashSet<>();
+        for (JsonObject arm : fatalArms) {
+            String identity = optionalString(arm, "readIdentity");
+            if (!identity.isEmpty()) identities.add(identity);
+            String selector = optionalString(arm, "selector");
+            if (!selector.isEmpty()) selectors.add(selector);
+        }
+        Set<String> terms = new LinkedHashSet<>();
+        for (JsonElement element
+                : array(manifest, ConcolicSmtComposer.ABSENT_KEY_DEFAULTS)) {
+            if (!element.isJsonObject()) continue;
+            JsonObject absent = element.getAsJsonObject();
+            String term = optionalString(absent, "solverTerm");
+            if (term.isEmpty()) continue;
+            boolean fatal = identities.contains(optionalString(absent,
+                    "readIdentity"));
+            String guard = optionalString(absent, "guard");
+            for (String selector : selectors) {
+                if (fatal) break;
+                fatal = guard.contains(selector);
+            }
+            if (fatal) terms.add(term);
+        }
+        return terms;
+    }
+
+    /**
+     * Which selectors read each merged consumer boundary.
+     *
+     * <p>Read off the composed text rather than re-derived: a guarded read
+     * arm consumes the boundary under its read selector
+     * ({@code (=> read_selector (and ... (= rf_value merged)))}), and a
+     * merge consumes another merge under the arm's case selector
+     * ({@code (ite selector merged ...)}).  Either selector true in a model
+     * while no arm of the boundary holds is the fall-through being read.</p>
+     */
+    static Map<String, List<String>> boundaryConsumers(
+            String composedSmt, JsonObject manifest) {
+        Map<String, List<String>> result = new LinkedHashMap<>();
+        List<String> merged = new ArrayList<>();
+        for (JsonElement element
+                : array(manifest,
+                        ConcolicSmtComposer.BOUNDARY_DISPATCH_TOTALITY)) {
+            if (!element.isJsonObject()) continue;
+            JsonObject dispatch = element.getAsJsonObject();
+            if (optionalBool(dispatch, "totalDispatch", true)) continue;
+            String term = optionalString(dispatch, "solverTerm");
+            if (!term.isEmpty()) merged.add(term);
+        }
+        if (merged.isEmpty() || composedSmt == null) return result;
+        java.util.regex.Pattern implication = java.util.regex.Pattern
+                .compile("\\(=> ([A-Za-z_][A-Za-z0-9_]*) ");
+        for (String line : composedSmt.split("\\R")) {
+            if (!line.startsWith("(assert")) continue;
+            for (String term : merged) {
+                int at = line.indexOf(term);
+                if (at < 0) continue;
+                // The term's own definition is not a consumer of it.
+                if (line.startsWith("(assert (= " + term + " ")) continue;
+                if (!boundedSymbolAt(line, at, term.length())) continue;
+                List<String> consumers = result.computeIfAbsent(term,
+                        ignored -> new ArrayList<>());
+                java.util.regex.Matcher antecedent = implication.matcher(
+                        line);
+                if (antecedent.find()) {
+                    addUnique(consumers, antecedent.group(1));
+                }
+                int ite = line.lastIndexOf("(ite ", at);
+                if (ite >= 0) {
+                    String[] parts = line.substring(ite + 5, at).trim()
+                            .split("\\s+");
+                    if (parts.length == 1 && !parts[0].isEmpty()
+                            && !parts[0].startsWith("(")) {
+                        addUnique(consumers, parts[0]);
+                    }
+                }
+            }
+        }
+        return result;
+    }
+
+    private static boolean boundedSymbolAt(String line, int at, int length) {
+        int end = at + length;
+        return (at == 0 || !Character.isLetterOrDigit(line.charAt(at - 1))
+                && line.charAt(at - 1) != '_')
+                && (end >= line.length()
+                || !Character.isLetterOrDigit(line.charAt(end))
+                && line.charAt(end) != '_');
+    }
+
+    private static void addUnique(List<String> list, String value) {
+        if (!list.contains(value)) list.add(value);
+    }
+
+    private static String firstNonEmptyText(String value, String fallback) {
+        return value == null || value.trim().isEmpty() ? fallback : value;
+    }
+
+    /** Where the clock-decision window probe is published. */
+    static final String CLOCK_DECISIONS = "clockDecisions";
+    /**
+     * A comparison on the fatal slice that involves a wall-clock root and
+     * takes one polarity only within the window the composition anchors the
+     * clock in, while the other polarity becomes satisfiable once the window
+     * is widened: the mechanism this clock could decide lies outside the
+     * window, and no witness can show it at the configured skew.
+     */
+    public static final String CLOCK_DECISION_OUTSIDE_WINDOW =
+            "CLOCK_DECISION_OUTSIDE_WINDOW";
+    /** Comparison atoms probed per run; a slice rarely has more. */
+    private static final int MAX_CLOCK_DECISION_ATOMS = 8;
+    /** Window doublings tried: 5 min becomes 5 h 20 min at the sixth. */
+    private static final int MAX_CLOCK_WINDOW_DOUBLINGS = 6;
+    /** Solver checks the probe may spend in total. */
+    private static final int MAX_CLOCK_DECISION_CHECKS = 40;
+
+    /** Whether the necessity ledger holds a necessary clock group. */
+    private static boolean clockNecessary(JsonObject necessity) {
+        for (JsonElement element : array(necessity, "mechanisms")) {
+            if (!element.isJsonObject()) continue;
+            JsonObject row = element.getAsJsonObject();
+            if ("CLOCK_SKEW".equals(optionalString(row, "mechanism"))
+                    && optionalBool(row, "necessary", false)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Which comparisons a clock root takes part in, and whether the window
+     * lets each be decided either way.
+     *
+     * <p>The clock window is a physical bound, not a pin: a clock may move
+     * five minutes off its recording and no further.  A mechanism whose time
+     * scale is longer -- a key that expires twenty hours out -- is then
+     * unreachable by construction, and until now nothing said so: the
+     * formula was simply unsat, or sat through something else.  This probe
+     * names the comparisons the window decides.  For each comparison atom
+     * over a clock term it asks the solver for both polarities inside the
+     * window; when one polarity is unsat it widens every clock's window by
+     * doublings until that polarity is sat, and reports the first width that
+     * admits it as the advance the decision needs.</p>
+     *
+     * <p>Skipped when the necessity ledger already shows a clock decision
+     * to be necessary: the window then admitted the mechanism, and the
+     * probe would only spend solver time confirming it.  An atom is asserted
+     * on its own, without the guards it sits under, so a comparison whose
+     * operands are free where it is not evaluated may read as decidable
+     * either way; that loses a gap, never invents one.</p>
+     */
+    private static JsonObject clockDecisionWindow(
+            Z3Solver solver, String base, JsonObject manifest,
+            boolean clockNecessary)
+            throws IOException, InterruptedException {
+        JsonObject result = new JsonObject();
+        result.addProperty("authority", "CLOCK_DECISION_WINDOW_PROBE_V1");
+        JsonObject physics = object(manifest, ClockRootPhysics.MANIFEST_FIELD);
+        long skew = Math.max(0L, optionalLongInteger(physics,
+                "clockSkewMillis", ClockRootPhysics.DEFAULT_SKEW_MILLIS));
+        result.addProperty("windowMillis", skew);
+        JsonArray rows = new JsonArray();
+        result.add("decisions", rows);
+        result.addProperty("outsideWindow", 0);
+        Map<String, JsonObject> clocks = new LinkedHashMap<>();
+        for (JsonElement element : array(physics, "clockReads")) {
+            if (!element.isJsonObject()) continue;
+            JsonObject read = element.getAsJsonObject();
+            String term = optionalString(read, "solverTerm");
+            if (!term.isEmpty() && read.has("recordedValue")) {
+                clocks.put(term, read);
+            }
+        }
+        if (clocks.isEmpty()) {
+            result.addProperty("probed", false);
+            result.addProperty("reason", "NO_CLOCK_ROOT");
+            return result;
+        }
+        if (clockNecessary) {
+            result.addProperty("probed", false);
+            result.addProperty("reason", "CLOCK_DECISION_NECESSARY");
+            return result;
+        }
+        List<String> atoms = clockComparisonAtoms(base, clocks.keySet(),
+                MAX_CLOCK_DECISION_ATOMS);
+        result.addProperty("probed", true);
+        result.addProperty("atoms", atoms.size());
+        int checks = 0;
+        int outside = 0;
+        for (String atom : atoms) {
+            if (checks + 2 > MAX_CLOCK_DECISION_CHECKS) {
+                result.addProperty("budgetExhausted", true);
+                break;
+            }
+            JsonObject row = new JsonObject();
+            row.addProperty("atom", atom);
+            JsonArray terms = new JsonArray();
+            JsonArray sites = new JsonArray();
+            for (Map.Entry<String, JsonObject> clock : clocks.entrySet()) {
+                if (!containsSymbol(atom, clock.getKey())) continue;
+                terms.add(clock.getKey());
+                sites.add(firstNonBlank(optionalString(clock.getValue(),
+                        "sourceKey")) + " " + optionalString(
+                        clock.getValue(), "siteId"));
+            }
+            row.add("clockTerms", terms);
+            row.add("sites", sites);
+            String holds = probeStatus(solver, base, atom);
+            String fails = probeStatus(solver, base, "(not " + atom + ")");
+            checks += 2;
+            row.addProperty("holdsWithinWindow", holds);
+            row.addProperty("failsWithinWindow", fails);
+            String blocked = "unsat".equals(holds) && "sat".equals(fails)
+                    ? atom : "unsat".equals(fails) && "sat".equals(holds)
+                    ? "(not " + atom + ")" : "";
+            if (blocked.isEmpty()) {
+                row.addProperty("decidedByWindow", false);
+                rows.add(row);
+                continue;
+            }
+            row.addProperty("decidedByWindow", true);
+            row.addProperty("blockedPolarity", blocked);
+            long admitted = -1L;
+            long widest = skew;
+            for (int doubling = 1; doubling <= MAX_CLOCK_WINDOW_DOUBLINGS;
+                    doubling++) {
+                if (checks + 1 > MAX_CLOCK_DECISION_CHECKS) {
+                    result.addProperty("budgetExhausted", true);
+                    break;
+                }
+                long wider = Math.max(1L, skew) << doubling;
+                String status = probeStatus(solver,
+                        widenClockWindows(base, clocks, skew, wider), blocked);
+                checks++;
+                widest = wider;
+                if ("sat".equals(status)) {
+                    admitted = wider;
+                    break;
+                }
+                if (!"unsat".equals(status)) {
+                    row.addProperty("wideningStatus", status);
+                    break;
+                }
+            }
+            row.addProperty("code", CLOCK_DECISION_OUTSIDE_WINDOW);
+            outside++;
+            if (admitted > 0L) {
+                row.addProperty("requiredWindowMillisAtMost", admitted);
+                row.addProperty("requiredWindowMillisAbove", admitted / 2);
+            } else {
+                row.addProperty("requiredWindowMillisAbove", widest);
+            }
+            rows.add(row);
+        }
+        result.addProperty("checks", checks);
+        result.addProperty("outsideWindow", outside);
+        return result;
+    }
+
+    private static String probeStatus(Z3Solver solver, String base,
+                                      String assertion)
+            throws IOException, InterruptedException {
+        solver.check(base + "(assert " + assertion + ")"
+                + System.lineSeparator() + "(check-sat)"
+                + System.lineSeparator());
+        return solver.lastStatus();
+    }
+
+    /** The base text with every clock window widened to the given skew. */
+    static String widenClockWindows(String base,
+                                    Map<String, JsonObject> clocks,
+                                    long skew, long wider) {
+        String text = base;
+        for (Map.Entry<String, JsonObject> clock : clocks.entrySet()) {
+            long recorded = optionalLongInteger(clock.getValue(),
+                    "recordedValue", 0L);
+            text = text.replace(
+                    ClockRootPhysics.window(clock.getKey(), recorded, skew),
+                    ClockRootPhysics.window(clock.getKey(), recorded, wider));
+        }
+        return text;
+    }
+
+    /**
+     * The comparison atoms of the formula that mention a clock term: the
+     * innermost {@code (< a b)}, {@code (> a b)}, {@code (<= a b)} or
+     * {@code (>= a b)} around each occurrence, one per operand pair, so the
+     * two halves of Java's {@code lcmp} idiom count once.
+     */
+    static List<String> clockComparisonAtoms(String text,
+                                             Collection<String> clockTerms,
+                                             int limit) {
+        List<String> atoms = new ArrayList<>();
+        Set<String> seen = new LinkedHashSet<>();
+        for (String term : clockTerms) {
+            int from = 0;
+            while (atoms.size() < limit) {
+                int at = text.indexOf(term, from);
+                if (at < 0) break;
+                from = at + term.length();
+                if (!boundedSymbolAt(text, at, term.length())) continue;
+                int open = enclosingComparison(text, at);
+                if (open < 0) continue;
+                int close = balancedEnd(text, open);
+                if (close < 0) continue;
+                String atom = text.substring(open, close + 1);
+                String key = comparisonKey(atom);
+                if (key.isEmpty() || !seen.add(key)) continue;
+                atoms.add(atom);
+            }
+        }
+        return atoms;
+    }
+
+    private static boolean containsSymbol(String text, String symbol) {
+        int at = text.indexOf(symbol);
+        while (at >= 0) {
+            if (boundedSymbolAt(text, at, symbol.length())) return true;
+            at = text.indexOf(symbol, at + 1);
+        }
+        return false;
+    }
+
+    /** The innermost enclosing s-expression headed by a comparison. */
+    private static int enclosingComparison(String text, int at) {
+        int depth = 0;
+        for (int index = at - 1; index >= 0; index--) {
+            char c = text.charAt(index);
+            if (c == ')') {
+                depth++;
+            } else if (c == '(') {
+                if (depth > 0) {
+                    depth--;
+                    continue;
+                }
+                int end = index + 1;
+                while (end < text.length()
+                        && !Character.isWhitespace(text.charAt(end))
+                        && text.charAt(end) != '(') {
+                    end++;
+                }
+                String head = text.substring(index + 1, end);
+                if ("<".equals(head) || ">".equals(head)
+                        || "<=".equals(head) || ">=".equals(head)) {
+                    return index;
+                }
+                if ("assert".equals(head) || "define-fun".equals(head)
+                        || "declare-const".equals(head)) {
+                    return -1;
+                }
+            }
+        }
+        return -1;
+    }
+
+    private static int balancedEnd(String text, int open) {
+        int depth = 0;
+        for (int index = open; index < text.length(); index++) {
+            char c = text.charAt(index);
+            if (c == '(') depth++;
+            if (c == ')') {
+                depth--;
+                if (depth == 0) return index;
+            }
+        }
+        return -1;
+    }
+
+    /** An operand-pair key so {@code (< a b)} and {@code (> a b)} agree. */
+    private static String comparisonKey(String atom) {
+        List<String> parts = topLevelTokens(atom);
+        if (parts.size() != 3) return "";
+        String left = parts.get(1);
+        String right = parts.get(2);
+        return left.compareTo(right) <= 0 ? left + "\n" + right
+                : right + "\n" + left;
+    }
+
+    /** The head and top-level operands of one s-expression. */
+    private static List<String> topLevelTokens(String atom) {
+        List<String> tokens = new ArrayList<>();
+        String inner = atom.substring(1, atom.length() - 1).trim();
+        int depth = 0;
+        int start = -1;
+        for (int index = 0; index < inner.length(); index++) {
+            char c = inner.charAt(index);
+            if (c == '(') {
+                if (depth == 0) start = index;
+                depth++;
+            } else if (c == ')') {
+                depth--;
+                if (depth == 0) {
+                    tokens.add(inner.substring(start, index + 1));
+                    start = -1;
+                }
+            } else if (depth == 0) {
+                if (Character.isWhitespace(c)) {
+                    if (start >= 0) {
+                        tokens.add(inner.substring(start, index));
+                        start = -1;
+                    }
+                } else if (start < 0) {
+                    start = index;
+                }
+            }
+        }
+        if (start >= 0 && depth == 0) tokens.add(inner.substring(start));
+        return tokens;
+    }
+
     private static JsonObject mechanismNecessity(
             Z3Solver solver, String base, JsonObject manifest,
             List<RootInput> markers, JsonArray valuations)
@@ -1864,9 +2425,6 @@ public final class BooleanReachConditionExtractor {
         result.addProperty("authority", "RECORDED_ROOT_PIN_V1");
         JsonArray rows = new JsonArray();
         result.add("mechanisms", rows);
-        if (markers.isEmpty()) {
-            return result;
-        }
         Map<String, String> recorded = new LinkedHashMap<>();
         Set<String> clocks = new LinkedHashSet<>();
         for (JsonElement element
@@ -1886,6 +2444,28 @@ public final class BooleanReachConditionExtractor {
             }
         }
         if (recorded.isEmpty()) {
+            return result;
+        }
+        // A run with no declared marker still has a mechanism to answer for.
+        // The clock cases plant no Boolean fault: the whole claim is that a
+        // wall clock decided the target, and an empty necessity ledger used
+        // to read as "nothing to ask" rather than as "the clock was never
+        // shown to matter". The satisfying valuations are then probed on
+        // their own, with no marker literal to hold.
+        if (markers.isEmpty()) {
+            for (int ordinal = 0; ordinal < valuations.size(); ordinal++) {
+                JsonObject valuation = valuationRow(valuations,
+                        ordinal);
+                if (valuation == null || !"sat".equals(optionalString(
+                        valuation, "status"))) {
+                    continue;
+                }
+                for (Map.Entry<String, Set<String>> group
+                        : mechanismRoots(valuation, clocks).entrySet()) {
+                    rows.add(necessityRow(solver, base, recorded, "", "",
+                            true, ordinal, group));
+                }
+            }
             return result;
         }
         for (int index = 0; index < markers.size(); index++) {
@@ -1926,6 +2506,43 @@ public final class BooleanReachConditionExtractor {
         return result;
     }
 
+    /**
+     * Asks one mechanism whether the target still reaches with its roots put
+     * back to what they recorded.
+     *
+     * @param markerLiteral the marker assertion to hold, or "" when the run
+     *                      declares no marker at all
+     */
+    private static JsonObject necessityRow(
+            Z3Solver solver, String base, Map<String, String> recorded,
+            String markerTerm, String markerLiteral, boolean polarity,
+            int ordinal, Map.Entry<String, Set<String>> group)
+            throws IOException, InterruptedException {
+        JsonObject row = new JsonObject();
+        row.addProperty("marker", markerTerm);
+        row.addProperty("sourceIdentity", "");
+        row.addProperty("polarity", polarity);
+        row.addProperty("valuationOrdinal", ordinal);
+        row.addProperty("mechanism", group.getKey());
+        row.addProperty("pinnedRoots", group.getValue().size());
+        StringBuilder query = new StringBuilder(base);
+        if (!markerLiteral.isEmpty()) {
+            query.append("(assert ").append(markerLiteral).append(")")
+                    .append(System.lineSeparator());
+        }
+        for (String term : group.getValue()) {
+            query.append("(assert (= ").append(term).append(' ')
+                    .append(smtLiteral(recorded.get(term)))
+                    .append("))").append(System.lineSeparator());
+        }
+        query.append("(check-sat)").append(System.lineSeparator());
+        solver.check(query.toString());
+        String answerStatus = solver.lastStatus();
+        row.addProperty("status", answerStatus);
+        row.addProperty("necessary", "unsat".equals(answerStatus));
+        return row;
+    }
+
     /** The roots each named mechanism of this witness rests on. */
     private static Map<String, Set<String>> mechanismRoots(
             JsonObject valuation, Set<String> clocks) {
@@ -1952,6 +2569,17 @@ public final class BooleanReachConditionExtractor {
                     ? clocks : Collections.singleton(term));
         }
         return groups;
+    }
+
+    /** One valuation row, or null. */
+    private static JsonObject valuationRow(JsonArray valuations,
+                                           int ordinal) {
+        if (valuations == null || ordinal < 0
+                || ordinal >= valuations.size()) {
+            return null;
+        }
+        JsonElement element = valuations.get(ordinal);
+        return element.isJsonObject() ? element.getAsJsonObject() : null;
     }
 
     /** The valuation that gives this Boolean root that polarity. */
@@ -2003,7 +2631,8 @@ public final class BooleanReachConditionExtractor {
             }
             Matcher binding = BOUNDARY_VALUE_BINDING.matcher(text);
             if (binding.matches()) {
-                boundaryValues.put(binding.group(1), binding.group(2));
+                boundaryValues.put(binding.group(1), binding.group(2) != null
+                        ? binding.group(2) : binding.group(3));
             }
         }
         Set<String> valueTerms = new LinkedHashSet<>();
