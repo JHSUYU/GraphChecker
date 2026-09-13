@@ -585,7 +585,13 @@ public final class ConcolicSummaryImporter {
                     census.duplicatesByTask.computeIfAbsent(taskId,
                             ignored -> new ArrayList<>()).add(ordinal);
                 }
-                if (optionalBool(raw, PathObservation.TARGET_REACHED, false)) {
+                // Reaching the target is the selected site having executed,
+                // which is what the reach event records.  targetReached is a
+                // different fact -- whether the activation left through the
+                // annotated throw -- and on a healthy recording it is false
+                // at every activation that nonetheless ran the site.  Reading
+                // it here refused the healthy disjunct as a missing one.
+                if (raw.has(PathObservation.TargetReachEvent.FIELD)) {
                     census.targetReachedTasks.add(taskId);
                 }
             }
@@ -627,7 +633,7 @@ public final class ConcolicSummaryImporter {
                         "TARGET_REACH_NO_ACTIVATION_REACHED_TARGET",
                         "none of the " + entry.getValue().size()
                         + " published activation(s) of this target task "
-                        + "exited through the selected target throw"));
+                        + "executed the selected target site"));
             }
         }
     }

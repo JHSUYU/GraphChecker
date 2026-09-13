@@ -560,8 +560,11 @@ public final class GapLedger {
                         + " task was an over-approximation that produced"
                         + " nothing");
         blocking(importer, "TARGET_REACH_NO_ACTIVATION_REACHED_TARGET",
-                "no activation of this region reached the target, so the"
-                        + " region states nothing about the target");
+                "no activation of this region executed the target site, so"
+                        + " the region states nothing about the target --"
+                        + " an activation that ran the site and decided"
+                        + " against the failure has stated something, and is"
+                        + " not this");
         blocking(importer, "TARGET_REACH_NOT_OBSERVED",
                 "the replay published no observation of the target this"
                         + " task was addressed at");
