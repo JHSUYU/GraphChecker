@@ -165,8 +165,6 @@ public class NoFabricatedChainElementTest {
                 unresolved(active).isEmpty());
     }
 
-    // ---------- 4. the planner's required-outcome selection ----------
-
     // ---------- harness ----------
 
     private static Map<String, Object> policy(boolean required) {

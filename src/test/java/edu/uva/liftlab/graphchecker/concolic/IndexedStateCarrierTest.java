@@ -22,10 +22,6 @@ import static org.junit.Assert.assertTrue;
  */
 public class IndexedStateCarrierTest {
 
-    // ---------------------------------------------------------------- types
-
-    // -------------------------------------------------------- version kinds
-
     // ------------------------------------------------------- replay admission
 
     @Test
@@ -129,10 +125,6 @@ public class IndexedStateCarrierTest {
         assertTrue(host.required.toString(),
                 host.required.toString().contains("(- (+ (+ (+ 0 1) 1) 1) 1)"));
     }
-
-    // ------------------------------------------- container-valued read sort
-
-    // -------------------------------------------- String literal identity
 
     // --------------------------------------------------------------- helpers
 

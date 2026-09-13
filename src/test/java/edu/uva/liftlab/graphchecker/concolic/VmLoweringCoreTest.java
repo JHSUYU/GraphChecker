@@ -83,10 +83,6 @@ public class VmLoweringCoreTest {
     }
 
     // ------------------------------------------------------------------
-    // Pure predicates of the shared core.
-    // ------------------------------------------------------------------
-
-    // ------------------------------------------------------------------
 
     private static final String INPUT =
             "M_J_field_REGION.lowering.in.value.occ.deadbeef_java/lang/Long";

@@ -46,8 +46,6 @@ public class ReferenceCarrierTest {
                 "L" + BLOCK_KEY.replace('.', '/') + ";"));
     }
 
-    // ------------------------------------------------- the VM payload path
-
     // ---------------------------------------------------- the bound value
 
     /** With nothing else known, the read is the free projection. */
