@@ -2,6 +2,9 @@ package edu.uva.liftlab.graphchecker.concolic;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
+import edu.uva.liftlab.graphchecker.contract.DependencyRole;
+import edu.uva.liftlab.graphchecker.contract.FieldPathSpec;
+import edu.uva.liftlab.graphchecker.contract.RegionInstancePlan;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
@@ -49,6 +52,8 @@ public class RootDependentCarrierTest {
             "<S: int getNumSnapshots()>::$i0";
     private static final String UNRELATED = "<T: long heartbeatTime>";
     private static final String DOWNSTREAM = "<U: int cachedSize>";
+    /** A structure-carrier port whose leaf the SMT layer can represent. */
+    private static final String SCALAR_OWNER = "<S: int snapshotCount>";
 
     @Rule
     public final TemporaryFolder folder = new TemporaryFolder();
@@ -211,6 +216,79 @@ public class RootDependentCarrierTest {
                 .get(0).getAsString());
     }
 
+    /**
+     * A structure-carrier role is not a refusal inside the root slice.
+     *
+     * <p>{@code CONCRETE_STRUCTURE_CARRIER} says "this port names a
+     * structural owner, not a value the solver moves".  That is right
+     * outside the slice and wrong inside it: the reference is then shared
+     * state whose writers a root decides, and the read arms over which of
+     * them wrote it -- HDFS-17899 bug3's {@code currentKey}, written by
+     * {@code updateKeys} / {@code setKeys} and read for its {@code keyId} at
+     * {@code BlockTokenSecretManager:538}.</p>
+     */
+    @Test
+    public void aStructureCarrierInTheSliceIsNotRefusedForItsRole()
+            throws Exception {
+        ConcolicScheduler.RootDependenceSlice slice =
+                ConcolicScheduler.RootDependenceSlice.forward(
+                        graph(edge(ORDERED, GUARD_LOCAL, "HEAP_READ"),
+                                edge(GUARD_LOCAL, SCALAR_OWNER, "GUARD")),
+                        Collections.singleton(ORDERED));
+
+        JsonArray planned = ConcolicScheduler.materializationPlan(
+                goal(structureCarrier(SCALAR_OWNER, "int"),
+                        structureCarrier(UNRELATED, "long")),
+                actions(structureCarrier(SCALAR_OWNER, "int"),
+                        structureCarrier(UNRELATED, "long")),
+                ConcolicScheduler.DefinitionIndex.from(
+                        Collections.<JsonObject>emptyList()),
+                Collections.<String>emptySet(), new JsonArray(), slice);
+
+        assertEquals("SYMBOLIC", mode(planned, 0));
+        assertTrue(planned.get(0).getAsJsonObject()
+                .get("rootDependentStructureCarrier").getAsBoolean());
+        assertEquals("outside the slice the role still decides",
+                "CONCRETE", mode(planned, 1));
+        assertEquals("CONCRETE_NON_VALUE_FRONTIER_ROLE:"
+                        + "CONCRETE_STRUCTURE_CARRIER",
+                demand(planned, 1));
+    }
+
+    /**
+     * Clearing the role gate is not permission to lower a reference.
+     *
+     * <p>An in-slice structure carrier whose leaf has no compact scalar
+     * representation -- bug3's {@code BlockKey currentKey} -- still stops,
+     * one gate later, at {@code CONCRETE_UNSUPPORTED_LEAF_TYPE}.  That gate
+     * states the VM/SMT contract, not a role heuristic, and lifting the role
+     * must not be read as lifting it.</p>
+     */
+    @Test
+    public void anInSliceReferenceStillStopsAtTheLeafTypeContract()
+            throws Exception {
+        ConcolicScheduler.RootDependenceSlice slice =
+                ConcolicScheduler.RootDependenceSlice.forward(
+                        graph(edge(ORDERED, GUARD_LOCAL, "HEAP_READ"),
+                                edge(GUARD_LOCAL, COUNTER, "GUARD")),
+                        Collections.singleton(ORDERED));
+
+        JsonArray planned = ConcolicScheduler.materializationPlan(
+                goal(structureCarrier(COUNTER, "org.apache.hadoop.hdfs"
+                        + ".security.token.block.BlockKey")),
+                actions(structureCarrier(COUNTER, "org.apache.hadoop.hdfs"
+                        + ".security.token.block.BlockKey")),
+                ConcolicScheduler.DefinitionIndex.from(
+                        Collections.<JsonObject>emptyList()),
+                Collections.<String>emptySet(), new JsonArray(), slice);
+
+        assertEquals("CONCRETE", mode(planned, 0));
+        assertEquals("the role no longer refuses it; its leaf type does",
+                "CONCRETE_UNSUPPORTED_LEAF_TYPE", demand(planned, 0));
+        assertTrue(planned.get(0).getAsJsonObject()
+                .get("rootDependentStructureCarrier").getAsBoolean());
+    }
+
     // --- helpers ---------------------------------------------------------
 
     /** A selection with no declarations, seeded from one hook-owned root. */
@@ -283,6 +361,48 @@ public class RootDependentCarrierTest {
         dependency.add(field);
         action.add("dependencyCells", dependency);
         return action;
+    }
+
+    /** A heap field read the refinement called a structural owner. */
+    private static JsonObject structureCarrier(
+            String field, String javaType) {
+        JsonObject action = base("ACTIVATION_FIELD_RECEIVER");
+        action.addProperty("accessFieldSignature", field);
+        action.addProperty("leafFieldSignature", field);
+        action.addProperty("cell", field);
+        action.addProperty("location", "HEAP_OBJECT_FIELD");
+        action.addProperty("javaType", javaType);
+        action.addProperty("dependencyRole",
+                DependencyRole.CONCRETE_STRUCTURE_CARRIER);
+        action.addProperty("symbol", "port." + field);
+        JsonArray declarations = new JsonArray();
+        declarations.add(field);
+        action.add("fieldPathDeclarations", declarations);
+        JsonArray path = new JsonArray();
+        path.add(FieldPathSpec.declaredField(field).name());
+        JsonArray paths = new JsonArray();
+        paths.add(path);
+        action.add("fieldPaths", paths);
+        return action;
+    }
+
+    /** The minimal region plan {@code materializationPlan} reads a root
+     *  selector from, carrying these proposals. */
+    private static RegionInstancePlan.Goal goal(JsonObject... proposed) {
+        JsonObject closureGoal = new JsonObject();
+        closureGoal.addProperty("goalId", "GOAL.1");
+        closureGoal.addProperty("kind", "REGION_PATH_CLOSURE");
+        closureGoal.add("symbolize", actions(proposed));
+        closureGoal.add("runtimeDefinitionMethods", new JsonArray());
+        JsonArray goals = new JsonArray();
+        goals.add(closureGoal);
+        JsonObject plan = new JsonObject();
+        plan.addProperty("sourceKey", "test/nn0#epoch1");
+        plan.addProperty("occurrenceId", "test/nn0#epoch1/region/" + NN + "#1");
+        plan.addProperty("relationKey", "RELATION.1");
+        plan.addProperty("regionId", NN);
+        plan.add("closureGoals", goals);
+        return RegionInstancePlan.decode(plan).goals().get(0);
     }
 
     private static JsonObject base(String sourceKind) {
