@@ -1818,7 +1818,7 @@ campaign_plan() {
   local seed_index="${seed_dir}/runtime_workflow_schedule_index.json"
   local frozen="${iteration_dir}/concolic_region_plan.jsonl"
   local role campaign_id region occurrence goal task worker
-  local plan_hash plan_size region_hash region_size
+  local region_hash region_size
 
   require_nonempty "runtime region plan" "${runtime_region_plan}"
   require_nonempty "runtime-refined data-flow graph" "${refined_graph}"
@@ -1832,25 +1832,21 @@ campaign_plan() {
   require_nonempty "campaign task plan" "${plan}"
   require_nonempty "runtime workflow schedule index" "${index}"
 
-  plan_hash=$(campaign_digest "${plan}")
-  plan_size=$(stat -c '%s' "${plan}")
   region_hash=$(campaign_digest "${frozen}")
   region_size=$(stat -c '%s' "${frozen}")
-  # Immutable paths and digests -- the whole of what the shell owns here. The
-  # index must commit exactly the plan bytes this iteration froze. Which tasks
-  # it names, what each selects, and by which authority, are the scheduler's
-  # own invariants and are not restated against the same file.
-  jq -e --arg plan_hash "${plan_hash}" --arg region_hash "${region_hash}" \
-    --argjson plan_size "${plan_size}" --argjson region_size "${region_size}" '
-      .executionTaskPlan.sha256 == $plan_hash
-        and .executionTaskPlan.sizeBytes == $plan_size
-        and .regionPlan.sha256 == $region_hash
+  # The copy above is the only fact about this index the shell owns: the
+  # scheduler read the discovery output, and every later stage reads the
+  # frozen copy, so the two must be the same bytes. The index's own
+  # executionTaskPlan identity is written and re-verified against the file by
+  # ConcolicScheduler in the process that wrote both, and the target and
+  # member schema is decoded once below; neither is restated here.
+  jq -e --arg region_hash "${region_hash}" \
+    --argjson region_size "${region_size}" '
+      .regionPlan.sha256 == $region_hash
         and .regionPlan.sizeBytes == $region_size
-        and (.target | type == "object")
-        and (.members | type == "array" and length > 0)
     ' "${index}" >/dev/null \
     || campaign_fail PLAN ConcolicScheduler "${index}" \
-      "the region-path schedule index does not commit the frozen task plan"
+      "the region-path schedule index does not commit the frozen region plan"
 
   mkdir -p "${seed_dir}"
   schedule_output_dir="${seed_dir}"
