@@ -798,6 +798,7 @@ campaign_require_claim() {
     and ((.campaignClaim.claim // "")
       | IN("SAT_CANDIDATE", "UNSAT_CLOSED", "INCONCLUSIVE_PARTIAL"))
     and (.campaignClaim.blockers | type) == "array"
+    and (.campaignClaim.blockerCount | type) == "number"
     and (.campaignClaim.claimReason | type) == "string"
     and (.campaignClaim.whyNotAccepted | type) == "string"' \
     "${path}" >/dev/null \
@@ -1818,7 +1819,7 @@ campaign_plan() {
   local seed_index="${seed_dir}/runtime_workflow_schedule_index.json"
   local frozen="${iteration_dir}/concolic_region_plan.jsonl"
   local role campaign_id region occurrence goal task worker
-  local plan_hash plan_size region_hash region_size
+  local region_hash region_size
 
   require_nonempty "runtime region plan" "${runtime_region_plan}"
   require_nonempty "runtime-refined data-flow graph" "${refined_graph}"
@@ -1832,25 +1833,21 @@ campaign_plan() {
   require_nonempty "campaign task plan" "${plan}"
   require_nonempty "runtime workflow schedule index" "${index}"
 
-  plan_hash=$(campaign_digest "${plan}")
-  plan_size=$(stat -c '%s' "${plan}")
   region_hash=$(campaign_digest "${frozen}")
   region_size=$(stat -c '%s' "${frozen}")
-  # Immutable paths and digests -- the whole of what the shell owns here. The
-  # index must commit exactly the plan bytes this iteration froze. Which tasks
-  # it names, what each selects, and by which authority, are the scheduler's
-  # own invariants and are not restated against the same file.
-  jq -e --arg plan_hash "${plan_hash}" --arg region_hash "${region_hash}" \
-    --argjson plan_size "${plan_size}" --argjson region_size "${region_size}" '
-      .executionTaskPlan.sha256 == $plan_hash
-        and .executionTaskPlan.sizeBytes == $plan_size
-        and .regionPlan.sha256 == $region_hash
+  # The copy above is the only fact about this index the shell owns: the
+  # scheduler read the discovery output, and every later stage reads the
+  # frozen copy, so the two must be the same bytes. The index's own
+  # executionTaskPlan identity is written and re-verified against the file by
+  # ConcolicScheduler in the process that wrote both, and the target and
+  # member schema is decoded once below; neither is restated here.
+  jq -e --arg region_hash "${region_hash}" \
+    --argjson region_size "${region_size}" '
+      .regionPlan.sha256 == $region_hash
         and .regionPlan.sizeBytes == $region_size
-        and (.target | type == "object")
-        and (.members | type == "array" and length > 0)
     ' "${index}" >/dev/null \
     || campaign_fail PLAN ConcolicScheduler "${index}" \
-      "the region-path schedule index does not commit the frozen task plan"
+      "the region-path schedule index does not commit the frozen region plan"
 
   mkdir -p "${seed_dir}"
   schedule_output_dir="${seed_dir}"
@@ -1933,40 +1930,25 @@ campaign_instrument() {
 # tree holds those owners and nothing else. The replay classpath is therefore
 # that tree in front of the project's own classes: a replay given the tree
 # alone loads no workload class it did not rewrite.
+# $7 says what an all-skipped result means to this caller. A seed replay is
+# the iteration's only source of observed cases, so "required" (the default)
+# makes REPLAY fail closed on one. A flip worker may legitimately replay a
+# model the workload never realized, and campaign_worker_task already records
+# that as REPLAY_NOT_ADMITTED, so it passes "tolerated" and keeps that
+# recorded outcome instead of ending the campaign.
 campaign_replay() {
   local role=$1 plan=$2 ids=$3 classes=$4 results=$5 worker=$6
-  local status=0 replay_group plan_digest replay_group_seed
+  local region_results=${7:-required}
+  local status=0
   require_nonempty "concolic execution task plan" "${plan}"
   [[ ! -e "${results}" ]] || die \
     "replay output already exists; worker directories are written once: ${results}"
   mkdir -p "${worker}" "$(dirname "${results}")"
-  # Every task in one workload JVM shares one propagation ledger. Replayed
-  # bundles already name that group in their tasks; the initial linked plan
-  # does not, so give the whole invocation one identity here.
-  if ! replay_group=$(jq -e -r -s '
-      ([.[] | (.linkedReplayGroupId // "")]) as $all
-      | ($all | map(select(length > 0)) | unique) as $named
-      | if ($named | length) == 0 then ""
-        elif ($named | length) == 1
-             and ($all | all(length > 0)) then $named[0]
-        else error("linked replay plan has mixed or conflicting group ids")
-        end
-    ' "${plan}"); then
-    die "linked replay plan has mixed or conflicting group ids: ${plan}"
-  fi
-  if [[ -z "${replay_group}" ]]; then
-    # The group names one propagation ledger, so it is seeded from what the
-    # ledger is over: the plan these tasks came from and the task ids this
-    # invocation replays. The worker directory used to be in the seed and is
-    # not: it is a per-iteration filesystem path, so the same plan and the
-    # same task ids were given a different group id in every iteration and in
-    # every campaign root, which no reader could join across two runs.
-    plan_digest=$(campaign_digest "${plan}") \
-      || die "failed to digest linked replay plan: ${plan}"
-    replay_group_seed=$(printf '%s\0' "${plan_digest}" "${ids}" \
-      | sha256sum | awk '{print $1}')
-    replay_group="REPLAY.GROUP.${replay_group_seed}"
-  fi
+  # Every task in one workload JVM shares one propagation ledger, and the plan
+  # names it: ConcolicScheduler stamps the seed replay's tasks and
+  # PathReplayTaskFactory stamps every flip bundle's, both as
+  # REPLAY.GROUP.<sha256>. One authority mints it, so nothing is derived or
+  # cross-checked here.
   run_capturing_status \
     campaign_run_adapter "replay(${role})" "${concolic_replay_command}" \
     "CAUSYNTH_CONCOLIC_ROLE=${role}" \
@@ -1975,7 +1957,6 @@ campaign_replay() {
     "CAUSYNTH_CONCOLIC_RESULTS=${results}" \
     "CAUSYNTH_CONCOLIC_CLASSES=${classes}" \
     "CAUSYNTH_CONCOLIC_WORKER_DIR=${worker}" \
-    "CAUSYNTH_CONCOLIC_REPLAY_GROUP_ID=${replay_group}" \
     "CAUSYNTH_CONCOLIC_MAX_TASKS=${schedule_max_jobs}" \
     "CAUSYNTH_TRACE_TEST=${trace_test}" >"${worker}/replay.log" 2>&1
   # A workload whose target branch throws exits nonzero by design, so the gate
@@ -1983,6 +1964,19 @@ campaign_replay() {
   # always a failure, and it is reported with the path that is empty.
   [[ -s "${results}" ]] || campaign_fail REPLAY WORKLOAD "${results}" \
     "the concolic replay published no result (exit ${status}); see ${worker}/replay.log"
+  # A workload that terminated before its selected regions ran still publishes
+  # one CONCOLIC_REGION_SKIPPED row per unreached region, so a non-empty file
+  # is not evidence that anything was replayed.  Only CONCOLIC_REGION_RESULT
+  # rows are importable (ConcolicSummaryImporter:354), so a result carrying
+  # none is a failed replay and is named here, beside the log that holds the
+  # workload's terminating exception -- not one stage later as a wall of
+  # anchor-miss rows the importer refuses.
+  if [[ "${region_results}" == required ]] \
+      && ! jq -e -n 'any(inputs; .event == "CONCOLIC_REGION_RESULT")' \
+        "${results}" >/dev/null; then
+    campaign_fail REPLAY WORKLOAD "${results}" \
+      "the concolic replay published only skipped regions (exit ${status}); the workload terminated before its selected regions ran and its exception is in ${worker}/replay.log"
+  fi
   campaign_log "replay role=${role} exit=${status} result=${results}"
 }
 
@@ -2180,7 +2174,7 @@ campaign_worker_task() {
     || die "the linked path solver emitted an empty replay bundle"
 
   campaign_replay worker "${worker}/execution_task_plan.jsonl" \
-    "${replay_tasks}" "${classes}" "${raw}" "${worker}"
+    "${replay_tasks}" "${classes}" "${raw}" "${worker}" tolerated
   raw_concolic_results="${raw}"
   import_task_plan="${worker}/execution_task_plan.jsonl"
   imported_summaries="${imported}"
@@ -2951,7 +2945,9 @@ campaign_emit() {
      claim: $decided.claim,
      claimReason: $decided.claimReason,
      blockers: $decided.blockers,
-     blockerCount: ($decided.blockers | length),
+     # ClaimPolicy counts its own blockers; re-counting the array here let
+     # the published count drift from the policy that decided the claim.
+     blockerCount: $decided.blockerCount,
      whyNotAccepted: $decided.whyNotAccepted,
      reachability: $reachability,
      degeneracyCheck: $degeneracy,

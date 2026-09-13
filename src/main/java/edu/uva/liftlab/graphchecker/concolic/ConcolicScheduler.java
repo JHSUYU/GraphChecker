@@ -280,6 +280,9 @@ public final class ConcolicScheduler {
         for (ExecutionTask task : result.executionTasks) {
             taskRows.add(task.json());
         }
+        if (arguments.closureMode == ClosureMode.SEED_REPLAY) {
+            taskRows = withSeedReplayGroup(taskRows);
+        }
         ArtifactIO.replaceJsonl(taskPlan, taskRows);
         ArtifactIO.replaceJsonl(arguments.outputDirectory.resolve(
                 "branch_queries.jsonl"), result.queries);
@@ -336,6 +339,38 @@ public final class ConcolicScheduler {
             }
         }
         return result;
+    }
+
+    /**
+     * Names the propagation ledger of the seed replay.
+     *
+     * <p>Every task replayed in one workload JVM shares one ledger, and the
+     * ledger's identity is what a reader joins two runs on.  A flip replay
+     * already carries that identity from {@link PathReplayTaskFactory}; the
+     * seed replay comes from no earlier bundle, so nothing has named its
+     * ledger yet.  It is minted here, in the same spelling and from the same
+     * authority, so one side -- this scheduler and that factory -- names
+     * every replay group and no caller has to derive one.</p>
+     *
+     * <p>The seed is the plan itself, which makes the identity stable across
+     * iterations and campaign roots: the same tasks replayed again are the
+     * same ledger.</p>
+     */
+    private static List<JsonObject> withSeedReplayGroup(
+            List<JsonObject> taskRows) {
+        StringBuilder seed = new StringBuilder();
+        for (JsonObject row : taskRows) {
+            seed.append(CanonicalJson.render(row)).append('\n');
+        }
+        String groupId = "REPLAY.GROUP."
+                + ArtifactIO.sha256(seed.toString());
+        List<JsonObject> named = new ArrayList<>(taskRows.size());
+        for (JsonObject row : taskRows) {
+            JsonObject stamped = row.deepCopy();
+            stamped.addProperty(LinkedReplayBundle.GROUP_FIELD, groupId);
+            named.add(stamped);
+        }
+        return named;
     }
 
     private static JsonObject artifactIdentity(Path path)

@@ -246,4 +246,4 @@ custom VM is under `third_party/OpenJDK-Concolic-Execution-Engine`.
 
 ### 已知可选/遗留
 
-- `callId`/`eventSeq` 证据字段；shell A3 项（`schedule_members.tsv`、`linkedReplayGroupId` by Java、flip solver own record）；增量 re-plan on topology delta。
+- `callId`/`eventSeq` 证据字段；shell A3 项（`schedule_members.tsv`、flip solver own record）；增量 re-plan on topology delta。
