@@ -76,8 +76,10 @@ public class ReplayTaskSliceTest {
         assertEquals("the failing read consumes this write directly",
                 reasons(ReplayTaskSlice.FATAL_READ_WRITER),
                 slice.reasons(WRITER));
-        assertEquals("a wire whose producer is a root site carries it",
-                reasons(ReplayTaskSlice.ROOT_DEPENDENT_FLOW),
+        assertEquals("a wire whose producer is a root site carries it,"
+                        + " and its receiver is never interchangeable",
+                reasons(ReplayTaskSlice.ROOT_DEPENDENT_FLOW,
+                        ReplayTaskSlice.WIRE_CONSUMER),
                 slice.reasons(WIRE_CONSUMER));
         assertEquals("the hook published the root inside this activation",
                 reasons(ReplayTaskSlice.ROOT_SITE), slice.reasons(HOOK_PHASE));
@@ -172,16 +174,19 @@ public class ReplayTaskSliceTest {
         JsonArray fromFirst = new JsonArray();
         JsonArray fromSecond = new JsonArray();
         for (int index = 1; index <= 4; index++) {
-            fromFirst.add(wire(ROOT_SITE, element(index)));
+            fromFirst.add(sharedFlow(ROOT_SITE, element(index), CARRIER,
+                    CARRIER_KEY));
         }
-        fromSecond.add(wire(secondRoot, element(5)));
+        fromSecond.add(sharedFlow(secondRoot, element(5), CARRIER,
+                CARRIER_KEY));
         plans.add(plan(ROOT_SITE, "REGION_PATH_CLOSURE",
                 actions(fieldRead(ROOT)), fromFirst));
         plans.add(plan(secondRoot, "REGION_PATH_CLOSURE",
                 actions(faultMarker()), fromSecond));
         for (int index = 1; index <= 5; index++) {
             plans.add(plan(element(index), "REGION_PATH_CLOSURE", actions(),
-                    edges(wire(element(index), COLLECTOR))));
+                    edges(sharedFlow(element(index), COLLECTOR, CARRIER,
+                            CARRIER_KEY))));
         }
         plans.add(plan(COLLECTOR, "REGION_PATH_CLOSURE", actions(),
                 edges(wire(COLLECTOR, TARGET))));
@@ -204,6 +209,53 @@ public class ReplayTaskSliceTest {
                 rows.get(2).get("reason").getAsString());
         assertEquals(element(1), rows.get(2).get("foldedInto").getAsString());
         assertEquals(3, rows.get(0).get("foldedSiblingCount").getAsInt());
+    }
+
+    /**
+     * The deliveries of one wire are not interchangeable.
+     *
+     * <p>A key rotation sends one structure and its receiver converts one
+     * element per delivery, so the receivers of one port share the
+     * producer's provenance exactly -- and the fold, which tells arms apart
+     * by provenance, sees one arm where there are five.  Which element the
+     * fatal read compares is a fact of the failing execution, so folding
+     * them left one attach point per node and bound the rest of the wire's
+     * values to nothing: on hdfs-17899-bug3 the nine per-key converts of
+     * {@code PBHelper.convert(BlockKeyProto)} collapsed to one per
+     * DataNode, and every block-key-id consumer family but that one stayed
+     * unreferenced.</p>
+     */
+    @Test
+    public void theDeliveriesOfOneWireAreNeverFolded() throws Exception {
+        List<RegionInstancePlan> plans = new ArrayList<>();
+        JsonArray deliveries = new JsonArray();
+        for (int index = 1; index <= 5; index++) {
+            deliveries.add(wire(ROOT_SITE, element(index)));
+        }
+        plans.add(plan(TARGET, "TARGET_REACH_CLOSURE", actions(), edges()));
+        plans.add(plan(ROOT_SITE, "REGION_PATH_CLOSURE",
+                actions(fieldRead(ROOT)), deliveries));
+        for (int index = 1; index <= 5; index++) {
+            plans.add(plan(element(index), "REGION_PATH_CLOSURE", actions(),
+                    edges(sharedFlow(element(index), COLLECTOR, CARRIER,
+                            CARRIER_KEY))));
+        }
+        plans.add(plan(COLLECTOR, "REGION_PATH_CLOSURE", actions(),
+                edges(wire(COLLECTOR, TARGET))));
+
+        ReplayTaskSlice slice = decide(plans, seeded());
+
+        for (int index = 1; index <= 5; index++) {
+            assertTrue("delivery " + index + " carries its own element",
+                    slice.keeps(element(index)));
+            assertTrue(slice.reasons(element(index))
+                    .contains(ReplayTaskSlice.WIRE_CONSUMER));
+            assertEquals("nothing stands for a delivery", "",
+                    slice.representative(element(index)));
+        }
+        assertEquals(0, slice.telemetry(Arrays.asList(element(1), element(2),
+                element(3), element(4), element(5)))
+                .get("foldedSiblingCount").getAsInt());
     }
 
     /** Two repetitions are a before and an after, and both are real arms. */
@@ -240,25 +292,30 @@ public class ReplayTaskSliceTest {
     public void theFoldNeverRemovesATargetARootOrAFatalReadWriter()
             throws Exception {
         List<RegionInstancePlan> plans = new ArrayList<>();
-        JsonArray wires = new JsonArray();
+        JsonArray carried = new JsonArray();
         for (int index = 1; index <= 5; index++) {
-            wires.add(wire(ROOT_SITE, element(index)));
+            carried.add(sharedFlow(ROOT_SITE, element(index), CARRIER,
+                    CARRIER_KEY));
         }
         plans.add(plan(TARGET, "TARGET_REACH_CLOSURE", actions(), edges()));
         plans.add(plan(ROOT_SITE, "REGION_PATH_CLOSURE",
-                actions(fieldRead(ROOT)), wires));
+                actions(fieldRead(ROOT)), carried));
         // Five siblings of one cohort: one writes what the failing read
         // consumes, one is a root site of its own, three carry only a flow.
         plans.add(plan(element(1), "REGION_PATH_CLOSURE", actions(),
                 edges(sharedFlow(element(1), TARGET, CARRIER, CARRIER_KEY))));
         plans.add(plan(element(2), "REGION_PATH_CLOSURE",
-                actions(faultMarker()), edges(wire(element(2), COLLECTOR))));
+                actions(faultMarker()), edges(sharedFlow(element(2),
+                        COLLECTOR, CARRIER, CARRIER_KEY))));
         plans.add(plan(element(3), "REGION_PATH_CLOSURE", actions(),
-                edges(wire(element(3), COLLECTOR))));
+                edges(sharedFlow(element(3), COLLECTOR, CARRIER,
+                        CARRIER_KEY))));
         plans.add(plan(element(4), "REGION_PATH_CLOSURE", actions(),
-                edges(wire(element(4), COLLECTOR))));
+                edges(sharedFlow(element(4), COLLECTOR, CARRIER,
+                        CARRIER_KEY))));
         plans.add(plan(element(5), "REGION_PATH_CLOSURE", actions(),
-                edges(wire(element(5), COLLECTOR))));
+                edges(sharedFlow(element(5), COLLECTOR, CARRIER,
+                        CARRIER_KEY))));
         plans.add(plan(COLLECTOR, "REGION_PATH_CLOSURE", actions(),
                 edges(wire(COLLECTOR, TARGET))));
 

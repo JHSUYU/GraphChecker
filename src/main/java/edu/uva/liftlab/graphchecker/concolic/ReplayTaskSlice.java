@@ -53,16 +53,23 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
  *   so a cohort of {@value #MIN_FANOUT_COHORT} or more such siblings
  *   replays one occurrence per distinct root provenance and publishes the
  *   others as {@link #FOLDED_SIBLING} naming the representative that stands
- *   for them.</li>
+ *   for them.  A {@link #WIRE_CONSUMER} is never a cohort member: the
+ *   deliveries of one port hand their receivers different elements of what
+ *   the producer sent, all with the producer's own provenance, so
+ *   provenance cannot tell them apart and which element the fatal read
+ *   compares is a fact of the failing execution rather than of the plan.
+ *   Folding them left one attach point per node and the rest of the wire's
+ *   values bound to nothing.</li>
  * </ol>
  *
- * <p>Soundness is bounded by four rules the narrowing may never break: a
+ * <p>Soundness is bounded by five rules the narrowing may never break: a
  * {@link #TARGET_REACH} occurrence, a {@link #ROOT_SITE} and an occurrence
  * whose write the fatal read itself consumes ({@link #FATAL_READ_WRITER})
- * are kept whatever else says, a cohort never folds to nothing, and a
- * withheld carrier slice prunes nothing at all -- a root the graph does not
- * name cannot state what it reaches, and neither can a fatal read the graph
- * has no cell for.</p>
+ * are kept whatever else says, a root-dependent {@link #WIRE_CONSUMER} is
+ * never folded away, a cohort never folds to nothing, and a withheld
+ * carrier slice prunes nothing at all -- a root the graph does not name
+ * cannot state what it reaches, and neither can a fatal read the graph has
+ * no cell for.</p>
  *
  * <p>The kept count is published against an optional expected-shape hint
  * the experiment states ({@code replay_task_budget} in workflow.properties,
@@ -95,6 +102,8 @@ final class ReplayTaskSlice {
     static final String ROOT_DEPENDENT_FLOW = "ROOT_DEPENDENT_FLOW";
     /** Keep reason of an occurrence the failing read consumes directly. */
     static final String FATAL_READ_WRITER = "FATAL_READ_WRITER";
+    /** Keep reason of a wire delivery's receiving occurrence. */
+    static final String WIRE_CONSUMER = "WIRE_CONSUMER";
 
     /**
      * How many repetitions of one case shape make a structure walk.
@@ -202,6 +211,7 @@ final class ReplayTaskSlice {
         }
         Map<String, Set<String>> forward = new LinkedHashMap<>();
         Set<String> writers = new LinkedHashSet<>();
+        Set<String> wireConsumers = new LinkedHashSet<>();
         for (JsonObject edge : edges.values()) {
             String from = planned(optionalString(edge, "fromOccurrenceId"));
             String to = planned(optionalString(edge, "toOccurrenceId"));
@@ -222,6 +232,13 @@ final class ReplayTaskSlice {
             // takes is the arm the failure sees: never this slice's to drop.
             if (targets.contains(to) && !targets.contains(from)) {
                 reasons.get(from).add(FATAL_READ_WRITER);
+            }
+            // Each delivery of a wire hands its receiver one element of what
+            // the producer sent, and the receivers of one port are not
+            // interchangeable: which element the fatal read compares is a
+            // fact of the failing execution, not of the plan.
+            if (AutomaticRegionEdge.tracedExchangeCandidate(edge)) {
+                wireConsumers.add(to);
             }
             // A wire delivery or request-fault control carries whatever its
             // producer carries, so it is walked from a root-dependent
@@ -264,6 +281,11 @@ final class ReplayTaskSlice {
                 reasons.get(writer).add(CARRIER_WRITER);
             }
         }
+        for (String consumer : wireConsumers) {
+            if (rootDependent.contains(consumer)) {
+                reasons.get(consumer).add(WIRE_CONSUMER);
+            }
+        }
         // The other half of the bidirectional rule, at occurrence grain: a
         // root reaching an occurrence says the value can move, and reaching
         // the fatal read from it says the failing branch can see the move.
@@ -281,7 +303,7 @@ final class ReplayTaskSlice {
             why.clear();
         }
         Map<String, String> folded = foldFanOut(regionPlans, reasons,
-                provenance);
+                provenance, wireConsumers);
         return new ReplayTaskSlice(true, "ROOT_DEPENDENT_CARRIERS", plans,
                 reasons, folded, budget);
     }
@@ -330,7 +352,8 @@ final class ReplayTaskSlice {
     private static Map<String, String> foldFanOut(
             List<RegionInstancePlan> regionPlans,
             Map<String, Set<String>> reasons,
-            Map<String, Set<String>> provenance) {
+            Map<String, Set<String>> provenance,
+            Set<String> wireConsumers) {
         Map<String, List<String>> cohorts = new LinkedHashMap<>();
         for (RegionInstancePlan plan : regionPlans) {
             String occurrence = planned(plan.occurrenceId());
@@ -341,7 +364,8 @@ final class ReplayTaskSlice {
             if (why == null || !why.contains(ROOT_DEPENDENT_FLOW)
                     || why.contains(TARGET_REACH)
                     || why.contains(ROOT_SITE)
-                    || why.contains(FATAL_READ_WRITER)) {
+                    || why.contains(FATAL_READ_WRITER)
+                    || wireConsumers.contains(occurrence)) {
                 continue;
             }
             String cohort = plan.regionId() + "\n" + plan.sourceKey() + "\n"

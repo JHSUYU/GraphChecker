@@ -485,6 +485,43 @@ public class RpcAttachLoweringTest {
                 ConcolicSmtComposer.unboundDeclaredPorts(ledger));
     }
 
+    /**
+     * Only a read on a node the wire reached realizes it.
+     *
+     * <p>The producer assigns the consumer's field from its own state before
+     * the value is ever sent, so a read there is the flow's source, not its
+     * arrival. hdfs-17899-bug3 and hdfs-17897 both excused an unbound
+     * {@code block-key-expiry-date} on a read of
+     * {@code DelegationKey#expiryDate} that happens only on the NameNode,
+     * while the wire delivered to the DataNodes -- and the DataNode's own
+     * expiry reads then served recorded constants no wire carried.</p>
+     */
+    @Test
+    public void onlyAReadOnAReceivingNodeRealizesAFlow() {
+        String field = "org.apache.hadoop.security.token.delegation"
+                + ".DelegationKey#expiryDate";
+        Map<String, Set<String>> readOnProducer = java.util.Collections
+                .<String, Set<String>>singletonMap(field,
+                        java.util.Collections.singleton(
+                                "hdfs-17899/nn0#epoch0"));
+
+        assertFalse("the producer's own assignment is not an arrival",
+                ConcolicSmtComposer.consumerFieldReadOnReceiver(field,
+                        "hdfs-17899/target-dn#epoch0", readOnProducer));
+        assertTrue(ConcolicSmtComposer.consumerFieldReadOnReceiver(field,
+                "hdfs-17899/nn0#epoch0", readOnProducer));
+        assertFalse("a field nothing reads realizes nothing",
+                ConcolicSmtComposer.consumerFieldReadOnReceiver(
+                        "org.apache.hadoop.Other#field",
+                        "hdfs-17899/nn0#epoch0", readOnProducer));
+        assertFalse(ConcolicSmtComposer.consumerFieldReadOnReceiver("",
+                "hdfs-17899/nn0#epoch0", readOnProducer));
+        assertFalse(ConcolicSmtComposer.consumerFieldReadOnReceiver(field, "",
+                readOnProducer));
+        assertFalse(ConcolicSmtComposer.consumerFieldReadOnReceiver(field,
+                "hdfs-17899/nn0#epoch0", null));
+    }
+
     /** An undeclared port nobody referred to is some other slice's region. */
     @Test
     public void anUndeclaredPortIsNeverARefusal() {
