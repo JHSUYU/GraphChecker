@@ -73,12 +73,29 @@ public final class ConcolicConstraintSolver {
         JsonObject activation = linked.inputs;
         PathQuery query = PathQuery.decode(task);
         BranchReplayContract replayContract = query.replayContract;
-        JsonArray branchConstraints = replayContract
-                .requiredPathPredicates();
-        JsonArray contextConstraints = query.pathContext.expressions();
+        // The obligation's path condition as the replay it was cut from
+        // valued it: roots, literals and containers over them, and no
+        // placeholder for this solver to choose a value for.  The planner
+        // resolved it, because only there does that replay still have its
+        // rows.
+        JsonObject resolved = ResolvedFlipQuery.of(task);
+        JsonArray unresolvedReasons = resolved == null
+                ? new JsonArray() : array(resolved, "unresolved");
+        JsonArray branchConstraints = resolved == null
+                ? replayContract.requiredPathPredicates()
+                : array(resolved, "predicates");
+        JsonArray contextConstraints = resolved == null
+                ? query.pathContext.expressions()
+                : array(resolved, "context");
+        if (unresolvedReasons.size() > 0) {
+            JsonObject cut = baseRecord(query.queryKey);
+            cut.add("unsupported", new JsonArray());
+            cut.addProperty("status", "MATERIALIZATION_GAP");
+            cut.addProperty("reason", ResolvedFlipQuery.UNRESOLVED_REASON);
+            cut.add("unresolvedPathCondition", unresolvedReasons.deepCopy());
+            return new Result(cut, "", new JsonArray(), replayContract);
+        }
         List<JsonObject> actions = materializationActions(activation);
-        List<JsonObject> targetActions = materializationActions(
-                primaryActivation);
         Encoder encoder = new Encoder();
         for (int index = 0; index < contextConstraints.size(); index++) {
             JsonElement constraint = contextConstraints.get(index);
@@ -90,22 +107,13 @@ public final class ConcolicConstraintSolver {
         Set<String> targetSymbols = new LinkedHashSet<>();
         for (int index = 0; index < branchConstraints.size(); index++) {
             boolean target = index + 1 == branchConstraints.size();
-            encoder.captureTargetContainerReads = target;
-            Set<String> symbols;
-            try {
-                symbols = encoder.addConstraint(branchConstraints.get(index),
-                        "q_branch_" + index);
-            } finally {
-                encoder.captureTargetContainerReads = false;
-            }
+            Set<String> symbols = encoder.addConstraint(
+                    branchConstraints.get(index), "q_branch_" + index);
             replayFrontier.addAll(symbols);
             if (target) {
                 targetSymbols.addAll(symbols);
             }
         }
-        replayFrontier.addAll(encoder.bindConsumerFamilyDependencies(
-                query.consumerAnchorCaseDependencies,
-                query.sourceActivationOccurrenceId));
         ReplaySupport targetSupport = classifyReplaySupport(
                 encoder, targetSymbols, actions,
                 linked.configuredSourcePhaseCatalogs);
@@ -116,24 +124,12 @@ public final class ConcolicConstraintSolver {
                 replaySupport.writableSymbols;
         preferObservedReplayControls(encoder,
                 writableReplayControlSymbols, actions);
-        encoder.finishGuardedReadSelections();
-        encoder.bindTargetContainerReads(targetActions);
         String smt = encoder.finish();
         JsonObject record = baseRecord(query.queryKey);
         record.add("unsupported", strings(encoder.unsupported));
         if (!encoder.unsupported.isEmpty()) {
             record.addProperty("status", "UNSUPPORTED");
             record.addProperty("reason", "UNSUPPORTED_EXPRESSION_IR");
-            return new Result(record, smt, new JsonArray(),
-                    replayContract);
-        }
-
-        if (!encoder.targetContainerGaps.isEmpty()) {
-            record.addProperty("status", "MATERIALIZATION_GAP");
-            record.addProperty("reason",
-                    "TARGET_CONTAINER_READ_IS_NOT_MATERIALIZABLE");
-            record.add("unresolvedTargetContainerReads",
-                    strings(encoder.targetContainerGaps));
             return new Result(record, smt, new JsonArray(),
                     replayContract);
         }
@@ -187,15 +183,8 @@ public final class ConcolicConstraintSolver {
         ModelProjection projection = modelAssignments(encoder, values,
                 actions, linked.configuredSourcePhaseCatalogs,
                 projectedSymbols);
-        ModelProjection containerProjection = targetContainerAssignments(
-                encoder, values, replayContract.source().occurrence());
-        for (JsonElement assignment : containerProjection.assignments) {
-            projection.assignments.add(assignment);
-        }
-        projection.unresolved.addAll(containerProjection.unresolved);
         JsonArray assignments = projection.assignments;
-        if (projectedSymbols.isEmpty()
-                && encoder.targetContainerModels.isEmpty()) {
+        if (projectedSymbols.isEmpty()) {
             record.addProperty("status", "MATERIALIZATION_GAP");
             record.addProperty("reason", "NO_REGION_INPUT_SYMBOL_IN_QUERY");
         } else if (!projection.unresolved.isEmpty()) {
@@ -537,7 +526,11 @@ public final class ConcolicConstraintSolver {
         @Override
         Term caseMergeTerm(JsonObject expression, Sort expected,
                            String origin) {
-            return consumerCaseMergeTerm(expression, expected, origin);
+            // A value merged over another region's cases is a cross-replay
+            // object.  One obligation is one replay's path condition.
+            unsupported.add(origin + ":CASE_MERGE_IN_PATH:"
+                    + optionalString(expression, "mergeId"));
+            return null;
         }
 
         /** A refused call yields no term, so no sort is needed for it. */
@@ -1036,20 +1029,14 @@ public final class ConcolicConstraintSolver {
         @Override
         Term guardedReadTerm(JsonObject read, Sort expected,
                              String origin) {
-            boolean targetMapRead = captureTargetContainerReads
-                    && guardedReadDepth == 0
-                    && SharedStateEvidence.LOCATION_KIND_MAP_STATE.equals(
-                    optionalString(object(read, "location"), "locationKind"));
-            guardedReadDepth++;
-            try {
-                Term value = lowerGuardedReadTerm(read, expected, origin);
-                if (targetMapRead && value != null) {
-                    captureTargetGuardedRead(read, value, origin);
-                }
-                return value;
-            } finally {
-                guardedReadDepth--;
-            }
+            // Every expression reaching this encoder was resolved inside its
+            // own replay, so a surviving read is a value that replay did not
+            // determine.  Choosing one here would be the solver inventing the
+            // history the flip is supposed to test.
+            unsupported.add(origin + ":UNRESOLVED_SHARED_READ:"
+                    + InSessionReadResolver.sessionLocation(
+                            object(read, "location")));
+            return null;
         }
 
         private Term lowerGuardedReadTerm(JsonObject read, Sort expected,

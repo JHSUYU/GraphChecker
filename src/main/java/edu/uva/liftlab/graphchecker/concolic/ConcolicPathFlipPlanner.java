@@ -128,6 +128,8 @@ public final class ConcolicPathFlipPlanner {
          *  Built from the whole wave: a root minted in one region is still a
          *  root when another region's branch consumes it. */
         private final SymbolicRootInventory roots;
+        /** One in-session resolver per replay of this wave's corpus. */
+        private final java.util.Map<String, InSessionReadResolver> resolvers;
         /** One verification of the wave's table, shared by every member. */
         private final SharedExpressionTable.Compactor compactor =
                 new SharedExpressionTable.Compactor();
@@ -150,6 +152,8 @@ public final class ConcolicPathFlipPlanner {
             this.topologyEpoch = topologyEpoch;
             this.bounds = bounds;
             this.roots = roots;
+            this.resolvers = ResolvedFlipQuery.resolversByReplay(
+                    allSummaries);
         }
 
         private static Wave load(Map<String, String> options)
@@ -219,6 +223,11 @@ public final class ConcolicPathFlipPlanner {
                     summaries, executionTasks, explorationRecords, bounds,
                     familyDigest, roots);
             for (JsonObject task : result.tasks) {
+                // The obligation asks for a root valuation, so its path
+                // condition has to be an expression over roots.  Resolve it
+                // here, where the replay it was cut from still has its rows.
+                String replay = replayOfSource(task);
+                ResolvedFlipQuery.attach(task, resolvers.get(replay), replay);
                 task.add(LinkedReplayBundle.CASE_DEPENDENCIES_FIELD,
                         scopedDependencies(task));
                 JsonObject bundle = LinkedReplayBundle.create(
@@ -259,6 +268,25 @@ public final class ConcolicPathFlipPlanner {
                     "region_path_manifest.json"),
                     PRETTY.toJson(result.manifest) + System.lineSeparator());
             return result.manifest;
+        }
+
+        /** The replay this obligation was cut from. */
+        private String replayOfSource(JsonObject task) {
+            String summaryId = optionalString(task, "sourceSummaryId");
+            String taskId = optionalString(task, "sourceTaskId");
+            for (JsonObject summary : allSummaries) {
+                if (!summaryId.isEmpty() && summaryId.equals(
+                        optionalString(summary, "summaryId"))) {
+                    return ResolvedFlipQuery.replayKey(summary);
+                }
+            }
+            for (JsonObject summary : allSummaries) {
+                if (!taskId.isEmpty() && taskId.equals(
+                        optionalString(summary, "taskId"))) {
+                    return ResolvedFlipQuery.replayKey(summary);
+                }
+            }
+            return "";
         }
 
         /**
