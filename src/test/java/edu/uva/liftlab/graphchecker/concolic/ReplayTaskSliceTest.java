@@ -291,7 +291,8 @@ public class ReplayTaskSliceTest {
         JsonObject region = new JsonObject();
         region.addProperty("regionId", ROOT_REGION);
         return ConcolicScheduler.SymbolicInputSelection.read(declarations,
-                Collections.singletonList(region));
+                Collections.singletonList(region),
+                        java.util.Collections.<edu.uva.liftlab.graphchecker.contract.RegionInstancePlan>emptyList());
     }
 
     private static List<Map.Entry<String, JsonArray>> proposals(

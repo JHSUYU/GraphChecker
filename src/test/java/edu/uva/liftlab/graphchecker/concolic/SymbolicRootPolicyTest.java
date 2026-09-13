@@ -54,7 +54,8 @@ public class SymbolicRootPolicyTest {
     @Test
     public void absentFileLeavesEveryProposedRootSymbolic() throws Exception {
         ConcolicScheduler.SymbolicInputSelection selection =
-                ConcolicScheduler.SymbolicInputSelection.read(null, catalog());
+                ConcolicScheduler.SymbolicInputSelection.read(null, catalog(),
+                        java.util.Collections.<edu.uva.liftlab.graphchecker.contract.RegionInstancePlan>emptyList());
 
         JsonArray selected = selection.select(NN, proposals());
 
@@ -71,7 +72,8 @@ public class SymbolicRootPolicyTest {
         ConcolicScheduler.SymbolicInputSelection selection =
                 ConcolicScheduler.SymbolicInputSelection.read(
                         declarations("{\"regionId\":\"" + NN + "\",\"cells\":[\""
-                                + CLOCK_CELL + "\"]}"), catalog());
+                                + CLOCK_CELL + "\"]}"), catalog(),
+                        java.util.Collections.<edu.uva.liftlab.graphchecker.contract.RegionInstancePlan>emptyList());
 
         JsonArray selected = selection.select(NN, proposals());
 
@@ -101,7 +103,8 @@ public class SymbolicRootPolicyTest {
         ConcolicScheduler.SymbolicInputSelection selection =
                 ConcolicScheduler.SymbolicInputSelection.read(
                         declarations("{\"regionId\":\"" + NN + "\",\"cells\":[\""
-                                + CLOCK_CELL + "\"]}"), catalog());
+                                + CLOCK_CELL + "\"]}"), catalog(),
+                        java.util.Collections.<edu.uva.liftlab.graphchecker.contract.RegionInstancePlan>emptyList());
 
         JsonArray selected = selection.select(DN, actions);
 

@@ -700,6 +700,14 @@ public final class GapLedger {
                         + " than the finalizer retains, so the port below it"
                         + " is under-approximated and the accesses it"
                         + " dropped are invisible to every later stage");
+        diagnostic(plan, "SYMBOLIC_INPUT_REGION_ID_DECLARATION",
+                "the manual root is declared and admitted either way: this"
+                        + " says only that the campaign spelled the region as"
+                        + " a planner-minted hash rather than as the static"
+                        + " site it belongs to, and a hash moves when the"
+                        + " retained selection moves -- the root itself is in"
+                        + " the plan, so no chain link is missing and the"
+                        + " site form is the thing to rewrite");
         blocking(plan, "SYMBOLIC_CONTAINER_SNAPSHOT_CAPACITY_REACHED",
                 "an accessor-return stream hit the container snapshot"
                         + " capacity, so later reads of that container were"

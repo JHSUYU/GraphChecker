@@ -199,7 +199,8 @@ public class RootDependentCarrierTest {
                 ConcolicScheduler.SymbolicInputSelection.read(
                         declarations("{\"regionId\":\"" + NN
                                 + "\",\"fieldSignatures\":[\"" + ORDERED
-                                + "\"]}"), catalog());
+                                + "\"]}"), catalog(),
+                        java.util.Collections.<edu.uva.liftlab.graphchecker.contract.RegionInstancePlan>emptyList());
         selection.seedCarrierSlice(graph, proposals(proposed));
         return selection;
     }

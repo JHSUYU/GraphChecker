@@ -58,6 +58,9 @@ public final class ConcolicScheduler {
     static final String ROOT_POLICY_ARTIFACT = "symbolic_root_policy.jsonl";
     /** Row kind of {@link #ROOT_POLICY_ARTIFACT}. */
     static final String SYMBOLIC_ROOT_POLICY = "SYMBOLIC_ROOT_POLICY";
+    /** A manual root still declared by a planner-minted region hash. */
+    static final String REGION_ID_DECLARATION =
+            "SYMBOLIC_INPUT_REGION_ID_DECLARATION";
     /** Row kind of one refused automatic root candidate. */
     static final String SUPPRESSED_ROOT_CANDIDATE =
             "SUPPRESSED_ROOT_CANDIDATE";
@@ -104,7 +107,7 @@ public final class ConcolicScheduler {
         DefinitionIndex definitions = DefinitionIndex.from(refinedGraph);
         SymbolicInputSelection symbolicInputs =
                 SymbolicInputSelection.read(arguments.symbolicInputs,
-                        regions);
+                        regions, regionPlans);
         Map<String, Region> regionIndex = regionIndex(regions);
         // The identities recorded here are verified once, against the same
         // files, at the point the schedule index commits them.
@@ -2143,6 +2146,7 @@ public final class ConcolicScheduler {
             Path declarations, SymbolicInputSelection selection) {
         List<JsonObject> rows = new ArrayList<>();
         rows.add(rootPolicyTelemetry(declarations, selection));
+        rows.addAll(selection.declarationDiagnostics());
         for (JsonElement element : selection.rootDecisions()) {
             rows.add(element.getAsJsonObject());
         }
@@ -2584,19 +2588,30 @@ public final class ConcolicScheduler {
         /** The locations this run kept as carriers, first-seen order. */
         private final Set<String> carrierLocations = new LinkedHashSet<>();
 
+        /** What each declaration row asked the campaign to change. */
+        private final List<JsonObject> declarationDiagnostics;
+
         private SymbolicInputSelection(
                 boolean configured, Map<String, Set<String>> admitted,
-                Map<String, Map<String, String>> minted) {
+                Map<String, Map<String, String>> minted,
+                List<JsonObject> declarationDiagnostics) {
             this.configured = configured;
             this.admitted = admitted;
             this.minted = minted;
+            this.declarationDiagnostics = declarationDiagnostics;
+        }
+
+        List<JsonObject> declarationDiagnostics() {
+            return declarationDiagnostics;
         }
 
         /** One pass over the static hook declarations and, when the campaign
          *  configured one, over the declared field/port/cell rows. */
         static SymbolicInputSelection read(
-                Path path, List<JsonObject> regionCatalog)
+                Path path, List<JsonObject> regionCatalog,
+                List<RegionInstancePlan> regionPlans)
                 throws IOException {
+            List<JsonObject> diagnostics = new ArrayList<>();
             Map<String, Map<String, String>> minted = new LinkedHashMap<>();
             Set<String> catalogRegions = new LinkedHashSet<>();
             for (JsonObject region : regionCatalog == null
@@ -2617,27 +2632,153 @@ public final class ConcolicScheduler {
             Map<String, Set<String>> admitted = new LinkedHashMap<>();
             if (path == null) {
                 return new SymbolicInputSelection(!minted.isEmpty(),
-                        admitted, minted);
+                        admitted, minted, diagnostics);
             }
             requireFile(path, "symbolic input selection");
             for (JsonObject row : ArtifactIO.readJsonl(path)) {
-                String regionId = firstNonBlank(optionalString(row, "regionId"));
-                if (regionId.isEmpty()) {
-                    throw new IOException("symbolic input selection row has "
-                            + "no regionId: " + row);
+                for (String regionId : declaredRegions(row, catalogRegions,
+                        regionPlans, diagnostics)) {
+                    Set<String> names = admitted.computeIfAbsent(regionId,
+                            ignored -> new LinkedHashSet<>());
+                    for (String field : new String[]{
+                            "fieldSignatures", "portIds", "cells"}) {
+                        addDeclaredNames(names, row, field);
+                    }
                 }
+            }
+            return new SymbolicInputSelection(true, admitted, minted,
+                    diagnostics);
+        }
+
+        /**
+         * Which planned regions one declaration row admits its names in.
+         *
+         * <p>A manual root belongs to a <em>site</em> -- the class and method
+         * the cell is read in -- not to a region.  A region id is a hash the
+         * planner mints from what the recording selected, so it moves when
+         * the selection moves, and a campaign that spells one has to be
+         * re-derived by hand every time: that is what refused bug3's clock
+         * declaration at PLAN when the retained region set changed
+         * underneath it.  A site is what the experiment actually knows, and
+         * it is resolved here, against the plan that names each region's
+         * {@code targetMethod}.</p>
+         *
+         * <p>A site that matches no planned region is a hard error naming the
+         * site: the campaign asked for a root the plan cannot carry, and
+         * running on without it would silently drop the root.  A site that
+         * matches several regions declares the root in each of them -- the
+         * same Java method planned on two nodes is two regions and the
+         * declaration means both -- unless it scopes itself to a node or an
+         * epoch.  The region-id form is still read, and asks in the policy
+         * artifact to be rewritten as a site.</p>
+         */
+        private static List<String> declaredRegions(
+                JsonObject row, Set<String> catalogRegions,
+                List<RegionInstancePlan> regionPlans,
+                Collection<JsonObject> diagnostics) throws IOException {
+            String regionId = firstNonBlank(optionalString(row, "regionId"));
+            if (!regionId.isEmpty()) {
                 if (!catalogRegions.contains(regionId)) {
                     throw new IOException("symbolic input selection names "
                             + "an unknown static region: " + regionId);
                 }
-                Set<String> names = admitted.computeIfAbsent(regionId,
-                        ignored -> new LinkedHashSet<>());
-                for (String field : new String[]{
-                        "fieldSignatures", "portIds", "cells"}) {
-                    addDeclaredNames(names, row, field);
+                if (diagnostics != null) {
+                    diagnostics.add(regionIdDeclarationDiagnostic(regionId));
                 }
+                return Collections.singletonList(regionId);
             }
-            return new SymbolicInputSelection(true, admitted, minted);
+            String method = declaredMethod(row);
+            if (method.isEmpty()) {
+                throw new IOException("symbolic input selection row declares "
+                        + "neither a regionId nor a static site "
+                        + "(class + method): " + row);
+            }
+            String node = firstNonBlank(optionalString(row, "node"));
+            String epoch = firstNonBlank(optionalString(row, "epoch"));
+            List<String> resolved = new ArrayList<>();
+            Set<String> seen = new LinkedHashSet<>();
+            for (RegionInstancePlan plan : regionPlans == null
+                    ? Collections.<RegionInstancePlan>emptyList()
+                    : regionPlans) {
+                if (!method.equals(optionalString(plan.json(),
+                        "targetMethod"))
+                        || !scopeAdmits(plan.sourceKey(), node, epoch)
+                        || !catalogRegions.contains(plan.regionId())) {
+                    continue;
+                }
+                if (seen.add(plan.regionId())) resolved.add(plan.regionId());
+            }
+            if (resolved.isEmpty()) {
+                throw new IOException("symbolic input selection names a "
+                        + "static site no planned region covers: " + method
+                        + (node.isEmpty() ? "" : " on node " + node)
+                        + (epoch.isEmpty() ? "" : " at epoch " + epoch));
+            }
+            return resolved;
+        }
+
+        /**
+         * The canonical signature a site declaration names.
+         *
+         * <p>Either spelling is read: the whole Soot signature in
+         * {@code method}, or {@code class} plus the method's own
+         * {@code returnType name(argumentTypes)} half.</p>
+         */
+        static String declaredMethod(JsonObject row) throws IOException {
+            String method = firstNonBlank(optionalString(row, "method"));
+            if (method.isEmpty()) return "";
+            if (method.startsWith("<")) {
+                if (!method.endsWith(">") || !method.contains(": ")) {
+                    throw new IOException("symbolic input selection method "
+                            + "is not a signature: " + method);
+                }
+                return method;
+            }
+            String declaring = firstNonBlank(optionalString(row, "class"));
+            if (declaring.isEmpty()) {
+                throw new IOException("symbolic input selection names a "
+                        + "method with no declaring class: " + method);
+            }
+            return "<" + declaring + ": " + method + ">";
+        }
+
+        /**
+         * Whether one planned region's source key is inside the declared
+         * scope.  {@code sourceKey} reads {@code <workload>/<node>#epoch<n>};
+         * an undeclared node or epoch admits every one of them.
+         */
+        static boolean scopeAdmits(String sourceKey, String node,
+                                   String epoch) {
+            if (node.isEmpty() && epoch.isEmpty()) return true;
+            String key = safe(sourceKey);
+            int slash = key.indexOf('/');
+            String address = slash < 0 ? key : key.substring(slash + 1);
+            int hash = address.indexOf('#');
+            String actualNode = hash < 0 ? address
+                    : address.substring(0, hash);
+            String actualEpoch = hash < 0 ? "" : address.substring(hash + 1);
+            if (actualEpoch.startsWith("epoch")) {
+                actualEpoch = actualEpoch.substring("epoch".length());
+            }
+            return (node.isEmpty() || node.equals(actualNode))
+                    && (epoch.isEmpty() || epoch.equals(actualEpoch));
+        }
+
+        /** Asks, once per row, for the site form the plan can resolve. */
+        private static JsonObject regionIdDeclarationDiagnostic(
+                String regionId) {
+            JsonObject row = new JsonObject();
+            row.addProperty("schemaVersion", 1);
+            row.addProperty("kind", "CONCOLIC_PLAN_DIAGNOSTIC");
+            row.addProperty("stage", "PLAN");
+            row.addProperty("source", "SYMBOLIC_INPUT_SELECTION");
+            row.addProperty("code", REGION_ID_DECLARATION);
+            row.addProperty("subject", regionId);
+            row.addProperty("detail", "this manual root is declared by a "
+                    + "planner-minted region hash, which moves when the "
+                    + "selection moves; declare it by its static site "
+                    + "(class + method, optionally node/epoch) instead");
+            return row;
         }
 
         /** An explicit source hook is itself the allowlist authority. */
@@ -2969,6 +3110,12 @@ public final class ConcolicScheduler {
             return !field.isEmpty() && minted.getOrDefault(safe(regionId),
                     Collections.<String, String>emptyMap())
                     .containsValue(field);
+        }
+
+        /** Whether one region admits one declared name, for tests. */
+        boolean declares(String regionId, String name) {
+            Set<String> names = admitted.get(safe(regionId));
+            return names != null && names.contains(name);
         }
 
         private boolean admits(String regionId, JsonObject action) {

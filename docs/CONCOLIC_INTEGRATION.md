@@ -133,9 +133,34 @@ expression to reuse and is therefore `CONCRETE`. A region the file does not
 mention mints nothing and still carries everything. Without the file every
 automatic candidate mints. "Carriers" below has the whole decision table.
 
-One JSONL row per region. `regionId` is required and must name a region the
-runtime plan actually contains; the other three keys are optional sets of
-names, any of which admits an action:
+One JSONL row per **static site**. A row says where the root is read -- the
+class and the method -- and PLAN resolves that to the planned regions that
+cover it:
+
+```json
+{"class":"org.apache.hadoop.hdfs.security.token.block.BlockTokenSecretManager",
+ "method":"boolean updateKeys()",
+ "cells":["<org.apache.hadoop.util.Timer: long now()>.return"]}
+```
+
+`method` may instead carry the whole Soot signature (`<class: ret name(args)>`),
+in which case `class` is redundant. `node` and `epoch` are optional and narrow
+the site to the regions planned on that node or in that epoch; without them a
+site that several regions cover declares the root in every one of them, which
+is what "the same Java method planned on two nodes" means. A site no planned
+region covers is a hard PLAN error naming the site: the campaign asked for a
+root the plan cannot carry, and running on would drop it in silence.
+
+A row may still carry `regionId` instead, and is still admitted, but PLAN
+records `SYMBOLIC_INPUT_REGION_ID_DECLARATION` (DIAGNOSTIC) in
+`symbolic_root_policy.jsonl` asking for the site form. A region id is a hash
+the planner mints from what the recording retained, so it moves when the
+retained selection moves, and a file that spells one has to be re-derived by
+hand every time: that is what refused the HDFS-17899 clock declaration at PLAN
+when a publication change shrank the retained region set.
+
+The other three keys are optional sets of names, any of which admits an
+action:
 
 | key | matches the action's |
 |---|---|
@@ -148,11 +173,11 @@ Every input this file does not mention is already tracked as a carrier.
 `cells` is how a call return is named, since it carries no field signature: an
 `EXTERNAL_CALL_RETURN` action's cell is `<callee signature>.return`, identical
 at every call site of that callee inside the region, so one entry declares
-"this region's wall clock". Example, from
+"this site's wall clock". Example, from
 `experiments/hadoop/hdfs-17899/symbolic-inputs.jsonl`:
 
 ```json
-{"regionId":"REGION.aaa1cfd7-...","fieldSignatures":["<org.apache.hadoop.security.token.delegation.DelegationKey: long expiryDate>"],"cells":["<org.apache.hadoop.util.Timer: long now()>.return"]}
+{"class":"org.apache.hadoop.hdfs.security.token.block.BlockTokenSecretManager","method":"boolean updateKeys()","cells":["<org.apache.hadoop.util.Timer: long now()>.return"]}
 ```
 
 A declared row does not only survive the narrowing: it **mints**. Once a
