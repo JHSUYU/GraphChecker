@@ -249,36 +249,6 @@ public final class SymbolicSourceEvidence {
      * Builds the one-to-one raw-symbol registry consumed by the Composer.
      * A collision is evidence corruption, never a reason to pick one row.
      */
-    /** Raw-root registry restricted to configured ({@code false}) or manual
-     * ({@code true}) events. A null restriction admits both. */
-    public static Map<String, String> rawSymbolIdentities(
-            Iterable<JsonObject> owners, Boolean manual) {
-        Map<String, String> result = new LinkedHashMap<>();
-        Map<String, JsonObject> authorityByRaw = new LinkedHashMap<>();
-        if (owners == null) return result;
-        for (JsonObject owner : owners) {
-            for (JsonObject event : eventsOf(owner)) {
-                if (manual != null && manual != isManual(event)) continue;
-                // A reused read is not a root: its expression already names
-                // the roots it was propagated from (wave 3 C2).
-                if (isReused(event)) continue;
-                String raw = optionalString(event, "rawSymbol");
-                String identity = identity(event);
-                JsonObject prior = authorityByRaw.putIfAbsent(raw, event);
-                String priorIdentity = result.putIfAbsent(raw, identity);
-                if (priorIdentity != null
-                        && !priorIdentity.equals(identity)
-                        && !(isManual(prior) && isManual(event)
-                        && identity(prior).equals(identity(event)))
-                        && !sameConfiguredSource(prior, event)) {
-                    throw new IllegalArgumentException(
-                            "one VM symbol names two configured sources: "
-                                    + raw);
-                }
-            }
-        }
-        return Collections.unmodifiableMap(result);
-    }
 
     /** One VM root may be observed again when the same field object survives
      * into another activation.  The raw root is then the identity authority;

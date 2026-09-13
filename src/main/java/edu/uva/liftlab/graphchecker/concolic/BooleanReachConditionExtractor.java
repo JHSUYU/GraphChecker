@@ -476,35 +476,8 @@ public final class BooleanReachConditionExtractor {
 
 
 
-    /** Matches either an activation owner or its stable planned address. */
-    static boolean caseOwnerMatchesOccurrence(String owner, String region,
-                                               String occurrence) {
-        if (SymbolicPropagationClosure.isInitialSourceCase(owner, region,
-                occurrence)) return true;
-        String prefix = "region:" + region + "/instance:";
-        if (owner.startsWith(prefix + occurrence + "/case:")) return true;
-        String planned = OccurrenceId.parse(occurrence).planned();
-        return owner.startsWith(prefix + planned + "/case:");
-    }
 
 
-    /**
-     * Whether the composed SMT defines {@code selector} under the named
-     * authority: one assertion that both implies from the selector and
-     * carries that authority's {@code :named} prefix.
-     */
-    private static boolean selectorDefinitionDeclared(String smt,
-                                                      String selector,
-                                                      String namedPrefix) {
-        String implication = "(=> " + selector + " ";
-        for (String line : firstNonBlank(smt).split("\\R")) {
-            if (line.contains(implication)
-                    && line.contains(":named " + namedPrefix)) {
-                return true;
-            }
-        }
-        return false;
-    }
 
 
 
@@ -1703,9 +1676,6 @@ public final class BooleanReachConditionExtractor {
         if (!list.contains(value)) list.add(value);
     }
 
-    private static String firstNonEmptyText(String value, String fallback) {
-        return value == null || value.trim().isEmpty() ? fallback : value;
-    }
 
     /** Where the clock-decision window probe is published. */
     static final String CLOCK_DECISIONS = "clockDecisions";

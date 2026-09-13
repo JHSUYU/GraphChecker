@@ -12,29 +12,6 @@ final class SmtLibQueries {
     private SmtLibQueries() {
     }
 
-    /**
-     * Exactly one of {@code selectors}, wherever {@code activation} holds.
-     *
-     * <p>A partition that is only in force under a guard: where the guard is
-     * false the choice is not made at all, which is how "this occurrence did
-     * not run" stays expressible.</p>
-     */
-    static String conditionalExactlyOne(String activation,
-                                        Collection<String> selectors) {
-        List<String> ordered = new ArrayList<>(selectors);
-        Collections.sort(ordered);
-        if (ordered.isEmpty()) {
-            throw new IllegalArgumentException(
-                    "an active guarded choice needs a candidate");
-        }
-        StringBuilder count = new StringBuilder("(= (+");
-        for (String selector : ordered) {
-            count.append(" (ite ").append(selector).append(" 1 0)");
-        }
-        count.append(") 1)");
-        return "(=> " + firstNonBlank(activation, "true") + " "
-                + count + ")";
-    }
 
     static String stripSolverCommands(String input) {
         StringBuilder result = new StringBuilder();

@@ -198,15 +198,6 @@ public final class SharedStateEvidence {
         return guard;
     }
 
-    /** Whether {@code guard} states that its writer took no branch. */
-    public static boolean unguarded(JsonElement guard) {
-        if (guard == null) return false;
-        if (guard.isJsonNull()) return true;
-        return guard.isJsonObject() && EMPTY_CONJUNCTION_KIND.equals(
-                optionalString(guard.getAsJsonObject(), "kind"))
-                && EMPTY_CONJUNCTION_AUTHORITY.equals(
-                optionalString(guard.getAsJsonObject(), "authority"));
-    }
 
     /**
      * Whether an expression tree recursively contains the VM's explicit
@@ -304,22 +295,6 @@ public final class SharedStateEvidence {
         return LOCATION_KINDS.contains(kind) ? kind : "";
     }
 
-    /**
-     * The slot -- a field offset or an array index -- encoded in a location
-     * key, or -1 when the key names none.  A whole-state location's slot is
-     * the negative sentinel and is reported as it stands.
-     */
-    public static int locationSlotOf(String locationKey) {
-        if (locationKindOf(locationKey).isEmpty()) return -1;
-        int slash = locationKey.indexOf('/');
-        int slot = locationKey.indexOf('#', slash + 1);
-        if (slot <= slash + 1) return -1;
-        try {
-            return Integer.parseInt(locationKey.substring(slot + 1));
-        } catch (NumberFormatException invalid) {
-            return -1;
-        }
-    }
 
     /** The VM session's symbolic owner encoded in a location key. */
     public static long locationOwnerOf(String locationKey) {
@@ -439,40 +414,6 @@ public final class SharedStateEvidence {
         }
     }
 
-    /**
-     * Indexes every selected shared location by both of its names, so a
-     * consumer holding either one can state the other and the Java field.
-     */
-    public static Map<String, LocationProvenance> locationProvenance(
-            Collection<JsonObject> summaries) {
-        Map<String, LocationProvenance> index = new LinkedHashMap<>();
-        if (summaries == null) return index;
-        for (JsonObject summary : summaries) {
-            if (summary == null) continue;
-            JsonObject recorded = object(summary, RECORDED_FIELD);
-            for (JsonElement element : array(recorded, "versions")) {
-                if (!element.isJsonObject()) continue;
-                JsonObject row = element.getAsJsonObject();
-                JsonObject carrier = object(row, "carrier");
-                String declaringClass = optionalString(carrier,
-                        "declaringClass");
-                String fieldName = optionalString(carrier, "fieldName");
-                String field = declaringClass.isEmpty() || fieldName.isEmpty()
-                        ? "" : declaringClass + "#" + fieldName;
-                String canonical = optionalString(row, "locationKey");
-                String session = sessionLocationKey(row);
-                LocationProvenance provenance = new LocationProvenance(
-                        canonical, session, field);
-                if (!canonical.isEmpty()) {
-                    index.putIfAbsent(canonical, provenance);
-                }
-                if (!session.isEmpty()) {
-                    index.putIfAbsent(session, provenance);
-                }
-            }
-        }
-        return index;
-    }
 
     /**
      * Names which part of a carrier left one location unnamed, so that the
@@ -494,33 +435,6 @@ public final class SharedStateEvidence {
     /** Prefix of a content-addressed runtime map-state witness. */
     static final String MAP_STATE_SYMBOL_PREFIX = "MAP_STATE.v1.";
 
-    /**
-     * Rebuilds the content address used by a runtime MAP_STATE carrier from
-     * its replay action.  This is the inverse lookup needed by sparse map
-     * projection: the expression keeps only the stable hash, while the
-     * action keeps the exact field and receiver which can be updated.
-     */
-    static String mapStateSymbolForAction(JsonObject action) {
-        if (action == null) return "";
-        String sourceKey = optionalString(action, "sourceKey");
-        long receiverObjectId = optionalLongInteger(action,
-                "fieldReceiverObjectId", 0L);
-        JsonArray declarations = array(action, "fieldPathDeclarations");
-        String declaration = declarations.size() == 0
-                ? optionalString(action, "leafFieldSignature")
-                : declarations.get(declarations.size() - 1).isJsonPrimitive()
-                ? declarations.get(declarations.size() - 1).getAsString()
-                : "";
-        FieldPathSpec.DeclaredField field =
-                FieldPathSpec.declaredField(declaration);
-        if (sourceKey.isEmpty() || receiverObjectId <= 0L || field == null) {
-            return "";
-        }
-        String descriptor = JavaPrimitiveSmtSemantics
-                .javaTypeDescriptor(field.type());
-        return descriptor.isEmpty() ? "" : mapStateSymbol(sourceKey,
-                field.owner(), field.name(), descriptor, receiverObjectId);
-    }
 
     private static String mapStateSymbol(
             String sourceKey, String declaringClass, String fieldName,
@@ -918,85 +832,9 @@ public final class SharedStateEvidence {
     /** An INITIAL version's declaration of the content it snapshotted. */
     public static final String INITIAL_SNAPSHOT_FIELD = "initialSnapshot";
 
-    /**
-     * Whether a whole-state carrier's INITIAL version snapshotted its content
-     * or gave up and stayed opaque.
-     *
-     * <p>A carrier's INITIAL version used to be one symbol standing for
-     * "whatever was in there", which lowers to a free container const and
-     * leaves membership undecidable.  When the VM can walk the container at
-     * selection it publishes the content instead, as a mutation chain over an
-     * explicit empty base, and says how many entries that was.  Past its
-     * budget it retains the opaque form and says so, and the free const stays
-     * the honest lowering for that case.</p>
-     */
-    public static boolean initialSnapshotTruncated(JsonObject version) {
-        JsonObject snapshot = object(version, INITIAL_SNAPSHOT_FIELD);
-        if (snapshot.size() > 0) {
-            return optionalBool(snapshot, "truncated", true);
-        }
-        return snapshotChainEntries(version) < 0L;
-    }
 
-    /** Whether this version declares a concrete initial content snapshot. */
-    public static boolean declaresInitialSnapshot(JsonObject version) {
-        return object(version, INITIAL_SNAPSHOT_FIELD).size() > 0
-                || snapshotChainEntries(version) >= 0L;
-    }
 
-    /** Entries the INITIAL snapshot names, or -1 when it declares none. */
-    public static long initialSnapshotEntries(JsonObject version) {
-        JsonObject snapshot = object(version, INITIAL_SNAPSHOT_FIELD);
-        return snapshot.size() == 0 ? snapshotChainEntries(version)
-                : optionalLongInteger(snapshot, "entries", -1L);
-    }
 
-    /**
-     * Members the version's own value states it started with, or -1 when the
-     * value states no content at all.
-     *
-     * <p>The {@code initialSnapshot} block is a summary of the value, not a
-     * second source for it: a stated content <em>is</em> a
-     * {@code SNAPSHOT_BASE} carrying one {@code PUT} or {@code APPEND} per
-     * member, and that chain is what the lowering reads. The summary is
-     * therefore only consulted when it exists, and the chain answers when it
-     * does not.</p>
-     *
-     * <p>That distinction is the whole point for a container that held
-     * nothing. Its complete snapshot is the bare {@code SNAPSHOT_BASE}, which
-     * a member count cannot tell apart from no snapshot at all, and
-     * {@code SNAPSHOT_BASE} already lowers to the exact empty container - so
-     * reading zero members as "content unknown" would call the one carrier
-     * whose initial state is pinned hardest the one nobody reconstructed.
-     * Anything not standing on that base - the bare opaque {@code STATE}
-     * root, a mutation history the recorder merely watched, a refusal past
-     * the entry bound - still answers -1 and stays honestly truncated.</p>
-     */
-    private static long snapshotChainEntries(JsonObject version) {
-        if (version == null) return -1L;
-        long entries = 0L;
-        JsonElement cursor = version.get("expression");
-        // The chain is a finite expanded tree, so each step strictly
-        // descends; the bound only keeps a malformed artifact from spinning,
-        // and answering -1 for one leaves it truncated, which is the safe way
-        // to be wrong.
-        for (long depth = 0L; depth <= MAX_SNAPSHOT_CHAIN_DEPTH; depth++) {
-            if (cursor == null || !cursor.isJsonObject()) return -1L;
-            JsonObject relation = cursor.getAsJsonObject();
-            if (!CONTAINER_RELATION_TYPE.equals(
-                    optionalString(relation, "_type"))) {
-                return -1L;
-            }
-            String operation = optionalString(relation, "operation");
-            if (SNAPSHOT_BASE_OPERATION.equals(operation)) return entries;
-            if (!"PUT".equals(operation) && !"APPEND".equals(operation)) {
-                return -1L;
-            }
-            entries++;
-            cursor = relation.get("receiver");
-        }
-        return -1L;
-    }
 
     /** The base a stated initial content stands on. */
     private static final String SNAPSHOT_BASE_OPERATION = "SNAPSHOT_BASE";
@@ -1132,17 +970,7 @@ public final class SharedStateEvidence {
         return "";
     }
 
-    /** Whether the envelope's writer set is still complete. */
-    public static boolean writerSetComplete(JsonObject envelope) {
-        return optionalBool(envelope, "writerSetComplete", false);
-    }
 
-    /**
-     * Whether the VM dropped read-log entries for this location.
-     */
-    public static boolean readLogTruncated(JsonObject envelope) {
-        return optionalBool(envelope, "readLogTruncated", false);
-    }
 
 
     /**
@@ -1200,56 +1028,6 @@ public final class SharedStateEvidence {
                 && GUARDED_READ_TYPE.equals(textString(node, "_type"));
     }
 
-    /**
-     * Admits one guarded read-from node.
-     */
-    public static String guardedReadFault(JsonObject node) {
-        if (!claimsGuardedRead(node)) {
-            return "node is not a guarded read-from choice";
-        }
-        if (!GUARDED_READ_AUTHORITY.equals(
-                optionalString(node, "expressionAuthority"))) {
-            return "guarded read carries no VM authority";
-        }
-        if (optionalString(node, "_java_type").isEmpty()) {
-            return "guarded read names no Java value sort";
-        }
-        long readEvent = optionalLongInteger(node, "readEventId", 0L);
-        if (readEvent <= 0L) return "guarded read has no readEventId";
-        if (locationKey(node).isEmpty()) {
-            return "guarded read names no addressable location";
-        }
-        if (!booleanMember(node, "writerSetComplete")) {
-            return "guarded read omits writer-set completeness";
-        }
-        JsonArray candidates = array(node, "candidates");
-        if (candidates.size() < 1) {
-            return "guarded read offers no candidate";
-        }
-        JsonArray selectors = array(node, "exactlyOne");
-        if (selectors.size() != candidates.size()) {
-            return "exactlyOne does not cover the candidate set";
-        }
-        Set<String> seen = new LinkedHashSet<>();
-        for (int index = 0; index < candidates.size(); index++) {
-            JsonElement element = candidates.get(index);
-            if (!element.isJsonObject()) return "candidate is not an object";
-            JsonObject candidate = element.getAsJsonObject();
-            String selector = optionalString(candidate, "selector");
-            if (selector.isEmpty()) return "candidate has no selector";
-            if (!seen.add(selector)) {
-                return "duplicate candidate selector " + selector;
-            }
-            if (!selector.equals(selectorName(selectors, index))) {
-                return "exactlyOne selector " + index
-                        + " does not name its candidate";
-            }
-            String fault = candidateFault(candidate,
-                    isMapState(locationKey(node)));
-            if (!fault.isEmpty()) return fault;
-        }
-        return "";
-    }
 
     private static String selectorName(JsonArray selectors, int index) {
         JsonElement element = selectors.get(index);

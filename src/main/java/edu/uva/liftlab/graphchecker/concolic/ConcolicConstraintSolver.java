@@ -506,21 +506,6 @@ public final class ConcolicConstraintSolver {
         }
 
 
-        /**
-         * Shares the value term of equivalent propagated families while the
-         * family keys themselves remain independent dependency authorities.
-         * Every occurrence is still lowered above, so nested families and
-         * read activation guards are discovered for each audited family.
-         */
-        private Term shareConsumerMergeTerm(Term value) {
-            String sharedValue = shareSemanticTerm(value.text, value.sort);
-            String nullness = value.stringNullness;
-            if (value.sort == Sort.STRING && !nullness.isEmpty()) {
-                nullness = shareSemanticTerm(nullness, Sort.BOOL);
-            }
-            return Term.vm(sharedValue, value.sort, value.integralWidth,
-                    nullness, value.stringReferenceOrigin);
-        }
 
         private String shareSemanticTerm(String text, Sort sort) {
             if (text == null || text.isEmpty() || text.charAt(0) != '(') {
@@ -543,71 +528,7 @@ public final class ConcolicConstraintSolver {
 
 
 
-        /** Enables each case family only while one of its values is used. */
-        private void finishConsumerFamilySelections() {
-            List<String> families = new ArrayList<>(
-                    consumerFamilySelectors.keySet());
-            Collections.sort(families);
-            for (String family : families) {
-                Set<String> activations = consumerFamilyActivations.get(
-                        family);
-                Set<String> selectors = consumerFamilySelectors.get(family);
-                if (activations == null || activations.isEmpty()
-                        || selectors == null || selectors.isEmpty()) {
-                    unsupported.add("CONSUMER_FAMILY_ACTIVATION_MISSING:"
-                            + family);
-                    continue;
-                }
-                List<String> orderedActivations = new ArrayList<>(activations);
-                List<String> orderedSelectors = new ArrayList<>(selectors);
-                Collections.sort(orderedActivations);
-                Collections.sort(orderedSelectors);
-                assertions.add("(=> " + orTerms(orderedActivations) + " "
-                        + orTerms(orderedSelectors) + ")");
-            }
-        }
 
-        /** Lowers one exact PC under the selector which owns its payload. */
-        private void bindConsumerPathCondition(
-                String family, String selector, JsonArray path,
-                Set<String> symbols, String sourceActivationOccurrenceId,
-                String occurrenceId, int observationIndex) {
-            // This query replaces the selected activation's observed path
-            // with replayContract(prefix + flipped predicate). Keep its value
-            // arm, but do not pin the old whole-case PC.
-            if (!sourceActivationOccurrenceId.isEmpty()
-                    && sourceActivationOccurrenceId.equals(occurrenceId)) {
-                return;
-            }
-            List<String> conditions = new ArrayList<>();
-            for (int index = 0; index < path.size(); index++) {
-                Set<String> previousFrontier = currentConstraintSymbols;
-                currentConstraintSymbols = new LinkedHashSet<>();
-                Term condition;
-                String previousReadGuard = currentReadActivationGuard;
-                currentReadActivationGuard = andGuard(previousReadGuard,
-                        selector);
-                try {
-                    condition = term(path.get(index), Sort.BOOL,
-                            "consumer_family_" + family + "_"
-                                    + (observationIndex < 0 ? "arm"
-                                    : "observation_" + observationIndex)
-                                    + "_" + index);
-                    symbols.addAll(currentConstraintSymbols);
-                } finally {
-                    currentReadActivationGuard = previousReadGuard;
-                    currentConstraintSymbols = previousFrontier;
-                }
-                if (condition == null || condition.sort != Sort.BOOL) {
-                    unsupported.add("CONSUMER_FAMILY_PC_MALFORMED:"
-                            + family);
-                    continue;
-                }
-                conditions.add(condition.text);
-            }
-            assertions.add("(=> " + selector + " "
-                    + andTerms(conditions) + ")");
-        }
 
 
 

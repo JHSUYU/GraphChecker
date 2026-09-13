@@ -30,41 +30,6 @@ public class InitialContainerSnapshotTest {
     private static final int PRESENT_TWO = 276372524;
     private static final int ABSENT = 999999999;
 
-    /** Everything that does not stand on the base stays truncated. */
-    @Test
-    public void anUnstatedInitialContentStaysTruncated() {
-        // The bare opaque root: nothing was ever stated about it.
-        JsonObject bare = new JsonObject();
-        bare.add("expression", stateRoot());
-        assertTrue(!SharedStateEvidence.declaresInitialSnapshot(bare));
-        assertTrue(SharedStateEvidence.initialSnapshotTruncated(bare));
-        assertEquals(-1L, SharedStateEvidence.initialSnapshotEntries(bare));
-
-        // A mutation history the recorder merely watched is not a statement
-        // of what was in there before it started watching.
-        JsonObject watched = new JsonObject();
-        JsonObject append = relation("APPEND");
-        append.add("receiver", stateRoot());
-        JsonArray arguments = new JsonArray();
-        arguments.add(constant(PRESENT_ONE));
-        append.add("arguments", arguments);
-        watched.add("expression", append);
-        assertTrue(SharedStateEvidence.initialSnapshotTruncated(watched));
-
-        // A version with no value at all cannot be read as complete.
-        assertTrue(SharedStateEvidence.initialSnapshotTruncated(
-                new JsonObject()));
-
-        // And a declared refusal still wins over whatever the value shows:
-        // the bound refused the content before any base was installed.
-        JsonObject refused = new JsonObject();
-        JsonObject partial = new JsonObject();
-        partial.addProperty("entries", 64);
-        partial.addProperty("truncated", true);
-        refused.add(SharedStateEvidence.INITIAL_SNAPSHOT_FIELD, partial);
-        refused.add("expression", rootedSnapshot());
-        assertTrue(SharedStateEvidence.initialSnapshotTruncated(refused));
-    }
 
     /** PUT over SNAPSHOT_BASE + one member: a history on a recovered base. */
     private static JsonObject insertOverBase() {
