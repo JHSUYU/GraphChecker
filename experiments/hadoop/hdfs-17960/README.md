@@ -64,10 +64,9 @@ nothing. The empty file says exactly what this case means: the hook's field
 is the only root, and everything under it carries. Re-running the PLAN stage
 over the recorded corpus with the empty file, the four `AtomicInteger#value`
 reads come back `SYMBOLIC` with `tracked: true`, `mintEligible: false` and no
-`declaredSymbolicRoot` marker -- the same campaign-time state the retired
-`carrierFieldSignatures` row used to buy -- alongside 80 tracked actions and
-31 symbolic `BOUNDED_CONTAINER_STATE` ports, with the configured source still
-the campaign's one root.
+`declaredSymbolicRoot` marker, alongside 80 tracked actions and 31 symbolic
+`BOUNDED_CONTAINER_STATE` ports, with the configured source still the
+campaign's one root.
 
 `loop-bounds.jsonl` contains every exact loop site retained by the final
 selected closure for this checkout, each with a bound of 16. In the baseline

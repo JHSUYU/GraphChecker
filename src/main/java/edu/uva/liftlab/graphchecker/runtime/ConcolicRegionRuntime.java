@@ -4288,16 +4288,12 @@ public final class ConcolicRegionRuntime {
      * <p>The finalizer stamps the classification on {@code sourceKind} when
      * it mints the port, and that is what both stages read:
      * {@code ConcolicScheduler.SymbolicInputSelection.declaredCutPort} asks
-     * the same question of the same field at plan time.  The second spelling
-     * is read only for a plan frozen by the build that briefly wrote the
-     * verdict into {@code symbolicDemand}.</p>
+     * the same question of the same field at plan time.</p>
      */
     static boolean declaredCommunicationCutPort(SymbolizeAction action) {
         return action != null
-                && (RuntimeSelectedRegionFinalizer.COMMUNICATION_SITE_PORT
-                .equals(action.sourceKind)
-                || InputActionCatalog.DECLARED_COMMUNICATION_CUT_PORT
-                .equals(action.symbolicDemand));
+                && RuntimeSelectedRegionFinalizer.COMMUNICATION_SITE_PORT
+                .equals(action.sourceKind);
     }
 
     /** Diagnostic name of one refused mint at a declared cut port. */

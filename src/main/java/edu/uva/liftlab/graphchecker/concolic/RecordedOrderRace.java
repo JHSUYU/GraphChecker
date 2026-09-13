@@ -32,8 +32,8 @@ import java.util.Map;
  * as {@code writerVersionId} and the {@code readEventId} of the read event
  * that published it. Both are session-monotonic, so "written after this read"
  * is the plain comparison {@code writerVersionId > readEventId} over arms of
- * the same {@code sessionLocationKey}. A manifest published before those rows
- * existed simply carries no race, which is the honest answer rather than a
+ * the same {@code sessionLocationKey}. An arm the composition could not give
+ * both ids carries no race, which is the honest answer rather than a
  * guess.</p>
  */
 public final class RecordedOrderRace {

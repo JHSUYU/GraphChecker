@@ -31,10 +31,6 @@ public final class InputActionCatalog {
      * mint-eligible; the replay refuses to mint there.  Both stages read the
      * port off {@code sourceKind}, so the name is one vocabulary rather than
      * a marker the plan has to carry.</p>
-     *
-     * <p>A plan frozen by the build that briefly wrote this string into
-     * {@code symbolicDemand} is still recognised by the replay, which is why
-     * the name has to outlive that build.</p>
      */
     public static final String DECLARED_COMMUNICATION_CUT_PORT =
             "DECLARED_COMMUNICATION_CUT_PORT";

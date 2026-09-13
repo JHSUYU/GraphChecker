@@ -143,9 +143,7 @@ names, any of which admits an action:
 | `portIds` | `portId` or `symbol` |
 | `cells` | `cell` |
 
-The retired `carrier`-prefixed twins (`carrierFieldSignatures`,
-`carrierPortIds`, `carrierCells`) are refused by name: every input this file
-does not mention is already tracked as a carrier.
+Every input this file does not mention is already tracked as a carrier.
 
 `cells` is how a call return is named, since it carries no field signature: an
 `EXTERNAL_CALL_RETURN` action's cell is `<callee signature>.return`, identical
@@ -271,10 +269,6 @@ narrowing overwrote it with its own verdict -- which is the other half of the
 HDFS-11741 defect: the four container-state actions that survived as cut
 ports reached replay with their `BOUNDED_CONTAINER_STATE` demand replaced by
 `DECLARED_COMMUNICATION_CUT_PORT`.
-
-The retired `carrier*` keys said "keep this read symbolic but mint nothing",
-which is now what every name the file does not mention already gets. A file
-still carrying one is refused by name rather than read as a root.
 
 Which leaves the choice of what to *declare* a soundness question, not a
 budget one. **A value whose earlier members are baked into concrete state
