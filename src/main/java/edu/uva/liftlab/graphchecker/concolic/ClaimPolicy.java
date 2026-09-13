@@ -196,6 +196,25 @@ public final class ClaimPolicy {
     static final String CONSUMER_FIELD_READ_OFF_RECEIVER_NODE =
             "CONSUMER_FIELD_READ_OFF_RECEIVER_NODE";
     /**
+     * An observed occurrence of the annotated target that this composition
+     * did not lower.
+     *
+     * <p>The planner plants a target-reach goal on every execution of the
+     * annotated site, and everything after it narrows to one: the workflow
+     * elects a single {@code TARGET} member, the campaign builds a reach
+     * query for that member alone, and the composition lowers that query.
+     * A verdict about one execution then reads as a verdict about the site.
+     * hdfs-17897 is the case in point -- the elected occurrence is the
+     * DataNode-to-DataNode SASL handshake, while the bug's chain ends at the
+     * client's handshake, which is therefore off the slice entirely.</p>
+     *
+     * <p>Reported rather than blocking: the composed formula is a true
+     * statement about the occurrence it lowered.  What it is not is a
+     * statement about the others, and this names each one.</p>
+     */
+    static final String TARGET_OCCURRENCE_NOT_COMPOSED =
+            "TARGET_OCCURRENCE_NOT_COMPOSED";
+    /**
      * Where the initial-state evidence names the arms that are both selected
      * by the model and the untouched initial content of a truncated carrier.
      */
@@ -2079,6 +2098,9 @@ public final class ClaimPolicy {
         for (JsonObject row : notAMechanismFindings(faultMarkers)) {
             reportedFindings.add(row);
         }
+        for (JsonObject row : uncomposedTargetOccurrences(manifest)) {
+            reportedFindings.add(row);
+        }
         for (JsonElement element : wireFlowRows) {
             JsonObject row = element.getAsJsonObject();
             if (!optionalBool(row, "consumerFieldReadOffReceiverNode",
@@ -2469,6 +2491,44 @@ public final class ClaimPolicy {
             summary.append(": ").append(optionalString(row, "detail"));
         }
         return summary.toString();
+    }
+
+    /**
+     * One finding per observed target occurrence the composition left out.
+     *
+     * <p>Silent when the recording observed the annotated site once, which
+     * is the ordinary case and the one every existing corpus rests on.</p>
+     */
+    static List<JsonObject> uncomposedTargetOccurrences(JsonObject manifest) {
+        JsonArray occurrences = array(manifest,
+                ConcolicSmtComposer.TARGET_REACH_OCCURRENCES);
+        List<JsonObject> result = new ArrayList<>();
+        if (occurrences.size() < 2) return result;
+        String composed = "";
+        for (JsonElement element : occurrences) {
+            if (element.isJsonObject() && optionalBool(
+                    element.getAsJsonObject(), "composed", false)) {
+                composed = optionalString(element.getAsJsonObject(),
+                        "occurrenceId");
+            }
+        }
+        for (JsonElement element : occurrences) {
+            if (!element.isJsonObject()) continue;
+            JsonObject row = element.getAsJsonObject();
+            if (optionalBool(row, "composed", false)) continue;
+            result.add(blocker(TARGET_OCCURRENCE_NOT_COMPOSED,
+                    optionalString(row, "occurrenceId"),
+                    "the recording observed the annotated target at "
+                            + occurrences.size() + " occurrences and this"
+                            + " composition lowered "
+                            + (composed.isEmpty() ? "none of them"
+                            : composed)
+                            + ": nothing here states whether the target is"
+                            + " reachable at "
+                            + optionalString(row, "occurrenceId")
+                            + " " + row.getAsJsonArray("failureSites")));
+        }
+        return result;
     }
 
     private static JsonObject blocker(String code, String subject,
