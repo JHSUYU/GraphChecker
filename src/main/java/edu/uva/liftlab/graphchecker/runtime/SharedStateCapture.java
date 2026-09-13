@@ -791,10 +791,24 @@ final class SharedStateCapture {
             // A per-instance receiver the plan never named still has one
             // replay-stable identity of its own: the access anchor this
             // carrier was selected on.  Naming it from that anchor keeps the
-            // location joinable across sessions instead of refusing it,
-            // while a map's content address stays on the frozen plan
-            // locator alone.
-            bindPlannedReceiver(planned > 0L || mapState() ? planned
+            // location joinable across sessions instead of refusing it.
+            //
+            // This used to exclude a map, on the ground that "a map's content
+            // address stays on the frozen plan locator alone" -- but the
+            // frozen locators are indexed out of inputActions
+            // (ConcolicTaskPlan.indexPlannedReceiverObjectIds), so a location
+            // the plan declares as a shared carrier and never reads as a
+            // symbolic input has none, and a map was the one shape with no
+            // second answer.  On 17960 that is exactly
+            // DirectorySnapshottableFeature#snapshotsByNames, the bug's own
+            // map and one of the four locations the slice keeps: it bound 0,
+            // captureRecordedSharedStateRaw refused it, and no version of it
+            // was read out at all.  The anchor identity is as replay-stable
+            // for a map as for a scalar -- it is a static site, an
+            // activation-local occurrence and the planned occurrence, none of
+            // them an object id -- so the exclusion bought nothing and cost
+            // the location.
+            bindPlannedReceiver(planned > 0L ? planned
                     : accessAnchorReceiverObjectId(task == null ? ""
                     : task.occurrenceId));
         }
@@ -871,8 +885,23 @@ final class SharedStateCapture {
             return plannedReceiverObjectId;
         }
 
+        /**
+         * Notes one read of this live carrier in the publishing activation.
+         *
+         * <p>A map is recorded like a scalar.  The anchor is a static access
+         * site and an activation-local occurrence -- a fact about the read,
+         * not about the shape of what was read -- and it is the only
+         * replay-stable receiver identity available to a location the plan
+         * froze no locator for.  Refusing to keep it for a map made
+         * {@link #accessAnchorReceiverObjectId} unable to answer for exactly
+         * the shape that had no other answer.</p>
+         *
+         * <p>An element carrier is still excluded: its identity is the array
+         * and the index, and it does not go through the receiver rule at all
+         * ({@link #requiresPlannedReceiver}).</p>
+         */
         void recordConsumerAccess(ConsumerAccessAnchor consumer) {
-            if (consumer != null && SHAPE_FIELD.equals(shape)
+            if (consumer != null && !SHAPE_ELEMENT.equals(shape)
                     && !consumer.siteId.isEmpty()
                     && consumer.occurrence > 0) {
                 consumerAccesses.add(consumer);
@@ -952,8 +981,24 @@ final class SharedStateCapture {
         /** Why this shape cannot name a carrier, or empty when it can. */
         String missing() {
             if (SHAPE_MAP.equals(shape)) {
+                // Two different absences, and only the first was tested.
+                // readExactField answers MissingValue.INSTANCE when the field
+                // is not declared on the object it was handed or the read
+                // threw -- a sentinel, not null -- so that case passed this
+                // test and was handed to selectSharedMapCarrier as though it
+                // were the container.  Both are refusals, and the row says
+                // which, because they call for different fixes: a null field
+                // is a live container that does not exist yet, an unreadable
+                // one is a receiver that never declared it.
+                if (owner == MissingValue.INSTANCE) {
+                    return "a map carrier needs the map it selects, and "
+                            + "this receiver does not declare a readable "
+                            + declaringClass + "#" + fieldName;
+                }
                 return owner == null
-                        ? "a map carrier needs the map it selects" : "";
+                        ? "a map carrier needs the map it selects, and this "
+                        + "receiver held null in " + declaringClass + "#"
+                        + fieldName : "";
             }
             if (SHAPE_ELEMENT.equals(shape)) {
                 return owner == null || index < 0
