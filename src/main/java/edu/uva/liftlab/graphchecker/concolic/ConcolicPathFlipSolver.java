@@ -84,10 +84,19 @@ public final class ConcolicPathFlipSolver {
                     + sourceId, malformed);
         }
 
+        // What this one obligation cost, start to verdict: encoding the
+        // query and running the solver on it.  Until this was recorded the
+        // only per-query timings a campaign kept were the final extractor's
+        // own attempt rows, so an EXPLORE stage could spend ten minutes
+        // without saying on what.
+        long startedAtMillis = System.currentTimeMillis();
+        long startedAtNanos = System.nanoTime();
         ConcolicConstraintSolver.Result solved =
                 ConcolicConstraintSolver.solve(task, linkedSources, source,
                         Paths.get(firstNonBlank(options.get("z3"), "z3")),
                         number(options, "solver-timeout-ms", 20_000L));
+        long elapsedMillis = Math.max(0L,
+                (System.nanoTime() - startedAtNanos) / 1_000_000L);
         String status = optionalString(solved.record, "status");
         if (isSolverTimeout(status,
                 optionalString(solved.record, "reason"))) {
@@ -107,6 +116,8 @@ public final class ConcolicPathFlipSolver {
                         ExecutionTask.GUARDED_READ_ASSIGNMENTS),
                 solved.replayContract)
                 : Collections.<JsonObject>emptyList();
+        solved.record.addProperty("startedAtMillis", startedAtMillis);
+        solved.record.addProperty("elapsedMillis", elapsedMillis);
         solved.record.addProperty("primarySourceTaskId", sourceId);
         solved.record.addProperty("regionId", optionalString(task, "regionId"));
         solved.record.addProperty("goalId", optionalString(task, "goalId"));
