@@ -258,6 +258,29 @@ public final class ContainerSmtCodec {
         return one;
     }
 
+    /** The member a read node keeps its versions under. */
+    private static String versionsMember(JsonObject read) {
+        return JsonFields.object(read,
+                InSessionReadResolver.OBSERVED_VERSION).size() == 0
+                ? "candidates" : InSessionReadResolver.OBSERVED_VERSION;
+    }
+
+    /**
+     * Writes projected versions back in the shape the read node uses.
+     *
+     * <p>A node that names the one version it observed keeps naming one;
+     * a node still carrying the older alternatives keeps the list.</p>
+     */
+    private static void putVersions(JsonObject projected, JsonObject read,
+                                    JsonArray versions) {
+        String member = versionsMember(read);
+        if (InSessionReadResolver.OBSERVED_VERSION.equals(member)) {
+            projected.add(member, versions.get(0));
+        } else {
+            projected.add(member, versions);
+        }
+    }
+
     /** Whether one version of a read must name a selector to be projected. */
     private static boolean needsSelector(JsonObject read) {
         return JsonFields.object(read,
@@ -483,21 +506,17 @@ public final class ContainerSmtCodec {
         }
         String type = optionalString(root, "_type");
         boolean read = SharedStateEvidence.GUARDED_READ_TYPE.equals(type);
-        String armsField = SymbolicPropagationClosure.ITE_TYPE.equals(type)
-                ? "arms" : read ? "candidates" : "";
-        if (!armsField.isEmpty()) {
-            JsonArray arms = read ? readVersions(root)
-                    : array(root, armsField);
+        if (read) {
+            JsonArray arms = readVersions(root);
             if (arms.size() == 0) return null;
-            JsonObject projected = copyWithout(root, armsField);
+            JsonObject projected = copyWithout(root, versionsMember(root));
             projected.addProperty("_java_type", selectedJavaType);
             JsonArray projectedArms = new JsonArray();
             for (JsonElement element : arms) {
                 if (!element.isJsonObject()) return null;
                 JsonObject arm = element.getAsJsonObject();
-                if (read && needsSelector(root)
+                if (needsSelector(root)
                         && optionalString(arm, "selector").isEmpty()
-                        || !read && optionalString(arm, "selector").isEmpty()
                         || arm.get("expression") == null) {
                     return null;
                 }
@@ -509,7 +528,7 @@ public final class ContainerSmtCodec {
                 projectedArm.add("expression", selected);
                 projectedArms.add(projectedArm);
             }
-            projected.add(armsField, projectedArms);
+            putVersions(projected, root, projectedArms);
             return projected;
         }
         JsonElement cursor = receiver;
@@ -1577,7 +1596,6 @@ public final class ContainerSmtCodec {
         String type = optionalString(object, "_type");
         return VmExpressionIr.isConsumerBoundary(object)
                 || VmExpressionIr.isConsumerBoundaryReference(object)
-                || SymbolicPropagationClosure.ITE_TYPE.equals(type)
                 || SharedStateEvidence.GUARDED_READ_TYPE.equals(type);
     }
 
@@ -1660,21 +1678,17 @@ public final class ContainerSmtCodec {
         }
         String type = optionalString(root, "_type");
         boolean read = SharedStateEvidence.GUARDED_READ_TYPE.equals(type);
-        String armsField = SymbolicPropagationClosure.ITE_TYPE.equals(type)
-                ? "arms" : read ? "candidates" : "";
-        if (!armsField.isEmpty()) {
-            JsonArray arms = read ? readVersions(root)
-                    : array(root, armsField);
+        if (read) {
+            JsonArray arms = readVersions(root);
             if (arms.size() == 0) return null;
-            JsonObject projected = copyWithout(root, armsField);
+            JsonObject projected = copyWithout(root, versionsMember(root));
             projected.addProperty("_java_type", projectedJavaType);
             JsonArray projectedArms = new JsonArray();
             for (JsonElement element : arms) {
                 if (!element.isJsonObject()) return null;
                 JsonObject arm = element.getAsJsonObject();
-                if (read && needsSelector(root)
+                if (needsSelector(root)
                         && optionalString(arm, "selector").isEmpty()
-                        || !read && optionalString(arm, "selector").isEmpty()
                         || arm.get("expression") == null) return null;
                 JsonElement payload = projectChoice(
                         arm.get("expression"), index, viewKind,
@@ -1684,7 +1698,7 @@ public final class ContainerSmtCodec {
                 projectedArm.add("expression", payload);
                 projectedArms.add(projectedArm);
             }
-            projected.add(armsField, projectedArms);
+            putVersions(projected, root, projectedArms);
             return projected;
         }
         if (!("INDEXED".equals(shape) ? scalarIndexedLeaf(root)
@@ -2012,14 +2026,8 @@ public final class ContainerSmtCodec {
                     optionalString(object, "operation"))
                     ? optionalString(object, "shape") : "";
         }
-        JsonArray arms;
-        if (SymbolicPropagationClosure.ITE_TYPE.equals(type)) {
-            arms = array(object, "arms");
-        } else if (SharedStateEvidence.GUARDED_READ_TYPE.equals(type)) {
-            arms = readVersions(object);
-        } else {
-            return "";
-        }
+        if (!SharedStateEvidence.GUARDED_READ_TYPE.equals(type)) return "";
+        JsonArray arms = readVersions(object);
         // Every arm must answer the same container shape, or the read has no
         // one shape to be lowered at and the sort check refuses it as before.
         String shape = "";
@@ -2073,17 +2081,10 @@ public final class ContainerSmtCodec {
                     ? selectedReadViewKind(object.get("receiver")) : "";
         }
         String type = optionalString(object, "_type");
-        JsonArray arms;
-        if (SymbolicPropagationClosure.ITE_TYPE.equals(type)) {
-            arms = array(object, "arms");
-        } else if ("ReadFromExpression".equals(type)) {
-            arms = readVersions(object);
-        } else {
-            return "";
-        }
+        if (!"ReadFromExpression".equals(type)) return "";
+        JsonArray arms = readVersions(object);
         if (arms.size() == 0) return "";
-        boolean selectorRequired = !"ReadFromExpression".equals(type)
-                || needsSelector(object);
+        boolean selectorRequired = needsSelector(object);
         String selected = "";
         for (JsonElement element : arms) {
             if (!element.isJsonObject()) return "";
@@ -2154,17 +2155,8 @@ public final class ContainerSmtCodec {
             return result;
         }
         String type = optionalString(object, "_type");
-        String armsField;
-        if (SymbolicPropagationClosure.ITE_TYPE.equals(type)) {
-            armsField = "arms";
-        } else if ("ReadFromExpression".equals(type)) {
-            armsField = "candidates";
-        } else {
-            return null;
-        }
-        boolean readNode = "ReadFromExpression".equals(type);
-        JsonArray arms = readNode ? readVersions(object)
-                : array(object, armsField);
+        if (!"ReadFromExpression".equals(type)) return null;
+        JsonArray arms = readVersions(object);
         if (arms.size() == 0) return null;
         JsonObject normalized = JsonFields.shallowCopy(object);
         normalized.addProperty("_java_type", "java/util/Map");
@@ -2172,7 +2164,7 @@ public final class ContainerSmtCodec {
         for (JsonElement element : arms) {
             if (!element.isJsonObject()) return null;
             JsonObject arm = element.getAsJsonObject();
-            if ((!readNode || needsSelector(object))
+            if (needsSelector(object)
                     && optionalString(arm, "selector").isEmpty()) return null;
             JsonElement projectedArm = selectedViewState(
                     arm.get("expression"), kind, memo);
@@ -2181,7 +2173,7 @@ public final class ContainerSmtCodec {
             normalizedArm.add("expression", projectedArm);
             normalizedArms.add(normalizedArm);
         }
-        normalized.add(armsField, normalizedArms);
+        putVersions(normalized, object, normalizedArms);
         memo.put(expression, normalized);
         return normalized;
     }

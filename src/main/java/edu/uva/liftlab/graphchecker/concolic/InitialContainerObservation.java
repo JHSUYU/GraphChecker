@@ -206,8 +206,6 @@ public final class InitialContainerObservation {
             } else {
                 arms = JsonFields.array(expression, "candidates");
             }
-        } else if (SymbolicPropagationClosure.ITE_TYPE.equals(type)) {
-            arms = JsonFields.array(expression, "arms");
         } else {
             return null;
         }
