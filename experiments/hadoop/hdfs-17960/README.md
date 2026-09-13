@@ -36,10 +36,19 @@ ordered deletes -> duplicate edit records -> NameNode restart
 No communication mapping is configured because the symbolic value and the
 state divergence are local to the NameNode; request epochs and edit-log replay
 remain represented by tracing. The production hook makes the ordered-deletion
-configuration an explicit Boolean root. The target's `AtomicInteger.value`
-read receives a bounded GuardedRead over the retained counter expressions from
-the custom JDK. Its consumer anchor and write-candidate selectors carry the chosen
-expression and its local path condition directly into the exception predicate.
+configuration an explicit Boolean root, and it is the only root this case
+varies: `symbolic-inputs.jsonl` is present and empty, which admits no
+automatic candidate at all while leaving the hook's own field -- the one
+authority an allowlist does not govern -- exactly where it is. Everything
+else stands at its recorded value.
+
+The target's `AtomicInteger.value` read receives a bounded GuardedRead over
+the retained counter expressions from the custom JDK. That family is the
+shared carrier's, not a minted root's, so it survives the empty allowlist:
+its arms are the two `getAndDecrement` writers, and which arm the witness
+takes is what the configuration root decides. Its consumer anchor and
+write-candidate selectors carry the chosen expression and its local path
+condition directly into the exception predicate.
 `loop-bounds.jsonl` contains every exact loop site retained by the final
 selected closure for this checkout, each with a bound of 16. In the baseline
 trace the first deletion reaches replay iteration 8 and the duplicate deletion

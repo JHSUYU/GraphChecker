@@ -117,6 +117,80 @@ public class InitialContainerSnapshotTest {
     }
 
     /**
+     * A container that held nothing is stated, not unknown.
+     *
+     * <p>HDFS-17960's fatal read stands on
+     * {@code DirectorySnapshottableFeature#snapshotsByNames}, an
+     * {@code ArrayList} the VM walked completely at selection and found
+     * empty.  Its complete content is therefore the bare
+     * {@code SNAPSHOT_BASE}, which already lowers to the exact empty list -
+     * but the VM summarizes a snapshot by its member count, and the count of
+     * an empty one is the same zero it reports for a container it never
+     * stated.  Reading that summary alone called the most tightly pinned
+     * carrier in the run "undetermined", so the value itself decides.</p>
+     */
+    @Test
+    public void anEmptyStatedContentIsCompleteRatherThanTruncated() {
+        JsonObject empty = new JsonObject();
+        empty.add("expression", indexedBase());
+        assertTrue(SharedStateEvidence.declaresInitialSnapshot(empty));
+        assertTrue(!SharedStateEvidence.initialSnapshotTruncated(empty));
+        assertEquals(0L, SharedStateEvidence.initialSnapshotEntries(empty));
+
+        // The same reading counts a non-empty chain the VM summarized the
+        // same way, so the two answers cannot disagree about one snapshot.
+        JsonObject stated = new JsonObject();
+        stated.add("expression", rootedSnapshot());
+        assertTrue(!SharedStateEvidence.initialSnapshotTruncated(stated));
+        assertEquals(2L, SharedStateEvidence.initialSnapshotEntries(stated));
+    }
+
+    /** Everything that does not stand on the base stays truncated. */
+    @Test
+    public void anUnstatedInitialContentStaysTruncated() {
+        // The bare opaque root: nothing was ever stated about it.
+        JsonObject bare = new JsonObject();
+        bare.add("expression", stateRoot());
+        assertTrue(!SharedStateEvidence.declaresInitialSnapshot(bare));
+        assertTrue(SharedStateEvidence.initialSnapshotTruncated(bare));
+        assertEquals(-1L, SharedStateEvidence.initialSnapshotEntries(bare));
+
+        // A mutation history the recorder merely watched is not a statement
+        // of what was in there before it started watching.
+        JsonObject watched = new JsonObject();
+        JsonObject append = relation("APPEND");
+        append.add("receiver", stateRoot());
+        JsonArray arguments = new JsonArray();
+        arguments.add(constant(PRESENT_ONE));
+        append.add("arguments", arguments);
+        watched.add("expression", append);
+        assertTrue(SharedStateEvidence.initialSnapshotTruncated(watched));
+
+        // A version with no value at all cannot be read as complete.
+        assertTrue(SharedStateEvidence.initialSnapshotTruncated(
+                new JsonObject()));
+
+        // And a declared refusal still wins over whatever the value shows:
+        // the bound refused the content before any base was installed.
+        JsonObject refused = new JsonObject();
+        JsonObject partial = new JsonObject();
+        partial.addProperty("entries", 64);
+        partial.addProperty("truncated", true);
+        refused.add(SharedStateEvidence.INITIAL_SNAPSHOT_FIELD, partial);
+        refused.add("expression", rootedSnapshot());
+        assertTrue(SharedStateEvidence.initialSnapshotTruncated(refused));
+    }
+
+    /** An INDEXED empty base, the shape the HDFS-17960 list carrier has. */
+    private static JsonObject indexedBase() {
+        JsonObject base = relation("SNAPSHOT_BASE");
+        base.addProperty("shape", "INDEXED");
+        base.add("receiver", stateRoot());
+        base.add("arguments", new JsonArray());
+        return base;
+    }
+
+    /**
      * The observation walker reaches the state root through the chain.
      *
      * <p>A snapshotted carrier's reads stand on SNAPSHOT_BASE + one PUT per
