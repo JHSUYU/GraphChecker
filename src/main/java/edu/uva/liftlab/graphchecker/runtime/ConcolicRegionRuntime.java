@@ -2207,14 +2207,23 @@ public final class ConcolicRegionRuntime {
     private static boolean stageMessageExpression(String portId,
                                                   long handle) {
         ActiveRegion active = activeRegion();
-        if (active == null) return false;
-        List<String> consumerOccurrences = active.activation
-                .exportConsumerOccurrences(portId);
-        boolean staged = !consumerOccurrences.isEmpty()
-                && SymbolicMessageEnvelope.stage(
-                portId, handle, active.activation.taskId,
-                active.occurrenceId(), consumerOccurrences);
-        if (staged) {
+        // The producer site ran, so the message carries the value.  Which
+        // occurrence produced it and which the plan addressed are what the
+        // entry says about itself, not conditions on saying it.
+        String producerTask = active == null ? UNPLANNED_ENDPOINT
+                : active.activation.taskId;
+        String producerOccurrence = active == null ? UNPLANNED_ENDPOINT
+                : active.occurrenceId();
+        List<String> consumerOccurrences = active == null
+                ? Collections.<String>emptyList()
+                : active.activation.exportConsumerOccurrences(portId);
+        if (consumerOccurrences.isEmpty()) {
+            consumerOccurrences = plannedExportConsumers(portId);
+        }
+        boolean staged = SymbolicMessageEnvelope.stage(
+                portId, handle, producerTask, producerOccurrence,
+                consumerOccurrences);
+        if (staged && active != null) {
             beginBookkeeping();
             try {
                 active.observeOutgoingSourceAnchor(portId);
@@ -2223,6 +2232,27 @@ public final class ConcolicRegionRuntime {
             }
         }
         return staged;
+    }
+
+    /**
+     * Stands in for an endpoint no plan named.
+     *
+     * <p>A leaf may be staged or taken under an identity the plan did not
+     * select.  The value is still the value; the entry says plainly that its
+     * endpoint was not planned rather than pretending to an occurrence.</p>
+     */
+    static final String UNPLANNED_ENDPOINT = "UNPLANNED";
+
+    /** Every consumer occurrence any plan bound to this port. */
+    private static List<String> plannedExportConsumers(String portId) {
+        List<String> consumers = new ArrayList<>();
+        for (ConcolicTaskPlan.RuntimeTask task : configuration().tasks) {
+            for (String consumer : task.exportConsumerOccurrences(portId)) {
+                if (!consumers.contains(consumer)) consumers.add(consumer);
+            }
+        }
+        if (consumers.isEmpty()) consumers.add(UNPLANNED_ENDPOINT);
+        return consumers;
     }
 
     // ------------------------------------------------------------------
@@ -2302,16 +2332,14 @@ public final class ConcolicRegionRuntime {
             return;
         }
         ActiveRegion active = activeRegion();
-        if (leafCarried && !acceptCommunicationEndpoint(active, site,
-                carried.producerOccurrenceId(),
-                carried.consumerOccurrenceIds())) {
-            recordHandoffGap(RpcExpressionHandoff.gap(
-                    RpcExpressionHandoff.STAGE_ATTACH,
-                    RpcExpressionHandoff.MISSING_METADATA, handle,
-                    "message entry names a different planned edge: "
-                            + carried.producerOccurrenceId() + " -> "
-                            + carried.consumerOccurrenceIds()));
-            return;
+        // Whether this activation is the edge the plan drew is a fact about
+        // the plan, not about the value: the leaf is the one the sender put
+        // in this message at this element, and refusing it here left the
+        // receiver holding a literal.  Say it and attach.
+        if (leafCarried && active != null) {
+            acceptCommunicationEndpoint(active, site,
+                    carried.producerOccurrenceId(),
+                    carried.consumerOccurrenceIds());
         }
         if (!leafCarried) {
             // The message does not have the element this decode asked for.
@@ -2338,11 +2366,34 @@ public final class ConcolicRegionRuntime {
     }
 
     /** The declared site of {@code portId} in this occurrence's plan. */
+    /**
+     * The declared site of {@code portId}, whoever is running.
+     *
+     * <p>Propagation is a property of the value, not of the activation that
+     * happens to be on the stack.  The same conversion runs under several
+     * region identities -- the one the plan selected for the port and the
+     * ones that merely call the same helper -- and the leaf crossing the
+     * wire is the same leaf in all of them.  Asking only the active task
+     * meant a value arriving under an unselected identity was dropped, which
+     * is how the four conversions that fill a DataNode's key map received no
+     * producer expression at all.  Occurrences decide what gets published,
+     * never whether a value propagates.</p>
+     */
     private static CommunicationHandoffSpec communicationHandoffSite(
             String portId, boolean exporting) {
+        if (safe(portId).isEmpty()) return null;
         ActiveRegion active = activeRegion();
-        if (active == null || safe(portId).isEmpty()) return null;
-        return active.activation.communicationHandoff(portId, exporting);
+        if (active != null) {
+            CommunicationHandoffSpec declared =
+                    active.activation.communicationHandoff(portId, exporting);
+            if (declared != null) return declared;
+        }
+        for (ConcolicTaskPlan.RuntimeTask task : configuration().tasks) {
+            CommunicationHandoffSpec declared =
+                    task.communicationHandoff(portId, exporting);
+            if (declared != null) return declared;
+        }
+        return null;
     }
 
     /**
