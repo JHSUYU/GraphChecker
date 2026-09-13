@@ -172,6 +172,30 @@ public class CrossExecutionSoundnessTest {
         return row;
     }
 
+    /**
+     * The slice reads a lowered term for the names it was built from.
+     *
+     * <p>Only names this composition declared or defined count: an SMT
+     * keyword, a sort and a literal are not symbols, and a name that merely
+     * contains a known one is a different symbol.</p>
+     */
+    @Test
+    public void sliceReadsOnlyTheNamesTheFormulaDeclares() {
+        Set<String> known = new LinkedHashSet<>(Arrays.asList(
+                "merged_boundary__abc", "rf_value__RFC_1", "sym__X"));
+        assertEquals(new LinkedHashSet<>(Arrays.asList(
+                        "merged_boundary__abc", "sym__X")),
+                ConcolicSmtComposer.Emitter.symbolsIn(
+                        "(ite (= (VInt merged_boundary__abc) (VInt 7))"
+                                + " sym__X (VRef nullRef))", known));
+        // A longer name that starts with a known one is not that symbol.
+        assertTrue(ConcolicSmtComposer.Emitter.symbolsIn(
+                "(= sym__X2 3)", known).isEmpty());
+        assertTrue(ConcolicSmtComposer.Emitter.symbolsIn("", known).isEmpty());
+        assertTrue(ConcolicSmtComposer.Emitter.symbolsIn(null, known)
+                .isEmpty());
+    }
+
     /** What the closure returns is a finding, not a working set. */
     @Test
     public void closureSetsAreUnmodifiable() {
