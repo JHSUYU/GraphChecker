@@ -92,21 +92,6 @@ public class RuntimeWorkflowHandoffClosureTest {
         version.add("expression", expression);
         version.add("pathGuard", SharedStateEvidence.emptyConjunction());
 
-        JsonObject writerClosure = new JsonObject();
-        writerClosure.addProperty("authority", SymbolicPropagationClosure
-                .WRITER_ACTIVATION_CLOSURE_AUTHORITY);
-        writerClosure.addProperty("complete", complete);
-        JsonArray cases = new JsonArray();
-        JsonObject writerCase = activation("TASK.T", writerOccurrence);
-        writerCase.addProperty("regionId", "R.T");
-        cases.add(writerCase);
-        JsonObject enclosingCase = activation("TASK.E", enclosingOccurrence);
-        enclosingCase.addProperty("regionId", "R.E");
-        cases.add(enclosingCase);
-        writerClosure.add("cases", cases);
-        version.add(SymbolicPropagationClosure.WRITER_ACTIVATION_CLOSURE,
-                writerClosure);
-
         JsonObject location = new JsonObject();
         location.addProperty("locationKind", "INSTANCE_FIELD");
         location.addProperty("ownerSymRid", 21L);
@@ -312,18 +297,7 @@ public class RuntimeWorkflowHandoffClosureTest {
                 writerOccurrence);
         version.add("expression", expression);
         version.add("pathGuard", SharedStateEvidence.emptyConjunction());
-        JsonObject writerClosure = new JsonObject();
-        writerClosure.addProperty("authority", SymbolicPropagationClosure
-                .WRITER_ACTIVATION_CLOSURE_AUTHORITY);
-        writerClosure.addProperty("complete", true);
-        JsonArray cases = new JsonArray();
-        JsonObject writerCase = activation("TASK.W", writerOccurrence);
-        writerCase.addProperty("regionId", "R.W");
-        cases.add(writerCase);
-        writerClosure.add("cases", cases);
-        version.add(SymbolicPropagationClosure.WRITER_ACTIVATION_CLOSURE,
-                writerClosure);
-
+        
         JsonObject read = new JsonObject();
         read.addProperty("readEventId", 20L);
         read.addProperty("regionEnterEventId", 19L);

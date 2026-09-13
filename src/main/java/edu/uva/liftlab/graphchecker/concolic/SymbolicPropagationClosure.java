@@ -45,92 +45,7 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
  */
 public final class SymbolicPropagationClosure {
     public static final int SCHEMA_VERSION = 2;
-    public static final String ITE_TYPE = "CaseMergeExpression";
-    /** A physical replay refines a local case only when its propagated
-     *  evidence cannot be folded into the case's replay-independent value. */
-    public static final String OBSERVATION_SELECTOR =
-            "replayObservationSelector";
-    public static final String OBSERVATION_SCOPE =
-            "replayObservationScope";
-    public static final String DEPENDENCY_KIND =
-            "CONSUMER_BOUNDARY_CASE_DEPENDENCY";
-    /** Stable producer-case join carried by a ReadFrom candidate. */
-    public static final String WRITER_CASE_FAMILY =
-            "writerCaseFamilyKey";
-    public static final String WRITER_CASE_OWNER = "writerCaseOwner";
-    public static final String WRITER_CASE_SELECTOR = "writerCaseSelector";
-    public static final String WRITER_CASE_REGION_ID = "writerCaseRegionId";
-    public static final String WRITER_CASE_OCCURRENCE_ID =
-            "writerCaseOccurrenceId";
-    /**
-     * The physical occurrence whose region entry published an INITIAL
-     * candidate's snapshot.  An INITIAL arm is owned by no region case, so
-     * this is the only tie between the snapshot and the activation that took
-     * it -- which is what decides whether the snapshot still names a value
-     * once a fault marker idles that activation.
-     *
-     * <p>It is published once per INITIAL owner in {@link
-     * Result#initialSnapshotHosts()} rather than stamped on every candidate:
-     * a candidate travels inside the propagated expressions, whose canonical
-     * rendering is content-addressed, so a field added there renames every
-     * witness minted from a node that contains one.</p>
-     */
-    public static final String INITIAL_HOST_KIND = "INITIAL_SNAPSHOT_HOST";
-    public static final String INITIAL_HOST_OWNER = "initialSourceCaseOwner";
-    public static final String INITIAL_HOST_REGION_ID =
-            "initialHostRegionId";
-    public static final String INITIAL_HOST_OCCURRENCE_ID =
-            "initialHostOccurrenceId";
-    /**
-     * Whether this row states the host activation or only records that it
-     * could not be stated.
-     *
-     * <p>An INITIAL arm is owned by no region case, so the host row is the
-     * only tie between the snapshot and the activation that took it.  When
-     * the writer version carries no region or occurrence, the tie does not
-     * exist -- and an absent row and an unknown host used to look alike, both
-     * being nothing at all.  A row with this field {@code false} is the
-     * difference: it says the question was asked and has no answer, which is
-     * a fact the composer can refuse on, rather than a silence it reads as
-     * "hosted".</p>
-     */
-    public static final String INITIAL_HOST_STATED = "initialHostStated";
-    /** One INITIAL arm whose host activation could not be stated. */
-    public static final String INITIAL_HOST_UNKNOWN =
-            "INITIAL_SNAPSHOT_HOST_UNKNOWN";
-    /**
-     * Exact selected-region stack captured when a physical writer region was
-     * entered. Runtime entries carry task/region/occurrence addresses; this
-     * pass resolves them to replay-independent local cases.
-     */
-    public static final String WRITER_ACTIVATION_CLOSURE =
-            "writerActivationClosure";
-    public static final String WRITER_ACTIVATION_CLOSURE_AUTHORITY =
-            "ACTIVE_REGION_STACK_AT_WRITER_ENTRY_V1";
-    /** Stable local cases which physically enclosed one writer event. */
-    public static final String WRITER_CASE_CLOSURE = "writerCaseClosure";
-    /** Replay-independent identity of one arm in a guarded read. */
-    public static final String READ_CANDIDATE_IDENTITY =
-            "readCandidateIdentity";
-    /**
-     * Stable identity of one recorded read choice.  VM event ids are local to
-     * a replay, so path queries must never join a guarded expression to a cut
-     * by the bare numeric id.
-     */
-    /**
-     * Cases one shared read may be consumed by before the closure stops
-     * naming it.  A read every case in a wave consumes is a sign the
-     * boundary address is wrong, not a value worth a family.
-     */
-    private static final int MAX_BOUNDARY_CONSUMERS = 32;
 
-    public static final String READ_CHOICE_IDENTITY = "readChoiceIdentity";
-    public static final String READ_CHOICE_OWNER = "readChoiceOwner";
-    public static final String READ_CHOICE_OCCURRENCE_ID =
-            "readChoiceOccurrenceId";
-    /** Dependency rows with this policy are enabled by an RF arm. */
-    public static final String READ_FROM_DEPENDENCY_POLICY =
-            "READ_FROM_ARM_IMPLIES_CASE";
     /** An INITIAL version is an observed source value, not a region write. */
     /**
      * A whole-state carrier whose INITIAL version stayed opaque, so its
@@ -151,15 +66,6 @@ public final class SymbolicPropagationClosure {
      */
     public static final String RPC_ATTACH_SENDER_EXPRESSION_MISSING =
             "RPC_ATTACH_SENDER_EXPRESSION_MISSING";
-    /**
-     * How many wires a resolved boundary sits behind the fatal cone.
-     *
-     * <p>Zero is a boundary the target reads directly. One is a boundary that
-     * arrived inside another boundary's payload -- the client's cached key
-     * inside what the client then sent on -- and so on, because NN to client
-     * to DN is one chain and the walk follows it.</p>
-     */
-    public static final String BOUNDARY_DEPTH = "boundaryDepth";
 
     private SymbolicPropagationClosure() {
     }
