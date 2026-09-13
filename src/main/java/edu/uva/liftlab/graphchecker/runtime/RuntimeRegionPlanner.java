@@ -524,43 +524,7 @@ final class RuntimeRegionPlanner {
         putRecordedTraceIds(activation, root);
         activation.put("callIds", new ArrayList<>(calls));
         activation.put("observedMethods", new ArrayList<>(observed));
-        activation.put(
-                RuntimeSelectedRegionFinalizer
-                        .OBSERVED_COMMUNICATION_CAPTURES,
-                observedCommunicationCaptures(skeleton, calls, trace));
         activationByCall.put(root.callId, activation);
-    }
-
-    /** Exact configured cut captures that executed in this activation. */
-    private static List<Map<String, Object>> observedCommunicationCaptures(
-            StaticProgram.RegionRow skeleton, Set<Long> calls,
-            TraceIndex trace) {
-        List<RuntimeEvent> events = trace.runtime(calls);
-        List<Map<String, Object>> observed = new ArrayList<>();
-        for (Map<String, Object> port : skeleton.communicationPorts) {
-            String side = stringValue(port.get(
-                    RuntimeSelectedRegionFinalizer.REGION_PORT_SIDE));
-            String portId = stringValue(port.get(
-                    CommunicationCatalogContract.PORT_ID));
-            String direction = stringValue(port.get(
-                    CommunicationCatalogContract.PORT_DIRECTION));
-            if (!("IN".equals(side) || "OUT".equals(side))
-                    || portId.isEmpty() || direction.isEmpty()) {
-                continue;
-            }
-            for (RuntimeEvent event : events) {
-                if (!communicationCaptureEvent(port, event)) continue;
-                Map<String, Object> capture = new LinkedHashMap<>();
-                capture.put("side", side);
-                capture.put("portId", portId);
-                capture.put("direction", direction);
-                capture.put("transport", port.get(
-                        CommunicationCatalogContract.TRANSPORT));
-                capture.put("eventSeq", event.seq);
-                observed.add(capture);
-            }
-        }
-        return observed;
     }
 
     private static boolean communicationCaptureEvent(
@@ -1250,13 +1214,6 @@ final class RuntimeRegionPlanner {
                 plan.put(ADMISSION_BASIS, seed.get(ADMISSION_BASIS));
                 if (seed.containsKey(DEMAND_DEPTH)) {
                     plan.put(DEMAND_DEPTH, seed.get(DEMAND_DEPTH));
-                }
-                // Which location bought the admission travels with it: the
-                // basis says why, the depth says how far, and this says
-                // through what.
-                if (seed.containsKey(DEMANDED_SHARED_LOCATIONS)) {
-                    plan.put(DEMANDED_SHARED_LOCATIONS, new ArrayList<>(
-                            strings(seed.get(DEMANDED_SHARED_LOCATIONS))));
                 }
             }
             plan.put("closureGoals", Collections.singletonList(goal));
@@ -2607,8 +2564,6 @@ final class RuntimeRegionPlanner {
             RuntimeSelectedRegionFinalizer.ADMISSION_BASIS;
     static final String DEMAND_DEPTH =
             RuntimeSelectedRegionFinalizer.DEMAND_DEPTH;
-    static final String DEMANDED_SHARED_LOCATIONS =
-            RuntimeSelectedRegionFinalizer.DEMANDED_SHARED_LOCATIONS;
 
     /** Task member carrying the retained loops of one occurrence. */
     static final String RETAINED_LOOPS_FIELD =
