@@ -98,6 +98,10 @@ workflow_config_keys=(
   # returned.  Cross-node skew is a failure mechanism the checker explores,
   # so this bounds it rather than pinning a clock to its recording.
   "clock_skew_ms CAUSYNTH_CLOCK_SKEW_MS krp 300000"
+  # Which composition builds candidate.smt2.  The merge of the anchored
+  # target's paths is the only one; the key stays so a future composition
+  # can be run against a recording beside it.
+  "composer COMPOSER krp path-merge"
 )
 
 # Reads one row of workflow_config_keys into config_key/config_env/
@@ -595,7 +599,16 @@ do_compose() {
   [[ -z "${fatal_occurrence_id}" ]] \
     || selection+=(--occurrence-id "${fatal_occurrence_id}")
   require_file "runtime region plan" "${runtime_region_plan}"
-  run_java_main edu.uva.liftlab.graphchecker.concolic.ConcolicSmtComposer \
+  local composer_main
+  case "${composer}" in
+    path-merge)
+      composer_main=edu.uva.liftlab.graphchecker.concolic.PathMergeComposer
+      ;;
+    *)
+      die "unknown composer: ${composer} (expected path-merge)"
+      ;;
+  esac
+  run_java_main "${composer_main}" \
     --fatal-query "${fatal_queries}" \
     "${PATH_LIST_ARGUMENTS[@]}" \
     --runtime-plan "${runtime_region_plan}" \

@@ -258,21 +258,6 @@ public final class SymbolicPropagationClosure {
                 + "\n" + ordinal);
     }
 
-    public static Result rewrite(
-            Collection<RelationSummary> selectedSummaries,
-            JsonObject fatal,
-            Collection<JsonObject> caseRows) {
-        return new Resolver(selectedSummaries, caseRows).rewrite(fatal);
-    }
-
-    /** Shared entry point for final composition and linked path flipping. */
-    public static Result rewrite(
-            Collection<RelationSummary> closureSummaries,
-            JsonObject fatal) {
-        return rewrite(closureSummaries, fatal,
-                caseRows(closureSummaries, fatal));
-    }
-
     /** JSON carrier used by the linked-replay planner. */
     public static Result rewriteSummaryRows(
             Collection<JsonObject> closureSummaryRows) {
@@ -433,18 +418,6 @@ public final class SymbolicPropagationClosure {
         private final Map<JsonElement, Map<String, String>> stableArms =
                 new IdentityHashMap<>();
 
-        private Resolver(Collection<RelationSummary> summaries,
-                         Collection<JsonObject> caseRows) {
-            if (summaries != null) {
-                for (RelationSummary summary : summaries) {
-                    if (summary == null) continue;
-                    inputSummaryRows.add(summary.immutableJson());
-                    indexSummaryCases(summary);
-                }
-            }
-            index(caseRows);
-        }
-
         /** Direct raw-summary constructor used by linked replay. */
         private Resolver(Collection<JsonObject> rawSummaries) {
             List<JsonObject> caseRows = new ArrayList<>();
@@ -517,26 +490,6 @@ public final class SymbolicPropagationClosure {
             LocalCaseIdentity.stamp(row, owner);
         }
 
-        private void indexSummaryCases(RelationSummary summary) {
-            JsonObject row = summary.pathCaseView();
-            JsonObject summaryRow = summary.immutableJson();
-            String occurrence = optionalString(row, "occurrenceId");
-            String owner = LocalCaseIdentity.owner(summaryRow);
-            CaseInfo info = new CaseInfo(owner,
-                    LocalCaseIdentity.selector(owner),
-                    summary.regionId(), occurrence,
-                    first(optionalString(row, "taskId"),
-                            first(optionalString(row, "sourceTaskId"),
-                                    optionalString(summaryRow, "taskId"))),
-                    first(optionalString(row, "boundarySessionScope"),
-                            optionalString(summaryRow,
-                                    "boundarySessionScope")),
-                    first(optionalString(row, VmExpressionIr.TOPOLOGY_EPOCH),
-                            optionalString(summaryRow,
-                                    VmExpressionIr.TOPOLOGY_EPOCH)),
-                    object(row, "guard").get("conditions"));
-            putCase(info);
-        }
 
         private void indexCaseRow(JsonObject row) {
             if (row == null) return;
@@ -2891,68 +2844,6 @@ public final class SymbolicPropagationClosure {
         }
     }
 
-    /** Builds the exact case evidence view without consulting graph ports. */
-    private static List<JsonObject> caseRows(
-            Collection<RelationSummary> summaries, JsonObject fatal) {
-        List<JsonObject> rows = new ArrayList<>();
-        if (summaries != null) {
-            for (RelationSummary summary : summaries) {
-                JsonObject top = summary.immutableJson();
-                JsonObject row = summary.pathCaseView();
-                String occurrence = optionalString(row, "occurrenceId");
-                row.addProperty("toOccurrenceId", occurrence);
-                row.addProperty("regionId", summary.regionId());
-                row.addProperty("caseRegionId", summary.regionId());
-                row.addProperty("sourceKey", summary.sourceKey());
-                row.addProperty("taskId", first(optionalString(row, "taskId"),
-                        first(optionalString(row, "sourceTaskId"),
-                                optionalString(top, "taskId"))));
-                row.addProperty("boundarySessionScope", first(
-                        optionalString(row, "boundarySessionScope"),
-                        optionalString(top, "boundarySessionScope")));
-                row.addProperty(VmExpressionIr.TOPOLOGY_EPOCH, first(
-                        optionalString(row, VmExpressionIr.TOPOLOGY_EPOCH),
-                        optionalString(top, VmExpressionIr.TOPOLOGY_EPOCH)));
-                String owner = LocalCaseIdentity.owner(top);
-                LocalCaseIdentity.stamp(row, owner);
-                rows.add(row);
-            }
-        }
-        if (fatal != null) {
-            JsonArray paths = array(fatal, "paths");
-            for (int index = 0; index < paths.size(); index++) {
-                if (!paths.get(index).isJsonObject()) continue;
-                JsonObject row = JsonFields.shallowCopy(
-                        paths.get(index).getAsJsonObject());
-                String plannedOccurrence = optionalString(fatal, "occurrenceId");
-                String occurrence = first(optionalString(row, "occurrenceId"),
-                        plannedOccurrence);
-                row.addProperty("toOccurrenceId", occurrence);
-                row.addProperty("occurrenceId", occurrence);
-                row.addProperty("regionId", optionalString(fatal, "regionId"));
-                row.addProperty("caseRegionId", optionalString(fatal, "regionId"));
-                row.addProperty("sourceTaskId", first(
-                        optionalString(row, "sourceTaskId"),
-                        first(optionalString(fatal, "sourceTaskId"),
-                                optionalString(fatal, "taskId"))));
-                row.addProperty("taskId", first(optionalString(row, "taskId"),
-                        optionalString(fatal, "taskId")));
-                row.addProperty("boundarySessionScope", first(
-                        optionalString(row, "boundarySessionScope"),
-                        optionalString(fatal, "boundarySessionScope")));
-                row.addProperty(VmExpressionIr.TOPOLOGY_EPOCH, first(
-                        optionalString(row, VmExpressionIr.TOPOLOGY_EPOCH),
-                        optionalString(fatal, VmExpressionIr.TOPOLOGY_EPOCH)));
-                String owner = LocalCaseIdentity.owner(
-                        optionalString(fatal, "regionId"), occurrence,
-                        first(optionalString(row, "caseId"),
-                                "TARGET_PATH." + index), index);
-                LocalCaseIdentity.stamp(row, owner);
-                rows.add(row);
-            }
-        }
-        return rows;
-    }
 
     private static boolean evidenceField(String field) {
         return "edgeBindings".equals(field)

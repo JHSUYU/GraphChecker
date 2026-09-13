@@ -1,5 +1,6 @@
 package edu.uva.liftlab.graphchecker.concolic;
 
+import edu.uva.liftlab.graphchecker.contract.ComposedManifest;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalBool;
@@ -736,7 +737,7 @@ public final class ClaimPolicy {
     static List<BoundFamily> wireFlowLedger(JsonObject manifest) {
         List<BoundFamily> ledger = new ArrayList<>();
         for (JsonElement element
-                : array(manifest, ConcolicSmtComposer.WIRE_FLOW_BINDINGS)) {
+                : array(manifest, ComposedManifest.WIRE_FLOW_BINDINGS)) {
             if (!element.isJsonObject()) continue;
             JsonObject row = element.getAsJsonObject();
             String port = optionalString(row, "portId");
@@ -1237,24 +1238,24 @@ public final class ClaimPolicy {
         Map<String, Map<String, String>> observed = new LinkedHashMap<>();
         Map<String, String> sites = new LinkedHashMap<>();
         for (JsonElement element
-                : array(manifest, ConcolicSmtComposer.RECORDED_ROOT_VALUES)) {
+                : array(manifest, ComposedManifest.RECORDED_ROOT_VALUES)) {
             if (!element.isJsonObject()) {
                 continue;
             }
             JsonObject ledger = element.getAsJsonObject();
             String term = optionalString(ledger, "solverTerm");
             observe(observed, term, optionalString(ledger, "recordedValue"),
-                    ConcolicSmtComposer.RECORDED_ROOT_VALUES);
+                    ComposedManifest.RECORDED_ROOT_VALUES);
             // A ledger row the composer already found two readings for
             // states the disagreement rather than a value.
             observeAll(observed, term, optionalString(ledger,
-                    ConcolicSmtComposer.RECORDED_VALUE_CONFLICT),
-                    ConcolicSmtComposer.RECORDED_ROOT_VALUES);
+                    ComposedManifest.RECORDED_VALUE_CONFLICT),
+                    ComposedManifest.RECORDED_ROOT_VALUES);
             if (!term.isEmpty()) {
                 sites.put(term, optionalString(ledger, "siteId"));
             }
         }
-        for (JsonElement element : array(manifest, ConcolicSmtComposer
+        for (JsonElement element : array(manifest, ComposedManifest
                 .CONFIGURED_SOURCE_MATERIALIZATION_FIELD)) {
             if (!element.isJsonObject()) {
                 continue;
@@ -1262,11 +1263,11 @@ public final class ClaimPolicy {
             JsonObject source = element.getAsJsonObject();
             String term = optionalString(source, "solverTerm");
             observe(observed, term, optionalString(source,
-                    ConcolicSmtComposer.RECORDED_SOURCE_VALUE),
-                    ConcolicSmtComposer.CONFIGURED_SOURCE_MATERIALIZATION_FIELD);
+                    ComposedManifest.RECORDED_SOURCE_VALUE),
+                    ComposedManifest.CONFIGURED_SOURCE_MATERIALIZATION_FIELD);
             observeAll(observed, term, optionalString(source,
-                    ConcolicSmtComposer.RECORDED_VALUE_CONFLICT),
-                    ConcolicSmtComposer.CONFIGURED_SOURCE_MATERIALIZATION_FIELD);
+                    ComposedManifest.RECORDED_VALUE_CONFLICT),
+                    ComposedManifest.CONFIGURED_SOURCE_MATERIALIZATION_FIELD);
             if (!term.isEmpty()) {
                 sites.put(term, firstNonEmpty(sites.get(term),
                         optionalString(source, "fieldSignature")));
@@ -1323,7 +1324,7 @@ public final class ClaimPolicy {
     /**
      * Every reading a composer-side conflict row already holds.
      *
-     * <p>{@link ConcolicSmtComposer#RECORDED_VALUE_CONFLICT} is the list of
+     * <p>{@link ComposedManifest#RECORDED_VALUE_CONFLICT} is the list of
      * values two mints of one source disagreed on, comma separated. Read as
      * one string it would print as a single made-up value.</p>
      */
@@ -2162,7 +2163,7 @@ public final class ClaimPolicy {
                 optionalString(reachCondition, "degeneracyCheck"),
                 "UNDECIDED");
         boolean unsatClosureComplete = optionalBool(reach,
-                ConcolicSmtComposer.UNSAT_CLOSURE_COMPLETE, false);
+                ComposedManifest.UNSAT_CLOSURE_COMPLETE, false);
         JsonArray valuations = array(reach, "valuations");
         boolean probeConstrains = optionalBool(
                 object(reach, "existentialRootProbe"),
@@ -2224,7 +2225,7 @@ public final class ClaimPolicy {
                 array(manifest, "symbolicPropagationGaps"));
         collectBlocking(hardGaps, "COMPOSE",
                 array(manifest,
-                        ConcolicSmtComposer.FAULT_CONTROL_GAPS_FIELD));
+                        ComposedManifest.FAULT_CONTROL_GAPS_FIELD));
         collectBlocking(hardGaps, "SOLVE", array(reach, "gaps"));
         if (!hardGaps.isEmpty()) {
             blockers.add(blocker(COMPOSITION_GAPS_UNRESOLVED,
@@ -2542,7 +2543,7 @@ public final class ClaimPolicy {
         result.add(WitnessLegitimacy.FINDINGS,
                 legitimacy.getAsJsonArray("valuations"));
         rootSpace.add("probedRoot", probedRoot(reach));
-        rootSpace.addProperty(ConcolicSmtComposer.UNSAT_CLOSURE_COMPLETE,
+        rootSpace.addProperty(ComposedManifest.UNSAT_CLOSURE_COMPLETE,
                 unsatClosureComplete);
         result.add("rootSpace", rootSpace);
         return result;
@@ -2919,7 +2920,7 @@ public final class ClaimPolicy {
      */
     static List<JsonObject> uncomposedTargetOccurrences(JsonObject manifest) {
         JsonArray occurrences = array(manifest,
-                ConcolicSmtComposer.TARGET_REACH_OCCURRENCES);
+                ComposedManifest.TARGET_REACH_OCCURRENCES);
         List<JsonObject> result = new ArrayList<>();
         if (occurrences.size() < 2) return result;
         String composed = "";

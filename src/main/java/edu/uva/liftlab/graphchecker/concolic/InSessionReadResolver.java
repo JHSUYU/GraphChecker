@@ -71,6 +71,8 @@ public final class InSessionReadResolver {
     private final Map<String, JsonElement> writes;
     /** The same key -> whether that version predates tracking. */
     private final Set<String> initialVersions;
+    private final Map<String, JsonElement> resolvedReads =
+            new LinkedHashMap<>();
 
     private InSessionReadResolver(Map<String, JsonElement> definitions,
                                   Map<Long, JsonElement> handoffs,
@@ -268,6 +270,13 @@ public final class InSessionReadResolver {
             return unresolved("no write of " + location + " at version "
                     + observed);
         }
+        // One version has one value, so a second arrival at it -- through a
+        // different read node, deeper in the same walk -- is a join in the
+        // value DAG rather than a loop.  Answering it from what the first
+        // arrival computed is both cheaper and the only reading under which
+        // the walk terminates with a value instead of with a refusal.
+        JsonElement memo = resolvedReads.get(key);
+        if (memo != null) return memo.deepCopy();
         JsonElement resolved = guarded("read:" + key, value, visiting, depth);
         if (initial && resolved.isJsonObject()) {
             // A value the recording did not watch being produced is still
@@ -275,6 +284,7 @@ public final class InSessionReadResolver {
             // something the program computed.
             resolved.getAsJsonObject().addProperty(INITIAL_TAG, true);
         }
+        if (!unresolved(resolved)) resolvedReads.put(key, resolved);
         return resolved;
     }
 

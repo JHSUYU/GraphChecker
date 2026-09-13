@@ -1,5 +1,6 @@
 package edu.uva.liftlab.graphchecker.concolic;
 
+import edu.uva.liftlab.graphchecker.contract.ComposedManifest;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
@@ -127,7 +128,7 @@ public class ClaimPolicyTest {
                 PRODUCER_REGION);
         JsonArray ledger = new JsonArray();
         for (JsonObject row : rows) ledger.add(row);
-        manifest.add(ConcolicSmtComposer.WIRE_FLOW_BINDINGS, ledger);
+        manifest.add(ComposedManifest.WIRE_FLOW_BINDINGS, ledger);
         return manifest;
     }
 
@@ -254,7 +255,7 @@ public class ClaimPolicyTest {
                 + "\"casePathConditionDependencies\":[],"
                 + "\"guardedReadModelComplete\":true,"
                 + "\"gaps\":[]}");
-        manifest.add(ConcolicSmtComposer.RECORDED_ROOT_VALUES, parseArray(
+        manifest.add(ComposedManifest.RECORDED_ROOT_VALUES, parseArray(
                 "[{\"solverTerm\":\"" + BASE_TERM + "\","
                 + "\"sourceId\":\"" + BASE_SOURCE + "\","
                 + "\"siteId\":\"" + BASE_FIELD + "\","
@@ -288,7 +289,7 @@ public class ClaimPolicyTest {
 
     private static JsonObject refutation(boolean closed) {
         JsonObject reach = reach();
-        reach.addProperty(ConcolicSmtComposer.UNSAT_CLOSURE_COMPLETE, closed);
+        reach.addProperty(ComposedManifest.UNSAT_CLOSURE_COMPLETE, closed);
         reach.getAsJsonObject("reachCondition")
                 .addProperty("reachability", "UNREACHABLE");
         reach.getAsJsonObject("reachCondition")
@@ -564,7 +565,7 @@ public class ClaimPolicyTest {
     /** Two markers, both recording false, both with a named call site. */
     private static JsonObject twoMarkerManifest() {
         JsonObject manifest = manifest();
-        manifest.add(ConcolicSmtComposer.RECORDED_ROOT_VALUES, parseArray(
+        manifest.add(ComposedManifest.RECORDED_ROOT_VALUES, parseArray(
                 "[{\"solverTerm\":\"manual__updater\","
                 + "\"recordedValue\":\"false\",\"wallClock\":false,"
                 + "\"siteId\":\"" + UPDATER_SITE + "\"},"
@@ -666,7 +667,7 @@ public class ClaimPolicyTest {
     @Test
     public void anUnstatedRecordedValueBlocksTheClaim() {
         JsonObject manifest = markerManifest();
-        manifest.add(ConcolicSmtComposer.RECORDED_ROOT_VALUES,
+        manifest.add(ComposedManifest.RECORDED_ROOT_VALUES,
                 new JsonArray());
 
         JsonObject claim = ClaimPolicy.decide(manifest,
@@ -774,11 +775,11 @@ public class ClaimPolicyTest {
      */
     private static JsonObject orderedManifest(String recordedValue) {
         JsonObject manifest = manifest();
-        manifest.add(ConcolicSmtComposer.RECORDED_ROOT_VALUES,
+        manifest.add(ComposedManifest.RECORDED_ROOT_VALUES,
                 new JsonArray());
-        manifest.add(ConcolicSmtComposer
+        manifest.add(ComposedManifest
                 .CONFIGURED_SOURCE_MATERIALIZATION_FIELD, parseArray(
-                "[{\"kind\":\"" + ConcolicSmtComposer
+                "[{\"kind\":\"" + ComposedManifest
                         .CONFIGURED_SOURCE_MATERIALIZATION_KIND + "\","
                 + "\"sourceKey\":\"hdfs-17960/nn0#epoch1\","
                 + "\"sourceId\":\"" + ORDERED_SOURCE + "\","
@@ -786,7 +787,7 @@ public class ClaimPolicyTest {
                 + "\"fieldSignature\":\"" + ORDERED_FIELD + "\","
                 + "\"javaTypeDescriptor\":\"Z\",\"sort\":\"BOOL\","
                 + (recordedValue.isEmpty() ? ""
-                        : "\"" + ConcolicSmtComposer.RECORDED_SOURCE_VALUE
+                        : "\"" + ComposedManifest.RECORDED_SOURCE_VALUE
                         + "\":\"" + recordedValue + "\",")
                 + "\"solverTerm\":\"" + ORDERED_TERM + "\"}]"));
         manifest.add(ClockRootPhysics.MANIFEST_FIELD, parse(
@@ -844,7 +845,7 @@ public class ClaimPolicyTest {
 
     private static JsonObject markerManifest() {
         JsonObject manifest = manifest();
-        manifest.add(ConcolicSmtComposer.RECORDED_ROOT_VALUES, parseArray(
+        manifest.add(ComposedManifest.RECORDED_ROOT_VALUES, parseArray(
                 "[{\"solverTerm\":\"manual__fault\","
                 + "\"recordedValue\":\"false\",\"wallClock\":false}]"));
         manifest.add(ClockRootPhysics.MANIFEST_FIELD, parse(
@@ -960,7 +961,7 @@ public class ClaimPolicyTest {
                         + "8f0b-c71ea893b3c5#1#a1");
         JsonArray bindings = new JsonArray();
         bindings.add(binding);
-        manifest.add(ConcolicSmtComposer.WIRE_FLOW_BINDINGS, bindings);
+        manifest.add(ComposedManifest.WIRE_FLOW_BINDINGS, bindings);
         JsonObject guardedReads = new JsonObject();
         guardedReads.add("reads", fieldRead ? readsOf(DEK_FIELD)
                 : new JsonArray());

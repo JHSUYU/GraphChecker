@@ -4466,7 +4466,7 @@ public final class ConcolicRegionRuntime {
      * condition to {@code true}.  A flow whose value never arrives is
      * already named three times over, by {@link #attachCommunicationLeaf}'s
      * own handoff gap, by {@code SymbolicPropagationClosure
-     * .RPC_ATTACH_SENDER_EXPRESSION_MISSING} and by {@code ConcolicSmtComposer
+     * .RPC_ATTACH_SENDER_EXPRESSION_MISSING} and by {@code the composition
      * .WIRE_FLOW_VALUE_UNBOUND}; a mint hid all three behind a root that
      * answered to nothing.</p>
      *

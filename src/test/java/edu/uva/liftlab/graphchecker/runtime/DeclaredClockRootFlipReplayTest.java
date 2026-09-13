@@ -19,7 +19,7 @@ import static org.junit.Assert.assertTrue;
  * branch keeps its recorded outcome, and the linked replay is refused:
  * {@code REPLAY_PREFIX_UNMATCHED -- still waiting for
  * removeExpiredKeys()#u15#1 (the flipped source decision)}.  With no flipped
- * case recorded, {@code ConcolicSmtComposer.lowerRegionCase} keeps asserting
+ * case recorded, the composition keeps asserting
  * the recorded polarity of that branch for every key and no clock window
  * admits the removal.</p>
  *

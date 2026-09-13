@@ -19,8 +19,8 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.firstNonBlank;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
 
 /**
- * The one SMT lowering vocabulary shared by {@code ConcolicSmtComposer
- * .Emitter} and {@code ConcolicConstraintSolver.Encoder}.  They differ only
+ * The one SMT lowering vocabulary shared by {@code PathMergeLowering}
+ * and {@code ConcolicConstraintSolver.Encoder}.  They differ only
  * in the three policies {@link Policy} names: an unsupported construct
  * becomes a fresh unconstrained symbol in the composer and a {@code null}
  * term in the solver; the composer threads Java evaluation definedness

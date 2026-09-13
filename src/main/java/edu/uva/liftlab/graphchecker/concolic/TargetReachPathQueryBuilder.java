@@ -5,6 +5,7 @@ import edu.uva.liftlab.graphchecker.contract.CommunicationCatalogContract;
 import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceId;
 import edu.uva.liftlab.graphchecker.contract.PathObservation;
+import edu.uva.liftlab.graphchecker.contract.TargetAnchorEvidence;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
@@ -403,6 +404,9 @@ public final class TargetReachPathQueryBuilder {
             }
             String pathKey = observation.pathKey();
             path.add("constraints", constraints);
+            path.add(TargetAnchorEvidence.FIELD, anchorEvidence(
+                    summary, observation, targetMapping, constraints,
+                    fatalRequiredOutcome));
             // Closure already rejects two observations of one local case
             // when their rewritten consumer payloads disagree.  Runtime
             // metadata must therefore not duplicate the same target case.
@@ -841,6 +845,59 @@ public final class TargetReachPathQueryBuilder {
     /**
      * Projects one attested source path into the requested target flip.
      */
+    /**
+     * The anchored target row this replay publishes.
+     *
+     * <p>Everything the path-merge composition reads, stated once and
+     * versioned: reaching the target is the site having executed, so a
+     * healthy activation publishes the same row and contributes the
+     * disjunct its own values make false.  It travels beside the members
+     * the old composition reads, which stay until that composition goes.</p>
+     */
+    private static JsonObject anchorEvidence(
+            JsonObject summary, PathObservation observation,
+            SummaryBranchMapping target, JsonArray constraints,
+            boolean fatalRequiredOutcome) {
+        JsonObject selectors = new JsonObject();
+        selectors.addProperty(LocalCaseIdentity.FIELD, observation.pathKey());
+        selectors.addProperty("desiredTakenOutcome", fatalRequiredOutcome);
+        for (String metadata : new String[]{"taskId", "replayGroupId",
+                "boundarySessionScope", "topologyEpoch"}) {
+            if (summary.has(metadata)) {
+                selectors.add(metadata, summary.get(metadata).deepCopy());
+            }
+        }
+        JsonArray mappings = new JsonArray();
+        for (SummaryBranchMapping mapping : observation.branchMappings()) {
+            if (!mapping.isExplore()) continue;
+            JsonObject row = new JsonObject();
+            row.addProperty("siteId", mapping.siteId());
+            row.addProperty("occurrence", mapping.occurrence());
+            row.addProperty("sourceTakenOutcome",
+                    mapping.sourceTakenOutcome());
+            mappings.add(row);
+        }
+        selectors.add("exploredBranches", mappings);
+        List<JsonObject> roots = new ArrayList<>(
+                SymbolicSourceEvidence.eventsOf(summary));
+        Set<String> carriers = new LinkedHashSet<>();
+        for (JsonElement encoded : array(object(summary,
+                SharedStateEvidence.RECORDED_FIELD), "versions")) {
+            if (!encoded.isJsonObject()) continue;
+            String location = InSessionReadResolver.sessionLocation(
+                    object(object(encoded.getAsJsonObject(), "envelope"),
+                            "location"));
+            if (!location.isEmpty()) carriers.add(location);
+        }
+        return TargetAnchorEvidence.build(target.siteId(),
+                target.occurrence(), optionalString(summary, "sourceKey"),
+                optionalString(summary, "regionId"),
+                observation.occurrenceId(),
+                optionalString(summary, "topologyEpoch"),
+                target.sourceTakenOutcome(), fatalRequiredOutcome,
+                constraints, selectors, roots, carriers);
+    }
+
     private static JsonArray flippedTargetConstraints(
             JsonObject summary, PathObservation observation,
             SummaryBranchMapping target) {

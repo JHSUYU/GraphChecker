@@ -1668,7 +1668,7 @@ public final class ConcolicConstraintSolver {
                 Collections.sort(useIds);
                 for (String useId : useIds) {
                     GuardedReadUse use = uses.get(useId);
-                    assertions.add(ConcolicSmtComposer
+                    assertions.add(SmtLibQueries
                             .conditionalExactlyOne(use.activation,
                                     use.selectors));
                 }
@@ -1798,9 +1798,9 @@ public final class ConcolicConstraintSolver {
             return "(= " + result.text + " " + call.text + ")";
         }
 
-        /** Mirror of {@link ConcolicSmtComposer}'s {@code parseIntTerm}. */
+        /** The composer's {@code parseIntTerm}, stated for this caller. */
 
-        /** Mirror of {@link ConcolicSmtComposer}'s {@code splitElementTerm}. */
+        /** The composer's {@code splitElementTerm}, stated for this caller. */
         @Override
         Term splitElementTerm(JsonObject expression, String origin) {
             SplitPrefix match = exactSplitPrefix(expression);
@@ -1817,7 +1817,7 @@ public final class ConcolicConstraintSolver {
         }
 
         /**
-         * Mirror of {@link ConcolicSmtComposer}'s {@code exactSplitPrefix}.
+         * The composer's {@code exactSplitPrefix}, for this caller.
          */
         private SplitPrefix exactSplitPrefix(JsonElement expression) {
             if (expression == null || !expression.isJsonObject()) {
@@ -2858,7 +2858,7 @@ public final class ConcolicConstraintSolver {
         return result;
     }
 
-    /** Mirror of {@link ConcolicSmtComposer}'s {@code SplitPrefix}. */
+    /** The composer's {@code SplitPrefix}, for this caller. */
     private static final class SplitPrefix {
         private final JsonElement integerExpression;
         private final String gap;
