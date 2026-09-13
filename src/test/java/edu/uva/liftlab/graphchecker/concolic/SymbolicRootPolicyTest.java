@@ -3,6 +3,7 @@ package edu.uva.liftlab.graphchecker.concolic;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.contract.InputActionCatalog;
+import edu.uva.liftlab.graphchecker.contract.StaticSymbolicSourceDeclaration;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
@@ -198,6 +199,99 @@ public class SymbolicRootPolicyTest {
             }
         }
         assertTrue("the refused clock is named", sawClock);
+    }
+
+    /**
+     * A file that admits nothing keeps only the hook's own root.
+     *
+     * <p>An absent file and an empty one are different instructions.  Absent
+     * means the experiment never narrowed anything, so every proposal stands;
+     * empty means it narrowed to the exempt authorities, which is how a
+     * workload says "the source hook's field is the only thing I am varying".
+     * HDFS-17960 is that case: one configuration Boolean, everything else at
+     * its recorded value.</p>
+     */
+    @Test
+    public void anEmptyFileAdmitsNothingButTheExemptAuthorities()
+            throws Exception {
+        ConcolicScheduler.SymbolicInputSelection selection =
+                ConcolicScheduler.SymbolicInputSelection.read(
+                        declarations(), hookCatalog());
+
+        JsonArray selected = selection.select(NN, hookProposals());
+
+        assertEquals("the automatic clock return is concretized",
+                "CONCRETE", mode(selected, 0));
+        assertEquals("CONFIGURED_SYMBOLIC_INPUT_UNSELECTED",
+                demand(selected, 0));
+        assertEquals("so is an unrelated accessor field",
+                "CONCRETE", mode(selected, 1));
+        assertEquals("the workload's own fault marker is exempt",
+                "SYMBOLIC", mode(selected, 2));
+        // The hook mints its field itself, so the input action stands down
+        // rather than minting a second root for the same location.
+        assertEquals("CONCRETE", mode(selected, 3));
+        assertEquals("CONFIGURED_SYMBOLIC_SOURCE_FIELD_OWNED",
+                demand(selected, 3));
+
+        // Narrowing happened, and the telemetry names what it refused: an
+        // empty file that silently behaved like an absent one would report
+        // nothing here.
+        assertEquals(2, selection.suppressedRootCandidates().size());
+    }
+
+    /** The same file, read as absent, narrows nothing at all. */
+    @Test
+    public void anAbsentFileWithAHookStillNarrowsToTheHook() throws Exception {
+        ConcolicScheduler.SymbolicInputSelection selection =
+                ConcolicScheduler.SymbolicInputSelection.read(
+                        null, hookCatalog());
+
+        JsonArray selected = selection.select(NN, hookProposals());
+
+        // A declaring hook is itself an allowlist authority, so its presence
+        // is what turns narrowing on - not the file.
+        assertEquals("CONCRETE", mode(selected, 0));
+        assertEquals("CONCRETE", mode(selected, 3));
+        assertEquals("CONFIGURED_SYMBOLIC_SOURCE_FIELD_OWNED",
+                demand(selected, 3));
+    }
+
+    private static final String ORDERED_FIELD =
+            "<org.apache.hadoop.hdfs.server.namenode.snapshot.SnapshotManager:"
+                    + " boolean snapshotDeletionOrdered>";
+
+    /** A catalog whose NN region declares one CausynthSymbolicSource hook. */
+    private static List<JsonObject> hookCatalog() {
+        JsonObject nn = region(NN);
+        JsonObject declaration = new JsonObject();
+        declaration.addProperty("schemaVersion",
+                StaticSymbolicSourceDeclaration.SCHEMA_VERSION);
+        declaration.addProperty("kind", StaticSymbolicSourceDeclaration.KIND);
+        declaration.addProperty("authority",
+                StaticSymbolicSourceDeclaration.AUTHORITY);
+        declaration.addProperty("sourceId",
+                "HDFS.CONFIG.SNAPSHOT_DELETION_ORDERED");
+        declaration.addProperty("fieldSignature", ORDERED_FIELD);
+        declaration.addProperty("declarationMethod",
+                "<org.apache.hadoop.hdfs.server.namenode.snapshot"
+                        + ".SnapshotManager: void <init>(FSDirectory)>");
+        declaration.addProperty("declarationUnitIndex", 42);
+        JsonArray declarations = new JsonArray();
+        declarations.add(declaration);
+        nn.add(StaticSymbolicSourceDeclaration.FIELD, declarations);
+        return Arrays.asList(nn, region(DN));
+    }
+
+    /** The three standing proposals plus a read of the hook's own field. */
+    private static JsonArray hookProposals() {
+        JsonArray actions = proposals();
+        JsonObject ordered = action("ACCESSOR_RETURN",
+                "<C: boolean isSnapshotDeletionOrdered()>#u1");
+        ordered.addProperty("accessFieldSignature", ORDERED_FIELD);
+        ordered.addProperty("cell", ORDERED_FIELD);
+        actions.add(ordered);
+        return actions;
     }
 
     private Path declarations(String... rows) throws IOException {
