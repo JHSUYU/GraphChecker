@@ -321,6 +321,40 @@ implemented here: it changes emitted SMT and must be gated on a byte-identical
 recompose of the HDFS-17960 and bug3 corpora, whose recorded summaries predate
 this plan and so do not exercise it.
 
+### The replay task set
+
+The same slice decides which planned occurrences a replay executes
+symbolically at all. The runtime plan admits the target's whole dynamic
+ancestry, and every admitted occurrence is a symbolic activation inside the
+replayed workload -- on HDFS-17960 the fsimage loader,
+`FSImageFormatProtobuf$Loader.loadInternal`, was 93% of every replay (~659 s
+of ~800 s) and fed nothing the root could move. `ConcolicScheduler` therefore
+keeps a selected occurrence only when it can carry a root's influence toward
+the target, and publishes the rest as pruned instead of scheduling them:
+
+| kept as | because |
+|---|---|
+| `TARGET_REACH` | the occurrence decides the fatal branch |
+| `ROOT_SITE` | it contains a root: a hook-owned or declared read, an `EXPLICIT_SYMBOLIC_FAULT` marker, or a configured source phase the hook published inside it |
+| `CARRIER_WRITER` | it writes a shared location on the root-dependence slice -- the case-controlled writers included, because the slice walks `GUARD` edges |
+| `ROOT_DEPENDENT_FLOW` | a root site or carrier writer reaches it over the plan's own edges: a shared-location flow of a carrier, or a wire delivery / request-fault control whose producer is itself root-dependent |
+
+Everything else replays only what the recording observed -- every arm
+writes the recorded value -- and is published in `replay_task_slice.jsonl`
+with `reason: REPLAY_TASK_PRUNED_NOT_ROOT_DEPENDENT`; the summary row and
+the schedule index's `replayTaskSlice` member carry the counts. The
+decision is a pure function of the plan, the refined graph and the roots, so
+the active-observed schedule of the seed query takes the same subset. It is
+withheld -- `replayTaskSliceApplied: false`, nothing pruned -- exactly when
+the carrier slice is, because a root the graph does not name cannot state
+what it reaches. Offline on the recorded plans it takes HDFS-17960 from 44
+tasks to 18 (the loader and the whole fsimage save nest go; every region the
+final formula named stays), HDFS-17899 bug3 from 41 to 35, HDFS-17897 from
+29 to 26 and HDFS-11741 from 88 to 77 -- the block-key family keeps its
+per-key `PBHelper.convert` fan-out because each convert writes an `allKeys`
+entry the root's expiry decision controls, and drops only the test-harness
+setters and the converts of keys no rotation ever re-stamped.
+
 ## Trace context and topology
 
 The workload registers a stable node owner with `registerSource`, may bind

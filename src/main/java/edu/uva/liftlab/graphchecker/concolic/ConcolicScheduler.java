@@ -245,6 +245,26 @@ public final class ConcolicScheduler {
                         loaded.regionPlans)
                 : RuntimeWorkflowDiscovery.rankedWorkflow(
                         loaded.regionPlans);
+        // The replay task set is narrowed against the same slice every
+        // selection narrows its inputs against, seeded once here.  An
+        // occurrence no root can reach replays only what the recording
+        // observed, so it is published as pruned rather than scheduled; the
+        // decision is a pure function of the plan, the graph and the roots,
+        // so a later active-observed schedule takes the same subset.
+        loaded.symbolicInputs.seedCarrierSlice(loaded.refinedGraph,
+                rawProposals(loaded.regionPlans));
+        ReplayTaskSlice replaySlice = ReplayTaskSlice.decide(
+                loaded.regionPlans, loaded.symbolicInputs);
+        List<String> selectedOccurrences = new ArrayList<>();
+        for (RuntimeWorkflowDiscovery.Selection selection
+                : workflow.selections()) {
+            selectedOccurrences.add(selection.occurrenceId);
+        }
+        ArtifactIO.replaceJsonl(arguments.outputDirectory.resolve(
+                        ReplayTaskSlice.ARTIFACT),
+                replaySlice.rows(selectedOccurrences));
+        workflow = workflow.retaining(
+                selection -> replaySlice.keeps(selection.occurrenceId));
         if (workflow.scheduledTaskCount() > arguments.maxJobs) {
             // A bare count says only that the campaign is too big; what a
             // reader needs is which admission rule bought the rows, so the
@@ -305,6 +325,8 @@ public final class ConcolicScheduler {
         JsonObject taskPlanIdentity = artifactIdentity(taskPlan);
         JsonObject index = workflow.scheduleIndex(result.executionTasks,
                 loaded.regionPlanIdentity, taskPlanIdentity);
+        index.add("replayTaskSlice",
+                replaySlice.telemetry(selectedOccurrences));
         requireArtifactIdentity(arguments.regionPlan,
                 loaded.regionPlanIdentity,
                 "region plan changed while scheduling");
@@ -2140,6 +2162,46 @@ public final class ConcolicScheduler {
             return false;
         }
 
+        /**
+         * Whether a root can still reach one shared location.
+         *
+         * <p>A plan edge names its location twice: as the declared field
+         * signatures it flows through, which are graph cells, and as the
+         * {@code owner#field} key the runtime matched on.  Either naming a
+         * reachable cell is enough.</p>
+         */
+        boolean reachesLocation(String location,
+                                Iterable<JsonElement> fieldSignatures) {
+            for (JsonElement element : fieldSignatures == null
+                    ? Collections.<JsonElement>emptyList() : fieldSignatures) {
+                if (element.isJsonPrimitive()
+                        && reachable.contains(element.getAsString().trim())) {
+                    return true;
+                }
+            }
+            return location != null && !location.isEmpty()
+                    && reachableLocations().contains(location);
+        }
+
+        private Set<String> locations;
+
+        /** The reachable cells that are declared fields, as location keys. */
+        private Set<String> reachableLocations() {
+            if (locations == null) {
+                Set<String> keys = new LinkedHashSet<>();
+                for (String cell : reachable) {
+                    FieldPathSpec.DeclaredField field =
+                            FieldPathSpec.declaredField(cell);
+                    if (field == null) continue;
+                    String key = SharedFieldFlow.fieldKey(field.owner(),
+                            field.name());
+                    if (!key.isEmpty()) keys.add(key);
+                }
+                locations = keys;
+            }
+            return locations;
+        }
+
         int rootCellCount() {
             return roots.size();
         }
@@ -2407,6 +2469,17 @@ public final class ConcolicScheduler {
         /** What the roots reach, for the policy artifact. */
         RootDependenceSlice carrierSlice() {
             return slice;
+        }
+
+        /**
+         * Whether {@code decide} would call this action a root: hook-owned,
+         * declared for its region, or a marker the workload wrote.  The
+         * same three authorities seed the carrier slice, so an occurrence
+         * that contains one is a root site by construction.
+         */
+        boolean rootAction(String regionId, JsonObject action) {
+            return minted(regionId, action) || admits(regionId, action)
+                    || workloadOwnedSymbol(action);
         }
 
         /** The distinct locations this run kept, in first-seen order. */

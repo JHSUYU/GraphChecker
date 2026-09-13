@@ -1010,6 +1010,20 @@ public final class RuntimeWorkflowDiscovery {
 
         int scheduledTaskCount() { return selections.size(); }
 
+        /** This workflow without the dependencies {@code keep} refuses.
+         *  The target is the workflow's reason to exist and is never
+         *  refused. */
+        RankedWorkflow retaining(
+                java.util.function.Predicate<Selection> keep) {
+            List<Selection> kept = new ArrayList<>();
+            for (Selection selection : selections) {
+                if (selection.target || keep.test(selection)) {
+                    kept.add(selection);
+                }
+            }
+            return new RankedWorkflow(kept);
+        }
+
         JsonObject scheduleIndex(List<ExecutionTask> tasks,
                                  JsonObject regionPlanIdentity,
                                  JsonObject taskPlanIdentity)
