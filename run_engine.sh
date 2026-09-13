@@ -633,8 +633,7 @@ do_reach() {
     --timeout-ms "${solver_timeout_ms}" \
     --workers "${concolic_worker_count}" \
     --max-inputs "${reach_max_inputs}" \
-    --max-valuations "${reach_max_valuations}" \
-    --mappings "${causynth_communication_mappings}"
+    --max-valuations "${reach_max_valuations}"
 }
 
 run_configured_workload() {
@@ -3492,16 +3491,6 @@ campaign_emit() {
          ($decided.rootSpace.consumerBoundaryFamilies // 0),
        consumerBoundaryArms:
          ($decided.rootSpace.consumerBoundaryArms // 0),
-       declaredWireFlows:
-         ($decided.rootSpace.declaredWireFlows // 0),
-       wireFlows: ($decided.rootSpace.wireFlows // []),
-       guardedReadModelComplete:
-         ($c.guardedReadModelComplete // false),
-       guardedReads:
-         (($c.guardedReadModel.reads // []) | length),
-       guardedReadCandidates:
-         ([$c.guardedReadModel.reads[]? | ((.arms // []) | length)]
-          | add // 0),
        unsatClosureComplete: $unsatClosureComplete,
        casePathConditionFamilies:
          (($c.casePathConditionDependencies // []) | length)},

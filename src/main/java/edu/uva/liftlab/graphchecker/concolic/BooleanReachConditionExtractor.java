@@ -49,10 +49,6 @@ import java.util.regex.Pattern;
  */
 public final class BooleanReachConditionExtractor {
     private static final int MAX_EXISTENTIAL_PERTURBATIONS = 32;
-    /** Which guarded-read arm the model chose for the fatal predicate. */
-    static final String FATAL_STATE_SELECTION = "fatalStateSelection";
-    private static final String FATAL_STATE_SELECTION_KIND =
-            "FATAL_READ_STATE_SELECTION";
     /**
      * An unsat every probed attempt owed to the driver's own frontier.
      *
@@ -95,7 +91,7 @@ public final class BooleanReachConditionExtractor {
                 arguments.workers);
         JsonObject report = extract(smt, manifest, solver,
                 arguments.maxInputs, arguments.maxValuations,
-                ClaimPolicy.WireFlowEvidence.read(arguments.mappings,
+                ClaimPolicy.PlannedSymbolicRoots.read(
                         arguments.runtimePlan.toString()));
         report.add("solverAttempts", solver.attempts());
         ArtifactIO.replace(arguments.output, GSON.toJson(report)
@@ -111,7 +107,7 @@ public final class BooleanReachConditionExtractor {
                               int maxInputs, int maxValuations)
             throws IOException, InterruptedException {
         return extract(composedSmt, manifest, solver, maxInputs,
-                maxValuations, ClaimPolicy.WireFlowEvidence.none());
+                maxValuations, ClaimPolicy.PlannedSymbolicRoots.none());
     }
 
     /**
@@ -123,7 +119,7 @@ public final class BooleanReachConditionExtractor {
     static JsonObject extract(String composedSmt, JsonObject manifest,
                               Z3Solver solver,
                               int maxInputs, int maxValuations,
-                              ClaimPolicy.WireFlowEvidence flows)
+                              ClaimPolicy.PlannedSymbolicRoots flows)
             throws IOException, InterruptedException {
         JsonObject report = reachReport(composedSmt, manifest, solver,
                 maxInputs, maxValuations);
@@ -219,15 +215,10 @@ public final class BooleanReachConditionExtractor {
         // a merged wire boundary none of whose arms the model satisfied --
         // there are no arms and no merge node now, and a wire value is the
         // producer's own expression.
-        List<JsonObject> fatalArms = Collections.<JsonObject>emptyList();
-        Set<String> fatalAbsentKeyTerms = fatalAbsentKeyTerms(manifest,
-                fatalArms);
+        Set<String> fatalAbsentKeyTerms = fatalAbsentKeyTerms(manifest);
         List<String> witnessFreedomSymbols =
                 new ArrayList<>(fatalAbsentKeyTerms);
         List<String> modelSymbols = new ArrayList<>(witnessFreedomSymbols);
-        report.add(FATAL_STATE_SELECTION, asEvidence(fatalStateSelection(
-                fatalArms, Collections.<String, String>emptyMap()),
-                evidenceOnly));
         List<boolean[]> satisfyingValuations = new ArrayList<>();
         JsonArray valuationRows = new JsonArray();
         JsonArray existentialPerturbations = new JsonArray();
@@ -259,11 +250,6 @@ public final class BooleanReachConditionExtractor {
                 satisfyingValuations.add(values.clone());
                 Map<String, String> model =
                         ConcolicConstraintSolver.parseGetValues(result.stdout);
-                if (!fatalArms.isEmpty() && satisfyingValuations.size() == 1) {
-                    report.add(FATAL_STATE_SELECTION, asEvidence(
-                            fatalStateSelection(fatalArms, model),
-                            evidenceOnly));
-                }
                 JsonArray witness = existentialWitness(result,
                         discovery.existentialNonBooleanRootInputs);
                 if (witness.size() > 0) {
@@ -271,15 +257,6 @@ public final class BooleanReachConditionExtractor {
                 }
                 JsonArray mechanisms = witnessMechanisms(manifest, inputs,
                         values, witness);
-                // The recorded write order is a mechanism too, and this
-                // valuation's own model is what says whether it holds: the
-                // fatal read took the program's last writer while the same
-                // location is written again afterwards.
-                JsonObject race = RecordedOrderRace.of(manifest, fatalArms,
-                        model);
-                if (race != null) {
-                    mechanisms.add(race);
-                }
                 if (mechanisms.size() > 0) {
                     row.add("witnessMechanisms", mechanisms);
                 }
@@ -1468,7 +1445,7 @@ public final class BooleanReachConditionExtractor {
             } else if ("true".equals(was) || "false".equals(was)) {
                 mechanism.addProperty("kind", "MARKER_FLIPPED");
             } else {
-                mechanism.addProperty("kind", "ROOT_MOVED");
+                mechanism.addProperty("kind", WitnessLegitimacy.ROOT_MOVED);
             }
             mechanisms.add(mechanism);
         }
@@ -1603,40 +1580,29 @@ public final class BooleanReachConditionExtractor {
     }
 
     /**
-     * The absent-key terms that belong to the read the target predicate
-     * tests.
+     * Every absent-key default the composition published.
      *
-     * <p>A row is the fatal read's when it names that read's identity, or
-     * when the guard it was lowered under carries one of the fatal read's
-     * arm selectors -- the container chain of a state read is lowered inside
-     * the arm that selects the state, so the arm is what the row records
-     * when the read identity itself was not in scope.</p>
+     * <p>These used to be filtered down to the fatal read's own: a row
+     * counted when it named that read's identity, or when the guard it was
+     * lowered under carried one of the read's arm selectors.  There are no
+     * arms and no read identity in the merge -- the composer records a row
+     * for a key the recording never saw written, wherever it lowered one --
+     * and with the filter's two inputs gone it kept nothing, which reported
+     * every model as resting on no default at all.
+     *
+     * <p>An absent key is a value the program never wrote and the model is
+     * free to pick, so a witness that turns on one is a freedom whichever
+     * read took it.  Keeping the whole published set is the answer that
+     * cannot be wrong in the direction that matters.</p>
      */
-    private static Set<String> fatalAbsentKeyTerms(JsonObject manifest,
-                                                   List<JsonObject> fatalArms) {
-        Set<String> identities = new LinkedHashSet<>();
-        Set<String> selectors = new LinkedHashSet<>();
-        for (JsonObject arm : fatalArms) {
-            String identity = optionalString(arm, "readIdentity");
-            if (!identity.isEmpty()) identities.add(identity);
-            String selector = optionalString(arm, "selector");
-            if (!selector.isEmpty()) selectors.add(selector);
-        }
+    private static Set<String> fatalAbsentKeyTerms(JsonObject manifest) {
         Set<String> terms = new LinkedHashSet<>();
         for (JsonElement element
                 : array(manifest, ComposedManifest.ABSENT_KEY_DEFAULTS)) {
             if (!element.isJsonObject()) continue;
-            JsonObject absent = element.getAsJsonObject();
-            String term = optionalString(absent, "solverTerm");
-            if (term.isEmpty()) continue;
-            boolean fatal = identities.contains(optionalString(absent,
-                    "readIdentity"));
-            String guard = optionalString(absent, "guard");
-            for (String selector : selectors) {
-                if (fatal) break;
-                fatal = guard.contains(selector);
-            }
-            if (fatal) terms.add(term);
+            String term = optionalString(element.getAsJsonObject(),
+                    "solverTerm");
+            if (!term.isEmpty()) terms.add(term);
         }
         return terms;
     }
@@ -2316,25 +2282,6 @@ public final class BooleanReachConditionExtractor {
 
 
     /** The published arms, with the model's choice marked on each. */
-    private static JsonObject fatalStateSelection(List<JsonObject> arms,
-                                                  Map<String, String> model) {
-        JsonObject selection = new JsonObject();
-        selection.addProperty("schemaVersion", 1);
-        selection.addProperty("kind", FATAL_STATE_SELECTION_KIND);
-        selection.addProperty("authority",
-                "SOLVER_SELECTED_GUARDED_READ_ARM_V1");
-        selection.addProperty("resolved", !arms.isEmpty());
-        JsonArray rows = new JsonArray();
-        for (JsonObject arm : arms) {
-            JsonObject row = arm.deepCopy();
-            String assigned = model.get(optionalString(arm, "selector"));
-            row.addProperty("selected", "true".equals(assigned));
-            row.addProperty("modelled", assigned != null);
-            rows.add(row);
-        }
-        selection.add("arms", rows);
-        return selection;
-    }
 
     /**
      * The value range each clock root's own physics allows, by solver term.
@@ -2840,7 +2787,6 @@ public final class BooleanReachConditionExtractor {
         private int maxInputs = 12;
         private int maxValuations = 4096;
         private int workers = 8;
-        private String mappings = "";
 
         private static Arguments parse(String[] argv) {
             Map<String, String> values = new LinkedHashMap<>();
@@ -2875,7 +2821,6 @@ public final class BooleanReachConditionExtractor {
             result.maxValuations = positiveInt(values.get(
                     "max-valuations"), 4096);
             result.workers = positiveInt(values.get("workers"), 8);
-            result.mappings = firstNonBlank(values.get("mappings"));
             return result;
         }
 
@@ -2886,8 +2831,7 @@ public final class BooleanReachConditionExtractor {
                     || "timeout-ms".equals(key)
                     || "max-inputs".equals(key)
                     || "max-valuations".equals(key)
-                    || "workers".equals(key)
-                    || "mappings".equals(key);
+                    || "workers".equals(key);
         }
 
         private static Path required(Map<String, String> values,

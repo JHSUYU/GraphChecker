@@ -132,38 +132,10 @@ public class ClaimPolicyTest {
         return manifest;
     }
 
-    private static ClaimPolicy.WireFlowEvidence noFlows() {
-        return ClaimPolicy.WireFlowEvidence.none();
+    private static ClaimPolicy.PlannedSymbolicRoots noFlows() {
+        return ClaimPolicy.PlannedSymbolicRoots.none();
     }
 
-    /**
-     * One declared flow whose exchange ports the plan bound to a consumer and
-     * a producer region, written as the campaign writes them.
-     */
-    private static ClaimPolicy.WireFlowEvidence flows() throws IOException {
-        Path directory = Files.createTempDirectory("claim-flows");
-        Path mappings = directory.resolve("communication-mappings.jsonl");
-        Files.write(mappings, ("{\"schemaVersion\":1,"
-                + "\"kind\":\"WIRE_FLOW\","
-                + "\"id\":\"data-encryption-key-id\","
-                + "\"transport\":\"HDFS_SASL\","
-                + "\"direction\":\"REQUEST\"}\n")
-                .getBytes(StandardCharsets.UTF_8));
-        Path plan = directory.resolve("concolic_region_plan.jsonl");
-        Files.write(plan, ("{\"schemaVersion\":1,"
-                + "\"kind\":\"CONCOLIC_REGION_PLAN\",\"regions\":["
-                + "{\"regionId\":\"" + CONSUMER_REGION + "\","
-                + "\"communicationHandoffs\":[{\"side\":\"IN\","
-                + "\"portId\":\"XCH.da84e470-fe7e-3068-b93f-caafeef64a70"
-                + ".req.data-encryption-key-id\"}]},"
-                + "{\"regionId\":\"" + PRODUCER_REGION + "\","
-                + "\"communicationHandoffs\":[{\"side\":\"OUT\","
-                + "\"portId\":\"XCH.da84e470-fe7e-3068-b93f-caafeef64a70"
-                + ".req.data-encryption-key-id\"}]}]}\n")
-                .getBytes(StandardCharsets.UTF_8));
-        return ClaimPolicy.WireFlowEvidence.read(mappings.toString(),
-                plan.toString());
-    }
 
     /**
      * A complete composition that drew two consumer boundary families, one
@@ -365,40 +337,6 @@ public class ClaimPolicyTest {
         return JsonParser.parseString(json).getAsJsonArray();
     }
 
-    private static JsonObject truncatedManifest() {
-        JsonObject manifest = manifest();
-        manifest.add("symbolicPropagationGaps", parseArray(
-                "[{\"schemaVersion\":2,"
-                + "\"reason\":\"INITIAL_CONTAINER_SNAPSHOT_TRUNCATED\","
-                + "\"subject\":\"MAP_STATE/140#-3\","
-                + "\"detail\":\"no complete initial content snapshot\"}]"));
-        return manifest;
-    }
-
-    /** A reach report whose fatal read names one initial and one writer arm. */
-    private static JsonObject selectionReach(boolean initialArmSelected) {
-        JsonObject reach = reach();
-        reach.add(BooleanReachConditionExtractor.FATAL_STATE_SELECTION, parse(
-                "{\"schemaVersion\":1,"
-                + "\"kind\":\"FATAL_READ_STATE_SELECTION\","
-                + "\"authority\":\"SOLVER_SELECTED_GUARDED_READ_ARM_V1\","
-                + "\"resolved\":true,\"arms\":["
-                + "{\"selector\":\"read_selector__initial\","
-                + "\"readIdentity\":\"RFC.fatal\","
-                + "\"sessionLocationKey\":\"MAP_STATE/140#-3\","
-                + "\"locationKey\":\"MAP_STATE/18ffea7d#-3\","
-                + "\"writerCaseOwner\":\"INITIAL_SOURCE.a706a1a\","
-                + "\"initialState\":true,\"modelled\":true,"
-                + "\"selected\":" + initialArmSelected + "},"
-                + "{\"selector\":\"read_selector__writer\","
-                + "\"readIdentity\":\"RFC.fatal\","
-                + "\"sessionLocationKey\":\"MAP_STATE/140#-3\","
-                + "\"locationKey\":\"MAP_STATE/18ffea7d#-3\","
-                + "\"writerCaseOwner\":\"region:REGION.addKeys\","
-                + "\"initialState\":false,\"modelled\":true,"
-                + "\"selected\":" + !initialArmSelected + "}]}"));
-        return reach;
-    }
 
     /**
      * The same run with the clock one millisecond past its window is not.
@@ -819,23 +757,6 @@ public class ClaimPolicyTest {
             "<org.apache.hadoop.ipc.Client$Connection:"
             + " void sendRpcRequest(org.apache.hadoop.ipc.Client$Call)>#u17";
 
-    /** A runtime plan that symbolizes the marker port at a recorded value. */
-    private static ClaimPolicy.WireFlowEvidence planWith(String recorded)
-            throws IOException {
-        Path directory = Files.createTempDirectory("claim-plan-roots");
-        Path plan = directory.resolve("concolic_region_plan.jsonl");
-        Files.write(plan, ("{\"regionId\":\"REGION.x\","
-                + "\"closureGoals\":[{\"symbolize\":["
-                + "{\"portId\":\"REGION.sendRpcRequest.in.fault\","
-                + "\"primitiveValue\":\"" + recorded + "\","
-                + "\"javaType\":\"boolean\","
-                + "\"siteId\":\"" + PLANNED_SITE + "\","
-                + "\"declaredCallee\":\"<edu.uva.liftlab.graphchecker"
-                + ".'annotation'.Debug: boolean makeSymbolicBoolean"
-                + "(java.lang.String)>\"}]}]}\n")
-                .getBytes(StandardCharsets.UTF_8));
-        return ClaimPolicy.WireFlowEvidence.read("", plan.toString());
-    }
 
     private static JsonObject markerRow(JsonObject claim) {
         return claim.getAsJsonObject("rootSpace")
@@ -934,40 +855,6 @@ public class ClaimPolicyTest {
         return reads;
     }
 
-    /** One declared flow whose consumer names the field it assigns to. */
-    private static ClaimPolicy.WireFlowEvidence fieldFlows()
-            throws IOException {
-        Path directory = Files.createTempDirectory("claim-field-flows");
-        Path mappings = directory.resolve("communication-mappings.jsonl");
-        Files.write(mappings, ("{\"schemaVersion\":1,"
-                + "\"kind\":\"WIRE_FLOW\","
-                + "\"id\":\"data-encryption-key-id\","
-                + "\"transport\":\"HDFS_SASL\","
-                + "\"direction\":\"REQUEST\","
-                + "\"consumerField\":\"" + DEK_FIELD + "\"}\n")
-                .getBytes(StandardCharsets.UTF_8));
-        return ClaimPolicy.WireFlowEvidence.read(mappings.toString(), "");
-    }
-
-    private static JsonObject flowManifest(boolean portBound,
-                                           boolean fieldRead) {
-        JsonObject manifest = manifest();
-        JsonObject binding = new JsonObject();
-        binding.addProperty("portId", "XCH.da84e470-fe7e-3068-b93f-"
-                + "caafeef64a70.req.data-encryption-key-id");
-        binding.addProperty("valueBound", portBound);
-        binding.addProperty("receiverOccurrenceId",
-                "hdfs-17897/client#epoch0/region/REGION.ff9377c2-8f99-3a0c-"
-                        + "8f0b-c71ea893b3c5#1#a1");
-        JsonArray bindings = new JsonArray();
-        bindings.add(binding);
-        manifest.add(ComposedManifest.WIRE_FLOW_BINDINGS, bindings);
-        JsonObject guardedReads = new JsonObject();
-        guardedReads.add("reads", fieldRead ? readsOf(DEK_FIELD)
-                : new JsonArray());
-        manifest.add("guardedReadModel", guardedReads);
-        return manifest;
-    }
 
     private static JsonArray readsOf(String declaredField) {
         JsonObject arm = new JsonObject();

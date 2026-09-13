@@ -11,6 +11,8 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.Comparator;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
@@ -28,23 +30,24 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
  * annotated site, and a run composes and solves each of them.  Each
  * composition is a formula about one execution of that site, so each carries
  * its own {@link ClaimPolicy} decision, and the run has as many verdicts as
- * the recording had occurrences.  This is the outer loop that turns that set
- * into one campaign claim: it reads each occurrence's composition manifest
- * and solver report, ranks them by how much the evidence supports a claim,
- * and names the best-supported one.</p>
+ * the recording had occurrences.  This publishes every one of them and says
+ * which the campaign's own artifacts were taken from.
  *
- * <p>Ranking is over the published claim alone, never over a name, a node or
- * an ordinal: a satisfying witness the policy explained outranks a satisfying
- * witness it did not, which outranks a closed refutation, which outranks an
- * inconclusive run, which outranks a composition the Composer refused.  Ties
- * fall to the fewer blockers, then to the fewer composition refusals, then to
- * the order the schedule named the occurrences, so the same evidence always
- * elects the same occurrence.</p>
+ * <p>Two things decide that, and nothing else.  An occurrence whose own
+ * artifacts carry an accepted claim displaces one whose do not -- the target
+ * is reached if any of its anchored occurrences reaches it, so an acceptance
+ * anywhere is the campaign's acceptance.  Among equals the order is the
+ * anchor address, (node, epoch, region, ordinal), which is what an occurrence
+ * <em>is</em>; it is stated rather than taken from whatever order the
+ * schedule happened to emit.  There is no measure of support here: degrees of
+ * evidence -- an explained witness over an unexplained one, fewer blockers
+ * over more -- decided which answer a campaign published by a scale nothing
+ * in the design defines.  Each occurrence's support is reported, beside every
+ * other occurrence's, for a reader to act on.</p>
  *
- * <p>This is not a disjunction over the occurrences.  Each formula is solved
- * on its own and none of them is weakened by another; what the election picks
- * is which of several finished answers the campaign publishes, and every
- * other answer stays in the ledger next to it.</p>
+ * <p>This is not a disjunction over the formulas.  Each is solved on its own
+ * and none is weakened by another; what is picked here is which of several
+ * finished answers the campaign's top-level artifacts are copied from.</p>
  */
 public final class TargetOccurrenceElection {
     public static final int SCHEMA_VERSION = 1;
@@ -88,9 +91,8 @@ public final class TargetOccurrenceElection {
     }
 
     /**
-     * One ledger over every reported target occurrence, with the elected one
-     * flagged.  Report order is preserved: it is the order the schedule
-     * named the occurrences in, and it is this election's last tie-break.
+     * One ledger over every reported target occurrence, in anchor-address
+     * order, with the one the campaign's artifacts came from flagged.
      */
     static JsonObject elect(List<JsonObject> reports) throws IOException {
         if (reports.isEmpty()) {
@@ -111,11 +113,20 @@ public final class TargetOccurrenceElection {
                 throw new IOException("target occurrence reported twice: "
                         + occurrence);
             }
-            JsonObject row = verdict(report, index);
+            JsonObject row = verdict(report);
             if (COMPOSED.equals(optionalString(row, "status"))) {
                 composed++;
             }
             rows.add(row);
+        }
+        Collections.sort(rows, new Comparator<JsonObject>() {
+            @Override
+            public int compare(JsonObject left, JsonObject right) {
+                return anchorAddress(left).compareTo(anchorAddress(right));
+            }
+        });
+        for (int index = 0; index < rows.size(); index++) {
+            rows.get(index).addProperty("order", index);
         }
         int elected = 0;
         for (int index = 1; index < rows.size(); index++) {
@@ -148,7 +159,7 @@ public final class TargetOccurrenceElection {
     }
 
     /** One occurrence's published verdict, read from its own artifacts. */
-    private static JsonObject verdict(JsonObject report, int order)
+    private static JsonObject verdict(JsonObject report)
             throws IOException {
         JsonObject row = new JsonObject();
         row.addProperty("occurrenceId", optionalString(report,
@@ -157,7 +168,6 @@ public final class TargetOccurrenceElection {
         row.addProperty("goalId", optionalString(report, "goalId"));
         row.addProperty("taskId", optionalString(report, "taskId"));
         row.addProperty("artifactDir", optionalString(report, "artifactDir"));
-        row.addProperty("order", order);
         row.addProperty("composeWallMillis",
                 optionalLongInteger(report, "composeWallMillis", -1L));
         row.addProperty("solveWallMillis",
@@ -249,16 +259,34 @@ public final class TargetOccurrenceElection {
      *
      * <p>Each occurrence is its own question with its own answer, so there
      * are only two things to say about a pair of them: one of them was
-     * accepted and the other was not, or neither was.  Ordering them by
-     * degree of support -- an explained witness over an unexplained one, an
-     * inconclusive run over a refused composition, fewer blockers over more
-     * -- decided which answer the campaign published by a measure nothing in
-     * the design defines, and could put a sibling's SAT in front of a
-     * refusal that mattered.  Equal standing leaves the order the schedule
-     * named them in.</p>
+     * accepted and the other was not, or neither was.  Equal standing leaves
+     * the anchor-address order the rows are already in.</p>
      */
     private static boolean outranks(JsonObject candidate, JsonObject best) {
         return accepted(candidate) && !accepted(best);
+    }
+
+    /**
+     * One occurrence's sort key: node, epoch, region, ordinal.
+     *
+     * <p>An occurrence id reads {@code <workload>/<node>#<epoch>/region/<region>#<k>}.
+     * The ordinal is compared as a number, zero-padded here rather than
+     * parsed, so that #10 follows #9 instead of #1.  An id that does not
+     * parse sorts by itself, which keeps the order total without inventing a
+     * position for it.</p>
+     */
+    private static String anchorAddress(JsonObject row) {
+        String occurrence = optionalString(row, "occurrenceId");
+        int hash = occurrence.lastIndexOf('#');
+        if (hash < 0) return occurrence;
+        String ordinal = occurrence.substring(hash + 1);
+        for (int index = 0; index < ordinal.length(); index++) {
+            if (!Character.isDigit(ordinal.charAt(index))) return occurrence;
+        }
+        StringBuilder padded = new StringBuilder(
+                occurrence.substring(0, hash + 1));
+        for (int pad = ordinal.length(); pad < 12; pad++) padded.append('0');
+        return padded.append(ordinal).toString();
     }
 
     /** Whether this occurrence's own artifacts carry an accepted claim. */
@@ -285,11 +313,12 @@ public final class TargetOccurrenceElection {
             others.add(optionalString(rows.get(index), "occurrenceId") + "="
                     + optionalString(rows.get(index), "support"));
         }
-        return "the campaign claim rests on "
-                + optionalString(chosen, "occurrenceId") + " (support="
-                + support + "), the best supported of " + rows.size()
-                + " observed target occurrence(s); the others are "
-                + String.join(", ", others);
+        return "the campaign artifacts are "
+                + optionalString(chosen, "occurrenceId") + "'s (support="
+                + support + "), the first of " + rows.size()
+                + " observed target occurrence(s) in anchor order to carry an"
+                + " accepted claim, or the first of them outright when none"
+                + " did; the others are " + String.join(", ", others);
     }
 
     private static JsonObject readRequired(JsonObject report, String field,
