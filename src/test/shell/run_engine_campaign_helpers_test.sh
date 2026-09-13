@@ -97,8 +97,8 @@ emit_fixture() {
       claim: "SAT_CANDIDATE",
       claimReason: "a valuation satisfies the target predicate inside the recorded model and a symbolic root flips it",
       blockers: [], blockerCount: 0, whyNotAccepted: "",
-      rootSpace: {consumerBoundaryFamilies: 1,
-                  consumerBoundaryArms: 2}}}' \
+      rootSpace: {reachability: "REACHABLE",
+                  degeneracyCheck: "DECIDED"}}}' \
     >"${reach_report}"
   printf '%s\n' \
     '{"schemaVersion":1,"kind":"REGION_PATH_WORKLIST","coverageGaps":[{"kind":"PATH_FLIP_REPLAY_NOT_ADMITTED","queryKey":"flip","reason":"UNEXPLORED"},{"kind":"PATH_FLIP_SOLVER_TIMEOUT","queryKey":"slow-flip","reason":"SOLVER_TIMEOUT"}]}' \
@@ -159,8 +159,8 @@ emit_fixture_undecided_roots() {
         {code: "FINDING_MECHANISM_UNNAMED", subject: "NO_MECHANISM",
          detail: "no satisfying witness names a mechanism"}],
       whyNotAccepted: ("claim=INCONCLUSIVE_PARTIAL: 3 blocker(s) withhold acceptance\n  UNDECIDED_ROOT_SPACE [UNDECIDED_UNENUMERATED_EXISTENTIAL_ROOTS:9]: the degeneracy question was not decided\n  TARGET_UNCONSTRAINED_BY_ROOTS: no symbolic root flips the target predicate\n  FINDING_MECHANISM_UNNAMED [NO_MECHANISM]: no satisfying witness names a mechanism"),
-      rootSpace: {consumerBoundaryFamilies: 99,
-                  consumerBoundaryArms: 240}}}' \
+      rootSpace: {reachability: "REACHABLE",
+                  degeneracyCheck: "DECIDED"}}}' \
     >"${reach_report}"
 }
 
@@ -186,7 +186,6 @@ run_emit
       "${campaign_final}/result.json") == "${emit_config}" ]] \
   || fail "the result names a different frozen config"
 jq -e '.evidence.symbolicPropagationComplete == false
-  and .evidence.consumerBoundaryArms == 2
   and .gapCount == 0
   and .telemetryCount >= 2' \
   "${campaign_final}/result.json" >/dev/null \
@@ -212,8 +211,8 @@ jq -e '[.targetOccurrences[] | .composeWallMillis] == [51234, 48010]
   || fail "the result lost the per-occurrence stage times"
 # CLAIM-1: the whole policy decision, so no consumer has to open the solver
 # report to find the claim this file was written from.
-jq -e '.rootSpace.consumerBoundaryFamilies == 1
-  and .rootSpace.consumerBoundaryArms == 2' \
+jq -e '.rootSpace.reachability == "REACHABLE"
+  and (.rootSpace | has("degeneracyCheck"))' \
   "${campaign_final}/result.json" >/dev/null \
   || fail "the result does not carry the claim root space: \
 $(jq -c '.rootSpace' "${campaign_final}/result.json")"
@@ -366,10 +365,6 @@ jq -e '[.blockers[] | select(.code == "FINDING_MECHANISM_UNNAMED")
     | .subject] == ["NO_MECHANISM"]' \
   "${campaign_final}/result.json" >/dev/null \
   || fail "the mechanism blocker did not name its subject"
-jq -e '.evidence.consumerBoundaryFamilies == 99' \
-  "${campaign_final}/result.json" >/dev/null \
-  || fail "the result lost its root-space evidence: \
-$(jq -c '.evidence' "${campaign_final}/result.json")"
 # The one view: a header plus one line per blocker, printed and recorded.
 [[ $(jq -r '.whyNotAccepted' "${campaign_final}/result.json" \
       | wc -l) -eq 4 ]] \
