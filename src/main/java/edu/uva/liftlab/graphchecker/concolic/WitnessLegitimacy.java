@@ -22,10 +22,10 @@ import java.util.Set;
  * polarity the experiment did not plant a fault in: both polarities
  * satisfiable refuted the hypothesis, and a clock that moved was decoration
  * unless the solver could show the polarity died without it. That reading
- * discards real findings. Key rotation races and clock drift <em>happen</em>,
- * on the "other" polarity as readily as on the planted one, and a witness that
- * names one is a legitimate finding about the program rather than a defect in
- * the analysis.</p>
+ * discards real findings. Clock drift <em>happens</em>, on the "other"
+ * polarity as readily as on the planted one, and a witness that names it is a
+ * legitimate finding about the program rather than a defect in the
+ * analysis.</p>
  *
  * <p>So a witness is read against a fixed, named set of mechanisms the
  * recording physically allows:</p>
@@ -34,10 +34,6 @@ import java.util.Set;
  *   <li>{@code MARKER_FLIPPED} -- the experiment's own injected fault.</li>
  *   <li>{@code CLOCK_SKEW} inside the configured window, at a wall-clock value
  *   that is a time rather than arithmetic noise.</li>
- *   <li>{@code ROTATION_RACE} -- the fatal read took the program's own last
- *   writer while the same location is written again later in the recorded
- *   order.  Nothing decides this at present: the probe that did read the
- *   composition's guarded-read arms, which no composition publishes.</li>
  * </ul>
  *
  * <p>A witness every one of whose mechanisms is in that set, standing on a
@@ -114,7 +110,7 @@ public final class WitnessLegitimacy {
             "CLOCK_NECESSITY_UNKNOWN";
 
     /**
-     * The four shapes a satisfying witness may be a finding in.
+     * The three shapes a satisfying witness may be a finding in.
      *
      * <p>A witness is a finding only where it names one of these, and it
      * names exactly one: the mechanism list may hold several rows, but the
@@ -124,9 +120,6 @@ public final class WitnessLegitimacy {
      * <ul>
      *   <li>{@link #MARKER_FLIPPED} -- a Boolean root moved off the value it
      *   recorded and the fatal predicate is satisfied there.</li>
-     *   <li>{@link #ROTATION_RACE} -- the recorded write order states the
-     *   race.  No probe names it since the read arms went; a mechanism
-     *   this run cannot decide is one it does not claim.</li>
      *   <li>{@link #CLOCK_SKEW} -- a wall clock moved inside the declared
      *   window <em>and</em> the necessity probe showed the target does not
      *   reach with the clocks back on record.</li>
@@ -140,12 +133,22 @@ public final class WitnessLegitimacy {
      * <p>Where two apply the first of that list is published, because a
      * flipped marker is a stronger statement than a clock that accompanied
      * it; every mechanism the witness named stays on the row beside it.</p>
+     *
+     * <p>There was a fourth, {@code ROTATION_RACE}: the fatal read took the
+     * program's own last writer while the same location was written again
+     * later in the recorded order.  Path merging cannot produce it.  Each
+     * replay fixes its own interleaving of that write and that read, and the
+     * merge is a disjunction over replays that ran -- so no path can exhibit
+     * a rotation order different from the one it executed, and nothing in the
+     * pipeline explores thread schedules.  A mechanism nothing can produce
+     * must not be listed, so the kind is retired.  Deciding it would mean
+     * exploring schedules, which is a separate feature and would bring its
+     * own way of stating which interleavings were searched.</p>
      */
-    public static final String ROTATION_RACE = "ROTATION_RACE";
     /** The recorded valuation is the failing one, and the flip is unsat. */
     public static final String RECORDED_FAILURE_EXPLAINED =
             "RECORDED_FAILURE_EXPLAINED";
-    /** Where a classified witness publishes which of the four it is. */
+    /** Where a classified witness publishes which of the three it is. */
     public static final String FINDING_KIND = "findingKind";
 
     /** What the necessity probe said about this witness's clock group. */
@@ -373,7 +376,7 @@ public final class WitnessLegitimacy {
     }
 
     /**
-     * Which of the four shapes this satisfying witness is, or {@code ""}.
+     * Which of the three shapes this satisfying witness is, or {@code ""}.
      *
      * <p>Only a mechanism that survived {@link #refuse} counts, so a clock
      * the necessity probe did not answer for is not a {@link #CLOCK_SKEW}
@@ -387,9 +390,6 @@ public final class WitnessLegitimacy {
                                       boolean recordedFailureExplained) {
         if (flipped.size() > 0 && namesKind(legitimate, MARKER_FLIPPED)) {
             return MARKER_FLIPPED;
-        }
-        if (namesKind(legitimate, ROTATION_RACE)) {
-            return ROTATION_RACE;
         }
         if (namesKind(legitimate, CLOCK_SKEW)) {
             return CLOCK_SKEW;
@@ -522,9 +522,8 @@ public final class WitnessLegitimacy {
     /**
      * Why this mechanism is not one the world allows, or {@code null}.
      *
-     * <p>A marker flip is the experiment's own hypothesis and a rotation race
-     * is the recorded order stating itself, so neither can be refused. A clock
-     * is refused on two counts and two only: it left the window the recording
+     * <p>A marker flip is the experiment's own hypothesis, so it cannot be
+     * refused. A clock is refused on two counts and two only: it left the window the recording
      * anchors it in, or it landed on a value that is not a time at all --
      * negative, or the arithmetic floor a 64-bit solver reaches for when
      * nothing constrains it. Anything else the witness moved has no named
@@ -536,7 +535,7 @@ public final class WitnessLegitimacy {
         String where = firstNonEmpty(optionalString(mechanism, "siteId"),
                 firstNonEmpty(optionalString(mechanism, "sourceKey"),
                         optionalString(mechanism, "solverTerm")));
-        if (MARKER_FLIPPED.equals(kind) || ROTATION_RACE.equals(kind)) {
+        if (MARKER_FLIPPED.equals(kind)) {
             return null;
         }
         if (CLOCK_SKEW.equals(kind)) {
