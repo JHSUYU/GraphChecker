@@ -3020,6 +3020,14 @@ run:
           bool carrier_read = false;
           bool replay_primitive_read = false;
           jlong replay_primitive_bits = 0;
+          // The receiver's own shadow, captured before the result overwrites
+          // its slot.  When it is a read through a reference-typed carrier,
+          // this field read is dependent on *which writer's object* the
+          // solver selects, and resolving it against the concrete receiver
+          // alone would silently pick one arm of that choice.
+          Expression *reference_owner = NULL;
+          int dependent_anchor = 0;
+          int dependent_slots = 0;
 
           if (ConcolicMngr::can_do_concolic()) {
             int stack_offset = GET_STACK_OFFSET;
@@ -3027,6 +3035,16 @@ run:
                 tos_type == ltos || tos_type == dtos ? 2 : 1;
             const int result_anchor = stack_offset
                 - (result_slots == 1 ? 1 : 0);
+            dependent_anchor = result_anchor;
+            dependent_slots = result_slots;
+            if ((Bytecodes::Code)opcode == Bytecodes::_getfield) {
+              Expression *owner_shadow =
+                  ConcolicMngr::ctx->get_stack_slot(stack_offset - 1);
+              if (owner_shadow != NULL
+                  && owner_shadow->is_guarded_reference_read()) {
+                reference_owner = owner_shadow;
+              }
+            }
             SymInstance *sym_inst = ConcolicMngr::ctx->find_sym_inst(obj);
             if (SharedFieldVersions::has_carriers() && sym_inst != NULL) {
               SharedFieldVersions::Location location(
@@ -3159,6 +3177,59 @@ run:
                 // previous shadow here would silently invent provenance.
                 ConcolicMngr::ctx->clear_stack_value(
                     carrier_anchor, carrier_slots);
+              }
+            }
+          }
+          // The dependent read of a reference carrier.  `owner` keeps the
+          // read-from choice the receiver came from, so the projection stays
+          // a question about the selected writer's object; the concrete pair
+          // states what this execution observed, which pins the arm the run
+          // did take without constraining the arms it did not.  Only a
+          // primitive-valued field is routed: a reference-valued one would
+          // hand the composer an owner shape it has no projection for, and
+          // the concrete shadow it already installs is still exact.
+          if (reference_owner != NULL) {
+            jlong observed_bits = 0;
+            bool primitive_field = true;
+            switch (tos_type) {
+              case ztos: observed_bits = SharedFieldVersions::raw_bits(
+                             (jboolean)(STACK_INT(-1) & 1)); break;
+              case btos: observed_bits = SharedFieldVersions::raw_bits(
+                             (jbyte) STACK_INT(-1)); break;
+              case ctos: observed_bits = SharedFieldVersions::raw_bits(
+                             (jchar) STACK_INT(-1)); break;
+              case stos: observed_bits = SharedFieldVersions::raw_bits(
+                             (jshort) STACK_INT(-1)); break;
+              case itos: observed_bits = SharedFieldVersions::raw_bits(
+                             (jint) STACK_INT(-1)); break;
+              case ltos: observed_bits = SharedFieldVersions::raw_bits(
+                             (jlong) STACK_LONG(-1)); break;
+              case ftos: observed_bits = SharedFieldVersions::raw_bits(
+                             (jfloat) STACK_FLOAT(-1)); break;
+              case dtos: observed_bits = SharedFieldVersions::raw_bits(
+                             (jdouble) STACK_DOUBLE(-1)); break;
+              default:   primitive_field = false; break;
+            }
+            if (primitive_field) {
+              BasicType field_type = as_BasicType(tos_type);
+              Expression *observed =
+                  ConcolicMngr::ctx->get_stack_slot(dependent_anchor);
+              if (observed == NULL) {
+                observed = SharedFieldVersions::primitive_expression(
+                    field_type, observed_bits);
+              }
+              Expression *concrete_owner =
+                  SharedFieldVersions::reference_expression(obj);
+              if (observed != NULL && concrete_owner != NULL) {
+                ResourceMark rm;
+                const char *owner_class = obj->klass()->name() == NULL
+                    ? "" : obj->klass()->name()->as_C_string();
+                ConcolicMngr::ctx->set_stack_value(
+                    dependent_anchor, dependent_slots,
+                    new FieldAccessExpression(
+                        reference_owner, owner_class, field_offset,
+                        field_type, std::string(), concrete_owner,
+                        observed));
               }
             }
           }

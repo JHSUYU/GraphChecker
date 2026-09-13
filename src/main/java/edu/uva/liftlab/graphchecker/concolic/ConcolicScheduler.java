@@ -831,6 +831,7 @@ public final class ConcolicScheduler {
                 "rootSelector"), "method");
         Set<String> guardDependent = definitions.guardDependentCells(
                 exploredGuardOperands(demandedBranches));
+        Set<String> declaredCarriers = declaredCarrierLocations(goal);
         for (JsonElement element : sourceActions) {
             if (!element.isJsonObject()) {
                 continue;
@@ -880,7 +881,23 @@ public final class ConcolicScheduler {
             }
             boolean boundedContainerState =
                     supportedBoundedContainerState(binding, location);
+            // A reference-typed location on the root-dependence slice is
+            // shared state too: its writers install object identities a root
+            // decides between, and a read through it must arm over those
+            // identities instead of stopping at the scalar leaf contract.
+            boolean referenceCarrier = !boundedContainerState
+                    && slice != null && slice.usable()
+                    && slice.carries(action)
+                    && supportedReferenceCarrier(binding, location)
+                    && declaredReferenceCarrier(declaredCarriers, slice,
+                    action, cell);
+            if (referenceCarrier) {
+                binding.addProperty("symbolicDemand",
+                        REFERENCE_CARRIER_DEMAND);
+            }
             String unsupportedLeaf = boundedContainerState ? ""
+                    : referenceCarrier
+                    ? unsupportedFieldLeafPathReason(action, location, cell)
                     : unsupportedSymbolicLeafReason(action, location, cell);
             if (!unsupportedLeaf.isEmpty()) {
                 addConcreteInputAction(result, represented, binding,
@@ -1121,7 +1138,19 @@ public final class ConcolicScheduler {
         if (!supportedScalar && !supportedPrimitiveArray) {
             return "CONCRETE_UNSUPPORTED_LEAF_TYPE";
         }
+        return unsupportedFieldLeafPathReason(action, location, cell);
+    }
 
+    /**
+     * The exact-field-path half of the leaf contract: a field port must name
+     * one declared leaf whose name and type agree with the access.  Stated
+     * separately so a reference carrier, which is exempt from the scalar
+     * type gate, still has to satisfy it.
+     */
+    static String unsupportedFieldLeafPathReason(
+            JsonObject action, String location, String cell) {
+        String descriptor = JavaPrimitiveSmtSemantics.javaTypeDescriptor(
+                optionalString(action, "javaType"));
         if (!("RECEIVER_FIELD".equals(location)
                 || "ARGUMENT_FIELD".equals(location)
                 || "ARGUMENT_FIELD_PATH".equals(location)
@@ -1145,6 +1174,66 @@ public final class ConcolicScheduler {
             return "CONCRETE_FIELD_LEAF_TYPE_MISMATCH";
         }
         return "";
+    }
+
+    /** The {@code owner#field} keys one goal declares as shared carriers. */
+    private static Set<String> declaredCarrierLocations(Goal goal) {
+        Set<String> locations = new LinkedHashSet<>();
+        for (JsonElement element : goal.sharedCarriers()) {
+            if (!element.isJsonObject()) continue;
+            String location = SharedCarrierSlice.location(
+                    element.getAsJsonObject());
+            if (!location.isEmpty()) locations.add(location);
+        }
+        return locations;
+    }
+
+    /**
+     * Whether the replay will actually track this reference.
+     *
+     * <p>A reference port is tracked and never minted, which makes the
+     * carrier declaration the whole of its materialization: with no
+     * declaration the replay has nothing to select, the getfield resolves no
+     * writer, and the port would reach the runtime as a SYMBOLIC input it
+     * cannot serve.  The plan therefore admits the demand only where the
+     * planner declared the location and the slice keeps it -- the same two
+     * facts {@link SharedCarrierSlice} uses to decide what is versioned.  A
+     * plan frozen before references were declared keeps its old concrete
+     * answer rather than gaining a port with no carrier behind it.</p>
+     */
+    private static boolean declaredReferenceCarrier(
+            Set<String> declaredCarriers, RootDependenceSlice slice,
+            JsonObject action, String cell) {
+        FieldPathSpec.DeclaredField leaf = declaredLeaf(action, cell);
+        if (leaf == null) return false;
+        String location = SharedFieldFlow.fieldKey(leaf.owner(), leaf.name());
+        return !location.isEmpty() && declaredCarriers.contains(location)
+                && slice.reachesLocation(location, null);
+    }
+
+    /**
+     * The demand a reference-typed shared location carries when its object
+     * identity is the value the solver arms over.  The VM versions the field
+     * as identities (INITIAL: the referent at selection; REF_WRITE: the
+     * installed object), and a read through it resolves a dependent field of
+     * the selected object rather than of the recorded one.
+     */
+    static final String REFERENCE_CARRIER_DEMAND = "REFERENCE_CARRIER";
+
+    /**
+     * Admits a plain object reference as an identity carrier.  The type
+     * contract is {@link JavaPrimitiveSmtSemantics#referenceIdentityCarrier},
+     * which is also what declares the location a shared carrier one stage
+     * earlier, so plan and runtime cannot disagree about which references
+     * are versioned.  Only a heap field access qualifies here: the runtime
+     * selects such a carrier at the exact getfield without minting, whereas
+     * receiver-entry and argument bindings would symbolize the object.
+     */
+    static boolean supportedReferenceCarrier(JsonObject action,
+                                             String location) {
+        return "HEAP_OBJECT_FIELD".equals(location)
+                && JavaPrimitiveSmtSemantics.referenceIdentityCarrier(
+                optionalString(action, "javaType"));
     }
 
     /** Admits a container identity only as a bounded relational state port. */

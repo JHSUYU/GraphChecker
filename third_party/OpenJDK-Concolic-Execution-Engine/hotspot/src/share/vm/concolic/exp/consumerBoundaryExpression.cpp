@@ -24,6 +24,11 @@ bool ConsumerBoundaryExpression::is_boolean_expression() {
   return _expression->is_boolean_expression();
 }
 
+bool ConsumerBoundaryExpression::is_guarded_reference_read() {
+  // The boundary is the identity function, so it answers for its child.
+  return _expression->is_guarded_reference_read();
+}
+
 bool ConsumerBoundaryExpression::is_recorded_container_mutation() {
   return _expression->is_recorded_container_mutation();
 }

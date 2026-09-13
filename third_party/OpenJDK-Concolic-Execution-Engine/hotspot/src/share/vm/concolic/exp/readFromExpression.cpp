@@ -22,6 +22,16 @@ bool ReadFromExpression::is_boolean_expression() {
   return _java_type.size() == 1 && _java_type[0] == type2char(T_BOOLEAN);
 }
 
+bool ReadFromExpression::is_guarded_reference_read() {
+  // The emitted Java type of the location, which SharedFieldVersions builds
+  // from type2char: 'L' for an object field, '[' for an array-valued one.
+  // Both are identities rather than scalars, and both are what a dependent
+  // field read has to resolve against the selected writer's object.
+  return _java_type.size() == 1
+      && (_java_type[0] == type2char(T_OBJECT)
+          || _java_type[0] == type2char(T_ARRAY));
+}
+
 std::string ReadFromExpression::get_name() {
   char buf[64];
   int length = snprintf(buf, sizeof(buf), "rf_read%ld",

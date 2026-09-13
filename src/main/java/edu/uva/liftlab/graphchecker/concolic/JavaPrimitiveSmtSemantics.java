@@ -1,5 +1,7 @@
 package edu.uva.liftlab.graphchecker.concolic;
 
+import edu.uva.liftlab.graphchecker.contract.JavaContainerTypes;
+
 import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.List;
@@ -77,6 +79,50 @@ public final class JavaPrimitiveSmtSemantics {
         for (int index = 0; index < dimensions; index++) result.append('[');
         return result.append(descriptor).toString();
     }
+
+    /**
+     * Whether a location of this Java type carries an object <em>identity</em>
+     * the solver can arm over rather than a scalar it can assign.
+     *
+     * <p>The scalar leaf contract represents a primitive, a {@code String},
+     * a boxed primitive and a primitive array, and the container algebra
+     * represents a collection as bounded state.  What was left with no
+     * representation at all is the plain object reference -- the shape of
+     * {@code BlockTokenSecretManager#currentKey} -- whose versions are the
+     * identities its writers installed.  Such a location is shared state in
+     * exactly the sense the version store already models: a read through it
+     * selects one of the recorded writers, and the value the read yields is
+     * a field <em>of the object that writer installed</em>.</p>
+     *
+     * <p>Arrays are excluded because an array is state rather than identity,
+     * and the boxed types because the scalar contract already unwraps them.
+     * {@code java.lang.Object} is excluded as well: it names no class whose
+     * fields a dependent read could resolve, and it is the declared type a
+     * container most often hides behind, which the static shape test cannot
+     * see through.</p>
+     */
+    public static boolean referenceIdentityCarrier(String javaType) {
+        String descriptor = javaTypeDescriptor(javaType);
+        if (!descriptor.startsWith("L") || !descriptor.endsWith(";")
+                || descriptor.length() <= 2) {
+            return false;
+        }
+        if (JavaContainerTypes.shape(javaType)
+                != JavaContainerTypes.Shape.NONE) {
+            return false;
+        }
+        return !SCALAR_REFERENCE_DESCRIPTORS.contains(descriptor);
+    }
+
+    /** Reference descriptors the scalar leaf contract already represents. */
+    private static final java.util.Set<String> SCALAR_REFERENCE_DESCRIPTORS =
+            java.util.Collections.unmodifiableSet(
+                    new java.util.LinkedHashSet<>(java.util.Arrays.asList(
+                            "Ljava/lang/String;", "Ljava/lang/Boolean;",
+                            "Ljava/lang/Byte;", "Ljava/lang/Character;",
+                            "Ljava/lang/Short;", "Ljava/lang/Integer;",
+                            "Ljava/lang/Long;", "Ljava/lang/Float;",
+                            "Ljava/lang/Double;", "Ljava/lang/Object;")));
 
     /**
      * The closed value range of one integral Java type, as {@code {minimum,

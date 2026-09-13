@@ -51,6 +51,7 @@ public:
                      bool writer_set_complete);
 
   virtual bool is_boolean_expression();
+  virtual bool is_guarded_reference_read();
   virtual std::string get_name();
 
 protected:

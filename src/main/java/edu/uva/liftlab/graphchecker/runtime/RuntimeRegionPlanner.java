@@ -1438,9 +1438,55 @@ final class RuntimeRegionPlanner {
         // the answer from explicit bounded-container demand and the semantic
         // leaf type, while retaining an explicit concrete runtime role.
         if (DependencyRole.VALUE_FRONTIER.equals(
-                sharedCarrierRuntimeRole(port, access, field.type()))) {
+                sharedCarrierRuntimeRole(port, access, field.type()))
+                // An Atomic wrapper is not an identity to arm over: its
+                // own value leaf, declared just above, is the shared state,
+                // and versioning the holder as well would put one location
+                // in the formula twice.
+                || atomicField == null
+                && referenceIdentityCarrier(port, access, field.type())) {
             addAccessOwnedCarrier(carriers, field);
         }
+    }
+
+    /**
+     * Whether this access names a plain object reference whose writers a
+     * later read must be able to choose between.
+     *
+     * <p>The role above answers VALUE_FRONTIER for a semantic leaf and
+     * CONCRETE_STRUCTURE_CARRIER for everything else, which puts an object
+     * reference on the concrete side -- correct for the object graph a
+     * replay walks, and wrong for a reference that is itself shared state.
+     * {@code BlockTokenSecretManager#currentKey} is the second kind: the
+     * wire key id is {@code currentKey.keyId}, and which {@code BlockKey}
+     * {@code currentKey} holds is exactly what the failing refresh decides.
+     * Without a version here the read resolves against whichever object the
+     * run happened to leave in the field, and the writer's object is lost.
+     * </p>
+     *
+     * <p>This is a declaration, not a selection: the scheduler's root slice
+     * ({@code SharedCarrierSlice}) drops every location no root reaches, so
+     * a reference declared here and never moved by a root costs nothing
+     * beyond one decision row.  An explicitly concrete access is still
+     * concrete -- a capture root, a loop control or a path assumption names
+     * structure the replay walks and not state a writer competes for.</p>
+     */
+    private static boolean referenceIdentityCarrier(
+            Map<String, Object> port, Map<String, Object> access,
+            String javaType) {
+        if (!JavaPrimitiveSmtSemantics.referenceIdentityCarrier(javaType)) {
+            return false;
+        }
+        Map<String, Object> semantic = new LinkedHashMap<>();
+        for (String key : new String[]{"symbolicDemand", "captureRootOnly",
+                "loopControlOnly", "controlOnly", "pathAssumptionOnly"}) {
+            if (access.containsKey(key)) {
+                semantic.put(key, access.get(key));
+            } else if (port.containsKey(key)) {
+                semantic.put(key, port.get(key));
+            }
+        }
+        return !concreteStructureCarrier(semantic);
     }
 
     /** Final semantic role of one access, with exact runtime facts winning. */
