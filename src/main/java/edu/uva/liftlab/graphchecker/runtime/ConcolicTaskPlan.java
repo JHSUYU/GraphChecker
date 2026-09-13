@@ -334,7 +334,7 @@ final class ConcolicTaskPlan {
                     registeredReceiverSource, context)) {
                 continue;
             }
-            String scope = task.invocationCounterKey();
+            String scope = task.invocationCounterKey(context.requestKey, context.requestApi);
             if (!actualOrdinalByScope.containsKey(scope)) {
                 int ordinal = invocationOrdinals.getOrDefault(scope, 0)
                         + 1;
@@ -357,7 +357,7 @@ final class ConcolicTaskPlan {
                 continue;
             }
             Integer ordinal = actualOrdinalByScope.get(
-                    task.invocationCounterKey());
+                    task.invocationCounterKey(context.requestKey, context.requestApi));
             boolean exactOutgoingAddress =
                     mayDeferMissingContextToOutgoingAnchor(task,
                             registeredReceiverSource, context);
@@ -431,7 +431,7 @@ final class ConcolicTaskPlan {
                     registeredReceiverSource, context)) {
                 continue;
             }
-            String scope = task.invocationCounterKey();
+            String scope = task.invocationCounterKey(context.requestKey, context.requestApi);
             if (!actualOrdinalByScope.containsKey(scope)) {
                 int ordinal = invocationOrdinals.getOrDefault(scope, 0)
                         + 1;
@@ -461,7 +461,7 @@ final class ConcolicTaskPlan {
             if (!sourceAdmissionMismatch(task, registeredReceiverSource,
                     context).isEmpty()) continue;
             Integer actualOrdinal = actualOrdinalByScope.get(
-                    task.invocationCounterKey());
+                    task.invocationCounterKey(context.requestKey, context.requestApi));
             boolean exactOutgoingAddress =
                     mayDeferMissingContextToOutgoingAnchor(task,
                             registeredReceiverSource, context);
@@ -2029,16 +2029,41 @@ final class ConcolicTaskPlan {
         }
 
         /**
-         * Counter scope frozen by the planner. Request-scoped activations are
-         * counted inside their exact request; roots with no request anchor
-         * retain the source-and-region scope used during discovery.
+         * Counter scope for one candidate, in the request it actually
+         * entered.
+         *
+         * <p>The planner counts activations per request -- every observed
+         * activation of this source, region and root, partitioned by the
+         * exchange it was reached under
+         * ({@code RuntimeRegionPlanner.replayInvocationScope}, counted at
+         * {@code RuntimeRegionPlanner:1058}).  Replay has to count the same
+         * population or the two ends disagree about which activation is the
+         * k-th.</p>
+         *
+         * <p>It used to key on the <em>planned</em> request, which is a
+         * constant per task, so every candidate fell in one bucket whatever
+         * request it entered under.  That was harmless only while a request
+         * mismatch refused the candidate before it reached the counter; once
+         * matching stopped consulting the request, a candidate from another
+         * exchange consumed the planned occurrence's ordinal and the replay
+         * reported invocation 2 where the plan said 1.  Keying on the
+         * observed request puts each candidate in the bucket the recording
+         * counted it in.</p>
+         *
+         * <p>The request is still not identity: it decides which counting
+         * bucket a candidate falls in, exactly as it did in the recording,
+         * and never whether the candidate matches.  One counting rule with
+         * no request in it at all is the repair, and it belongs with the
+         * shared occurrence address -- see
+         * {@code $SP_NEW/d-runtime/IDENTITY_DESIGN.md}.</p>
          */
-        String invocationCounterKey() {
+        String invocationCounterKey(String observedRequestKey,
+                                    String observedRequestApi) {
             StringBuilder key = new StringBuilder(sourceKey)
                     .append('\n').append(regionId)
                     .append('\n').append(rootMethod)
-                    .append('\n').append(rootContextSelector.requestKey)
-                    .append('\n').append(rootContextSelector.requestApi);
+                    .append('\n').append(safe(observedRequestKey))
+                    .append('\n').append(safe(observedRequestApi));
             return key.toString();
         }
 

@@ -111,6 +111,43 @@ public class OccurrenceAddressIsNotARequestTest {
         assertTrue(refusal, refusal.contains("source-dn"));
     }
 
+    /**
+     * Two candidates under two requests are each the first of their own.
+     *
+     * <p>The planner counts activations per request; replay has to count the
+     * same population or the two ends disagree about which activation is the
+     * k-th.  Keyed on the planned request -- a constant per task -- every
+     * candidate fell in one bucket, so one arriving from another exchange
+     * consumed the planned occurrence's ordinal and replay reported
+     * invocation 2 where the plan said 1.</p>
+     */
+    @Test
+    public void candidatesAreCountedInTheRequestTheyEntered() {
+        ConcolicTaskPlan.RuntimeTask task = task();
+
+        String here = task.invocationCounterKey(
+                "hdfs-17960/client#epoch0/request/record-ordered-deletes#1",
+                "record-ordered-deletes");
+        String there = task.invocationCounterKey(
+                "hdfs-17960/nn0#epoch1/request/restart-namenode#1",
+                "restart-namenode");
+        String alsoHere = task.invocationCounterKey(
+                "hdfs-17960/client#epoch0/request/record-ordered-deletes#1",
+                "record-ordered-deletes");
+
+        assertTrue("two exchanges are two buckets", !here.equals(there));
+        assertEquals("one exchange is one bucket", here, alsoHere);
+    }
+
+    /** The bucket is still the source, region and root of the occurrence. */
+    @Test
+    public void theBucketIsStillTheOccurrencesOwnScope() {
+        ConcolicTaskPlan.RuntimeTask task = task();
+
+        assertTrue(task.invocationCounterKey("", "")
+                .startsWith(task.sourceKey));
+    }
+
     private static ConcolicTaskPlan.RuntimeTask task() {
         return new ConcolicTaskPlan.RuntimeTask(ExecutionTask.decode(
                 row("plans/hdfs-17899-bug3-loop-body-producer.json")));
