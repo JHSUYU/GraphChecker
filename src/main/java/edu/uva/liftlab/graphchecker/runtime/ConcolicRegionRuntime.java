@@ -60,6 +60,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Predicate;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -315,9 +316,8 @@ public final class ConcolicRegionRuntime {
     }
 
     /**
-     * The innermost activation, or null while observation is muted.  Every
-     * loop-accounting hook asks this before charging anything: a hook reached
-     * from GraphChecker's own bookkeeping accounts for nothing.
+     * The innermost activation, or null while observation is muted: a hook
+     * reached from GraphChecker's own bookkeeping accounts for nothing.
      */
     private static ActiveRegion observingActiveRegion() {
         return OBSERVATION_PAUSE_DEPTH.get() > 0 ? null : activeRegion();
@@ -356,19 +356,10 @@ public final class ConcolicRegionRuntime {
                     instrumentedMaxTraversals,
                     "BOUND_HOOK_FAILURE:" + rootCause(failure));
         } finally {
-            if (paused) {
-                try {
-                    api.resumePathCondition();
-                } catch (Throwable failure) {
-                    active.addUnresolvedOnce(
-                            "loop-bound path-condition resume failed: "
-                                    + rootCause(failure));
-                    if (cut == null) {
-                        cut = active.loopBoundCut(safe(backedgeId),
-                                instrumentedMaxTraversals,
-                                "BOUND_HOOK_RESUME_FAILURE");
-                    }
-                }
+            if (resumeLoopAccounting(active, api, paused) && cut == null) {
+                cut = active.loopBoundCut(safe(backedgeId),
+                        instrumentedMaxTraversals,
+                        "BOUND_HOOK_RESUME_FAILURE");
             }
         }
         endAtCut(active, cut);
@@ -406,15 +397,7 @@ public final class ConcolicRegionRuntime {
             active.addUnresolvedOnce("replay loop resource hook failed: "
                     + rootCause(failure));
         } finally {
-            if (paused) {
-                try {
-                    api.resumePathCondition();
-                } catch (Throwable failure) {
-                    active.addUnresolvedOnce(
-                            "loop-bound path-condition resume failed: "
-                                    + rootCause(failure));
-                }
-            }
+            resumeLoopAccounting(active, api, paused);
         }
         endAtCut(active, cut);
     }
@@ -444,6 +427,23 @@ public final class ConcolicRegionRuntime {
             active.completeLoopCardinality(safe(loopId));
         } finally {
             endBookkeeping();
+        }
+    }
+
+    /**
+     * Restores the path condition a loop-accounting hook paused.  True when
+     * the resume was lost, leaving the workload's own observation muted.
+     */
+    private static boolean resumeLoopAccounting(
+            ActiveRegion active, ConcolicVmBroker api, boolean paused) {
+        if (!paused) return false;
+        try {
+            api.resumePathCondition();
+            return false;
+        } catch (Throwable failure) {
+            active.addUnresolvedOnce("loop-bound path-condition resume "
+                    + "failed: " + rootCause(failure));
+            return true;
         }
     }
 
@@ -1051,10 +1051,7 @@ public final class ConcolicRegionRuntime {
         return false;
     }
 
-    /**
-     * Null-safe equality for either string naming one instrumented root hook:
-     * the instrumentation selector and the root method compare the same way.
-     */
+    /** Null-safe equality for either string naming one root hook. */
     static boolean sameHookIdentity(String left, String right) {
         return left == null ? right == null : left.equals(right);
     }
@@ -2467,8 +2464,8 @@ public final class ConcolicRegionRuntime {
     }
 
     /**
-     * The sibling-hook accounting both root stacks share: one physical Java
-     * entry emits one hook per plan row, and only the first is an activation.
+     * The sibling-hook accounting both root stacks share: one physical entry
+     * emits one hook per plan row, and only the first is an activation.
      */
     private static class SiblingHookGroupEntry {
         final String groupKey;
@@ -3613,14 +3610,10 @@ public final class ConcolicRegionRuntime {
     }
 
     /**
-     * Applies the solve's reference model for one action to the live value.
-     *
-     * @return the replacement (which may legitimately be null);
-     *         {@link MissingValue#INSTANCE} when the solve named no
-     *         assignment for this action; or
-     *         {@link UnsupportedReplayValue#INSTANCE} when the assignment
-     *         cannot be replayed as a reference, which is also filed as
-     *         unresolved under {@code label}.
+     * Applies the solve's reference model for one action.  Returns the
+     * replacement (possibly null), {@code MissingValue} when the solve named
+     * no assignment, or {@code UnsupportedReplayValue} when it cannot be
+     * replayed as a reference - which is also filed as unresolved.
      */
     private static Object modeledReference(
             ActiveRegion active, SymbolizeAction action, Object concrete,
@@ -3890,9 +3883,9 @@ public final class ConcolicRegionRuntime {
     }
 
     /**
-     * The replacement one solver model names for a live container element.
-     * A model may only null out an element or re-coerce a present one: an
-     * absent element has no Java type to coerce against.
+     * The replacement a model names for a live container element.  A model
+     * may null an element out or re-coerce a present one; an absent element
+     * has no Java type to coerce against.
      */
     private static Object modeledContainerValue(
             Object current, String valueType, String value) {
@@ -3901,10 +3894,7 @@ public final class ConcolicRegionRuntime {
                 : coerceModelValue(valueType, value, current.getClass());
     }
 
-    /**
-     * True when writing {@code modeled} over {@code current} would merge two
-     * distinct entries of a uniqueness-bearing container into one.
-     */
+    /** True when this write would merge two distinct live entries into one. */
     private static boolean collidesWithLiveElement(
             Object current, Object modeled, boolean alreadyPresent) {
         return alreadyPresent && !(current == null ? modeled == null
@@ -4390,10 +4380,7 @@ public final class ConcolicRegionRuntime {
         CURRENT_TOKENS.get().push(active.token);
     }
 
-    /**
-     * The activation stack, having proved {@code active} is its innermost
-     * entry.  Every reader of the stack asks this first; a mismatch is fatal.
-     */
+    /** The stack, having proved {@code active} is its innermost entry. */
     private static Deque<Long> innermostActiveRegionStack(
             ActiveRegion active, String violation) {
         Deque<Long> tokens = CURRENT_TOKENS.get();
@@ -5912,18 +5899,21 @@ public final class ConcolicRegionRuntime {
                     || previous.equals(symbol) ? symbol : "");
         }
 
-        private ModelAssignment assignment(SymbolizeAction action,
-                                           List<String> path) {
+        /**
+         * The one unspent assignment matching {@code matcher}.  Two survivors
+         * address nothing, so the ambiguity is filed and neither applies.
+         */
+        private ModelAssignment uniqueAssignment(
+                Predicate<ModelAssignment> matcher, boolean reusable,
+                String subject, String ambiguity) {
             ModelAssignment selected = null;
             for (ModelAssignment candidate : activation.modelAssignments) {
-                if (!candidate.matches(action, path)
-                        || !action.repeatedPrimitiveAccessor()
+                if (!matcher.test(candidate) || !reusable
                         && appliedModelAssignments.contains(candidate.key)) {
                     continue;
                 }
                 if (selected != null) {
-                    addUnresolvedOnce(action.symbol
-                            + ": ambiguous model assignments");
+                    addUnresolvedOnce(subject + ambiguity);
                     return null;
                 }
                 selected = candidate;
@@ -5931,25 +5921,23 @@ public final class ConcolicRegionRuntime {
             return selected;
         }
 
+        private ModelAssignment assignment(SymbolizeAction action,
+                                           List<String> path) {
+            return uniqueAssignment(
+                    candidate -> candidate.matches(action, path),
+                    action.repeatedPrimitiveAccessor(), action.symbol,
+                    ": ambiguous model assignments");
+        }
+
         /** One solver value for one exact configured source hook. */
         private ModelAssignment configuredSourceAssignment(
                 String sourcePhaseId, String sourceId,
                 String fieldSignature) {
-            ModelAssignment selected = null;
-            for (ModelAssignment candidate : activation.modelAssignments) {
-                if (!candidate.matchesConfiguredSource(sourcePhaseId,
-                        sourceId, fieldSignature)
-                        || appliedModelAssignments.contains(candidate.key)) {
-                    continue;
-                }
-                if (selected != null) {
-                    addUnresolvedOnce(sourcePhaseId
-                            + ": ambiguous configured source models");
-                    return null;
-                }
-                selected = candidate;
-            }
-            return selected;
+            return uniqueAssignment(
+                    candidate -> candidate.matchesConfiguredSource(
+                            sourcePhaseId, sourceId, fieldSignature),
+                    false, sourcePhaseId,
+                    ": ambiguous configured source models");
         }
 
         private boolean hasAppliedExactNullReferenceAssignment(
