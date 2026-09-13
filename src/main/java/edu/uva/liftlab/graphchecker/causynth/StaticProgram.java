@@ -1,6 +1,7 @@
 package edu.uva.liftlab.graphchecker.causynth;
 
 import edu.uva.liftlab.graphchecker.concolic.JsonFields;
+import edu.uva.liftlab.graphchecker.contract.CommunicationCatalogContract;
 import edu.uva.liftlab.graphchecker.contract.ConfiguredSourcePhaseContract;
 import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.contract.SiteId;
@@ -363,21 +364,80 @@ public final class StaticProgram {
     }
 
     /** The region's retained loops that could be a service loop, by owner. */
-    private static Map<String, List<Map<String, Object>>> serviceLoops(
+    private Map<String, List<Map<String, Object>>> serviceLoops(
             RegionRow skeleton) {
         Map<String, List<Map<String, Object>>> byMethod =
                 new LinkedHashMap<>();
         for (Map<String, Object> loop : skeleton.retainedLoops) {
             String owner = text(loop.get("enclosingMethod"));
-            if (owner.isEmpty() || !LoopBoundPolicy.LOOP_CONDITION_BOUNDED
-                    .equals(text(loop.get(
-                            LoopBoundPolicy.LOOP_CLASSIFICATION)))) {
+            if (owner.isEmpty() || !serviceLoopCandidate(skeleton, loop,
+                    owner)) {
                 continue;
             }
             byMethod.computeIfAbsent(owner,
                     ignored -> new ArrayList<>()).add(loop);
         }
         return byMethod;
+    }
+
+    /**
+     * Whether one retained loop may be the region's service loop.
+     *
+     * <p>A {@code CONDITION_BOUNDED} loop always may: it decides its own
+     * continuation, which is the shape the once-only-root rule is about.  An
+     * indexed walk over an array cardinality usually may not -- iterating a
+     * collection is not by itself a unit of demanded work -- but it is
+     * exactly that when the iteration is what the slice demands:</p>
+     * <ul>
+     *   <li>a declared wire port is defined inside the loop body, or by a
+     *       method the loop body calls, so one iteration produces or consumes
+     *       one wire value; or</li>
+     *   <li>the loop body writes a declared field, so one iteration is one
+     *       shared-location write the failure may read.</li>
+     * </ul>
+     * <p>The trip count of such a loop is exact and recorded, so naming the
+     * iteration adds no unbounded path space; and {@link #loopBodyRoot}
+     * still requires the demanded call to sit lexically inside the loop and
+     * the trace to have seen the loop iterate inside one activation.</p>
+     */
+    private boolean serviceLoopCandidate(RegionRow skeleton,
+                                         Map<String, Object> loop,
+                                         String owner) {
+        String classification = text(loop.get(
+                LoopBoundPolicy.LOOP_CLASSIFICATION));
+        if (LoopBoundPolicy.LOOP_CONDITION_BOUNDED.equals(classification)) {
+            return true;
+        }
+        if (!LoopBoundPolicy.LOOP_FIXED_COUNT_INDEXED.equals(classification)) {
+            return false;
+        }
+        Set<String> calledInLoop = new LinkedHashSet<>();
+        for (Map<String, Object> edge : regionGraph(skeleton.regionId)) {
+            if (!owner.equals(text(edge.get("method")))
+                    || !loopContains(loop, number(edge.get("unitIndex"), -1))) {
+                continue;
+            }
+            String callee = invocationTarget(edge);
+            if (!callee.isEmpty()) calledInLoop.add(callee);
+            if ("HEAP_WRITE".equals(text(edge.get("transferKind")))
+                    && declaredField(text(edge.get("toCell")))) {
+                return true;
+            }
+        }
+        for (Map<String, Object> port : skeleton.communicationPorts) {
+            String definition = text(port.get(CommunicationCatalogContract
+                    .PORT_DEFINITION_METHOD));
+            if (definition.isEmpty()) continue;
+            if (calledInLoop.contains(definition)) {
+                return true;
+            }
+            if (owner.equals(definition) && loopContains(loop, number(
+                    port.get(CommunicationCatalogContract
+                            .PORT_DEFINITION_UNIT_INDEX), -1))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** The published loop body a re-rooted region names. */
@@ -488,8 +548,8 @@ public final class StaticProgram {
      * publishes: from the loop's dominance-proved header to its last exiting
      * branch.
      */
-    private static boolean loopContains(Map<String, Object> loop,
-                                        int unitIndex) {
+    static boolean loopContains(Map<String, Object> loop,
+                                int unitIndex) {
         int header = loopHeaderUnitIndex(text(loop.get(
                 LoopBoundPolicy.RUNTIME_LOOP_ID)));
         if (header < 0 || unitIndex < header) return false;
