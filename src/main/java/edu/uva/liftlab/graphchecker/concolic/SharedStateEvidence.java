@@ -994,15 +994,91 @@ public final class SharedStateEvidence {
         return record;
     }
 
-    /** Whether {@code row} is an admitted version-store record. */
+    /** Whether {@code row} is an admitted write log. */
     public static boolean isVersionsRecord(JsonObject row) {
-        return row != null
-                && VERSIONS_RECORD_KIND.equals(optionalString(row, "kind"))
-                && RECORD_AUTHORITY.equals(optionalString(row, "authority"))
-                && optionalInteger(row, "schemaVersion", -1) == RECORD_SCHEMA_VERSION
-                && RecordedEvidenceIdentity.stamped(row)
-                && !optionalString(row, "locationKey").isEmpty()
-                && versionsFault(object(row, "envelope")).isEmpty();
+        return writeLogFault(row).isEmpty();
+    }
+
+    /**
+     * Why one published write log cannot be read, or {@code ""}.
+     *
+     * <p>{@link #versionsFault} is the recording side's contract: it runs on
+     * the VM envelope, which states the selection, the writer case behind
+     * every version, the read log and the truncation flags.  A replay
+     * publishes none of that -- it publishes the write log, {@code
+     * location#version -> expression} -- because a read inside one replay is
+     * determined and needs only the version it observed and the expression
+     * written at it.  So this side admits on exactly that: an addressable
+     * location, and per version an id, a declared kind and an untruncated
+     * value.  Requiring the recording's members here refuses every write log
+     * the runtime publishes and leaves every read unresolved.</p>
+     */
+    public static String writeLogFault(JsonObject row) {
+        if (row == null) return "no write log";
+        if (!VERSIONS_RECORD_KIND.equals(optionalString(row, "kind"))
+                || !RECORD_AUTHORITY.equals(
+                optionalString(row, "authority"))) {
+            return "row is not an authoritative write log";
+        }
+        if (optionalString(row, "locationKey").isEmpty()) {
+            return "write log names no location";
+        }
+        JsonObject envelope = object(row, "envelope");
+        if (!VERSIONS_ENVELOPE_KIND.equals(optionalString(envelope, "kind"))
+                || optionalInteger(envelope, "schemaVersion", -1)
+                != SCHEMA_VERSION) {
+            return "envelope is not an authoritative version store";
+        }
+        if (locationKey(envelope).isEmpty()) {
+            return "envelope names no addressable location";
+        }
+        JsonElement versionsMember = envelope.get("versions");
+        if (versionsMember == null || !versionsMember.isJsonArray()) {
+            return "envelope carries no version array";
+        }
+        JsonArray versions = versionsMember.getAsJsonArray();
+        if (versions.size() == 0) {
+            return "selected location published no version";
+        }
+        boolean mapState = isMapState(locationKey(envelope));
+        Set<Long> versionIds = new LinkedHashSet<>();
+        for (JsonElement element : versions) {
+            if (!element.isJsonObject()) return "version is not an object";
+            JsonObject version = element.getAsJsonObject();
+            String fault = writtenVersionFault(version, mapState);
+            if (!fault.isEmpty()) return fault;
+            if (!versionIds.add(optionalLongInteger(version,
+                    "fieldVersionId", 0L))) {
+                return "duplicate fieldVersionId "
+                        + optionalLongInteger(version, "fieldVersionId", 0L);
+            }
+        }
+        return "";
+    }
+
+    /** Admits one version of a published write log. */
+    private static String writtenVersionFault(
+            JsonObject version, boolean mapState) {
+        long id = optionalLongInteger(version, "fieldVersionId", 0L);
+        if (id <= 0L) return "version has no fieldVersionId";
+        String versionKind = optionalString(version, "versionKind");
+        if (!VERSION_KINDS.contains(versionKind)) {
+            return "version " + id + " has no declared kind";
+        }
+        if (!INITIAL_VERSION_KIND.equals(versionKind)
+                && stateVersionKind(versionKind) != mapState) {
+            return "version " + id + " has kind " + versionKind
+                    + " that its location kind does not publish";
+        }
+        JsonElement expression = version.get("expression");
+        if (expression == null || expression.isJsonNull()) {
+            return "version " + id + " carries no value expression";
+        }
+        if (containsVmSerializationTruncation(expression)) {
+            return VM_EXPRESSION_SERIALIZATION_TRUNCATED
+                    + ": version " + id + " value expression";
+        }
+        return "";
     }
 
 
