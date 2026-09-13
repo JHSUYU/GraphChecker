@@ -1,5 +1,6 @@
 package edu.uva.liftlab.graphchecker.concolic;
 
+import edu.uva.liftlab.graphchecker.contract.ComposedManifest;
 import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.contract.RuntimePlanArtifact;
 import edu.uva.liftlab.graphchecker.contract.TargetAnchorEvidence;
@@ -541,13 +542,13 @@ public final class PathMergeComposer {
             partitions.add(partition);
         }
         manifest.add("caseSelectorPartitions", partitions);
-        manifest.add(ConcolicSmtComposer.CONDITIONAL_CASE_PARTITIONS,
+        manifest.add(ComposedManifest.CONDITIONAL_CASE_PARTITIONS,
                 new JsonArray());
-        manifest.add(ConcolicSmtComposer.CONFIGURED_SOURCE_MATERIALIZATION_FIELD,
+        manifest.add(ComposedManifest.CONFIGURED_SOURCE_MATERIALIZATION_FIELD,
                 rootRows);
-        manifest.add(ConcolicSmtComposer.MANUAL_SOURCE_MATERIALIZATION_FIELD,
+        manifest.add(ComposedManifest.MANUAL_SOURCE_MATERIALIZATION_FIELD,
                 new JsonArray());
-        manifest.add(ConcolicSmtComposer.RECORDED_ROOT_VALUES,
+        manifest.add(ComposedManifest.RECORDED_ROOT_VALUES,
                 recordedRootValues(rootRows));
         manifest.add(LoopBoundPolicy.PATH_LOOP_COUNTS,
                 loopCounts(fatal));
@@ -560,15 +561,15 @@ public final class PathMergeComposer {
         // composer forgot to say".
         manifest.addProperty("guardedReadModelComplete", true);
         manifest.add("casePathConditionDependencies", new JsonArray());
-        manifest.add(ConcolicSmtComposer.BOUNDARY_DISPATCH_TOTALITY,
+        manifest.add(ComposedManifest.BOUNDARY_DISPATCH_TOTALITY,
                 new JsonArray());
-        manifest.add(ConcolicSmtComposer.ABSENT_KEY_DEFAULTS,
+        manifest.add(ComposedManifest.ABSENT_KEY_DEFAULTS,
                 new JsonArray());
-        manifest.add(ConcolicSmtComposer.WIRE_FLOW_BINDINGS,
+        manifest.add(ComposedManifest.WIRE_FLOW_BINDINGS,
                 new JsonArray());
-        manifest.add(ConcolicSmtComposer.FAULT_CONTROL_GAPS_FIELD,
+        manifest.add(ComposedManifest.FAULT_CONTROL_GAPS_FIELD,
                 new JsonArray());
-        manifest.add(ConcolicSmtComposer.TARGET_REACH_OCCURRENCES,
+        manifest.add(ComposedManifest.TARGET_REACH_OCCURRENCES,
                 targetReachOccurrences(fatal, site, occurrence));
 
         JsonObject merge = new JsonObject();
@@ -606,14 +607,14 @@ public final class PathMergeComposer {
                 && !selectors.isEmpty();
         manifest.addProperty("state",
                 ready ? "CANDIDATE_READY" : "CANDIDATE_WITH_GAPS");
-        manifest.addProperty(ConcolicSmtComposer.FINAL_STATUS,
+        manifest.addProperty(ComposedManifest.FINAL_STATUS,
                 ready ? "FINAL_READY" : "FINAL_REFUSED");
         JsonArray refusals = new JsonArray();
         for (JsonElement row : gates) refusals.add(row.deepCopy());
         manifest.add("finalStatusRefusals", refusals);
         manifest.addProperty("pathSetComplete", pathSetComplete(fatal));
         boolean closed = ready && pathSetComplete(fatal);
-        manifest.addProperty(ConcolicSmtComposer.UNSAT_CLOSURE_COMPLETE,
+        manifest.addProperty(ComposedManifest.UNSAT_CLOSURE_COMPLETE,
                 closed);
         JsonObject closure = new JsonObject();
         closure.addProperty("schemaVersion", 1);
@@ -621,7 +622,7 @@ public final class PathMergeComposer {
         closure.addProperty("authority", COMPOSER);
         closure.addProperty("targetPathsClosed", pathSetComplete(fatal));
         closure.addProperty("finalStatusReady", ready);
-        manifest.add(ConcolicSmtComposer.UNSAT_CLOSURE_EVIDENCE, closure);
+        manifest.add(ComposedManifest.UNSAT_CLOSURE_EVIDENCE, closure);
         manifest.addProperty("symbolicPropagationComplete",
                 noCut(gates));
         manifest.add("symbolicPropagationGaps", cutRows(gates));
@@ -722,7 +723,7 @@ public final class PathMergeComposer {
         manifest.addProperty("kind", KIND);
         manifest.addProperty("composer", COMPOSER);
         manifest.addProperty("state", "CANDIDATE_WITH_GAPS");
-        manifest.addProperty(ConcolicSmtComposer.FINAL_STATUS,
+        manifest.addProperty(ComposedManifest.FINAL_STATUS,
                 "FINAL_REFUSED");
         JsonArray gates = new JsonArray();
         gate(gates, gate, detail);

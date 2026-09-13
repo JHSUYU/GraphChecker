@@ -1,5 +1,6 @@
 package edu.uva.liftlab.graphchecker.concolic;
 
+import edu.uva.liftlab.graphchecker.contract.ComposedManifest;
 import static edu.uva.liftlab.graphchecker.concolic.ArtifactIO.artifact;
 import static edu.uva.liftlab.graphchecker.concolic.ArtifactIO.sibling;
 import static edu.uva.liftlab.graphchecker.concolic.JavaPrimitiveSmtSemantics.javaTypeDescriptor;
@@ -105,7 +106,7 @@ public final class BooleanReachConditionExtractor {
                 arguments.timeoutMillis,
                 array(manifest, "caseSelectorPartitions"),
                 array(manifest,
-                        ConcolicSmtComposer.CONDITIONAL_CASE_PARTITIONS),
+                        ComposedManifest.CONDITIONAL_CASE_PARTITIONS),
                 arguments.workers);
         JsonObject report = extract(smt, manifest, solver,
                 arguments.maxInputs, arguments.maxValuations,
@@ -159,12 +160,12 @@ public final class BooleanReachConditionExtractor {
         report.addProperty("guardedReadModelComplete",
                 guardedReadModelComplete);
         boolean unsatClosureComplete = unsatClosureComplete(manifest);
-        report.addProperty(ConcolicSmtComposer.UNSAT_CLOSURE_COMPLETE,
+        report.addProperty(ComposedManifest.UNSAT_CLOSURE_COMPLETE,
                 unsatClosureComplete);
         JsonObject unsatClosureEvidence = object(manifest,
-                ConcolicSmtComposer.UNSAT_CLOSURE_EVIDENCE);
+                ComposedManifest.UNSAT_CLOSURE_EVIDENCE);
         if (unsatClosureEvidence.size() > 0) {
-            report.add(ConcolicSmtComposer.UNSAT_CLOSURE_EVIDENCE,
+            report.add(ComposedManifest.UNSAT_CLOSURE_EVIDENCE,
                     unsatClosureEvidence.deepCopy());
         }
 
@@ -246,7 +247,7 @@ public final class BooleanReachConditionExtractor {
                 boundaryConsumers(composedSmt, manifest);
         for (JsonElement element
                 : array(manifest,
-                        ConcolicSmtComposer.BOUNDARY_DISPATCH_TOTALITY)) {
+                        ComposedManifest.BOUNDARY_DISPATCH_TOTALITY)) {
             if (!element.isJsonObject()) continue;
             JsonObject dispatch = element.getAsJsonObject();
             for (JsonElement arm : array(dispatch, "armSelectors")) {
@@ -544,7 +545,7 @@ public final class BooleanReachConditionExtractor {
         JsonArray partitions = new JsonArray();
         partitions.addAll(encodedPartitions.getAsJsonArray());
         partitions.addAll(array(manifest,
-                ConcolicSmtComposer.CONDITIONAL_CASE_PARTITIONS));
+                ComposedManifest.CONDITIONAL_CASE_PARTITIONS));
         for (int partitionIndex = 0;
              partitionIndex < partitions.size(); partitionIndex++) {
             JsonElement encodedPartition = partitions.get(partitionIndex);
@@ -800,18 +801,18 @@ public final class BooleanReachConditionExtractor {
     private static boolean unsatClosureComplete(JsonObject manifest) {
         if (manifest == null
                 || !optionalBool(manifest,
-                ConcolicSmtComposer.UNSAT_CLOSURE_COMPLETE, false)
-                || !ConcolicSmtComposer.FINAL_READY.equals(
-                optionalString(manifest, ConcolicSmtComposer.FINAL_STATUS))) {
+                ComposedManifest.UNSAT_CLOSURE_COMPLETE, false)
+                || !ComposedManifest.FINAL_READY.equals(
+                optionalString(manifest, ComposedManifest.FINAL_STATUS))) {
             return false;
         }
         JsonObject evidence = object(manifest,
-                ConcolicSmtComposer.UNSAT_CLOSURE_EVIDENCE);
+                ComposedManifest.UNSAT_CLOSURE_EVIDENCE);
         JsonElement partial = evidence.get("partialProducerSummaryIds");
         return optionalInteger(evidence, "schemaVersion", -1) == 1
                 && "UNSAT_CLOSURE_EVIDENCE".equals(
                 optionalString(evidence, "kind"))
-                && ConcolicSmtComposer.UNSAT_CLOSURE_AUTHORITY.equals(
+                && ComposedManifest.UNSAT_CLOSURE_AUTHORITY.equals(
                 optionalString(evidence, "authority"))
                 // The manifest states the guarded-read verdict once; the
                 // remaining components are the closure itself, and their
@@ -1766,7 +1767,7 @@ public final class BooleanReachConditionExtractor {
         JsonArray mechanisms = new JsonArray();
         Map<String, JsonObject> recorded = new LinkedHashMap<>();
         for (JsonElement element : array(manifest,
-                ConcolicSmtComposer.RECORDED_ROOT_VALUES)) {
+                ComposedManifest.RECORDED_ROOT_VALUES)) {
             if (!element.isJsonObject()) continue;
             JsonObject ledger = element.getAsJsonObject();
             String term = optionalString(ledger, "solverTerm");
@@ -1918,7 +1919,7 @@ public final class BooleanReachConditionExtractor {
         JsonArray rows = new JsonArray();
         for (JsonElement element
                 : array(manifest,
-                        ConcolicSmtComposer.BOUNDARY_DISPATCH_TOTALITY)) {
+                        ComposedManifest.BOUNDARY_DISPATCH_TOTALITY)) {
             if (!element.isJsonObject()) continue;
             JsonObject dispatch = element.getAsJsonObject();
             JsonArray arms = array(dispatch, "armSelectors");
@@ -1966,7 +1967,7 @@ public final class BooleanReachConditionExtractor {
             rows.add(row);
         }
         for (JsonElement element
-                : array(manifest, ConcolicSmtComposer.ABSENT_KEY_DEFAULTS)) {
+                : array(manifest, ComposedManifest.ABSENT_KEY_DEFAULTS)) {
             if (!element.isJsonObject()) continue;
             JsonObject absent = element.getAsJsonObject();
             String term = optionalString(absent, "solverTerm");
@@ -2014,7 +2015,7 @@ public final class BooleanReachConditionExtractor {
         }
         Set<String> terms = new LinkedHashSet<>();
         for (JsonElement element
-                : array(manifest, ConcolicSmtComposer.ABSENT_KEY_DEFAULTS)) {
+                : array(manifest, ComposedManifest.ABSENT_KEY_DEFAULTS)) {
             if (!element.isJsonObject()) continue;
             JsonObject absent = element.getAsJsonObject();
             String term = optionalString(absent, "solverTerm");
@@ -2047,7 +2048,7 @@ public final class BooleanReachConditionExtractor {
         List<String> merged = new ArrayList<>();
         for (JsonElement element
                 : array(manifest,
-                        ConcolicSmtComposer.BOUNDARY_DISPATCH_TOTALITY)) {
+                        ComposedManifest.BOUNDARY_DISPATCH_TOTALITY)) {
             if (!element.isJsonObject()) continue;
             JsonObject dispatch = element.getAsJsonObject();
             if (optionalBool(dispatch, "totalDispatch", true)) continue;
@@ -2556,7 +2557,7 @@ public final class BooleanReachConditionExtractor {
         Map<String, String> recorded = new LinkedHashMap<>();
         Set<String> clocks = new LinkedHashSet<>();
         for (JsonElement element
-                : array(manifest, ConcolicSmtComposer.RECORDED_ROOT_VALUES)) {
+                : array(manifest, ComposedManifest.RECORDED_ROOT_VALUES)) {
             if (!element.isJsonObject()) {
                 continue;
             }
@@ -3047,7 +3048,7 @@ public final class BooleanReachConditionExtractor {
                 JsonObject manifest, List<String> gaps) {
             ManualSymbolicRootCatalog result = new ManualSymbolicRootCatalog();
             JsonElement encoded = manifest == null ? null : manifest.get(
-                    ConcolicSmtComposer.MANUAL_SOURCE_MATERIALIZATION_FIELD);
+                    ComposedManifest.MANUAL_SOURCE_MATERIALIZATION_FIELD);
             if (encoded == null || !encoded.isJsonArray()) {
                 gaps.add("MANUAL_SYMBOLIC_ROOT_LEDGER_MISSING");
                 return result;
@@ -3182,9 +3183,9 @@ public final class BooleanReachConditionExtractor {
 
         private static ManualSymbolicRootInfo decode(JsonObject row) {
             if (row == null || optionalInteger(row, "schemaVersion", -1) != 1
-                    || !ConcolicSmtComposer.MANUAL_SOURCE_MATERIALIZATION_KIND.equals(
+                    || !ComposedManifest.MANUAL_SOURCE_MATERIALIZATION_KIND.equals(
                     optionalString(row, "kind"))
-                    || !ConcolicSmtComposer.MANUAL_SOURCE_MATERIALIZATION_AUTHORITY
+                    || !ComposedManifest.MANUAL_SOURCE_MATERIALIZATION_AUTHORITY
                     .equals(optionalString(row, "authority"))) {
                 return null;
             }

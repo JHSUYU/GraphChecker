@@ -1,5 +1,6 @@
 package edu.uva.liftlab.graphchecker.concolic;
 
+import edu.uva.liftlab.graphchecker.contract.ComposedManifest;
 import edu.uva.liftlab.graphchecker.contract.TargetAnchorEvidence;
 
 import com.google.gson.JsonArray;
@@ -131,7 +132,7 @@ public class PathMergeComposerTest {
         assertFalse(merge.getAsJsonArray("paths").get(0).getAsJsonObject()
                 .get("admitted").getAsBoolean());
         assertEquals("FINAL_REFUSED", result.manifest.get(
-                ConcolicSmtComposer.FINAL_STATUS).getAsString());
+                ComposedManifest.FINAL_STATUS).getAsString());
     }
 
     // ------------------------------------------------------------------
