@@ -2192,6 +2192,22 @@ public final class ConcolicScheduler {
                         "CONFIGURED_SYMBOLIC_SOURCE_FIELD_OWNED");
                 return;
             }
+            if (declaredCutPort(action)) {
+                // Tracked, and never mint-eligible.  The value this port
+                // names is produced on the other side of the wire and
+                // installed at the consumer by attachCommunicationLeaf, so
+                // the consumer's copy carries the producer's expression and
+                // starts no search of its own.  Naming the port in the
+                // selection file cannot change that -- a root minted here is
+                // a free variable the attach immediately overwrites, which
+                // is how HDFS-17899 bug3 acquired four existential roots on
+                // PBHelper.convert(BlockKeyProto) -- so the declaration is
+                // not allowed to reach it.
+                retained.addProperty(MINT_ELIGIBLE, false);
+                record(regionId, action, true, false, false,
+                        InputActionCatalog.DECLARED_COMMUNICATION_CUT_PORT);
+                return;
+            }
             boolean declared = admits(regionId, action);
             // The workload wrote this symbol into its own program text; that
             // is a declaration in the same sense a hook call is one, so an
@@ -2219,6 +2235,20 @@ public final class ConcolicScheduler {
                     declared, declared ? "DECLARED_SYMBOLIC_ROOT"
                             : workloadOwned ? "WORKLOAD_DECLARED_SYMBOLIC_FAULT"
                             : "TRACKED_CARRIER");
+        }
+
+        /**
+         * A port declared by {@code communication-mappings.jsonl}.
+         *
+         * <p>It is a handoff, not a mint: the consumer reuses the producer's
+         * already-propagated expression.  {@code ConcolicRegionRuntime
+         * .declaredCommunicationCutPort} answers the same question at
+         * replay, off the same {@code sourceKind}, so the two stages agree
+         * without the plan carrying a second marker.</p>
+         */
+        private static boolean declaredCutPort(JsonObject action) {
+            return RuntimeSelectedRegionFinalizer.COMMUNICATION_SITE_PORT
+                    .equals(optionalString(action, "sourceKind"));
         }
 
         /** An explicit {@code Debug.makeSymbolicBoolean} marker: the fault
