@@ -138,6 +138,14 @@ public final class GapLedger {
         blocking(composer, "MissingTargetInstanceSymbolicContext",
                 "the target activation carries no symbolic context, so no"
                         + " root reaches it");
+        blocking(composer, "GUARDED_READ_ORDER_UNKNOWN",
+                "a read whose candidate writers admit no single program"
+                        + " order carries no last-writer-wins axiom, so its"
+                        + " arms do not describe a sequence of writes");
+        blocking(composer, "FAULT_IDLE_INITIAL_HOST_UNKNOWN",
+                "an INITIAL arm that names no activation whose entry took"
+                        + " the snapshot leaves the fault claiming something"
+                        + " about a version nobody observed");
         // The acceptance gate spells a refusal CODE[subject] or CODE:subject
         // and publishes it under one COMPOSITION_GAP kind; run_engine.sh
         // decodes that spelling before classing the row, so the ledger sees
@@ -266,6 +274,7 @@ public final class GapLedger {
                 "CONSUMER_BOUNDARY_PAYLOAD_TRUNCATED",
                 "CONSUMER_BOUNDARY_PRODUCER_CASE_AMBIGUOUS",
                 "CONSUMER_BOUNDARY_PRODUCER_CASE_MISSING",
+                "INITIAL_SNAPSHOT_HOST_UNKNOWN",
                 "LOCAL_CASE_OBSERVATION_AMBIGUOUS",
                 "LOCAL_CASE_OBSERVATION_MISSING",
                 "LOCAL_CASE_OBSERVATION_PC_MISSING",
@@ -482,6 +491,9 @@ public final class GapLedger {
         blocking(importer, "TARGET_REACH_NO_ACTIVATION_REACHED_TARGET",
                 "no activation of this region reached the target, so the"
                         + " region states nothing about the target");
+        blocking(importer, "TARGET_REACH_NOT_OBSERVED",
+                "the replay published no observation of the target this"
+                        + " task was addressed at");
         for (String code : new String[]{
                 "SKIPPED_RUNTIME_EVENT",
                 "REGION_NOT_STARTED",

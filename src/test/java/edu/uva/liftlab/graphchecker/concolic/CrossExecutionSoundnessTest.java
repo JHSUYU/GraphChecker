@@ -219,6 +219,38 @@ public class CrossExecutionSoundnessTest {
         assertTrue(ConcolicSmtComposer.caseGuardsIn(null).isEmpty());
     }
 
+    /**
+     * A snapshot with no host cannot be what a fault retained.
+     *
+     * <p>An INITIAL arm is the value an object held when some activation was
+     * entered, and which activation that was is what lets a marker say the
+     * snapshot never happened.  Without it the arm answers every marker with
+     * the same value while the fault idles the region around it -- the same
+     * step {@code FAULT_IDLE_INITIAL_HOST_IDLED} refuses when the host is
+     * known.  With no marker at all nothing idles anything and the fact is
+     * not needed.</p>
+     */
+    @Test
+    public void anInitialArmWithoutAHostIsRefusedOnceAMarkerExists() {
+        assertTrue(ConcolicSmtComposer.initialArmRefusable(true, false));
+        assertFalse("a known host is the fact the rule wants",
+                ConcolicSmtComposer.initialArmRefusable(true, true));
+        assertFalse("with no marker nothing can idle the host",
+                ConcolicSmtComposer.initialArmRefusable(false, false));
+        assertFalse(ConcolicSmtComposer.initialArmRefusable(false, true));
+
+        // armIdled is the other half: it retires an INITIAL arm only when it
+        // knows the host and every case of it is idled.
+        Set<String> idled = new LinkedHashSet<>(Arrays.asList(HOST_CASE_A,
+                HOST_CASE_B));
+        assertFalse("no host, nothing to idle",
+                ConcolicSmtComposer.armIdled(Collections.<String>emptySet(),
+                        Collections.<String>emptySet(), idled));
+        assertTrue(ConcolicSmtComposer.armIdled(
+                Collections.<String>emptySet(),
+                Arrays.asList(HOST_CASE_A, HOST_CASE_B), idled));
+    }
+
     /** The node an occurrence names is the side of the wire it sits on. */
     @Test
     public void occurrenceNamesItsNode() {

@@ -195,6 +195,19 @@ public final class ConcolicSmtComposer {
      * and a reader has to default its polarity.</p>
      */
     public static final String RECORDED_SOURCE_VALUE = "recordedValue";
+    /**
+     * On a root whose observations disagree: every value some mint stated.
+     *
+     * <p>Two activations of one configured source that read different values
+     * are a contradiction about the recording, not a missing recording.
+     * Dropping the row back to stating nothing published the contradiction as
+     * an absence, and the claim layer then had nothing to compare a witness
+     * against -- which is where a defaulted polarity came in. Both values are
+     * carried instead, and {@code ClaimPolicy} withholds the claim naming
+     * them.</p>
+     */
+    public static final String RECORDED_VALUE_CONFLICT =
+            "recordedValueConflict";
     /** Per declared value handoff: whether its family reached a term. */
     public static final String WIRE_FLOW_BINDINGS = "wireFlowBindings";
     /**
@@ -305,6 +318,23 @@ public final class ConcolicSmtComposer {
     public static final String FAULT_IDLE_INITIAL_HOST_IDLED =
             "FAULT_IDLE_INITIAL_HOST_IDLED";
     /**
+     * An INITIAL arm of an instance field whose host activation this
+     * composition cannot name, while a fault marker is in play.
+     *
+     * <p>The snapshot of an instance field is the value the object held when
+     * some activation was entered, and which activation that was decides
+     * whether a marker can say it never happened.  An arm carrying no host
+     * -- because the recording published none, or because the activation it
+     * names was never lowered -- answers every marker with the same value,
+     * so a fault that idles the whole region still reads the snapshot as
+     * "what the fault retained".  That is the same unsound step {@link
+     * #FAULT_IDLE_INITIAL_HOST_IDLED} refuses when the host <em>is</em>
+     * known, and it is refused here rather than passing silently for want of
+     * the fact.</p>
+     */
+    public static final String FAULT_IDLE_INITIAL_HOST_UNKNOWN =
+            "FAULT_IDLE_INITIAL_HOST_UNKNOWN";
+    /**
      * The replay executions merged into this formula recorded different
      * values for one location.
      *
@@ -354,6 +384,16 @@ public final class ConcolicSmtComposer {
      * had not written -- while its own evidence says it did.  The gate names
      * that case instead of letting the default stand in for its write.</p>
      *
+     * <p>Each row carries {@code writerCaseWrite} when the writer case
+     * published a version of the location in its own summary -- the kind,
+     * the field version id, and whether the write's expression came with it.
+     * A row with {@code expressionPublished: true} is a gap the composer
+     * could close on evidence it already holds: the reader's arms are built
+     * from its own replay's read-time candidates, so a case the reader never
+     * ran alongside contributes none, even though that case published the
+     * write.  The arm the model wants is one per writer case, valued by that
+     * case's own write expression.</p>
+     *
      * <p>A read the writer region performs on itself is the exception: it is
      * lowered once per local case and merged over the occurrence's
      * exactly-one partition, so it does not exist under its own siblings and
@@ -374,6 +414,13 @@ public final class ConcolicSmtComposer {
     /**
      * One guarded read whose candidate writers admit no single program order,
      * and which therefore carries no last-writer-wins axiom.
+     *
+     * <p>Last-writer-wins is not an optimisation on top of the read-from
+     * choice, it is half of what the choice means: without it the read may
+     * take any writer's value, including one a later write overwrote, and
+     * the arms stop describing a sequence.  This was published as telemetry
+     * while 21 reads on one corpus and 51 on another lost the axiom and the
+     * model still called itself complete.  It is a gap.</p>
      */
     public static final String GUARDED_READ_ORDER_UNKNOWN =
             "GUARDED_READ_ORDER_UNKNOWN";
@@ -1249,15 +1296,24 @@ public final class ConcolicSmtComposer {
      * slice did not need. Asked per family, a flow with three of eleven
      * families lowered was called unbound eight times over.</p>
      *
-     * <p>The second route is the field the consumer assigns the value to: when
-     * the value leaves the wire on arrival, a read of that field is where it
-     * ends up and the port's own family is a term nobody was going to build.
-     * That route is only open on a node the wire delivered to; see {@link
-     * #consumerFieldReadOnReceiver}.
+     * <p>There used to be a second route: a read of the field the consumer
+     * assigns the value to, on the theory that when the value leaves the
+     * wire on arrival the port's own family is a term nobody was going to
+     * build.  It excused the flow rather than realizing it.  A read is not a
+     * binding -- it says the field was read, never that what it served came
+     * off this wire -- and the arms it served were recorded constants: on
+     * hdfs-17899 the {@code block-key-expiry-date} flow was excused by a
+     * read that the composition then answered out of a per-run INITIAL
+     * snapshot, which is exactly the substitution the gate exists to catch.
+     * Node-scoping it (8bb4e32ca) narrowed the excuse without making it
+     * evidence, so it is gone: a declared flow is realized by a lowered
+     * boundary family or by nothing.  The ledger still records
+     * {@code consumerFieldRead} as telemetry, and
+     * {@link #WIRE_FLOW_CONSUMER_FIELD_UNATTACHED} still names a consumer
+     * read the flow did not reach.</p>
      */
-    static boolean wireFlowRefusable(boolean anyFamilyBound,
-                                     boolean consumerFieldRead) {
-        return !anyFamilyBound && !consumerFieldRead;
+    static boolean wireFlowRefusable(boolean anyFamilyBound) {
+        return !anyFamilyBound;
     }
 
     /**
@@ -1327,7 +1383,6 @@ public final class ConcolicSmtComposer {
      */
     static List<String> unboundDeclaredPorts(JsonArray ledger) {
         Map<String, Boolean> bound = new LinkedHashMap<>();
-        Map<String, Boolean> fieldRead = new LinkedHashMap<>();
         for (JsonElement element : ledger) {
             if (!element.isJsonObject()) {
                 continue;
@@ -1342,14 +1397,10 @@ public final class ConcolicSmtComposer {
             }
             bound.merge(port, optionalBool(row, "valueBound", false),
                     Boolean::logicalOr);
-            fieldRead.merge(port,
-                    optionalBool(row, "consumerFieldRead", false),
-                    Boolean::logicalOr);
         }
         List<String> unbound = new ArrayList<>();
         for (Map.Entry<String, Boolean> port : bound.entrySet()) {
-            if (wireFlowRefusable(Boolean.TRUE.equals(port.getValue()),
-                    Boolean.TRUE.equals(fieldRead.get(port.getKey())))) {
+            if (wireFlowRefusable(Boolean.TRUE.equals(port.getValue()))) {
                 unbound.add(port.getKey());
             }
         }
@@ -1985,6 +2036,22 @@ public final class ConcolicSmtComposer {
     }
 
     /**
+     * Whether one INITIAL arm is inadmissible for want of its host.
+     *
+     * <p>{@link #armIdled} can only retire an INITIAL arm when it knows the
+     * activation whose entry took the snapshot; an arm with no host answers
+     * every marker with the same value, which is how a snapshot came to
+     * stand for "what the fault retained" in a region the fault idled
+     * wholesale.  With no marker in the composition nothing idles anything
+     * and the fact is not needed.</p>
+     *
+     * Pure encoding shared by final composition and focused regression tests.
+     */
+    static boolean initialArmRefusable(boolean anyMarker, boolean hostKnown) {
+        return anyMarker && !hostKnown;
+    }
+
+    /**
      * Everything one fault marker idles, not only its own consumer.
      *
      * <p>The control edge names the occurrence that consumed the response,
@@ -2303,6 +2370,12 @@ public final class ConcolicSmtComposer {
         /** INITIAL arm selector -> activations whose entry took its snapshot. */
         private final Map<String, Set<InvocationKey>> guardedReadInitialHosts =
                 new LinkedHashMap<>();
+        /** INITIAL arm selector -> its read, for arms naming no host. */
+        private final Map<String, String> initialArmsWithoutHost =
+                new LinkedHashMap<>();
+        /** INITIAL arm selector -> its read, for hosts never lowered. */
+        private final Map<String, String> hostlessInitialArms =
+                new LinkedHashMap<>();
         /** INITIAL source case owner -> the activations, from the closure. */
         private final Map<String, Set<InvocationKey>> initialSnapshotHosts =
                 new LinkedHashMap<>();
@@ -2317,6 +2390,9 @@ public final class ConcolicSmtComposer {
                 new LinkedHashMap<>();
         /** Base case selector -> content-addressed locations it wrote. */
         private final Map<String, Set<String>> writtenLocationsByCase =
+                new LinkedHashMap<>();
+        /** (case selector, location) -> the write that case published. */
+        private final Map<String, JsonObject> caseWriteEvidence =
                 new LinkedHashMap<>();
         /** One row per (read, writer case with no arm); see finish(). */
         private final JsonArray unlinkedWriterCases = new JsonArray();
@@ -2759,6 +2835,24 @@ public final class ConcolicSmtComposer {
                     }
                     writtenLocationsByCase.computeIfAbsent(selector,
                             ignored -> new LinkedHashSet<>()).add(location);
+                    // The write this case published, kept so the
+                    // unlinked-writer ledger can say whether the arm the
+                    // reader is missing could be built from evidence that
+                    // already exists.
+                    JsonObject evidence = new JsonObject();
+                    evidence.addProperty("versionKind",
+                            optionalString(version, "versionKind"));
+                    evidence.addProperty("fieldVersionId",
+                            optionalString(version, "fieldVersionId"));
+                    evidence.addProperty("writerOccurrenceId",
+                            optionalString(version, SharedStateEvidence
+                                    .WRITER_OCCURRENCE_ID));
+                    evidence.addProperty("expressionPublished",
+                            version.has(VmExpressionIr.EXPRESSION)
+                                    && !version.get(VmExpressionIr.EXPRESSION)
+                                    .isJsonNull());
+                    caseWriteEvidence.put(selector + "\u0000" + location,
+                            evidence);
                     break;
                 }
             }
@@ -2977,6 +3071,11 @@ public final class ConcolicSmtComposer {
                                 GSON.toJsonTree(linked));
                         row.add("readActivationCases",
                                 GSON.toJsonTree(readCases));
+                        JsonObject published = caseWriteEvidence.get(
+                                caseSelector + "\u0000" + location);
+                        if (published != null) {
+                            row.add("writerCaseWrite", published.deepCopy());
+                        }
                         row.addProperty("refused", !exclusive);
                         unlinkedWriterCases.add(row);
                         if (exclusive) continue;
@@ -2988,7 +3087,14 @@ public final class ConcolicSmtComposer {
                                         + " but owns no arm of this read, so"
                                         + " selecting it would let the read"
                                         + " fall to INITIAL as if the case"
-                                        + " had not written");
+                                        + " had not written"
+                                        + (published != null
+                                        && published.get("expressionPublished")
+                                        .getAsBoolean()
+                                        ? "; the case published that write"
+                                        + " with its expression, so the arm"
+                                        + " is missing from the read, not"
+                                        + " from the evidence" : ""));
                     }
                 }
             }
@@ -3172,7 +3278,14 @@ public final class ConcolicSmtComposer {
                 String term = optionalString(source, "solverTerm");
                 String recorded = optionalString(source,
                         RECORDED_SOURCE_VALUE);
-                if (term.isEmpty() || recorded.isEmpty()
+                String conflict = optionalString(source,
+                        RECORDED_VALUE_CONFLICT);
+                // A row whose observations disagree still belongs in the
+                // ledger: "these two mints read different values" is a
+                // statement the claim layer has to see, and leaving the row
+                // out states nothing at all.
+                if (term.isEmpty()
+                        || (recorded.isEmpty() && conflict.isEmpty())
                         || !seenTerms.add(term)) {
                     continue;
                 }
@@ -3195,6 +3308,9 @@ public final class ConcolicSmtComposer {
                         optionalString(source, "javaTypeDescriptor"));
                 out.addProperty("eventSeq", -1L);
                 out.addProperty("recordedValue", recorded);
+                if (!conflict.isEmpty()) {
+                    out.addProperty(RECORDED_VALUE_CONFLICT, conflict);
+                }
                 out.addProperty("solverTerm", term);
                 // A configuration field is not a clock, whatever it holds.
                 out.addProperty("wallClock", false);
@@ -3294,9 +3410,8 @@ public final class ConcolicSmtComposer {
                 refuse(WIRE_FLOW_VALUE_UNBOUND + "[" + declaredPort + "]",
                         "a declared value handoff reached the composition with"
                                 + " no consumer boundary family any lowered"
-                                + " expression refers to and no read of the"
-                                + " field its consumer assigns, so the value"
-                                + " the wire carried constrains nothing");
+                                + " expression refers to, so the value the"
+                                + " wire carried constrains nothing");
             }
             checkUnattachedConsumerReads(rows, consumerFields);
             return rows;
@@ -3611,6 +3726,7 @@ public final class ConcolicSmtComposer {
                 }
                 recordFaultControlClosure(marker, seed, closure);
             }
+            checkHostlessInitialArms(!markers.isEmpty());
 
             for (Map.Entry<InvocationKey, Set<String>> entry
                     : markersByInstance.entrySet()) {
@@ -3655,18 +3771,70 @@ public final class ConcolicSmtComposer {
                 for (InvocationKey host : entry.getValue()) {
                     Set<String> partition = casePartitions.get(host);
                     // An activation this composition never lowered has no
-                    // cases to idle, so nothing can say it did not run: the
-                    // arm keeps whatever standing it had.
+                    // cases to idle, so no marker can say it did not run.
+                    // That is the same missing fact as a snapshot with no
+                    // host at all, and it is refused with them.
                     if (partition == null || partition.isEmpty()) {
                         complete = false;
                         break;
                     }
                     cases.addAll(partition);
                 }
-                if (!complete || cases.isEmpty()) continue;
+                if (!complete || cases.isEmpty()) {
+                    hostlessInitialArms.put(entry.getKey(),
+                            guardedReadOfArm(entry.getKey()));
+                    continue;
+                }
                 hosts.put(entry.getKey(), cases);
             }
             return hosts;
+        }
+
+        /** The read one arm selector belongs to, or "". */
+        private String guardedReadOfArm(String selector) {
+            for (Map.Entry<String, Set<String>> entry
+                    : guardedReadSelectors.entrySet()) {
+                if (entry.getValue().contains(selector)) return entry.getKey();
+            }
+            return "";
+        }
+
+        /**
+         * Refuses every INITIAL arm of an instance field that names no host
+         * activation, once a fault marker is in play.
+         *
+         * <p>Asked once, after the closures have run, so an arm counts once
+         * however many markers exist.  With no marker at all nothing can
+         * idle anything and the fact is not needed, so the composition is
+         * left alone: this is a rule about what a fault may claim, not about
+         * snapshots in general.</p>
+         */
+        private void checkHostlessInitialArms(boolean anyMarker) {
+            Map<String, String> arms = new LinkedHashMap<>(
+                    initialArmsWithoutHost);
+            arms.putAll(hostlessInitialArms);
+            for (Map.Entry<String, String> entry : arms.entrySet()) {
+                if (!initialArmRefusable(anyMarker, false)) continue;
+                String read = entry.getValue();
+                JsonObject row = new JsonObject();
+                row.addProperty("schemaVersion", 1);
+                row.addProperty("kind", FAULT_IDLE_INITIAL_HOST_UNKNOWN);
+                row.addProperty("readIdentity", read);
+                row.addProperty("armSelector", entry.getKey());
+                row.addProperty("reason", hostlessInitialArms.containsKey(
+                        entry.getKey()) ? "HOST_ACTIVATION_NOT_LOWERED"
+                        : "NO_HOST_ACTIVATION_RECORDED");
+                faultControlTelemetry.add(row);
+                refuse(FAULT_IDLE_INITIAL_HOST_UNKNOWN + "["
+                                + (read.isEmpty() ? entry.getKey() : read)
+                                + "]",
+                        "this read's INITIAL arm " + entry.getKey()
+                                + " names no activation whose entry took the"
+                                + " snapshot, so no fault marker can say the"
+                                + " snapshot never happened and the arm"
+                                + " answers every marker with the same"
+                                + " value");
+            }
         }
 
         /** One auditable row per marker, plus a row per starved read. */
@@ -4760,11 +4928,17 @@ public final class ConcolicSmtComposer {
                     arm.term);
             if (initial) {
                 Set<InvocationKey> hosts = initialSnapshotHosts.get(owner);
-                if (hosts != null && !hosts.isEmpty()
-                        && "INSTANCE_FIELD".equals(SharedStateEvidence
-                        .locationKindOf(canonicalLocation))) {
+                boolean instanceField = "INSTANCE_FIELD".equals(
+                        SharedStateEvidence.locationKindOf(canonicalLocation));
+                if (hosts != null && !hosts.isEmpty() && instanceField) {
                     guardedReadInitialHosts.putIfAbsent(arm.selector,
                             new LinkedHashSet<>(hosts));
+                } else if (instanceField) {
+                    // The recording published no activation for this
+                    // snapshot, so no marker can say it never ran.  Noted
+                    // here and refused once, next to the markers.
+                    initialArmsWithoutHost.putIfAbsent(arm.selector,
+                            readIdentity);
                 }
                 return;
             }
@@ -5272,7 +5446,6 @@ public final class ConcolicSmtComposer {
             model.addProperty("kind", "DIRECT_GUARDED_READ_MODEL");
             model.addProperty("authority",
                     "VM_READ_TIME_CANDIDATE_SNAPSHOT_V1");
-            model.addProperty("complete", guardedReadComplete);
             JsonArray reads = new JsonArray();
             List<String> identities = new ArrayList<>(
                     guardedReadActivations.keySet());
@@ -5347,8 +5520,9 @@ public final class ConcolicSmtComposer {
                 reads.add(read);
             }
             model.add("reads", reads);
-            // Telemetry, not a refusal: a read with no single writer order
-            // keeps the model it had before last-writer-wins, and says so.
+            // A read with no single writer order carries no last-writer-wins
+            // axiom, so its arms no longer describe a sequence of writes: the
+            // rows are published and the composition refuses on each.
             JsonArray orderGaps = new JsonArray();
             List<String> ungrouped = new ArrayList<>(
                     guardedReadOrderGaps.keySet());
@@ -5364,7 +5538,15 @@ public final class ConcolicSmtComposer {
                 row.addProperty("detail",
                         guardedReadOrderGaps.get(scope));
                 orderGaps.add(row);
+                refuse(GUARDED_READ_ORDER_UNKNOWN + "[" + scope + "]",
+                        "this read's candidate writers admit no single"
+                                + " program order, so it carries no"
+                                + " last-writer-wins axiom and its arms do"
+                                + " not describe a sequence of writes: "
+                                + guardedReadOrderGaps.get(scope));
             }
+            if (!guardedReadOrderGaps.isEmpty()) guardedReadComplete = false;
+            model.addProperty("complete", guardedReadComplete);
             model.add("orderGaps", orderGaps);
             model.addProperty("orderedReads", guardedReadOrders.size());
             return model;
@@ -6544,12 +6726,15 @@ public final class ConcolicSmtComposer {
         }
 
         /**
-         * Records what a configured source's field held, or leaves it
-         * unstated.
+         * Records what a configured source's field held.
          *
          * <p>Two observations of one entry that disagree are not a value to
-         * pick between: the row drops back to stating none, which reads
-         * downstream as "unknown" rather than as a recording.</p>
+         * pick between -- but they are not an absence either. The row used
+         * to drop back to stating none, which read downstream as "nobody
+         * recorded this" and let the claim layer default the polarity of a
+         * root two activations had actually read. Both values are published
+         * instead, under {@link #RECORDED_VALUE_CONFLICT}, and the claim
+         * layer refuses naming them.</p>
          */
         private void mergeRecordedSourceValue(JsonObject row,
                                               String recordedValue) {
@@ -6557,9 +6742,18 @@ public final class ConcolicSmtComposer {
             String held = optionalString(row, RECORDED_SOURCE_VALUE);
             if (held.isEmpty()) {
                 row.addProperty(RECORDED_SOURCE_VALUE, recordedValue);
-            } else if (!held.equals(recordedValue)) {
-                row.remove(RECORDED_SOURCE_VALUE);
+                return;
             }
+            if (held.equals(recordedValue)) return;
+            String conflict = optionalString(row, RECORDED_VALUE_CONFLICT);
+            Set<String> values = new LinkedHashSet<>();
+            if (!conflict.isEmpty()) {
+                values.addAll(Arrays.asList(conflict.split(",")));
+            }
+            values.add(held);
+            values.add(recordedValue);
+            row.addProperty(RECORDED_VALUE_CONFLICT,
+                    String.join(",", values));
         }
 
         /**

@@ -2312,7 +2312,8 @@ final class RuntimeRegionPlanner {
         return occurrenceId + "\n" + direction + "\n" + portId;
     }
 
-    private static List<Map<String, Object>> branches(
+    /** Package-visible for the required-outcome selection contract test. */
+    static List<Map<String, Object>> branches(
             List<Map<String, Object>> policies,
             List<RuntimeEvent> events) {
         Map<String, List<RuntimeEvent>> bySite = new LinkedHashMap<>();
@@ -2339,10 +2340,13 @@ final class RuntimeRegionPlanner {
             }
             int selectedIndex = 0;
             Object required = policy.get("requiredOutcome");
-            if (required instanceof Boolean) {
+            boolean requiredDeclared = required instanceof Boolean;
+            boolean requiredObserved = false;
+            if (requiredDeclared) {
                 for (int index = 0; index < occurrences.size(); index++) {
                     if (required.equals(occurrences.get(index).outcome)) {
                         selectedIndex = index;
+                        requiredObserved = true;
                         break;
                     }
                 }
@@ -2350,6 +2354,11 @@ final class RuntimeRegionPlanner {
             RuntimeEvent selected = occurrences.isEmpty() ? null
                     : occurrences.get(selectedIndex);
             Map<String, Object> branch = new LinkedHashMap<>(policy);
+            // "observed" is, and stays, "this site executed in the
+            // recording".  It is not "it took the required outcome": a
+            // required outcome the recording never took is the normal state
+            // of a guard the search intends to flip, and reading the two as
+            // one answer would make every flip target ineligible.
             branch.put("observed", selected != null);
             branch.put("observedOutcome",
                     selected == null ? null : selected.outcome);
@@ -2359,10 +2368,65 @@ final class RuntimeRegionPlanner {
                 branch.put("selectedRuntimeEventSeq", selected.seq);
                 branch.put("selectedCallId", selected.callId);
             }
+            if (requiredDeclared) {
+                stateRequiredOutcomeSelection(branch, requiredObserved,
+                        occurrences.size(), site);
+            }
             branch.put("occurrences", encoded);
             result.add(branch);
         }
         return result;
+    }
+
+    /**
+     * States how the occurrence of a required-outcome policy was chosen.
+     *
+     * <p>The loop above searches the recorded occurrences for one that took
+     * the required outcome.  When the search fails, {@code selectedIndex} is
+     * still 0 -- and the row used to say nothing at all about that, so a
+     * policy whose required outcome no occurrence took was published
+     * indistinguishably from one whose first occurrence took it.  Downstream
+     * that reads as "occurrence #1 is the one the policy means", which for a
+     * failure target is the fatal cutoff being supplied by a guard that never
+     * took the failing arm.</p>
+     *
+     * <p>So the row now states the fact:
+     * {@code requiredOutcomeObserved} answers the question the search asked,
+     * and {@code selectedOccurrenceAuthority} says which of three things the
+     * published ordinal is -- the occurrence that took the required outcome,
+     * the only occurrence there was, or a choice among several that nothing
+     * in the recording decides.  The third is the invented one, and it is
+     * named as {@link ConcolicRegionRuntime#TARGET_REACH_NOT_OBSERVED} on the
+     * row so a consumer can refuse it.</p>
+     *
+     * <p>The ordinal itself is left in place.  Withholding it would take the
+     * fatal-prefix boundary out from under a replay that is otherwise sound
+     * ({@code FATAL_PREFIX_BOUNDARY_MISSING}), and the blocking answer to an
+     * unwitnessed target belongs at replay time, where {@code
+     * ConcolicResultPublisher.targetReachedByActivation} requires the
+     * declared occurrence to have actually been decided.</p>
+     */
+    private static void stateRequiredOutcomeSelection(
+            Map<String, Object> branch, boolean requiredObserved,
+            int occurrenceCount, String site) {
+        branch.put("requiredOutcomeObserved", requiredObserved);
+        if (requiredObserved) {
+            branch.put("selectedOccurrenceAuthority", "REQUIRED_OUTCOME");
+            return;
+        }
+        if (occurrenceCount <= 1) {
+            branch.put("selectedOccurrenceAuthority",
+                    "SOLE_RECORDED_OCCURRENCE");
+            return;
+        }
+        branch.put("selectedOccurrenceAuthority",
+                ConcolicRegionRuntime.TARGET_REACH_NOT_OBSERVED);
+        branch.put("selectedOccurrenceGap",
+                ConcolicRegionRuntime.TARGET_REACH_NOT_OBSERVED
+                + ": none of the " + occurrenceCount + " recorded "
+                + "occurrences of " + site + " took the required outcome, so "
+                + "which one this policy names is not decided by the "
+                + "recording");
     }
 
     /** Copies a complete switch successor authority into a task occurrence. */

@@ -127,7 +127,6 @@ public final class ConcolicSummaryImporter {
         final JsonArray unresolvedInputs;
         final JsonArray branchMappings;
         final JsonArray branchCoverageGaps;
-        final JsonArray concreteBranchWitnesses;
         final boolean statesBranchEvidence;
         /** One row per entry of a declared mint site. */
         final List<JsonObject> symbolizedInputs;
@@ -193,10 +192,7 @@ public final class ConcolicSummaryImporter {
             this.unresolvedInputs = array(raw, "unresolvedInputs");
             this.branchMappings = array(raw, "branchMappings");
             this.branchCoverageGaps = array(raw, "branchCoverageGaps");
-            this.concreteBranchWitnesses = array(raw,
-                    "concreteBranchWitnesses");
-            this.statesBranchEvidence = raw.has("branchMappings")
-                    || raw.has("concreteBranchWitnesses");
+            this.statesBranchEvidence = raw.has("branchMappings");
             this.vmHandoffs = raw.has(VmHandoffEvidence.FIELD)
                     ? array(raw, VmHandoffEvidence.FIELD) : null;
             this.sharedFieldVersions = array(raw, "sharedFieldVersions");
@@ -221,9 +217,8 @@ public final class ConcolicSummaryImporter {
             this.targetReach = raw.get(
                     PathObservation.TargetReachEvent.FIELD);
             this.decidedBranchSites = siteIds(branchMappings);
-            SortedSet<String> sites = new TreeSet<>(decidedBranchSites);
-            sites.addAll(siteIds(concreteBranchWitnesses));
-            this.observedBranchSites = sites;
+            this.observedBranchSites =
+                    new TreeSet<>(decidedBranchSites);
             String refused = resultShapeRefusal(raw, event,
                     activationOrdinal, plannedOccurrenceId,
                     rowOccurrenceId, replayGroupId);
@@ -1509,16 +1504,8 @@ public final class ConcolicSummaryImporter {
             return ReplayAdmission.refused(observed.issue);
         }
         if (replay == null) {
-            final Map<String, Set<String>> preGate;
-            try {
-                preGate = concreteBranchOutcomes(row);
-            } catch (IllegalArgumentException malformed) {
-                return ReplayAdmission.refused(
-                        "malformed pre-gate concrete branch witness: "
-                                + malformed.getMessage());
-            }
             return ReplayAdmission.of(exactSeedMismatch(task.goalId(),
-                    seed.events, observed.events, preGate,
+                    seed.events, observed.events,
                     "BOUNDED".equals(row.exitKind),
                     task.loopExitSites()), null);
         }
@@ -1636,18 +1623,25 @@ public final class ConcolicSummaryImporter {
         return result;
     }
 
-    /** Attests a seed replay against the recorded branch witnesses. */
+    /**
+     * Attests a seed replay against the recorded branch witnesses.
+     *
+     * <p>A pre-gate witness set used to widen {@code found} here, which is
+     * the only thing it was ever read for.  Its producer arm was
+     * unreachable -- {@code observeDecision} returns for every undeclared
+     * site before {@code recordConcreteDecision} can file one -- so the
+     * excuse was permanently empty on every corpus, and the union was a
+     * no-op.</p>
+     */
     private static String exactSeedMismatch(
             String replayId, List<BranchEvent> expected,
-            List<BranchEvent> observed,
-            Map<String, Set<String>> concrete, boolean earlyStop,
+            List<BranchEvent> observed, boolean earlyStop,
             Set<String> admittedBoundarySites) {
         Map<String, Set<String>> wanted = decisionsBySite(expected);
         Map<String, Set<String>> actual = decisionsBySite(observed);
         for (Map.Entry<String, Set<String>> entry : wanted.entrySet()) {
-            Set<String> found = union(actual.get(entry.getKey()),
-                    concrete.get(entry.getKey()));
-            if (found.isEmpty()) {
+            Set<String> found = actual.get(entry.getKey());
+            if (found == null || found.isEmpty()) {
                 if (earlyStop) continue;
                 return replayDetail(replayId, "missing " + entry.getKey());
             }
@@ -1666,46 +1660,6 @@ public final class ConcolicSummaryImporter {
             }
         }
         return "";
-    }
-
-    /** Indexes the branches an activation executed before its symbolic gate
-     * opened. */
-    private static Map<String, Set<String>> concreteBranchOutcomes(
-            ResultRow row) {
-        Map<String, Set<String>> outcomes = new LinkedHashMap<>();
-        for (JsonElement element : row.concreteBranchWitnesses) {
-            if (!element.isJsonObject()) continue;
-            JsonObject witness = element.getAsJsonObject();
-            String site = optionalString(witness, "siteId");
-            JsonElement outcome = witness.get("sourceTakenOutcome");
-            if (site.isEmpty() || outcome == null
-                    || !outcome.isJsonPrimitive()
-                    || !outcome.getAsJsonPrimitive().isBoolean()) {
-                continue;
-            }
-            final BranchEvent event;
-            try {
-                event = branchEvent(site, 1, outcome.getAsBoolean(),
-                        witness);
-            } catch (IllegalArgumentException malformed) {
-                throw new IllegalArgumentException(site + ": "
-                        + malformed.getMessage(), malformed);
-            }
-            Set<String> seen = outcomes.get(site);
-            if (seen == null) {
-                seen = new LinkedHashSet<>();
-                outcomes.put(site, seen);
-            }
-            seen.add(event.decisionToken);
-        }
-        return outcomes;
-    }
-
-    private static Set<String> union(Set<String> first, Set<String> second) {
-        Set<String> result = new LinkedHashSet<>();
-        if (first != null) result.addAll(first);
-        if (second != null) result.addAll(second);
-        return result;
     }
 
     private static ReplayAdmission replayPrefixAdmission(
