@@ -1787,7 +1787,15 @@ public final class ConcolicRegionRuntime {
                     evidence = SymbolicSourceEvidence.event(entry.phaseId(),
                             safe(sourceId), active.occurrenceId(),
                             safe(fieldSignature), expression,
-                            entry.ordinal, reused, symbol);
+                            entry.ordinal, reused, symbol,
+                            // Only an activation that read the field as the
+                            // program left it observed a recorded value.  A
+                            // replay that wrote a model assignment into the
+                            // field above read the model back, and publishing
+                            // that as "recorded" is how a counterfactual
+                            // becomes the recording.
+                            assignment == null
+                                    ? recordedScalar(value) : null);
                 } catch (IllegalArgumentException refused) {
                     throw new IllegalStateException(refused.getMessage()
                             + " (VM read-back after symbolizeExactField: "
@@ -4807,6 +4815,27 @@ public final class ConcolicRegionRuntime {
 
     static String safe(String value) {
         return value == null ? "" : value;
+    }
+
+    /**
+     * How a configured source's recorded value is spelled in the ledger.
+     *
+     * <p>The same spelling the recorded-root ledger already uses for a
+     * manual root's {@code primitiveValue}, so one reader can compare a
+     * witness against either: {@code "true"}/{@code "false"} for a Boolean,
+     * the decimal digits for an integral, the literal text for a String. A
+     * reference the runtime cannot spell as a scalar states nothing rather
+     * than a {@code toString()} nobody can compare against.</p>
+     */
+    static String recordedScalar(Object value) {
+        if (value instanceof Boolean || value instanceof Character
+                || value instanceof Byte || value instanceof Short
+                || value instanceof Integer || value instanceof Long
+                || value instanceof Float || value instanceof Double
+                || value instanceof String) {
+            return String.valueOf(value);
+        }
+        return "";
     }
 
     enum MissingValue { INSTANCE }

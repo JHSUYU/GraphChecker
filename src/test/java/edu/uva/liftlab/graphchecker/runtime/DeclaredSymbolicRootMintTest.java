@@ -199,7 +199,90 @@ public class DeclaredSymbolicRootMintTest {
                 .getAsString());
         assertEquals("SymbolExpression " + raw,
                 ConcolicRegionRuntime.describeReadBack(symbol));
+        assertEquals("a mint that states no recorded value says nothing",
+                "", SymbolicSourceEvidence.recordedValueOf(row));
+        assertFalse(row.has(SymbolicSourceEvidence.RECORDED_VALUE));
     }
+
+    /**
+     * The concrete value the field held travels with the mint.
+     *
+     * <p>It exists only here: a configured source has no port and no
+     * {@code symbolize} row, so the plan states nothing about it, and
+     * dropping it at the mint leaves every downstream reader to default the
+     * polarity. HDFS-17960's {@code snapshotDeletionOrdered} is recorded
+     * {@code false} on the epoch-1 NameNode, and the default of {@code true}
+     * reported a witness that reproduces the recorded failure as a flip of
+     * it.</p>
+     */
+    @Test
+    public void aMintCarriesTheValueTheFieldHeld() {
+        String label = SymbolicSourceEvidence.engineLabelForPhase(
+                ORDERED_PHASE, ORDERED_SOURCE);
+        String raw = "M_Z_field_" + label + "_org/apache/hadoop/hdfs/server/"
+                + "namenode/snapshot/SnapshotManager";
+        JsonObject symbol = new JsonObject();
+        symbol.addProperty("_type", "SymbolExpression");
+        symbol.addProperty("_java_type", "Z");
+        symbol.addProperty("_exp", raw);
+
+        JsonObject row = SymbolicSourceEvidence.event(ORDERED_PHASE,
+                ORDERED_SOURCE, SERIAL_NO_OCCURRENCE, ORDERED_FIELD, symbol,
+                1, false, "sym__ordered__1", "false");
+
+        assertEquals("false", SymbolicSourceEvidence.recordedValueOf(row));
+        assertEquals("false", row.get(SymbolicSourceEvidence.RECORDED_VALUE)
+                .getAsString());
+    }
+
+    /**
+     * A replay that overwrote the field before reading it states none.
+     *
+     * <p>The model assignment is written into the field before the mint
+     * reads it back, so that activation observed the model's value. Calling
+     * it "recorded" would publish a counterfactual as the recording, which
+     * is the one way this row can be worse than absent.</p>
+     */
+    @Test
+    public void aMintOverAModelAssignmentStatesNoRecordedValue() {
+        String label = SymbolicSourceEvidence.engineLabelForPhase(
+                ORDERED_PHASE, ORDERED_SOURCE);
+        String raw = "M_Z_field_" + label + "_org/apache/hadoop/hdfs/server/"
+                + "namenode/snapshot/SnapshotManager";
+        JsonObject symbol = new JsonObject();
+        symbol.addProperty("_type", "SymbolExpression");
+        symbol.addProperty("_java_type", "Z");
+        symbol.addProperty("_exp", raw);
+
+        JsonObject row = SymbolicSourceEvidence.event(ORDERED_PHASE,
+                ORDERED_SOURCE, SERIAL_NO_OCCURRENCE, ORDERED_FIELD, symbol,
+                1, false, "sym__ordered__1", null);
+
+        assertFalse(row.has(SymbolicSourceEvidence.RECORDED_VALUE));
+        assertEquals("", SymbolicSourceEvidence.recordedValueOf(row));
+    }
+
+    /** Only a scalar the ledger can be compared against is spelled out. */
+    @Test
+    public void onlyScalarsAreSpelledAsRecordedValues() {
+        assertEquals("false",
+                ConcolicRegionRuntime.recordedScalar(Boolean.FALSE));
+        assertEquals("7", ConcolicRegionRuntime.recordedScalar(7));
+        assertEquals("-3", ConcolicRegionRuntime.recordedScalar(-3L));
+        assertEquals("ordered",
+                ConcolicRegionRuntime.recordedScalar("ordered"));
+        assertEquals("a reference has no spelling a witness compares to",
+                "", ConcolicRegionRuntime.recordedScalar(new Object()));
+        assertEquals("", ConcolicRegionRuntime.recordedScalar(null));
+    }
+
+    private static final String ORDERED_PHASE =
+            "SOURCE_PHASE.f2395415-6c7d-3e1d-aa84-c9385b295a8c";
+    private static final String ORDERED_SOURCE =
+            "HDFS.CONFIG.SNAPSHOT_DELETION_ORDERED";
+    private static final String ORDERED_FIELD = "<org.apache.hadoop.hdfs"
+            + ".server.namenode.snapshot.SnapshotManager:"
+            + " boolean snapshotDeletionOrdered>";
 
     private static JsonObject binary(String op, JsonObject left,
                                      JsonObject right) {

@@ -151,6 +151,34 @@ public final class ClaimPolicy {
      */
     static final String NOT_A_MECHANISM = "NOT_A_MECHANISM";
     /**
+     * The accepted witness moved a planted marker off what it recorded.
+     *
+     * <p>The shape a fault-injection campaign claims: the experiment planted
+     * the fault, and the polarity that has it is what reaches the target.</p>
+     */
+    static final String FLIPPED_PLANTED_MARKER = "FLIPPED_PLANTED_MARKER";
+    /**
+     * The accepted witness left every declared root at what it recorded.
+     *
+     * <p>The shape a run with no planted marker claims: nothing was injected,
+     * and the witness reproduces the failure the recording already had.
+     * HDFS-17960 is one -- its only root is the configured
+     * {@code snapshot.deletion.ordered} field, recorded {@code false}, and
+     * the satisfying valuation is that same {@code false}.</p>
+     */
+    static final String RECORDED_ROOT_VALUES_REPRODUCED =
+            "RECORDED_ROOT_VALUES_REPRODUCED";
+    /**
+     * The accepted witness moved a root nobody planted.
+     *
+     * <p>Neither shape: no fault was injected, and the witness still does not
+     * sit at what the roots recorded. Most often that is a root whose
+     * recorded value nothing stated, so "moved" is measured against a
+     * default -- which is exactly the reading that has to be visible rather
+     * than folded into one of the other two names.</p>
+     */
+    static final String UNPLANTED_ROOT_MOVED = "UNPLANTED_ROOT_MOVED";
+    /**
      * Where the initial-state evidence names the arms that are both selected
      * by the model and the untouched initial content of a truncated carrier.
      */
@@ -828,19 +856,32 @@ public final class ClaimPolicy {
     }
 
     /**
-     * One declared Boolean fault marker, with the polarity it recorded.
+     * One declared Boolean root, with the polarity it recorded.
      *
      * <p>The marker list is the reach report's {@code roots.booleanInputs} and
      * its order is the order of every valuation's {@code values} vector, so the
      * index is what ties an assignment to a marker. The recorded polarity comes
-     * from the manifest's {@code recordedRootValues}; a manifest that states
-     * none leaves {@code stated} false and the polarity reads as {@code true},
-     * which is the reading 17960's configured source needs. A reader has to be
-     * able to see that difference, so it is published rather than folded away.
-     * </p>
+     * from the manifest -- the {@code recordedRootValues} ledger first, and a
+     * configured source's own materialization row after it -- and from the
+     * runtime plan where the manifest states neither.</p>
+     *
+     * <p>Where nothing states one, {@code stated} is false and the polarity
+     * <em>defaults</em> to {@code true}. That default is a placeholder and
+     * not a reading: it says only "no recording was found", and every finding
+     * built on it has to carry {@code recordedPolarityStated} beside it or it
+     * asserts a flip nobody observed. HDFS-17960 is the case that shows why.
+     * Its configured source is {@code snapshot.deletion.ordered}, and
+     * {@code TestOrderedSnapshotDeletion} sets that flag to {@code false}
+     * before the restart the whole composition replays, so the epoch-1
+     * recorded value is {@code false} and a witness at {@code false}
+     * reproduces the recorded failure rather than flipping it. An earlier
+     * version of this javadoc claimed the {@code true} default was "the
+     * reading 17960's configured source needs", which inverted every
+     * statement the run made about which value reached the target.</p>
      */
     static final class Marker {
         private final int index;
+        private final String inputKind;
         private final String sourceIdentity;
         private final String portId;
         private final String occurrenceId;
@@ -852,13 +893,41 @@ public final class ClaimPolicy {
         Marker(int index, JsonObject row, String recordedValue,
                String siteId) {
             this.index = index;
-            this.sourceIdentity = optionalString(row, "sourceIdentity");
+            this.inputKind = optionalString(row, "inputKind");
+            // A configured source carries no sourceIdentity and no portId:
+            // it is named by the field it reads and the activation that read
+            // it. Falling back to them is what keeps a finding about 17960
+            // saying "snapshotDeletionOrdered" rather than an SMT term.
+            this.sourceIdentity = firstNonEmpty(
+                    optionalString(row, "sourceIdentity"),
+                    optionalString(row, "sourceId"));
             this.portId = optionalString(row, "portId");
-            this.occurrenceId = optionalString(row, "occurrenceId");
+            this.occurrenceId = firstNonEmpty(
+                    optionalString(row, "occurrenceId"),
+                    optionalString(row, "sourceOccurrenceId"));
             this.solverTerm = optionalString(row, "solverTerm");
-            this.siteId = siteId == null ? "" : siteId;
+            this.siteId = firstNonEmpty(siteId == null ? "" : siteId,
+                    optionalString(row, "fieldSignature"));
             this.stated = recordedValue != null && !recordedValue.isEmpty();
-            this.recordedPolarity = !"false".equals(recordedValue);
+            // Defaulted, and only where nothing states one.
+            this.recordedPolarity = !stated || !"false".equals(recordedValue);
+        }
+
+        /**
+         * Whether the experiment planted this root or only read it.
+         *
+         * <p>A {@code REGION_SYMBOLIC_INPUT} is a manual symbolization the
+         * task plan asked for: the campaign's hypothesis is that moving it
+         * off what it recorded reaches the target, so the buggy polarity is
+         * a flip and an accepted claim has to show one. A
+         * {@code CONFIGURED_SOURCE_FIELD} is the program's own configuration
+         * field, which the recording read and nobody injected; the claim it
+         * carries is about the value the recording had, and demanding a flip
+         * of it refuses the run for reproducing its own recorded failure.
+         * </p>
+         */
+        boolean planted() {
+            return "REGION_SYMBOLIC_INPUT".equals(inputKind);
         }
 
         /** How a blocker or a finding names this marker. */
@@ -915,6 +984,15 @@ public final class ClaimPolicy {
      * Every declared fault marker, in valuation-vector order, with the
      * recorded polarity taken from the manifest where it states one and from
      * the runtime plan where it does not.
+     *
+     * <p>The manifest states it in two places, and both are read. The
+     * recorded-root ledger is the ledger of record. A configured source's
+     * materialization row is the fallback for it: the ledger is built from
+     * the plan's {@code symbolize} rows, which exist only for manual roots,
+     * so a manifest composed before configured sources reached the ledger
+     * carries the value on the materialization row alone. Reading only the
+     * ledger there leaves the polarity defaulted while the manifest states
+     * it plainly one field away.</p>
      */
     static List<Marker> declaredMarkers(JsonObject manifest,
                                         JsonObject reach,
@@ -930,6 +1008,24 @@ public final class ClaimPolicy {
             String term = optionalString(ledger, "solverTerm");
             recorded.put(term, optionalString(ledger, "recordedValue"));
             sites.put(term, optionalString(ledger, "siteId"));
+        }
+        for (JsonElement element : array(manifest, ConcolicSmtComposer
+                .CONFIGURED_SOURCE_MATERIALIZATION_FIELD)) {
+            if (!element.isJsonObject()) {
+                continue;
+            }
+            JsonObject source = element.getAsJsonObject();
+            String term = optionalString(source, "solverTerm");
+            String value = optionalString(source,
+                    ConcolicSmtComposer.RECORDED_SOURCE_VALUE);
+            String held = recorded.get(term);
+            if (term.isEmpty() || value.isEmpty()
+                    || (held != null && !held.isEmpty())) {
+                continue;
+            }
+            recorded.put(term, value);
+            sites.put(term, firstNonEmpty(sites.get(term),
+                    optionalString(source, "fieldSignature")));
         }
         List<Marker> markers = new ArrayList<>();
         JsonArray rows = array(object(reach, "roots"), "booleanInputs");
@@ -1088,20 +1184,35 @@ public final class ClaimPolicy {
             row.addProperty("flippedValuations", flippedRows);
             row.addProperty("flippedSatisfiable", flippedSat);
             row.addProperty("flippedUnsatisfiable", flippedUnsat);
-            row.addProperty("recordedPolaritySatisfiable",
-                    atRecorded != null && satisfied(atRecorded));
+            boolean recordedSat = atRecorded != null
+                    && satisfied(atRecorded);
+            boolean recordedDecided = atRecorded != null
+                    && decided(atRecorded);
+            row.addProperty("recordedPolaritySatisfiable", recordedSat);
             row.addProperty("flippedPolaritySatisfiable", flippedSat > 0);
-            // Not the mechanism: every way of moving this marker was refuted.
-            // An undecided row is not a refutation, so a timeout leaves the
-            // question open rather than answering it.
+            // Every refuted flip was refuted, and the other polarity was
+            // answered: this marker decides the target predicate. Which of
+            // its two values reaches the target is a separate fact -- a
+            // planted fault decides it by being flipped, a configuration
+            // field the recording already held decides it by staying put --
+            // and reading only the first is what made HDFS-17960's recorded
+            // false look like a counterfactual. An undecided row answers
+            // neither, so a timeout leaves the question open.
+            boolean decides = flippedSat > 0
+                    ? recordedDecided && !recordedSat
+                    : recordedSat && flippedRows > 0
+                            && flippedUnsat == flippedRows;
+            // Not the mechanism: every way of moving this marker was refuted
+            // and its recorded value reaches nothing either, so no polarity
+            // of it is what reached the target.
             row.addProperty(NOT_A_MECHANISM.toLowerCase(java.util.Locale.ROOT),
                     flippedRows > 0 && flippedSat == 0
-                            && flippedUnsat == flippedRows);
-            boolean flips = flippedSat > 0
-                    && atRecorded != null && !satisfied(atRecorded);
+                            && flippedUnsat == flippedRows && !decides);
+            boolean flips = flippedSat > 0 && recordedDecided && !recordedSat;
             JsonArray necessary = necessaryMechanisms(reach,
                     marker.solverTerm, marker.recordedPolarity);
-            row.addProperty("polarityDecides", flips);
+            row.addProperty("polarityDecides", decides);
+            row.addProperty("reachesAtRecordedValue", decides && !flips);
             // A reader deciding whether to trust the mechanism needs to see
             // how much of it is pressed against the window: six interior rows
             // out of ten is a different claim from six out of six.
@@ -1113,7 +1224,7 @@ public final class ClaimPolicy {
             row.addProperty("clockWindowMillis", window);
             row.add("otherPolarityMechanisms", unsaturated);
             row.add("necessaryMechanisms", necessary);
-            row.addProperty("determining", flips || necessary.size() > 0);
+            row.addProperty("determining", decides || necessary.size() > 0);
             rows.add(row);
         }
         return evidence;
@@ -1257,8 +1368,9 @@ public final class ClaimPolicy {
         }
         return blocker(FAULT_MARKER_NOT_DETERMINING,
                 String.join(",", undetermined),
-                "the target is reachable in both polarities of "
-                        + undetermined.size() + " declared fault marker(s)"
+                "no polarity of " + undetermined.size()
+                        + " declared fault marker(s) was shown to decide the"
+                        + " target"
                         + (freedom == null || freedom.isEmpty()
                                 ? " and the polarity without the fault is a"
                                 + " witness this composition explains, so"
@@ -1290,12 +1402,19 @@ public final class ClaimPolicy {
      * production tolerates. The "other" polarity is correspondingly the one
      * valuation that leaves every marker as recorded.</p>
      *
-     * <p>Where a manifest carries no recorded value the recorded polarity
-     * reads as {@code true}, which is what makes 17960's configured
-     * {@code ordered=false} its buggy polarity; the marker rows say whether
-     * the manifest actually stated it. A run with no Boolean root at all --
-     * the clock cases -- asks only that some satisfying witness be
-     * explained.</p>
+     * <p>That demand is made of <em>planted</em> markers only. A manual
+     * symbolization is the experiment's own hypothesis, so its buggy polarity
+     * is a flip and an accepted claim has to show one. A configured source is
+     * the program's own configuration field, which the recording read and
+     * nobody injected: the claim it carries is about the value the recording
+     * had. HDFS-17960 is that case -- {@code snapshot.deletion.ordered} is
+     * recorded {@code false} on the epoch-1 NameNode the whole composition
+     * replays, and the satisfying witness at {@code false} reproduces the
+     * recorded failure. Demanding a flip there refuses a run for reproducing
+     * its own recording, and defaulting the unstated polarity to {@code true}
+     * hid that by reporting the reproduction as a flip. A run with no planted
+     * marker therefore asks only that some satisfying witness be explained --
+     * the same question the clock cases ask.</p>
      */
     private static JsonObject witnessLegitimacy(
             JsonObject manifest, JsonObject reach, JsonArray valuations,
@@ -1307,6 +1426,12 @@ public final class ClaimPolicy {
                         array(initialState, FREE_INITIAL_ARMS),
                         unrealizedFlows);
         List<Marker> markers = declaredMarkers(manifest, reach, flows);
+        List<Marker> planted = new ArrayList<>();
+        for (Marker marker : markers) {
+            if (marker.planted()) {
+                planted.add(marker);
+            }
+        }
         // What the necessity probe said about each valuation's clock group.
         Map<Integer, WitnessLegitimacy.ClockNecessity> clockNecessity =
                 clockNecessityByValuation(reach);
@@ -1321,6 +1446,9 @@ public final class ClaimPolicy {
         // that is the buggy polarity, whichever marker it moved.
         boolean flippedWitnessAccepted = false;
         int acceptedOrdinal = -1;
+        // The first explained satisfying witness, whatever it moved: what a
+        // run with no planted marker rests on.
+        int explainedOrdinal = -1;
         // Per valuation: satisfied, and free of the freedom that lives in the
         // witness itself. Composition freedoms are excluded here because each
         // already withholds acceptance under its own blocker, and asking the
@@ -1352,7 +1480,10 @@ public final class ClaimPolicy {
             }
             if (local.isEmpty()) {
                 someSatWitnessExplained = true;
-                if (!flippedMarkers(candidate, markers).isEmpty()) {
+                if (explainedOrdinal < 0) {
+                    explainedOrdinal = index;
+                }
+                if (!flippedMarkers(candidate, planted).isEmpty()) {
                     flippedWitnessAccepted = true;
                     if (acceptedOrdinal < 0) {
                         acceptedOrdinal = index;
@@ -1385,10 +1516,10 @@ public final class ClaimPolicy {
         // every clock going back to what it recorded is a witness the clock
         // played no part in, and accepting it publishes a clock finding the
         // formula does not support.
-        boolean clockOnly = markers.isEmpty()
+        boolean clockOnly = planted.isEmpty()
                 && !clockNecessity.isEmpty();
         result.addProperty("faultPolarityNotWitnessed",
-                markers.isEmpty()
+                planted.isEmpty()
                         ? (someSatWitnessExplained
                                 && (!clockOnly || anyClockNecessary) ? ""
                                 : clockOnly && !anyClockNecessary
@@ -1397,15 +1528,24 @@ public final class ClaimPolicy {
                                 + " survives pinning the clocks to what they"
                                 + " recorded" + clockDecisionNote(reach)
                                 : "the enumerated valuations")
-                        : (flippedWitnessAccepted ? "" : markerNames(markers)));
+                        : (flippedWitnessAccepted ? "" : markerNames(planted)));
         result.addProperty("clockMechanismNecessary", anyClockNecessary);
         result.addProperty("clockOnlyExperiment", clockOnly);
         result.add("clockDecisionsOutsideWindow",
                 clockDecisionsOutsideWindow(reach));
         // Which valuation the acceptance rests on, so a probe can assert that
         // marker assignment rather than guess one.
-        result.addProperty("acceptedValuationOrdinal", acceptedOrdinal);
+        // A run with no planted marker rests on the witness it explained,
+        // and a probe still needs one valuation to assert.
+        int restsOn = acceptedOrdinal >= 0 ? acceptedOrdinal
+                : planted.isEmpty() ? explainedOrdinal : -1;
+        result.addProperty("acceptedValuationOrdinal", restsOn);
+        result.addProperty("acceptedWitnessKind", restsOn < 0 ? ""
+                : acceptedOrdinal >= 0 ? FLIPPED_PLANTED_MARKER
+                : flippedMarkers(row(valuations, restsOn), markers).isEmpty()
+                ? RECORDED_ROOT_VALUES_REPRODUCED : UNPLANTED_ROOT_MOVED);
         result.addProperty("declaredMarkers", markers.size());
+        result.addProperty("plantedMarkers", planted.size());
         return result;
     }
 
@@ -1742,7 +1882,8 @@ public final class ClaimPolicy {
         result.addProperty("kind", KIND);
         result.addProperty("claim", claim);
         result.addProperty("claimReason", claimReason(claim, reachability,
-                blockers, refusals));
+                blockers, refusals, legitimacy, faultMarkers,
+                faultSensitive(valuations, probeConstrains)));
         JsonArray blockerRows = new JsonArray();
         for (JsonObject row : blockers) {
             blockerRows.add(row);
@@ -1805,6 +1946,13 @@ public final class ClaimPolicy {
         // guess at which marker the bug is.
         rootSpace.addProperty("acceptedValuationOrdinal",
                 optionalInteger(legitimacy, "acceptedValuationOrdinal", -1));
+        // Which shape the acceptance has: a planted marker flipped, or every
+        // declared root left at what the recording had. A probe asserting the
+        // buggy polarity needs to know which of the two it is looking at.
+        rootSpace.addProperty("acceptedWitnessKind",
+                optionalString(legitimacy, "acceptedWitnessKind"));
+        rootSpace.addProperty("plantedMarkers",
+                optionalInteger(legitimacy, "plantedMarkers", 0));
         result.add(WitnessLegitimacy.FINDINGS,
                 legitimacy.getAsJsonArray("valuations"));
         rootSpace.add("probedRoot", probedRoot(reach));
@@ -1971,12 +2119,29 @@ public final class ClaimPolicy {
         return "sat".equals(status) || "unsat".equals(status);
     }
 
+    /**
+     * Why this run was accepted, read off the decision it was accepted by.
+     *
+     * <p>This sentence used to be a constant -- "a valuation satisfies the
+     * target predicate inside the recorded model and a symbolic root flips
+     * it" -- emitted for every accepted candidate whatever the run did. It
+     * consulted no valuation, no marker and no mechanism, so it asserted a
+     * root flip on HDFS-17960, whose accepted witness flips nothing and
+     * reproduces the value the recording had. A reason nothing computes is
+     * not evidence about the run it is attached to, so it is derived here
+     * from the same rows {@code witnessFindings} publishes: which valuation
+     * the acceptance rests on, which roots that valuation moved or left
+     * alone, which mechanisms explained it, and whether the root space was
+     * shown to decide the target.</p>
+     */
     private static String claimReason(String claim, String reachability,
                                       List<JsonObject> blockers,
-                                      String refusals) {
+                                      String refusals, JsonObject legitimacy,
+                                      JsonObject faultMarkers,
+                                      boolean faultSensitive) {
         if (SAT_CANDIDATE.equals(claim)) {
-            return "a valuation satisfies the target predicate inside the"
-                    + " recorded model and a symbolic root flips it";
+            return satCandidateReason(legitimacy, faultMarkers,
+                    faultSensitive);
         }
         if (UNSAT_CLOSED.equals(claim)) {
             return "no valuation satisfies the target predicate and the"
@@ -1996,6 +2161,135 @@ public final class ClaimPolicy {
             reason.append("; Composer refusals: ").append(refusals);
         }
         return reason.toString();
+    }
+
+    /**
+     * The accepted witness, named: which valuation, what it moved, what
+     * explained it, and what the root space was shown to do.
+     */
+    private static String satCandidateReason(JsonObject legitimacy,
+                                             JsonObject faultMarkers,
+                                             boolean faultSensitive) {
+        int ordinal = optionalInteger(legitimacy,
+                "acceptedValuationOrdinal", -1);
+        JsonObject accepted = null;
+        for (JsonElement element : array(legitimacy, "valuations")) {
+            if (element.isJsonObject() && optionalInteger(
+                    element.getAsJsonObject(), "valuationOrdinal", -1)
+                    == ordinal) {
+                accepted = element.getAsJsonObject();
+            }
+        }
+        if (accepted == null) {
+            return "the solver reached the target predicate and no blocker"
+                    + " withholds the claim; no enumerated valuation was"
+                    + " named as the one the acceptance rests on";
+        }
+        StringBuilder reason = new StringBuilder();
+        reason.append("valuation ").append(ordinal)
+                .append(" satisfies the target predicate inside the recorded"
+                        + " model");
+        JsonArray flipped = array(accepted, "flippedMarkers");
+        if (flipped.size() > 0) {
+            reason.append(" and moves ").append(flipped.size())
+                    .append(" declared root(s) off what they recorded: ")
+                    .append(markerSummary(flipped));
+        } else if (array(accepted, "markerAssignment").size() > 0) {
+            reason.append(" with every declared root at the value the"
+                            + " recording had (")
+                    .append(markerSummary(array(accepted,
+                            "markerAssignment")))
+                    .append("), so the witness reproduces the recorded case"
+                            + " rather than a counterfactual");
+        } else {
+            reason.append(" and declares no symbolic root to move");
+        }
+        String mechanisms = mechanismSummary(array(accepted, "mechanisms"));
+        reason.append("; ").append(mechanisms.isEmpty()
+                ? "no named mechanism was needed" : "explained by "
+                + mechanisms);
+        reason.append("; ").append(faultSensitive
+                ? "the root space decides the target"
+                : "no enumerated root flip changes the target predicate");
+        String deciding = decidingMarkers(faultMarkers);
+        if (!deciding.isEmpty()) {
+            reason.append(" (").append(deciding).append(')');
+        }
+        return reason.toString();
+    }
+
+    /** Each marker named with the value this valuation gave it. */
+    private static String markerSummary(JsonArray rows) {
+        List<String> named = new ArrayList<>();
+        for (JsonElement element : rows) {
+            if (!element.isJsonObject()) {
+                continue;
+            }
+            JsonObject row = element.getAsJsonObject();
+            StringBuilder text = new StringBuilder();
+            text.append(firstNonEmpty(optionalString(row, "sourceIdentity"),
+                    optionalString(row, "solverTerm")));
+            String where = firstNonEmpty(optionalString(row, "siteId"),
+                    optionalString(row, "portId"));
+            if (!where.isEmpty()) {
+                text.append(" (").append(where).append(')');
+            }
+            text.append(" = ").append(optionalBool(row, "value", false));
+            if (!optionalBool(row, "recordedPolarityStated", false)) {
+                // Said out loud: nothing recorded this root's value, so the
+                // polarity it is being compared against is a placeholder.
+                text.append(" [recorded value unstated, assumed ")
+                        .append(optionalBool(row, "recordedPolarity", true))
+                        .append(']');
+            }
+            named.add(text.toString());
+        }
+        return String.join(", ", named);
+    }
+
+    /** Each named mechanism, once, with a count where it repeats. */
+    private static String mechanismSummary(JsonArray mechanisms) {
+        Map<String, Integer> counts = new LinkedHashMap<>();
+        for (JsonElement element : mechanisms) {
+            if (!element.isJsonObject()) {
+                continue;
+            }
+            String kind = optionalString(element.getAsJsonObject(), "kind");
+            if (kind.isEmpty()) {
+                continue;
+            }
+            Integer held = counts.get(kind);
+            counts.put(kind, held == null ? 1 : held + 1);
+        }
+        List<String> named = new ArrayList<>();
+        for (Map.Entry<String, Integer> entry : counts.entrySet()) {
+            named.add(entry.getValue() > 1
+                    ? entry.getKey() + " x" + entry.getValue()
+                    : entry.getKey());
+        }
+        return String.join(", ", named);
+    }
+
+    /** The markers the evidence shows decide the target, and how. */
+    private static String decidingMarkers(JsonObject faultMarkers) {
+        List<String> named = new ArrayList<>();
+        for (JsonElement element : array(faultMarkers, "markers")) {
+            if (!element.isJsonObject()) {
+                continue;
+            }
+            JsonObject row = element.getAsJsonObject();
+            if (!optionalBool(row, "polarityDecides", false)) {
+                continue;
+            }
+            named.add(firstNonEmpty(optionalString(row, "sourceIdentity"),
+                    optionalString(row, "portId"))
+                    + (optionalBool(row, "reachesAtRecordedValue", false)
+                    ? " reaches the target at its recorded value and at no"
+                    + " other"
+                    : " reaches the target only when moved off what it"
+                    + " recorded"));
+        }
+        return String.join("; ", named);
     }
 
     /** One line per blocker: the whole reason a run was not accepted. */
