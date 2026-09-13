@@ -1903,7 +1903,18 @@ public final class ClaimPolicy {
             }
         }
         result.addProperty("acceptedValuationOrdinal", restsOn);
-        result.addProperty("acceptedWitnessKind", restsOn < 0 ? ""
+        // All three names are claims about recorded values -- moved off one,
+        // left at one -- so none of them can be said of a run whose roots
+        // nobody recorded. laneX's artifact was published as
+        // RECORDED_ROOT_VALUES_REPRODUCED over an empty recorded-root ledger,
+        // which reads as "the witness reproduces the recording" about a
+        // recording the run never read.
+        boolean everyValueStated = !markers.isEmpty();
+        for (Marker marker : markers) {
+            everyValueStated &= marker.stated();
+        }
+        result.addProperty("acceptedWitnessKind",
+                restsOn < 0 || !everyValueStated ? ""
                 : acceptedOrdinal >= 0 ? FLIPPED_PLANTED_MARKER
                 : flippedMarkers(row(valuations, restsOn), markers).isEmpty()
                 ? RECORDED_ROOT_VALUES_REPRODUCED : UNPLANTED_ROOT_MOVED);
