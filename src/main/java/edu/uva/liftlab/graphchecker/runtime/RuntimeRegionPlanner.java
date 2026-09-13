@@ -2307,7 +2307,8 @@ final class RuntimeRegionPlanner {
         return occurrenceId + "\n" + direction + "\n" + portId;
     }
 
-    private static List<Map<String, Object>> branches(
+    /** Package-visible for the required-outcome selection contract test. */
+    static List<Map<String, Object>> branches(
             List<Map<String, Object>> policies,
             List<RuntimeEvent> events) {
         Map<String, List<RuntimeEvent>> bySite = new LinkedHashMap<>();

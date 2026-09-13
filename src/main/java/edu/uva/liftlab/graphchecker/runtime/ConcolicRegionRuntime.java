@@ -1963,7 +1963,8 @@ public final class ConcolicRegionRuntime {
         }
     }
 
-    private static JsonElement engineExpression(String serialized) {
+    /** Package-visible for the import-refusal contract test. */
+    static JsonElement engineExpression(String serialized) {
         ActiveRegion active = activeRegion();
         try {
             VmExpressionTable.Store store = active == null

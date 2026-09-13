@@ -485,7 +485,8 @@ final class ConcolicResultPublisher {
      * composed is already a first-class answer downstream: {@code
      * TargetOccurrenceElection.SKIPPED_UNOBSERVED}.</p>
      */
-    private static boolean targetReachedByActivation(ActiveRegion active) {
+    /** Package-visible for the target-reach contract test. */
+    static boolean targetReachedByActivation(ActiveRegion active) {
         RuntimeTask task = active.activation;
         return task.declaresTargetBranch()
                 && task.reachedRequiredTargetOutcome(active.targetReach);
