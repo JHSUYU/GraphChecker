@@ -34,9 +34,10 @@ import java.util.Set;
  *   <li>{@code MARKER_FLIPPED} -- the experiment's own injected fault.</li>
  *   <li>{@code CLOCK_SKEW} inside the configured window, at a wall-clock value
  *   that is a time rather than arithmetic noise.</li>
- *   <li>{@link RecordedOrderRace#KIND} -- the fatal read took the program's own
- *   last writer while the same location is written again later in the recorded
- *   order.</li>
+ *   <li>{@code ROTATION_RACE} -- the fatal read took the program's own last
+ *   writer while the same location is written again later in the recorded
+ *   order.  Nothing decides this at present: the probe that did read the
+ *   composition's guarded-read arms, which no composition publishes.</li>
  * </ul>
  *
  * <p>A witness every one of whose mechanisms is in that set, standing on a
@@ -65,20 +66,14 @@ public final class WitnessLegitimacy {
     /** Some part of this witness is freedom nobody accounted for. */
     public static final String UNEXPLAINED = "UNEXPLAINED";
 
-    /** The witness reads a container state nobody reconstructed. */
-    public static final String FREE_INITIAL_ARM = "FREE_INITIAL_ARM";
     /** The existential root space was never enumerated. */
     public static final String UNENUMERATED_EXISTENTIAL_ROOT =
             "UNENUMERATED_EXISTENTIAL_ROOT";
-    /** A declared wire carried a value the composition never bound. */
-    public static final String UNBOUND_WIRE_VALUE = "UNBOUND_WIRE_VALUE";
     /**
      * This model read a merged wire boundary through a consumer it left
      * active while satisfying none of the boundary's case arms: the value
      * the consumer took is the boundary's fall-through, which nothing
-     * binds.  Distinct from {@link #UNBOUND_WIRE_VALUE}, which the
-     * composition states about a declared flow and withholds under its own
-     * blocker; this one is a property of one model.
+     * binds.  A property of one model, not of the composition.
      */
     public static final String UNBOUND_WIRE_VALUE_TAKEN =
             "UNBOUND_WIRE_VALUE_TAKEN";
@@ -130,7 +125,8 @@ public final class WitnessLegitimacy {
      *   <li>{@link #MARKER_FLIPPED} -- a Boolean root moved off the value it
      *   recorded and the fatal predicate is satisfied there.</li>
      *   <li>{@link #ROTATION_RACE} -- the recorded write order states the
-     *   race, as {@link RecordedOrderRace} defines it.</li>
+     *   race.  No probe names it since the read arms went; a mechanism
+     *   this run cannot decide is one it does not claim.</li>
      *   <li>{@link #CLOCK_SKEW} -- a wall clock moved inside the declared
      *   window <em>and</em> the necessity probe showed the target does not
      *   reach with the clocks back on record.</li>
@@ -145,7 +141,7 @@ public final class WitnessLegitimacy {
      * flipped marker is a stronger statement than a clock that accompanied
      * it; every mechanism the witness named stays on the row beside it.</p>
      */
-    public static final String ROTATION_RACE = RecordedOrderRace.KIND;
+    public static final String ROTATION_RACE = "ROTATION_RACE";
     /** The recorded valuation is the failing one, and the flip is unsat. */
     public static final String RECORDED_FAILURE_EXPLAINED =
             "RECORDED_FAILURE_EXPLAINED";
@@ -248,13 +244,6 @@ public final class WitnessLegitimacy {
      *                         valuation, each row flagged {@code flipped} when
      *                         it differs from what that marker recorded
      */
-    public static JsonObject classify(JsonObject valuation, int ordinal,
-                                      long windowMillis,
-                                      List<Freedom> composition,
-                                      JsonArray markerAssignment) {
-        return classify(valuation, ordinal, windowMillis, composition,
-                markerAssignment, ClockNecessity.UNKNOWN, false);
-    }
 
     /**
      * Reads one valuation's witness against the legitimate set.
@@ -269,14 +258,6 @@ public final class WitnessLegitimacy {
      *                       in any satisfied conjunct, were reported as
      *                       "sat via CLOCK_SKEW x9".
      */
-    public static JsonObject classify(JsonObject valuation, int ordinal,
-                                      long windowMillis,
-                                      List<Freedom> composition,
-                                      JsonArray markerAssignment,
-                                      ClockNecessity clockNecessity) {
-        return classify(valuation, ordinal, windowMillis, composition,
-                markerAssignment, clockNecessity, false);
-    }
 
     /**
      * Reads one valuation's witness against the legitimate set.
@@ -555,7 +536,7 @@ public final class WitnessLegitimacy {
         String where = firstNonEmpty(optionalString(mechanism, "siteId"),
                 firstNonEmpty(optionalString(mechanism, "sourceKey"),
                         optionalString(mechanism, "solverTerm")));
-        if (MARKER_FLIPPED.equals(kind) || RecordedOrderRace.KIND.equals(kind)) {
+        if (MARKER_FLIPPED.equals(kind) || ROTATION_RACE.equals(kind)) {
             return null;
         }
         if (CLOCK_SKEW.equals(kind)) {
