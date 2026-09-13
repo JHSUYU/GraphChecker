@@ -361,13 +361,11 @@ public final class GapLedger {
         }
 
         diagnostic(propagation, "INITIAL_CONTAINER_SNAPSHOT_TRUNCATED",
-                "ClaimPolicy already decides this one per read rather than"
-                        + " per composition: initialStateBlocker withholds"
-                        + " the claim under UNDETERMINED_INITIAL_STATE"
-                        + " exactly when the accepted witness reads out of"
-                        + " the truncated carrier's initial arm, and a"
-                        + " carrier the fatal read never touches is not on"
-                        + " the chain that witness stands on -- so promoting"
+                "a container whose initial content the recording did not"
+                        + " watch being produced: the value is still the"
+                        + " value, and a carrier the fatal read never touches"
+                        + " is not on the chain a witness stands on -- so"
+                        + " promoting"
                         + " the row itself would replace a per-witness proof"
                         + " with a coarser guess, not add one");
 

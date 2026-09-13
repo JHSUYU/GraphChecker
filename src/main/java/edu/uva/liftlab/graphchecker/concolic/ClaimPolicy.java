@@ -83,9 +83,6 @@ public final class ClaimPolicy {
     /** No root flip changed satisfiability: the witness is not fault-sensitive. */
     static final String TARGET_UNCONSTRAINED_BY_ROOTS =
             "TARGET_UNCONSTRAINED_BY_ROOTS";
-    /** The experiment declares wire flows the composition never realized. */
-    static final String DECLARED_WIRE_FLOWS_UNREALIZED =
-            "DECLARED_WIRE_FLOWS_UNREALIZED";
     /** The existential witness carries no information about the target. */
     static final String WITNESS_UNINFORMATIVE = "WITNESS_UNINFORMATIVE";
     /**
@@ -98,8 +95,6 @@ public final class ClaimPolicy {
     static final String PORT_FAMILY = "PORT_FAMILY";
     /** The field the consumer assigned it to is read in the formula. */
     static final String CONSUMER_FIELD_READ = "CONSUMER_FIELD_READ";
-    static final String UNDETERMINED_INITIAL_STATE =
-            "UNDETERMINED_INITIAL_STATE";
     /** The solver returned neither sat nor unsat on an enumerated valuation. */
     static final String SOLVER_UNDECIDED_VALUATIONS =
             "SOLVER_UNDECIDED_VALUATIONS";
@@ -138,10 +133,9 @@ public final class ClaimPolicy {
      * flip, drift inside the recorded clock window, a rotation race the
      * recorded write order states -- and is withheld only where the witness
      * was free in a way nobody wrote down. The freedoms that already carry a
-     * blocker of their own ({@link #UNDECIDED_ROOT_SPACE},
-     * {@link #UNDETERMINED_INITIAL_STATE},
-     * {@link #DECLARED_WIRE_FLOWS_UNREALIZED}) are not named twice; this one
-     * covers the freedom that lives in the witness itself.</p>
+     * blocker of their own ({@link #UNDECIDED_ROOT_SPACE}) are not named
+     * twice; this one covers the freedom that lives in the witness
+     * itself.</p>
      */
     static final String WITNESS_FREEDOM_UNEXPLAINED =
             "WITNESS_FREEDOM_UNEXPLAINED";
@@ -243,23 +237,6 @@ public final class ClaimPolicy {
      */
     static final String UNPLANTED_ROOT_MOVED = "UNPLANTED_ROOT_MOVED";
     /**
-     * A declared flow counted realized because the field its consumer assigns
-     * to is read -- but read only on a node the wire never delivered to.
-     *
-     * <p>A wire value may leave the wire on arrival and be read downstream,
-     * so a read outside the consumer's own region still carries it.  It
-     * cannot leave the node.  hdfs-17897 declares
-     * {@code namenode-data-encryption-key-id} from the NameNode to the
-     * client, and the only read of {@code DataEncryptionKey#keyId} in the
-     * composition is on the DataNode, which that hop never fed: the client's
-     * cached key is not in the formula, and the key id the target looks up is
-     * a block key the DataNode converted.  Reported rather than blocking,
-     * because the route it questions is the one a legitimate downstream read
-     * uses.</p>
-     */
-    static final String CONSUMER_FIELD_READ_OFF_RECEIVER_NODE =
-            "CONSUMER_FIELD_READ_OFF_RECEIVER_NODE";
-    /**
      * An observed occurrence of the annotated target that this composition
      * did not lower.
      *
@@ -278,11 +255,6 @@ public final class ClaimPolicy {
      */
     static final String TARGET_OCCURRENCE_NOT_COMPOSED =
             "TARGET_OCCURRENCE_NOT_COMPOSED";
-    /**
-     * Where the initial-state evidence names the arms that are both selected
-     * by the model and the untouched initial content of a truncated carrier.
-     */
-    static final String FREE_INITIAL_ARMS = "freeInitialArmsOnSelectedPath";
 
     private static final Gson GSON = new GsonBuilder()
             .disableHtmlEscaping().setPrettyPrinting().create();
@@ -658,140 +630,8 @@ public final class ClaimPolicy {
         return arms;
     }
 
-    /**
-     * Carriers whose initial content the Composer reported it could not
-     * reconstruct, by the session location key its gap names.
-     */
-    static Set<String> truncatedCarriers(JsonObject manifest) {
-        Set<String> carriers = new LinkedHashSet<>();
-        for (JsonElement element
-                : array(manifest, "symbolicPropagationGaps")) {
-            if (!element.isJsonObject()) {
-                continue;
-            }
-            JsonObject gap = element.getAsJsonObject();
-            if (SymbolicPropagationClosure.INITIAL_CONTAINER_SNAPSHOT_TRUNCATED
-                    .equals(optionalString(gap, "reason"))) {
-                String subject = optionalString(gap, "subject");
-                if (!subject.isEmpty()) {
-                    carriers.add(subject);
-                }
-            }
-        }
-        return carriers;
-    }
 
-    /**
-     * Whether the witness reads the fatal value out of a state nobody
-     * reconstructed.
-     *
-     * <p>A truncated initial container snapshot makes membership over that
-     * container a free Boolean.  The Composer publishes that as a propagation
-     * gap and still emits the formula, which is right: the other arms of the
-     * same read are real, and a witness that uses one of them is unaffected.
-     * What must not pass is a witness whose fatal value comes from the
-     * <em>initial</em> arm of exactly such a carrier -- there the solver is
-     * free to answer "the container never held that key", and the target is
-     * satisfied by an admitted hole rather than by the program.  So the
-     * selected arm decides: on the path it is a blocker naming the carrier and
-     * the arm, off the path it is an information row.</p>
-     */
-    static JsonObject initialStateEvidence(JsonObject manifest,
-                                           JsonObject reach) {
-        Set<String> carriers = truncatedCarriers(manifest);
-        JsonObject selection = object(reach,
-                BooleanReachConditionExtractor.FATAL_STATE_SELECTION);
-        JsonObject evidence = new JsonObject();
-        evidence.addProperty("truncatedCarrierCount", carriers.size());
-        evidence.add("truncatedCarriers", GSON.toJsonTree(carriers));
-        evidence.addProperty("fatalArmsResolved",
-                optionalBool(selection, "resolved", false));
-        JsonArray onPath = new JsonArray();
-        JsonArray offPath = new JsonArray();
-        for (JsonElement element : array(selection, "arms")) {
-            if (!element.isJsonObject()) {
-                continue;
-            }
-            JsonObject arm = element.getAsJsonObject();
-            if (!carriers.contains(optionalString(arm,
-                    "sessionLocationKey"))) {
-                continue;
-            }
-            JsonObject row = new JsonObject();
-            row.addProperty("selector", optionalString(arm, "selector"));
-            row.addProperty("sessionLocationKey",
-                    optionalString(arm, "sessionLocationKey"));
-            row.addProperty("locationKey",
-                    optionalString(arm, "locationKey"));
-            row.addProperty("readIdentity",
-                    optionalString(arm, "readIdentity"));
-            row.addProperty("initialState",
-                    optionalBool(arm, "initialState", false));
-            if (optionalBool(arm, "selected", false)) {
-                onPath.add(row);
-            } else {
-                offPath.add(row);
-            }
-        }
-        evidence.add("onSelectedPath", onPath);
-        evidence.add("offSelectedPath", offPath);
-        // The arms that are both selected and initial: the witness reading a
-        // container nobody reconstructed. A selected writer arm of the same
-        // truncated carrier is a different thing -- it rests on a write the
-        // recording carries -- so the two are counted apart rather than
-        // together under "this read touched a truncated carrier".
-        JsonArray freeInitial = new JsonArray();
-        for (JsonElement element : onPath) {
-            if (element.isJsonObject() && optionalBool(
-                    element.getAsJsonObject(), "initialState", false)) {
-                freeInitial.add(element);
-            }
-        }
-        evidence.add(FREE_INITIAL_ARMS, freeInitial);
-        evidence.addProperty("fatalCarrierTruncated",
-                onPath.size() + offPath.size() > 0);
-        return evidence;
-    }
 
-    /**
-     * The blocker that evidence justifies, or null when it justifies none.
-     *
-     * <p>Which arm the witness picked is what decides it. A truncated snapshot
-     * makes {@code assoc_has} over that container free, and a witness that
-     * <em>takes</em> that arm satisfies the target out of an admitted hole
-     * rather than out of the program -- that is unexplained freedom and it
-     * blocks. A witness that took a reconstructed writer arm instead rests on
-     * a write the recording carries; the untaken initial arm beside it is a
-     * fact about the formula, reported as a finding. The earlier reading
-     * blocked both, which withheld every run whose fatal read happened to
-     * share a container with a truncated snapshot even when no model went near
-     * it.</p>
-     */
-    private static JsonObject initialStateBlocker(JsonObject evidence) {
-        JsonArray freeInitial = array(evidence, FREE_INITIAL_ARMS);
-        if (freeInitial.size() == 0) {
-            return null;
-        }
-        Set<String> carriers = new LinkedHashSet<>();
-        List<String> where = new ArrayList<>();
-        for (JsonElement element : freeInitial) {
-            if (!element.isJsonObject()) {
-                continue;
-            }
-            JsonObject row = element.getAsJsonObject();
-            carriers.add(optionalString(row, "sessionLocationKey"));
-            where.add(optionalString(row, "selector")
-                    + " (selected, initial state)");
-        }
-        return blocker(UNDETERMINED_INITIAL_STATE,
-                String.join(",", carriers),
-                "the witness reads the fatal value from the initial state of "
-                        + carriers.size()
-                        + " carrier(s) whose initial content the composition"
-                        + " reported truncated, so membership there is a free"
-                        + " choice rather than the program's: "
-                        + String.join("; ", where));
-    }
 
     /**
      * What the probe actually perturbed, so a reader can see which root the
@@ -1558,13 +1398,11 @@ public final class ClaimPolicy {
      */
     private static JsonObject witnessLegitimacy(
             JsonObject manifest, JsonObject reach, JsonArray valuations,
-            String degeneracy, JsonObject initialState,
+            String degeneracy,
             List<String> unrealizedFlows, WireFlowEvidence flows) {
         long window = Math.max(0L, ClockRootPhysics.skewOf(manifest));
         List<WitnessLegitimacy.Freedom> composition =
-                WitnessLegitimacy.compositionFreedoms(degeneracy,
-                        array(initialState, FREE_INITIAL_ARMS),
-                        unrealizedFlows);
+                WitnessLegitimacy.compositionFreedoms(degeneracy);
         List<Marker> markers = declaredMarkers(manifest, reach, flows);
         List<Marker> planted = new ArrayList<>();
         for (Marker marker : markers) {
@@ -1974,9 +1812,8 @@ public final class ClaimPolicy {
         // moved is a marker flip, drift inside the recorded clock window, or a
         // rotation race the recorded write order states; only freedom nobody
         // accounted for blocks.
-        JsonObject initialState = initialStateEvidence(manifest, reach);
         JsonObject legitimacy = witnessLegitimacy(manifest, reach, valuations,
-                degeneracy, initialState, unrealizedFlows, flows);
+                degeneracy, unrealizedFlows, flows);
         boolean someSatUnexplained = optionalBool(legitimacy,
                 "someSatisfyingWitnessUnexplained", false);
         String witnessFreedom = optionalString(legitimacy, "freedomCodes");
@@ -2066,15 +1903,6 @@ public final class ClaimPolicy {
         // satisfies. Which flows those are is the blocker: a count cannot be
         // acted on, and counting one realization mechanism out of two called
         // a realized flow unrealized.
-
-        // A composition may publish a propagation gap and still be
-        // FINAL_READY with no refusal; the gap is then invisible to a caller
-        // that reads only finalStatusRefusals and the solver's own gaps. One
-        // such gap changes what a witness means, so it is read here.
-        JsonObject initialStateGap = initialStateBlocker(initialState);
-        if (initialStateGap != null) {
-            blockers.add(initialStateGap);
-        }
 
         // Nothing is compared against a value nobody observed. A declared
         // root whose recorded value no source states, and a root two sources
@@ -2220,7 +2048,6 @@ public final class ClaimPolicy {
                 consumerBoundaryArms(manifest));
         rootSpace.addProperty("realizedRegions",
                 realizedRegions(manifest).size());
-        rootSpace.add("initialState", initialState);
         rootSpace.add("faultMarkers", faultMarkers);
         // Findings the ruling reports rather than blocks: a marker satisfiable
         // in both polarities whose other polarity is explained is one of them,
@@ -2235,16 +2062,6 @@ public final class ClaimPolicy {
                             + " enumerated valuations, and every satisfying"
                             + " witness is explained: a finding about the"
                             + " mechanism rather than about the marker"));
-        }
-        JsonArray untakenInitial = array(initialState, "onSelectedPath");
-        if (array(initialState, FREE_INITIAL_ARMS).size() == 0
-                && array(initialState, "offSelectedPath").size()
-                + untakenInitial.size() > 0) {
-            reportedFindings.add(blocker(UNDETERMINED_INITIAL_STATE, "",
-                    "the fatal read shares a carrier with a truncated initial"
-                            + " snapshot, and the witness took a reconstructed"
-                            + " writer arm rather than that carrier's initial"
-                            + " content"));
         }
         // A marker every flip of which is unsatisfiable is not the mechanism.
         // That is a statement about the experiment's own hypothesis, and it is
