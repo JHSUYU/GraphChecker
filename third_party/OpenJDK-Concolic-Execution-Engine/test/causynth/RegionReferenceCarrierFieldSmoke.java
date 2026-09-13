@@ -56,7 +56,10 @@ public final class RegionReferenceCarrierFieldSmoke {
                 Holder.class.getName(), "current", KEY_DESCRIPTOR);
         require(versions.contains("\"writerSetComplete\":true"), versions);
         require(count(versions, "\"fieldVersionId\"") == 2, versions);
-        require(versions.contains("InstanceSymbolExp"), versions);
+        // Two object identities, not two scalars: an installed reference is
+        // versioned as the object it is.
+        require(count(versions, "\"_exp\":\"M_L'"
+                + Key.class.getName() + "'_") == 2, versions);
 
         // The dependent read: one getfield of the carrier, then a getfield
         // of the object it produced.

@@ -150,6 +150,12 @@ public final class ConcolicSmtComposer {
             "MANUAL_SYMBOLIC_ROOT_MATERIALIZATION";
     static final String MANUAL_SOURCE_MATERIALIZATION_AUTHORITY =
             "COMPOSER_MANUAL_SYMBOLIC_ROOT_TERM_V1";
+    /** Per unnamed VM reference stored into a container: the witness that
+     *  stands for it, scoped to the mutation that stored it. */
+    static final String UNTRACKED_ELEMENT_WITNESSES_FIELD =
+            "untrackedElementWitnesses";
+    static final String UNTRACKED_ELEMENT_WITNESS_KIND =
+            "UNTRACKED_ELEMENT_WITNESS";
     private static final String CASE_REGION_ID = "_caseRegionId";
     /** Whether this artifact may be accepted as the milestone result. */
     public static final String FINAL_STATUS = "finalStatus";
@@ -387,6 +393,8 @@ public final class ConcolicSmtComposer {
                 emitter.configuredSourceMaterializationLedger());
         manifest.add(MANUAL_SOURCE_MATERIALIZATION_FIELD,
                 emitter.manualSourceMaterializationLedger());
+        manifest.add(UNTRACKED_ELEMENT_WITNESSES_FIELD,
+                emitter.untrackedElementWitnessLedger());
         manifest.add(BoundedLoopComposition.MANIFEST_FIELD,
                 loops.manifest());
         manifest.add("guardedReadModel", guardedReads);
@@ -1818,6 +1826,14 @@ public final class ConcolicSmtComposer {
                 new LinkedHashMap<>();
         /** Concrete VM objects/arrays used only as execution witnesses. */
         private final Map<String, Term> structuralWitnesses =
+                new LinkedHashMap<>();
+        /** The mutation whose stored element is being lowered, if any. */
+        private JsonObject currentElementMutation;
+        /** Mutation node -> content digest, so one insertion is one name. */
+        private final Map<JsonObject, String> mutationDigests =
+                new java.util.IdentityHashMap<>();
+        /** Witness key -> ledger row, first-seen order. */
+        private final Map<String, JsonObject> untrackedElementWitnesses =
                 new LinkedHashMap<>();
         /** Case/observation selector -> replay scope whose VM ids it owns. */
         private final Map<String, String> executionScopesByCase =
@@ -4605,6 +4621,18 @@ public final class ConcolicSmtComposer {
                 }
 
                 @Override
+                public ContainerSmtCodec.Term element(
+                        JsonElement expression, JsonObject mutation) {
+                    JsonObject previous = currentElementMutation;
+                    currentElementMutation = mutation;
+                    try {
+                        return box(expression);
+                    } finally {
+                        currentElementMutation = previous;
+                    }
+                }
+
+                @Override
                 public ContainerSmtCodec.Term unbox(
                         ContainerSmtCodec.Term value,
                         String javaType) {
@@ -4743,6 +4771,11 @@ public final class ConcolicSmtComposer {
                     && VmExpressionIr
                     .isExecutionLocalStructuralWitness(raw)) {
                 return structuralWitness(raw, sort);
+            }
+            if (sort == Sort.REF && currentElementMutation != null
+                    && VmExpressionIr.isUntrackedReferencePlaceholder(raw)) {
+                return untrackedElementWitness(raw, javaType,
+                        currentElementMutation);
             }
             if (!declaredSymbolicRoot(raw)) {
                 refuse("SymbolicSourceAuthorityMissing:" + raw,
@@ -4926,6 +4959,85 @@ public final class ConcolicSmtComposer {
                                 entry.getKey(), 16),
                         text.toString());
             }
+        }
+
+        /**
+         * A witness for a reference the VM stored into a container without
+         * naming it.
+         *
+         * <p>{@code P_L'<class>'_} is the VM's placeholder for an operand
+         * oop no shadow names: the object exists in the recording and is
+         * not a root (nothing declared it, nothing the solver may move), so
+         * refusing it as a root with no authority refuses the whole
+         * composition for an identity the formula only has to keep
+         * distinct.  HDFS-17960 met it the moment {@code snapshotCounter}
+         * left the carrier set: the {@code Snapshot} inserted into
+         * {@code snapshotsByNames} used to be shadowed only because its
+         * {@code id} field had received a versioned value.</p>
+         *
+         * <p>The placeholder carries no oop id, so it cannot be the same
+         * witness everywhere it appears -- two distinct objects render the
+         * same text.  What is unique is the mutation that stored it: one
+         * insertion event, one element.  The witness is therefore an
+         * execution-local {@code structural_ref} scoped by the replay scope
+         * and the content digest of the mutation node, minted once per
+         * insertion and reused wherever that insertion is lowered.  It gets
+         * no distinctness constraints (nothing states which placeholders
+         * are one object), which over-approximates: a formula that needs
+         * two such elements equal or different can choose either.  The
+         * placeholder outside a mutation's element position keeps its
+         * refusal.</p>
+         */
+        private Term untrackedElementWitness(String raw, String javaType,
+                                             JsonObject mutation) {
+            String executionScope = executionScopesByCase.get(
+                    currentSymbolScope);
+            if (executionScope == null || executionScope.isEmpty()) {
+                refuse("StructuralWitnessExecutionScopeMissing:"
+                                + currentSymbolScope,
+                        "structural witness has no linked replay scope");
+                return unsupportedTerm(Sort.REF);
+            }
+            String digest = mutationDigests.get(mutation);
+            if (digest == null) {
+                digest = CanonicalJson.sha256(CanonicalJson.render(mutation));
+                mutationDigests.put(mutation, digest);
+            }
+            String key = executionScope + "\u0000untracked-element\u0000"
+                    + raw + "\u0000" + digest;
+            Term witness = structuralWitnesses.get(key);
+            if (witness == null) {
+                String name = smtSymbols.mint("structural_ref__"
+                        + scopeToken(executionScope) + "__" + smtName(raw)
+                        + "__", key, 12);
+                witness = Term.of(name, Sort.REF);
+                structuralWitnesses.put(key, witness);
+                declare(name, Sort.REF);
+                JsonObject row = new JsonObject();
+                row.addProperty("kind", UNTRACKED_ELEMENT_WITNESS_KIND);
+                row.addProperty("placeholder", raw);
+                row.addProperty("javaType", javaType);
+                row.addProperty("operation",
+                        optionalString(mutation, "operation"));
+                row.addProperty("shape", optionalString(mutation, "shape"));
+                row.addProperty("mutationDigest", digest);
+                row.addProperty("executionScope", executionScope);
+                row.addProperty("witness", name);
+                row.addProperty("uses", 0);
+                untrackedElementWitnesses.put(key, row);
+            }
+            JsonObject row = untrackedElementWitnesses.get(key);
+            row.addProperty("uses", row.get("uses").getAsInt() + 1);
+            return witness;
+        }
+
+        /** Every unnamed element witness, in first-seen order. */
+        private JsonArray untrackedElementWitnessLedger() {
+            JsonArray result = new JsonArray();
+            for (JsonObject row : untrackedElementWitnesses.values()) {
+                result.add(row.deepCopy());
+            }
+            return result;
         }
 
         /**
