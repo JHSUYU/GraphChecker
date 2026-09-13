@@ -1245,7 +1245,7 @@ public final class ClaimPolicy {
                     ConcolicSmtComposer.RECORDED_ROOT_VALUES);
             // A ledger row the composer already found two readings for
             // states the disagreement rather than a value.
-            observe(observed, term, optionalString(ledger,
+            observeAll(observed, term, optionalString(ledger,
                     ConcolicSmtComposer.RECORDED_VALUE_CONFLICT),
                     ConcolicSmtComposer.RECORDED_ROOT_VALUES);
             if (!term.isEmpty()) {
@@ -1262,7 +1262,7 @@ public final class ClaimPolicy {
             observe(observed, term, optionalString(source,
                     ConcolicSmtComposer.RECORDED_SOURCE_VALUE),
                     ConcolicSmtComposer.CONFIGURED_SOURCE_MATERIALIZATION_FIELD);
-            observe(observed, term, optionalString(source,
+            observeAll(observed, term, optionalString(source,
                     ConcolicSmtComposer.RECORDED_VALUE_CONFLICT),
                     ConcolicSmtComposer.CONFIGURED_SOURCE_MATERIALIZATION_FIELD);
             if (!term.isEmpty()) {
@@ -1311,7 +1311,29 @@ public final class ClaimPolicy {
             observed.put(term, readings);
         }
         String held = readings.get(value);
-        readings.put(value, held == null ? source : held + "+" + source);
+        // One source may state the same reading twice -- a ledger row that
+        // carries both a value and a conflict list including it. Naming it
+        // once is what makes the printed detail readable.
+        readings.put(value, held == null ? source
+                : held.contains(source) ? held : held + "+" + source);
+    }
+
+    /**
+     * Every reading a composer-side conflict row already holds.
+     *
+     * <p>{@link ConcolicSmtComposer#RECORDED_VALUE_CONFLICT} is the list of
+     * values two mints of one source disagreed on, comma separated. Read as
+     * one string it would print as a single made-up value.</p>
+     */
+    private static void observeAll(Map<String, Map<String, String>> observed,
+                                   String term, String values,
+                                   String source) {
+        if (values == null || values.isEmpty()) {
+            return;
+        }
+        for (String value : values.split(",")) {
+            observe(observed, term, value.trim(), source);
+        }
     }
 
     /** {@code false (recordedRootValues), true (runtimePlan.symbolize)}. */

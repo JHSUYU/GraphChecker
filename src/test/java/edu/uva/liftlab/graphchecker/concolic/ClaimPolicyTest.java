@@ -1093,6 +1093,9 @@ public class ClaimPolicyTest {
                 witnessFinding(claim, 0).get("verdict").getAsString());
         assertTrue(witnessFinding(claim, 0).get("narrative").getAsString()
                 .contains("ROTATION_RACE at MAP_STATE/100#-3"));
+        assertEquals(WitnessLegitimacy.ROTATION_RACE,
+                witnessFinding(claim, 0).get(WitnessLegitimacy.FINDING_KIND)
+                        .getAsString());
     }
 
     /**
@@ -1765,9 +1768,101 @@ public class ClaimPolicyTest {
                 accepted.get("narrative").getAsString().contains(
                         "every declared root at its recorded value ("
                         + ORDERED_SOURCE + " = false)"));
+        assertEquals(WitnessLegitimacy.RECORDED_FAILURE_EXPLAINED,
+                rootSpace.get("acceptedFindingKind").getAsString());
+        assertTrue(rootSpace.get("recordedFailureExplained").getAsBoolean());
+        assertEquals(WitnessLegitimacy.RECORDED_FAILURE_EXPLAINED,
+                accepted.get(WitnessLegitimacy.FINDING_KIND).getAsString());
         JsonObject marker = markerRow(claim);
         assertTrue(marker.get("polarityDecides").getAsBoolean());
         assertTrue(marker.get("reachesAtRecordedValue").getAsBoolean());
+    }
+
+    /**
+     * The same shape with the other polarity also satisfiable is not it.
+     *
+     * <p>{@link WitnessLegitimacy#RECORDED_FAILURE_EXPLAINED} says the chain
+     * shows the recording is root-determined, and a flip the target reaches
+     * anyway shows the opposite. Without the refutation the witness is a sat
+     * answer with nothing named behind it.</p>
+     */
+    @Test
+    public void aReproducedRecordingNeedsTheOtherPolarityRefuted() {
+        JsonObject claim = ClaimPolicy.decide(orderedManifest("false"),
+                orderedReach("sat", "sat"), noFlows());
+
+        assertEquals(ClaimPolicy.INCONCLUSIVE_PARTIAL,
+                claim.get("claim").getAsString());
+        assertFalse(claim.getAsJsonObject("rootSpace")
+                .get("recordedFailureExplained").getAsBoolean());
+        assertEquals("", claim.getAsJsonObject("rootSpace")
+                .get("acceptedFindingKind").getAsString());
+        assertNotNull(blocker(claim,
+                ClaimPolicy.FINDING_MECHANISM_UNNAMED));
+    }
+
+    /**
+     * A planted marker moved off what it recorded, with the formula sat.
+     *
+     * <p>The shape a fault-injection campaign claims, named as one of the
+     * four rather than left to a reader to infer from an unnamed mechanism
+     * list.</p>
+     */
+    @Test
+    public void aFlippedPlantedMarkerIsAMarkerFlippedFinding() {
+        JsonObject reach = markerReach(true, "-300000");
+        reach.getAsJsonArray("valuations").get(0).getAsJsonObject()
+                .addProperty("status", "unsat");
+
+        JsonObject claim = ClaimPolicy.decide(markerManifest(), reach,
+                noFlows());
+
+        assertEquals(ClaimPolicy.SAT_CANDIDATE,
+                claim.get("claim").getAsString());
+        assertEquals(WitnessLegitimacy.MARKER_FLIPPED,
+                claim.getAsJsonObject("rootSpace")
+                        .get("acceptedFindingKind").getAsString());
+        assertEquals(WitnessLegitimacy.MARKER_FLIPPED,
+                witnessFinding(claim, 1).get(WitnessLegitimacy.FINDING_KIND)
+                        .getAsString());
+        assertTrue(witnessFinding(claim, 1).get("narrative").getAsString()
+                .endsWith("finding: " + WitnessLegitimacy.MARKER_FLIPPED));
+    }
+
+    /**
+     * The composer's own disagreement row is read as a disagreement.
+     *
+     * <p>Two activations of one configured source that read different values
+     * used to drop the row back to stating nothing, which read downstream as
+     * "nobody recorded this" and defaulted. The row carries both values now,
+     * and the claim layer prints them.</p>
+     */
+    @Test
+    public void aComposerRecordedValueConflictBlocksTheClaim() {
+        JsonObject manifest = orderedManifest("false");
+        manifest.add(ConcolicSmtComposer.RECORDED_ROOT_VALUES, parseArray(
+                "[{\"solverTerm\":\"" + ORDERED_TERM + "\","
+                + "\"recordedValue\":\"false\",\"wallClock\":false,"
+                + "\"" + ConcolicSmtComposer.RECORDED_VALUE_CONFLICT
+                + "\":\"false,true\","
+                + "\"siteId\":\"" + ORDERED_FIELD + "\"}]"));
+
+        JsonObject claim = ClaimPolicy.decide(manifest,
+                orderedReach("sat", "unsat"), noFlows());
+
+        assertEquals(ClaimPolicy.INCONCLUSIVE_PARTIAL,
+                claim.get("claim").getAsString());
+        assertFalse(markerRow(claim).get("recordedPolarityStated")
+                .getAsBoolean());
+        String conflict = markerRow(claim).get("recordedValueConflict")
+                .getAsString();
+        assertTrue(conflict, conflict.contains("false ("
+                + ConcolicSmtComposer.RECORDED_ROOT_VALUES));
+        assertTrue(conflict, conflict.contains("true ("
+                + ConcolicSmtComposer.RECORDED_ROOT_VALUES + ")"));
+        assertTrue(blocker(claim,
+                ClaimPolicy.RECORDED_ROOT_VALUE_DISAGREEMENT)
+                .get("detail").getAsString().contains(ORDERED_SOURCE));
     }
 
     /**
