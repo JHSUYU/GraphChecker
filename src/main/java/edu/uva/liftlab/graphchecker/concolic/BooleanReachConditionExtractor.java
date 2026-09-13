@@ -53,21 +53,6 @@ public final class BooleanReachConditionExtractor {
     static final String FATAL_STATE_SELECTION = "fatalStateSelection";
     private static final String FATAL_STATE_SELECTION_KIND =
             "FATAL_READ_STATE_SELECTION";
-    private static final String FATAL_PATH_ASSERTION = ":named fatal_path";
-    private static final Pattern MERGED_BOUNDARY_SYMBOL =
-            Pattern.compile("merged_boundary__[A-Za-z0-9_]+");
-    /** The one equality that binds a boundary constant to a read's value. */
-    /**
-     * A merged boundary bound to one guarded read's value: either the plain
-     * equality, or the single-arm dispatch every merge is emitted as now
-     * that its one arm carries its own guard and the fall-through is the
-     * named unbound term.
-     */
-    private static final Pattern BOUNDARY_VALUE_BINDING = Pattern.compile(
-            "^\\(assert \\(= (merged_boundary__[A-Za-z0-9_]+) "
-            + "(?:(rf_value__[A-Za-z0-9_]+)"
-            + "|\\(ite [A-Za-z0-9_]+ (rf_value__[A-Za-z0-9_]+)"
-            + " unbound_boundary__[A-Za-z0-9_]+\\))\\)\\)$");
     /**
      * An unsat every probed attempt owed to the driver's own frontier.
      *
@@ -473,12 +458,6 @@ public final class BooleanReachConditionExtractor {
             gaps.add(COMPOSITION_NOT_ELIGIBLE);
         }
     }
-
-
-
-
-
-
 
 
     /** The Composer's single, internally consistent UNSAT closure claim. */
@@ -1670,10 +1649,6 @@ public final class BooleanReachConditionExtractor {
                 && (end >= line.length()
                 || !Character.isLetterOrDigit(line.charAt(end))
                 && line.charAt(end) != '_');
-    }
-
-    private static void addUnique(List<String> list, String value) {
-        if (!list.contains(value)) list.add(value);
     }
 
 

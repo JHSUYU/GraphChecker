@@ -160,34 +160,10 @@ public final class SymbolicPropagationClosure {
      * to DN is one chain and the walk follows it.</p>
      */
     public static final String BOUNDARY_DEPTH = "boundaryDepth";
-    public static final String INITIAL_SOURCE_CASE_PREFIX =
-            "INITIAL_SOURCE.";
 
     private SymbolicPropagationClosure() {
     }
 
-    /** Stable identity shape of a source case created from an INITIAL value. */
-    static boolean isInitialSourceCase(String owner, String region,
-                                       String occurrence) {
-        return owner != null && owner.equals(occurrence)
-                && hasInitialSourceDigest(owner)
-                && hasInitialSourceDigest(region);
-    }
-
-    private static boolean hasInitialSourceDigest(String value) {
-        if (value == null || !value.startsWith(INITIAL_SOURCE_CASE_PREFIX)
-                || value.length() != INITIAL_SOURCE_CASE_PREFIX.length()
-                + 64) {
-            return false;
-        }
-        for (int index = INITIAL_SOURCE_CASE_PREFIX.length();
-             index < value.length(); index++) {
-            char digit = value.charAt(index);
-            if (!((digit >= '0' && digit <= '9')
-                    || (digit >= 'a' && digit <= 'f'))) return false;
-        }
-        return true;
-    }
 
     /**
      * The stable family key one consumer boundary carries.

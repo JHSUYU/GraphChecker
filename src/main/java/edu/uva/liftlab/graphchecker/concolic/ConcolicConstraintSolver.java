@@ -314,22 +314,8 @@ public final class ConcolicConstraintSolver {
         private final Set<String> softAssertions = new LinkedHashSet<>();
         private final Set<String> unsupported = new LinkedHashSet<>();
         private final Set<String> controlledSymbols = new LinkedHashSet<>();
-        private final Set<String> additionalModelNames =
-                new LinkedHashSet<>();
         private final Set<String> javaIntRangeAssertions =
                 new LinkedHashSet<>();
-        private final Set<String> usedConsumerFamilies =
-                new LinkedHashSet<>();
-        private final Set<String> boundConsumerFamilies =
-                new LinkedHashSet<>();
-        private final Set<String> activeConsumerMerges =
-                new LinkedHashSet<>();
-        /** A family chooses a case only where its propagated value is used. */
-        private final Map<String, Set<String>> consumerFamilyActivations =
-                new LinkedHashMap<>();
-        private final Map<String, Set<String>> consumerFamilySelectors =
-                new LinkedHashMap<>();
-        private String currentReadActivationGuard = "true";
         private boolean usesJavaIntString;
         private Set<String> currentConstraintSymbols;
 
@@ -402,7 +388,7 @@ public final class ConcolicConstraintSolver {
                     return null;
                 }
                 if (!"false".equals(value.stringNullness)) {
-                    requireUnderCurrentGuard(
+                    assertions.add(
                             "(not " + value.stringNullness + ")");
                 }
             }
@@ -506,45 +492,6 @@ public final class ConcolicConstraintSolver {
         }
 
 
-
-        private String shareSemanticTerm(String text, Sort sort) {
-            if (text == null || text.isEmpty() || text.charAt(0) != '(') {
-                return text;
-            }
-            String identity = "CONSUMER_MERGE_TERM_V1\u0000"
-                    + sort.replayName() + "\u0000" + text;
-            String digest = sha256(identity);
-            SharedTermDefinition definition = sharedTerms.get(digest);
-            if (definition == null) {
-                definition = new SharedTermDefinition(
-                        smtSymbols.mintFromDigest(SHARED_TERM_PREFIX,
-                                digest, identity, 24),
-                        sort, text);
-                sharedTerms.put(digest, definition);
-            }
-            return definition.name;
-        }
-
-
-
-
-
-
-
-
-
-
-        private static String andTerms(List<String> terms) {
-            if (terms.isEmpty()) return "true";
-            if (terms.size() == 1) return terms.get(0);
-            return "(and " + String.join(" ", terms) + ")";
-        }
-
-        private static String orTerms(List<String> terms) {
-            if (terms.size() == 1) return terms.get(0);
-            return "(or " + String.join(" ", terms) + ")";
-        }
-
         /** Lowers the VM's read-time candidate snapshot directly. */
         @Override
         Term guardedReadTerm(JsonObject read, Sort expected,
@@ -560,28 +507,6 @@ public final class ConcolicConstraintSolver {
         }
 
 
-
-
-
-
-
-
-        private static String andGuard(String left, String right) {
-            if (left == null || left.isEmpty() || "true".equals(left)) {
-                return right == null || right.isEmpty() ? "true" : right;
-            }
-            if (right == null || right.isEmpty() || "true".equals(right)) {
-                return left;
-            }
-            if (left.equals(right)) return left;
-            return "(and " + left + " " + right + ")";
-        }
-
-        private void requireUnderCurrentGuard(String predicate) {
-            assertions.add("true".equals(currentReadActivationGuard)
-                    ? predicate : "(=> " + currentReadActivationGuard + " "
-                    + predicate + ")");
-        }
 
         @Override
         Term containerTerm(JsonObject expression, boolean field,
@@ -691,7 +616,7 @@ public final class ConcolicConstraintSolver {
 
                 @Override
                 public void require(String predicate) {
-                    requireUnderCurrentGuard(predicate);
+                    assertions.add(predicate);
                 }
 
                 @Override
@@ -835,7 +760,6 @@ public final class ConcolicConstraintSolver {
         private SymbolNames names(String raw) {
             return names.get(raw);
         }
-
 
 
         private void constrainIntegralInput(String name,
@@ -1265,7 +1189,6 @@ public final class ConcolicConstraintSolver {
                     }
                 }
             }
-            modelNames.addAll(additionalModelNames);
             Collections.sort(modelNames);
             if (!modelNames.isEmpty()) {
                 result.append("(get-value (");
