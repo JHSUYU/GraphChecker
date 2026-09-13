@@ -11,6 +11,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.Collections;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 /**
@@ -112,40 +113,52 @@ public class OccurrenceAddressIsNotARequestTest {
     }
 
     /**
-     * Two candidates under two requests are each the first of their own.
+     * Two activations under two requests are the first and the second.
      *
-     * <p>The planner counts activations per request; replay has to count the
-     * same population or the two ends disagree about which activation is the
-     * k-th.  Keyed on the planned request -- a constant per task -- every
-     * candidate fell in one bucket, so one arriving from another exchange
-     * consumed the planned occurrence's ordinal and replay reported
-     * invocation 2 where the plan said 1.</p>
+     * <p>Counting and matching use one scope.  Partitioning the count by the
+     * exchange while matching ignored it handed out ordinal 1 in several
+     * buckets, and any of them satisfied a planned ordinal of 1 -- on
+     * hdfs-17960 that matched the checkpoint region's planned occurrence to
+     * the process's first saveNamespace, which serialized no snapshots and
+     * decided none of the branches the goal needs.</p>
      */
     @Test
-    public void candidatesAreCountedInTheRequestTheyEntered() {
+    public void activationsAreCountedAcrossEveryRequest() {
         ConcolicTaskPlan.RuntimeTask task = task();
 
-        String here = task.invocationCounterKey(
-                "hdfs-17960/client#epoch0/request/record-ordered-deletes#1",
-                "record-ordered-deletes");
-        String there = task.invocationCounterKey(
-                "hdfs-17960/nn0#epoch1/request/restart-namenode#1",
-                "restart-namenode");
-        String alsoHere = task.invocationCounterKey(
-                "hdfs-17960/client#epoch0/request/record-ordered-deletes#1",
-                "record-ordered-deletes");
-
-        assertTrue("two exchanges are two buckets", !here.equals(there));
-        assertEquals("one exchange is one bucket", here, alsoHere);
+        assertEquals("one region on one node is one bucket",
+                task.invocationCounterKey(), task.invocationCounterKey());
+        assertFalse("the request is not in the bucket",
+                task.invocationCounterKey().contains("request"));
     }
 
-    /** The bucket is still the source, region and root of the occurrence. */
+    /** The bucket is the node, the region and the root, and nothing else. */
     @Test
-    public void theBucketIsStillTheOccurrencesOwnScope() {
+    public void theBucketIsNodeRegionAndRoot() {
         ConcolicTaskPlan.RuntimeTask task = task();
+        String bucket = task.invocationCounterKey();
 
-        assertTrue(task.invocationCounterKey("", "")
-                .startsWith(task.sourceKey));
+        assertTrue(bucket.startsWith(task.sourceKey));
+        assertTrue(bucket.contains(task.regionId));
+        assertTrue(bucket.contains(task.rootMethod));
+        assertEquals("node, region, root -- three parts", 3,
+                bucket.split("\n", -1).length);
+    }
+
+    /**
+     * The planned k-th occurrence is the k-th activation, not the first.
+     *
+     * <p>An ordinal is only an address if the same activation answers to it
+     * on both sides.  A plan that names activation 2 must not be satisfied
+     * by activation 1 because 1 was the first of some other bucket.</p>
+     */
+    @Test
+    public void aPlannedSecondOccurrenceIsNotTheFirstActivation() {
+        ConcolicTaskPlan.RuntimeTask task = task();
+        assertTrue("activation 1 answers the planned ordinal",
+                task.acceptsRootInvocation(1, false));
+        assertFalse("activation 2 does not",
+                task.acceptsRootInvocation(2, false));
     }
 
     private static ConcolicTaskPlan.RuntimeTask task() {

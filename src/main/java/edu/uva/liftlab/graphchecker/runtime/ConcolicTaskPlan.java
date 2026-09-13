@@ -312,6 +312,17 @@ final class ConcolicTaskPlan {
                     receiver, rootArguments, threadName)) {
                 continue;
             }
+            // Counted before anything else may refuse it: the planner
+            // counted every observed activation of this region, so a
+            // candidate the replay declines for another reason still
+            // occupies the ordinal the recording gave it.  Filtering first
+            // would renumber the activations after it.
+            String scope = task.invocationCounterKey();
+            if (!actualOrdinalByScope.containsKey(scope)) {
+                int ordinal = invocationOrdinals.getOrDefault(scope, 0) + 1;
+                invocationOrdinals.put(scope, ordinal);
+                actualOrdinalByScope.put(scope, ordinal);
+            }
             String sourceMismatch = sourceAdmissionMismatch(task,
                     registeredReceiverSource, context);
             if (!sourceMismatch.isEmpty()) {
@@ -334,13 +345,6 @@ final class ConcolicTaskPlan {
                     registeredReceiverSource, context)) {
                 continue;
             }
-            String scope = task.invocationCounterKey(context.requestKey, context.requestApi);
-            if (!actualOrdinalByScope.containsKey(scope)) {
-                int ordinal = invocationOrdinals.getOrDefault(scope, 0)
-                        + 1;
-                invocationOrdinals.put(scope, ordinal);
-                actualOrdinalByScope.put(scope, ordinal);
-            }
         }
         Set<String> admitted = new LinkedHashSet<>();
         for (RuntimeTask task : tasks) {
@@ -357,7 +361,7 @@ final class ConcolicTaskPlan {
                 continue;
             }
             Integer ordinal = actualOrdinalByScope.get(
-                    task.invocationCounterKey(context.requestKey, context.requestApi));
+                    task.invocationCounterKey());
             boolean exactOutgoingAddress =
                     mayDeferMissingContextToOutgoingAnchor(task,
                             registeredReceiverSource, context);
@@ -409,6 +413,17 @@ final class ConcolicTaskPlan {
                     receiver, rootArguments, threadName)) {
                 continue;
             }
+            // Counted before anything else may refuse it: the planner
+            // counted every observed activation of this region, so a
+            // candidate the replay declines for another reason still
+            // occupies the ordinal the recording gave it.  Filtering first
+            // would renumber the activations after it.
+            String scope = task.invocationCounterKey();
+            if (!actualOrdinalByScope.containsKey(scope)) {
+                int ordinal = invocationOrdinals.getOrDefault(scope, 0) + 1;
+                invocationOrdinals.put(scope, ordinal);
+                actualOrdinalByScope.put(scope, ordinal);
+            }
             String sourceMismatch = sourceAdmissionMismatch(task,
                     registeredReceiverSource, context);
             if (!sourceMismatch.isEmpty()) {
@@ -430,13 +445,6 @@ final class ConcolicTaskPlan {
             if (mayDeferMissingContextToOutgoingAnchor(task,
                     registeredReceiverSource, context)) {
                 continue;
-            }
-            String scope = task.invocationCounterKey(context.requestKey, context.requestApi);
-            if (!actualOrdinalByScope.containsKey(scope)) {
-                int ordinal = invocationOrdinals.getOrDefault(scope, 0)
-                        + 1;
-                invocationOrdinals.put(scope, ordinal);
-                actualOrdinalByScope.put(scope, ordinal);
             }
         }
 
@@ -461,7 +469,7 @@ final class ConcolicTaskPlan {
             if (!sourceAdmissionMismatch(task, registeredReceiverSource,
                     context).isEmpty()) continue;
             Integer actualOrdinal = actualOrdinalByScope.get(
-                    task.invocationCounterKey(context.requestKey, context.requestApi));
+                    task.invocationCounterKey());
             boolean exactOutgoingAddress =
                     mayDeferMissingContextToOutgoingAnchor(task,
                             registeredReceiverSource, context);
@@ -2029,42 +2037,32 @@ final class ConcolicTaskPlan {
         }
 
         /**
-         * Counter scope for one candidate, in the request it actually
-         * entered.
+         * The bucket this region's activations are counted in.
          *
-         * <p>The planner counts activations per request -- every observed
-         * activation of this source, region and root, partitioned by the
-         * exchange it was reached under
-         * ({@code RuntimeRegionPlanner.replayInvocationScope}, counted at
-         * {@code RuntimeRegionPlanner:1058}).  Replay has to count the same
-         * population or the two ends disagree about which activation is the
-         * k-th.</p>
+         * <p>An occurrence is the k-th activation of this region on this
+         * node and epoch.  Counting and matching have to use the same scope
+         * or the ordinal means one thing when the plan writes it and
+         * another when the replay checks it -- the planner counts every
+         * observed activation of the region ({@code
+         * RuntimeRegionPlanner.replayInvocationScope}), so the replay counts
+         * every compatible activation of it too.</p>
          *
-         * <p>It used to key on the <em>planned</em> request, which is a
-         * constant per task, so every candidate fell in one bucket whatever
-         * request it entered under.  That was harmless only while a request
-         * mismatch refused the candidate before it reached the counter; once
-         * matching stopped consulting the request, a candidate from another
-         * exchange consumed the planned occurrence's ordinal and the replay
-         * reported invocation 2 where the plan said 1.  Keying on the
-         * observed request puts each candidate in the bucket the recording
-         * counted it in.</p>
-         *
-         * <p>The request is still not identity: it decides which counting
-         * bucket a candidate falls in, exactly as it did in the recording,
-         * and never whether the candidate matches.  One counting rule with
-         * no request in it at all is the repair, and it belongs with the
-         * shared occurrence address -- see
-         * {@code $SP_NEW/d-runtime/IDENTITY_DESIGN.md}.</p>
+         * <p>The request is in neither scope.  It used to be in both, which
+         * was consistent; then matching stopped comparing it while counting
+         * still partitioned by it, and "ordinal 1 of the bucket this
+         * candidate happens to be in" satisfied "ordinal 1 of the bucket the
+         * plan meant".  On hdfs-17960 that matched the checkpoint region's
+         * planned occurrence to the process's first saveNamespace, which
+         * serialized no snapshots and decided none of the branches the goal
+         * needs.  Which exchange an activation was reached under is
+         * information about it, and information does not partition a
+         * count.</p>
          */
-        String invocationCounterKey(String observedRequestKey,
-                                    String observedRequestApi) {
-            StringBuilder key = new StringBuilder(sourceKey)
+        String invocationCounterKey() {
+            return new StringBuilder(sourceKey)
                     .append('\n').append(regionId)
                     .append('\n').append(rootMethod)
-                    .append('\n').append(safe(observedRequestKey))
-                    .append('\n').append(safe(observedRequestApi));
-            return key.toString();
+                    .toString();
         }
 
         /**

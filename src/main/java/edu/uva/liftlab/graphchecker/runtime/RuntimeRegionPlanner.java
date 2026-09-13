@@ -1056,8 +1056,8 @@ final class RuntimeRegionPlanner {
             SourceRef source = semanticContext.source != null
                     ? semanticContext.source : rootSource;
             int replayInvocationOrdinal = replayInvocationOrdinals.merge(
-                    replayInvocationScope(regionId, root, rootSource,
-                            semanticContext), 1, Integer::sum);
+                    replayInvocationScope(regionId, root, rootSource),
+                    1, Integer::sum);
             // The region finalizer mints the one activation identity of
             // the pipeline and stamps it onto this seed; an activation it
             // did not retain carries none.
@@ -2448,15 +2448,24 @@ final class RuntimeRegionPlanner {
     }
 
     /** Stable counter scope used to address the same invocation at replay. */
+    /**
+     * The bucket this region's activations are counted in.
+     *
+     * <p>An occurrence is the k-th activation of this region on this node
+     * and epoch, over every activation the recording holds.  The replay
+     * counts the same way ({@code ConcolicTaskPlan.invocationCounterKey});
+     * counting and matching have to use one scope or the ordinal means one
+     * thing when it is written and another when it is checked.</p>
+     *
+     * <p>The request was in this key and in the replay's.  That was
+     * consistent while matching compared it too; once matching stopped, a
+     * count partitioned by request handed out ordinal 1 in several buckets
+     * and any of them satisfied a planned ordinal of 1.</p>
+     */
     private static String replayInvocationScope(
-            String regionId, MethodEvent root, SourceRef source,
-            MethodEvent semanticContext) {
+            String regionId, MethodEvent root, SourceRef source) {
         return source.key() + "\u0000" + safe(regionId) + "\u0000"
-                + safe(root == null ? "" : root.method) + "\u0000"
-                + safe(semanticContext == null
-                ? "" : semanticContext.requestKey) + "\u0000"
-                + safe(semanticContext == null
-                ? "" : semanticContext.requestApi);
+                + safe(root == null ? "" : root.method);
     }
 
 
