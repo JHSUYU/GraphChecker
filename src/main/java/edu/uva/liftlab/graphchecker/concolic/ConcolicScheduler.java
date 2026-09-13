@@ -2366,6 +2366,34 @@ public final class ConcolicScheduler {
          * lone members: a root the dataflow graph has no cell for cannot
          * state what it reaches, and keeping it would make the slice claim
          * the root's own read is the whole of its influence.</p>
+         *
+         * <p><b>Every edge kind is walked, control edges included.</b>  The
+         * refined graph states a container mutation's guard as an edge from
+         * the deciding value to the mutated <em>location</em> -- a
+         * {@code heap_mutation_path_guard} or
+         * {@code receiver_field_effect_path_guard} whose {@code toCell} is
+         * the field and whose {@code guardedMutations} /
+         * {@code guardedEffects} name the mutating site.  Walking it here,
+         * and backwards in {@link #reachingFatalRead}, is what puts a value
+         * that decides whether a container is mutated on the chain of every
+         * read of that container: {@code removeExpiredKeys}'s
+         * {@code key.getExpiryDate() &lt; now} reaches
+         * {@code BlockTokenSecretManager#allKeys} over exactly such an edge,
+         * and the map's readers reach the expiry date back over it.  No edge
+         * kind is filtered, so a guard the refined graph states is never a
+         * guard this slice drops.</p>
+         *
+         * <p><b>And no edge is filtered by what the recording executed.</b>
+         * The refined graph is the static candidate graph annotated with one
+         * execution's bindings, not narrowed by them: a site the run never
+         * reached keeps its edges and is stamped
+         * {@code runtimeObserved: false}.  This walk reads {@code fromCell}
+         * and {@code toCell} only, so root dependence is what the
+         * <em>program</em> lets a root reach, not what one recording
+         * happened to take -- which is what lets a campaign be recorded on a
+         * healthy configuration and still plan the carriers of the branch a
+         * flipped root will take.  Consulting {@code runtimeObserved} here
+         * would make the plan a function of the recording's luck.</p>
          */
         static RootDependenceSlice forward(
                 List<JsonObject> refinedGraph, Set<String> rootCells) {

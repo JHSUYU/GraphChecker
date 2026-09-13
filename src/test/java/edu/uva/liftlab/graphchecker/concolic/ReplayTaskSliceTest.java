@@ -215,6 +215,77 @@ public class ReplayTaskSliceTest {
     }
 
     /**
+     * A value that decides whether a container is mutated is on the chain of
+     * every read of that container.
+     *
+     * <p>The graph is {@code removeExpiredKeys} in miniature: a root moves
+     * {@code v}; {@code if (v &lt; c) container.remove(k)} states the guard
+     * as an edge from {@code v} to the container's own location -- which is
+     * how the refined graph spells {@code heap_mutation_path_guard} -- and
+     * the failing branch reads {@code container.get(k)}.  No value edge runs
+     * from {@code v} to the fatal read: the only path is the guard.  The
+     * occurrence that writes {@code v}, and the one that reads it, must both
+     * replay, or the arms of the fatal read cannot say whether the removal
+     * happened.</p>
+     */
+    @Test
+    public void aGuardOfAContainerMutationIsOnTheSlice() throws Exception {
+        String guarded = "<S: java.util.Map container>";
+        String guardedKey = "S#container";
+        String decided = "<S: void sweep()>::$z1";
+        String writer = occurrence("REGION.expiry");
+        String reader = occurrence("REGION.sweep");
+        List<JsonObject> graph = Arrays.asList(
+                // root -> v, and v decides the remove on the container.
+                edge(ROOT, CARRIER, "HEAP_WRITE"),
+                edge(CARRIER, decided, "HEAP_READ"),
+                guardOfMutation(decided, guarded),
+                // the fatal read is a lookup on that same container.
+                edge(guarded, FATAL_READ, "HEAP_READ"));
+        List<RegionInstancePlan> plans = new ArrayList<>();
+        plans.add(targetPlan(TARGET, edges()));
+        plans.add(plan(ROOT_SITE, "REGION_PATH_CLOSURE",
+                actions(fieldRead(ROOT)),
+                edges(wire(ROOT_SITE, writer))));
+        // The occurrence that writes v: its own read is the guard value, and
+        // the plan gives it one shared-location flow onward.
+        plans.add(plan(writer, "REGION_PATH_CLOSURE",
+                actions(fieldRead(CARRIER)),
+                edges(sharedFlow(writer, reader, CARRIER, CARRIER_KEY))));
+        // The occurrence that mutates the container under the guard.  No
+        // plan edge points into it -- the delivery was attributed elsewhere
+        // -- so only the refined graph can say it carries the root.
+        plans.add(plan(reader, "REGION_PATH_CLOSURE",
+                actions(fieldRead(CARRIER)),
+                edges(sharedFlow(reader, TARGET, guarded, guardedKey))));
+
+        ConcolicScheduler.SymbolicInputSelection selection = selection();
+        selection.seedCarrierSlice(graph, proposals(fieldRead(ROOT)));
+        ReplayTaskSlice slice = ReplayTaskSlice.decide(plans, selection,
+                graph, 0);
+
+        assertTrue("the guard reaches the fatal read over the mutation it "
+                + "decides", selection.carrierSlice()
+                .reachingFatalRead(graph, singleton(FATAL_READ))
+                .reachesLocation(guardedKey, null));
+        assertTrue("the guard value is on the slice",
+                selection.carrierSlice()
+                        .reachingFatalRead(graph, singleton(FATAL_READ))
+                        .reachesLocation(CARRIER_KEY, null));
+        assertTrue("the writer of the guard value replays",
+                slice.keeps(writer));
+        assertTrue("so does the occurrence whose mutation it decides",
+                slice.keeps(reader));
+        assertEquals(reasons(ReplayTaskSlice.ROOT_DEPENDENT_FLOW,
+                        ReplayTaskSlice.CARRIER_WRITER),
+                slice.reasons(writer));
+        assertEquals(reasons(ReplayTaskSlice.ROOT_DEPENDENT_FLOW,
+                        ReplayTaskSlice.FATAL_READ_WRITER,
+                        ReplayTaskSlice.CARRIER_WRITER),
+                slice.reasons(reader));
+    }
+
+    /**
      * The expected-shape hint is read against, never enforced: a schedule
      * over it is published in full, because a campaign bigger than its
      * author expected is a fact to read, not tasks to drop at random.
@@ -476,6 +547,30 @@ public class ReplayTaskSliceTest {
         JsonArray actions = new JsonArray();
         for (JsonObject action : proposed) actions.add(action.deepCopy());
         return actions;
+    }
+
+    /**
+     * The refined graph's spelling of "this value decides whether that
+     * location is mutated": a GUARD edge into the mutated location, naming
+     * the guard site and the mutating site it controls.
+     */
+    private static JsonObject guardOfMutation(String guard, String location) {
+        JsonObject row = edge(guard, location, "GUARD");
+        row.addProperty("kind", "heap_mutation_path_guard");
+        row.addProperty("guardSiteId", "<S: void sweep()>#u7");
+        row.addProperty("guardedMutationSiteId", "<S: void sweep()>#u16");
+        JsonObject mutation = new JsonObject();
+        mutation.addProperty("guardSiteId", "<S: void sweep()>#u7");
+        mutation.addProperty("guardedMutationSiteId", "<S: void sweep()>#u16");
+        mutation.addProperty("guardedMutationUnit", "remove(k)");
+        JsonArray mutations = new JsonArray();
+        mutations.add(mutation);
+        row.add("guardedMutations", mutations);
+        return row;
+    }
+
+    private static Set<String> singleton(String value) {
+        return new LinkedHashSet<>(Collections.singletonList(value));
     }
 
     private static JsonObject edge(String from, String to, String kind) {
