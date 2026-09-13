@@ -24,6 +24,7 @@ copy_family() {
 }
 
 copy_family "${common}" org/apache/hadoop/ipc/CausynthMessagePropagation
+copy_family "${common}" org/apache/hadoop/ipc/CausynthSymbolicSource
 copy_family "${common}" org/apache/hadoop/security/token/delegation/DelegationKey
 copy_family "${client}" org/apache/hadoop/hdfs/DFSClient
 copy_family "${client}" org/apache/hadoop/hdfs/FileChecksumHelper
