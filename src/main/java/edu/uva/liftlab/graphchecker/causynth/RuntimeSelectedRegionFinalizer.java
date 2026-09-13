@@ -53,6 +53,25 @@ public final class RuntimeSelectedRegionFinalizer {
      */
     public static final String DEMAND_SCOPE = "demandScopeMethods";
 
+    /** Row kind of a gap this finalizer raised about its own ports. */
+    public static final String PLAN_GAP_KIND = "RUNTIME_PLAN_GAP";
+    /**
+     * One static site demanded more activation-local accesses than
+     * {@link #MAX_RETAINED_SITE_ACCESSES}, so the port below it keeps only
+     * the plain resource default.  The refusal string for this has been
+     * computed since the bound existed; until now it was computed and
+     * discarded, which is the failure design point 5 forbids -- a javadoc
+     * asserting a reporting path that did not exist.
+     */
+    public static final String BOUND_INSUFFICIENT = "BOUND_INSUFFICIENT";
+    /**
+     * An accessor-return stream reached
+     * {@link LoopBoundPolicy#SYMBOLIC_CONTAINER_SNAPSHOT_CAPACITY}, so the
+     * reads after it were never minted as ports at all.
+     */
+    public static final String SNAPSHOT_CAPACITY_REACHED =
+            "SYMBOLIC_CONTAINER_SNAPSHOT_CAPACITY_REACHED";
+
     /**
      * Existing planner admission vocabulary for a bounded state writer.  Why
      * this activation is in the plan at all, when it is there for anything
@@ -259,7 +278,7 @@ public final class RuntimeSelectedRegionFinalizer {
                 branchOrder);
         Set<String> demandedFields = failureRelevantFields(program);
         List<Map<String, Object>> runtimeFieldFlows = fieldFlows(
-                program.regions, demandedFields);
+                program.regions, demandedFields, program.planGaps);
         program.regionEdges.addAll(runtimeFieldFlows);
         stampEdgeOccurrences(program.regionEdges,
                 occurrenceByRecordedRootCall);
@@ -290,7 +309,8 @@ public final class RuntimeSelectedRegionFinalizer {
         declareCommunicationPorts(program, cutPorts);
         canonicalizeRegionEdges(program);
         return new Result(program.regions, program.regionEdges,
-                new ArrayList<>(program.demandPruned.values()));
+                new ArrayList<>(program.demandPruned.values()),
+                program.planGaps);
     }
 
     /** The edge id is the canonical semantic identity. */
@@ -2115,11 +2135,11 @@ public final class RuntimeSelectedRegionFinalizer {
             region.put("symbolicInputs", filterPorts(
                     rows(region.get("symbolicInputs")),
                     occurrences, false, walk.demandedInputs,
-                    fatalPrefixCutoffs));
+                    fatalPrefixCutoffs, program.planGaps));
             region.put("outputs", filterPorts(
                     rows(region.get("outputs")),
                     occurrences, true, walk.demandedOutputs,
-                    fatalPrefixCutoffs));
+                    fatalPrefixCutoffs, program.planGaps));
         }
     }
 
@@ -2127,7 +2147,8 @@ public final class RuntimeSelectedRegionFinalizer {
             List<Map<String, Object>> ports, Set<String> occurrences,
             boolean output,
             Set<String> demandedPorts,
-            Map<String, Long> fatalPrefixCutoffs)
+            Map<String, Long> fatalPrefixCutoffs,
+            List<Map<String, Object>> gaps)
             throws IOException {
         List<Map<String, Object>> retained = new ArrayList<>();
         for (Map<String, Object> port : ports) {
@@ -2147,7 +2168,7 @@ public final class RuntimeSelectedRegionFinalizer {
                     selected.get("dependencyRole"))) {
                 trimFatalPrefixAccesses(selected, cutoff);
             }
-            retainRuntimeAccesses(selected, demand);
+            retainRuntimeAccesses(selected, demand, gaps);
             retained.add(selected);
         }
         return retained;
@@ -2168,10 +2189,11 @@ public final class RuntimeSelectedRegionFinalizer {
 
     /** Keeps the bounded occurrence-local accesses of one retained port. */
     private static void retainRuntimeAccesses(
-            Map<String, Object> port, String demand) throws IOException {
+            Map<String, Object> port, String demand,
+            List<Map<String, Object>> gaps) throws IOException {
         if (!"HEAP".equals(text(port.get("transportKind")))) return;
         List<Map<String, Object>> accesses = boundedRuntimeAccesses(port,
-                NO_ACCESS_DEMAND);
+                NO_ACCESS_DEMAND, gaps);
         if (accesses.isEmpty()) {
             throw new IOException("demanded heap port has no runtime access: "
                     + demand);
@@ -2708,6 +2730,19 @@ public final class RuntimeSelectedRegionFinalizer {
                         stream, 0);
                 if (retained >= LoopBoundPolicy
                         .SYMBOLIC_CONTAINER_SNAPSHOT_CAPACITY) {
+                    // Reads past the capacity were never minted as ports, so
+                    // the container this accessor returns is described by its
+                    // first N observations and nothing states that the rest
+                    // exist.
+                    planGap(program.planGaps, SNAPSHOT_CAPACITY_REACHED,
+                            regionId + "\n" + SiteId.of(caller, unitIndex)
+                                    + "\n" + field,
+                            "an accessor-return stream reached the "
+                                    + LoopBoundPolicy
+                                            .SYMBOLIC_CONTAINER_SNAPSHOT_CAPACITY
+                                    + "-observation container snapshot"
+                                    + " capacity, so its later reads were"
+                                    + " never minted as ports");
                     continue;
                 }
                 retainedByActivationStream.put(stream, retained + 1);
@@ -3368,14 +3403,16 @@ public final class RuntimeSelectedRegionFinalizer {
     /** Every writer the trace observed for each demanded shared-field read. */
     static List<Map<String, Object>> fieldFlows(
             List<Map<String, Object>> regions,
-            Set<String> demandedFields) throws IOException {
+            Set<String> demandedFields,
+            List<Map<String, Object>> gaps) throws IOException {
         // Reads state the location demand. Every bounded write to that exact
         // receiver and leaf remains a replay candidate; concrete trace order
         // never chooses a writer for the symbolic read.
         List<BoundPort> reads = new ArrayList<>();
         for (Map<String, Object> region : regions) {
             collectPorts(reads, text(region.get("regionId")),
-                    rows(region.get("symbolicInputs")), NO_ACCESS_DEMAND);
+                    rows(region.get("symbolicInputs")), NO_ACCESS_DEMAND,
+                    gaps);
         }
         reads.removeIf(port -> !demandedFields.contains(
                 port.leafDeclaration()));
@@ -3383,7 +3420,7 @@ public final class RuntimeSelectedRegionFinalizer {
         List<BoundPort> writes = new ArrayList<>();
         for (Map<String, Object> region : regions) {
             collectPorts(writes, text(region.get("regionId")),
-                    rows(region.get("outputs")), demand);
+                    rows(region.get("outputs")), demand, gaps);
         }
         Map<String, List<BoundPort>> writesByReceiverAndField =
                 new LinkedHashMap<>();
@@ -3571,14 +3608,15 @@ public final class RuntimeSelectedRegionFinalizer {
 
     private static void collectPorts(List<BoundPort> target, String region,
                                      List<Map<String, Object>> ports,
-                                     RuntimeAccessDemand demand)
+                                     RuntimeAccessDemand demand,
+                                     List<Map<String, Object>> gaps)
             throws IOException {
         for (Map<String, Object> port : ports) {
             if (!causalHeapPort(port)) {
                 continue;
             }
             List<Map<String, Object>> accesses = boundedRuntimeAccesses(
-                    port, demand);
+                    port, demand, gaps);
             if (accesses.isEmpty()) {
                 accesses = Collections.singletonList(port);
             }
@@ -3669,8 +3707,35 @@ public final class RuntimeSelectedRegionFinalizer {
      * travels with the artifact instead of ending the whole refinement over
      * one hot site.
      */
+    /**
+     * Records one finalizer gap, once per (code, subject).
+     *
+     * <p>{@code gaps} may be null where a caller builds ports outside a
+     * finalize pass; the two truncations below both run inside one, so in
+     * practice every raised gap reaches
+     * {@link edu.uva.liftlab.graphchecker.contract.GapLedger}.</p>
+     */
+    private static void planGap(List<Map<String, Object>> gaps, String code,
+                                String subject, String detail) {
+        if (gaps == null) return;
+        for (Map<String, Object> existing : gaps) {
+            if (code.equals(text(existing.get("code")))
+                    && subject.equals(text(existing.get("subject")))) {
+                return;
+            }
+        }
+        Map<String, Object> row = new LinkedHashMap<>();
+        row.put("schemaVersion", 1);
+        row.put("kind", PLAN_GAP_KIND);
+        row.put("code", code);
+        row.put("subject", subject);
+        row.put("detail", detail);
+        gaps.add(row);
+    }
+
     private static List<Map<String, Object>> boundedRuntimeAccesses(
-            Map<String, Object> port, RuntimeAccessDemand demand)
+            Map<String, Object> port, RuntimeAccessDemand demand,
+            List<Map<String, Object>> gaps)
             throws IOException {
         List<Map<String, Object>> accesses = new ArrayList<>(
                 rows(port.get("runtimeAccesses")));
@@ -3695,9 +3760,15 @@ public final class RuntimeSelectedRegionFinalizer {
             retained.put(site, kept);
             if (kept > MAX_RETAINED_SITE_ACCESSES) {
                 if (refusal.isEmpty()) {
-                    refusal = "BOUND_INSUFFICIENT: static site " + site
+                    refusal = "static site " + site
                             + " demands more than " + MAX_RETAINED_SITE_ACCESSES
-                            + " activation-local accesses";
+                            + " activation-local accesses, so this port keeps"
+                            + " only the "
+                            + LoopBoundPolicy.MAX_LOOP_BODY_ITERATIONS
+                            + "-access resource default and the accesses"
+                            + " above it are invisible to every later stage";
+                    planGap(gaps, BOUND_INSUFFICIENT,
+                            text(port.get("portId")) + "\n" + site, refusal);
                 }
                 continue;
             }
@@ -4351,12 +4422,23 @@ public final class RuntimeSelectedRegionFinalizer {
          * so a pruned-but-needed location can be named after the fact.
          */
         public final List<Map<String, Object>> demandPruned;
+        /**
+         * Gaps this pass raised about its own ports.  Unlike
+         * {@link #demandPruned} these are not telemetry: every one of them
+         * says a recorded access or a recorded container observation was
+         * dropped, which no later stage can see, so they travel into the
+         * runtime plan artifact and are classed by
+         * {@link edu.uva.liftlab.graphchecker.contract.GapLedger}.
+         */
+        public final List<Map<String, Object>> gaps;
         private Result(List<Map<String, Object>> regions,
                        List<Map<String, Object>> regionEdges,
-                       List<Map<String, Object>> demandPruned) {
+                       List<Map<String, Object>> demandPruned,
+                       List<Map<String, Object>> gaps) {
             this.regions = regions;
             this.regionEdges = regionEdges;
             this.demandPruned = demandPruned;
+            this.gaps = gaps;
         }
     }
 }

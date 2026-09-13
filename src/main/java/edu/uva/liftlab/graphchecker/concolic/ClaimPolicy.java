@@ -7,6 +7,8 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalInteger;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalLongInteger;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
 
+import edu.uva.liftlab.graphchecker.contract.GapLedger;
+
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
@@ -2201,13 +2203,29 @@ public final class ClaimPolicy {
                             + firstNonEmpty(finalStatus, "none")
                             + " and refused this composition"));
         }
+        // One ledger classes every gap, wherever it was raised.  The
+        // composition used to publish four gap arrays this decision never
+        // opened -- its own, the bounded-loop model's, the propagation
+        // closure's and the fault-control closure's -- so a loop nobody
+        // bounded or a read the marker starved could sit inside an accepted
+        // formula. GapLedger.blocking() is the same table run_engine.sh
+        // partitions gaps.json with, and an unregistered code is blocking in
+        // both.
         Set<String> hardGaps = new LinkedHashSet<>();
         for (JsonElement refusal : array(manifest, "finalStatusRefusals")) {
             hardGaps.add("COMPOSE/" + code(refusal));
         }
-        for (JsonElement gap : array(reach, "gaps")) {
-            hardGaps.add("SOLVE/" + code(gap));
-        }
+        collectBlocking(hardGaps, "COMPOSE",
+                array(manifest, "gaps"));
+        collectBlocking(hardGaps, "COMPOSE",
+                array(object(manifest,
+                        BoundedLoopComposition.MANIFEST_FIELD), "gaps"));
+        collectBlocking(hardGaps, "COMPOSE",
+                array(manifest, "symbolicPropagationGaps"));
+        collectBlocking(hardGaps, "COMPOSE",
+                array(manifest,
+                        ConcolicSmtComposer.FAULT_CONTROL_GAPS_FIELD));
+        collectBlocking(hardGaps, "SOLVE", array(reach, "gaps"));
         if (!hardGaps.isEmpty()) {
             blockers.add(blocker(COMPOSITION_GAPS_UNRESOLVED,
                     String.valueOf(hardGaps.size()),
@@ -2938,6 +2956,22 @@ public final class ClaimPolicy {
         row.addProperty("subject", subject == null ? "" : subject);
         row.addProperty("detail", detail);
         return row;
+    }
+
+    /**
+     * Adds every blocking gap row of {@code rows} to {@code hardGaps}.
+     *
+     * <p>The class comes from {@link GapLedger}, which is fail-closed: a code
+     * nobody registered is blocking, so a new gap withholds a claim until
+     * somebody states why it cannot break a chain.</p>
+     */
+    private static void collectBlocking(Set<String> hardGaps, String stage,
+                                        JsonArray rows) {
+        for (JsonElement row : rows) {
+            String code = code(row);
+            if (code.isEmpty() || !GapLedger.blocking(code)) continue;
+            hardGaps.add(stage + "/" + code);
+        }
     }
 
     private static String code(JsonElement element) {

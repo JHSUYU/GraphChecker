@@ -31,12 +31,7 @@ final class CausynthTargetResolver {
                 config.get("causynth_output_dir"),
                 "causynth-output/seed-backward"))
                 .toAbsolutePath().normalize();
-        String scope = firstNonBlank(
-                System.getProperty("causynth.analysis.scope"),
-                config.get("causynth_analysis_scope"),
-                "");
-        return new CausynthTargetContext(output, exceptionTargetId,
-                null, scope);
+        return new CausynthTargetContext(output, exceptionTargetId, null);
     }
 
     private static Map<String, String> readConfig(String configPath)

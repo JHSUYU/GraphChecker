@@ -21,6 +21,42 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
 
 /** Scheduled work for one causal-skeleton region occurrence. */
 public final class ExecutionTask extends PlanRow {
+    /**
+     * How many tasks one campaign may contain.
+     *
+     * <p>A campaign has to be bounded to be a campaign: the instrumentation
+     * pass rewrites every row and the runtime admits every row, so an
+     * unbounded plan is a runaway workload rather than an experiment, and it
+     * is refused by name instead of being started.</p>
+     *
+     * <p>The bound lives here because both ends of the plan check it -- the
+     * Soot pass before the workload runs and the replay JVM as it loads the
+     * same file -- and they were checking two copies of one constant against
+     * one property name, with two copies of the parse.</p>
+     */
+    public static final String MAX_TASKS_PROPERTY =
+            "causynth.concolic.campaign.max.tasks";
+    public static final int DEFAULT_MAX_TASKS = 64;
+
+    /** The declared campaign bound, or {@link #DEFAULT_MAX_TASKS}. */
+    public static int maxCampaignTasks() {
+        String configured = System.getProperty(MAX_TASKS_PROPERTY);
+        configured = configured == null ? "" : configured.trim();
+        if (configured.isEmpty()) return DEFAULT_MAX_TASKS;
+        int value;
+        try {
+            value = Integer.parseInt(configured);
+        } catch (NumberFormatException malformed) {
+            throw new IllegalStateException("malformed plan: "
+                    + MAX_TASKS_PROPERTY + " must be a number");
+        }
+        if (value <= 0) {
+            throw new IllegalStateException("malformed plan: "
+                    + MAX_TASKS_PROPERTY + " must be positive");
+        }
+        return value;
+    }
+
     /** Member a scheduler declares this task's symbolic carriers in. */
     public static final String SHARED_CARRIERS = "sharedCarriers";
     /** Solver-selected concrete values for exact guarded primitive reads. */

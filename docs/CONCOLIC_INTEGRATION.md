@@ -380,15 +380,14 @@ nest gone -- HDFS-17899 bug3 from 31 to 25 and HDFS-17897 from 23 to 20.
 Every occurrence on the ground-truth causal chains survives in every case,
 and so does every delivery of every declared wire flow.
 
-**Budgets are telemetry.** An experiment may state `replay_task_budget` in
-its workflow.properties, which `run_engine.sh` carries to the scheduler as
-`--replay-task-budget`. It caps nothing. The kept count is published against
-it as `replayTaskBudgetStatus: REPLAY_TASK_BUDGET_EXCEEDED` or
-`REPLAY_TASK_IN_BUDGET`, and every task the slice kept still runs, because a
-campaign bigger than its author expected is a fact to read, not a set of
-tasks to drop at random. Left unstated it judges nothing. No rule above names
-a workload, a class or a failure mechanism; whatever a single case needs
-beyond them belongs in that config and never in the scheduler.
+No rule above names a workload, a class or a failure mechanism; whatever a
+single case needs beyond them belongs in that config and never in the
+scheduler. There used to be a `replay_task_budget` knob here, carried to the
+scheduler as `--replay-task-budget` and published as
+`replayTaskBudgetStatus`. It capped nothing, no experiment ever set it, and
+its own test asserted that it never dropped a task -- a number nobody wrote
+compared against a count nobody read. It is gone; the kept count is in
+`keptOccurrenceCount` and the per-occurrence decisions are beside it.
 
 **Shared carriers are declared on the same slice.** `RuntimeRegionPlanner`
 publishes on every closure goal every shared field its region reads or writes
@@ -411,10 +410,11 @@ over 18 tasks) to 4 (49 rows): `snapshotDeletionOrdered`, `snapshotsByNames`,
 31 arms in the recorded formula), `snapshotCounter`, `snapshotQuota`, the
 edit-log op strings and the fsimage loader's fields go. The composer
 manufactures no family of its own -- every arm is a VM `ReadFromExpression`
-over a carrier the replay selected -- so it is consistent by construction;
-given `--task-plan` it states that in the manifest's `carrierDeclarations`
-ledger, which against a narrower plan names the families that plan would not
-have produced.
+over a carrier the replay selected -- so it is consistent by construction.
+A `carrierDeclarations` ledger used to restate that in the manifest; it was
+`consistent: true` with `undeclaredFamilyCount: 0` on every recorded run, its
+own javadoc said an undeclared family "is not something to gate here", and
+nothing read it, so it is gone.
 
 ## Trace context and topology
 
@@ -774,7 +774,7 @@ else is `INCONCLUSIVE_PARTIAL` and every reason is one row of `blockers`
 | Blocker | Named when |
 | --- | --- |
 | `COMPOSER_NOT_FINAL_READY` | the manifest's `finalStatus` is not `FINAL_READY` |
-| `COMPOSITION_GAPS_UNRESOLVED` | a Composer refusal or a solver gap is open -- the same rows EMIT counts in `gaps.json` |
+| `COMPOSITION_GAPS_UNRESOLVED` | a blocking gap is open in the composition manifest or the solver report -- Composer refusals, the composition's own gaps, the bounded-loop model's, the propagation closure's, the fault-control closure's, classed by `GapLedger` |
 | `DECLARED_WIRE_FLOWS_UNREALIZED` | a declared `WIRE_FLOW` reached the formula by neither route; the subject names those flows |
 | `UNDETERMINED_INITIAL_STATE` | the fatal read's own container carries an `INITIAL_CONTAINER_SNAPSHOT_TRUNCATED` gap, so membership over its initial state is a free choice available under every arm |
 | `FAULT_MARKER_NOT_DETERMINING` | the experiment injects a fault marker, both polarities are satisfiable, and no named mechanism the target cannot do without explains the polarity that has no fault |
@@ -802,6 +802,63 @@ the probe perturbed and whether it was rejected.
 
 `UNSAT_CLOSURE_INCOMPLETE` is required for `UNSAT_CLOSED` and for nothing
 else: one connected SAT witness stays valid while sibling paths are open.
+
+### The gap ledger
+
+Every gap code the pipeline can publish is registered in one place,
+`contract/GapLedger.java`, with an explicit class:
+
+- **`BLOCKING`** -- a missing chain element, or freedom nobody accounted for.
+  The candidate is withheld while one is open.
+- **`DIAGNOSTIC`** -- provably cannot change the chain. Each of these carries
+  the argument in the table itself, and the registry refuses an entry that
+  states none.
+
+**A code nobody registered is `BLOCKING`.** Adding a gap to some stage
+therefore withholds candidates until somebody comes to that file and writes
+down why it cannot break a chain. That default is applied identically by both
+readers, so there is no second place for a code to be classed.
+
+`ClaimPolicy` reads the ledger for every gap the composition manifest and the
+reach report publish. The EMIT stage of `run_engine.sh` reads the same table --
+published beside the gaps as `schedule/final/gap_ledger.json` -- to partition
+`gaps.json` for the stages the claim cannot see: IMPORT diagnostics, EXPLORE
+path closures, CLASSIFY topology deltas, the static catalog's own gaps and the
+planning gaps the runtime plan artifact carries. `gaps.json` keeps `gaps` and
+`gapCount` for the blocking rows and `telemetryGaps` / `telemetryCount` for
+the diagnostic ones, with each row carrying its `class` and the whole exception
+list echoed in `gapLedger.diagnosticCodes`.
+
+`result.json` states `accepted`: the claim together with the ledger. A claim
+is decided in SOLVE and cannot see IMPORT, EXPLORE or CLASSIFY, so a run can
+publish `SAT_CANDIDATE` with blocking gaps raised after it -- `accepted` is
+false there and the campaign exits 3.
+
+The diagnostic classes, and what each rests on:
+
+| Code | Why it cannot change the chain |
+| --- | --- |
+| `SELECTED_PATH_SET_INCOMPLETE` | completeness is required only to close an UNSAT refutation, which `UNSAT_CLOSURE_INCOMPLETE` withholds by name |
+| the EXPLORE sibling-path family (`BOUND_REACHED`, `PATH_FLIP_*`, `UNSUPPORTED_PATH_FLIP`, `LINKED_REPLAY_LEFT_TOPOLOGY_EPOCH`, `REGION_PATH_WAVE_BUDGET_REACHED`, `REGION_PATH_CLOSURE_NO_PROGRESS`) | an unexplored sibling path is not a link of the chain the witness walks; each of these rows makes the summary's path set unclosed, so the one conclusion it can falsify is withheld by name |
+| `INITIAL_CONTAINER_SNAPSHOT_TRUNCATED` | `ClaimPolicy` decides this per read, blocking `UNDETERMINED_INITIAL_STATE` exactly when the accepted witness reads out of the truncated carrier's initial arm |
+| `REGION_LOOP_OCCURRENCES_BOUNDED` | the occurrence set is bounded by the declared `K_L` rather than truncated, and `BoundedLoopComposition` checks every replayed case against that same declaration |
+| `BOUNDED_LOOP_FIXED_COUNT_BOUND_UNDECLARED` | an array-indexed loop's trip count is its array length; a case that published no dense exact cardinality vector raises the blocking `PATH_LOCAL_ARRAY_CARDINALITY_MISSING` |
+
+Four codes are neither, and are decided against the replay slice the campaign
+ran: `REGION_CAUSAL_ANCHOR_NOT_OBSERVED`, `REGION_OCCURRENCE_ANCHOR_UNMATCHED`,
+`REGION_TASK_NO_PUBLISHED_ACTIVATION` and `COVERAGE_GAP`. The static plan
+over-approximates -- it admits every region the backward walk reaches -- and
+`ReplayTaskSlice` keeps the occurrences root dependence selected, for one of
+`TARGET_REACH`, `ROOT_SITE`, `CARRIER_WRITER`, `ROOT_DEPENDENT_FLOW` or
+`FATAL_READ_WRITER`. A planned region that never ran is a broken chain on the
+kept slice and an over-approximation of the plan off it, so each row is
+resolved through `runtime_workflow_schedule_index.json` (and
+`replay_task_slice.jsonl` where the run published one) and carries its
+`sliceVerdict`. An absent slice, a slice that narrowed nothing, or a subject
+naming no planned occurrence all read as blocking: not knowing which side a
+row is on is not a reason to stop withholding on it.
+
+Every gap row carries `classReason`, the ledger's own sentence for its code.
 
 **Reading a campaign as passed.** The claim is `SAT_CANDIDATE`, `blockers` is
 empty and `finalStatus` is `FINAL_READY`; and on the plain `candidate.smt2`,

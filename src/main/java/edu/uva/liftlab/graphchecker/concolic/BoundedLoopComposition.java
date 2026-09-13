@@ -415,16 +415,30 @@ public final class BoundedLoopComposition {
      * The gaps this model raised, for the composer's own gap stream.
      *
      * <p>A loop the replay traversed and this model could not check is a
-     * property of the emitted candidate, not only coverage telemetry, so the
-     * composer refuses on it rather than publishing it and moving on.</p>
+     * property of the emitted candidate, not coverage telemetry it can
+     * outlive, so the composer refuses on it rather than publishing it and
+     * moving on.  That was once true of {@link #LOOP_OBSERVED_UNDECLARED}
+     * alone: every other reason -- a body count nobody published, two
+     * declarations that disagree on {@code K_L}, an indexed loop with no
+     * exact cardinality vector -- was filtered out here and reached only
+     * {@code boundedLoopComposition.gaps}, which no claim read.  On
+     * hdfs-17899-bug3 that filter dropped 28 of 28 raised gaps.  Each of
+     * them says the same thing the retained reason says: some step of the
+     * chain is stated at a multiplicity this composition cannot check.</p>
+     *
+     * <p>The copy is stamped with its own reason as {@code kind} because the
+     * composer's acceptance gate names a refusal by that member; publishing
+     * all of them under one {@code BOUNDED_LOOP_COMPOSITION_GAP} would have
+     * made 28 distinct findings one row, and would have hidden the reason
+     * from {@link edu.uva.liftlab.graphchecker.contract.GapLedger}.</p>
      */
     public List<JsonObject> compositionGaps() {
         List<JsonObject> rows = new ArrayList<>();
         for (JsonObject gap : gaps) {
-            if (LOOP_OBSERVED_UNDECLARED.equals(
-                    optionalString(gap, "reason"))) {
-                rows.add(gap.deepCopy());
-            }
+            JsonObject row = gap.deepCopy();
+            String reason = optionalString(row, "reason");
+            if (!reason.isEmpty()) row.addProperty("kind", reason);
+            rows.add(row);
         }
         return rows;
     }

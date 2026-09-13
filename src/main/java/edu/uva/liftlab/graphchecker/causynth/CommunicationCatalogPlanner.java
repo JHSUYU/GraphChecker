@@ -22,6 +22,14 @@ import java.util.function.Function;
 
 /** The static communication and loop catalog of one target-selected slice. */
 final class CommunicationCatalogPlanner {
+    /**
+     * A retained {@code FIXED_COUNT_INDEXED} loop with no declared {@code
+     * K_L}: its trip count is the array length the replay observes, and
+     * nothing here has seen a replay yet.
+     */
+    static final String FIXED_COUNT_BOUND_UNDECLARED =
+            "BOUNDED_LOOP_FIXED_COUNT_BOUND_UNDECLARED";
+
     private CommunicationCatalogPlanner() {
     }
 
@@ -120,6 +128,29 @@ final class CommunicationCatalogPlanner {
                 result.gaps.add(gap("BOUNDED_LOOP_BODY_BOUND_UNDECLARED",
                         "INHERITED_K_L_"
                                 + LoopBoundPolicy.MAX_LOOP_BODY_ITERATIONS,
+                        method, loopSiteId, controlSites.toString()));
+            } else if (fixedCount && declaredBound == 0) {
+                // An array-indexed for was exempt from the row above and
+                // said nothing at all, so a loop resting on a count nobody
+                // had yet observed was indistinguishable from a loop with a
+                // declared bound: on hdfs-11741 that was 4 of 7 retained
+                // loops, every one at loopBodyBound NONE and none of them
+                // named anywhere.
+                //
+                // It is still not the same finding.  This loop's trip count
+                // is its array length, which is exact where the replay
+                // publishes a dense cardinality vector covering the body
+                // count -- and where it does not,
+                // BoundedLoopComposition raises
+                // PATH_LOCAL_ARRAY_CARDINALITY_MISSING against that case and
+                // the claim is withheld by name.  Demanding a declared K_L
+                // here would replace an exact count with a stated prefix,
+                // which is what experiments/hadoop/hdfs-11741 argues in its
+                // own loop-bounds file.  So the row is published under its
+                // own code and GapLedger classes it against that downstream
+                // check.
+                result.gaps.add(gap(FIXED_COUNT_BOUND_UNDECLARED,
+                        "EXACT_ARRAY_CARDINALITY_EXPECTED",
                         method, loopSiteId, controlSites.toString()));
             }
             Map<String, Object> row = newRow(LOOP_ROW_KIND);

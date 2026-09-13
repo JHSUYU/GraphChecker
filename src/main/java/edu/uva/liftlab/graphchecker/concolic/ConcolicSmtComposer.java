@@ -584,16 +584,6 @@ public final class ConcolicSmtComposer {
         manifest.add(BoundedLoopComposition.MANIFEST_FIELD,
                 loops.manifest());
         manifest.add("guardedReadModel", guardedReads);
-        if (arguments.taskPlan != null) {
-            // Every family is VM evidence over a carrier the replay
-            // selected; the ledger states that against the plan that
-            // declared the carriers, and names the families a narrower
-            // plan would not have produced.
-            manifest.add(CarrierDeclarationLedger.MANIFEST_FIELD,
-                    CarrierDeclarationLedger.of(
-                            ArtifactIO.readJsonl(arguments.taskPlan),
-                            guardedReads, artifact(arguments.taskPlan)));
-        }
         manifest.add(ClockRootPhysics.MANIFEST_FIELD, clockPhysics);
         manifest.add(WIRE_FLOW_BINDINGS, wireFlowBindings);
         manifest.add(EXECUTION_DIVERGENCE_FIELD, emitter.executionDivergence);
@@ -3879,8 +3869,6 @@ public final class ConcolicSmtComposer {
                         + " not the version the fault retained (marker "
                         + marker + ")";
                 faultControlGap(FAULT_IDLE_INITIAL_HOST_IDLED, read, detail);
-                refuse(FAULT_IDLE_INITIAL_HOST_IDLED + "[" + read + "]",
-                        detail);
             }
         }
 
@@ -3932,6 +3920,17 @@ public final class ConcolicSmtComposer {
             return rows;
         }
 
+        /**
+         * Records one fault-control gap -- and refuses on it.
+         *
+         * <p>Two of the three reasons used to record and return. A read the
+         * marker starves observes nothing, and a fault-controlled selector
+         * the reach driver may pin freezes the marker the claim is about;
+         * both decide the experiment's own hypothesis outside the formula,
+         * which is the same thing {@code FAULT_IDLE_INITIAL_HOST_IDLED}
+         * already refused for. So all three refuse, and the caller that used
+         * to pair this with its own {@code refuse} no longer has to.</p>
+         */
         private void faultControlGap(String reason, String subject,
                                      String detail) {
             if (!faultControlGapKeys.add(reason + "\n" + subject)) return;
@@ -3941,6 +3940,7 @@ public final class ConcolicSmtComposer {
             row.addProperty("subject", subject);
             row.addProperty("detail", detail);
             faultControlTelemetry.add(row);
+            refuse(reason + "[" + subject + "]", detail);
         }
 
         /**
@@ -7557,7 +7557,6 @@ public final class ConcolicSmtComposer {
         private Path z3;
         /** The execution task plan whose carrier declarations the lowered
          *  families are audited against; absent means no ledger. */
-        private Path taskPlan;
         private long deadCaseArmRlimit = DeadCaseLemmas.DEFAULT_ARM_RLIMIT;
 
         public static Arguments parse(String[] argv) {
@@ -7595,9 +7594,6 @@ public final class ConcolicSmtComposer {
                     }
                 } else if ("z3".equals(key)) {
                     result.z3 = firstNonBlank(value).isEmpty() ? null
-                            : Paths.get(value);
-                } else if ("task-plan".equals(key)) {
-                    result.taskPlan = firstNonBlank(value).isEmpty() ? null
                             : Paths.get(value);
                 } else if ("dead-case-rlimit".equals(key)) {
                     result.deadCaseArmRlimit = Long.parseLong(value);

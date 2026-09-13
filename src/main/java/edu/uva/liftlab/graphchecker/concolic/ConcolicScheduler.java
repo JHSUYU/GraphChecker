@@ -257,7 +257,7 @@ public final class ConcolicScheduler {
                 rawProposals(loaded.regionPlans));
         ReplayTaskSlice replaySlice = ReplayTaskSlice.decide(
                 loaded.regionPlans, loaded.symbolicInputs,
-                loaded.refinedGraph, arguments.replayTaskBudget);
+                loaded.refinedGraph);
         List<String> selectedOccurrences = new ArrayList<>();
         for (RuntimeWorkflowDiscovery.Selection selection
                 : workflow.selections()) {
@@ -3065,16 +3065,13 @@ public final class ConcolicScheduler {
         public final int maxJobs;
         public final int maxLoopIterations;
         public final Path symbolicInputs;
-        /** The expected kept replay-task count, or 0 when unstated. */
-        public final int replayTaskBudget;
         private final ClosureMode closureMode;
 
         private Arguments(Path regionPlan, Path refinedGraph, Path summaries,
                           Path outputDirectory, String regionId,
                           String occurrenceId, String goalId,
                           int maxJobs, int maxLoopIterations,
-                          Path symbolicInputs, ClosureMode closureMode,
-                          int replayTaskBudget) {
+                          Path symbolicInputs, ClosureMode closureMode) {
             this.regionPlan = regionPlan;
             this.refinedGraph = refinedGraph;
             this.summaries = summaries;
@@ -3086,16 +3083,13 @@ public final class ConcolicScheduler {
             this.maxLoopIterations = maxLoopIterations;
             this.symbolicInputs = symbolicInputs;
             this.closureMode = closureMode;
-            // An unstated budget is no expectation, not an expectation of
-            // zero: the telemetry then reports the count and judges nothing.
-            this.replayTaskBudget = Math.max(0, replayTaskBudget);
         }
 
         public static Arguments parse(String[] args) {
             Map<String, String> values = parseArgs(args, "region-plan",
                     "refined-graph", "summaries", "output-dir", "max-jobs",
                     "symbolic-inputs", "max-loop-iterations",
-                    "closure-mode", "replay-task-budget");
+                    "closure-mode");
             Path regionPlan = requiredPath(values, "region-plan");
             Path output = Paths.get(firstNonBlank(values.get("output-dir"),
                     ArtifactIO.sibling(regionPlan,
@@ -3112,8 +3106,7 @@ public final class ConcolicScheduler {
                     positiveInt(values.get("max-loop-iterations"),
                             LoopBoundPolicy.MAX_LOOP_BODY_ITERATIONS,
                             "max-loop-iterations"),
-                    symbolicInputs, closureMode,
-                    parseInt(values.get("replay-task-budget"), 0));
+                    symbolicInputs, closureMode);
         }
 
         private static Path requiredPath(Map<String, String> values,
@@ -3160,7 +3153,7 @@ public final class ConcolicScheduler {
                     summaries, outputDirectory,
                     selection.regionId, selection.occurrenceId,
                     selection.goalId, 1, maxLoopIterations,
-                    symbolicInputs, closureMode, replayTaskBudget);
+                    symbolicInputs, closureMode);
         }
 
     }

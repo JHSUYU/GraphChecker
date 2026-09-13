@@ -1008,7 +1008,7 @@ public final class CausynthTraceRecorder {
             }
             writeRuntimeRegionPlans(planOutputDirectory, refinedFlowIndex,
                     closure.regions, closure.regionEdges, trace,
-                    activationGraph.runtimeInstances);
+                    activationGraph.runtimeInstances, closure.gaps);
         }
     }
 
@@ -1890,13 +1890,15 @@ public final class CausynthTraceRecorder {
             File directory, RuntimeRegionPlanner.RefinedFlowIndex flowIndex,
             List<Map<String, Object>> regions,
             List<Map<String, Object>> regionEdges, TraceData trace,
-            Collection<Map<String, Object>> runtimeSeeds) throws IOException {
+            Collection<Map<String, Object>> runtimeSeeds,
+            Collection<Map<String, Object>> planGaps) throws IOException {
         writeFile(new File(directory, "concolic_region_plan.jsonl"),
                 RuntimeRegionPlanner.plan(regions, regionEdges, flowIndex,
                         "runtime region closure",
                         "runtime region edge closure",
                         runtimeSeeds, trace.methods, trace.execution,
-                        trace.fields, trace.protocol).runtimePlanJsonl());
+                        trace.fields, trace.protocol,
+                        planGaps).runtimePlanJsonl());
     }
 
     private static void writeFile(File file, String value) throws IOException {

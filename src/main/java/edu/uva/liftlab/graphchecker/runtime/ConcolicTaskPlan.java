@@ -82,16 +82,6 @@ final class ConcolicTaskPlan {
         }
     }
 
-    /**
-     * How many tasks one campaign may contain.  A campaign has to be
-     * bounded to be a campaign: the runtime instruments and admits every
-     * row, so an unbounded plan is a runaway workload rather than an
-     * experiment, and it is refused by name instead of being started.
-     */
-    static final String MAX_TASKS_PROPERTY =
-            "causynth.concolic.campaign.max.tasks";
-    static final int DEFAULT_MAX_TASKS = 64;
-
     final Path resultFile;
     final List<RuntimeTask> tasks;
     /**
@@ -623,7 +613,7 @@ final class ConcolicTaskPlan {
         try (BufferedReader reader = Files.newBufferedReader(plan,
                 StandardCharsets.UTF_8)) {
             Set<String> taskIds = new LinkedHashSet<>();
-            int maxTasks = maxCampaignTasks();
+            int maxTasks = ExecutionTask.maxCampaignTasks();
             String line;
             while ((line = reader.readLine()) != null) {
                 if (line.trim().isEmpty()) continue;
@@ -682,22 +672,6 @@ final class ConcolicTaskPlan {
         return ids;
     }
 
-    static int maxCampaignTasks() {
-        String configured = safe(System.getProperty(
-                MAX_TASKS_PROPERTY)).trim();
-        if (configured.isEmpty()) return DEFAULT_MAX_TASKS;
-        try {
-            int value = Integer.parseInt(configured);
-            if (value <= 0) {
-                throw new IllegalStateException("malformed plan: "
-                        + MAX_TASKS_PROPERTY + " must be positive");
-            }
-            return value;
-        } catch (NumberFormatException malformed) {
-            throw new IllegalStateException("malformed plan: "
-                    + MAX_TASKS_PROPERTY + " must be a number");
-        }
-    }
     static boolean compatibleRoot(
             String selectedMethod, String actualMethod,
             RootContextSelector context, RootArgumentSelector arguments,
@@ -1672,7 +1646,7 @@ final class ConcolicTaskPlan {
 
         /** Body entries this loop may run before the replay is cut. */
         int maxLoopBodies(String loopId) {
-            return LoopBoundPolicy.maxLoopBodies(false);
+            return LoopBoundPolicy.MAX_REPLAY_PATH_LOOP_BODIES;
         }
 
         String policy(String siteId) {

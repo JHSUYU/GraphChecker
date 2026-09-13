@@ -984,13 +984,18 @@ final class RuntimeRegionPlanner {
                        List<MethodEvent> methods,
                        List<RuntimeEvent> runtimeEvents,
                        List<FieldAccessEvent> fieldEvents,
-                       List<ProtocolEvent> protocolEvents) {
+                       List<ProtocolEvent> protocolEvents,
+                       Collection<Map<String, Object>> planGaps) {
         // One loop has one prefix: region rows that disagree on a loop's K_L
         // are refused here, before anything is planned over them.
         declaredLoopBounds(regions);
         TraceIndex trace = new TraceIndex(methods, runtimeEvents,
                 fieldEvents, protocolEvents);
         Result result = new Result();
+        // The finalizer's own gaps ride the plan artifact: they are about the
+        // ports these plans were built from and no later artifact carries the
+        // accesses they say were dropped.
+        if (planGaps != null) result.planGaps.addAll(planGaps);
         Map<String, StaticProgram.RegionRow> regionById =
                 new LinkedHashMap<>();
         for (StaticProgram.RegionRow region : StaticProgram.regionRows(
@@ -3210,6 +3215,8 @@ final class RuntimeRegionPlanner {
         final List<Map<String, Object>> regionPlans = new ArrayList<>();
         final List<Map<String, Object>> edgeValidations = new ArrayList<>();
         final List<Map<String, Object>> regionCatalog = new ArrayList<>();
+        /** Gaps the region finalizer raised while building these ports. */
+        final List<Map<String, Object>> planGaps = new ArrayList<>();
         final List<Map<String, Object>> runtimeInstances = new ArrayList<>();
         /** Recorded exchange and shared-location links across occurrences. */
         final List<Map<String, Object>> occurrenceLinks = new ArrayList<>();
@@ -3228,7 +3235,11 @@ final class RuntimeRegionPlanner {
             for (Map<String, Object> region : regionCatalog) {
                 regions.add(toJsonTreeFast(region).getAsJsonObject());
             }
-            return RuntimePlanArtifact.encode(plans, edges, regions);
+            List<JsonObject> gaps = new ArrayList<>();
+            for (Map<String, Object> gap : planGaps) {
+                gaps.add(toJsonTreeFast(gap).getAsJsonObject());
+            }
+            return RuntimePlanArtifact.encode(plans, edges, regions, gaps);
         }
 
     }

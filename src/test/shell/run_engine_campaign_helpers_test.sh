@@ -18,6 +18,15 @@ fail() {
   exit 1
 }
 
+# EMIT publishes the gap ledger beside the gaps it classed, and the ledger is
+# the Java table -- there is no second copy of it to test against.  The built
+# jar is therefore an input to these helper tests.
+graphchecker_jar="${repo}/target/GraphChecker-1.0-SNAPSHOT-jar-with-dependencies.jar"
+[[ -s "${graphchecker_jar}" ]] \
+  || fail "these tests need the packaged jar: run mvn -o package -DskipTests"
+java_bin=${JAVA_HOME:+${JAVA_HOME}/bin/}java
+graphchecker_work_dir="${repo}"
+
 emit_sequence=0
 emit_fixture() {
   emit_sequence=$((emit_sequence + 1))
@@ -39,6 +48,14 @@ emit_fixture() {
   printf '# no retained condition loop\n' >"${emit_bounds}"
   printf 'production class bytes\n' >"${emit_classes}/Frozen.class"
   project_classpath="${emit_classes}"
+  # The two gap sources EMIT reads outside the iteration directory: the
+  # static catalog's own gaps and the planning gaps the runtime plan carries
+  # in its catalog row.
+  causynth_output_dir="${emit_root}/causynth"
+  mkdir -p "${causynth_output_dir}"
+  runtime_region_plan="${emit_root}/concolic_region_plan.jsonl"
+  jq -n -c '{schemaVersion: 2, kind: "CONCOLIC_RUNTIME_MODEL_CATALOG",
+    edges: [], regions: [], gaps: []}' >"${runtime_region_plan}"
 
   campaign_provenance=$(jq -n \
     --arg config "${emit_config}" \
@@ -64,11 +81,8 @@ emit_fixture() {
     pathSetComplete: false,
     symbolicPropagationComplete: false,
     symbolicPropagation: [{armCount: 2}],
-    symbolicPropagationGaps: [{reason:"UNRELATED_FAMILY_OPEN",
-                               subject:"CBF.fixture", detail:"telemetry"}],
-    boundedLoopComposition: {gaps: [{reason:"LOOP_BOUND_OPEN",
-                                     subject:"loop.fixture",
-                                     detail:"telemetry"}]},
+    symbolicPropagationGaps: [],
+    boundedLoopComposition: {gaps: []},
     guardedReadModelComplete: false,
     guardedReadModel: {
       schemaVersion: 1, kind: "DIRECT_GUARDED_READ_MODEL",
@@ -92,7 +106,7 @@ emit_fixture() {
                   declaredWireFlows: 0, wireFlows: []}}}' \
     >"${reach_report}"
   printf '%s\n' \
-    '{"schemaVersion":1,"kind":"REGION_PATH_WORKLIST","coverageGaps":[{"kind":"PATH_FLIP_NOT_ADMITTED","queryKey":"flip","reason":"UNEXPLORED"},{"kind":"PATH_FLIP_SOLVER_TIMEOUT","queryKey":"slow-flip","reason":"SOLVER_TIMEOUT"}]}' \
+    '{"schemaVersion":1,"kind":"REGION_PATH_WORKLIST","coverageGaps":[{"kind":"PATH_FLIP_REPLAY_NOT_ADMITTED","queryKey":"flip","reason":"UNEXPLORED"},{"kind":"PATH_FLIP_SOLVER_TIMEOUT","queryKey":"slow-flip","reason":"SOLVER_TIMEOUT"}]}' \
     >"${emit_iteration}/workers/task-target/path_closure.json"
   # DECIDE publishes this ledger and EMIT copies it into the result, so the
   # fixture states it exactly as TargetOccurrenceElection states it.
@@ -187,7 +201,7 @@ jq -e '.evidence.symbolicPropagationComplete == false
   and .evidence.consumerBoundaryArms == 2
   and .evidence.guardedReadModelComplete == false
   and .gapCount == 0
-  and .telemetryCount >= 4' \
+  and .telemetryCount >= 2' \
   "${campaign_final}/result.json" >/dev/null \
   || fail "the result lost its propagation provenance"
 
@@ -234,6 +248,114 @@ jq -e '[.gaps[] | select(.code == "PATH_FLIP_SOLVER_TIMEOUT")] | length == 0' \
 jq -e '.blockers == [] and .blockerCount == 0 and .whyNotAccepted == ""' \
   "${campaign_final}/result.json" >/dev/null \
   || fail "an accepted claim published blockers"
+
+# GAP-1: a gap raised by a stage the claim cannot see still withholds the
+# candidate, because one ledger classes every code and an unregistered code
+# is blocking.  BOUND_INSUFFICIENT is the finalizer truncation that used to
+# build a refusal string and throw it away.
+emit_fixture
+jq -n -c '{schemaVersion: 2, kind: "CONCOLIC_RUNTIME_MODEL_CATALOG",
+  edges: [], regions: [],
+  gaps: [{schemaVersion: 1, kind: "RUNTIME_PLAN_GAP",
+          code: "BOUND_INSUFFICIENT", subject: "port\nsite",
+          detail: "static site demands more accesses than are retained"}]}' \
+  >"${runtime_region_plan}"
+run_emit
+[[ "${emit_status}" -eq 3 ]] \
+  || fail "a plan gap did not withhold the candidate (exit ${emit_status}): \
+$(<"${emit_root}/emit.log")"
+jq -e '.gapCount == 1
+  and (.gaps[0].stage == "PLAN")
+  and (.gaps[0].code == "BOUND_INSUFFICIENT")
+  and (.gaps[0].class == "BLOCKING")' \
+  "${campaign_final}/gaps.json" >/dev/null \
+  || fail "the plan gap was not published as blocking: \
+$(jq -c '.gaps' "${campaign_final}/gaps.json")"
+jq -e '.accepted == false and .gapCount == 1' \
+  "${campaign_final}/result.json" >/dev/null \
+  || fail "result.json did not state that acceptance was withheld"
+
+# GAP-3: a code nobody registered is blocking.  This fixture used to publish
+# two invented composition gap reasons as accepted telemetry; under one
+# ledger they withhold the candidate until somebody writes down why they
+# cannot break a chain.
+emit_fixture
+jq '.symbolicPropagationGaps = [{reason: "UNRELATED_FAMILY_OPEN",
+                                 subject: "CBF.fixture", detail: "invented"}]
+    | .boundedLoopComposition.gaps = [{reason: "LOOP_BOUND_OPEN",
+                                       subject: "loop.fixture",
+                                       detail: "invented"}]' \
+  "${composition_manifest}" >"${composition_manifest}.tmp"
+mv "${composition_manifest}.tmp" "${composition_manifest}"
+run_emit
+[[ "${emit_status}" -eq 3 ]] \
+  || fail "unregistered gap codes did not withhold the candidate \
+(exit ${emit_status}): $(<"${emit_root}/emit.log")"
+jq -e '[.gaps[].code] | sort == ["LOOP_BOUND_OPEN", "UNRELATED_FAMILY_OPEN"]' \
+  "${campaign_final}/gaps.json" >/dev/null \
+  || fail "the unregistered codes were not both blocking: \
+$(jq -c '[.gaps[].code]' "${campaign_final}/gaps.json")"
+
+# GAP-4: the three region codes are decided against the replay slice, not by
+# a blanket rule.  The static plan over-approximates; a region root
+# dependence never selected is not a chain element.  With no schedule index
+# in the fixture the slice is unknown, and an unknown slice blocks.
+emit_fixture
+printf '%s\n' '{"code":"REGION_CAUSAL_ANCHOR_NOT_OBSERVED","taskId":"TASK.REPLAY.kept","detail":"anchor never observed"}' \
+  >"${emit_iteration}/import_diagnostics.jsonl"
+run_emit
+[[ "${emit_status}" -eq 3 ]] \
+  || fail "an unknown replay slice did not block a region code \
+(exit ${emit_status}): $(<"${emit_root}/emit.log")"
+jq -e '[.gaps[] | select(.code == "REGION_CAUSAL_ANCHOR_NOT_OBSERVED")
+        | .sliceVerdict] == ["SLICE_NOT_APPLIED"]' \
+  "${campaign_final}/gaps.json" >/dev/null \
+  || fail "the unknown slice was not named on the row: \
+$(jq -c '.gaps' "${campaign_final}/gaps.json")"
+
+# With a slice that kept one occurrence and pruned another, the same code
+# blocks on the kept task and is diagnostic on the pruned one.
+emit_fixture
+printf '%s\n' \
+  '{"code":"REGION_CAUSAL_ANCHOR_NOT_OBSERVED","taskId":"TASK.REPLAY.kept","detail":"anchor never observed"}' \
+  '{"code":"REGION_CAUSAL_ANCHOR_NOT_OBSERVED","taskId":"TASK.REPLAY.pruned","detail":"anchor never observed"}' \
+  >"${emit_iteration}/import_diagnostics.jsonl"
+jq -n '{schemaVersion: 1, kind: "RUNTIME_REGION_PATH_SCHEDULE_INDEX",
+  replayTaskSlice: {replayTaskSliceApplied: true, keptOccurrenceCount: 1},
+  members: [{taskId: "TASK.REPLAY.kept", occurrenceId: "OCC.kept",
+             regionId: "REGION.kept", role: "TARGET"}]}' \
+  >"${emit_iteration}/runtime_workflow_schedule_index.json"
+printf '%s\n' \
+  '{"taskId":"TASK.REPLAY.kept","occurrenceId":"OCC.kept"}' \
+  '{"taskId":"TASK.REPLAY.pruned","occurrenceId":"OCC.pruned"}' \
+  >"${emit_iteration}/execution_task_plan.jsonl"
+run_emit
+[[ "${emit_status}" -eq 3 ]] \
+  || fail "a region code on the kept slice did not block \
+(exit ${emit_status}): $(<"${emit_root}/emit.log")"
+jq -e '.gapCount == 1
+  and (.gaps[0].subject == "TASK.REPLAY.kept")
+  and (.gaps[0].sliceVerdict == "ON_KEPT_SLICE:OCC.kept")
+  and ([.telemetryGaps[] | select(.subject == "TASK.REPLAY.pruned")
+        | .sliceVerdict] == ["SLICE_PRUNED:OCC.pruned"])' \
+  "${campaign_final}/gaps.json" >/dev/null \
+  || fail "the slice-aware split is wrong: \
+$(jq -c '[(.gaps+.telemetryGaps)[]|{code,subject,class,sliceVerdict}]' \
+    "${campaign_final}/gaps.json")"
+# The rationale travels with the row, so a reader does not have to open the
+# ledger to see why a gap was classed the way it was.
+jq -e '[(.gaps + .telemetryGaps)[] | select((.classReason // "") == "")]
+       | length == 0' \
+  "${campaign_final}/gaps.json" >/dev/null \
+  || fail "a gap row carries no classification reason"
+
+# GAP-2: the ledger is published beside the gaps it classed, and it names its
+# own exceptions rather than leaving a reader to guess the default.
+jq -e '.kind == "GAP_LEDGER" and .defaultClass == "BLOCKING"
+  and (.diagnostic | index("SELECTED_PATH_SET_INCOMPLETE")) != null
+  and (.entries | length) > 100' \
+  "${campaign_final}/gap_ledger.json" >/dev/null \
+  || fail "EMIT published no usable gap ledger"
 
 # An undecided root space is no longer a witness. The claim ClaimPolicy
 # decided is published with every named blocker and one readable summary, and
@@ -416,10 +538,10 @@ for config_row in "${workflow_config_keys[@]}"; do
       || fail "internal key ${config_key} is loadable from a config file"
   fi
 done
-# 41 since `replay_task_budget` joined the table (bef2db898); the count was
-# left at 40 there, so this assertion has been failing on staging since that
-# merge landed.
-[[ "$(print_normalized_config | wc -l)" -eq 41 ]] \
+# 40 again: `replay_task_budget` joined the table in bef2db898 without this
+# count being raised, and has now been deleted -- it capped nothing, no
+# experiment set it, and its own test asserted it dropped no task.
+[[ "$(print_normalized_config | wc -l)" -eq 40 ]] \
   || fail "config prints a different number of keys than it used to: \
 $(print_normalized_config | wc -l)"
 

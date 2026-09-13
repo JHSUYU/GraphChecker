@@ -120,13 +120,11 @@ public final class LoopBoundPolicy {
             "BOUNDED_LOOP_BODY_BOUND_SITE_UNDECLARED";
     /** Maximum failure-relevant cells retained for one symbolic container. */
     public static final int SYMBOLIC_CONTAINER_SNAPSHOT_CAPACITY = 32;
-    /** Body entries one execution-scope loop may run in one activation.
+    /** Body entries one replay-path loop may run in one activation: the
+     *  service loops a long-lived root spins between the slice's calls,
+     *  where an unbounded count is what makes an activation endless.
      *  Independent of {@link #MAX_LOOP_BODY_ITERATIONS}: that caps the path
      *  space a solver reasons about, this caps the work one replay may do. */
-    public static final int MAX_EXECUTION_SCOPE_LOOP_BODIES = 2048;
-    /** Body entries one replay-path loop outside the execution scope may run:
-     *  the service loops a long-lived root spins between the slice's calls,
-     *  where an unbounded count is what makes an activation endless. */
     public static final int MAX_REPLAY_PATH_LOOP_BODIES = 32;
     private static final int SCHEMA_VERSION = 1;
     /** Vocabulary of {@link #identity()}, never a wire member: one kind, one
@@ -234,12 +232,6 @@ public final class LoopBoundPolicy {
 
     public Map<String, Integer> declaredBounds() {
         return declared;
-    }
-
-    public static int maxLoopBodies(boolean executionScopeLoop) {
-        return executionScopeLoop
-                ? MAX_EXECUTION_SCOPE_LOOP_BODIES
-                : MAX_REPLAY_PATH_LOOP_BODIES;
     }
 
     public String identity() {

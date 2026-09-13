@@ -69,7 +69,6 @@ workflow_config_keys=(
   "causynth_output_dir CAUSYNTH_OUTPUT_DIR krp -"
   "causynth_cache_dir CAUSYNTH_CACHE_DIR krp -"
   "causynth_target_spec CAUSYNTH_TARGET_SPEC krp -"
-  "causynth_analysis_scope CAUSYNTH_ANALYSIS_SCOPE kr -"
   "causynth_process_dirs CAUSYNTH_PROCESS_DIRS krp -"
   "causynth_communication_mappings CAUSYNTH_COMMUNICATION_MAPPINGS krp -"
   "causynth_loop_bounds CAUSYNTH_LOOP_BOUNDS krp -"
@@ -92,7 +91,6 @@ workflow_config_keys=(
   # nothing: the scheduler publishes the kept count against it and every
   # task it kept still runs.  Left unstated, the telemetry reports the
   # count and judges it against no expectation at all.
-  "replay_task_budget CAUSYNTH_REPLAY_TASK_BUDGET krp -"
   "solver_timeout_ms CAUSYNTH_SOLVER_TIMEOUT_MS krp -"
   "reach_max_inputs CAUSYNTH_REACH_MAX_INPUTS krp -"
   "reach_max_valuations CAUSYNTH_REACH_MAX_VALUATIONS krp -"
@@ -455,9 +453,6 @@ do_analyze() {
   if [[ -n "${trace_test}" ]]; then
     system_properties+=("-Dcausynth.trace.test=${trace_test}")
   fi
-  if [[ -n "${causynth_analysis_scope}" ]]; then
-    system_properties+=("-Dcausynth.analysis.scope=${causynth_analysis_scope}")
-  fi
   if [[ -n "${causynth_process_dirs}" ]]; then
     system_properties+=("-Dcausynth.process.dirs=${causynth_process_dirs}")
   fi
@@ -538,11 +533,6 @@ do_schedule() {
     args+=(--summaries "${schedule_summaries}")
   fi
   args+=(--closure-mode "${schedule_closure_mode}")
-  if [[ -n "${replay_task_budget//[[:space:]]/}" ]]; then
-    [[ "${replay_task_budget}" =~ ^[0-9]+$ ]] \
-      || die "replay_task_budget must be a non-negative integer: ${replay_task_budget}"
-    args+=(--replay-task-budget "${replay_task_budget}")
-  fi
   run_java_main edu.uva.liftlab.graphchecker.concolic.ConcolicScheduler \
     "${args[@]}"
 }
@@ -605,13 +595,6 @@ do_compose() {
   [[ -z "${fatal_occurrence_id}" ]] \
     || selection+=(--occurrence-id "${fatal_occurrence_id}")
   require_file "runtime region plan" "${runtime_region_plan}"
-  # The task plan the replays ran under: the composer audits every lowered
-  # guarded-read family against the carriers it declared (manifest member
-  # carrierDeclarations).  A compose outside a campaign has none.
-  local -a task_plan
-  task_plan=()
-  [[ ! -s "${compose_task_plan:-}" ]] \
-    || task_plan=(--task-plan "${compose_task_plan}")
   run_java_main edu.uva.liftlab.graphchecker.concolic.ConcolicSmtComposer \
     --fatal-query "${fatal_queries}" \
     "${PATH_LIST_ARGUMENTS[@]}" \
@@ -621,7 +604,6 @@ do_compose() {
     --clock-skew-ms "${clock_skew_ms}" \
     --mappings "${causynth_communication_mappings}" \
     --z3 "${z3_bin}" \
-    "${task_plan[@]}" \
     "${selection[@]}"
 }
 
@@ -1042,13 +1024,12 @@ campaign_seed_cache_key() {
   local identity config_seed_sha
   config_seed_sha=$(campaign_digest "${config_file}")
   identity=$(jq -S -c \
-    --arg analysisScope "${causynth_analysis_scope}" \
     --arg processDirs "${causynth_process_dirs}" \
     --arg workloadWorkDir "${workload_work_dir}" \
     --arg workloadCommand "${workload_command}" \
     --arg traceTest "${trace_test}" \
     --arg configSeedSha "${config_seed_sha}" '
-    {schemaVersion: 3, kind: "CAMPAIGN_SEED_CACHE_KEY",
+    {schemaVersion: 4, kind: "CAMPAIGN_SEED_CACHE_KEY",
      inputs: {
        jar: .jar.sha256,
        config: $configSeedSha,
@@ -1062,7 +1043,6 @@ campaign_seed_cache_key() {
        graphCheckerSource: .source.graphchecker,
        workloadSource: .source.workload},
      seedConfiguration: {
-       analysisScope: $analysisScope,
        processDirs: $processDirs,
        workloadWorkDir: $workloadWorkDir,
        workloadCommand: $workloadCommand,
@@ -1813,7 +1793,6 @@ campaign_seed() {
   seed_manifest="${campaign_root}/seed-manifest.json"
   if ! jq -n \
     --argjson provenance "${campaign_provenance}" \
-    --arg analysisScope "${causynth_analysis_scope}" \
     --arg processDirs "${causynth_process_dirs}" \
     --arg workloadWorkDir "${workload_work_dir}" \
     --arg workloadCommand "${workload_command}" \
@@ -1826,7 +1805,6 @@ campaign_seed() {
       cache: {schemaVersion: 1, authority: "CONTENT_DIGEST_V1",
               key: $cacheKey, status: $cacheStatus},
       seedConfiguration: {
-        analysisScope: $analysisScope,
         processDirs: $processDirs,
         workloadWorkDir: $workloadWorkDir,
         workloadCommand: $workloadCommand,
@@ -3103,7 +3081,7 @@ campaign_decide() {
 campaign_artifact_digests() {
   local name path bytes sha row
   local -a required=(candidate.smt2 candidate_composition_manifest.json
-    z3-result.json path-closures.json gaps.json result.json
+    z3-result.json path-closures.json gaps.json gap_ledger.json result.json
     target_occurrences.json)
   local -a names=()
   local -a rows=()
@@ -3132,46 +3110,180 @@ campaign_artifact_digests() {
 # Aggregate the already-validated owner reports without copying their contents
 # into exec argv.  Real compositions and topology deltas routinely exceed both
 # Linux's per-argument limit and ARG_MAX, so every JSON input is a file.
+#
+# There is one gap ledger and it lives in GapLedger.java.  This function used
+# to be the second one: it hand-picked two sources -- the Composer's
+# finalStatusRefusals and the solver's own gaps -- as blocking and demoted
+# every other gap the pipeline raised into a telemetryGaps array no claim
+# read.  On hdfs-17960 that demoted all 27 rows of a run that then published
+# gapCount 0, including 15 regions whose causal anchor was never observed.
+# Now every source is folded into one list and each row is classed by the
+# ledger, which defaults an unregistered code to BLOCKING in both readers.
+campaign_write_gap_ledger() {
+  local output=$1
+  run_java_main edu.uva.liftlab.graphchecker.contract.GapLedger \
+    --output "${output}"
+  require_nonempty "gap ledger" "${output}"
+  campaign_require_json "gap ledger" "${output}" \
+    || campaign_fail EMIT GapLedger "${output}" \
+      "the published gap ledger is malformed"
+}
+
+# The static catalog's own gaps, as a JSON array.  A campaign that restored
+# its seed from cache still has this artifact, because it is one of the
+# cached ones.
+campaign_static_gaps_json() {
+  local gzipped="${causynth_output_dir}/communication_gaps.jsonl.gz"
+  if [[ ! -s "${gzipped}" ]]; then
+    echo '[]'
+    return 0
+  fi
+  gzip -d -c -- "${gzipped}" | jq -c -s '.' || return 1
+}
+
+# The planning gaps the runtime plan artifact carries in its catalog row.
+campaign_plan_gaps_json() {
+  if [[ ! -s "${runtime_region_plan}" ]]; then
+    echo '[]'
+    return 0
+  fi
+  head -n 1 -- "${runtime_region_plan}" | jq -c '.gaps // []' || return 1
+}
+
+# The replay slice the campaign actually ran, as one document:
+#
+#   {applied, keptOccurrences: [...], taskOccurrence: {taskId: occurrenceId}}
+#
+# The static plan over-approximates -- it admits every region the backward
+# walk reaches -- and ReplayTaskSlice then keeps the occurrences root
+# dependence selected, for one of TARGET_REACH, ROOT_SITE, CARRIER_WRITER,
+# ROOT_DEPENDENT_FLOW or FATAL_READ_WRITER.  A planned region that never ran
+# means two different things on the two sides of that line, so the ledger's
+# slice-conditional codes are decided against this.
+#
+# Fail-closed: an absent or withheld slice publishes applied=false, and the
+# fold then treats every such row as blocking rather than guessing.
+campaign_kept_slice_json() {
+  local iteration_dir=$1
+  local index="${iteration_dir}/runtime_workflow_schedule_index.json"
+  local slice="${iteration_dir}/replay_task_slice.jsonl"
+  local plans
+  if [[ ! -s "${index}" ]]; then
+    echo '{"applied": false, "keptOccurrences": [], "taskOccurrence": {}}'
+    return 0
+  fi
+  if ! plans=$(find "${iteration_dir}" -type f \
+      -name 'execution_task_plan.jsonl' -print | LC_ALL=C sort); then
+    echo '{"applied": false, "keptOccurrences": [], "taskOccurrence": {}}'
+    return 0
+  fi
+  {
+    cat "${index}"
+    [[ ! -s "${slice}" ]] || cat "${slice}"
+    [[ -z "${plans}" ]] || xargs -r -d '\n' cat <<<"${plans}"
+  } | jq -s '
+    ([.[] | select(.kind == "RUNTIME_REGION_PATH_SCHEDULE_INDEX"
+                   or (.replayTaskSlice? != null))] | first) as $index
+    | ([.[] | select(.kind == "REPLAY_TASK_DECISION")]) as $decisions
+    | ([.[] | select(.taskId? != null and .occurrenceId? != null)]) as $tasks
+    | (($index.replayTaskSlice.replayTaskSliceApplied // false)
+       and (($index.members // []) | length) > 0) as $applied
+    | {applied: $applied,
+       keptOccurrences:
+         ((($index.members // []) | map(.occurrenceId // ""))
+          + ($decisions | map(select(.decision == "KEEP")
+                              | .occurrenceId // ""))
+          | map(select(. != "")) | unique),
+       keptReasons:
+         ($decisions | map(select(.decision == "KEEP")
+            | {key: (.occurrenceId // ""),
+               value: ((.keepReasons // []) | join(","))})
+          | from_entries),
+       taskOccurrence:
+         ($tasks | map({key: .taskId, value: .occurrenceId})
+          | from_entries)}' \
+    || return 1
+}
+
 campaign_write_coverage_gaps() {
   local composition=$1 reach=$2 diagnostics=$3 delta=$4
-  local path_closures=$5 output=$6
+  local path_closures=$5 ledger=$6 iteration_dir=$7 output=$8
+  local static_gaps plan_gaps kept_slice
+  static_gaps=$(campaign_static_gaps_json) || return 1
+  plan_gaps=$(campaign_plan_gaps_json) || return 1
+  kept_slice=$(campaign_kept_slice_json "${iteration_dir}") || return 1
   jq -n \
     --slurpfile composedDocuments "${composition}" \
     --slurpfile reachDocuments "${reach}" \
     --slurpfile diagnostics "${diagnostics}" \
     --slurpfile delta "${delta}" \
-    --slurpfile pathClosureDocuments "${path_closures}" '
+    --slurpfile pathClosureDocuments "${path_closures}" \
+    --slurpfile ledgerDocuments "${ledger}" \
+    --argjson staticGaps "${static_gaps}" \
+    --argjson planGaps "${plan_gaps}" \
+    --argjson keptSlice "${kept_slice}" '
     $composedDocuments[0] as $composed |
     $reachDocuments[0] as $reach |
     $pathClosureDocuments[0] as $pathClosures |
-    ([$composed.finalStatusRefusals[]?
-         | {stage: "COMPOSE", source: "COMPOSER",
-            code: .code, subject: .subject, detail: .detail}]
-       + [$reach.gaps[]?
-           | {stage: "SOLVE", source: "SOLVER", code: ., subject: "",
-              detail: ""}]
-       | unique_by([.stage, .source, .code, .subject, .detail])) as $gaps |
-    ([$composed.gaps[]?
-           | {stage: "COMPOSE", source: "COMPOSER",
-              code: (.reason // .kind // ""),
-              subject: (.subject // ""), detail: (.detail // "")}]
+    $ledgerDocuments[0] as $ledger |
+    # The ledger names its exceptions; everything else is blocking, which is
+    # the same default GapLedger.classOf applies in Java.
+    ($ledger.diagnostic // []) as $diagnosticCodes |
+    ($ledger.sliceConditional // []) as $sliceCodes |
+    ($ledger.reasonByCode // {}) as $reasonByCode |
+    ($keptSlice.applied // false) as $sliceApplied |
+    (($keptSlice.keptOccurrences // []) | map({key: ., value: true})
+     | from_entries) as $keptOccurrence |
+    ($keptSlice.taskOccurrence // {}) as $taskOccurrence |
+    # A slice-conditional row is blocking on the kept slice and diagnostic
+    # off it.  Anything this cannot resolve -- no slice, a slice that
+    # narrowed nothing, or a subject naming no planned occurrence -- is
+    # blocking, because not knowing which side a row is on is not a reason
+    # to stop withholding on it.
+    def sliceVerdict($subject):
+      if $sliceApplied | not then {onSlice: true, why: "SLICE_NOT_APPLIED"}
+      else ($taskOccurrence[$subject] // "") as $occurrence
+        | if $occurrence == ""
+            then {onSlice: true, why: "SUBJECT_NAMES_NO_PLANNED_OCCURRENCE"}
+          elif ($keptOccurrence[$occurrence] // false)
+            then {onSlice: true, why: ("ON_KEPT_SLICE:" + $occurrence)}
+          else {onSlice: false, why: ("SLICE_PRUNED:" + $occurrence)}
+          end
+      end;
+    # The acceptance gate publishes every emitter refusal under one
+    # COMPOSITION_GAP kind and spells the reason it actually named into the
+    # subject, as CODE[subject] or CODE:subject.  Left encoded, fifty
+    # distinct findings read as fifty rows of one code, the ledger could
+    # class none of them, and the same refusal arrived twice -- once
+    # generically here and once precisely from the array that raised it.
+    # So the spelling is decoded, and every COMPOSE row is published under
+    # one source so the two views of one refusal are one row.
+    def composeRow($row):
+      ($row.code // $row.reason // $row.kind // "") as $rawCode
+      | ($row.subject // "") as $rawSubject
+      | (if $rawCode == "COMPOSITION_GAP"
+           then ($rawSubject | capture("^(?<c>[A-Za-z_][A-Za-z0-9_]*)"
+                                      + "(\\[(?<b>.*)\\]|:(?<d>.*))$";
+                                      "s") // null)
+           else null end) as $named
+      | {stage: "COMPOSE", source: "COMPOSER",
+         code: (if $named == null then $rawCode else $named.c end),
+         subject: (if $named == null then $rawSubject
+                   else ($named.b // $named.d) end),
+         detail: ($row.detail // "")};
+    ([$composed.finalStatusRefusals[]? | composeRow(.)]
+       + [$composed.gaps[]? | composeRow(.)]
        + [if ($composed.pathSetComplete // false)
             then empty else
             {stage: "COMPOSE", source: "COVERAGE",
              code: "SELECTED_PATH_SET_INCOMPLETE", subject: "",
              detail: "required only for a closed UNSAT conclusion"} end]
-       + [$composed.boundedLoopComposition.gaps[]?
-           | {stage: "COMPOSE", source: "BOUNDED_LOOP",
-              code: (.reason // .kind // ""),
-              subject: (.subject // ""), detail: (.detail // "")}]
-       + [$composed.symbolicPropagationGaps[]?
-           | {stage: "COMPOSE", source: "SYMBOLIC_PROPAGATION",
-              code: (.reason // .kind // ""),
-              subject: (.subject // ""), detail: (.detail // "")}]
-       + [$composed.faultControlGaps[]?
-           | {stage: "COMPOSE", source: "FAULT_CONTROL",
-              code: (.reason // .kind // ""),
-              subject: (.subject // ""), detail: (.detail // "")}]
+       + [$composed.boundedLoopComposition.gaps[]? | composeRow(.)]
+       + [$composed.symbolicPropagationGaps[]? | composeRow(.)]
+       + [$composed.faultControlGaps[]? | composeRow(.)]
+       + [$reach.gaps[]?
+           | {stage: "SOLVE", source: "SOLVER", code: ., subject: "",
+              detail: ""}]
        + [$pathClosures[]? as $closure
            | $closure.coverageGaps[]?
            | {stage: "EXPLORE", source: "PATH_WORKLIST",
@@ -3188,16 +3300,48 @@ campaign_write_coverage_gaps() {
            | {stage: "CLASSIFY", source: (.source // "IMPORTER"),
               code: (.code // .deltaKind), subject: (.taskId // ""),
               detail: (.reason // .gap // "")}]
+       + [$staticGaps[]?
+           | {stage: "PLAN", source: "STATIC",
+              code: (.gapKind // .kind // ""),
+              subject: ([(.gapReason // ""), (.enclosingMethod // .method
+                          // ""), (.siteId // "")]
+                        | map(select(. != "")) | join("\n")),
+              detail: (.detail // "")}]
+       + [$planGaps[]?
+           | {stage: "PLAN", source: "RUNTIME_PLAN",
+              code: (.code // .kind // ""),
+              subject: (.subject // ""), detail: (.detail // "")}]
+       | map(select(.code != ""))
+       | map(. + (if (.code | IN($sliceCodes[]))
+                  then (sliceVerdict(.subject) as $v
+                        | {class: (if $v.onSlice
+                                   then "BLOCKING" else "DIAGNOSTIC" end),
+                           sliceVerdict: $v.why})
+                  elif (.code | IN($diagnosticCodes[]))
+                  then {class: "DIAGNOSTIC"}
+                  else {class: "BLOCKING"} end))
+       | map(. + {classReason: ($reasonByCode[.code]
+                                // "no ledger entry: blocking by default")})
        | unique_by([.stage, .source, .code, .subject, .detail]))
-       as $telemetry |
-    {schemaVersion: 1,
+       as $rows |
+    {schemaVersion: 2,
      kind: "CAMPAIGN_COVERAGE_GAPS",
-     gaps: $gaps,
-     telemetryGaps: $telemetry}
+     gapLedger: {kind: ($ledger.kind // ""),
+                 schemaVersion: ($ledger.schemaVersion // 0),
+                 defaultClass: ($ledger.defaultClass // "BLOCKING"),
+                 diagnosticCodes: $diagnosticCodes,
+                 sliceConditionalCodes: $sliceCodes,
+                 replayTaskSliceApplied: $sliceApplied,
+                 keptOccurrenceCount:
+                   (($keptSlice.keptOccurrences // []) | length)},
+     gaps: [$rows[] | select(.class == "BLOCKING")],
+     telemetryGaps: [$rows[] | select(.class == "DIAGNOSTIC")]}
     | .gapCount = (.gaps | length)
     | .telemetryCount = (.telemetryGaps | length)
     | .byStage = (.gaps | group_by(.stage)
         | map({key: .[0].stage, value: length}) | from_entries)
+    | .byCode = (.gaps | group_by(.code)
+        | map({key: .[0].code, value: length}) | from_entries)
     | .telemetryByStage = (.telemetryGaps | group_by(.stage)
         | map({key: .[0].stage, value: length}) | from_entries)
   ' >"${output}"
@@ -3253,15 +3397,21 @@ campaign_emit() {
       "a path-closure JSON is malformed or could not be enumerated"
   fi
 
-  # Formula/solver gaps block a candidate. Exploration, loop-bound and
-  # propagation-merge coverage stay as telemetry: they are needed to justify
-  # a closed UNSAT result, while one connected SAT witness is already valid.
+  # One ledger classes every gap this campaign raised, wherever it was
+  # raised.  A code the ledger does not register is blocking, so a gap added
+  # to some stage withholds the claim until somebody states why it cannot
+  # break a chain.  The ledger is published beside the gaps it classed, so a
+  # reader of the final directory can check the classification without the
+  # jar.
+  campaign_write_gap_ledger "${campaign_final}/gap_ledger.json"
   campaign_write_coverage_gaps \
     "${composition_manifest}" \
     "${reach_report}" \
     "${iteration_dir}/import_diagnostics.jsonl" \
     "${iteration_dir}/topology_delta.jsonl" \
     "${path_closures_artifact}" \
+    "${campaign_final}/gap_ledger.json" \
+    "${iteration_dir}" \
     "${campaign_final}/gaps.json"
   require_nonempty "campaign gaps" "${campaign_final}/gaps.json"
   campaign_require_json "campaign gaps" "${campaign_final}/gaps.json" \
@@ -3333,6 +3483,17 @@ campaign_emit() {
          (($c.casePathConditionDependencies // []) | length)},
      gapCount: $gapCount,
      telemetryCount: $telemetryCount,
+     # The claim is what ClaimPolicy decided; acceptance is that claim
+     # together with the gap ledger, because the stages the policy cannot
+     # see -- IMPORT, EXPLORE, CLASSIFY and the static plan -- raise their
+     # own blocking gaps and the ledger classes all of them from one
+     # table. This is the
+     # conjunction the exit code below already tests, published so a reader
+     # of result.json alone does not have to infer it from two numbers.
+     accepted: (($decided.claim == "SAT_CANDIDATE"
+                 or $decided.claim == "UNSAT_CLOSED")
+                and $gapCount == 0),
+     blockingGapCodes: ($gaps.byCode // {}),
      # What each satisfying witness named, and whether the policy read it as a
      # finding or as freedom nobody accounted for. A reader asking "why is this
      # sat" gets the mechanism narrative here rather than having to rebuild it
@@ -3424,8 +3585,9 @@ campaign_emit() {
       exit 2
       ;;
   esac
-  # Formula and solver gaps remain hard failures. Coverage gaps are telemetry
-  # above and only keep an UNSAT result from becoming UNSAT_CLOSED.
+  # Every blocking gap in the ledger is a hard failure, whichever stage
+  # raised it.  The telemetry array holds only the codes the ledger names as
+  # unable to change a chain, and each of those carries its reason there.
   [[ "${gapCount}" -eq 0 ]] || {
     jq -r '"[campaign] candidate withheld: claim=\(.claim), but the run named "
       + (.gapCount | tostring) + " unresolved gap(s)"' \
@@ -3446,9 +3608,12 @@ campaign_publish_bound_gap() {
       kind: "CAMPAIGN_COVERAGE_GAPS",
       gapCount: 1,
       byStage: {CLASSIFY: 1},
+      byCode: {ITERATION_BOUND_REACHED: 1},
+      telemetryGaps: [],
+      telemetryCount: 0,
       provenance: $provenance,
       gaps: [{stage: "CLASSIFY", source: "CAMPAIGN",
-              code: "ITERATION_BOUND_REACHED",
+              code: "ITERATION_BOUND_REACHED", class: "BLOCKING",
               subject: ("campaign_max_iterations=" + ($iterations | tostring)),
               detail: "the topology still diverged at the declared iteration bound; no candidate was composed"}]}' \
     >"${campaign_final}/gaps.json"

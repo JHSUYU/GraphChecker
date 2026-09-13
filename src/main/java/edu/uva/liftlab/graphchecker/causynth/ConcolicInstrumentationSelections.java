@@ -79,11 +79,6 @@ public final class ConcolicInstrumentationSelections {
         return Collections.unmodifiableSet(classes);
     }
 
-    /** How many tasks one instrumentation campaign may contain. */
-    static final String MAX_TASKS_PROPERTY =
-            "causynth.concolic.campaign.max.tasks";
-    static final int DEFAULT_MAX_TASKS = 64;
-
     /** The campaign this instrumentation pass must cover, in plan order. */
     static List<InstrumentationPlan> instrumentationCampaignFromEnvironment() {
         String planValue = stringValue(System.getProperty(
@@ -201,7 +196,13 @@ public final class ConcolicInstrumentationSelections {
             }
             Path normalized = taskPlan.toAbsolutePath().normalize();
             Set<String> selected = campaignTaskIds(selectedTasks);
-            int maxTasks = maxCampaignTasks();
+            // One bound, stated once: ConcolicTaskPlan owns the property
+            // name, the default and the parse, and this pass bounds the
+            // campaign it is about to rewrite by exactly the number the
+            // replay JVM will bound the same plan by.  Two copies of the
+            // same constant and the same parse is one place for them to
+            // drift apart.
+            int maxTasks = ExecutionTask.maxCampaignTasks();
             List<InstrumentationPlan> campaign = new ArrayList<>();
             Set<String> covered = new LinkedHashSet<>();
             try (BufferedReader reader = Files.newBufferedReader(normalized,
@@ -280,20 +281,6 @@ public final class ConcolicInstrumentationSelections {
                 throw new IOException("Selected task id is required");
             }
             return ids;
-        }
-
-        private static int maxCampaignTasks() throws IOException {
-            String configured = stringValue(System.getProperty(
-                    MAX_TASKS_PROPERTY)).trim();
-            if (configured.isEmpty()) {
-                return DEFAULT_MAX_TASKS;
-            }
-            int value = intValue(configured, -1);
-            if (value <= 0) {
-                throw new IOException("malformed plan: " + MAX_TASKS_PROPERTY
-                        + " must be a positive number");
-            }
-            return value;
         }
 
         String rootMethod() {

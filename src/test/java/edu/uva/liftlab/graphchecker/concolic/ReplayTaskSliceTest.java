@@ -149,7 +149,7 @@ public class ReplayTaskSliceTest {
         ReplayTaskSlice slice = ReplayTaskSlice.decide(plans, seeded(),
                 Arrays.asList(edge(ROOT, FATAL_READ, "HEAP_READ"),
                         edge(ROOT, GUARD_LOCAL, "HEAP_READ"),
-                        edge(GUARD_LOCAL, CARRIER, "GUARD")), 0);
+                        edge(GUARD_LOCAL, CARRIER, "GUARD")));
 
         assertTrue(slice.keeps(ROOT_SITE));
         assertTrue("the root's own field reaches the failing branch",
@@ -262,7 +262,7 @@ public class ReplayTaskSliceTest {
         ConcolicScheduler.SymbolicInputSelection selection = selection();
         selection.seedCarrierSlice(graph, proposals(fieldRead(ROOT)));
         ReplayTaskSlice slice = ReplayTaskSlice.decide(plans, selection,
-                graph, 0);
+                graph);
 
         assertTrue("the guard reaches the fatal read over the mutation it "
                 + "decides", selection.carrierSlice()
@@ -283,34 +283,6 @@ public class ReplayTaskSliceTest {
                         ReplayTaskSlice.FATAL_READ_WRITER,
                         ReplayTaskSlice.CARRIER_WRITER),
                 slice.reasons(reader));
-    }
-
-    /**
-     * The expected-shape hint is read against, never enforced: a schedule
-     * over it is published in full, because a campaign bigger than its
-     * author expected is a fact to read, not tasks to drop at random.
-     */
-    @Test
-    public void theBudgetIsTelemetryAndNeverACap() throws Exception {
-        ReplayTaskSlice narrow = ReplayTaskSlice.decide(plans(), seeded(),
-                Collections.<JsonObject>emptyList(), 1);
-
-        List<String> selected = Arrays.asList(TARGET, ROOT_SITE, LOADER);
-        JsonObject telemetry = narrow.telemetry(selected);
-        assertEquals(2, telemetry.get("keptOccurrenceCount").getAsInt());
-        assertEquals(1, telemetry.get("replayTaskBudget").getAsInt());
-        assertEquals(ReplayTaskSlice.BUDGET_EXCEEDED,
-                telemetry.get("replayTaskBudgetStatus").getAsString());
-        assertTrue("no task is dropped to meet the hint",
-                narrow.keeps(TARGET) && narrow.keeps(ROOT_SITE));
-
-        JsonObject roomy = ReplayTaskSlice.decide(plans(), seeded(),
-                Collections.<JsonObject>emptyList(), 8).telemetry(selected);
-        assertEquals("REPLAY_TASK_IN_BUDGET",
-                roomy.get("replayTaskBudgetStatus").getAsString());
-        assertFalse("an unstated hint judges nothing",
-                decide(plans(), seeded()).telemetry(selected)
-                        .has("replayTaskBudgetStatus"));
     }
 
     @Test
@@ -369,7 +341,7 @@ public class ReplayTaskSliceTest {
             List<RegionInstancePlan> plans,
             ConcolicScheduler.SymbolicInputSelection selection) {
         return ReplayTaskSlice.decide(plans, selection,
-                Collections.<JsonObject>emptyList(), 0);
+                Collections.<JsonObject>emptyList());
     }
 
     /**
