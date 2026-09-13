@@ -1395,11 +1395,13 @@ public final class ClaimPolicy {
                                 ? "no clock decision on the fatal slice is"
                                 + " necessary: every satisfying witness"
                                 + " survives pinning the clocks to what they"
-                                + " recorded"
+                                + " recorded" + clockDecisionNote(reach)
                                 : "the enumerated valuations")
                         : (flippedWitnessAccepted ? "" : markerNames(markers)));
         result.addProperty("clockMechanismNecessary", anyClockNecessary);
         result.addProperty("clockOnlyExperiment", clockOnly);
+        result.add("clockDecisionsOutsideWindow",
+                clockDecisionsOutsideWindow(reach));
         // Which valuation the acceptance rests on, so a probe can assert that
         // marker assignment rather than guess one.
         result.addProperty("acceptedValuationOrdinal", acceptedOrdinal);
@@ -1434,6 +1436,68 @@ public final class ClaimPolicy {
                 // this one is a property of the model, which no other
                 // blocker reads, so it belongs to the witness.
                 || WitnessLegitimacy.UNBOUND_WIRE_VALUE_TAKEN.equals(code);
+    }
+
+    /**
+     * The comparisons the solver stage found decidable only beyond the
+     * clock window, as the reach report published them.
+     */
+    private static JsonArray clockDecisionsOutsideWindow(JsonObject reach) {
+        JsonArray rows = new JsonArray();
+        for (JsonElement element : array(object(reach,
+                BooleanReachConditionExtractor.CLOCK_DECISIONS),
+                "decisions")) {
+            if (!element.isJsonObject()) continue;
+            JsonObject row = element.getAsJsonObject();
+            if (BooleanReachConditionExtractor.CLOCK_DECISION_OUTSIDE_WINDOW
+                    .equals(optionalString(row, "code"))) {
+                rows.add(row.deepCopy());
+            }
+        }
+        return rows;
+    }
+
+    /**
+     * Why the clocks could not have been needed, when the probe knows: the
+     * site whose comparison the window decides, and the advance it needs.
+     */
+    private static String clockDecisionNote(JsonObject reach) {
+        JsonObject probe = object(reach,
+                BooleanReachConditionExtractor.CLOCK_DECISIONS);
+        JsonArray outside = clockDecisionsOutsideWindow(reach);
+        if (outside.size() == 0) return "";
+        StringBuilder note = new StringBuilder("; ")
+                .append(outside.size())
+                .append(" clock comparison(s) on the slice are decidable")
+                .append(" only beyond the +/-")
+                .append(optionalLongInteger(probe, "windowMillis", 0L))
+                .append("ms window (")
+                .append(BooleanReachConditionExtractor
+                        .CLOCK_DECISION_OUTSIDE_WINDOW)
+                .append("):");
+        for (JsonElement element : outside) {
+            JsonObject row = element.getAsJsonObject();
+            note.append(' ');
+            JsonArray sites = array(row, "sites");
+            note.append(sites.size() > 0 ? sites.get(0).getAsString()
+                    : optionalString(row, "atom"));
+            if (row.has("requiredWindowMillisAtMost")) {
+                note.append(" needs a window above ")
+                        .append(optionalLongInteger(row,
+                                "requiredWindowMillisAbove", 0L))
+                        .append("ms and at most ")
+                        .append(optionalLongInteger(row,
+                                "requiredWindowMillisAtMost", 0L))
+                        .append("ms");
+            } else {
+                note.append(" is not admitted by any window up to ")
+                        .append(optionalLongInteger(row,
+                                "requiredWindowMillisAbove", 0L))
+                        .append("ms");
+            }
+            note.append(';');
+        }
+        return note.toString();
     }
 
     /**

@@ -25,6 +25,7 @@ import java.math.BigInteger;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -353,9 +354,11 @@ public final class BooleanReachConditionExtractor {
         }
 
         report.add("valuations", valuationRows);
-        report.add(MECHANISM_NECESSITY, asEvidence(mechanismNecessity(
-                solver, base, manifest, inputs, valuationRows),
-                evidenceOnly));
+        JsonObject necessity = mechanismNecessity(solver, base, manifest,
+                inputs, valuationRows);
+        report.add(MECHANISM_NECESSITY, asEvidence(necessity, evidenceOnly));
+        report.add(CLOCK_DECISIONS, asEvidence(clockDecisionWindow(solver,
+                base, manifest, clockNecessary(necessity)), evidenceOnly));
         if (existentialPerturbations.size() > 0) {
             JsonObject probe = new JsonObject();
             probe.addProperty("authority",
@@ -2090,6 +2093,318 @@ public final class BooleanReachConditionExtractor {
 
     private static String firstNonEmptyText(String value, String fallback) {
         return value == null || value.trim().isEmpty() ? fallback : value;
+    }
+
+    /** Where the clock-decision window probe is published. */
+    static final String CLOCK_DECISIONS = "clockDecisions";
+    /**
+     * A comparison on the fatal slice that involves a wall-clock root and
+     * takes one polarity only within the window the composition anchors the
+     * clock in, while the other polarity becomes satisfiable once the window
+     * is widened: the mechanism this clock could decide lies outside the
+     * window, and no witness can show it at the configured skew.
+     */
+    public static final String CLOCK_DECISION_OUTSIDE_WINDOW =
+            "CLOCK_DECISION_OUTSIDE_WINDOW";
+    /** Comparison atoms probed per run; a slice rarely has more. */
+    private static final int MAX_CLOCK_DECISION_ATOMS = 8;
+    /** Window doublings tried: 5 min becomes 5 h 20 min at the sixth. */
+    private static final int MAX_CLOCK_WINDOW_DOUBLINGS = 6;
+    /** Solver checks the probe may spend in total. */
+    private static final int MAX_CLOCK_DECISION_CHECKS = 40;
+
+    /** Whether the necessity ledger holds a necessary clock group. */
+    private static boolean clockNecessary(JsonObject necessity) {
+        for (JsonElement element : array(necessity, "mechanisms")) {
+            if (!element.isJsonObject()) continue;
+            JsonObject row = element.getAsJsonObject();
+            if ("CLOCK_SKEW".equals(optionalString(row, "mechanism"))
+                    && optionalBool(row, "necessary", false)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Which comparisons a clock root takes part in, and whether the window
+     * lets each be decided either way.
+     *
+     * <p>The clock window is a physical bound, not a pin: a clock may move
+     * five minutes off its recording and no further.  A mechanism whose time
+     * scale is longer -- a key that expires twenty hours out -- is then
+     * unreachable by construction, and until now nothing said so: the
+     * formula was simply unsat, or sat through something else.  This probe
+     * names the comparisons the window decides.  For each comparison atom
+     * over a clock term it asks the solver for both polarities inside the
+     * window; when one polarity is unsat it widens every clock's window by
+     * doublings until that polarity is sat, and reports the first width that
+     * admits it as the advance the decision needs.</p>
+     *
+     * <p>Skipped when the necessity ledger already shows a clock decision
+     * to be necessary: the window then admitted the mechanism, and the
+     * probe would only spend solver time confirming it.  An atom is asserted
+     * on its own, without the guards it sits under, so a comparison whose
+     * operands are free where it is not evaluated may read as decidable
+     * either way; that loses a gap, never invents one.</p>
+     */
+    private static JsonObject clockDecisionWindow(
+            Z3Solver solver, String base, JsonObject manifest,
+            boolean clockNecessary)
+            throws IOException, InterruptedException {
+        JsonObject result = new JsonObject();
+        result.addProperty("authority", "CLOCK_DECISION_WINDOW_PROBE_V1");
+        JsonObject physics = object(manifest, ClockRootPhysics.MANIFEST_FIELD);
+        long skew = Math.max(0L, optionalLongInteger(physics,
+                "clockSkewMillis", ClockRootPhysics.DEFAULT_SKEW_MILLIS));
+        result.addProperty("windowMillis", skew);
+        JsonArray rows = new JsonArray();
+        result.add("decisions", rows);
+        result.addProperty("outsideWindow", 0);
+        Map<String, JsonObject> clocks = new LinkedHashMap<>();
+        for (JsonElement element : array(physics, "clockReads")) {
+            if (!element.isJsonObject()) continue;
+            JsonObject read = element.getAsJsonObject();
+            String term = optionalString(read, "solverTerm");
+            if (!term.isEmpty() && read.has("recordedValue")) {
+                clocks.put(term, read);
+            }
+        }
+        if (clocks.isEmpty()) {
+            result.addProperty("probed", false);
+            result.addProperty("reason", "NO_CLOCK_ROOT");
+            return result;
+        }
+        if (clockNecessary) {
+            result.addProperty("probed", false);
+            result.addProperty("reason", "CLOCK_DECISION_NECESSARY");
+            return result;
+        }
+        List<String> atoms = clockComparisonAtoms(base, clocks.keySet(),
+                MAX_CLOCK_DECISION_ATOMS);
+        result.addProperty("probed", true);
+        result.addProperty("atoms", atoms.size());
+        int checks = 0;
+        int outside = 0;
+        for (String atom : atoms) {
+            if (checks + 2 > MAX_CLOCK_DECISION_CHECKS) {
+                result.addProperty("budgetExhausted", true);
+                break;
+            }
+            JsonObject row = new JsonObject();
+            row.addProperty("atom", atom);
+            JsonArray terms = new JsonArray();
+            JsonArray sites = new JsonArray();
+            for (Map.Entry<String, JsonObject> clock : clocks.entrySet()) {
+                if (!containsSymbol(atom, clock.getKey())) continue;
+                terms.add(clock.getKey());
+                sites.add(firstNonBlank(optionalString(clock.getValue(),
+                        "sourceKey")) + " " + optionalString(
+                        clock.getValue(), "siteId"));
+            }
+            row.add("clockTerms", terms);
+            row.add("sites", sites);
+            String holds = probeStatus(solver, base, atom);
+            String fails = probeStatus(solver, base, "(not " + atom + ")");
+            checks += 2;
+            row.addProperty("holdsWithinWindow", holds);
+            row.addProperty("failsWithinWindow", fails);
+            String blocked = "unsat".equals(holds) && "sat".equals(fails)
+                    ? atom : "unsat".equals(fails) && "sat".equals(holds)
+                    ? "(not " + atom + ")" : "";
+            if (blocked.isEmpty()) {
+                row.addProperty("decidedByWindow", false);
+                rows.add(row);
+                continue;
+            }
+            row.addProperty("decidedByWindow", true);
+            row.addProperty("blockedPolarity", blocked);
+            long admitted = -1L;
+            long widest = skew;
+            for (int doubling = 1; doubling <= MAX_CLOCK_WINDOW_DOUBLINGS;
+                    doubling++) {
+                if (checks + 1 > MAX_CLOCK_DECISION_CHECKS) {
+                    result.addProperty("budgetExhausted", true);
+                    break;
+                }
+                long wider = Math.max(1L, skew) << doubling;
+                String status = probeStatus(solver,
+                        widenClockWindows(base, clocks, skew, wider), blocked);
+                checks++;
+                widest = wider;
+                if ("sat".equals(status)) {
+                    admitted = wider;
+                    break;
+                }
+                if (!"unsat".equals(status)) {
+                    row.addProperty("wideningStatus", status);
+                    break;
+                }
+            }
+            row.addProperty("code", CLOCK_DECISION_OUTSIDE_WINDOW);
+            outside++;
+            if (admitted > 0L) {
+                row.addProperty("requiredWindowMillisAtMost", admitted);
+                row.addProperty("requiredWindowMillisAbove", admitted / 2);
+            } else {
+                row.addProperty("requiredWindowMillisAbove", widest);
+            }
+            rows.add(row);
+        }
+        result.addProperty("checks", checks);
+        result.addProperty("outsideWindow", outside);
+        return result;
+    }
+
+    private static String probeStatus(Z3Solver solver, String base,
+                                      String assertion)
+            throws IOException, InterruptedException {
+        solver.check(base + "(assert " + assertion + ")"
+                + System.lineSeparator() + "(check-sat)"
+                + System.lineSeparator());
+        return solver.lastStatus();
+    }
+
+    /** The base text with every clock window widened to the given skew. */
+    static String widenClockWindows(String base,
+                                    Map<String, JsonObject> clocks,
+                                    long skew, long wider) {
+        String text = base;
+        for (Map.Entry<String, JsonObject> clock : clocks.entrySet()) {
+            long recorded = optionalLongInteger(clock.getValue(),
+                    "recordedValue", 0L);
+            text = text.replace(
+                    ClockRootPhysics.window(clock.getKey(), recorded, skew),
+                    ClockRootPhysics.window(clock.getKey(), recorded, wider));
+        }
+        return text;
+    }
+
+    /**
+     * The comparison atoms of the formula that mention a clock term: the
+     * innermost {@code (< a b)}, {@code (> a b)}, {@code (<= a b)} or
+     * {@code (>= a b)} around each occurrence, one per operand pair, so the
+     * two halves of Java's {@code lcmp} idiom count once.
+     */
+    static List<String> clockComparisonAtoms(String text,
+                                             Collection<String> clockTerms,
+                                             int limit) {
+        List<String> atoms = new ArrayList<>();
+        Set<String> seen = new LinkedHashSet<>();
+        for (String term : clockTerms) {
+            int from = 0;
+            while (atoms.size() < limit) {
+                int at = text.indexOf(term, from);
+                if (at < 0) break;
+                from = at + term.length();
+                if (!boundedSymbolAt(text, at, term.length())) continue;
+                int open = enclosingComparison(text, at);
+                if (open < 0) continue;
+                int close = balancedEnd(text, open);
+                if (close < 0) continue;
+                String atom = text.substring(open, close + 1);
+                String key = comparisonKey(atom);
+                if (key.isEmpty() || !seen.add(key)) continue;
+                atoms.add(atom);
+            }
+        }
+        return atoms;
+    }
+
+    private static boolean containsSymbol(String text, String symbol) {
+        int at = text.indexOf(symbol);
+        while (at >= 0) {
+            if (boundedSymbolAt(text, at, symbol.length())) return true;
+            at = text.indexOf(symbol, at + 1);
+        }
+        return false;
+    }
+
+    /** The innermost enclosing s-expression headed by a comparison. */
+    private static int enclosingComparison(String text, int at) {
+        int depth = 0;
+        for (int index = at - 1; index >= 0; index--) {
+            char c = text.charAt(index);
+            if (c == ')') {
+                depth++;
+            } else if (c == '(') {
+                if (depth > 0) {
+                    depth--;
+                    continue;
+                }
+                int end = index + 1;
+                while (end < text.length()
+                        && !Character.isWhitespace(text.charAt(end))
+                        && text.charAt(end) != '(') {
+                    end++;
+                }
+                String head = text.substring(index + 1, end);
+                if ("<".equals(head) || ">".equals(head)
+                        || "<=".equals(head) || ">=".equals(head)) {
+                    return index;
+                }
+                if ("assert".equals(head) || "define-fun".equals(head)
+                        || "declare-const".equals(head)) {
+                    return -1;
+                }
+            }
+        }
+        return -1;
+    }
+
+    private static int balancedEnd(String text, int open) {
+        int depth = 0;
+        for (int index = open; index < text.length(); index++) {
+            char c = text.charAt(index);
+            if (c == '(') depth++;
+            if (c == ')') {
+                depth--;
+                if (depth == 0) return index;
+            }
+        }
+        return -1;
+    }
+
+    /** An operand-pair key so {@code (< a b)} and {@code (> a b)} agree. */
+    private static String comparisonKey(String atom) {
+        List<String> parts = topLevelTokens(atom);
+        if (parts.size() != 3) return "";
+        String left = parts.get(1);
+        String right = parts.get(2);
+        return left.compareTo(right) <= 0 ? left + "\n" + right
+                : right + "\n" + left;
+    }
+
+    /** The head and top-level operands of one s-expression. */
+    private static List<String> topLevelTokens(String atom) {
+        List<String> tokens = new ArrayList<>();
+        String inner = atom.substring(1, atom.length() - 1).trim();
+        int depth = 0;
+        int start = -1;
+        for (int index = 0; index < inner.length(); index++) {
+            char c = inner.charAt(index);
+            if (c == '(') {
+                if (depth == 0) start = index;
+                depth++;
+            } else if (c == ')') {
+                depth--;
+                if (depth == 0) {
+                    tokens.add(inner.substring(start, index + 1));
+                    start = -1;
+                }
+            } else if (depth == 0) {
+                if (Character.isWhitespace(c)) {
+                    if (start >= 0) {
+                        tokens.add(inner.substring(start, index));
+                        start = -1;
+                    }
+                } else if (start < 0) {
+                    start = index;
+                }
+            }
+        }
+        if (start >= 0 && depth == 0) tokens.add(inner.substring(start));
+        return tokens;
     }
 
     private static JsonObject mechanismNecessity(
