@@ -631,6 +631,24 @@ public final class GapLedger {
                         + " one it was planned against");
 
         // ------------------------------------------------------------------
+        // REPLAY / COMMUNICATION -- the message envelope's own findings.  A
+        // declared port is one pair of bytecode sites, and a protocol sends
+        // many unrelated values through it, so each leaf is addressed by its
+        // element ordinal within its message.  These two say the two sides
+        // of one message disagreed about which elements exist.
+        // ------------------------------------------------------------------
+        String messages = "REPLAY/COMMUNICATION";
+        blocking(messages, "WIRE_LEAVES_UNATTACHED",
+                "the sender put a value in the message and no decode on the"
+                        + " receiving side looked it up, so whatever that"
+                        + " value feeds is a leaf with no producer and the"
+                        + " chain the message was carrying stops there");
+        blocking(messages, "WIRE_LEAF_MISSING",
+                "a decode asked its message for an element the sender never"
+                        + " staged, so the value it went on to use carries"
+                        + " no expression from the node that produced it");
+
+        // ------------------------------------------------------------------
         // PLAN / STATIC -- the static catalog and the runtime-selected region
         // finalizer.  These used to be published to a seed artifact nothing
         // downstream read.

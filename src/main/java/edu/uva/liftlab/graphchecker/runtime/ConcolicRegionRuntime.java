@@ -2313,6 +2313,18 @@ public final class ConcolicRegionRuntime {
                             + carried.consumerOccurrenceIds()));
             return;
         }
+        if (!leafCarried) {
+            // The message does not have the element this decode asked for.
+            // Ordinals address elements, so this is not "the queue ran dry":
+            // it is the two sides disagreeing about what the message holds.
+            recordHandoffGap(RpcExpressionHandoff.gap(
+                    RpcExpressionHandoff.LEAF_MISSING,
+                    RpcExpressionHandoff.STAGE_ATTACH,
+                    RpcExpressionHandoff.MISSING_METADATA, 0L,
+                    "message carries no element for this decode: "
+                            + site.portId()));
+            return;
+        }
         if (handle <= 0L) {
             recordHandoffGap(RpcExpressionHandoff.gap(
                     RpcExpressionHandoff.STAGE_ATTACH,
@@ -2545,6 +2557,26 @@ public final class ConcolicRegionRuntime {
         }
         return inboundMessageAddressMatches(inboundProducers,
                 consumerOccurrenceId);
+    }
+
+    /**
+     * Names one element of a closing message that no decode looked up.
+     *
+     * <p>Called by {@link SymbolicMessageEnvelope} as the receiver drops the
+     * message: at that point nothing else will ever ask for the element, so
+     * the value it was carrying reaches whatever it feeds as a leaf with no
+     * producer.  Refusing here rather than at the reader is what keeps the
+     * loss named instead of inferred later from a literal.</p>
+     */
+    static void reportUnattachedMessageLeaf(String portId, int ordinal,
+                                            String producerOccurrenceId) {
+        recordHandoffGap(RpcExpressionHandoff.gap(
+                RpcExpressionHandoff.LEAVES_UNATTACHED,
+                RpcExpressionHandoff.STAGE_ATTACH,
+                RpcExpressionHandoff.MISSING_METADATA, 0L,
+                "message element nothing decoded: " + safe(portId)
+                        + " element " + ordinal + " from "
+                        + safe(producerOccurrenceId)));
     }
 
     /** Files one handoff gap with the active region, when there is one. */

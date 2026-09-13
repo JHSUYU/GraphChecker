@@ -42,6 +42,16 @@ public final class RpcExpressionHandoff {
     public static final String STAGE_EXPORT = "EXPORT";
     public static final String STAGE_ATTACH = "ATTACH";
 
+    /**
+     * A value the sender put in a message that no decode looked up.
+     *
+     * <p>Whatever that value feeds on the receiving side is a leaf with no
+     * producer, so the chain the message was carrying stops there.</p>
+     */
+    public static final String LEAVES_UNATTACHED = "WIRE_LEAVES_UNATTACHED";
+    /** A decode asked a message for an element the sender never staged. */
+    public static final String LEAF_MISSING = "WIRE_LEAF_MISSING";
+
     private static final String REASON_PREFIX = "RPC_HANDOFF_";
     /** Reason used for any negative status this build does not declare. */
     public static final String UNDECLARED_REASON =
@@ -96,6 +106,14 @@ public final class RpcExpressionHandoff {
         gap.addProperty("statusCode", status);
         gap.addProperty("handle", handle);
         gap.addProperty("detail", nonNull(detail));
+        return gap;
+    }
+
+    /** Builds one named coverage gap under an explicit code. */
+    public static JsonObject gap(String code, String stage, int status,
+                                 long handle, String detail) {
+        JsonObject gap = gap(stage, status, handle, detail);
+        gap.addProperty("code", nonNull(code));
         return gap;
     }
 
