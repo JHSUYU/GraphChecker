@@ -2023,12 +2023,12 @@ public final class ConcolicRegionRuntime {
                                                   long handle) {
         ActiveRegion active = activeRegion();
         if (active == null) return false;
-        String consumerOccurrence = active.activation
-                .exportConsumerOccurrence(portId);
-        boolean staged = !consumerOccurrence.isEmpty()
+        List<String> consumerOccurrences = active.activation
+                .exportConsumerOccurrences(portId);
+        boolean staged = !consumerOccurrences.isEmpty()
                 && SymbolicMessageEnvelope.stage(
                 portId, handle, active.activation.taskId,
-                active.occurrenceId(), consumerOccurrence);
+                active.occurrenceId(), consumerOccurrences);
         if (staged) {
             beginBookkeeping();
             try {
@@ -2119,13 +2119,13 @@ public final class ConcolicRegionRuntime {
         ActiveRegion active = activeRegion();
         if (leafCarried && !acceptCommunicationEndpoint(active, site,
                 carried.producerOccurrenceId(),
-                carried.consumerOccurrenceId())) {
+                carried.consumerOccurrenceIds())) {
             recordHandoffGap(RpcExpressionHandoff.gap(
                     RpcExpressionHandoff.STAGE_ATTACH,
                     RpcExpressionHandoff.MISSING_METADATA, handle,
                     "message entry names a different planned edge: "
                             + carried.producerOccurrenceId() + " -> "
-                            + carried.consumerOccurrenceId()));
+                            + carried.consumerOccurrenceIds()));
             return;
         }
         if (handle <= 0L) {
@@ -2242,25 +2242,46 @@ public final class ConcolicRegionRuntime {
     /** Checks that one message entry came from its planned producer. */
     private static boolean acceptCommunicationEndpoint(
             ActiveRegion active, CommunicationHandoffSpec site,
-            String producerOccurrenceId, String consumerOccurrenceId) {
+            String producerOccurrenceId,
+            List<String> consumerOccurrenceIds) {
         String expectedProducer = active.activation
                 .attachProducerOccurrence(site.portId());
         String actualProducer = OccurrenceId.parse(
                 producerOccurrenceId).planned();
         String expectedConsumer = active.activation.occurrenceId;
-        String actualConsumer = OccurrenceId.parse(
-                consumerOccurrenceId).planned();
         if (expectedProducer.isEmpty()
                 || !expectedProducer.equals(actualProducer)
-                || !expectedConsumer.equals(actualConsumer)) {
+                || !addressesConsumer(consumerOccurrenceIds,
+                expectedConsumer)) {
             diag("ATTACH_ENDPOINT_MISMATCH", "task="
                     + safe(active.activation.taskId) + " port="
                     + site.portId() + " expected=" + expectedProducer
                     + " -> " + expectedConsumer + " actual="
-                    + actualProducer + " -> " + actualConsumer);
+                    + actualProducer + " -> " + consumerOccurrenceIds);
             return false;
         }
         return true;
+    }
+
+    /**
+     * Whether a staged entry is addressed to this exact consumer occurrence.
+     *
+     * <p>One delivery of a repeated field carries one value per element, and
+     * the plan names one consumer occurrence per element; the envelope is a
+     * queue, so the value a consumer takes is the one its own iteration is
+     * due.  Membership is what the plan authorises -- never a wildcard: an
+     * occurrence the plan did not bind to this port still refuses.</p>
+     */
+    private static boolean addressesConsumer(List<String> consumers,
+                                             String occurrenceId) {
+        if (consumers == null || safe(occurrenceId).isEmpty()) return false;
+        for (String consumer : consumers) {
+            if (occurrenceId.equals(
+                    OccurrenceId.parse(consumer).planned())) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -2284,9 +2305,8 @@ public final class ConcolicRegionRuntime {
         return carried.present() && expectedProducer.equals(
                 OccurrenceId.parse(
                         carried.producerOccurrenceId()).planned())
-                && expectedConsumer.equals(
-                OccurrenceId.parse(
-                        carried.consumerOccurrenceId()).planned());
+                && addressesConsumer(carried.consumerOccurrenceIds(),
+                expectedConsumer);
     }
 
     /** Whether every planner-authored input belongs to this exact message. */

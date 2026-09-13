@@ -25,6 +25,25 @@ closure-wide waves. Each selected shared read carries a bounded GuardedRead
 snapshot of every retained writer expression; its exactly-one selector is
 coupled to the corresponding writer case and local path condition.
 
+The manual symbolic roots are the NameNode's key id, time and expiry, and they
+come from two authorities. Two are minted by configured-source hooks in
+`BlockTokenSecretManager.updateKeys`:
+`CausynthSymbolicSource.symbolize("HDFS.BLOCK_KEY.SERIAL_NO", this, ...)` roots
+`<org.apache.hadoop.hdfs.security.token.block.BlockTokenSecretManager: int
+serialNo>`, the counter each new `BlockKey` takes its id from, and
+`CausynthSymbolicSource.symbolize("HDFS.BLOCK_KEY.EXPIRY_DATE", nextKey, ...)`
+roots `<org.apache.hadoop.security.token.delegation.DelegationKey: long
+expiryDate>` (the field `BlockKey` inherits). A hook site owns its field: every
+competing field-read candidate for it is stamped
+`CONFIGURED_SYMBOLIC_SOURCE_FIELD_OWNED` and left concrete, so each root is
+minted once, at its hook -- which is why neither field is listed in
+`symbolic-inputs.jsonl`. The third root, the clock
+`<org.apache.hadoop.util.Timer: long now()>.return`, has no hook and is still
+declared there for both regions. The key IDs observed on the wire and `allKeys`
+are carriers, not roots of their own: they carry the NameNode's minted
+expressions, and the file narrows which inputs may *mint*, never which are
+symbolized.
+
 ## Clock window
 
 `clock_skew_ms=900000` (15 min), against the engine default of 300 000 ms.
