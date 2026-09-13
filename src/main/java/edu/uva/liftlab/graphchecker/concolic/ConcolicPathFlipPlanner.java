@@ -33,7 +33,7 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
  * immutable frontier feed many independent worker processes.
  *
  * <p>A wave's members all read the same summaries and the same task plan, so
- * the symbolic propagation closure over them is one computation, not one per
+ * resolving each replay's own path conditions is one indexing pass, not one per
  * member. This process performs it once and then plans each member from it;
  * each member still writes its own {@code region_path_manifest.json} and
  * {@code region_path_worklist.jsonl} in its own directory, exactly as when
@@ -112,11 +112,9 @@ public final class ConcolicPathFlipPlanner {
         private final List<JsonObject> allExecutionTasks;
         private final List<JsonObject> allSummaries;
         private final List<JsonObject> allRecords;
-        private final SymbolicPropagationClosure.Result propagation;
         /** The wave's receiver-family rows, indexed by their family key.
          *  Expanded, so the transitive family walk below sees every nested
          *  family name instead of a Merkle reference to one. */
-        private final Map<String, JsonObject> dependenciesByFamily;
         /** The families each dependency row names, walked once per wave
          *  rather than once per flip row that reaches it. */
         private final Map<String, Set<String>> nestedFamilies =
@@ -137,8 +135,6 @@ public final class ConcolicPathFlipPlanner {
         private Wave(List<JsonObject> allExecutionTasks,
                      List<JsonObject> allSummaries,
                      List<JsonObject> allRecords,
-                     SymbolicPropagationClosure.Result propagation,
-                     Map<String, JsonObject> dependenciesByFamily,
                      String familyDigest,
                      String topologyEpoch,
                      RegionPathWorklist.Bounds bounds,
@@ -146,8 +142,6 @@ public final class ConcolicPathFlipPlanner {
             this.allExecutionTasks = allExecutionTasks;
             this.allSummaries = allSummaries;
             this.allRecords = allRecords;
-            this.propagation = propagation;
-            this.dependenciesByFamily = dependenciesByFamily;
             this.familyDigest = familyDigest;
             this.topologyEpoch = topologyEpoch;
             this.bounds = bounds;
@@ -160,22 +154,30 @@ public final class ConcolicPathFlipPlanner {
                 throws IOException {
             List<JsonObject> allExecutionTasks = ArtifactIO.readJsonl(
                     requiredPath(options, "task-plan"));
-            List<JsonObject> observedSummaries = ArtifactIO.readJsonl(
-                    requiredPath(options, "summaries"));
-            SymbolicPropagationClosure.Result propagation =
-                    SymbolicPropagationClosure.rewriteSummaryRows(
-                            observedSummaries);
-            JsonArray caseDependencies = propagation.caseDependencies();
+            // Rows arrive content-addressed; the wave plans over one
+            // expanded DAG, as the closure used to expand them on its way
+            // through.
+            List<JsonObject> observedSummaries =
+                    SharedExpressionTable.expandAll(ArtifactIO.readJsonl(
+                            requiredPath(options, "summaries")));
+            // The summaries are read as the replays published them.  The
+            // closure used to rewrite them first, replacing each shared read
+            // with a choice over the writers the region graph could find --
+            // and an obligation cut from that asks the solver to pick a
+            // writer, which is the opposite of asking it for a root.  Each
+            // path condition is resolved inside its own replay instead, by
+            // ResolvedFlipQuery, where the value is a fact rather than a
+            // choice.
+            JsonArray caseDependencies = new JsonArray();
             RegionPathWorklist.Bounds defaults =
                     RegionPathWorklist.Bounds.defaults();
             // The roots are the wave's, not a member's: read them from the
-            // rewritten summaries the members will actually plan against and
-            // from the plan that declares them.
+            // summaries the members will actually plan against and from the
+            // plan that declares them.
             SymbolicRootInventory roots = SymbolicRootInventory.of(
-                    propagation.summaries(), allExecutionTasks);
-            return new Wave(allExecutionTasks, propagation.summaries(),
-                    rows(options, "records"), propagation,
-                    dependenciesByFamily(caseDependencies),
+                    observedSummaries, allExecutionTasks);
+            return new Wave(allExecutionTasks, observedSummaries,
+                    rows(options, "records"),
                     LinkedReplayBundle.familySnapshotDigest(caseDependencies),
                     optional(options, "topology-epoch"),
                     new RegionPathWorklist.Bounds(
@@ -228,8 +230,6 @@ public final class ConcolicPathFlipPlanner {
                 // here, where the replay it was cut from still has its rows.
                 String replay = replayOfSource(task);
                 ResolvedFlipQuery.attach(task, resolvers.get(replay), replay);
-                task.add(LinkedReplayBundle.CASE_DEPENDENCIES_FIELD,
-                        scopedDependencies(task));
                 JsonObject bundle = LinkedReplayBundle.create(
                         optionalString(task, "sourceTaskId"),
                         allExecutionTasks, allSummaries,
@@ -244,8 +244,7 @@ public final class ConcolicPathFlipPlanner {
                         LinkedReplayBundle.TOPOLOGY_EPOCH_FIELD,
                         topologyEpoch);
             }
-            result.manifest.add("symbolicPropagationGaps",
-                    propagation.gaps());
+            result.manifest.add("symbolicPropagationGaps", new JsonArray());
             // A worklist repeats the same upstream PCs in several independent
             // flip rows.  Preserve the portable one-row contract while storing
             // their immutable expression DAG once per row as Merkle references.
@@ -289,113 +288,9 @@ public final class ConcolicPathFlipPlanner {
             return "";
         }
 
-        /**
-         * The receiver-family rows one flip row can actually reach.
-         *
-         * <p>{@link ConcolicConstraintSolver} binds "only families reached
-         * from this flip's local expression", so handing a row the whole
-         * wave's snapshot attaches evidence no worker will ever read -- and
-         * attaches it again, larger, in every later wave, because the
-         * snapshot is the union over a corpus that keeps growing. A row's
-         * payload has to track its own constraints, not the corpus: this
-         * publishes the transitive closure of the families the row names,
-         * which is exactly the set the solver walks.</p>
-         *
-         * <p>The closure is transitive because lowering one family's arm
-         * path condition can name a second family, which is the same reason
-         * the solver drains its family work set in a loop.</p>
-         */
-        private JsonArray scopedDependencies(JsonObject task) {
-            Set<String> reached = new TreeSet<>();
-            Deque<String> pending = new ArrayDeque<>(familyKeys(task));
-            while (!pending.isEmpty()) {
-                String family = pending.pop();
-                if (!reached.add(family)) continue;
-                JsonObject dependency = dependenciesByFamily.get(family);
-                // A family with no row is the solver's gap to name
-                // (CONSUMER_FAMILY_DEPENDENCY_MISSING), not one to invent.
-                if (dependency == null) continue;
-                Set<String> nested = nestedFamilies.get(family);
-                if (nested == null) {
-                    nested = familyKeys(dependency);
-                    nestedFamilies.put(family, nested);
-                }
-                for (String next : nested) {
-                    if (!reached.contains(next)) pending.push(next);
-                }
-            }
-            JsonArray scoped = new JsonArray();
-            for (String family : reached) {
-                JsonObject dependency = dependenciesByFamily.get(family);
-                if (dependency != null) scoped.add(dependency);
-            }
-            return scoped;
-        }
     }
 
-    /** Indexes the wave's case dependencies by the family each one defines. */
-    private static Map<String, JsonObject> dependenciesByFamily(
-            JsonArray caseDependencies) {
-        Map<String, JsonObject> byFamily = new LinkedHashMap<>();
-        for (JsonElement element : caseDependencies) {
-            if (element == null || !element.isJsonObject()) continue;
-            JsonObject dependency = element.getAsJsonObject();
-            String family = optionalString(dependency,
-                    VmExpressionIr.FAMILY_KEY);
-            if (!family.isEmpty()) byFamily.put(family, dependency);
-        }
-        return byFamily;
-    }
 
-    /**
-     * Every receiver family named anywhere inside one payload.
-     *
-     * <p>A family reaches the solver under two spellings: {@code familyKey}
-     * on a {@code CaseMergeExpression} or consumer-boundary reference, and
-     * {@code writerCaseFamilyKey} on a ReadFrom candidate's writer case.
-     * Both discovery paths add to the solver's family work set, so both have
-     * to be followed here or a row would arrive without evidence the solver
-     * then reports as missing.</p>
-     */
-    private static Set<String> familyKeys(JsonElement root) {
-        Set<String> families = new LinkedHashSet<>();
-        // The payload is a DAG, not a tree: SharedExpressionTable.expandAll
-        // interns equal definitions, so one shared node is reached by many
-        // paths.  Walking it without marking visited nodes re-expands every
-        // shared node once per path that reaches it, which is exponential in
-        // the sharing depth -- it planned a 2,218-node bug3 DAG in seconds
-        // and then wedged hdfs-11741 for twenty minutes on one member.
-        // Identity is the right test precisely because the interning gives
-        // one shared node one object.
-        Set<JsonElement> visited = Collections.newSetFromMap(
-                new IdentityHashMap<JsonElement, Boolean>());
-        Deque<JsonElement> pending = new ArrayDeque<>();
-        pending.push(root);
-        while (!pending.isEmpty()) {
-            JsonElement node = pending.pop();
-            if (node == null || node.isJsonNull()) continue;
-            if (!node.isJsonObject() && !node.isJsonArray()) continue;
-            if (!visited.add(node)) continue;
-            if (node.isJsonArray()) {
-                for (JsonElement item : node.getAsJsonArray()) {
-                    pending.push(item);
-                }
-                continue;
-            }
-            JsonObject object = node.getAsJsonObject();
-            for (Map.Entry<String, JsonElement> field : object.entrySet()) {
-                String name = field.getKey();
-                if (VmExpressionIr.FAMILY_KEY.equals(name)
-                        || SymbolicPropagationClosure.WRITER_CASE_FAMILY
-                                .equals(name)) {
-                    String family = optionalString(object, name);
-                    if (!family.isEmpty()) families.add(family);
-                }
-                pending.push(field.getValue());
-            }
-        }
-        return families;
-    }
 
     private static List<JsonObject> rows(Map<String, String> options,
                                          String name) throws IOException {
