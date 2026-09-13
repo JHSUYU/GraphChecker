@@ -1,6 +1,7 @@
 #ifdef ENABLE_CONCOLIC
 
 #include "concolic/fieldTraverser.hpp"
+#include "concolic/sharedFieldVersions.hpp"
 #include "concolic/reference/symbolicString.hpp"
 #include "concolic/reference/symbolicPrimitive.hpp"
 #include "oops/klass.hpp"
@@ -261,9 +262,24 @@ bool FieldSymbolizer::do_field_helper(fieldDescriptor *fd, oop obj) {
     }
     assert(sym_inst == (SymInstance *)this->_sym_refs.back(),
            "should be equal");
-    // Invariant: a field that already carries a symbolic expression is
-    // never overwritten by a fresh symbol, and no equation is recorded.
-    if (sym_inst->has_sym_exp(fd->offset())) return false;
+    // Invariant for the recursive and by-name symbolizers: a field that
+    // already carries a symbolic expression is never overwritten by a fresh
+    // symbol, and no equation is recorded.
+    //
+    // The exact symbolizer (holder + name + descriptor) is the one explicit
+    // mint API, and its caller has already asked getSymbolicFieldExpression
+    // whether the field carries an expression of its own: it calls here only
+    // when the answer was "no root inside".  What the field holds then is a
+    // propagated tree over constants -- typically the value an application
+    // write just computed from carrier reads whose every candidate is a
+    // recorded constant -- and keeping it would leave the declared source
+    // concrete forever, because nothing later can ask again.  So the exact
+    // form replaces the shadow.  A field that is a selected shared carrier
+    // also publishes the symbol as a version: a later getfield of a carrier
+    // resolves over the version store, not over the owner shadow, and the
+    // mint has to be the writer that read observes.
+    const bool exact = !_selected_holder.empty();
+    if (!exact && sym_inst->has_sym_exp(fd->offset())) return false;
     Expression *symbol = new FieldSymbolExp(
         sym_inst->get_sym_rid(), symbolic_name, type);
     sym_inst->set_sym_exp(fd->offset(), symbol);
@@ -272,7 +288,18 @@ bool FieldSymbolizer::do_field_helper(fieldDescriptor *fd, oop obj) {
             sym_inst->get_or_create_ref_exp(obj),
             obj->klass()->name()->as_C_string(), fd->offset(), type),
         symbol, op_eq, true));
-//      sym_inst->init_sym_exp(fd->offset(), type);
+    if (exact && SharedFieldVersions::has_carriers()) {
+      SharedFieldVersions::Location location(
+          sym_inst->get_sym_rid(), fd->offset(),
+          SharedFieldVersions::LOC_INSTANCE_FIELD);
+      if (SharedFieldVersions::is_carrier(location)) {
+        // Folded outside every engine lock, as the store's concurrency
+        // contract requires; the same guard a putfield would publish.
+        Expression *guard = _ctx.path_guard();
+        SharedFieldVersions::publish(location, symbol, guard,
+                                     SharedFieldVersions::VERSION_WRITE);
+      }
+    }
     return false;
   }
 }
