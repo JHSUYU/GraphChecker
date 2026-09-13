@@ -126,43 +126,6 @@ public final class SymbolicPropagationClosure {
 
     public static final String READ_CHOICE_IDENTITY = "readChoiceIdentity";
     public static final String READ_CHOICE_OWNER = "readChoiceOwner";
-    /**
-     * The carrier one guarded read names, independent of the session it ran
-     * in and of whether any boundary consumed it.
-     *
-     * <p>{@link #READ_CHOICE_IDENTITY} names a read by its boundary family
-     * and the case that consumed it, which exists only for a read some other
-     * case reached through.  A write's own reads have no such consumer, so
-     * they carried no name at all, and a write expression offered to another
-     * region as a read-from arm asked that region to lower a read addressed
-     * {@code INSTANCE_FIELD/<session rid>#<slot>#event<n>} -- a foreign
-     * session's address.  This identity is the location's instead: the same
-     * shared carrier read from two regions carries the same leaf name, which
-     * is what lets a consumer substitute its own admitted arm set for the
-     * writer's leaf rather than lower the writer's read.</p>
-     */
-    public static final String WRITE_LEAF_IDENTITY = "writeLeafIdentity";
-    /** The stable location {@link #WRITE_LEAF_IDENTITY} digests. */
-    public static final String WRITE_LEAF_LOCATION = "writeLeafLocation";
-    /**
-     * Which write-expression contract one summary was published under.
-     *
-     * <p>Only {@link #PORTABLE_LEAVES_V1} states that every guarded read in
-     * the summary carries {@link #WRITE_LEAF_PORTABLE}, so a consumer can
-     * tell "this write reads nothing" from "this write was recorded before
-     * leaf identities existed".  Without the marker the two are
-     * indistinguishable, and a consumer that guesses offers arms whose
-     * leaves it then cannot resolve.</p>
-     */
-    public static final String WRITE_EXPRESSION_CONTRACT =
-            "writeExpressionContract";
-    public static final String PORTABLE_LEAVES_V1 = "PORTABLE_LEAVES_V1";
-    /**
-     * False when a guarded read has no stable location and can therefore
-     * never travel out of its own summary; the composer refuses such a leaf
-     * by name instead of reporting an unnamed read.
-     */
-    public static final String WRITE_LEAF_PORTABLE = "writeLeafPortable";
     public static final String READ_CHOICE_OCCURRENCE_ID =
             "readChoiceOccurrenceId";
     /** Dependency rows with this policy are enabled by an RF arm. */
