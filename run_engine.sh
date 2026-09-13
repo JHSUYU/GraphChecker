@@ -757,6 +757,13 @@ campaign_delta_divergences=0
 # stages is five chances to disagree about one frozen file that is written
 # once and never rewritten.
 campaign_member_rows=""
+# One row per observed occurrence of the annotated target: what COMPOSE
+# composed for it, what SOLVE concluded from that, and what DECIDE elected.
+# COMPOSE writes the rows, SOLVE rewrites them with its own artifact, DECIDE
+# turns them into the published ledger and EMIT copies that ledger into the
+# result.
+campaign_target_reports=""
+campaign_target_ledger=""
 
 campaign_log() {
   printf '[campaign] %s\n' "$*"
@@ -1316,10 +1323,11 @@ campaign_record_gap() {
 }
 
 # The scheduler index is the only campaign membership authority.  Decode the
-# complete schema in one checked jq operation.  The six fields are emitted as
-# TSV only after their types, non-blank identities, and task-set disjointness
-# have been proved. The target and all causal predecessors are peers in one
-# linked region-path bundle.
+# complete schema in one checked jq operation.  The seven fields are emitted
+# as TSV only after their types, non-blank identities, and task-set
+# disjointness have been proved. The target and all causal predecessors are
+# peers in one linked region-path bundle, and the seventh field says which of
+# those peers carry a goal that captures target reach.
 campaign_decode_index_members() {
   local index=$1
   [[ -s "${index}" ]] || {
@@ -1336,20 +1344,26 @@ campaign_decode_index_members() {
       and (.regionId | scalar_id)
       and (.occurrenceId | scalar_id)
       and (.goalId | scalar_id)
-      and (.taskId | scalar_id);
+      and (.taskId | scalar_id)
+      and (.targetReachGoal | type == "boolean");
     if length != 1 then
       error("schedule index must contain exactly one JSON document")
     else .[0] end
     # ConcolicScheduler owns the index schema, its constants and its task
     # identities. What is checked here is what this shell then does with the
-    # rows: it emits them as TSV and it dispatches on the one TARGET.
+    # rows: it emits them as TSV, it dispatches on the one TARGET, and it
+    # composes one query per member whose goal captures target reach. The
+    # elected TARGET is one of those members by construction; an index that
+    # says otherwise is an index this shell cannot dispatch on.
     | if ((.members | type == "array" and length > 0)
         and all(.members[];
           member and ((.role == "TARGET") or (.role == "DEPENDENCY")))
-        and ([.members[] | select(.role == "TARGET")] | length == 1))
+        and ([.members[] | select(.role == "TARGET")] | length == 1)
+        and all(.members[]; select(.role == "TARGET") | .targetReachGoal))
     then
       .members[]
-      | [.role, .campaignId, .regionId, .occurrenceId, .goalId, .taskId]
+      | [.role, .campaignId, .regionId, .occurrenceId, .goalId, .taskId,
+         (.targetReachGoal | tostring)]
       | @tsv
     else error("invalid runtime region-path schedule index") end
   ' "${index}"
@@ -1907,7 +1921,8 @@ campaign_plan() {
   # 545 MB of task plans in one recorded iteration).  Every writer here
   # publishes through a temporary file and an atomic rename, so a later
   # rewrite replaces a member's entry instead of editing the shared one.
-  while IFS=$'\t' read -r role campaign_id region occurrence goal task; do
+  while IFS=$'\t' read -r role campaign_id region occurrence goal task \
+      target_reach; do
     worker="${iteration_dir}/workers/${task}"
     mkdir -p "${worker}"
     ln -f "${plan}" "${worker}/execution_task_plan.jsonl"
@@ -2069,7 +2084,8 @@ campaign_import_session() {
   # Fan the importer's own rows out to the candidate directories.  Candidate
   # occurrences may be dormant on this replay; exact VM evidence selects the
   # active observed closure in SEED_QUERY before any worklist is built.
-  while IFS=$'\t' read -r role campaign_id region occurrence goal task; do
+  while IFS=$'\t' read -r role campaign_id region occurrence goal task \
+      target_reach; do
     campaign_json select-summary "${summaries}" "${task}" \
       >"${iteration_dir}/workers/${task}/concolic_region_summaries.jsonl"
   done <<<"${campaign_member_rows}"
@@ -2350,28 +2366,73 @@ campaign_publish_wave() {
 # The builder requires exactly one solver-ready target seed and publishes the
 # exact observed target paths it can justify.
 campaign_target_reach_query() {
-  local iteration_dir=$1 task=$2
-  local member="${iteration_dir}/workers/${task}"
+  local iteration_dir=$1 elected=$2
   local resolved="${causynth_output_dir}/target_resolved.json"
-  local exception="" status=0
+  local exception="" built=0
+  local role campaign_id region occurrence goal task target_reach
   [[ ! -s "${resolved}" ]] \
     || exception=$(jq -r '.exception // ""' "${resolved}")
   if [[ -z "${exception}" ]]; then
     campaign_fail EXPLORE TargetReachPathQueryBuilder "${resolved}" \
       "no target attestation names the selected exception"
   fi
+  # One reach query per observed occurrence of the annotated target, not one
+  # for the elected member alone.  Each is built from that occurrence's own
+  # closed worklist over the one shared closure the wave loop published, so
+  # the queries differ exactly where the executions differed.  Only the
+  # elected member's query is mandatory: it is the one every later stage is
+  # guaranteed to have.  A sibling occurrence whose worklist never closed has
+  # nothing to state, and saying so is a skip the composition reports rather
+  # than a campaign failure.
+  while IFS=$'\t' read -r role campaign_id region occurrence goal task \
+      target_reach; do
+    [[ "${target_reach}" == "true" ]] || continue
+    if campaign_member_reach_query "${iteration_dir}" "${task}" \
+        "${occurrence}"; then
+      built=$((built + 1))
+    elif [[ "${task}" == "${elected}" ]]; then
+      campaign_fail EXPLORE TargetReachPathQueryBuilder \
+        "${iteration_dir}/workers/${task}" \
+        "the elected target published no exact reach query"
+    fi
+  done <<<"${campaign_member_rows}"
+  campaign_log "target reach queries: ${built}"
+}
+
+# One member's exact reach query, or a named skip.  The skip reason is left
+# beside the absent query so COMPOSE can publish why this occurrence carries
+# no verdict instead of leaving a silent hole in the ledger.
+campaign_member_reach_query() {
+  local iteration_dir=$1 task=$2 occurrence=$3
+  local member="${iteration_dir}/workers/${task}"
+  local skipped="${member}/reach_query.skipped"
+  local status=0
+  rm -f "${skipped}"
+  if [[ ! -s "${member}/path_closure.json" ]]; then
+    printf '%s\n' "the linked replay published no path closure for this \
+occurrence: its fatal read was not observed in any summary this run linked" \
+      >"${skipped}"
+    campaign_log "target occurrence skipped (no closure): ${occurrence}"
+    return 1
+  fi
   run_capturing_status run_java_main \
     edu.uva.liftlab.graphchecker.concolic.TargetReachPathQueryBuilder \
     --summaries "${member}/observed_path_summaries.jsonl" \
     --path-manifest "${member}/path_closure.json" \
     --seed-query "${iteration_dir}/seed-query/branch_queries.jsonl" \
-    --output "${member}/reach_query.jsonl" >/dev/null
+    --output "${member}/reach_query.jsonl" \
+    >"${member}/reach_query.log" 2>&1
   if [[ "${status}" -ne 0 || ! -s "${member}/reach_query.jsonl" ]]; then
-    campaign_fail EXPLORE TargetReachPathQueryBuilder "${member}" \
-      "TargetReachPathQueryBuilder published no exact reach query (exit ${status})"
+    rm -f "${member}/reach_query.jsonl"
+    printf '%s\n' "TargetReachPathQueryBuilder published no exact reach \
+query (exit ${status}): $(tail -n 1 "${member}/reach_query.log")" \
+      >"${skipped}"
+    campaign_log "target occurrence skipped (no query): ${occurrence}"
+    return 1
   fi
   campaign_log "target reach paths: $(jq -r '.paths | length' \
-    "${member}/reach_query.jsonl")"
+    "${member}/reach_query.jsonl") ${occurrence}"
+  return 0
 }
 
 # EXPLORE-1: the closure loop stops on its own fixed point, and failing that
@@ -2457,7 +2518,8 @@ campaign_explore() {
     mkdir -p "${wave_dir}"
     roster="${wave_dir}/members.tsv"
     : >"${roster}"
-    while IFS=$'\t' read -r role campaign_id region occurrence goal task; do
+    while IFS=$'\t' read -r role campaign_id region occurrence goal task \
+        target_reach; do
       member="${iteration_dir}/workers/${task}"
       if [[ "${role}" == "TARGET" ]]; then
         target_task=${task}
@@ -2633,7 +2695,8 @@ obligation(s) as the wave before it with no new verdict"
   # 130.7 MB corpus (3266.9 MB) and 25 of one 24.6 MB task set (615.6 MB).
   # Both files are published above by an atomic rename and nothing rewrites a
   # member's entry in place, so the link cannot carry an edit between members.
-  while IFS=$'\t' read -r role campaign_id region occurrence goal task; do
+  while IFS=$'\t' read -r role campaign_id region occurrence goal task \
+      target_reach; do
     member="${iteration_dir}/workers/${task}"
     ln -f "${summaries}" "${member}/observed_path_summaries.jsonl"
     ln -f "${tasks}" "${member}/observed_execution_tasks.jsonl"
@@ -2689,7 +2752,8 @@ campaign_publish_iteration_manifest() {
   local role campaign_id region occurrence goal task worker
   local obligations plan_sha index_sha summaries_sha
   : >"${members}"
-  while IFS=$'\t' read -r role campaign_id region occurrence goal task; do
+  while IFS=$'\t' read -r role campaign_id region occurrence goal task \
+      target_reach; do
     worker="${iteration_dir}/workers/${task}"
     if ! obligations=$(find "${worker}" -mindepth 2 -maxdepth 2 \
         -type d -path '*/obligations-*/*' -printf '%f\n' \
@@ -2755,13 +2819,34 @@ campaign_publish_iteration_manifest() {
 
 # Composition consumes the closure-wide local cases. Consumer anchors inside
 # those path conditions already carry the propagated values into the formula.
+#
+# COMPOSE-1: one composition per observed occurrence of the annotated target.
+# The planner plants a target-reach goal on every occurrence the recording
+# observed, and a formula composed for one of them states nothing about the
+# others: for hdfs-17897 the elected occurrence was the DataNode-to-DataNode
+# handshake while the chain the experiment is about ends at the client's.  So
+# every occurrence that published a reach query is composed into its own
+# directory and judged on its own; DECIDE elects which of those finished
+# answers the campaign publishes.  This is an outer loop over whole
+# compositions, never a disjunction inside one: no formula is weakened by
+# another, and each one remains exactly the formula this stage used to
+# compose for the elected member.
+#
+# The evidence every composition reads is built once -- one combined
+# closure-wide summary corpus and one task plan, shared by every occurrence.
+# The Composer still rebuilds its own propagation closure per run, because
+# that closure is cut to the fatal query it is lowering, so the stage costs
+# one composition per *composed* occurrence.  Occurrences whose fatal read
+# this run never observed publish no query and are skipped, which is what
+# keeps that count at the number of executions the recording actually had.
 campaign_compose() {
   local iteration_dir=$1
-  local role campaign_id region occurrence goal task
+  local role campaign_id region occurrence goal task target_reach
   local target_task="" target_region="" target_occurrence=""
-  local status=0 observed
+  local status=0 observed elected_manifest=""
   local -a observed_inputs=()
-  while IFS=$'\t' read -r role campaign_id region occurrence goal task; do
+  while IFS=$'\t' read -r role campaign_id region occurrence goal task \
+      target_reach; do
     require_nonempty "linked member observed summaries" \
       "${iteration_dir}/workers/${task}/observed_path_summaries.jsonl"
     observed_inputs+=(
@@ -2774,44 +2859,252 @@ campaign_compose() {
   done <<<"${campaign_member_rows}"
   [[ ! -e "${campaign_final}" ]] || die \
     "the final directory already exists: ${campaign_final}"
-  mkdir -p "${campaign_final}"
-  fatal_queries="${iteration_dir}/workers/${target_task}/reach_query.jsonl"
-  require_nonempty "target reach query" "${fatal_queries}"
+  mkdir -p "${campaign_final}/targets"
+  require_nonempty "target reach query" \
+    "${iteration_dir}/workers/${target_task}/reach_query.jsonl"
   observed="${iteration_dir}/closure_observed_summaries.jsonl"
   campaign_json combine summaryId "${observed}" "${observed_inputs[@]}"
   require_nonempty "closure-wide observed summaries" "${observed}"
   compose_summary_inputs="${observed}"
   compose_task_plan="${iteration_dir}/execution_task_plan.jsonl"
-  composed_smt="${campaign_final}/candidate.smt2"
-  composition_manifest="${campaign_final}/candidate_composition_manifest.json"
-  fatal_region="${target_region}"
-  fatal_occurrence_id="${target_occurrence}"
-  run_capturing_status do_compose >/dev/null
-  [[ "${status}" -eq 0 ]] || campaign_fail COMPOSE ConcolicSmtComposer \
-    "${composition_manifest}" \
-    "the Composer failed with exit ${status} on inputs it was given"
+  campaign_target_reports="${campaign_final}/target_occurrence_reports.jsonl"
+  : >"${campaign_target_reports}"
+  # The elected member first, so the mandatory composition is the one a
+  # failure is reported against, and so the ledger's first row is the
+  # occurrence every earlier run composed.
+  campaign_compose_occurrence "${iteration_dir}" TARGET "${target_task}" \
+    "${target_region}" "${target_occurrence}"
+  elected_manifest="${composition_manifest}"
+  while IFS=$'\t' read -r role campaign_id region occurrence goal task \
+      target_reach; do
+    [[ "${target_reach}" == "true" ]] || continue
+    [[ "${task}" != "${target_task}" ]] || continue
+    campaign_compose_occurrence "${iteration_dir}" SIBLING "${task}" \
+      "${region}" "${occurrence}"
+  done <<<"${campaign_member_rows}"
+  # Occurrences the runtime plan named and this iteration never scheduled at
+  # all: the active observed closure dropped them because no linked summary
+  # carried their fatal read.  The Composer's own occurrence ledger is the
+  # authority on the planned set, so they are read from it rather than
+  # re-derived here, and each is published as a skip with its reason.
+  campaign_compose_unscheduled "${elected_manifest}"
+  require_nonempty "target occurrence reports" "${campaign_target_reports}"
+  campaign_log "composed target occurrences: \
+$(jq -r -s '[.[] | select(.status == "COMPOSED")] | length' \
+    "${campaign_target_reports}") of $(wc -l <"${campaign_target_reports}")"
+}
+
+# One occurrence's own composition, timed and reported.  A Composer refusal
+# is an outcome this stage publishes: the refused stub carries its own
+# named refusal and DECIDE ranks it below every composed formula.  Only a
+# Composer that failed outright stops the campaign, and only for the elected
+# member, whose composition every later stage is guaranteed to have.
+campaign_compose_occurrence() {
+  local iteration_dir=$1 kind=$2 task=$3 region=$4 occurrence=$5
+  local member="${iteration_dir}/workers/${task}"
+  local key target_dir status=0 started ended millis detail=""
+  key=$(campaign_occurrence_key "${occurrence}")
+  target_dir="${campaign_final}/targets/${key}"
+  [[ ! -e "${target_dir}" ]] || die \
+    "two target occurrences share one artifact directory: ${target_dir}"
+  if [[ ! -s "${member}/reach_query.jsonl" ]]; then
+    [[ ! -s "${member}/reach_query.skipped" ]] \
+      || detail=$(<"${member}/reach_query.skipped")
+    campaign_report_target_occurrence "${occurrence}" "${region}" \
+      "${task}" "" SKIPPED_UNOBSERVED \
+      "${detail:-this occurrence published no exact reach query}" -1
+    return 0
+  fi
+  mkdir -p "${target_dir}"
+  fatal_queries="${member}/reach_query.jsonl"
+  composed_smt="${target_dir}/candidate.smt2"
+  composition_manifest="${target_dir}/candidate_composition_manifest.json"
+  fatal_region="${region}"
+  fatal_occurrence_id="${occurrence}"
+  started=$(date +%s%N)
+  run_capturing_status do_compose >"${target_dir}/compose.log" 2>&1
+  ended=$(date +%s%N)
+  millis=$(( (ended - started) / 1000000 ))
+  if [[ "${status}" -ne 0 ]]; then
+    if [[ "${kind}" == "TARGET" ]]; then
+      campaign_fail COMPOSE ConcolicSmtComposer \
+        "${composition_manifest}" \
+        "the Composer failed with exit ${status} on inputs it was given"
+    fi
+    campaign_report_target_occurrence "${occurrence}" "${region}" \
+      "${task}" "${target_dir}" SKIPPED_UNOBSERVED \
+      "the Composer failed with exit ${status} on this occurrence" \
+      "${millis}"
+    campaign_log "target occurrence composition failed: ${occurrence}"
+    return 0
+  fi
   require_nonempty "candidate SMT" "${composed_smt}"
   require_nonempty "candidate composition manifest" "${composition_manifest}"
+  campaign_report_target_occurrence "${occurrence}" "${region}" "${task}" \
+    "${target_dir}" COMPOSED "" "${millis}"
+  printf '%s\t%s\n' "COMPOSE[${occurrence}]" "${millis}" \
+    >>"${campaign_stage_metrics}"
+  campaign_log "composed ${occurrence} in ${millis}ms status=$(jq -r \
+    '.finalStatus // ""' "${composition_manifest}")"
+}
+
+# Every planned target occurrence the member set never carried.  Read from
+# the elected composition's own occurrence ledger so the planned set and the
+# reported set come from one owner.
+campaign_compose_unscheduled() {
+  local manifest=$1
+  local reported planned occurrence region goal
+  reported=$(jq -r -s '[.[].occurrenceId] | join("\n")' \
+    "${campaign_target_reports}") || campaign_fail COMPOSE CAMPAIGN \
+    "${campaign_target_reports}" "the target occurrence reports are invalid"
+  planned=$(jq -r --arg reported "${reported}" '
+    ($reported | split("\n")) as $seen
+    | (.targetReachOccurrences // [])[]
+    | select((.occurrenceId as $id | $seen | index($id)) == null)
+    | [.occurrenceId, .regionId, .goalId] | @tsv' \
+    "${manifest}") || campaign_fail COMPOSE ConcolicSmtComposer \
+    "${manifest}" "the composition named no occurrence ledger"
+  [[ -n "${planned}" ]] || return 0
+  while IFS=$'\t' read -r occurrence region goal; do
+    [[ -n "${occurrence}" ]] || continue
+    campaign_report_target_occurrence "${occurrence}" "${region}" "" "" \
+      SKIPPED_UNOBSERVED "the active observed closure scheduled no replay \
+member for this occurrence: no linked summary carried its fatal read" -1
+    campaign_log "target occurrence unscheduled: ${occurrence}"
+  done <<<"${planned}"
+}
+
+# A filesystem name for one occurrence, from the occurrence identity alone so
+# the same occurrence always lands in the same directory.
+campaign_occurrence_key() {
+  printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '_'
+}
+
+campaign_report_target_occurrence() {
+  local occurrence=$1 region=$2 task=$3 target_dir=$4 status=$5
+  local detail=$6 millis=$7
+  local manifest="" smt=""
+  if [[ "${status}" == "COMPOSED" ]]; then
+    manifest="${target_dir}/candidate_composition_manifest.json"
+    smt="${target_dir}/candidate.smt2"
+  fi
+  jq -n -c --arg occurrence "${occurrence}" --arg region "${region}" \
+    --arg task "${task}" --arg dir "${target_dir}" --arg status "${status}" \
+    --arg detail "${detail}" --arg manifest "${manifest}" --arg smt "${smt}" \
+    --argjson millis "${millis}" \
+    '{occurrenceId: $occurrence, regionId: $region, taskId: $task,
+      artifactDir: $dir, status: $status, detail: $detail,
+      manifest: $manifest, smt: $smt, reachReport: "",
+      composeWallMillis: $millis, solveWallMillis: -1}' \
+    >>"${campaign_target_reports}" || campaign_fail COMPOSE CAMPAIGN \
+    "${campaign_target_reports}" \
+    "failed to report target occurrence ${occurrence}"
 }
 
 # The solver stage refuses a composition it may not conclude from and exits 2
 # on a gapped one. Both are outcomes the campaign publishes rather than hides.
+#
+# SOLVE-1: one solver run per composed occurrence.  Each formula is solved on
+# its own evidence and carries its own ClaimPolicy decision; nothing here
+# compares them, because which verdict the campaign publishes is DECIDE's
+# question and not the solver's.
 campaign_solve() {
+  local pending="${campaign_target_reports}.solved"
+  local occurrence dir state millis started ended report
   local status=0
+  require_nonempty "target occurrence reports" "${campaign_target_reports}"
+  : >"${pending}"
+  while IFS=$'\t' read -r occurrence dir state; do
+    [[ -n "${occurrence}" ]] || continue
+    if [[ "${state}" != "COMPOSED" ]]; then
+      campaign_solve_report "${occurrence}" "" -1 >>"${pending}"
+      continue
+    fi
+    composed_smt="${dir}/candidate.smt2"
+    composition_manifest="${dir}/candidate_composition_manifest.json"
+    report="${dir}/z3-result.json"
+    reach_report="${report}"
+    status=0
+    started=$(date +%s%N)
+    run_capturing_status do_reach >"${dir}/solve.log" 2>&1
+    ended=$(date +%s%N)
+    millis=$(( (ended - started) / 1000000 ))
+    require_nonempty "Z3 result" "${report}"
+    [[ "${status}" -eq 0 || "${status}" -eq 2 ]] \
+      || die "the solver stage failed with exit ${status}: ${report}"
+    campaign_log "z3 ${occurrence} state=$(jq -r '.state' "${report}") reachability=$(jq -r '.reachCondition.reachability' "${report}") in ${millis}ms"
+    printf '%s\t%s\n' "SOLVE[${occurrence}]" "${millis}" \
+      >>"${campaign_stage_metrics}"
+    campaign_solve_report "${occurrence}" "${report}" "${millis}" \
+      >>"${pending}"
+  done < <(jq -r -c '[.occurrenceId, .artifactDir, .status] | @tsv' \
+    "${campaign_target_reports}")
+  require_nonempty "solved target occurrence reports" "${pending}"
+  mv -- "${pending}" "${campaign_target_reports}"
+}
+
+# One report row with its solver artifact and time filled in.  The row is
+# rewritten from the one on disk so nothing this stage knows can replace what
+# COMPOSE reported about the same occurrence.
+campaign_solve_report() {
+  local occurrence=$1 report=$2 millis=$3
+  jq -c --arg occurrence "${occurrence}" --arg report "${report}" \
+    --argjson millis "${millis}" \
+    'select(.occurrenceId == $occurrence)
+     | .reachReport = $report | .solveWallMillis = $millis' \
+    "${campaign_target_reports}" || campaign_fail SOLVE CAMPAIGN \
+    "${campaign_target_reports}" \
+    "failed to record the solver result for ${occurrence}"
+}
+
+# DECIDE: the campaign has one claim and the run has one per occurrence of the
+# annotated target.  ClaimPolicy decided each of those; this stage asks the
+# one remaining question -- which of them the campaign publishes -- and it
+# asks it of TargetOccurrenceElection, so the ordering is a policy with a
+# name rather than a shell comparison.  The elected occurrence's artifacts are
+# copied to the paths every consumer already reads, and every occurrence's
+# verdict stays in the ledger beside them.
+campaign_decide() {
+  local chosen dir
+  campaign_target_ledger="${campaign_final}/target_occurrences.json"
+  run_java_main \
+    edu.uva.liftlab.graphchecker.concolic.TargetOccurrenceElection \
+    --reports "${campaign_target_reports}" \
+    --output "${campaign_target_ledger}" >/dev/null \
+    || campaign_fail DECIDE TargetOccurrenceElection \
+      "${campaign_target_reports}" \
+      "the target occurrence election published no ledger"
+  require_nonempty "target occurrence ledger" "${campaign_target_ledger}"
+  chosen=$(jq -r '.occurrences[] | select(.chosen) | .artifactDir' \
+    "${campaign_target_ledger}")
+  [[ -n "${chosen}" && -d "${chosen}" ]] || campaign_fail DECIDE \
+    TargetOccurrenceElection "${campaign_target_ledger}" \
+    "the elected target occurrence has no composed artifacts"
+  dir=${chosen}
+  composed_smt="${campaign_final}/candidate.smt2"
+  composition_manifest="${campaign_final}/candidate_composition_manifest.json"
   reach_report="${campaign_final}/z3-result.json"
-  run_capturing_status do_reach >/dev/null
+  cp -f "${dir}/candidate.smt2" "${composed_smt}"
+  cp -f "${dir}/candidate_composition_manifest.json" \
+    "${composition_manifest}"
+  cp -f "${dir}/z3-result.json" "${reach_report}"
+  require_nonempty "candidate SMT" "${composed_smt}"
+  require_nonempty "candidate composition manifest" "${composition_manifest}"
   require_nonempty "Z3 result" "${reach_report}"
-  [[ "${status}" -eq 0 || "${status}" -eq 2 ]] \
-    || die "the solver stage failed with exit ${status}: ${reach_report}"
-  campaign_log "z3 state=$(jq -r '.state' "${reach_report}") reachability=$(jq -r '.reachCondition.reachability' "${reach_report}")"
   campaign_print_symbolic_variable_models "${reach_report}" \
     || die "the solver result has no valid symbolic variable model: ${reach_report}"
+  jq -r '"[campaign] " + .electionReason' "${campaign_target_ledger}"
+  jq -r '.occurrences[]
+    | "  occurrence=\(.occurrenceId) status=\(.status) support=\(.support)"
+      + " claim=\(.claim) blockers=\(.blockerCount) chosen=\(.chosen)"' \
+    "${campaign_target_ledger}"
 }
 
 campaign_artifact_digests() {
   local name path bytes sha row
   local -a required=(candidate.smt2 candidate_composition_manifest.json
-    z3-result.json path-closures.json gaps.json result.json)
+    z3-result.json path-closures.json gaps.json result.json
+    target_occurrences.json)
   local -a names=()
   local -a rows=()
   for name in "${required[@]}"; do
@@ -2980,13 +3273,19 @@ campaign_emit() {
   # reason, and every named blocker, so one Java policy decides acceptance and
   # the shell only publishes what it decided.
   campaign_require_claim "${reach_report}"
+  campaign_require_json "target occurrence ledger" \
+    "${campaign_target_ledger}" || campaign_fail EMIT \
+      TargetOccurrenceElection "${campaign_target_ledger}" \
+      "the run published no target occurrence ledger"
   jq -n \
     --argjson provenance "${campaign_provenance}" \
     --slurpfile composedDocuments "${composition_manifest}" \
     --slurpfile reachDocuments "${reach_report}" \
-    --slurpfile gapDocuments "${campaign_final}/gaps.json" '
+    --slurpfile gapDocuments "${campaign_final}/gaps.json" \
+    --slurpfile targetDocuments "${campaign_target_ledger}" '
     $composedDocuments[0] as $c | $reachDocuments[0] as $r |
     $gapDocuments[0] as $gaps |
+    $targetDocuments[0] as $targets |
     ($r.campaignClaim) as $decided |
     ($r.reachCondition.reachability // "UNKNOWN") as $reachability |
     ($r.reachCondition.degeneracyCheck // "UNDECIDED") as $degeneracy |
@@ -3040,6 +3339,17 @@ campaign_emit() {
      # from the model.
      witnessFindings: ($decided.witnessFindings // []),
      reportedFindings: ($decided.rootSpace.reportedFindings // []),
+     # The whole policy decision, not a selection from it.  A consumer asking
+     # which valuation the acceptance rests on, or what shape that witness
+     # has, reads it here rather than opening z3-result.json to find the
+     # claim this file was written from.
+     rootSpace: ($decided.rootSpace // {}),
+     # Which execution of the annotated target this claim is about, and what
+     # every other observed execution of it concluded.  A verdict that rests
+     # on one of several occurrences says which one, in the result itself.
+     targetOccurrence: ($targets.chosenOccurrenceId // ""),
+     targetOccurrenceReason: ($targets.electionReason // ""),
+     targetOccurrences: ($targets.occurrences // []),
      valuations: ($r.valuations // [])}
   ' >"${campaign_final}/result.json"
   require_nonempty "campaign result" "${campaign_final}/result.json"
@@ -3091,6 +3401,10 @@ campaign_emit() {
   gapCount=$(jq -r '.gapCount' "${campaign_final}/gaps.json")
   campaign_log "artifacts in ${campaign_final}"
   jq -r '"  claim=\(.claim) reachability=\(.reachability) blockers=\(.blockerCount) gaps=\(.gapCount) telemetry=\(.telemetryCount) finalStatus=\(.finalStatus)"' \
+    "${campaign_final}/result.json"
+  jq -r 'select((.targetOccurrences | length) > 1)
+    | "  target occurrence=\(.targetOccurrence) of "
+      + ((.targetOccurrences | length) | tostring) + " observed"' \
     "${campaign_final}/result.json"
   # One view of why a run was not accepted, with a line per named blocker.
   # finalStatus stays printed above as the stage-local state it is; this is
@@ -3204,6 +3518,7 @@ do_campaign() {
     fi
     campaign_stage COMPOSE campaign_compose "${iteration_dir}"
     campaign_stage SOLVE campaign_solve
+    campaign_stage DECIDE campaign_decide
     campaign_stage EMIT campaign_emit "${iteration_dir}"
     return 0
   done

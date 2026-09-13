@@ -1686,6 +1686,18 @@ public final class ClaimPolicy {
         // and a probe still needs one valuation to assert.
         int restsOn = acceptedOrdinal >= 0 ? acceptedOrdinal
                 : planted.isEmpty() ? explainedOrdinal : -1;
+        // The same answer on the row itself.  A consumer reading one witness
+        // row can then tell whether the claim rests on it without carrying
+        // the ordinal in from another document; every row states it, so an
+        // absent flag is an artifact older than this field rather than a
+        // row nobody classified.
+        for (int index = 0; index < findings.size(); index++) {
+            JsonElement finding = findings.get(index);
+            if (finding.isJsonObject()) {
+                finding.getAsJsonObject().addProperty("accepted",
+                        index == restsOn);
+            }
+        }
         result.addProperty("acceptedValuationOrdinal", restsOn);
         result.addProperty("acceptedWitnessKind", restsOn < 0 ? ""
                 : acceptedOrdinal >= 0 ? FLIPPED_PLANTED_MARKER

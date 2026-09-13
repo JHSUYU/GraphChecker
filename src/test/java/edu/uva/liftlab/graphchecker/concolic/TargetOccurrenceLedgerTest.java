@@ -105,12 +105,68 @@ public class TargetOccurrenceLedgerTest {
                 .isEmpty());
     }
 
+    /**
+     * The schedule names every target occurrence as one, not only the one it
+     * elects.
+     *
+     * <p>Exactly one member carries the {@code TARGET} role -- that is the
+     * replay closure this bundle is built around and every stage still
+     * dispatches on it -- but each occurrence of the annotated site is
+     * flagged as carrying a target-reach goal.  That flag is what EXPLORE
+     * builds a reach query per occurrence from and what COMPOSE composes per
+     * occurrence from; without it the other occurrences are indistinguishable
+     * from an ordinary causal dependency.</p>
+     */
+    @Test
+    public void everyTargetOccurrenceIsScheduledAsATargetReachMember()
+            throws java.io.IOException {
+        List<RuntimeWorkflowDiscovery.Selection> selections =
+                RuntimeWorkflowDiscovery.rankedWorkflow(distinctHandshakes())
+                        .selections();
+        assertEquals(2, selections.size());
+        int elected = 0;
+        for (RuntimeWorkflowDiscovery.Selection selection : selections) {
+            assertTrue("occurrence " + selection.occurrenceId
+                    + " is not named as a target occurrence",
+                    selection.targetReach);
+            if (selection.target) elected++;
+        }
+        assertEquals("one member carries the replay closure", 1, elected);
+    }
+
+    /** An ordinary causal dependency is not flagged as a target occurrence. */
+    @Test
+    public void aCausalDependencyIsNotATargetOccurrence() {
+        RegionInstancePlan dependency = plan(
+                "hdfs-17897/nn0#epoch0/region/REGION.aaa1cfd7#1",
+                "REGION.aaa1cfd7", "GOAL.REGION_PATH.1", false);
+        RuntimeWorkflowDiscovery.Selection selection =
+                RuntimeWorkflowDiscovery.Selection.dependency("CAMPAIGN.1",
+                        dependency, dependency.goals().get(0), false);
+        assertTrue(!selection.targetReach);
+        assertEquals("DEPENDENCY",
+                selection.indexEntry("TASK.SEED.1").get("role")
+                        .getAsString());
+        assertTrue(!selection.indexEntry("TASK.SEED.1")
+                .get("targetReachGoal").getAsBoolean());
+    }
+
     private static List<RegionInstancePlan> bothHandshakes() {
         return Arrays.asList(
                 plan(CLIENT_HANDSHAKE, "REGION.53092d3e",
                         "GOAL.TARGET_REACH.1", true),
                 plan(DATANODE_HANDSHAKE, "REGION.53092d3e",
                         "GOAL.TARGET_REACH.2", true));
+    }
+
+    /** The same two handshakes, with the runtime event that separates them:
+     *  the ranking refuses evidence that does not distinguish occurrences. */
+    private static List<RegionInstancePlan> distinctHandshakes() {
+        return Arrays.asList(
+                plan(CLIENT_HANDSHAKE, "REGION.53092d3e",
+                        "GOAL.TARGET_REACH.1", true, 11L),
+                plan(DATANODE_HANDSHAKE, "REGION.53092d3e",
+                        "GOAL.TARGET_REACH.2", true, 27L));
     }
 
     private static String occurrence(JsonArray ledger, int index) {
@@ -132,11 +188,20 @@ public class TargetOccurrenceLedgerTest {
 
     private static RegionInstancePlan plan(String occurrence, String region,
                                            String goal, boolean target) {
+        return plan(occurrence, region, goal, target, -1L);
+    }
+
+    private static RegionInstancePlan plan(String occurrence, String region,
+                                           String goal, boolean target,
+                                           long runtimeEventSeq) {
         JsonObject branch = new JsonObject();
         branch.addProperty("failureTarget", target);
         branch.addProperty("loopControlGuard", false);
         branch.addProperty("observed", target);
         branch.addProperty("siteId", SITE);
+        if (runtimeEventSeq >= 0) {
+            branch.addProperty("selectedRuntimeEventSeq", runtimeEventSeq);
+        }
         if (target) branch.addProperty("requiredOutcome", false);
         JsonArray branches = new JsonArray();
         branches.add(branch);

@@ -94,6 +94,24 @@ emit_fixture() {
   printf '%s\n' \
     '{"schemaVersion":1,"kind":"REGION_PATH_WORKLIST","coverageGaps":[{"kind":"PATH_FLIP_NOT_ADMITTED","queryKey":"flip","reason":"UNEXPLORED"},{"kind":"PATH_FLIP_SOLVER_TIMEOUT","queryKey":"slow-flip","reason":"SOLVER_TIMEOUT"}]}' \
     >"${emit_iteration}/workers/task-target/path_closure.json"
+  # DECIDE publishes this ledger and EMIT copies it into the result, so the
+  # fixture states it exactly as TargetOccurrenceElection states it.
+  campaign_target_ledger="${campaign_final}/target_occurrences.json"
+  jq -n '{schemaVersion: 1, kind: "TARGET_OCCURRENCE_LEDGER",
+    occurrenceCount: 2, composedCount: 2,
+    chosenOccurrenceId: "REGION.T#1", chosenTaskId: "task-target",
+    chosenSupport: "SAT_CANDIDATE_EXPLAINED_WITNESS",
+    electionReason: "the campaign claim rests on REGION.T#1",
+    occurrences: [
+      {occurrenceId: "REGION.T#1", status: "COMPOSED",
+       support: "SAT_CANDIDATE_EXPLAINED_WITNESS", claim: "SAT_CANDIDATE",
+       blockerCount: 0, composeWallMillis: 51234, solveWallMillis: 9001,
+       chosen: true},
+      {occurrenceId: "REGION.T#2", status: "COMPOSED",
+       support: "INCONCLUSIVE", claim: "INCONCLUSIVE_PARTIAL",
+       blockerCount: 2, composeWallMillis: 48010, solveWallMillis: 7700,
+       chosen: false}]}' \
+    >"${campaign_target_ledger}"
   printf '%s\n' \
     '{"taskId":"task-target","published":true}' \
     >"${emit_iteration}/seed-result/concolic_region_results.jsonl"
@@ -173,6 +191,32 @@ jq -e '.evidence.symbolicPropagationComplete == false
   "${campaign_final}/result.json" >/dev/null \
   || fail "the result lost its propagation provenance"
 
+# DECIDE-1: a verdict that rests on one of several observed executions of the
+# annotated target says which one, in the result itself, with every other
+# execution's verdict beside it. The harness reads one document.
+jq -e '.targetOccurrence == "REGION.T#1"
+  and (.targetOccurrences | length) == 2
+  and ([.targetOccurrences[] | select(.chosen)] | length) == 1
+  and ([.targetOccurrences[] | select(.chosen) | .support]
+       == ["SAT_CANDIDATE_EXPLAINED_WITNESS"])
+  and (.targetOccurrenceReason | test("REGION.T#1"))' \
+  "${campaign_final}/result.json" >/dev/null \
+  || fail "the result does not name the elected target occurrence: \
+$(jq -c '.targetOccurrence, .targetOccurrences' \
+    "${campaign_final}/result.json")"
+# Per-occurrence stage times are telemetry a reader needs to size the loop.
+jq -e '[.targetOccurrences[] | .composeWallMillis] == [51234, 48010]
+  and [.targetOccurrences[] | .solveWallMillis] == [9001, 7700]' \
+  "${campaign_final}/result.json" >/dev/null \
+  || fail "the result lost the per-occurrence stage times"
+# CLAIM-1: the whole policy decision, so no consumer has to open the solver
+# report to find the claim this file was written from.
+jq -e '.rootSpace.consumerBoundaryFamilies == 1
+  and .rootSpace.consumerBoundaryArms == 2' \
+  "${campaign_final}/result.json" >/dev/null \
+  || fail "the result does not carry the claim root space: \
+$(jq -c '.rootSpace' "${campaign_final}/result.json")"
+
 # A flip query the solver could not decide in its budget is an unexplored
 # sibling path.  It is coverage telemetry, so it leaves a SAT candidate
 # accepted; only the closed UNSAT conclusion is withheld by it.
@@ -246,6 +290,69 @@ grep -q 'no ClaimPolicy decision' "${emit_root}/emit.log" \
 [[ ! -e "${campaign_final}/result.json" ]] \
   || fail "a result was published without a claim"
 
+# The elected occurrence has one home too. A run whose DECIDE stage published
+# no ledger is a run EMIT may not publish a result from: the claim would then
+# rest on an occurrence nothing named.
+emit_fixture
+rm -f "${campaign_target_ledger}"
+run_emit
+[[ "${emit_status}" -ne 0 ]] \
+  || fail "a result was published with no target occurrence ledger"
+grep -q 'no target occurrence ledger' "${emit_root}/emit.log" \
+  || fail "the missing ledger was not named: $(<"${emit_root}/emit.log")"
+[[ ! -e "${campaign_final}/result.json" ]] \
+  || fail "a result was published without a target occurrence ledger"
+
+# COMPOSE-1: one occurrence, one artifact directory, derived from the
+# occurrence identity alone so the same occurrence always lands in the same
+# place and two occurrences never share one.
+[[ "$(campaign_occurrence_key \
+      'hdfs-17897/dn0#epoch0/region/REGION.53092d3e#1')" \
+    == 'hdfs-17897_dn0_epoch0_region_REGION.53092d3e_1' ]] \
+  || fail "the occurrence key is not a filesystem name: \
+$(campaign_occurrence_key 'hdfs-17897/dn0#epoch0/region/REGION.53092d3e#1')"
+[[ "$(campaign_occurrence_key 'a#1')" \
+    != "$(campaign_occurrence_key 'a#2')" ]] \
+  || fail "two occurrences share one artifact directory"
+
+# PLAN-1: the schedule index says which members carry a target-reach goal, so
+# EXPLORE and COMPOSE can address every observed occurrence of the annotated
+# site and not only the elected one.
+index_root="${test_tmp}/schedule-index"
+mkdir -p "${index_root}"
+index_file="${index_root}/runtime_workflow_schedule_index.json"
+jq -n '{schemaVersion: 2, kind: "RUNTIME_REGION_PATH_SCHEDULE_INDEX",
+  members: [
+    {campaignId: "CAMPAIGN.1", regionId: "REGION.T",
+     relationKey: "rel/REGION.T", occurrenceId: "REGION.T#2",
+     goalId: "GOAL.TARGET_REACH.2", taskId: "task-a", role: "TARGET",
+     targetReachGoal: true},
+    {campaignId: "CAMPAIGN.1", regionId: "REGION.T",
+     relationKey: "rel/REGION.T", occurrenceId: "REGION.T#1",
+     goalId: "GOAL.TARGET_REACH.1", taskId: "task-b", role: "DEPENDENCY",
+     targetReachGoal: true},
+    {campaignId: "CAMPAIGN.1", regionId: "REGION.D",
+     relationKey: "rel/REGION.D", occurrenceId: "REGION.D#1",
+     goalId: "GOAL.REGION_PATH.1", taskId: "task-c", role: "DEPENDENCY",
+     targetReachGoal: false}]}' >"${index_file}"
+index_rows=$(campaign_decode_index_members "${index_file}") \
+  || fail "a complete schedule index was refused"
+[[ "$(printf '%s\n' "${index_rows}" | cut -f7 | tr '\n' ' ')" \
+    == "true true false " ]] \
+  || fail "the decoded members do not name the target occurrences: \
+$(printf '%s\n' "${index_rows}" | cut -f7 | tr '\n' ' ')"
+# An index whose elected TARGET is not a target-reach member is an index this
+# shell cannot dispatch on: every later stage composes from that flag.
+jq '.members[0].targetReachGoal = false' "${index_file}" \
+  >"${index_file}.broken"
+( campaign_decode_index_members "${index_file}.broken" ) >/dev/null 2>&1 \
+  && fail "a TARGET with no target-reach goal was accepted"
+# An index from before the flag existed is not a silently narrowed index.
+jq 'del(.members[].targetReachGoal)' "${index_file}" \
+  >"${index_file}.old"
+( campaign_decode_index_members "${index_file}.old" ) >/dev/null 2>&1 \
+  && fail "a schedule index with no target-reach flag was accepted"
+
 # A published obligation wave records a solver timeout instead of failing the
 # campaign, and contributes only its exploration record: no new path case.
 wave_root="${test_tmp}/wave"
@@ -309,8 +416,12 @@ for config_row in "${workflow_config_keys[@]}"; do
       || fail "internal key ${config_key} is loadable from a config file"
   fi
 done
-[[ "$(print_normalized_config | wc -l)" -eq 40 ]] \
-  || fail "config prints a different number of keys than it used to"
+# 41 since `replay_task_budget` joined the table (bef2db898); the count was
+# left at 40 there, so this assertion has been failing on staging since that
+# merge landed.
+[[ "$(print_normalized_config | wc -l)" -eq 41 ]] \
+  || fail "config prints a different number of keys than it used to: \
+$(print_normalized_config | wc -l)"
 
 # FREEZE-1: one dispatch decides how each kind of frozen input is digested.
 digest_root="${test_tmp}/kind-digest"

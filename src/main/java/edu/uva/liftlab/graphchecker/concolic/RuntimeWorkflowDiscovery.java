@@ -149,6 +149,17 @@ public final class RuntimeWorkflowDiscovery {
                 closure.add(occurrence);
             }
         }
+        // Every occurrence of the annotated target the recording observed,
+        // by the goal that captures its reach.  One of them is elected to
+        // carry the replay closure; the rest are scheduled as dependencies
+        // and stay named, because a run that composes only the elected one
+        // states a verdict about one execution of the site and not about the
+        // site.  Downstream stages read this flag to compose and judge each
+        // of them.
+        Set<String> targetReachGoals = new LinkedHashSet<>();
+        for (Target candidate : targets) {
+            targetReachGoals.add(candidate.goal.goalId());
+        }
         List<Selection> selections = new ArrayList<>();
         // Preserve the seed task's symbolic frontier and therefore its stable
         // task identity.  The exact replay closure narrows which occurrences
@@ -169,7 +180,8 @@ public final class RuntimeWorkflowDiscovery {
             Goal goal = onlyReplayableGoal(plan);
             if (goal != null) {
                 selections.add(Selection.dependency(target.campaignId,
-                        plan, goal));
+                        plan, goal,
+                        targetReachGoals.contains(goal.goalId())));
             }
         }
         return new RankedWorkflow(selections);
@@ -1076,25 +1088,31 @@ public final class RuntimeWorkflowDiscovery {
         final String goalId;
         final String relationKey;
         final boolean target;
+        /** Whether this member's goal captures the annotated target's reach.
+         *  True for the elected target and for every other observed
+         *  occurrence of the same annotated site. */
+        final boolean targetReach;
 
         private Selection(String campaignId, RegionInstancePlan plan,
-                          Goal goal, boolean target) {
+                          Goal goal, boolean target, boolean targetReach) {
             this.campaignId = campaignId;
             this.regionId = plan.regionId();
             this.occurrenceId = plan.occurrenceId();
             this.goalId = goal.goalId();
             this.relationKey = plan.relationKey();
             this.target = target;
+            this.targetReach = targetReach;
         }
 
         static Selection target(Target target) {
             return new Selection(target.campaignId, target.plan, target.goal,
-                    true);
+                    true, true);
         }
 
         static Selection dependency(String campaignId,
-                                    RegionInstancePlan plan, Goal goal) {
-            return new Selection(campaignId, plan, goal, false);
+                                    RegionInstancePlan plan, Goal goal,
+                                    boolean targetReach) {
+            return new Selection(campaignId, plan, goal, false, targetReach);
         }
 
         JsonObject indexEntry(String taskId) {
@@ -1106,6 +1124,7 @@ public final class RuntimeWorkflowDiscovery {
             row.addProperty("goalId", goalId);
             row.addProperty("taskId", taskId);
             row.addProperty("role", target ? "TARGET" : "DEPENDENCY");
+            row.addProperty("targetReachGoal", targetReach);
             return row;
         }
     }
