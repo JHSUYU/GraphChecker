@@ -70,19 +70,47 @@ public final class GapLedger {
         DIAGNOSTIC
     }
 
+    /**
+     * What a registered code's class depends on.
+     *
+     * <p>Most codes answer the same way wherever they are raised.  Three do
+     * not: a planned region that never ran is a broken chain when the replay
+     * slice kept that region, and an over-approximation of the static plan
+     * when root dependence never selected it.  Those carry
+     * {@link #KEPT_SLICE} and are decided against the slice the campaign
+     * actually ran.</p>
+     */
+    public enum Scope {
+        /** The class in the entry, wherever the code is raised. */
+        ALWAYS,
+        /**
+         * BLOCKING when the row's subject names a task or occurrence the
+         * replay slice kept -- a task the plan said must run and publish,
+         * for one of TARGET_REACH, ROOT_SITE, CARRIER_WRITER,
+         * ROOT_DEPENDENT_FLOW or FATAL_READ_WRITER -- and DIAGNOSTIC when it
+         * names a statically planned region the slice pruned.  Where the
+         * slice is unknown, withheld, or the subject maps to no planned
+         * occurrence, the answer is BLOCKING.
+         */
+        KEPT_SLICE
+    }
+
     /** One registered code. */
     public static final class Entry {
         public final String code;
         /** The producing stage/source pair this code is published under. */
         public final String source;
         public final GapClass gapClass;
+        public final Scope scope;
         /** Why the class is what it is; required for DIAGNOSTIC. */
         public final String reason;
 
-        Entry(String code, String source, GapClass gapClass, String reason) {
+        Entry(String code, String source, GapClass gapClass, Scope scope,
+              String reason) {
             this.code = code;
             this.source = source;
             this.gapClass = gapClass;
+            this.scope = scope;
             this.reason = reason;
         }
 
@@ -91,6 +119,7 @@ public final class GapLedger {
             row.addProperty("code", code);
             row.addProperty("source", source);
             row.addProperty("class", gapClass.name());
+            row.addProperty("scope", scope.name());
             row.addProperty("reason", reason);
             return row;
         }
@@ -99,17 +128,36 @@ public final class GapLedger {
     private static final Map<String, Entry> REGISTRY = new LinkedHashMap<>();
 
     private static void blocking(String source, String code, String reason) {
-        register(new Entry(code, source, GapClass.BLOCKING, reason));
+        register(new Entry(code, source, GapClass.BLOCKING, Scope.ALWAYS,
+                reason));
     }
 
     private static void diagnostic(String source, String code,
                                    String reason) {
+        requireReason(code, reason);
+        register(new Entry(code, source, GapClass.DIAGNOSTIC, Scope.ALWAYS,
+                reason));
+    }
+
+    /**
+     * Blocking on the kept replay slice, diagnostic off it.
+     *
+     * <p>The entry's own class is BLOCKING, which is what every reader that
+     * cannot see the slice answers.</p>
+     */
+    private static void onKeptSlice(String source, String code,
+                                    String reason) {
+        requireReason(code, reason);
+        register(new Entry(code, source, GapClass.BLOCKING, Scope.KEPT_SLICE,
+                reason));
+    }
+
+    private static void requireReason(String code, String reason) {
         if (reason == null || reason.trim().isEmpty()) {
             throw new IllegalStateException(
-                    "a DIAGNOSTIC gap code states why it cannot change a"
-                            + " chain: " + code);
+                    "a gap code whose class is anything but the blocking"
+                            + " default states why: " + code);
         }
-        register(new Entry(code, source, GapClass.DIAGNOSTIC, reason));
     }
 
     private static void register(Entry entry) {
@@ -474,20 +522,30 @@ public final class GapLedger {
         // IMPORT / IMPORTER.
         // ------------------------------------------------------------------
         String importer = "IMPORT/IMPORTER";
-        blocking(importer, "REGION_CAUSAL_ANCHOR_NOT_OBSERVED",
-                "a planned region whose causal anchor was never observed"
-                        + " contributes no case, so a link the plan named is"
-                        + " absent from the model");
-        blocking(importer, "REGION_OCCURRENCE_ANCHOR_UNMATCHED",
+        // Slice-aware, not blanket.  The static plan over-approximates: it
+        // admits every region the backward walk reaches, and the replay
+        // slice then keeps the ones root dependence actually selected.  A
+        // planned region that never ran is a broken chain when the slice
+        // kept it and an over-approximation of the plan when it did not.
+        onKeptSlice(importer, "REGION_CAUSAL_ANCHOR_NOT_OBSERVED",
+                "a region whose causal anchor was never observed contributes"
+                        + " no case: on the kept slice that is a link the"
+                        + " plan said must run and publish and the model does"
+                        + " not contain, off it the static plan simply named"
+                        + " a region root dependence never selected");
+        onKeptSlice(importer, "REGION_OCCURRENCE_ANCHOR_UNMATCHED",
                 "compatible activations did not answer the addressed"
-                        + " occurrence, so the region the chain names was"
-                        + " not the region that ran");
+                        + " occurrence: on the kept slice the region the"
+                        + " chain names is not the region that ran, off it no"
+                        + " chain element was addressed there");
         blocking(importer, "REGION_REPLAY_PREFIX_UNMATCHED",
                 "the replay did not follow the prefix the plan addressed");
-        blocking(importer, "REGION_TASK_NO_PUBLISHED_ACTIVATION",
-                "a planned task published neither an activation nor a skip,"
-                        + " so its region contributes no case to the"
-                        + " selected path set");
+        onKeptSlice(importer, "REGION_TASK_NO_PUBLISHED_ACTIVATION",
+                "a planned task published neither an activation nor a skip:"
+                        + " on the kept slice its region contributes no case"
+                        + " to a path set the chain runs through, off it the"
+                        + " task was an over-approximation that produced"
+                        + " nothing");
         blocking(importer, "TARGET_REACH_NO_ACTIVATION_REACHED_TARGET",
                 "no activation of this region reached the target, so the"
                         + " region states nothing about the target");
@@ -549,9 +607,12 @@ public final class GapLedger {
         // CLASSIFY / IMPORTER -- topology deltas.
         // ------------------------------------------------------------------
         String classify = "CLASSIFY/IMPORTER";
-        blocking(classify, "COVERAGE_GAP",
-                "a planned task that produced no result is a case the plan"
-                        + " demanded and the recording does not contain");
+        onKeptSlice(classify, "COVERAGE_GAP",
+                "a planned task produced no result: on the kept slice that is"
+                        + " a case the plan demanded and the recording does"
+                        + " not contain, off it a task root dependence never"
+                        + " selected produced nothing, which is what the"
+                        + " slice already said about it");
         blocking(classify, "TOPOLOGY_DIVERGENCE",
                 "the composed iteration's topology still diverges from the"
                         + " one it was planned against");
@@ -596,10 +657,34 @@ public final class GapLedger {
     private GapLedger() {
     }
 
-    /** The class of {@code code}; an unregistered code is BLOCKING. */
+    /**
+     * The class of {@code code} for a reader that cannot see the replay
+     * slice.  An unregistered code is BLOCKING, and so is every
+     * {@link Scope#KEPT_SLICE} code, because not knowing whether a row is on
+     * the slice is not a reason to stop withholding on it.
+     */
     public static GapClass classOf(String code) {
         Entry entry = code == null ? null : REGISTRY.get(code.trim());
         return entry == null ? GapClass.BLOCKING : entry.gapClass;
+    }
+
+    /**
+     * The class of {@code code} for a row whose slice membership is known.
+     *
+     * @param onKeptSlice whether the row's subject names a task or
+     *                    occurrence the replay slice kept
+     */
+    public static GapClass classOf(String code, boolean onKeptSlice) {
+        Entry entry = code == null ? null : REGISTRY.get(code.trim());
+        if (entry == null) return GapClass.BLOCKING;
+        if (entry.scope != Scope.KEPT_SLICE) return entry.gapClass;
+        return onKeptSlice ? GapClass.BLOCKING : GapClass.DIAGNOSTIC;
+    }
+
+    /** Whether {@code code} is decided against the replay slice. */
+    public static boolean sliceConditional(String code) {
+        Entry entry = code == null ? null : REGISTRY.get(code.trim());
+        return entry != null && entry.scope == Scope.KEPT_SLICE;
     }
 
     /** Whether {@code code} withholds a claim. */
@@ -650,6 +735,18 @@ public final class GapLedger {
         JsonArray diagnostic = new JsonArray();
         for (String code : diagnosticCodes()) diagnostic.add(code);
         ledger.add("diagnostic", diagnostic);
+        // Read by run_engine.sh, which is the reader that can see the slice.
+        JsonArray conditional = new JsonArray();
+        for (Entry entry : REGISTRY.values()) {
+            if (entry.scope != Scope.KEPT_SLICE) continue;
+            conditional.add(entry.code);
+        }
+        ledger.add("sliceConditional", conditional);
+        JsonObject reasons = new JsonObject();
+        for (Entry entry : REGISTRY.values()) {
+            reasons.addProperty(entry.code, entry.reason);
+        }
+        ledger.add("reasonByCode", reasons);
         JsonArray blocking = new JsonArray();
         for (String code : blockingCodes()) blocking.add(code);
         ledger.add("blocking", blocking);

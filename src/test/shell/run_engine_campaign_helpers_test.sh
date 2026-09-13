@@ -296,6 +296,59 @@ jq -e '[.gaps[].code] | sort == ["LOOP_BOUND_OPEN", "UNRELATED_FAMILY_OPEN"]' \
   || fail "the unregistered codes were not both blocking: \
 $(jq -c '[.gaps[].code]' "${campaign_final}/gaps.json")"
 
+# GAP-4: the three region codes are decided against the replay slice, not by
+# a blanket rule.  The static plan over-approximates; a region root
+# dependence never selected is not a chain element.  With no schedule index
+# in the fixture the slice is unknown, and an unknown slice blocks.
+emit_fixture
+printf '%s\n' '{"code":"REGION_CAUSAL_ANCHOR_NOT_OBSERVED","taskId":"TASK.REPLAY.kept","detail":"anchor never observed"}' \
+  >"${emit_iteration}/import_diagnostics.jsonl"
+run_emit
+[[ "${emit_status}" -eq 3 ]] \
+  || fail "an unknown replay slice did not block a region code \
+(exit ${emit_status}): $(<"${emit_root}/emit.log")"
+jq -e '[.gaps[] | select(.code == "REGION_CAUSAL_ANCHOR_NOT_OBSERVED")
+        | .sliceVerdict] == ["SLICE_NOT_APPLIED"]' \
+  "${campaign_final}/gaps.json" >/dev/null \
+  || fail "the unknown slice was not named on the row: \
+$(jq -c '.gaps' "${campaign_final}/gaps.json")"
+
+# With a slice that kept one occurrence and pruned another, the same code
+# blocks on the kept task and is diagnostic on the pruned one.
+emit_fixture
+printf '%s\n' \
+  '{"code":"REGION_CAUSAL_ANCHOR_NOT_OBSERVED","taskId":"TASK.REPLAY.kept","detail":"anchor never observed"}' \
+  '{"code":"REGION_CAUSAL_ANCHOR_NOT_OBSERVED","taskId":"TASK.REPLAY.pruned","detail":"anchor never observed"}' \
+  >"${emit_iteration}/import_diagnostics.jsonl"
+jq -n '{schemaVersion: 1, kind: "RUNTIME_REGION_PATH_SCHEDULE_INDEX",
+  replayTaskSlice: {replayTaskSliceApplied: true, keptOccurrenceCount: 1},
+  members: [{taskId: "TASK.REPLAY.kept", occurrenceId: "OCC.kept",
+             regionId: "REGION.kept", role: "TARGET"}]}' \
+  >"${emit_iteration}/runtime_workflow_schedule_index.json"
+printf '%s\n' \
+  '{"taskId":"TASK.REPLAY.kept","occurrenceId":"OCC.kept"}' \
+  '{"taskId":"TASK.REPLAY.pruned","occurrenceId":"OCC.pruned"}' \
+  >"${emit_iteration}/execution_task_plan.jsonl"
+run_emit
+[[ "${emit_status}" -eq 3 ]] \
+  || fail "a region code on the kept slice did not block \
+(exit ${emit_status}): $(<"${emit_root}/emit.log")"
+jq -e '.gapCount == 1
+  and (.gaps[0].subject == "TASK.REPLAY.kept")
+  and (.gaps[0].sliceVerdict == "ON_KEPT_SLICE:OCC.kept")
+  and ([.telemetryGaps[] | select(.subject == "TASK.REPLAY.pruned")
+        | .sliceVerdict] == ["SLICE_PRUNED:OCC.pruned"])' \
+  "${campaign_final}/gaps.json" >/dev/null \
+  || fail "the slice-aware split is wrong: \
+$(jq -c '[(.gaps+.telemetryGaps)[]|{code,subject,class,sliceVerdict}]' \
+    "${campaign_final}/gaps.json")"
+# The rationale travels with the row, so a reader does not have to open the
+# ledger to see why a gap was classed the way it was.
+jq -e '[(.gaps + .telemetryGaps)[] | select((.classReason // "") == "")]
+       | length == 0' \
+  "${campaign_final}/gaps.json" >/dev/null \
+  || fail "a gap row carries no classification reason"
+
 # GAP-2: the ledger is published beside the gaps it classed, and it names its
 # own exceptions rather than leaving a reader to guess the default.
 jq -e '.kind == "GAP_LEDGER" and .defaultClass == "BLOCKING"

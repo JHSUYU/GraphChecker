@@ -584,16 +584,6 @@ public final class ConcolicSmtComposer {
         manifest.add(BoundedLoopComposition.MANIFEST_FIELD,
                 loops.manifest());
         manifest.add("guardedReadModel", guardedReads);
-        if (arguments.taskPlan != null) {
-            // Every family is VM evidence over a carrier the replay
-            // selected; the ledger states that against the plan that
-            // declared the carriers, and names the families a narrower
-            // plan would not have produced.
-            manifest.add(CarrierDeclarationLedger.MANIFEST_FIELD,
-                    CarrierDeclarationLedger.of(
-                            ArtifactIO.readJsonl(arguments.taskPlan),
-                            guardedReads, artifact(arguments.taskPlan)));
-        }
         manifest.add(ClockRootPhysics.MANIFEST_FIELD, clockPhysics);
         manifest.add(WIRE_FLOW_BINDINGS, wireFlowBindings);
         manifest.add(EXECUTION_DIVERGENCE_FIELD, emitter.executionDivergence);
@@ -7567,7 +7557,6 @@ public final class ConcolicSmtComposer {
         private Path z3;
         /** The execution task plan whose carrier declarations the lowered
          *  families are audited against; absent means no ledger. */
-        private Path taskPlan;
         private long deadCaseArmRlimit = DeadCaseLemmas.DEFAULT_ARM_RLIMIT;
 
         public static Arguments parse(String[] argv) {
@@ -7605,9 +7594,6 @@ public final class ConcolicSmtComposer {
                     }
                 } else if ("z3".equals(key)) {
                     result.z3 = firstNonBlank(value).isEmpty() ? null
-                            : Paths.get(value);
-                } else if ("task-plan".equals(key)) {
-                    result.taskPlan = firstNonBlank(value).isEmpty() ? null
                             : Paths.get(value);
                 } else if ("dead-case-rlimit".equals(key)) {
                     result.deadCaseArmRlimit = Long.parseLong(value);

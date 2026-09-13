@@ -410,10 +410,11 @@ over 18 tasks) to 4 (49 rows): `snapshotDeletionOrdered`, `snapshotsByNames`,
 31 arms in the recorded formula), `snapshotCounter`, `snapshotQuota`, the
 edit-log op strings and the fsimage loader's fields go. The composer
 manufactures no family of its own -- every arm is a VM `ReadFromExpression`
-over a carrier the replay selected -- so it is consistent by construction;
-given `--task-plan` it states that in the manifest's `carrierDeclarations`
-ledger, which against a narrower plan names the families that plan would not
-have produced.
+over a carrier the replay selected -- so it is consistent by construction.
+A `carrierDeclarations` ledger used to restate that in the manifest; it was
+`consistent: true` with `undeclaredFamilyCount: 0` on every recorded run, its
+own javadoc said an undeclared family "is not something to gate here", and
+nothing read it, so it is gone.
 
 ## Trace context and topology
 
@@ -842,6 +843,22 @@ The diagnostic classes, and what each rests on:
 | `INITIAL_CONTAINER_SNAPSHOT_TRUNCATED` | `ClaimPolicy` decides this per read, blocking `UNDETERMINED_INITIAL_STATE` exactly when the accepted witness reads out of the truncated carrier's initial arm |
 | `REGION_LOOP_OCCURRENCES_BOUNDED` | the occurrence set is bounded by the declared `K_L` rather than truncated, and `BoundedLoopComposition` checks every replayed case against that same declaration |
 | `BOUNDED_LOOP_FIXED_COUNT_BOUND_UNDECLARED` | an array-indexed loop's trip count is its array length; a case that published no dense exact cardinality vector raises the blocking `PATH_LOCAL_ARRAY_CARDINALITY_MISSING` |
+
+Four codes are neither, and are decided against the replay slice the campaign
+ran: `REGION_CAUSAL_ANCHOR_NOT_OBSERVED`, `REGION_OCCURRENCE_ANCHOR_UNMATCHED`,
+`REGION_TASK_NO_PUBLISHED_ACTIVATION` and `COVERAGE_GAP`. The static plan
+over-approximates -- it admits every region the backward walk reaches -- and
+`ReplayTaskSlice` keeps the occurrences root dependence selected, for one of
+`TARGET_REACH`, `ROOT_SITE`, `CARRIER_WRITER`, `ROOT_DEPENDENT_FLOW` or
+`FATAL_READ_WRITER`. A planned region that never ran is a broken chain on the
+kept slice and an over-approximation of the plan off it, so each row is
+resolved through `runtime_workflow_schedule_index.json` (and
+`replay_task_slice.jsonl` where the run published one) and carries its
+`sliceVerdict`. An absent slice, a slice that narrowed nothing, or a subject
+naming no planned occurrence all read as blocking: not knowing which side a
+row is on is not a reason to stop withholding on it.
+
+Every gap row carries `classReason`, the ledger's own sentence for its code.
 
 **Reading a campaign as passed.** The claim is `SAT_CANDIDATE`, `blockers` is
 empty and `finalStatus` is `FINAL_READY`; and on the plain `candidate.smt2`,

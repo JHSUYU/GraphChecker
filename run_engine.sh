@@ -595,13 +595,6 @@ do_compose() {
   [[ -z "${fatal_occurrence_id}" ]] \
     || selection+=(--occurrence-id "${fatal_occurrence_id}")
   require_file "runtime region plan" "${runtime_region_plan}"
-  # The task plan the replays ran under: the composer audits every lowered
-  # guarded-read family against the carriers it declared (manifest member
-  # carrierDeclarations).  A compose outside a campaign has none.
-  local -a task_plan
-  task_plan=()
-  [[ ! -s "${compose_task_plan:-}" ]] \
-    || task_plan=(--task-plan "${compose_task_plan}")
   run_java_main edu.uva.liftlab.graphchecker.concolic.ConcolicSmtComposer \
     --fatal-query "${fatal_queries}" \
     "${PATH_LIST_ARGUMENTS[@]}" \
@@ -611,7 +604,6 @@ do_compose() {
     --clock-skew-ms "${clock_skew_ms}" \
     --mappings "${causynth_communication_mappings}" \
     --z3 "${z3_bin}" \
-    "${task_plan[@]}" \
     "${selection[@]}"
 }
 
@@ -3158,12 +3150,68 @@ campaign_plan_gaps_json() {
   head -n 1 -- "${runtime_region_plan}" | jq -c '.gaps // []' || return 1
 }
 
+# The replay slice the campaign actually ran, as one document:
+#
+#   {applied, keptOccurrences: [...], taskOccurrence: {taskId: occurrenceId}}
+#
+# The static plan over-approximates -- it admits every region the backward
+# walk reaches -- and ReplayTaskSlice then keeps the occurrences root
+# dependence selected, for one of TARGET_REACH, ROOT_SITE, CARRIER_WRITER,
+# ROOT_DEPENDENT_FLOW or FATAL_READ_WRITER.  A planned region that never ran
+# means two different things on the two sides of that line, so the ledger's
+# slice-conditional codes are decided against this.
+#
+# Fail-closed: an absent or withheld slice publishes applied=false, and the
+# fold then treats every such row as blocking rather than guessing.
+campaign_kept_slice_json() {
+  local iteration_dir=$1
+  local index="${iteration_dir}/runtime_workflow_schedule_index.json"
+  local slice="${iteration_dir}/replay_task_slice.jsonl"
+  local plans
+  if [[ ! -s "${index}" ]]; then
+    echo '{"applied": false, "keptOccurrences": [], "taskOccurrence": {}}'
+    return 0
+  fi
+  if ! plans=$(find "${iteration_dir}" -type f \
+      -name 'execution_task_plan.jsonl' -print | LC_ALL=C sort); then
+    echo '{"applied": false, "keptOccurrences": [], "taskOccurrence": {}}'
+    return 0
+  fi
+  {
+    cat "${index}"
+    [[ ! -s "${slice}" ]] || cat "${slice}"
+    [[ -z "${plans}" ]] || xargs -r -d '\n' cat <<<"${plans}"
+  } | jq -s '
+    ([.[] | select(.kind == "RUNTIME_REGION_PATH_SCHEDULE_INDEX"
+                   or (.replayTaskSlice? != null))] | first) as $index
+    | ([.[] | select(.kind == "REPLAY_TASK_DECISION")]) as $decisions
+    | ([.[] | select(.taskId? != null and .occurrenceId? != null)]) as $tasks
+    | (($index.replayTaskSlice.replayTaskSliceApplied // false)
+       and (($index.members // []) | length) > 0) as $applied
+    | {applied: $applied,
+       keptOccurrences:
+         ((($index.members // []) | map(.occurrenceId // ""))
+          + ($decisions | map(select(.decision == "KEEP")
+                              | .occurrenceId // ""))
+          | map(select(. != "")) | unique),
+       keptReasons:
+         ($decisions | map(select(.decision == "KEEP")
+            | {key: (.occurrenceId // ""),
+               value: ((.keepReasons // []) | join(","))})
+          | from_entries),
+       taskOccurrence:
+         ($tasks | map({key: .taskId, value: .occurrenceId})
+          | from_entries)}' \
+    || return 1
+}
+
 campaign_write_coverage_gaps() {
   local composition=$1 reach=$2 diagnostics=$3 delta=$4
-  local path_closures=$5 ledger=$6 output=$7
-  local static_gaps plan_gaps
+  local path_closures=$5 ledger=$6 iteration_dir=$7 output=$8
+  local static_gaps plan_gaps kept_slice
   static_gaps=$(campaign_static_gaps_json) || return 1
   plan_gaps=$(campaign_plan_gaps_json) || return 1
+  kept_slice=$(campaign_kept_slice_json "${iteration_dir}") || return 1
   jq -n \
     --slurpfile composedDocuments "${composition}" \
     --slurpfile reachDocuments "${reach}" \
@@ -3172,7 +3220,8 @@ campaign_write_coverage_gaps() {
     --slurpfile pathClosureDocuments "${path_closures}" \
     --slurpfile ledgerDocuments "${ledger}" \
     --argjson staticGaps "${static_gaps}" \
-    --argjson planGaps "${plan_gaps}" '
+    --argjson planGaps "${plan_gaps}" \
+    --argjson keptSlice "${kept_slice}" '
     $composedDocuments[0] as $composed |
     $reachDocuments[0] as $reach |
     $pathClosureDocuments[0] as $pathClosures |
@@ -3180,6 +3229,27 @@ campaign_write_coverage_gaps() {
     # The ledger names its exceptions; everything else is blocking, which is
     # the same default GapLedger.classOf applies in Java.
     ($ledger.diagnostic // []) as $diagnosticCodes |
+    ($ledger.sliceConditional // []) as $sliceCodes |
+    ($ledger.reasonByCode // {}) as $reasonByCode |
+    ($keptSlice.applied // false) as $sliceApplied |
+    (($keptSlice.keptOccurrences // []) | map({key: ., value: true})
+     | from_entries) as $keptOccurrence |
+    ($keptSlice.taskOccurrence // {}) as $taskOccurrence |
+    # A slice-conditional row is blocking on the kept slice and diagnostic
+    # off it.  Anything this cannot resolve -- no slice, a slice that
+    # narrowed nothing, or a subject naming no planned occurrence -- is
+    # blocking, because not knowing which side a row is on is not a reason
+    # to stop withholding on it.
+    def sliceVerdict($subject):
+      if $sliceApplied | not then {onSlice: true, why: "SLICE_NOT_APPLIED"}
+      else ($taskOccurrence[$subject] // "") as $occurrence
+        | if $occurrence == ""
+            then {onSlice: true, why: "SUBJECT_NAMES_NO_PLANNED_OCCURRENCE"}
+          elif ($keptOccurrence[$occurrence] // false)
+            then {onSlice: true, why: ("ON_KEPT_SLICE:" + $occurrence)}
+          else {onSlice: false, why: ("SLICE_PRUNED:" + $occurrence)}
+          end
+      end;
     # The acceptance gate publishes every emitter refusal under one
     # COMPOSITION_GAP kind and spells the reason it actually named into the
     # subject, as CODE[subject] or CODE:subject.  Left encoded, fifty
@@ -3242,8 +3312,16 @@ campaign_write_coverage_gaps() {
               code: (.code // .kind // ""),
               subject: (.subject // ""), detail: (.detail // "")}]
        | map(select(.code != ""))
-       | map(. + {class: (if (.code | IN($diagnosticCodes[]))
-                          then "DIAGNOSTIC" else "BLOCKING" end)})
+       | map(. + (if (.code | IN($sliceCodes[]))
+                  then (sliceVerdict(.subject) as $v
+                        | {class: (if $v.onSlice
+                                   then "BLOCKING" else "DIAGNOSTIC" end),
+                           sliceVerdict: $v.why})
+                  elif (.code | IN($diagnosticCodes[]))
+                  then {class: "DIAGNOSTIC"}
+                  else {class: "BLOCKING"} end))
+       | map(. + {classReason: ($reasonByCode[.code]
+                                // "no ledger entry: blocking by default")})
        | unique_by([.stage, .source, .code, .subject, .detail]))
        as $rows |
     {schemaVersion: 2,
@@ -3251,7 +3329,11 @@ campaign_write_coverage_gaps() {
      gapLedger: {kind: ($ledger.kind // ""),
                  schemaVersion: ($ledger.schemaVersion // 0),
                  defaultClass: ($ledger.defaultClass // "BLOCKING"),
-                 diagnosticCodes: $diagnosticCodes},
+                 diagnosticCodes: $diagnosticCodes,
+                 sliceConditionalCodes: $sliceCodes,
+                 replayTaskSliceApplied: $sliceApplied,
+                 keptOccurrenceCount:
+                   (($keptSlice.keptOccurrences // []) | length)},
      gaps: [$rows[] | select(.class == "BLOCKING")],
      telemetryGaps: [$rows[] | select(.class == "DIAGNOSTIC")]}
     | .gapCount = (.gaps | length)
@@ -3329,6 +3411,7 @@ campaign_emit() {
     "${iteration_dir}/topology_delta.jsonl" \
     "${path_closures_artifact}" \
     "${campaign_final}/gap_ledger.json" \
+    "${iteration_dir}" \
     "${campaign_final}/gaps.json"
   require_nonempty "campaign gaps" "${campaign_final}/gaps.json"
   campaign_require_json "campaign gaps" "${campaign_final}/gaps.json" \
