@@ -100,8 +100,6 @@ public final class SharedStateEvidence {
     public static final int NOT_SELECTED = -1003;
     /** Addressing that names no single location. */
     public static final int MISSING_METADATA = -1004;
-    /** The VM retained only a bounded suffix of the recorded reads. */
-    public static final int READ_LOG_TRUNCATED = -1006;
     /** One expression root was serialized only up to the VM's safety bound. */
     public static final int EXPRESSION_SERIALIZATION_TRUNCATED = -1007;
     /** A map-state receiver has no complete runtime carrier identity. */
@@ -181,8 +179,6 @@ public final class SharedStateEvidence {
                 return REASON_PREFIX + "NOT_SELECTED";
             case MISSING_METADATA:
                 return REASON_PREFIX + "MISSING_METADATA";
-            case READ_LOG_TRUNCATED:
-                return REASON_PREFIX + "READ_LOG_TRUNCATED";
             case EXPRESSION_SERIALIZATION_TRUNCATED:
                 return VM_EXPRESSION_SERIALIZATION_TRUNCATED;
             case MAP_STATE_IDENTITY_MISSING:

@@ -198,13 +198,7 @@ public class BranchDecisionRecordingTest {
         StringBuilder text = new StringBuilder();
         JsonArray rows = new JsonArray();
         for (JsonObject row : active.branchMappings) rows.add(row);
-        JsonArray witnesses = new JsonArray();
-        for (JsonObject row : active.concreteBranchWitnesses) {
-            witnesses.add(row);
-        }
         text.append("rows=").append(CanonicalJson.render(rows)).append('\n');
-        text.append("witnesses=").append(CanonicalJson.render(witnesses))
-                .append('\n');
         text.append("unresolved=").append(field(active, "unresolved"))
                 .append('\n');
         Object reach = rawField(active, "targetReach");
@@ -265,7 +259,6 @@ public class BranchDecisionRecordingTest {
                 + "\"rawPathConditionBaseline\":0,"
                 + "\"rawPathConditionSize\":0,\"siteId\":\"" + DECLARED
                 + "\",\"unitIndex\":4}]\n"
-                + "witnesses=[]\n"
                 + "unresolved=[]\n"
                 + "targetReach={\"kind\":\"TARGET_REACH_EVENT\","
                 + "\"occurrence\":1,\"outcome\":true,\"siteId\":\""
@@ -288,7 +281,6 @@ public class BranchDecisionRecordingTest {
                 + "\",\"occurrence\":1,\"rawPathConditionBaseline\":0,"
                 + "\"rawPathConditionSize\":0,\"siteId\":\"" + DECLARED
                 + "\",\"unitIndex\":4}]\n"
-                + "witnesses=[]\n"
                 + "unresolved=[]\n"
                 + "targetReach={\"kind\":\"TARGET_REACH_EVENT\","
                 + "\"occurrence\":1,\"outcome\":true,\"siteId\":\""
@@ -296,38 +288,6 @@ public class BranchDecisionRecordingTest {
                 + "returned=observation\n"
                 + "diag=TARGET_REACHED|token=900002 site=" + DECLARED
                 + "#1\n", transcript(multiway, observation));
-    }
-
-    @Test
-    public void concreteDecisionAtAnUndeclaredSiteRecordsOnlyItsWitness()
-            throws Exception {
-        ConcolicRegionRuntime.ActiveRegion binary = region(true, false);
-        Object observation = call(binary, "recordConcreteDecision",
-                new Class<?>[] {String.class, int.class, decisionType()},
-                METHOD, 9, binary(false));
-        assertEquals("rows=[]\n"
-                + "witnesses=[{\"kind\":"
-                + "\"CONCRETE_BRANCH_EXECUTION_WITNESS_V1\",\"method\":\""
-                + METHOD + "\",\"schemaVersion\":1,\"siteId\":\"" + METHOD
-                + "#u9\",\"sourceTakenOutcome\":false,\"unitIndex\":9}]\n"
-                + "unresolved=[]\n"
-                + "targetReach=none\n"
-                + "returned=null\n", transcript(binary, observation));
-
-        ConcolicRegionRuntime.ActiveRegion multiway = region(true, false);
-        observation = call(multiway, "recordConcreteDecision",
-                new Class<?>[] {String.class, int.class, decisionType()},
-                METHOD, 9, multiway("LOOKUP_SWITCH", "7,9", 2));
-        assertEquals("rows=[]\n"
-                + "witnesses=[{\"branchKind\":\"LOOKUP_SWITCH\","
-                + "\"caseKeys\":[7,9],\"kind\":"
-                + "\"CONCRETE_BRANCH_EXECUTION_WITNESS_V1\",\"method\":\""
-                + METHOD + "\",\"observedSuccessorIndex\":2,"
-                + "\"schemaVersion\":1,\"siteId\":\"" + METHOD
-                + "#u9\",\"sourceTakenOutcome\":false,\"unitIndex\":9}]\n"
-                + "unresolved=[]\n"
-                + "targetReach=none\n"
-                + "returned=null\n", transcript(multiway, observation));
     }
 
     @Test
@@ -346,7 +306,6 @@ public class BranchDecisionRecordingTest {
                 + "\"rawPathConditionBaseline\":0,"
                 + "\"rawPathConditionSize\":0,\"siteId\":\"" + BOUNDARY
                 + "\",\"unitIndex\":12}]\n"
-                + "witnesses=[]\n"
                 + "unresolved=[]\n"
                 + "targetReach=none\n"
                 + "returned=observation\n", transcript(binary, observation));
@@ -366,7 +325,6 @@ public class BranchDecisionRecordingTest {
                 + "\",\"occurrence\":3,\"rawPathConditionBaseline\":0,"
                 + "\"rawPathConditionSize\":0,\"siteId\":\"" + BOUNDARY
                 + "\",\"unitIndex\":12}]\n"
-                + "witnesses=[]\n"
                 + "unresolved=[]\n"
                 + "targetReach=none\n"
                 + "returned=observation\n",
@@ -381,7 +339,6 @@ public class BranchDecisionRecordingTest {
                 new Class<?>[] {String.class, int.class, decisionType(),
                         String.class}, DECLARED, 2, binary(true), "DIGEST");
         assertEquals("rows=[]\n"
-                + "witnesses=[]\n"
                 + "unresolved=[]\n"
                 + "targetReach=none\n"
                 + "returned=true\n"
@@ -395,7 +352,6 @@ public class BranchDecisionRecordingTest {
                         String.class}, DECLARED, 2,
                 multiway("TABLE_SWITCH", "0,1,2", 1), "");
         assertEquals("rows=[]\n"
-                + "witnesses=[]\n"
                 + "unresolved=[]\n"
                 + "targetReach=none\n"
                 // The successor is the replay authority itself, so a
@@ -406,20 +362,29 @@ public class BranchDecisionRecordingTest {
                 transcript(multiway, observed));
     }
 
+    /**
+     * A site the plan did not name records nothing at all.
+     *
+     * <p>This is also why there is no pre-gate witness list any more: {@code
+     * observeDecision} returns here, before {@code recordConcreteDecision}
+     * can be reached, so the arm that filed those witnesses was unreachable
+     * and the seed-mismatch excuse the importer read them for was
+     * permanently empty.</p>
+     */
     @Test
     public void anUndeclaredSiteThatIsNoBoundaryIsTransparent()
             throws Exception {
         ConcolicRegionRuntime.ActiveRegion binary = region(true, false);
         boolean outcome = ConcolicRegionRuntime.resolveBranch(0L, 0L, METHOD,
                 99, "x > 0", true);
-        assertEquals("rows=[]\nwitnesses=[]\nunresolved=[]\n"
+        assertEquals("rows=[]\nunresolved=[]\n"
                 + "targetReach=none\nreturned=true\n",
                 transcript(binary, outcome));
 
         ConcolicRegionRuntime.ActiveRegion multiway = region(true, false);
         int successor = ConcolicRegionRuntime.resolveSwitchBranch(0L, 0L,
                 METHOD, 99, "x", "TABLE_SWITCH", "0,1", 0);
-        assertEquals("rows=[]\nwitnesses=[]\nunresolved=[]\n"
+        assertEquals("rows=[]\nunresolved=[]\n"
                 + "targetReach=none\nreturned=0\n",
                 transcript(multiway, successor));
     }
@@ -473,7 +438,7 @@ public class BranchDecisionRecordingTest {
                 region(true, true);
         boolean outcome = ConcolicRegionRuntime.resolveBranch(77L, 0L, METHOD,
                 12, "x > 0", true);
-        assertEquals("rows=[]\nwitnesses=[]\n"
+        assertEquals("rows=[]\n"
                 + "unresolved=[missing or mismatched replay loop boundary 77"
                 + " for " + BOUNDARY + "]\n"
                 + "targetReach=none\nreturned=true\n",
@@ -482,7 +447,7 @@ public class BranchDecisionRecordingTest {
         ConcolicRegionRuntime.ActiveRegion switchBoundary = region(true, true);
         int successor = ConcolicRegionRuntime.resolveSwitchBranch(77L, 0L,
                 METHOD, 12, "x", "TABLE_SWITCH", "0,1", 0);
-        assertEquals("rows=[]\nwitnesses=[]\n"
+        assertEquals("rows=[]\n"
                 + "unresolved=[missing or mismatched replay loop switch"
                 + " boundary 77 for " + BOUNDARY + "]\n"
                 + "targetReach=none\nreturned=0\n",
@@ -491,7 +456,7 @@ public class BranchDecisionRecordingTest {
         ConcolicRegionRuntime.ActiveRegion binary = region(true, true);
         outcome = ConcolicRegionRuntime.resolveBranch(77L, 0L, METHOD, 4,
                 "x > 0", true);
-        assertEquals("rows=[]\nwitnesses=[]\n"
+        assertEquals("rows=[]\n"
                 + "unresolved=[missing or mismatched prepared branch 77 for "
                 + DECLARED + "]\n"
                 + "targetReach=none\nreturned=true\n",
@@ -500,7 +465,7 @@ public class BranchDecisionRecordingTest {
         ConcolicRegionRuntime.ActiveRegion multiway = region(true, true);
         successor = ConcolicRegionRuntime.resolveSwitchBranch(77L, 0L, METHOD,
                 4, "x", "TABLE_SWITCH", "0,1", 0);
-        assertEquals("rows=[]\nwitnesses=[]\n"
+        assertEquals("rows=[]\n"
                 + "unresolved=[missing or mismatched prepared switch 77 for "
                 + DECLARED + "]\n"
                 + "targetReach=none\nreturned=0\n",
@@ -513,7 +478,7 @@ public class BranchDecisionRecordingTest {
         ConcolicRegionRuntime.ActiveRegion multiway = region(true, false);
         int successor = ConcolicRegionRuntime.resolveSwitchBranch(0L, 0L,
                 METHOD, 4, "x", "BAD_SWITCH", "0,1", 0);
-        assertEquals("rows=[]\nwitnesses=[]\n"
+        assertEquals("rows=[]\n"
                 + "unresolved=[" + DECLARED + ": invalid static switch"
                 + " contract: java.lang.IllegalArgumentException: unsupported"
                 + " branch kind BAD_SWITCH]\n"

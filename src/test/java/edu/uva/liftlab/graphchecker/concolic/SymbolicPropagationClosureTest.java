@@ -373,6 +373,89 @@ public class SymbolicPropagationClosureTest {
                 .get("operation").getAsString());
     }
 
+    /**
+     * An INITIAL arm whose host activation the recording does not name.
+     *
+     * <p>The host row is the only tie between the snapshot and the
+     * activation whose entry took it, so with no row "the host idled" can
+     * never be shown and the arm survives every fault marker.  Returning in
+     * silence made an unknown host and an arm that simply has no row look
+     * alike.  Now the fact itself is published -- {@code
+     * initialHostStated:false} on a row keyed by the same owner -- and named
+     * as a gap, so a consumer can refuse on it rather than read the silence
+     * as "hosted".</p>
+     */
+    @Test
+    public void anInitialArmWithNoKnownHostCarriesThatFactNotSilence() {
+        String scope = "replay-group:initial-host-unknown";
+        JsonObject absentInstaller = summary("W", "W#a1", "TASK.W", scope,
+                symbol("M_INITIAL"));
+        JsonObject initial = candidate("rf_initial", 24L,
+                symbol("M_INITIAL"), absentInstaller, 1);
+        initial.addProperty("versionKind", "INITIAL");
+        JsonObject read = guardedRead(28L, initial);
+        JsonObject reader = summary("R", "R#a2", "TASK.R", scope,
+                boundary(VmExpressionIr.FIELD_READ, 28L, read));
+        addGuardedReadEvidence(reader, read, absentInstaller);
+        JsonObject version = reader
+                .getAsJsonObject(SharedStateEvidence.RECORDED_FIELD)
+                .getAsJsonArray("versions").get(0).getAsJsonObject()
+                .getAsJsonObject("envelope").getAsJsonArray("versions")
+                .get(0).getAsJsonObject();
+        version.addProperty("versionKind", "INITIAL");
+        // The recording never said which activation's entry took it.
+        version.remove("regionId");
+
+        SymbolicPropagationClosure.Result result = rewrite(
+                Arrays.asList(reader));
+
+        assertFalse("an unknown host is not a complete closure",
+                result.complete());
+        assertTrue(result.gaps().toString(), result.gaps().toString()
+                .contains(SymbolicPropagationClosure.INITIAL_HOST_UNKNOWN));
+        JsonObject host = result.initialSnapshotHosts().get(0)
+                .getAsJsonObject();
+        assertFalse(host.get(SymbolicPropagationClosure.INITIAL_HOST_STATED)
+                .getAsBoolean());
+        assertTrue(optionalString(host,
+                SymbolicPropagationClosure.INITIAL_HOST_OWNER).startsWith(
+                SymbolicPropagationClosure.INITIAL_SOURCE_CASE_PREFIX));
+        assertFalse("an unstated host names no region",
+                host.has(SymbolicPropagationClosure
+                        .INITIAL_HOST_REGION_ID));
+    }
+
+    /** A host the recording does name is still stated, and says so. */
+    @Test
+    public void aKnownInitialHostIsStated() {
+        String scope = "replay-group:initial-host-known";
+        JsonObject absentInstaller = summary("W", "W#a1", "TASK.W", scope,
+                symbol("M_INITIAL"));
+        JsonObject initial = candidate("rf_initial", 24L,
+                symbol("M_INITIAL"), absentInstaller, 1);
+        initial.addProperty("versionKind", "INITIAL");
+        JsonObject read = guardedRead(28L, initial);
+        JsonObject reader = summary("R", "R#a2", "TASK.R", scope,
+                boundary(VmExpressionIr.FIELD_READ, 28L, read));
+        addGuardedReadEvidence(reader, read, absentInstaller);
+        reader.getAsJsonObject(SharedStateEvidence.RECORDED_FIELD)
+                .getAsJsonArray("versions").get(0).getAsJsonObject()
+                .getAsJsonObject("envelope").getAsJsonArray("versions")
+                .get(0).getAsJsonObject().addProperty("versionKind",
+                        "INITIAL");
+
+        SymbolicPropagationClosure.Result result = rewrite(
+                Arrays.asList(reader));
+
+        assertTrue(result.gaps().toString(), result.complete());
+        JsonObject host = result.initialSnapshotHosts().get(0)
+                .getAsJsonObject();
+        assertTrue(host.get(SymbolicPropagationClosure.INITIAL_HOST_STATED)
+                .getAsBoolean());
+        assertEquals("W#a1", optionalString(host, SymbolicPropagationClosure
+                .INITIAL_HOST_OCCURRENCE_ID));
+    }
+
     @Test
     public void initialReadUsesStableSourceWithoutProducerSummary() {
         String scope = "replay-group:initial-source";

@@ -401,6 +401,36 @@ public class InitialContainerSnapshotCallerTest {
      * what it held <em>before</em> the recorded mutations, not how many
      * members it has now.</p>
      */
+    /**
+     * An offer that threw declines out loud like any other outcome.
+     *
+     * <p>{@code SharedStateCapture.stateInitialContent} used to turn the
+     * throw into a {@code null} outcome and return, which bypassed the
+     * {@code INITIAL_SNAPSHOT_SKIPPED} row entirely.  The container's INITIAL
+     * version keeps its opaque root either way, so the two states are
+     * identical to the solver -- and identical in the corpus too, which is
+     * how a carrier with a free initial container came to read as one that
+     * had simply never been offered.</p>
+     */
+    @Test
+    public void anOfferThatFailedDeclinesOutLoud() {
+        InitialContainerSnapshot.Outcome outcome =
+                InitialContainerSnapshot.unavailable(
+                        "java.lang.LinkageError: snapshotContainer");
+
+        assertFalse(outcome.stated);
+        assertTrue("a failed offer must still reach the ledger",
+                outcome.declined());
+        JsonObject row = InitialContainerSnapshot.skipRow(outcome, "carrier");
+        assertEquals(InitialContainerSnapshot.SKIPPED_EVENT,
+                row.get("kind").getAsString());
+        assertEquals(InitialContainerSnapshot.INSTALL_UNAVAILABLE,
+                row.get("reason").getAsString());
+        assertEquals("NOT_SELECTABLE", row.get("answer").getAsString());
+        assertTrue(row.get("detail").getAsString()
+                .contains("snapshotContainer"));
+    }
+
     @Test
     public void aKeptHistoryStatesNoContentAndSaysSo() {
         List<Object> rows = new ArrayList<Object>(Arrays.asList("a", "b"));

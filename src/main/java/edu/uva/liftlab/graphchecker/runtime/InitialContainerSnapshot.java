@@ -104,6 +104,9 @@ final class InitialContainerSnapshot {
     static final String OVER_BOUND = "over bound";
     static final String CONTENT_RACED = "content changed while it was read";
     static final String VM_DECLINED = "the VM declined the snapshot";
+    /** The offer could not be made at all: no answer, so no stated base. */
+    static final String INSTALL_UNAVAILABLE =
+            "the snapshot offer failed before the VM answered";
     // The VM's own answers, one reason each.  A single "the VM said no" hides
     // exactly the distinction this call was changed to make.
     static final String VM_KEPT_HISTORY =
@@ -235,6 +238,19 @@ final class InitialContainerSnapshot {
     private static Outcome declined(String reason, String detail,
                                     int entries) {
         return declined(NOT_SELECTABLE, reason, detail, entries);
+    }
+
+    /**
+     * The outcome of an offer that threw before the VM could answer.
+     *
+     * <p>Declining out loud is the contract of this class, and a failure is
+     * one more way of declining: the container's INITIAL version keeps its
+     * opaque root either way.  What must never happen is the failure reading
+     * as "no offer was made", because that is indistinguishable from a
+     * carrier the runtime never needed to state.</p>
+     */
+    static Outcome unavailable(String detail) {
+        return declined(INSTALL_UNAVAILABLE, detail, -1);
     }
 
     private static Outcome declined(int answer, String reason, String detail,
