@@ -150,6 +150,16 @@ public final class ConcolicRegionRuntime {
      * A bounded loop address ran, but the response exchange selected as its
      * causal identity never occurred before the workload ended.
      */
+    /**
+     * The planned root never executed in this replay.
+     *
+     * <p>Not the same as an address several activations failed to answer:
+     * there was no activation at all, compatible or otherwise.  Saying so is
+     * what keeps a planned task that simply did not run from reaching the
+     * importer as silence.</p>
+     */
+    static final String SKIP_ROOT_NEVER_EXECUTED =
+            "ROOT_NEVER_EXECUTED";
     static final String SKIP_CAUSAL_ANCHOR_NOT_OBSERVED =
             "CAUSAL_ANCHOR_NOT_OBSERVED";
     /**

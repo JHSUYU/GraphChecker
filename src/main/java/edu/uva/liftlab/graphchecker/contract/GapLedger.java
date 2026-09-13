@@ -557,6 +557,12 @@ public final class GapLedger {
                         + " occurrence: on the kept slice the region the"
                         + " chain names is not the region that ran, off it no"
                         + " chain element was addressed there");
+        onKeptSlice(importer, "ROOT_NEVER_EXECUTED",
+                "the planned root did not execute in this replay: no"
+                        + " compatible activation was offered at all, which"
+                        + " on the kept slice means the region the chain"
+                        + " names never ran, and off it means the task was an"
+                        + " over-approximation");
         blocking(importer, "REGION_REPLAY_PREFIX_UNMATCHED",
                 "the replay did not follow the prefix the plan addressed");
         onKeptSlice(importer, "REGION_TASK_NO_PUBLISHED_ACTIVATION",

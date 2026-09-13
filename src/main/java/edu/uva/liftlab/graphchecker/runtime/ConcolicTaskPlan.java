@@ -61,6 +61,7 @@ import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.registe
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.rootInvocationAddressMatches;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.safe;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.sameHookIdentity;
+import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.SKIP_ROOT_NEVER_EXECUTED;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicResultPublisher.writeSkipped;
 
 /** The bounded campaign this JVM executes. */
@@ -191,7 +192,18 @@ final class ConcolicTaskPlan {
             // answered for end-of-run diagnostics. Goal completion owns
             // the separate decision to admit another activation.
             if (occurrenceClaimed[index]) continue;
-            if (task.unaddressedCandidates == 0) continue;
+            if (task.unaddressedCandidates == 0) {
+                // Nothing compatible ran at all -- not one activation the
+                // address could have been compared against.  That is a
+                // different statement from "several ran and none matched",
+                // and it used to be no statement: the task published neither
+                // an activation nor a skip, and the importer met silence.
+                writeSkipped(task, SKIP_ROOT_NEVER_EXECUTED,
+                        "the planned root did not execute in this replay: no"
+                                + " compatible activation was offered for "
+                                + task.occurrenceId, null);
+                continue;
+            }
             writeSkipped(task, task.rootContextSelector
                             .anchorSourceNeverExisted()
                             ? SKIP_ANCHOR_SOURCE_NEVER_EXISTED
