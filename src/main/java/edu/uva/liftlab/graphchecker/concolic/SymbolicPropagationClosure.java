@@ -1722,10 +1722,42 @@ public final class SymbolicPropagationClosure {
             if (family == null || family.isEmpty()) {
                 gap("CONSUMER_BOUNDARY_FAMILY_MISSING",
                         scope + ":" + eventId,
-                        "dynamic boundary has no exact stable-family join");
+                        boundaryFamilyShortfall(dynamic));
                 return JsonFields.shallowCopy(boundary);
             }
             return resolveFamily(family);
+        }
+
+        /**
+         * Why this boundary has no family, counted inside its own scope.
+         *
+         * <p>A field-read family is minted only where a version-store
+         * envelope claims that read event: {@link #scanFieldBoundaryPayloads}
+         * walks {@code envelope.reads} and nothing else registers one. So an
+         * absent family means the replay published a guarded read that no
+         * envelope in its session claimed, and there was never anything to
+         * join it to -- a shortfall in what the replay recorded, which
+         * recomposing the same corpus cannot repair.</p>
+         *
+         * <p>Every case used to read {@code dynamic boundary has no exact
+         * stable-family join}, which points at this closure and sends the
+         * reader looking for a join that was never possible. Say how much of
+         * the scope was claimed instead, so the two candidate causes -- an
+         * under-recorded replay and a scope that went wholly unindexed --
+         * are told apart before anyone spends a campaign on the wrong one.
+         * The count is taken within {@code scope} on purpose: a VM event id
+         * is session-local, so the same number in another replay group is a
+         * different event and proves nothing about this one.</p>
+         */
+        private String boundaryFamilyShortfall(DynamicKey dynamic) {
+            int claimedInScope = 0;
+            for (DynamicKey registered : dynamicFamilies.keySet()) {
+                if (registered.scope.equals(dynamic.scope)) {
+                    claimedInScope++;
+                }
+            }
+            return SymbolicPropagationClosure.boundaryFamilyShortfall(
+                    claimedInScope);
         }
 
         private JsonElement resolveFamily(String key) {
@@ -2539,6 +2571,25 @@ public final class SymbolicPropagationClosure {
                     && producerOwner.equals(other.producerOwner)
                     && receiverOwner.equals(other.receiverOwner);
         }
+    }
+
+    /**
+     * How a boundary with no family reads, given what its scope did claim.
+     *
+     * <p>Pure encoding shared by the closure and focused regression tests.
+     * Zero claims is a scope nothing indexed; a positive count is this one
+     * read going unclaimed while its neighbours were fine, which is the
+     * hdfs-17899-bug3 shape.</p>
+     */
+    static String boundaryFamilyShortfall(int claimedInScope) {
+        if (claimedInScope <= 0) {
+            return "no version-store envelope in this replay scope claimed"
+                    + " any read event, so the boundary has no family to"
+                    + " join";
+        }
+        return "no version-store envelope claimed this read event, so the"
+                + " boundary has no family to join (" + claimedInScope
+                + " other event(s) in this scope were claimed)";
     }
 
     private static final class DynamicKey {
