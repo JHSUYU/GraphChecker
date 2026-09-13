@@ -223,10 +223,6 @@ public final class ConcolicRegionRuntime {
      */
     private static volatile VmExpressionTable.Store workloadExpressionStore =
             new VmExpressionTable.Store();
-    /** Exact materialized activation owning each session VM context. */
-    private static final Object CONTEXT_ACTIVATION_LOCK = new Object();
-    private static final Map<Long, List<WriterActivationIdentity>>
-            CONTEXT_ACTIVATIONS = new LinkedHashMap<>();
     private ConcolicRegionRuntime() {
     }
 
@@ -539,7 +535,6 @@ public final class ConcolicRegionRuntime {
     public static String openWorkloadSession() {
         if (configuration().tasks.isEmpty()) {
             workloadExpressionStore = new VmExpressionTable.Store();
-            clearContextActivations();
             return "";
         }
         ConcolicVmBroker api = engine();
@@ -556,7 +551,6 @@ public final class ConcolicRegionRuntime {
                     + api.workloadSessionStatus();
         }
         SymbolicMessageEnvelope.clear();
-        clearContextActivations();
         workloadExpressionStore = new VmExpressionTable.Store();
         workloadSessionId = status;
         return "";
@@ -575,7 +569,6 @@ public final class ConcolicRegionRuntime {
         long sessionId = workloadSessionId;
         if (sessionId == 0L) {
             workloadExpressionStore = new VmExpressionTable.Store();
-            clearContextActivations();
             return "";
         }
         ConcolicVmBroker api = engine();
@@ -592,7 +585,6 @@ public final class ConcolicRegionRuntime {
                     + api.workloadSessionStatus();
         }
         SymbolicMessageEnvelope.clear();
-        clearContextActivations();
         workloadSessionId = 0L;
         workloadExpressionStore = new VmExpressionTable.Store();
         return "";
@@ -619,109 +611,6 @@ public final class ConcolicRegionRuntime {
         if (status == -3L) return "MEMBERS_REMAIN";
         if (status == -4L) return "CLOSING";
         return "UNNAMED_STATUS(" + status + ")";
-    }
-
-    private static void clearContextActivations() {
-        synchronized (CONTEXT_ACTIVATION_LOCK) {
-            CONTEXT_ACTIVATIONS.clear();
-        }
-    }
-
-    private static void rememberContextActivation(
-            long contextId, ActiveRegion active) {
-        if (contextId <= 0L || active == null) return;
-        synchronized (CONTEXT_ACTIVATION_LOCK) {
-            CONTEXT_ACTIVATIONS.computeIfAbsent(contextId,
-                    ignored -> new ArrayList<>()).add(
-                    new WriterActivationIdentity(active));
-        }
-    }
-
-    /** Exact nested activation in one VM thread context, or null if ambiguous. */
-    static WriterActivationIdentity contextActivation(
-            long contextId, long regionEnterEventId, RuntimeTask writer) {
-        synchronized (CONTEXT_ACTIVATION_LOCK) {
-            for (WriterActivationIdentity candidate
-                    : CONTEXT_ACTIVATIONS.getOrDefault(contextId,
-                    Collections.<WriterActivationIdentity>emptyList())) {
-                if (candidate.regionEnterEventId == regionEnterEventId
-                        && candidate.owns(writer)) {
-                    return candidate;
-                }
-            }
-            return null;
-        }
-    }
-
-    /** Immutable owner of one session-global VM field-version event. */
-    static final class WriterActivationIdentity {
-        private final String vmTaskId;
-        private final String vmRegionId;
-        private final long regionEnterEventId;
-        final String sourceKey;
-        final String occurrenceId;
-        final List<WriterCaseAddress> caseClosure;
-
-        private WriterActivationIdentity(ActiveRegion active) {
-            this.vmTaskId = active.activation.taskId;
-            this.vmRegionId = active.activation.regionId;
-            this.regionEnterEventId = active.vmRegionEnterEventId;
-            this.sourceKey = active.activation.sourceKey;
-            this.occurrenceId = active.occurrenceId();
-            this.caseClosure = activeWriterCaseClosure();
-        }
-
-        boolean owns(RuntimeTask writer) {
-            return writer != null && vmTaskId.equals(writer.taskId)
-                    && vmRegionId.equals(writer.regionId);
-        }
-
-        JsonObject caseClosure() {
-            JsonObject result = new JsonObject();
-            result.addProperty("authority", SymbolicPropagationClosure
-                    .WRITER_ACTIVATION_CLOSURE_AUTHORITY);
-            result.addProperty("complete", !caseClosure.isEmpty());
-            JsonArray cases = new JsonArray();
-            for (WriterCaseAddress address : caseClosure) {
-                cases.add(address.toJson());
-            }
-            result.add("cases", cases);
-            return result;
-        }
-    }
-
-    /** Stable dynamic addresses of the selected regions active at this write. */
-    private static List<WriterCaseAddress> activeWriterCaseClosure() {
-        List<WriterCaseAddress> result = new ArrayList<>();
-        Set<String> occurrences = new LinkedHashSet<>();
-        for (Long token : CURRENT_TOKENS.get()) {
-            ActiveRegion active = ownerRegion(token);
-            if (active == null || active.activationOrdinal <= 0) continue;
-            WriterCaseAddress address = new WriterCaseAddress(active);
-            if (occurrences.add(address.occurrenceId)) result.add(address);
-        }
-        return Collections.unmodifiableList(result);
-    }
-
-    /** Runtime address resolved to a local-case selector after all PCs close. */
-    private static final class WriterCaseAddress {
-        private final String taskId;
-        private final String regionId;
-        private final String occurrenceId;
-
-        private WriterCaseAddress(ActiveRegion active) {
-            this.taskId = active.activation.taskId;
-            this.regionId = active.activation.regionId;
-            this.occurrenceId = active.occurrenceId();
-        }
-
-        private JsonObject toJson() {
-            JsonObject result = new JsonObject();
-            result.addProperty("taskId", taskId);
-            result.addProperty("regionId", regionId);
-            result.addProperty("occurrenceId", occurrenceId);
-            return result;
-        }
     }
 
     /**
@@ -901,7 +790,6 @@ public final class ConcolicRegionRuntime {
                         "custom concolic engine returned no region-entry "
                                 + "event id");
             }
-            rememberContextActivation(active.vmContextId, active);
             // A delivery can establish the causal request immediately before
             // the selected handler entry.
             RuntimeTraceContext.View context = RuntimeTraceContext.current();
@@ -2214,12 +2102,11 @@ public final class ConcolicRegionRuntime {
                 : active.activation.taskId;
         String producerOccurrence = active == null ? UNPLANNED_ENDPOINT
                 : active.occurrenceId();
-        List<String> consumerOccurrences = active == null
-                ? Collections.<String>emptyList()
-                : active.activation.exportConsumerOccurrences(portId);
-        if (consumerOccurrences.isEmpty()) {
-            consumerOccurrences = plannedExportConsumers(portId);
-        }
+        // The entry says which consumers the plan bound to this port, which
+        // is a property of the port and not of whoever is producing: asking
+        // the running task first only narrowed it to the subset that task
+        // happened to declare.
+        List<String> consumerOccurrences = plannedExportConsumers(portId);
         boolean staged = SymbolicMessageEnvelope.stage(
                 portId, handle, producerTask, producerOccurrence,
                 consumerOccurrences);
@@ -2386,15 +2273,6 @@ public final class ConcolicRegionRuntime {
             return;
         }
         ActiveRegion active = activeRegion();
-        // Whether this activation is the edge the plan drew is a fact about
-        // the plan, not about the value: the leaf is the one the sender put
-        // in this message at this element, and refusing it here left the
-        // receiver holding a literal.  Say it and attach.
-        if (leafCarried && active != null) {
-            acceptCommunicationEndpoint(active, site,
-                    carried.producerOccurrenceId(),
-                    carried.consumerOccurrenceIds());
-        }
         if (!leafCarried) {
             // The message does not have the element this decode asked for.
             // Ordinals address elements, so this is not "the queue ran dry":
@@ -2541,39 +2419,6 @@ public final class ConcolicRegionRuntime {
         ensurePathRecordingStarted(active);
     }
 
-    /** Checks that one message entry came from its planned producer. */
-    private static boolean acceptCommunicationEndpoint(
-            ActiveRegion active, CommunicationHandoffSpec site,
-            String producerOccurrenceId,
-            List<String> consumerOccurrenceIds) {
-        String expectedProducer = active.activation
-                .attachProducerOccurrence(site.portId());
-        String actualProducer = OccurrenceId.parse(
-                producerOccurrenceId).planned();
-        String expectedConsumer = active.activation.occurrenceId;
-        if (expectedProducer.isEmpty()
-                || !expectedProducer.equals(actualProducer)
-                || !addressesConsumer(consumerOccurrenceIds,
-                expectedConsumer)) {
-            diag("ATTACH_ENDPOINT_MISMATCH", "task="
-                    + safe(active.activation.taskId) + " port="
-                    + site.portId() + " expected=" + expectedProducer
-                    + " -> " + expectedConsumer + " actual="
-                    + actualProducer + " -> " + consumerOccurrenceIds);
-            return false;
-        }
-        return true;
-    }
-
-    /**
-     * Whether a staged entry is addressed to this exact consumer occurrence.
-     *
-     * <p>One delivery of a repeated field carries one value per element, and
-     * the plan names one consumer occurrence per element; the envelope is a
-     * queue, so the value a consumer takes is the one its own iteration is
-     * due.  Membership is what the plan authorises -- never a wildcard: an
-     * occurrence the plan did not bind to this port still refuses.</p>
-     */
     private static boolean addressesConsumer(List<String> consumers,
                                              String occurrenceId) {
         if (consumers == null || safe(occurrenceId).isEmpty()) return false;
@@ -5830,16 +5675,6 @@ public final class ConcolicRegionRuntime {
         final Map<String, JsonObject> sharedStateRecords =
                 new LinkedHashMap<>();
         final List<JsonObject> sharedStateGaps = new ArrayList<>();
-        /**
-         * Containers this activation selected as whole-state carriers and
-         * declined to state the initial content of. Telemetry, not a
-         * refusal: the opaque root that stays behind is already the honest
-         * answer, and the row says which containers it is honest about.
-         */
-        final List<JsonObject> initialSnapshotSkips = new ArrayList<>();
-        /** Whole-state carriers whose initial content this run did state. */
-        final List<JsonObject> initialSnapshotStates = new ArrayList<>();
-
         /** Read-out batch every record of this activation is stamped with. */
         private long evidenceSnapshot;
         private final Set<String> materialized = new LinkedHashSet<>();

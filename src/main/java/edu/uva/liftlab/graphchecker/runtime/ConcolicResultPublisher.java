@@ -279,6 +279,34 @@ final class ConcolicResultPublisher {
         }
     }
 
+    /**
+     * Brings the VM's summary into the row before the row is compacted.
+     *
+     * <p>The summary used to be spliced into the line as the VM serialized
+     * it, beside a result that had already been compacted.  That published
+     * two tables for the same expressions under two reference schemes -- the
+     * portable anchors for everything the Java side had touched, the VM's own
+     * ids for the path condition -- and neither could ever cover the other,
+     * because the two were never in the same object.  Merging the summary in
+     * first means one table, one scheme, and every expression stored once
+     * however it was reached.</p>
+     *
+     * <p>A summary that will not decode is a gap, not a silent omission: the
+     * row says so and keeps what it has.</p>
+     */
+    private static void mergeEngineSummary(ActiveRegion active,
+                                           JsonObject result,
+                                           String rawEngineSummary) {
+        if (rawEngineSummary == null) return;
+        try {
+            result.add("engineSummary",
+                    active.expressionStore.importEnvelope(rawEngineSummary));
+        } catch (RuntimeException undecodable) {
+            result.addProperty("engineSummaryError",
+                    rootCause(undecodable));
+        }
+    }
+
     /** Decodes, assembles, appends, and settles one already-closed region. */
     private static void publishCompletedResult(
             ActiveRegion active, JsonObject result,
@@ -288,8 +316,9 @@ final class ConcolicResultPublisher {
             addRecordedSharedStateToResult(result, active,
                     rawSharedState == null ? evidenceIdentity(active)
                             : rawSharedState.identity);
+            mergeEngineSummary(active, result, rawEngineSummary);
             JsonObject portableResult = active.expressionStore.compact(result);
-            boolean written = appendResult(portableResult, rawEngineSummary);
+            boolean written = appendResult(portableResult);
             boolean goalAnswered = written
                     && resultAnswersSelectedGoal(active.activation, result);
             if (goalAnswered) {
@@ -505,20 +534,6 @@ final class ConcolicResultPublisher {
             result.add("sharedStateGaps",
                     stamped(active.sharedStateGaps, identity));
         }
-        // Whole-state carriers whose initial content this run declined to
-        // state.  Not a gap: the opaque INITIAL root they keep is already
-        // the honest answer, and this says which containers it covers.
-        if (!active.initialSnapshotSkips.isEmpty()) {
-            result.add("initialSnapshotSkips",
-                    stamped(active.initialSnapshotSkips, identity));
-        }
-        // The other half: which containers this run did state, and with how
-        // many members.  Without it an absent snapshot and a snapshot that
-        // was never offered read alike.
-        if (!active.initialSnapshotStates.isEmpty()) {
-            result.add("initialSnapshotStates",
-                    stamped(active.initialSnapshotStates, identity));
-        }
     }
 
     static void addResultIdentity(
@@ -579,44 +594,25 @@ final class ConcolicResultPublisher {
     }
 
     static boolean appendResult(JsonObject result) {
-        return appendResult(result, null);
-    }
-
-    static boolean appendResult(
-            JsonObject result, String rawEngineSummary) {
-        return appendResultLine(configuration().resultFile, result,
-                rawEngineSummary);
+        return appendResultLine(configuration().resultFile, result);
     }
 
     /**
      * Appends one durable result without depending on interruptible NIO
      * channels.
      */
-    static boolean appendResultLine(Path output, JsonObject result,
-                                    String rawEngineSummary) {
+    static boolean appendResultLine(Path output, JsonObject result) {
         synchronized (WRITE_LOCK) {
             try {
                 Path parent = output.toAbsolutePath().getParent();
                 if (parent != null) {
                     Files.createDirectories(parent);
                 }
-                String metadata = GSON.toJson(result);
-                int close = metadata.lastIndexOf('}');
-                if (close < 0) {
-                    throw new IOException("result metadata is not a JSON object");
-                }
                 try (BufferedWriter writer = new BufferedWriter(
                         new OutputStreamWriter(new FileOutputStream(
                                 output.toFile(), true),
                                 StandardCharsets.UTF_8))) {
-                    writer.write(metadata, 0, close);
-                    if (rawEngineSummary != null) {
-                        if (result.size() > 0) writer.write(',');
-                        writer.write("\"engineSummary\":");
-                        writer.write(rawEngineSummary);
-                    }
-                    writer.write(metadata, close,
-                            metadata.length() - close);
+                    writer.write(GSON.toJson(result));
                     writer.newLine();
                 }
                 return true;

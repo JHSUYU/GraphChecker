@@ -82,15 +82,12 @@ public final class RuntimeSelectedRegionFinalizer {
     public static final String ADMISSION_BASIS = "admissionBasis";
     private static final String SHARED_LOCATION_DEMAND_ADMISSION =
             "SHARED_LOCATION_DEMAND_V1";
-    private static final String DEMANDED_BY_REGIONS = "demandedByRegionIds";
     /**
      * Which shared locations a demand admission was asked for.  Published on
      * the plan row beside {@link #ADMISSION_BASIS} so a reader of the frozen
      * artifact can tell which location bought each admission, rather than
      * having to re-derive it from the retained edges.
      */
-    public static final String DEMANDED_SHARED_LOCATIONS =
-            "demandedSharedLocations";
     /**
      * Telemetry row kind for a shared-location demand hop the care set
      * refused.  A location outside the care set is a constant for this
@@ -1963,18 +1960,12 @@ public final class RuntimeSelectedRegionFinalizer {
                         + "admission basis for " + writer + ": "
                         + existingBasis);
             }
-            Set<String> demandedBy = new TreeSet<>(strings(
-                    activation.get(DEMANDED_BY_REGIONS)));
-            demandedBy.addAll(consumerRegions);
-            Set<String> locations = new LinkedHashSet<>(strings(
-                    activation.get(DEMANDED_SHARED_LOCATIONS)));
-            locations.addAll(entry.getValue());
+            // Which regions demanded this writer, and which locations they
+            // demanded it for, were the stitcher's join columns: it merged
+            // replays and had to re-derive who wanted each write.  The
+            // admission basis and the depth stay -- the scheduler reads both.
             activation.put(ADMISSION_BASIS,
                     SHARED_LOCATION_DEMAND_ADMISSION);
-            activation.put(DEMANDED_BY_REGIONS,
-                    new ArrayList<>(demandedBy));
-            activation.put(DEMANDED_SHARED_LOCATIONS,
-                    new ArrayList<>(locations));
             activation.put(DEMAND_DEPTH,
                     demandDepth(demandDepths, writer));
             admitted.add(writer);

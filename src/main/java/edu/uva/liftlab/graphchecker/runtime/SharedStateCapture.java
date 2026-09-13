@@ -1,5 +1,6 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
+import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.concolic.RecordedEvidenceIdentity;
@@ -11,7 +12,6 @@ import edu.uva.liftlab.graphchecker.contract.SiteId;
 import edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.AccessorCallContext;
 import edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.ActiveRegion;
 import edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.MissingValue;
-import edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.WriterActivationIdentity;
 import edu.uva.liftlab.graphchecker.runtime.ConcolicTaskPlan.RuntimeTask;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -30,7 +30,6 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalLongInteg
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.CURRENT_ACCESSOR_CALL_CONTEXT;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.activeRegion;
-import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.contextActivation;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.decodeVmEnvelope;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.readExactField;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.resolveFieldPathLeafOwner;
@@ -219,18 +218,20 @@ final class SharedStateCapture {
                     rootCause(unavailable));
         }
         if (outcome == null) return;
+        // Whether the initial content was stated is already in the write
+        // log: a container this run stated carries a SNAPSHOT_BASE over its
+        // members, and one it declined keeps the opaque INITIAL root.  The
+        // two telemetry rows that said the same thing a second time were
+        // read by nothing.
         if (outcome.stated) {
-            JsonObject stated = InitialContainerSnapshot.statedRow(outcome,
-                    carrier.describe());
-            diag(outcome.statedEvent(), stated.toString());
-            if (active != null) active.initialSnapshotStates.add(stated);
+            diag(outcome.statedEvent(), InitialContainerSnapshot.statedRow(
+                    outcome, carrier.describe()).toString());
             return;
         }
         if (!outcome.declined()) return;
-        JsonObject row = InitialContainerSnapshot.skipRow(outcome,
-                carrier.describe());
-        diag(InitialContainerSnapshot.SKIPPED_EVENT, row.toString());
-        if (active != null) active.initialSnapshotSkips.add(row);
+        diag(InitialContainerSnapshot.SKIPPED_EVENT,
+                InitialContainerSnapshot.skipRow(outcome,
+                        carrier.describe()).toString());
     }
 
     /**
@@ -288,131 +289,64 @@ final class SharedStateCapture {
         String locationKey = SharedStateEvidence.locationKey(envelope);
         JsonObject record = SharedStateEvidence.versionsRecord(locationKey,
                 envelope, identity);
-        if (carrier != null) {
-            // The VM addresses a location by its own session identity; the
-            // slice and the composer address one by its declared Java field.
-            record.add("carrier", carrier.toJson());
-        }
-        // Publication can run after the owner thread has left ACTIVE.
-        addActivationIdentity(object(record, "envelope"), active, carrier);
         return new SharedStateResult(SharedStateEvidence.STAGE_VERSIONS,
-                SharedStateEvidence.OK, locationKey, record);
+                SharedStateEvidence.OK, locationKey,
+                writeLogRecord(record));
     }
 
     /**
-     * Gives every write and read in one envelope the activation address the
-     * rest of the pipeline joins on.
+     * One location's write log: {@code location#version -> expression}.
      *
-     * <p>The VM stamps writes and reads with their task, region and thread
-     * context; reads additionally carry the exact region-entry event.</p>
+     * <p>This is the whole of what a replay says about shared state.  A read
+     * inside one replay is determined -- the location had one version when
+     * the read ran and one event wrote it -- so the reader needs the version
+     * and the expression written at it, and nothing else.  Everything the
+     * envelope used to carry besides that existed for an offline stitcher
+     * that merged many replays and therefore had to re-derive, per version,
+     * which activation wrote it, under which case, on which node, and which
+     * reads elsewhere might have observed it: the writer source key,
+     * occurrence and activation closure, the read log with its reader
+     * authorities and consumer anchors, the carrier's declared field, the
+     * per-version path guard, the evidence identity, and the truncation and
+     * selection flags.  None of it is an input to in-session resolution, and
+     * publishing it made the write log four times its own size.</p>
+     *
+     * <p>An INITIAL version stays, tagged as one: a value the recording did
+     * not watch being produced is still the value, and saying which kind it
+     * is what keeps "the program computed this" apart from "the recording
+     * started after it".</p>
      */
-    private static void addActivationIdentity(JsonObject envelope,
-                                              ActiveRegion active,
-                                              SharedCarrier carrier) {
-        ConcolicTaskPlan config = configuration();
+    private static JsonObject writeLogRecord(JsonObject record) {
+        JsonObject envelope = object(record, "envelope");
+        JsonObject published = new JsonObject();
+        copyIfPresent(record, published, "kind");
+        copyIfPresent(record, published, "authority");
+        copyIfPresent(record, published, "locationKey");
+        JsonObject publishedEnvelope = new JsonObject();
+        copyIfPresent(envelope, publishedEnvelope, "kind");
+        copyIfPresent(envelope, publishedEnvelope, "schemaVersion");
+        copyIfPresent(envelope, publishedEnvelope, "sessionId");
+        copyIfPresent(envelope, publishedEnvelope, "location");
+        JsonArray versions = new JsonArray();
         for (JsonElement element : array(envelope, "versions")) {
             if (!element.isJsonObject()) continue;
             JsonObject version = element.getAsJsonObject();
-            // Wave 3 concurrency: every symbolic write of the session is a
-            // version the composer may read from, so each one is addressed
-            // by the write that produced it and the thread that ran it.
-            RuntimeTask writer = config.taskById(
-                    optionalString(version, "taskId"));
-            if (writer == null) continue;
-            WriterActivationIdentity exact = contextActivation(
-                    optionalLongInteger(version, "writerContextId", 0L),
-                    optionalLongInteger(version, "regionEnterEventId", 0L), writer);
-            if (exact != null && exact.owns(writer)) {
-                version.addProperty(SharedStateEvidence.WRITER_SOURCE_KEY,
-                        exact.sourceKey);
-                version.addProperty(SharedStateEvidence.WRITER_OCCURRENCE_ID,
-                        exact.occurrenceId);
-                version.add(SymbolicPropagationClosure
-                        .WRITER_ACTIVATION_CLOSURE, exact.caseClosure());
-            } else {
-                // A writer without its exact region-entry binding has no
-                // activation owner. Leave it unnamed rather than collapsing
-                // loop activations to their common planned address.
-                version.addProperty(SharedStateEvidence.WRITER_SOURCE_KEY, "");
-                version.addProperty(
-                        SharedStateEvidence.WRITER_OCCURRENCE_ID, "");
-            }
+            JsonObject entry = new JsonObject();
+            copyIfPresent(version, entry, "fieldVersionId");
+            copyIfPresent(version, entry, "versionKind");
+            copyIfPresent(version, entry, "expression");
+            versions.add(entry);
         }
-        List<JsonObject> ownedReads = new ArrayList<>();
-        for (JsonElement element : array(envelope, "reads")) {
-            if (element.isJsonObject()
-                    && activeOwnsRead(element.getAsJsonObject(), active)) {
-                ownedReads.add(element.getAsJsonObject());
-            }
-        }
-        ownedReads.sort(Comparator.comparingLong(
-                read -> optionalLongInteger(read, "readEventId", Long.MAX_VALUE)));
-        if (carrier != null
-                && ownedReads.size() == carrier.consumerAccesses().size()) {
-            for (int index = 0; index < ownedReads.size(); index++) {
-                ConsumerAccessAnchor anchor =
-                        carrier.consumerAccesses().get(index);
-                ownedReads.get(index).addProperty(
-                        SharedStateEvidence.CONSUMER_SITE_ID, anchor.siteId);
-                ownedReads.get(index).addProperty(
-                        SharedStateEvidence.CONSUMER_SITE_OCCURRENCE,
-                        anchor.occurrence);
-            }
-        }
-        for (JsonElement element : array(envelope, "reads")) {
-            if (!element.isJsonObject()) continue;
-            JsonObject read = element.getAsJsonObject();
-            if (active == null) {
-                read.addProperty(READER_AUTHORITY_FIELD,
-                        READER_OUTSIDE_SELECTED_REGION);
-                continue;
-            }
-            RuntimeTask reader = active.activation;
-            // A session envelope contains reads from every task that touched
-            // this location.  A row may claim only the reads issued by the
-            // activation currently closing: native task, context and region
-            // entry together are the exact dynamic owner.
-            if (!activeOwnsRead(read, active)) {
-                read.addProperty(READER_AUTHORITY_FIELD,
-                        READER_FOREIGN_REGION);
-                continue;
-            }
-            read.addProperty(SharedStateEvidence.READER_SOURCE_KEY,
-                    reader.sourceKey);
-            read.addProperty(SharedStateEvidence.READER_OCCURRENCE_ID,
-                    active.occurrenceId());
-            read.addProperty(READER_AUTHORITY_FIELD,
-                    READER_ACTIVE_REGION_AUTHORITY);
-        }
+        publishedEnvelope.add("versions", versions);
+        published.add("envelope", publishedEnvelope);
+        return published;
     }
 
-    /** Whether this native read belongs to the activation publishing it. */
-    private static boolean activeOwnsRead(JsonObject read,
-                                           ActiveRegion active) {
-        if (read == null || active == null
-                || active.vmRegionEnterEventId <= 0L) {
-            return false;
-        }
-        RuntimeTask reader = active.activation;
-        return active.vmContextId == optionalLongInteger(read,
-                "readerContextId", 0L)
-                && reader.taskId.equals(optionalString(read, "taskId"))
-                && reader.regionId.equals(optionalString(read, "regionId"))
-                && active.vmRegionEnterEventId == optionalLongInteger(read,
-                "regionEnterEventId", 0L);
+    private static void copyIfPresent(JsonObject from, JsonObject to,
+                                      String field) {
+        JsonElement value = from.get(field);
+        if (value != null && !value.isJsonNull()) to.add(field, value);
     }
-
-    /** Member naming where one read's activation address came from. */
-    static final String READER_AUTHORITY_FIELD = "readerAuthority";
-    /** Authority of a reader address taken from the running activation. */
-    static final String READER_ACTIVE_REGION_AUTHORITY =
-            "ACTIVE_REGION_READER_IDENTITY_V1";
-    /** Marker for a read read out while no selected region was running. */
-    static final String READER_OUTSIDE_SELECTED_REGION =
-            "READER_OUTSIDE_SELECTED_REGION";
-    /** Marker for a read whose static region is not the running one. */
-    static final String READER_FOREIGN_REGION =
-            "READER_REGION_NOT_ACTIVE_ACTIVATION";
 
     /** The identity every record of one read-out batch is stamped with. */
     static RecordedEvidenceIdentity evidenceIdentity(

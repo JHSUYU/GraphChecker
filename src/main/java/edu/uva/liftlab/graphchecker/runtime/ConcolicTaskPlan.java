@@ -306,11 +306,17 @@ final class ConcolicTaskPlan {
                 task.noteUnaddressedCandidate(sourceMismatch);
                 continue;
             }
-            String requestMismatch = requestMismatch(task,
+            // The request a root entered is recorded, never a refusal: an
+            // occurrence is (node, epoch, region, k-th activation), and the
+            // exchange that happened to be open around it is not part of
+            // that identity.  Vetoing on it refused a flip replay whose
+            // activation is the seed's -- same node, same region, same
+            // ordinal -- because the workload reached it under a different
+            // request the second time.
+            String enteredUnder = requestMismatch(task,
                     registeredReceiverSource, context);
-            if (!requestMismatch.isEmpty()) {
-                task.noteUnaddressedCandidate(requestMismatch);
-                continue;
+            if (!enteredUnder.isEmpty()) {
+                task.noteRequestContext(enteredUnder);
             }
             if (mayDeferMissingContextToOutgoingAnchor(task,
                     registeredReceiverSource, context)) {
@@ -335,8 +341,6 @@ final class ConcolicTaskPlan {
                     receiver, rootArguments, threadName)
                     || !sourceAdmissionMismatch(task,
                     registeredReceiverSource,
-                    context).isEmpty()
-                    || !requestMismatch(task, registeredReceiverSource,
                     context).isEmpty()) {
                 continue;
             }
@@ -399,11 +403,17 @@ final class ConcolicTaskPlan {
                 task.noteUnaddressedCandidate(sourceMismatch);
                 continue;
             }
-            String requestMismatch = requestMismatch(task,
+            // The request a root entered is recorded, never a refusal: an
+            // occurrence is (node, epoch, region, k-th activation), and the
+            // exchange that happened to be open around it is not part of
+            // that identity.  Vetoing on it refused a flip replay whose
+            // activation is the seed's -- same node, same region, same
+            // ordinal -- because the workload reached it under a different
+            // request the second time.
+            String enteredUnder = requestMismatch(task,
                     registeredReceiverSource, context);
-            if (!requestMismatch.isEmpty()) {
-                task.noteUnaddressedCandidate(requestMismatch);
-                continue;
+            if (!enteredUnder.isEmpty()) {
+                task.noteRequestContext(enteredUnder);
             }
             if (mayDeferMissingContextToOutgoingAnchor(task,
                     registeredReceiverSource, context)) {
@@ -437,8 +447,6 @@ final class ConcolicTaskPlan {
                 continue;
             }
             if (!sourceAdmissionMismatch(task, registeredReceiverSource,
-                    context).isEmpty()
-                    || !requestMismatch(task, registeredReceiverSource,
                     context).isEmpty()) continue;
             Integer actualOrdinal = actualOrdinalByScope.get(
                     task.invocationCounterKey());
@@ -456,6 +464,16 @@ final class ConcolicTaskPlan {
         return null;
     }
 
+    /**
+     * How the request this root entered differs from the planned one, or "".
+     *
+     * <p>Information, not admission.  The request was the stitcher's way of
+     * addressing an occurrence, because it merged replays and needed the RPC
+     * exchange to tell two runs of one region apart.  An occurrence is
+     * (node, epoch, region, k-th activation); which exchange happened to be
+     * open around it says where it was reached from, not which occurrence it
+     * is.</p>
+     */
     static String requestMismatch(
             RuntimeTask task, SourceRef registeredReceiverSource,
             RuntimeTraceContext.View context) {
@@ -1627,10 +1645,21 @@ final class ConcolicTaskPlan {
          * Records that one candidate ran and was not this address, keeping
          * the last reason for the run's single statement about it.
          */
+        private final Set<String> requestContexts = new LinkedHashSet<>();
+
         synchronized void noteUnaddressedCandidate(String reason) {
             unaddressedCandidates++;
             unaddressedReasons.add(safe(reason));
             registerRunTotalsHook();
+        }
+
+        /**
+         * Records which request a matching root entered, when it is not the
+         * planned one.  Kept so the run can say where an admitted occurrence
+         * was reached from; it never withholds the address.
+         */
+        synchronized void noteRequestContext(String enteredUnder) {
+            requestContexts.add(safe(enteredUnder));
         }
 
         /** The run's one statement about an address nothing answered. */
