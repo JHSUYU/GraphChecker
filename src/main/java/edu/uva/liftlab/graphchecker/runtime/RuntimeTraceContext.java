@@ -453,6 +453,25 @@ final class RuntimeTraceContext {
     }
 
     /**
+     * Whether the recording window has opened in this run.
+     *
+     * <p>A workload starts its cluster, then names its sources, then does
+     * the thing being recorded.  Everything the process did before the first
+     * source was registered is outside the window: the recording never saw
+     * it, so the plan counted none of it, and a replay that counts it is
+     * numbering a different population than the plan numbered.</p>
+     *
+     * <p>The first registration is the moment, and it is the same moment in
+     * every replay of one recording because it is the workload that makes
+     * it, not the engine.</p>
+     */
+    static boolean recordingWindowOpen() {
+        synchronized (LOCK) {
+            return !SOURCES_BY_KEY.isEmpty();
+        }
+    }
+
+    /**
      * Whether this run registered the same logical source as {@code
      * sourceKey}.
      */

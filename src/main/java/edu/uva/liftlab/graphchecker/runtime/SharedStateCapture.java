@@ -14,6 +14,7 @@ import edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.ActiveRegion;
 import edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.MissingValue;
 import edu.uva.liftlab.graphchecker.runtime.ConcolicTaskPlan.RuntimeTask;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -527,12 +528,12 @@ final class SharedStateCapture {
                 SharedCarrier map = SharedCarrier.map(owner,
                         resolveContentMonitor(active.receiver),
                         declaringClass, fieldName, descriptor);
-                map.recordConsumerAccess(entry);
+                map.recordEntryAnchor(entry);
                 return selectCarrierForTask(map, task);
             }
             SharedCarrier field = SharedCarrier.field(owner,
                     declaringClass, fieldName, descriptor);
-            field.recordConsumerAccess(entry);
+            field.recordEntryAnchor(entry);
             return selectCarrierForTask(field, task);
         }
     }
@@ -705,6 +706,18 @@ final class SharedStateCapture {
         /** Frozen trace locator from this task's selected causal edge. */
         private long plannedReceiverObjectId;
         /** Reads of this live carrier in the publishing activation. */
+        /**
+         * The region entry, kept apart from the accesses.
+         *
+         * <p>It is the last resort for naming this location, never a
+         * competitor: a map reached by an access in one activation and
+         * selected at entry in another would otherwise take an entry name
+         * once and an access name the next time, and one map would have two
+         * identities in one replay.  An access names the location better --
+         * it is where the program touched it -- so the entry only answers
+         * when nothing else does.</p>
+         */
+        private ConsumerAccessAnchor entryAnchor;
         private final List<ConsumerAccessAnchor> consumerAccesses =
                 new ArrayList<>();
 
@@ -830,7 +843,11 @@ final class SharedStateCapture {
          */
         private long accessAnchorReceiverObjectId(String occurrenceId) {
             String canonical = "";
-            for (ConsumerAccessAnchor access : consumerAccesses) {
+            List<ConsumerAccessAnchor> naming = consumerAccesses.isEmpty()
+                    && entryAnchor != null
+                    ? Collections.singletonList(entryAnchor)
+                    : consumerAccesses;
+            for (ConsumerAccessAnchor access : naming) {
                 if (access == null || access.siteId.isEmpty()
                         || access.occurrence < 1) {
                     continue;
@@ -891,6 +908,14 @@ final class SharedStateCapture {
                     && !consumer.siteId.isEmpty()
                     && consumer.occurrence > 0) {
                 consumerAccesses.add(consumer);
+            }
+        }
+
+        void recordEntryAnchor(ConsumerAccessAnchor entry) {
+            if (entry != null && !SHAPE_ELEMENT.equals(shape)
+                    && !entry.siteId.isEmpty() && entry.occurrence > 0
+                    && entryAnchor == null) {
+                entryAnchor = entry;
             }
         }
 

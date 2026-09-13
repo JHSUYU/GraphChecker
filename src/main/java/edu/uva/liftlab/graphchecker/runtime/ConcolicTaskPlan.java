@@ -312,6 +312,16 @@ final class ConcolicTaskPlan {
                     receiver, rootArguments, threadName)) {
                 continue;
             }
+            // Outside the recording window there is nothing to count.  A
+            // workload starts its cluster, names its sources, then does the
+            // thing being recorded; whatever the process did before the
+            // first registration the recording never saw, so the plan
+            // counted none of it.  Counting it here numbers a different
+            // population than the plan numbered -- on hdfs-17960 the
+            // process's first saveNamespace, 38 seconds before the workload
+            // begins, took ordinal 1 and pushed the checkpoint activation
+            // the plan means to 2.
+            if (!RuntimeTraceContext.recordingWindowOpen()) continue;
             // Counted before anything else may refuse it: the planner
             // counted every observed activation of this region, so a
             // candidate the replay declines for another reason still
@@ -413,6 +423,16 @@ final class ConcolicTaskPlan {
                     receiver, rootArguments, threadName)) {
                 continue;
             }
+            // Outside the recording window there is nothing to count.  A
+            // workload starts its cluster, names its sources, then does the
+            // thing being recorded; whatever the process did before the
+            // first registration the recording never saw, so the plan
+            // counted none of it.  Counting it here numbers a different
+            // population than the plan numbered -- on hdfs-17960 the
+            // process's first saveNamespace, 38 seconds before the workload
+            // begins, took ordinal 1 and pushed the checkpoint activation
+            // the plan means to 2.
+            if (!RuntimeTraceContext.recordingWindowOpen()) continue;
             // Counted before anything else may refuse it: the planner
             // counted every observed activation of this region, so a
             // candidate the replay declines for another reason still
