@@ -380,15 +380,14 @@ nest gone -- HDFS-17899 bug3 from 31 to 25 and HDFS-17897 from 23 to 20.
 Every occurrence on the ground-truth causal chains survives in every case,
 and so does every delivery of every declared wire flow.
 
-**Budgets are telemetry.** An experiment may state `replay_task_budget` in
-its workflow.properties, which `run_engine.sh` carries to the scheduler as
-`--replay-task-budget`. It caps nothing. The kept count is published against
-it as `replayTaskBudgetStatus: REPLAY_TASK_BUDGET_EXCEEDED` or
-`REPLAY_TASK_IN_BUDGET`, and every task the slice kept still runs, because a
-campaign bigger than its author expected is a fact to read, not a set of
-tasks to drop at random. Left unstated it judges nothing. No rule above names
-a workload, a class or a failure mechanism; whatever a single case needs
-beyond them belongs in that config and never in the scheduler.
+No rule above names a workload, a class or a failure mechanism; whatever a
+single case needs beyond them belongs in that config and never in the
+scheduler. There used to be a `replay_task_budget` knob here, carried to the
+scheduler as `--replay-task-budget` and published as
+`replayTaskBudgetStatus`. It capped nothing, no experiment ever set it, and
+its own test asserted that it never dropped a task -- a number nobody wrote
+compared against a count nobody read. It is gone; the kept count is in
+`keptOccurrenceCount` and the per-occurrence decisions are beside it.
 
 **Shared carriers are declared on the same slice.** `RuntimeRegionPlanner`
 publishes on every closure goal every shared field its region reads or writes

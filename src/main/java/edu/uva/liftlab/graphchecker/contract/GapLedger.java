@@ -395,21 +395,10 @@ public final class GapLedger {
         // EXPLORE / PATH_WORKLIST.
         // ------------------------------------------------------------------
         String explore = "EXPLORE/PATH_WORKLIST";
-        blocking(explore, "BOUND_REACHED",
-                "a region, path or task ceiling truncated the worklist, so"
-                        + " the paths it did not plan are unexplained"
-                        + " freedom rather than paths it ruled out");
         blocking(explore, "SHARED_STATE_GAP",
                 "a shared-state carrier whose map, receiver locator or"
                         + " access anchor is missing is a read with no"
                         + " stated source");
-        blocking(explore, "PATH_FLIP_MATERIALIZATION_GAP",
-                "an exploration obligation that produced no replay leaves"
-                        + " the sibling path it was meant to decide open");
-        blocking(explore, "PATH_FLIP_REPLAY_NOT_ADMITTED",
-                "a satisfying flip model whose replay was not admitted"
-                        + " leaves the path it names neither walked nor"
-                        + " excluded");
         blocking(explore, "INVALID_BRANCH_MAPPING_SCHEMA",
                 "a branch mapping the worklist cannot read is a decision it"
                         + " cannot flip");
@@ -429,30 +418,47 @@ public final class GapLedger {
                 "nothing observed seeds this region's path space");
         blocking(explore, "MULTIPLE_EXPLORATION_SCOPE",
                 "one task spans several exploration scopes");
-        blocking(explore, "PATH_FLIP_SOLVER_TIMEOUT",
-                "the flip query for this path was never answered, so the"
-                        + " path it names is neither walked nor excluded");
-        // Written by run_engine.sh's closure loop onto every pending
-        // worklist, which is why they are classed here rather than in the
-        // shell that raises them.
-        blocking(explore, "REGION_PATH_WAVE_BUDGET_REACHED",
-                "the closure loop stopped at its wave budget with"
-                        + " obligations still pending");
-        blocking(explore, "REGION_PATH_CLOSURE_NO_PROGRESS",
-                "a closure wave repeated its predecessor's signature with"
-                        + " obligations still pending, so the paths they"
-                        + " name were never decided");
         for (String code : new String[]{
-                "UNSUPPORTED_PATH_FLIP",
-                "PATH_FLIP_REPLAY_ENGINE_UNAVAILABLE",
-                "PATH_FLIP_REPLAY_PRODUCED_NO_RESULT",
-                "LINKED_REPLAY_LEFT_TOPOLOGY_EPOCH",
                 "RPC_HANDOFF_GAP",
                 "REPLAY_DIVERGENCE",
                 "TOPOLOGY_DIVERGENCE"}) {
             blocking(explore, code,
-                    "an obligation the worklist raised and no replay answered leaves"
-                            + " the path it names neither walked nor excluded");
+                    "an alignment gap on a path the replay actually walked:"
+                            + " the recorded evidence for a step of that"
+                            + " path is missing or disagrees with the model"
+                            + " the plan was built on");
+        }
+        // The sibling-path family.  Every one of these says some path other
+        // than the one the witness walks was not explored, and every one of
+        // them lands in a summary's coverageGaps, which run_engine.sh reads
+        // as pathSetClosed=false (see campaign_explore); the composer then
+        // publishes pathSetComplete=false and ClaimPolicy withholds
+        // UNSAT_CLOSED by name under UNSAT_CLOSURE_INCOMPLETE.  So the one
+        // conclusion these can falsify is already withheld by name, and the
+        // chain a SAT witness reports contains no sibling path by
+        // construction.  This is also why BOUND_REACHED had to start firing
+        // at the worklist's task ceiling: an unexplored path that published
+        // no row left coverageState reading CLOSED, and then nothing
+        // withheld the UNSAT conclusion either.
+        for (String code : new String[]{
+                "BOUND_REACHED",
+                "UNSUPPORTED_PATH_FLIP",
+                "PATH_FLIP_MATERIALIZATION_GAP",
+                "PATH_FLIP_REPLAY_NOT_ADMITTED",
+                "PATH_FLIP_REPLAY_ENGINE_UNAVAILABLE",
+                "PATH_FLIP_REPLAY_PRODUCED_NO_RESULT",
+                "PATH_FLIP_SOLVER_TIMEOUT",
+                "LINKED_REPLAY_LEFT_TOPOLOGY_EPOCH",
+                "REGION_PATH_WAVE_BUDGET_REACHED",
+                "REGION_PATH_CLOSURE_NO_PROGRESS"}) {
+            diagnostic(explore, code,
+                    "an unexplored sibling path is not a link of the chain"
+                            + " the witness walks, and the one conclusion it"
+                            + " can falsify -- a closed UNSAT -- is withheld"
+                            + " by name, because this row makes the"
+                            + " summary's path set unclosed and ClaimPolicy"
+                            + " blocks UNSAT_CLOSURE_INCOMPLETE on exactly"
+                            + " that");
         }
 
         // ------------------------------------------------------------------

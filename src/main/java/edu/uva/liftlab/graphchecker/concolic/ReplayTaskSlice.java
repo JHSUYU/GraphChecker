@@ -64,14 +64,9 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
  * at all -- a root the graph does not name cannot state what it reaches,
  * and neither can a fatal read the graph has no cell for.</p>
  *
- * <p>The kept count is published against an optional expected-shape hint
- * the experiment states ({@code replay_task_budget} in workflow.properties,
- * carried by {@code --replay-task-budget}).  Exceeding it is
- * {@link #BUDGET_EXCEEDED} telemetry and nothing else: the schedule is not
- * capped, truncated or silently accepted, because a campaign bigger than
- * its author expected is a fact to read, not a set of tasks to drop at
- * random.  No rule here names a workload, a class or a failure mechanism;
- * everything a single case needs beyond them belongs in that config.</p>
+ * <p>No rule here names a workload, a class or a failure mechanism;
+ * everything a single case needs beyond them belongs in the experiment's
+ * own config.</p>
  */
 final class ReplayTaskSlice {
     /** The artifact beside the task plan: one telemetry row, then one
@@ -85,8 +80,6 @@ final class ReplayTaskSlice {
     static final String KEPT = "REPLAY_TASK_KEPT";
     /** Decision reason when the slice narrowed nothing. */
     static final String WITHHELD = "REPLAY_TASK_SLICE_WITHHELD";
-    /** Telemetry member: the kept count passed the expected-shape hint. */
-    static final String BUDGET_EXCEEDED = "REPLAY_TASK_BUDGET_EXCEEDED";
     static final String TARGET_REACH = "TARGET_REACH";
     static final String ROOT_SITE = "ROOT_SITE";
     static final String CARRIER_WRITER = "CARRIER_WRITER";
@@ -100,17 +93,14 @@ final class ReplayTaskSlice {
     private final Map<String, RegionInstancePlan> plans;
     /** Planned occurrence -> why it is kept; empty means pruned. */
     private final Map<String, Set<String>> reasons;
-    /** The expected kept count, or a non-positive number when unstated. */
-    private final int budget;
 
     private ReplayTaskSlice(boolean applied, String sliceReason,
                             Map<String, RegionInstancePlan> plans,
-                            Map<String, Set<String>> reasons, int budget) {
+                            Map<String, Set<String>> reasons) {
         this.applied = applied;
         this.sliceReason = sliceReason;
         this.plans = plans;
         this.reasons = reasons;
-        this.budget = budget;
     }
 
     /**
@@ -124,7 +114,7 @@ final class ReplayTaskSlice {
     static ReplayTaskSlice decide(
             List<RegionInstancePlan> regionPlans,
             ConcolicScheduler.SymbolicInputSelection selection,
-            List<JsonObject> refinedGraph, int budget) {
+            List<JsonObject> refinedGraph) {
         Map<String, RegionInstancePlan> plans = new LinkedHashMap<>();
         Map<String, Set<String>> reasons = new LinkedHashMap<>();
         Map<String, JsonObject> edges = new LinkedHashMap<>();
@@ -174,8 +164,7 @@ final class ReplayTaskSlice {
                         refinedGraph, fatalCells);
         if (!slice.usable()) {
             return new ReplayTaskSlice(false,
-                    "NO_ROOT_CELL_IN_REFINED_GRAPH", plans, reasons,
-                    budget);
+                    "NO_ROOT_CELL_IN_REFINED_GRAPH", plans, reasons);
         }
         Set<String> targets = new LinkedHashSet<>();
         for (Map.Entry<String, Set<String>> entry : reasons.entrySet()) {
@@ -254,7 +243,7 @@ final class ReplayTaskSlice {
             why.clear();
         }
         return new ReplayTaskSlice(true, "ROOT_DEPENDENT_CARRIERS", plans,
-                reasons, budget);
+                reasons);
     }
 
     /**
@@ -392,13 +381,6 @@ final class ReplayTaskSlice {
             byReason.addProperty(entry.getKey(), entry.getValue());
         }
         row.add("keptByReason", byReason);
-        // The hint is an expectation to read against, never a cap: a kept
-        // count over it is published and every one of those tasks still runs.
-        row.addProperty("replayTaskBudget", budget);
-        if (budget > 0) {
-            row.addProperty("replayTaskBudgetStatus",
-                    kept > budget ? BUDGET_EXCEEDED : "REPLAY_TASK_IN_BUDGET");
-        }
         return row;
     }
 

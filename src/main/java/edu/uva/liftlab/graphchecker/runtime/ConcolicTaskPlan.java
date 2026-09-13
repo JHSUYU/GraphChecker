@@ -1672,7 +1672,7 @@ final class ConcolicTaskPlan {
 
         /** Body entries this loop may run before the replay is cut. */
         int maxLoopBodies(String loopId) {
-            return LoopBoundPolicy.maxLoopBodies(false);
+            return LoopBoundPolicy.MAX_REPLAY_PATH_LOOP_BODIES;
         }
 
         String policy(String siteId) {
