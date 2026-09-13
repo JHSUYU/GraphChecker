@@ -11,6 +11,7 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
 
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
@@ -47,6 +48,17 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
  *   <li>a concrete the program itself wrote.</li>
  * </ul>
  *
+ * <p>A value reached through an object is resolved the same way.  When a
+ * field projection's owner is a symbolic object reference -- the VM writes
+ * one as {@code M_L'some/Class'_<rid>} -- that reference and the projection's
+ * offset name a location this replay may itself have published, and the walk
+ * continues into it.  That is how a key id crosses two objects and a wire in
+ * one step-by-step chain: the arriving value projects the sender's object,
+ * whose own field was written from the root.  A projection is followed only
+ * when the location's value is unambiguous in this replay; a field the replay
+ * wrote more than once is refused, because the projection does not say which
+ * of those writes it saw.</p>
+ *
  * <p>The semantics are exact and single-execution: there is no arm, no
  * selector and no case here, and nothing in this class depends on the
  * guarded-read or candidate machinery.  A path composer builds
@@ -73,15 +85,20 @@ public final class InSessionReadResolver {
     private final Set<String> initialVersions;
     private final Map<String, JsonElement> resolvedReads =
             new LinkedHashMap<>();
+    /** "kind/rid#slot" -> its versions in this replay, lowest id first. */
+    private final Map<String, TreeMap<Long, String>> locationVersions;
 
-    private InSessionReadResolver(Map<String, JsonElement> definitions,
-                                  Map<Long, JsonElement> handoffs,
-                                  Map<String, JsonElement> writes,
-                                  Set<String> initialVersions) {
+    private InSessionReadResolver(
+            Map<String, JsonElement> definitions,
+            Map<Long, JsonElement> handoffs,
+            Map<String, JsonElement> writes,
+            Set<String> initialVersions,
+            Map<String, TreeMap<Long, String>> locationVersions) {
         this.definitions = definitions;
         this.handoffs = handoffs;
         this.writes = writes;
         this.initialVersions = initialVersions;
+        this.locationVersions = locationVersions;
     }
 
     /**
@@ -99,9 +116,10 @@ public final class InSessionReadResolver {
         Map<Long, JsonElement> handoffs = new LinkedHashMap<>();
         Map<String, JsonElement> writes = new LinkedHashMap<>();
         Set<String> initial = new LinkedHashSet<>();
+        Map<String, TreeMap<Long, String>> byLocation = new LinkedHashMap<>();
         if (replayRows == null) {
             return new InSessionReadResolver(definitions, handoffs, writes,
-                    initial);
+                    initial, byLocation);
         }
         for (JsonObject row : replayRows) {
             if (row == null) continue;
@@ -137,20 +155,26 @@ public final class InSessionReadResolver {
                         "versions")) {
                     if (!versionElement.isJsonObject()) continue;
                     JsonObject version = versionElement.getAsJsonObject();
-                    String key = location + "\n" + optionalLongInteger(
-                            version, "fieldVersionId", -1L);
+                    long id = optionalLongInteger(version,
+                            "fieldVersionId", -1L);
+                    String key = location + "\n" + id;
+                    String kind = optionalString(version, "versionKind");
                     if (version.has("expression")) {
                         writes.putIfAbsent(key, version.get("expression"));
                     }
-                    if ("INITIAL".equals(optionalString(version,
-                            "versionKind"))) {
+                    if ("INITIAL".equals(kind)) {
                         initial.add(key);
+                    }
+                    if (id >= 0L) {
+                        byLocation.computeIfAbsent(location,
+                                ignored -> new TreeMap<>()).putIfAbsent(id,
+                                kind);
                     }
                 }
             }
         }
         return new InSessionReadResolver(definitions, handoffs, writes,
-                initial);
+                initial, byLocation);
     }
 
     /** {@code kind/rid#slot}, the way a read node addresses a location. */
@@ -246,6 +270,10 @@ public final class InSessionReadResolver {
         if ("ReadFromExpression".equals(type)) {
             return rewriteRead(node, visiting, depth);
         }
+        if ("FieldAccessExpression".equals(type)) {
+            JsonElement projected = rewriteProjection(node, visiting, depth);
+            if (projected != null) return projected;
+        }
         JsonObject rewritten = new JsonObject();
         for (Map.Entry<String, JsonElement> field : node.entrySet()) {
             rewritten.add(field.getKey(),
@@ -292,6 +320,86 @@ public final class InSessionReadResolver {
         }
         if (!unresolved(resolved)) resolvedReads.put(key, resolved);
         return resolved;
+    }
+
+    /**
+     * A field read through a symbolic object reference, or null.
+     *
+     * <p>The VM names an object it is tracking {@code M_L'some/Class'_<rid>},
+     * and that {@code rid} is the same owner id a location key carries.  So a
+     * projection whose owner resolves to such a reference names the location
+     * {@code INSTANCE_FIELD/<rid>#<offset>}, and if this replay published that
+     * location the walk continues into the value written there.  Returning
+     * null means "not a projection this resolver can follow", and the caller
+     * keeps the node with its children rewritten -- the behaviour before this
+     * existed.</p>
+     */
+    private JsonElement rewriteProjection(JsonObject node,
+                                          Deque<String> visiting, int depth) {
+        if (!node.has("fieldOffset") || !node.has("owner")) return null;
+        JsonElement owner = rewrite(node.get("owner"), visiting, depth + 1);
+        long rid = referencedObject(owner);
+        if (rid <= 0L) return null;
+        String location = "INSTANCE_FIELD/" + rid + "#"
+                + optionalLongInteger(node, "fieldOffset", 0L);
+        TreeMap<Long, String> versions = locationVersions.get(location);
+        if (versions == null || versions.isEmpty()) return null;
+        long written = -1L;
+        int writeCount = 0;
+        for (Map.Entry<Long, String> version : versions.entrySet()) {
+            if ("INITIAL".equals(version.getValue())) continue;
+            writeCount++;
+            written = version.getKey();
+        }
+        if (writeCount > 1) {
+            // Two writes and no event to order the read against them: the
+            // projection does not say which one it saw, and guessing the
+            // later one would be an arm by another name.
+            return unresolved("field " + location + " was written "
+                    + writeCount + " times; the projection names no version");
+        }
+        boolean initial = writeCount == 0;
+        long observed = initial ? versions.lastKey() : written;
+        String key = location + "\n" + observed;
+        JsonElement value = writes.get(key);
+        if (value == null) {
+            return unresolved("no value of " + location + " at version "
+                    + observed);
+        }
+        JsonElement resolved = guarded("field:" + key, value, visiting, depth);
+        if (initial && resolved.isJsonObject()) {
+            resolved.getAsJsonObject().addProperty(INITIAL_TAG, true);
+        }
+        return resolved;
+    }
+
+    /**
+     * The rid inside {@code M_L'some/Class'_<rid>}, or -1.
+     *
+     * <p>Only an object reference carries one.  A primitive symbol, a root
+     * the source phase introduced, and anything that is not a symbol at all
+     * are all "no object here", and the projection over them stays a
+     * projection.</p>
+     */
+    static long referencedObject(JsonElement owner) {
+        if (owner == null || !owner.isJsonObject()) return -1L;
+        JsonObject node = owner.getAsJsonObject();
+        if (!"SymbolExpression".equals(optionalString(node, "_type"))) {
+            return -1L;
+        }
+        String symbol = optionalString(node, "_exp");
+        int quoted = symbol.lastIndexOf("'_");
+        if (!symbol.startsWith("M_L'") || quoted < 0) return -1L;
+        String digits = symbol.substring(quoted + 2);
+        if (digits.isEmpty()) return -1L;
+        for (int index = 0; index < digits.length(); index++) {
+            if (!Character.isDigit(digits.charAt(index))) return -1L;
+        }
+        try {
+            return Long.parseLong(digits);
+        } catch (NumberFormatException notAnObject) {
+            return -1L;
+        }
     }
 
     /**

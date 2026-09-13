@@ -174,7 +174,88 @@ public class InSessionReadResolverTest {
         assertTrue(InSessionReadResolver.unresolved(resolved));
     }
 
+    /**
+     * A key id crosses two objects and a wire, and lands on the root.
+     *
+     * <p>The shape hdfs-17899-bug3 records at the fatal read: the value the
+     * DataNode received projects the sender's {@code DataEncryptionKey},
+     * whose own field projects the imported {@code BlockKey}, whose own field
+     * is the serial number the NameNode minted.  Three projections, one
+     * replay, no arms -- each owner is a symbolic object reference, and each
+     * reference plus offset names a location this replay published.</p>
+     */
+    @Test
+    public void aProjectionThroughObjectReferencesReachesTheRoot() {
+        JsonObject minted = row(versions("INSTANCE_FIELD", 17, 32,
+                version(47, "INITIAL", constant(0)),
+                version(48, "WRITE", symbol(ROOT))));
+        JsonObject imported = row(versions("INSTANCE_FIELD", 159, 32,
+                version(299, "INITIAL", constant(0)),
+                version(300, "WRITE", projection(17, 32))));
+        JsonObject sent = row(versions("INSTANCE_FIELD", 178, 32,
+                version(342, "INITIAL", constant(0)),
+                version(343, "WRITE", projection(159, 32))));
+        InSessionReadResolver resolver = InSessionReadResolver.of(
+                Arrays.asList(minted, imported, sent));
+
+        JsonElement resolved = resolver.resolve(projection(178, 32));
+
+        assertFalse(InSessionReadResolver.unresolved(resolved));
+        assertEquals("SymbolExpression",
+                resolved.getAsJsonObject().get("_type").getAsString());
+        assertEquals(ROOT, resolved.getAsJsonObject().get("_exp")
+                .getAsString());
+    }
+
+    /** A field this replay wrote twice does not say which write was seen. */
+    @Test
+    public void aProjectionOfATwiceWrittenFieldIsRefused() {
+        JsonObject row = row(versions("INSTANCE_FIELD", 9, 56,
+                version(39, "INITIAL", constant(0)),
+                version(41, "WRITE", constant(119982)),
+                version(44, "WRITE", symbol(ROOT))));
+
+        JsonElement resolved = InSessionReadResolver.of(
+                Collections.singletonList(row)).resolve(projection(9, 56));
+
+        assertTrue(InSessionReadResolver.unresolved(resolved));
+        assertTrue(resolved.getAsJsonObject()
+                .get(InSessionReadResolver.UNRESOLVED_REASON).getAsString()
+                .contains("written 2 times"));
+    }
+
+    /** A projection over something that is not an object stays a projection. */
+    @Test
+    public void aProjectionOverANonReferenceIsLeftAlone() {
+        assertEquals(-1L, InSessionReadResolver.referencedObject(
+                symbol("M_I_field_SRC.serialNo")));
+        assertEquals(-1L, InSessionReadResolver.referencedObject(
+                constant(3)));
+        assertEquals(159L, InSessionReadResolver.referencedObject(
+                symbol("M_L'org/apache/hadoop/A'_159")));
+
+        JsonObject over = new JsonObject();
+        over.addProperty("_type", "FieldAccessExpression");
+        over.addProperty("fieldOffset", 32);
+        over.add("owner", constant(7));
+        JsonElement resolved = InSessionReadResolver.of(
+                Collections.<JsonObject>emptyList()).resolve(over);
+
+        assertFalse(InSessionReadResolver.unresolved(resolved));
+        assertEquals("FieldAccessExpression",
+                resolved.getAsJsonObject().get("_type").getAsString());
+    }
+
     // ---- fixtures -------------------------------------------------------
+
+    private static JsonObject projection(long ownerRid, long offset) {
+        JsonObject node = new JsonObject();
+        node.addProperty("_type", "FieldAccessExpression");
+        node.addProperty("ownerClass", "org/apache/hadoop/A");
+        node.addProperty("fieldOffset", offset);
+        node.add("owner", symbol("M_L'org/apache/hadoop/A'_" + ownerRid));
+        return node;
+    }
 
     private static JsonObject symbol(String name) {
         JsonObject node = new JsonObject();
