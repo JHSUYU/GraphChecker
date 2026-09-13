@@ -224,6 +224,85 @@ public class InSessionReadResolverTest {
                 .contains("written 2 times"));
     }
 
+    /**
+     * Three writes, and the access between the second and the third.
+     *
+     * <p>One execution has exactly one write of a location live at any
+     * event, so the value this projection read is the write with the
+     * greatest event id below the access.  That is the in-session rule
+     * itself -- there is no choice between writers to make, only a clock to
+     * read -- and it is what makes a field a replay wrote three times
+     * resolvable at all.</p>
+     */
+    @Test
+    public void aProjectionTakesTheWriteLiveAtItsOwnEvent() {
+        JsonObject row = row(versions("INSTANCE_FIELD", 9, 56,
+                version(39, "INITIAL", constant(0)),
+                clocked(version(41, "WRITE", constant(119981)), 100),
+                clocked(version(44, "WRITE", constant(119982)), 200),
+                clocked(version(47, "WRITE", symbol(ROOT)), 300)));
+
+        JsonElement resolved = InSessionReadResolver.of(
+                Collections.singletonList(row))
+                .resolve(projection(9, 56), 250);
+
+        assertFalse(InSessionReadResolver.unresolved(resolved));
+        assertEquals("119982",
+                resolved.getAsJsonObject().get("_exp").getAsString());
+    }
+
+    /** Every write is after the access, so what it read predates tracking. */
+    @Test
+    public void aProjectionBeforeEveryWriteReadsTheInitialVersion() {
+        JsonObject row = row(versions("INSTANCE_FIELD", 9, 56,
+                version(39, "INITIAL", constant(119980)),
+                clocked(version(41, "WRITE", constant(119981)), 100),
+                clocked(version(44, "WRITE", symbol(ROOT)), 200)));
+
+        JsonElement resolved = InSessionReadResolver.of(
+                Collections.singletonList(row))
+                .resolve(projection(9, 56), 50);
+
+        assertFalse(InSessionReadResolver.unresolved(resolved));
+        assertEquals("119980",
+                resolved.getAsJsonObject().get("_exp").getAsString());
+        assertTrue(resolved.getAsJsonObject()
+                .get(InSessionReadResolver.INITIAL_TAG).getAsBoolean());
+    }
+
+    /** No clock on the access: which write it saw is unstated, never guessed. */
+    @Test
+    public void aProjectionWithNoClockOfItsOwnIsRefused() {
+        JsonObject row = row(versions("INSTANCE_FIELD", 9, 56,
+                clocked(version(41, "WRITE", constant(119981)), 100),
+                clocked(version(44, "WRITE", symbol(ROOT)), 200)));
+
+        JsonElement resolved = InSessionReadResolver.of(
+                Collections.singletonList(row)).resolve(projection(9, 56));
+
+        assertTrue(InSessionReadResolver.unresolved(resolved));
+        assertTrue(resolved.getAsJsonObject()
+                .get(InSessionReadResolver.UNRESOLVED_REASON).getAsString()
+                .contains("carries no vmEventId"));
+    }
+
+    /** No clock on the writes: the same refusal, naming that side. */
+    @Test
+    public void aProjectionOverUnclockedWritesIsRefused() {
+        JsonObject row = row(versions("INSTANCE_FIELD", 9, 56,
+                version(41, "WRITE", constant(119981)),
+                version(44, "WRITE", symbol(ROOT))));
+
+        JsonElement resolved = InSessionReadResolver.of(
+                Collections.singletonList(row))
+                .resolve(projection(9, 56), 250);
+
+        assertTrue(InSessionReadResolver.unresolved(resolved));
+        assertTrue(resolved.getAsJsonObject()
+                .get(InSessionReadResolver.UNRESOLVED_REASON).getAsString()
+                .contains("vmEventId for 0 of them"));
+    }
+
     /** A projection over something that is not an object stays a projection. */
     @Test
     public void aProjectionOverANonReferenceIsLeftAlone() {
@@ -379,6 +458,12 @@ public class InSessionReadResolverTest {
         node.addProperty("versionKind", kind);
         node.add("expression", expression);
         return node;
+    }
+
+    /** One write log version, stamped with the event that wrote it. */
+    private static JsonObject clocked(JsonObject version, long vmEventId) {
+        version.addProperty(InSessionReadResolver.VM_EVENT_ID, vmEventId);
+        return version;
     }
 
     private static JsonArray versions(String kind, long rid, long slot,

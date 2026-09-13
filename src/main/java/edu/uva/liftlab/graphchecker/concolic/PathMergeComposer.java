@@ -447,10 +447,14 @@ public final class PathMergeComposer {
         }
         for (JsonObject summary : replayGroup) {
             String occurrence = optionalString(summary, "occurrenceId");
-            for (JsonElement constraint : array(summary, "pathCondition")) {
+            Map<Integer, Long> clocks = decisionClocks(summary);
+            JsonArray conditions = array(summary, "pathCondition");
+            for (int index = 0; index < conditions.size(); index++) {
+                JsonElement constraint = conditions.get(index);
                 if (!held.add(CanonicalJson.render(constraint))) continue;
                 List<String> reasons = new ArrayList<>();
-                JsonElement decision = resolve(resolver, constraint, reasons);
+                JsonElement decision = resolve(resolver, constraint,
+                        clocks.getOrDefault(index, 0L), reasons);
                 if (!reasons.isEmpty()) {
                     if (mentionsRoot(constraint, rootSymbols)) {
                         unresolvedReasons.add(occurrence
@@ -512,6 +516,29 @@ public final class PathMergeComposer {
         return held;
     }
 
+    /**
+     * Which VM event each of this summary's decisions was recorded at.
+     *
+     * <p>A decision row names the path-condition entry it decided, and the
+     * runtime stamps the row with the VM event sequence it was recorded at.
+     * Reading a condition at its own event is what lets a projection over a
+     * field written several times name the write that was live when the
+     * decision read it.</p>
+     */
+    private static Map<Integer, Long> decisionClocks(JsonObject summary) {
+        Map<Integer, Long> clocks = new LinkedHashMap<>();
+        for (JsonElement element : array(summary, "branchMappings")) {
+            if (!element.isJsonObject()) continue;
+            JsonObject mapping = element.getAsJsonObject();
+            int index = JsonFields.exactInteger(mapping,
+                    "summaryPcIndex", -1);
+            long clock = JsonFields.optionalLongInteger(mapping,
+                    InSessionReadResolver.VM_EVENT_ID, 0L);
+            if (index >= 0 && clock > 0L) clocks.putIfAbsent(index, clock);
+        }
+        return clocks;
+    }
+
     /** Whether one expression names a root the recording minted. */
     private static boolean mentionsRoot(JsonElement expression,
                                         Set<String> rootSymbols) {
@@ -542,7 +569,14 @@ public final class PathMergeComposer {
     private static JsonElement resolve(InSessionReadResolver resolver,
                                        JsonElement expression,
                                        List<String> reasons) {
-        JsonElement resolved = resolver.resolve(expression);
+        return resolve(resolver, expression, 0L, reasons);
+    }
+
+    private static JsonElement resolve(InSessionReadResolver resolver,
+                                       JsonElement expression,
+                                       long vmEventId,
+                                       List<String> reasons) {
+        JsonElement resolved = resolver.resolve(expression, vmEventId);
         collectUnresolved(resolved, reasons);
         return resolved;
     }
