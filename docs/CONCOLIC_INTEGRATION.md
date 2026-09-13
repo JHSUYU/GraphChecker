@@ -773,7 +773,7 @@ else is `INCONCLUSIVE_PARTIAL` and every reason is one row of `blockers`
 | Blocker | Named when |
 | --- | --- |
 | `COMPOSER_NOT_FINAL_READY` | the manifest's `finalStatus` is not `FINAL_READY` |
-| `COMPOSITION_GAPS_UNRESOLVED` | a Composer refusal or a solver gap is open -- the same rows EMIT counts in `gaps.json` |
+| `COMPOSITION_GAPS_UNRESOLVED` | a blocking gap is open in the composition manifest or the solver report -- Composer refusals, the composition's own gaps, the bounded-loop model's, the propagation closure's, the fault-control closure's, classed by `GapLedger` |
 | `DECLARED_WIRE_FLOWS_UNREALIZED` | a declared `WIRE_FLOW` reached the formula by neither route; the subject names those flows |
 | `UNDETERMINED_INITIAL_STATE` | the fatal read's own container carries an `INITIAL_CONTAINER_SNAPSHOT_TRUNCATED` gap, so membership over its initial state is a free choice available under every arm |
 | `FAULT_MARKER_NOT_DETERMINING` | the experiment injects a fault marker, both polarities are satisfiable, and no named mechanism the target cannot do without explains the polarity that has no fault |
@@ -801,6 +801,47 @@ the probe perturbed and whether it was rejected.
 
 `UNSAT_CLOSURE_INCOMPLETE` is required for `UNSAT_CLOSED` and for nothing
 else: one connected SAT witness stays valid while sibling paths are open.
+
+### The gap ledger
+
+Every gap code the pipeline can publish is registered in one place,
+`contract/GapLedger.java`, with an explicit class:
+
+- **`BLOCKING`** -- a missing chain element, or freedom nobody accounted for.
+  The candidate is withheld while one is open.
+- **`DIAGNOSTIC`** -- provably cannot change the chain. Each of these carries
+  the argument in the table itself, and the registry refuses an entry that
+  states none.
+
+**A code nobody registered is `BLOCKING`.** Adding a gap to some stage
+therefore withholds candidates until somebody comes to that file and writes
+down why it cannot break a chain. That default is applied identically by both
+readers, so there is no second place for a code to be classed.
+
+`ClaimPolicy` reads the ledger for every gap the composition manifest and the
+reach report publish. The EMIT stage of `run_engine.sh` reads the same table --
+published beside the gaps as `schedule/final/gap_ledger.json` -- to partition
+`gaps.json` for the stages the claim cannot see: IMPORT diagnostics, EXPLORE
+path closures, CLASSIFY topology deltas, the static catalog's own gaps and the
+planning gaps the runtime plan artifact carries. `gaps.json` keeps `gaps` and
+`gapCount` for the blocking rows and `telemetryGaps` / `telemetryCount` for
+the diagnostic ones, with each row carrying its `class` and the whole exception
+list echoed in `gapLedger.diagnosticCodes`.
+
+`result.json` states `accepted`: the claim together with the ledger. A claim
+is decided in SOLVE and cannot see IMPORT, EXPLORE or CLASSIFY, so a run can
+publish `SAT_CANDIDATE` with blocking gaps raised after it -- `accepted` is
+false there and the campaign exits 3.
+
+The diagnostic classes, and what each rests on:
+
+| Code | Why it cannot change the chain |
+| --- | --- |
+| `SELECTED_PATH_SET_INCOMPLETE` | completeness is required only to close an UNSAT refutation, which `UNSAT_CLOSURE_INCOMPLETE` withholds by name |
+| the EXPLORE sibling-path family (`BOUND_REACHED`, `PATH_FLIP_*`, `UNSUPPORTED_PATH_FLIP`, `LINKED_REPLAY_LEFT_TOPOLOGY_EPOCH`, `REGION_PATH_WAVE_BUDGET_REACHED`, `REGION_PATH_CLOSURE_NO_PROGRESS`) | an unexplored sibling path is not a link of the chain the witness walks; each of these rows makes the summary's path set unclosed, so the one conclusion it can falsify is withheld by name |
+| `INITIAL_CONTAINER_SNAPSHOT_TRUNCATED` | `ClaimPolicy` decides this per read, blocking `UNDETERMINED_INITIAL_STATE` exactly when the accepted witness reads out of the truncated carrier's initial arm |
+| `REGION_LOOP_OCCURRENCES_BOUNDED` | the occurrence set is bounded by the declared `K_L` rather than truncated, and `BoundedLoopComposition` checks every replayed case against that same declaration |
+| `BOUNDED_LOOP_FIXED_COUNT_BOUND_UNDECLARED` | an array-indexed loop's trip count is its array length; a case that published no dense exact cardinality vector raises the blocking `PATH_LOCAL_ARRAY_CARDINALITY_MISSING` |
 
 **Reading a campaign as passed.** The claim is `SAT_CANDIDATE`, `blockers` is
 empty and `finalStatus` is `FINAL_READY`; and on the plain `candidate.smt2`,
