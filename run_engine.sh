@@ -2983,6 +2983,12 @@ campaign_emit() {
          (($c.casePathConditionDependencies // []) | length)},
      gapCount: $gapCount,
      telemetryCount: $telemetryCount,
+     # What each satisfying witness named, and whether the policy read it as a
+     # finding or as freedom nobody accounted for. A reader asking "why is this
+     # sat" gets the mechanism narrative here rather than having to rebuild it
+     # from the model.
+     witnessFindings: ($decided.witnessFindings // []),
+     reportedFindings: ($decided.rootSpace.reportedFindings // []),
      valuations: ($r.valuations // [])}
   ' >"${campaign_final}/result.json"
   require_nonempty "campaign result" "${campaign_final}/result.json"

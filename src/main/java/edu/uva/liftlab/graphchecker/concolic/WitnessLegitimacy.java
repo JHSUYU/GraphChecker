@@ -316,20 +316,35 @@ public final class WitnessLegitimacy {
         if (legitimate.size() == 0) {
             text.append("sat with no root moved off its recorded value");
         } else {
+            // Named once each, with a count: a witness that moved ten clocks
+            // on one node is one statement about that node, and repeating the
+            // row ten times buries it.
             text.append("sat via ");
+            int named = 0;
             for (int index = 0; index < legitimate.size(); index++) {
-                if (index > 0) {
-                    text.append(", ");
-                }
                 JsonObject mechanism = legitimate.get(index)
                         .getAsJsonObject();
-                text.append(optionalString(mechanism, "kind"));
+                String kind = optionalString(mechanism, "kind");
+                if (seenEarlier(legitimate, index, kind)) {
+                    continue;
+                }
+                if (named++ > 0) {
+                    text.append(", ");
+                }
+                text.append(kind);
+                int count = countOf(legitimate, kind);
+                if (count > 1) {
+                    text.append(" x").append(count);
+                }
                 String where = firstNonEmpty(optionalString(mechanism,
                         "siteId"), firstNonEmpty(optionalString(mechanism,
                         SharedStateEvidence.SESSION_LOCATION_FIELD),
                         optionalString(mechanism, "sourceKey")));
                 if (!where.isEmpty()) {
                     text.append(" at ").append(where);
+                    if (count > 1) {
+                        text.append(" and elsewhere");
+                    }
                 }
                 if (mechanism.has("skewMillis")) {
                     text.append(" (").append(optionalLongInteger(mechanism,
@@ -349,6 +364,29 @@ public final class WitnessLegitimacy {
             }
         }
         return text.toString();
+    }
+
+    /** Whether this kind already appeared before {@code index}. */
+    private static boolean seenEarlier(JsonArray rows, int index,
+                                       String kind) {
+        for (int earlier = 0; earlier < index; earlier++) {
+            if (kind.equals(optionalString(rows.get(earlier).getAsJsonObject(),
+                    "kind"))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static int countOf(JsonArray rows, String kind) {
+        int count = 0;
+        for (JsonElement element : rows) {
+            if (kind.equals(optionalString(element.getAsJsonObject(),
+                    "kind"))) {
+                count++;
+            }
+        }
+        return count;
     }
 
     private static String firstNonEmpty(String value, String fallback) {
