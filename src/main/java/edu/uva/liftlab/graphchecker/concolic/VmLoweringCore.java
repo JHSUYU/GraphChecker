@@ -78,6 +78,15 @@ abstract class VmLoweringCore implements VmTermLowering.Policy {
                                 String definedness, Term... inputs);
 
     /**
+     * One lowered {@code &&} or {@code ||}.  Its definedness is exactly its
+     * operands': Java evaluates the right one only where the left decided
+     * nothing, so an operand obligation must not escape that guard.  The
+     * obligation is therefore the caller's to state or to carry.
+     */
+    abstract Term shortCircuit(String text, Term left, Term right,
+                               boolean conjunction);
+
+    /**
      * The definedness of one Java String operation.  Every term in
      * {@code dereferenced} is a receiver the operation dereferences, so
      * evaluation proves it non-null; every term in {@code evaluated} only
@@ -184,14 +193,9 @@ abstract class VmLoweringCore implements VmTermLowering.Policy {
                         Sort.BOOL);
             }
             boolean conjunction = "&&".equals(operator);
-            String rightEvaluated = conjunction ? left.text
-                    : "(not " + left.text + ")";
-            String defined = and(Arrays.asList(left.precondition,
-                    "(=> " + rightEvaluated + " " + right.precondition
-                            + ")"));
-            return definedResult("(" + (conjunction ? "and" : "or") + " "
-                    + left.text + " " + right.text + ")", Sort.BOOL,
-                    IntegralWidth.NONE, defined);
+            return shortCircuit("(" + (conjunction ? "and" : "or") + " "
+                    + left.text + " " + right.text + ")", left, right,
+                    conjunction);
         }
         if (left.sort != right.sort
                 && (left.sort == Sort.VALUE) != (right.sort == Sort.VALUE)

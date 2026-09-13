@@ -1905,6 +1905,17 @@ public final class ConcolicSmtComposer {
         }
 
         @Override
+        Term shortCircuit(String text, Term left, Term right,
+                          boolean conjunction) {
+            String rightEvaluated = conjunction ? left.text
+                    : "(not " + left.text + ")";
+            return Term.of(text, Sort.BOOL).withPrecondition(
+                    and(Arrays.asList(left.precondition, "(=> "
+                            + rightEvaluated + " " + right.precondition
+                            + ")")));
+        }
+
+        @Override
         String stringDefinedness(String origin, String operation,
                                  List<Term> dereferenced,
                                  List<Term> evaluated) {
