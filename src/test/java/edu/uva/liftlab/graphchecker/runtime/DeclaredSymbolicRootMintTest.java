@@ -76,6 +76,33 @@ public class DeclaredSymbolicRootMintTest {
                 action("long", true), boundary));
     }
 
+    /**
+     * A tracked carrier the plan did not make mint-eligible.
+     *
+     * <p>The scheduler now symbolizes every carrier so the VM keeps
+     * publishing its candidates, and reserves the mint for the three
+     * declaring authorities.  {@code mintEligible} is how that second
+     * verdict reaches the replay, and it must default to the unnarrowed
+     * behaviour when a plan row predates the field.</p>
+     */
+    @Test
+    public void aTrackedCarrierIsNotMintEligible() {
+        JsonObject json = new JsonObject();
+        json.addProperty("symbol", "port.value");
+        json.addProperty("javaType", "int");
+        json.addProperty("mintEligible", false);
+        assertFalse(new ConcolicRegionRuntime.SymbolizeAction(json)
+                .mintEligible);
+    }
+
+    @Test
+    public void anActionWithoutTheVerdictKeepsTheUnnarrowedBehaviour() {
+        assertTrue("a plan with no selection file mints as it always did",
+                action("int", false).mintEligible);
+        assertTrue("and a declared root is mint-eligible by construction",
+                action("int", true).mintEligible);
+    }
+
     private static ConcolicRegionRuntime.SymbolizeAction action(
             String javaType, boolean declared) {
         JsonObject json = new JsonObject();
@@ -87,6 +114,7 @@ public class DeclaredSymbolicRootMintTest {
                         + ".BlockTokenSecretManager: int serialNo>");
         if (declared) {
             json.addProperty(InputActionCatalog.DECLARED_SYMBOLIC_ROOT, true);
+            json.addProperty("mintEligible", true);
         }
         return new ConcolicRegionRuntime.SymbolizeAction(json);
     }

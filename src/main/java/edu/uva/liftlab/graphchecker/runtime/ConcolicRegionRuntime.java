@@ -4070,13 +4070,45 @@ public final class ConcolicRegionRuntime {
             ActiveRegion active, SymbolizeAction action, Object value,
             JsonElement expression, String requestedSymbol,
             List<String> fieldPath, String fieldSignature) {
-        if (!carriesInputAuthority(action, expression)) return false;
+        if (!carriesInputAuthority(action, expression)) {
+            return observeWithoutMinting(active, action, value);
+        }
         ensurePathRecordingStarted(active);
         if (value != null && !value.getClass().isArray()) {
             active.recordSymbolizedInputPort(action.symbol, value);
         }
         active.recordManualSymbolization(action, requestedSymbol, fieldPath,
                 fieldSignature, expression, false, true);
+        return true;
+    }
+
+    /**
+     * The one thing a tracked carrier does when nothing propagated into it.
+     *
+     * <p>Every caller of {@link #retainPropagatedInput} treats {@code false}
+     * as permission to mint.  For an action the plan tracked but did not
+     * make mint-eligible that answer is wrong: the experiment declared where
+     * the search starts, and this read is not it.  Open path recording and
+     * publish the port at its recorded value -- the same two steps a
+     * selected shared read already takes -- so the VM still resolves the
+     * writer and creates the read boundary, and return {@code true} to say
+     * the caller has nothing left to do.</p>
+     *
+     * <p>A container is the exception and falls through: tracking one
+     * publishes the versions of a shared state, which is what a carrier
+     * exists to do, and mints no scalar the solver can move.</p>
+     */
+    private static boolean observeWithoutMinting(
+            ActiveRegion active, SymbolizeAction action, Object value) {
+        if (action == null || action.mintEligible
+                || containerValue(value)) {
+            return false;
+        }
+        ensurePathRecordingStarted(active);
+        if (value != null && value != MissingValue.INSTANCE
+                && !value.getClass().isArray()) {
+            active.recordSymbolizedInputPort(action.symbol, value);
+        }
         return true;
     }
 
@@ -6047,6 +6079,19 @@ public final class ConcolicRegionRuntime {
         final String sourceKind;
         /** The selection file named this input by hand: mint, do not reuse. */
         final boolean declaredSymbolicRoot;
+        /**
+         * Whether this input may become a fresh root at all.
+         *
+         * <p>The scheduler tracks every carrier -- so the VM keeps
+         * publishing its {@code ReadFrom} candidates and container versions
+         * -- while reserving the mint for the three declaring authorities.
+         * A tracked carrier that no propagated expression reached is simply
+         * read at its recorded value; falling through to a mint would put a
+         * free root exactly where the experiment said there is none.
+         * Absent from a plan row it defaults to {@code true}, which is the
+         * unnarrowed behaviour of a campaign with no selection file.</p>
+         */
+        final boolean mintEligible;
         final String rootKind;
         final List<String> fieldPath;
         final String javaType;
@@ -6104,6 +6149,7 @@ public final class ConcolicRegionRuntime {
             this.sourceKind = optionalString(json, "sourceKind");
             this.declaredSymbolicRoot = optionalBool(json,
                     InputActionCatalog.DECLARED_SYMBOLIC_ROOT, false);
+            this.mintEligible = optionalBool(json, "mintEligible", true);
             this.rootKind = optionalString(json, "rootKind");
             String explicitLeafSignature = firstNonBlank(
                     optionalString(json, "leafFieldSignature"),

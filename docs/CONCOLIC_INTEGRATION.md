@@ -124,11 +124,14 @@ every `<org.apache.hadoop.util.Timer: long now()>` return. An experiment that
 does not want the whole automatic set narrows it with
 `causynth_symbolic_inputs=@config/symbolic-inputs.jsonl`.
 
-The file is a **restrictive allowlist, not an addition**: with it present, any
-input action the file does not name is scheduled `CONCRETE` and keeps whatever
-expression the VM already propagated to it, so it mints nothing. A region the
-file does not mention has all of its symbolic actions concretized. Without the
-file every automatic candidate stays symbolic.
+The file is a **restrictive allowlist over roots, not over symbols**: with it
+present, the only input actions that may mint are the ones it names plus the
+two exempt authorities. Every other input stays `SYMBOLIC` and is tracked as
+a carrier, reusing whatever expression the VM propagated to it -- with one
+exception, an undeclared `EXTERNAL_CALL_RETURN`, which has no propagated
+expression to reuse and is therefore `CONCRETE`. A region the file does not
+mention mints nothing and still carries everything. Without the file every
+automatic candidate mints. "Carriers" below has the whole decision table.
 
 One JSONL row per region. `regionId` is required and must name a region the
 runtime plan actually contains; the other three keys are optional sets of
@@ -140,10 +143,9 @@ names, any of which admits an action:
 | `portIds` | `portId` or `symbol` |
 | `cells` | `cell` |
 
-Each has a `carrier`-prefixed twin -- `carrierFieldSignatures`,
-`carrierPortIds`, `carrierCells` -- which admits the action without declaring
-it a root: see "Carriers" below. A name may appear under one form or the
-other, never both.
+The retired `carrier`-prefixed twins (`carrierFieldSignatures`,
+`carrierPortIds`, `carrierCells`) are refused by name: every input this file
+does not mention is already tracked as a carrier.
 
 `cells` is how a call return is named, since it carries no field signature: an
 `EXTERNAL_CALL_RETURN` action's cell is `<callee signature>.return`, identical
@@ -173,32 +175,74 @@ to mint.
 
 Concretizing a read is not the neutral option it looks like. A `CONCRETE`
 action is one the plan never symbolizes, so the VM publishes no `ReadFrom`
-candidates for it; the guarded read family the composer builds over a shared
-location then has no writer cases to admit, the observed closure has nothing
-to explore, and a configured-source root that only reaches the fatal predicate
-*through* that family never appears in `candidate.smt2` at all. HDFS-17960 is
-the recorded case: emptying its allowlist concretized the four reads of
-`AtomicInteger#value`, and the campaign went from 25 active observed tasks, 94
-consumer-boundary families and 46 guarded reads to 1, 2 and 0 -- with
-`configuredSourceMaterializations: []` and no root in the formula, though the
-narrowing never touched the hook's own field.
+candidates and no container versions for it; the guarded read family the
+composer builds over a shared location then has no writer cases to admit, the
+observed closure has nothing to explore, and a root that only reaches the
+fatal predicate *through* that family never appears in `candidate.smt2` at
+all. Two campaigns measured it. HDFS-17960: emptying its allowlist
+concretized the four reads of `AtomicInteger#value`, and the campaign went
+from 25 active observed tasks, 94 consumer-boundary families and 46 guarded
+reads to 1, 2 and 0, with `configuredSourceMaterializations: []` and no root
+in the formula, though the narrowing never touched the hook's own field.
+HDFS-11741: its per-region allowlist concretized 212 of 277 input actions,
+including 14 of the 18 `BOUNDED_CONTAINER_STATE` actions outright -- among
+them the DataNode's `allKeys`, which its own README calls "shared state
+reconstructed from its retained writers".
 
-The `carrier*` keys are the third answer. A carrier row admits the action like
-any declared name -- it stays `SYMBOLIC` and carries
-`symbolicDemand: DECLARED_SYMBOLIC_CARRIER` -- but it is never stamped
-`declaredSymbolicRoot`, so the replay asks the loose question and reuses the
-expression that already reached the read instead of minting beside it.
-Propagation continues; the root count does not move. Declare a carrier where
-a field must keep flowing but is not itself the thing the case varies:
+So the file governs one decision and not the other. Every proposed input
+carries two verdicts, and `symbolic_root_policy.jsonl` publishes both per
+action alongside its summary row:
 
-```json
-{"regionId":"REGION.f0132fca-...","carrierFieldSignatures":["<java.util.concurrent.atomic.AtomicInteger: int value>"]}
-```
+| verdict | meaning | on the plan row | who decides |
+|---|---|---|---|
+| TRACK | symbolize the read: the VM publishes its `ReadFrom` candidates and container versions | the surviving `mode: SYMBOLIC` | the mechanism -- true for every carrier |
+| MINT | may become a *fresh* root, a free symbol the solver moves | `mintEligible` | the three declaring authorities below |
 
-Which makes the choice of what to declare a soundness question, not a budget
-one. **A value whose earlier members are baked into concrete state elsewhere
-in the recording cannot be declared a free root.** The block key id is the
-worked example: the NameNode rolls it from a counter, and the target
+A carrier is anything the replayed process itself wrote: instance-field
+reads, bounded container states, declared communication cut ports, accessor
+returns. All of them are tracked, and the allowlist cannot refuse them --
+refusing one removes no root and deletes the evidence. Three things, and
+nothing else, are mint-eligible:
+
+- a name this file declares, through `fieldSignatures`, `portIds` or `cells`,
+  for the region the action belongs to;
+- a field a `CausynthSymbolicSource.symbolize` hook site owns -- the hook call
+  is itself the declaration, and it mints at its own site, so the input action
+  stands down (`CONFIGURED_SYMBOLIC_SOURCE_FIELD_OWNED`);
+- an `EXPLICIT_SYMBOLIC_FAULT` port, i.e. a `Debug.makeSymbolicBoolean` marker
+  the workload wrote into its own source.
+
+One input kind cannot be tracked without minting. An `EXTERNAL_CALL_RETURN`
+-- a `Timer.now()` return, say -- has no writer inside the recording, so
+there is no carrier expression to reuse and symbolizing it *is* minting. An
+undeclared one is therefore `CONCRETE`, and is the only thing the file still
+refuses; each refusal is published with its region, source kind, site and
+cell as `suppressedRootCandidates`.
+
+`ConcolicRegionRuntime` honours the second verdict. `mintEligible` decodes on
+`SymbolizeAction` (default `true`, the behaviour of a campaign with no
+selection file), and `retainPropagatedInput` no longer answers "nothing
+propagated, go and mint" for a tracked carrier: it opens path recording and
+publishes the port at its recorded value, exactly as a selected shared read
+already does. Containers fall through and are still tracked, because
+publishing a shared state's versions is what a carrier is for.
+
+The authored `symbolicDemand` survives a tracked action untouched. It is how
+the replay learns that a port models a whole container rather than a scalar
+(`ConcolicRegionRuntime.trackContainerOrObserveConcrete`), and the previous
+narrowing overwrote it with its own verdict -- which is the other half of the
+HDFS-11741 defect: the four container-state actions that survived as cut
+ports reached replay with their `BOUNDED_CONTAINER_STATE` demand replaced by
+`DECLARED_COMMUNICATION_CUT_PORT`.
+
+The retired `carrier*` keys said "keep this read symbolic but mint nothing",
+which is now what every name the file does not mention already gets. A file
+still carrying one is refused by name rather than read as a root.
+
+Which leaves the choice of what to *declare* a soundness question, not a
+budget one. **A value whose earlier members are baked into concrete state
+elsewhere in the recording cannot be declared a free root.** The block key id
+is the worked example: the NameNode rolls it from a counter, and the target
 DataNode's `allKeys` arrives in the composition as an initial snapshot of
 three recorded constants. Minting the NameNode-side id as a free symbol gives
 it no identity with those constants, so the solver answers with an id outside
@@ -207,17 +251,33 @@ fired -- a world the recording does not admit. Declare the mechanism that is
 genuinely free (here the wall clock, and the expiry computed from it) and let
 the counter flow as the constants it was recorded as.
 
-Two things are exempt from the allowlist and stay symbolic without a row:
+#### What tracking costs, and the fold that pays it back
 
-- a field owned by a `CausynthSymbolicSource.symbolize` hook site — the hook
-  call is itself the declaration;
-- an `EXPLICIT_SYMBOLIC_FAULT` port, i.e. a `Debug.makeSymbolicBoolean` marker
-  the workload wrote into its own source.
+Tracking every carrier grows the plan. Re-running the PLAN stage offline over
+three recorded corpora, with each experiment's own file unchanged except
+HDFS-17960's (whose one carrier row is now redundant and removed):
 
-Every candidate the file refuses is published, with its region, source kind,
-site and cell, as `suppressedRootCandidates` in the scheduler's
-`symbolic_root_policy.jsonl`, so a root that is missing downstream can be
-traced to the declaration rather than to the mechanism that proposed it.
+| corpus | SYMBOLIC | CONCRETE | `BOUNDED_CONTAINER_STATE` symbolic | declared roots |
+|---|---|---|---|---|
+| hdfs-17897 | 18 -> 97 | 97 -> 18 | 0 -> 5 | 16 -> 16 |
+| hdfs-17899-bug3 | 20 -> 121 | 130 -> 29 | 0 -> 5 | 17 -> 17 |
+| hdfs-17960 | 4 -> 80 | 212 -> 136 | 0 -> 31 | 0 -> 0 |
+
+The root set is unchanged in all three. Most of the new symbolic actions are
+reads of state written only from constants, and each becomes a guarded read
+whose arms all lower to the same literal. Such a family is free of any case:
+`ConcolicSmtComposer.guardedReadTerm` still mints a fresh `sym__read__` value
+(ConcolicSmtComposer.java:3496), declares a selector per arm and asserts the
+`exactlyOne` cardinality over them (ConcolicSmtComposer.java:3230) plus each
+arm's writer-case closure (ConcolicSmtComposer.java:3823). When every arm's
+lowered term is a syntactic constant and they are all equal, the read *is*
+that constant: the value symbol, the selectors, the cardinality axiom and the
+writer-case closure can all be dropped and every use replaced by the literal.
+`collapsedContainerArm` (ConcolicSmtComposer.java:1582) already recognises
+the shape for container arms, but as a refusal, not a fold. The fold is not
+implemented here: it changes emitted SMT and must be gated on a byte-identical
+recompose of the HDFS-17960 and bug3 corpora, whose recorded summaries predate
+this plan and so do not exercise it.
 
 ## Trace context and topology
 

@@ -288,8 +288,8 @@ public final class ConcolicScheduler {
         // makes "why is there no clock root" answerable from one file.
         ArtifactIO.replaceJsonl(arguments.outputDirectory.resolve(
                         ROOT_POLICY_ARTIFACT),
-                Collections.singletonList(rootPolicyTelemetry(
-                        arguments.symbolicInputs, loaded.symbolicInputs)));
+                rootPolicyRows(arguments.symbolicInputs,
+                        loaded.symbolicInputs));
         JsonObject taskPlanIdentity = artifactIdentity(taskPlan);
         JsonObject index = workflow.scheduleIndex(result.executionTasks,
                 loaded.regionPlanIdentity, taskPlanIdentity);
@@ -1907,7 +1907,36 @@ public final class ConcolicScheduler {
         JsonArray suppressed = selection.suppressedRootCandidates();
         row.addProperty("suppressedRootCandidateCount", suppressed.size());
         row.add("suppressedRootCandidates", suppressed);
+        JsonArray decisions = selection.rootDecisions();
+        int tracked = 0;
+        int mintEligible = 0;
+        int declared = 0;
+        for (JsonElement element : decisions) {
+            JsonObject decision = element.getAsJsonObject();
+            if (optionalBool(decision,
+                    SymbolicInputSelection.TRACKED, false)) tracked++;
+            if (optionalBool(decision,
+                    SymbolicInputSelection.MINT_ELIGIBLE, false)) {
+                mintEligible++;
+            }
+            if (optionalBool(decision, "declared", false)) declared++;
+        }
+        row.addProperty("decidedActionCount", decisions.size());
+        row.addProperty("trackedActionCount", tracked);
+        row.addProperty("mintEligibleActionCount", mintEligible);
+        row.addProperty("declaredActionCount", declared);
         return row;
+    }
+
+    /** The policy artifact: one summary row, then one verdict per action. */
+    static List<JsonObject> rootPolicyRows(
+            Path declarations, SymbolicInputSelection selection) {
+        List<JsonObject> rows = new ArrayList<>();
+        rows.add(rootPolicyTelemetry(declarations, selection));
+        for (JsonElement element : selection.rootDecisions()) {
+            rows.add(element.getAsJsonObject());
+        }
+        return rows;
     }
 
     public static final class Result {
@@ -1916,42 +1945,69 @@ public final class ConcolicScheduler {
     }
 
     /**
-     * Optional experiment-owned allowlist of symbolic roots.
+     * Optional experiment-owned declaration of which inputs may mint a root.
      *
-     * <p>Wave 3: the only surviving job is turning declared FIELD signatures
-     * into SYMBOLIC materialization actions and everything else CONCRETE.
-     * Which symbol reaches which read is decided at replay -- the VM's
-     * propagated expression is the authority -- so no selector, selected
-     * phase, producer version or output-version boundary is predicted here.
-     * </p>
+     * <p>Two orthogonal decisions are taken about every proposed input
+     * action, and this file governs only the second.</p>
+     *
+     * <dl>
+     *   <dt>TRACK</dt>
+     *   <dd>Keep the action {@code SYMBOLIC}, so the replay symbolizes the
+     *       read and the VM publishes its {@code ReadFrom} candidates and
+     *       container versions.  Every carrier is tracked: instance-field
+     *       reads, bounded container states, declared communication cut
+     *       ports and accessor returns.  Concretizing a carrier removes no
+     *       root -- it deletes the evidence the composition reconstructs
+     *       shared state from, because a read the plan never symbolizes
+     *       publishes no candidates for the composer to admit.</dd>
+     *   <dt>MINT</dt>
+     *   <dd>Permission to become a <em>fresh</em> root: a free symbol the
+     *       solver may move.  Three authorities carry it and nothing else
+     *       does -- an {@code EXPLICIT_SYMBOLIC_FAULT} marker the workload
+     *       wrote into its own program text, a field a
+     *       {@code CausynthSymbolicSource} hook site owns, and a name this
+     *       file declares through {@code fieldSignatures},
+     *       {@code portIds} or {@code cells} for the action's own
+     *       region.</dd>
+     * </dl>
+     *
+     * <p>One input kind cannot be tracked without minting:
+     * {@code EXTERNAL_CALL_RETURN} (a {@code Timer.now()} return, say).
+     * Nothing inside the replayed process wrote that value, so there is no
+     * carrier expression for the read to reuse and symbolizing it <em>is</em>
+     * minting.  An undeclared one is therefore concrete.</p>
+     *
+     * <p>Wave 3: which symbol reaches which read is decided at replay -- the
+     * VM's propagated expression is the authority -- so no selector,
+     * selected phase, producer version or output-version boundary is
+     * predicted here.</p>
      */
     static final class SymbolicInputSelection {
+        /** Decision-row member: the plan symbolizes this read. */
+        static final String TRACKED = "tracked";
+        /** Action and decision-row member: may become a fresh root. */
+        static final String MINT_ELIGIBLE = "mintEligible";
+        /** Row kind of one per-action verdict. */
+        static final String ROOT_DECISION = "SYMBOLIC_ROOT_DECISION";
+        /** The removed carrier keys, refused by name rather than ignored. */
+        private static final String[] RETIRED_CARRIER_KEYS = {
+                "carrierFieldSignatures", "carrierPortIds", "carrierCells"};
+
         private final boolean configured;
         /** regionId -> the field signatures, port ids and cells it admits. */
         private final Map<String, Set<String>> admitted;
-        /**
-         * regionId -> the names it declares as carriers rather than roots.
-         *
-         * <p>A carrier survives the narrowing exactly as an admitted name
-         * does, but is never stamped as a declared root, so the replay keeps
-         * asking the loose question and reuses whatever expression already
-         * reached the read.  It is how an experiment says "keep propagating
-         * through this field" without also saying "and start a free search
-         * here".</p>
-         */
-        private final Map<String, Set<String>> carried;
         /** regionId -> sourceId -> the one field that hook site mints. */
         private final Map<String, Map<String, String>> minted;
         /** Every automatic candidate this selection refused, first-seen order. */
         private final Set<JsonObject> suppressed = new LinkedHashSet<>();
+        /** One verdict per decided action, deduplicated, first-seen order. */
+        private final Set<JsonObject> decisions = new LinkedHashSet<>();
 
         private SymbolicInputSelection(
                 boolean configured, Map<String, Set<String>> admitted,
-                Map<String, Set<String>> carried,
                 Map<String, Map<String, String>> minted) {
             this.configured = configured;
             this.admitted = admitted;
-            this.carried = carried;
             this.minted = minted;
         }
 
@@ -1978,10 +2034,9 @@ public final class ConcolicScheduler {
                 }
             }
             Map<String, Set<String>> admitted = new LinkedHashMap<>();
-            Map<String, Set<String>> carried = new LinkedHashMap<>();
             if (path == null) {
                 return new SymbolicInputSelection(!minted.isEmpty(),
-                        admitted, carried, minted);
+                        admitted, minted);
             }
             requireFile(path, "symbolic input selection");
             for (JsonObject row : ArtifactIO.readJsonl(path)) {
@@ -1994,29 +2049,25 @@ public final class ConcolicScheduler {
                     throw new IOException("symbolic input selection names "
                             + "an unknown static region: " + regionId);
                 }
+                // A carrier is now what every undeclared input already is,
+                // so a file still asking for one is stale rather than
+                // harmless: say so instead of silently reading it as a root.
+                for (String retired : RETIRED_CARRIER_KEYS) {
+                    if (row.has(retired)) {
+                        throw new IOException("symbolic input selection "
+                                + retired + " was removed: every input this "
+                                + "file does not name is already tracked as "
+                                + "a carrier and mints nothing");
+                    }
+                }
                 Set<String> names = admitted.computeIfAbsent(regionId,
                         ignored -> new LinkedHashSet<>());
                 for (String field : new String[]{
                         "fieldSignatures", "portIds", "cells"}) {
                     addDeclaredNames(names, row, field);
                 }
-                Set<String> carriers = carried.computeIfAbsent(regionId,
-                        ignored -> new LinkedHashSet<>());
-                for (String field : new String[]{"carrierFieldSignatures",
-                        "carrierPortIds", "carrierCells"}) {
-                    addDeclaredNames(carriers, row, field);
-                }
-                // Root and carrier are opposite answers to "does the search
-                // start here", so one name may not carry both.
-                for (String name : carriers) {
-                    if (names.contains(name)) {
-                        throw new IOException("symbolic input selection "
-                                + "declares one name as both a root and a "
-                                + "carrier: " + name);
-                    }
-                }
             }
-            return new SymbolicInputSelection(true, admitted, carried, minted);
+            return new SymbolicInputSelection(true, admitted, minted);
         }
 
         /** An explicit source hook is itself the allowlist authority. */
@@ -2077,57 +2128,62 @@ public final class ConcolicScheduler {
                 // Every input remains declared because concrete topology may
                 // use it as an instrumentation anchor.
                 if ("SYMBOLIC".equals(optionalString(action, "mode"))) {
-                    if (minted(regionId, action)) {
-                        // The Java hook mints this exact root once.
-                        retained.addProperty("mode", "CONCRETE");
-                        retained.addProperty("symbolicDemand",
-                                "CONFIGURED_SYMBOLIC_SOURCE_FIELD_OWNED");
-                    } else if (workloadOwnedSymbol(action)) {
-                        // The workload itself wrote this symbol into the
-                        // program text.  It is a declaration, in the same
-                        // sense a CausynthSymbolicSource hook is one, so an
-                        // allowlist that narrows the automatic candidates
-                        // must not silently delete it.
-                        retained.addProperty("symbolicDemand",
-                                "WORKLOAD_DECLARED_SYMBOLIC_FAULT");
-                    } else if (declaredCutPort(action)) {
-                        // A wire-flow cut port mints no root at all: it
-                        // attaches the producer's already-propagated
-                        // expression at the consumer.  Concretizing it would
-                        // cut the propagation this file exists to focus,
-                        // while removing no root from the solver.
-                        retained.addProperty("symbolicDemand",
-                                "DECLARED_COMMUNICATION_CUT_PORT");
-                    } else if (carries(regionId, action)) {
-                        // Named by hand as a carrier, not a root.  It stays
-                        // symbolic so the VM keeps publishing this read's
-                        // ReadFrom candidates -- which is what gives the
-                        // guarded read over a shared counter its writer
-                        // cases, and what keeps the observed closure large
-                        // enough to explore them -- but it carries no mint
-                        // marker, so the replay asks the loose question and
-                        // reuses the expression that already arrived.
-                        // Concretizing it instead deletes the whole family:
-                        // a read the plan never symbolizes publishes no
-                        // candidates for the composer to admit.
-                        retained.addProperty("symbolicDemand",
-                                "DECLARED_SYMBOLIC_CARRIER");
-                    } else if (!admits(regionId, action)) {
-                        retained.addProperty("mode", "CONCRETE");
-                        retained.addProperty("symbolicDemand",
-                                "CONFIGURED_SYMBOLIC_INPUT_UNSELECTED");
-                        suppressed.add(suppressedCandidate(regionId, action));
-                    } else {
-                        // Named by hand: the replay mints here rather than
-                        // reusing whatever carrier happens to wrap the read.
-                        retained.addProperty(
-                                InputActionCatalog.DECLARED_SYMBOLIC_ROOT,
-                                true);
-                    }
+                    decide(regionId, action, retained);
                 }
                 selected.add(retained);
             }
             return selected;
+        }
+
+        /**
+         * Stamps one proposed input with its TRACK and MINT verdicts.
+         *
+         * <p>The authored {@code symbolicDemand} survives a tracked action
+         * untouched: it is what tells the replay that a
+         * {@code BOUNDED_CONTAINER_STATE} port models a whole container
+         * rather than a scalar, and overwriting it with this file's verdict
+         * would silently downgrade the carrier the verdict just kept.</p>
+         */
+        private void decide(
+                String regionId, JsonObject action, JsonObject retained) {
+            if (minted(regionId, action)) {
+                // The Java hook mints this exact root once, at its own call
+                // site; a second action for the same location would add a
+                // free root beside it.
+                retained.addProperty("mode", "CONCRETE");
+                retained.addProperty("symbolicDemand",
+                        "CONFIGURED_SYMBOLIC_SOURCE_FIELD_OWNED");
+                record(regionId, action, false, false, true,
+                        "CONFIGURED_SYMBOLIC_SOURCE_FIELD_OWNED");
+                return;
+            }
+            boolean declared = admits(regionId, action);
+            // The workload wrote this symbol into its own program text; that
+            // is a declaration in the same sense a hook call is one, so an
+            // allowlist over the automatic candidates must not delete it.
+            boolean workloadOwned = workloadOwnedSymbol(action);
+            if (!declared && !workloadOwned && mintsWithoutACarrier(action)) {
+                retained.addProperty("mode", "CONCRETE");
+                retained.addProperty("symbolicDemand",
+                        "CONFIGURED_SYMBOLIC_INPUT_UNSELECTED");
+                suppressed.add(suppressedCandidate(regionId, action));
+                record(regionId, action, false, false, false,
+                        "CONFIGURED_SYMBOLIC_INPUT_UNSELECTED");
+                return;
+            }
+            // TRACK is already stated by the surviving SYMBOLIC mode; the
+            // row carries only the verdict the replay cannot infer.
+            retained.addProperty(MINT_ELIGIBLE, declared || workloadOwned);
+            if (declared) {
+                // Named by hand: the replay mints here rather than reusing
+                // whatever carrier happens to wrap the read.
+                retained.addProperty(
+                        InputActionCatalog.DECLARED_SYMBOLIC_ROOT, true);
+            }
+            record(regionId, action, true, declared || workloadOwned,
+                    declared, declared ? "DECLARED_SYMBOLIC_ROOT"
+                            : workloadOwned ? "WORKLOAD_DECLARED_SYMBOLIC_FAULT"
+                            : "TRACKED_CARRIER");
         }
 
         /** An explicit {@code Debug.makeSymbolicBoolean} marker: the fault
@@ -2138,10 +2194,18 @@ public final class ConcolicScheduler {
                     .equals(optionalString(action, "sourceKind"));
         }
 
-        /** A port declared by {@code communication-mappings.jsonl}: it is a
-         *  handoff, not a mint, so the root allowlist does not govern it. */
-        private static boolean declaredCutPort(JsonObject action) {
-            return RuntimeSelectedRegionFinalizer.COMMUNICATION_SITE_PORT
+        /**
+         * Whether symbolizing this input can only mint.
+         *
+         * <p>A carrier read observes a value some store inside the replayed
+         * process already holds, so the VM has an expression to hand back
+         * and tracking it costs no root.  An {@code EXTERNAL_CALL_RETURN}
+         * has no such writer -- the value enters from outside the recording
+         * -- so there is nothing to carry and a symbolic one is a free root
+         * by construction.  Undeclared, it stays at its recorded value.</p>
+         */
+        private static boolean mintsWithoutACarrier(JsonObject action) {
+            return RuntimeSelectedRegionFinalizer.EXTERNAL_CALL_RETURN
                     .equals(optionalString(action, "sourceKind"));
         }
 
@@ -2169,11 +2233,44 @@ public final class ConcolicScheduler {
             return row;
         }
 
+        /** Both verdicts for one action, so "why is this read concrete" and
+         *  "why did this read mint" are answerable from one file. */
+        private void record(String regionId, JsonObject action,
+                            boolean tracked, boolean mintEligible,
+                            boolean declared, String verdict) {
+            JsonObject row = new JsonObject();
+            row.addProperty("schemaVersion", 1);
+            row.addProperty("kind", ROOT_DECISION);
+            row.addProperty("regionId", safe(regionId));
+            row.addProperty("sourceKind",
+                    optionalString(action, "sourceKind"));
+            row.addProperty("symbolicDemand",
+                    optionalString(action, "symbolicDemand"));
+            row.addProperty("siteId", firstNonBlank(
+                    optionalString(action, "siteId"),
+                    optionalString(action, "staticAccessSiteId")));
+            row.addProperty("fieldSignature", actionField(action));
+            row.addProperty("cell", optionalString(action, "cell"));
+            row.addProperty("portId", actionPort(action));
+            row.addProperty(TRACKED, tracked);
+            row.addProperty(MINT_ELIGIBLE, mintEligible);
+            row.addProperty("declared", declared);
+            row.addProperty("verdict", verdict);
+            decisions.add(row);
+        }
+
         /** The refused candidates of this run, deduplicated, in first-seen
          *  order; empty when no selection file narrowed anything. */
         JsonArray suppressedRootCandidates() {
             JsonArray rows = new JsonArray();
             for (JsonObject row : suppressed) rows.add(row.deepCopy());
+            return rows;
+        }
+
+        /** One row per distinct action this file decided. */
+        JsonArray rootDecisions() {
+            JsonArray rows = new JsonArray();
+            for (JsonObject row : decisions) rows.add(row.deepCopy());
             return rows;
         }
 
@@ -2187,17 +2284,7 @@ public final class ConcolicScheduler {
         }
 
         private boolean admits(String regionId, JsonObject action) {
-            return names(admitted, regionId, action);
-        }
-
-        /** Whether this region declares the action as a non-root carrier. */
-        private boolean carries(String regionId, JsonObject action) {
-            return names(carried, regionId, action);
-        }
-
-        private static boolean names(Map<String, Set<String>> declared,
-                                     String regionId, JsonObject action) {
-            Set<String> names = declared.get(safe(regionId));
+            Set<String> names = admitted.get(safe(regionId));
             return names != null
                     && (names.contains(actionField(action))
                     || names.contains(actionPort(action))

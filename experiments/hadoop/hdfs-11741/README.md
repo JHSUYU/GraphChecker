@@ -14,7 +14,12 @@ clock/expiry families in `symbolic-inputs.jsonl`:
 `allKeys` is a declared root: `keyId` is a *propagated* wire value, carried by
 the `block-key-id` and `data-encryption-key-id` flows in
 `communication-mappings.jsonl`, and `allKeys` is shared state reconstructed
-from its retained writers. There is no Boolean fault marker in this workload --
+from its retained writers. Not a root is not the same as not symbolic: both
+are carriers, so the plan tracks them -- the file narrows which inputs may
+*mint*, never which are symbolized. (Until the mint-only policy landed it
+narrowed both, and concretized 14 of this case's 18 `BOUNDED_CONTAINER_STATE`
+actions, `allKeys` among them, which is precisely the reconstruction this
+paragraph describes.) There is no Boolean fault marker in this workload --
 `/opt/hadoop-hdfs-11741` contains no `Debug.makeSymbolicBoolean` anywhere -- so
 the only thing that can open the target branch is the symbolic clock. The
 custom JDK propagates the root expressions through the fixed sequence of

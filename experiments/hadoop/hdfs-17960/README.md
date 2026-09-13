@@ -49,17 +49,26 @@ configuration root decides. Its consumer anchor and write-candidate selectors
 carry the chosen expression and its local path condition directly into the
 exception predicate.
 
-That family is the shared carrier's rather than a minted root's, but it does
+That family is the shared carrier's rather than a minted root's, and it does
 not survive the read being concretized: a `CONCRETE` action is never
 symbolized, so the VM publishes no candidates and there is nothing to admit.
-A campaign on an allowlist that named nothing measured it -- 25 active
+A campaign on an allowlist that named nothing measured that -- 25 active
 observed tasks became 1, 94 consumer-boundary families became 2, 46 guarded
 reads became 0, and the composer emitted `configuredSourceMaterializations:
-[]`, so the configuration root itself was missing from `candidate.smt2`. The
-file therefore declares the counter as a **carrier**
-(`carrierFieldSignatures`): the read stays symbolic so its candidates keep
-being published, and it is never stamped a declared root, so it mints
-nothing. One root, and it is the configuration's.
+[]`, so the configuration root itself was missing from `candidate.smt2`.
+
+The counter therefore needs no row of its own. `symbolic-inputs.jsonl`
+governs mint eligibility only; every carrier it does not name -- this read
+included -- stays symbolic so its candidates keep being published, and mints
+nothing. The empty file says exactly what this case means: the hook's field
+is the only root, and everything under it carries. Re-running the PLAN stage
+over the recorded corpus with the empty file, the four `AtomicInteger#value`
+reads come back `SYMBOLIC` with `tracked: true`, `mintEligible: false` and no
+`declaredSymbolicRoot` marker -- the same campaign-time state the retired
+`carrierFieldSignatures` row used to buy -- alongside 80 tracked actions and
+31 symbolic `BOUNDED_CONTAINER_STATE` ports, with the configured source still
+the campaign's one root.
+
 `loop-bounds.jsonl` contains every exact loop site retained by the final
 selected closure for this checkout, each with a bound of 16. In the baseline
 trace the first deletion reaches replay iteration 8 and the duplicate deletion
