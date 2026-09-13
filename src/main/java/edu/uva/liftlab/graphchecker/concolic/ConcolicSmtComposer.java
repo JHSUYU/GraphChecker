@@ -1488,6 +1488,80 @@ public final class ConcolicSmtComposer {
         return new FaultIdleClosure(idled, starved);
     }
 
+    /** One read's surviving version, once a marker idles some of its arms. */
+    static final class RetainedVersion {
+        /** The read whose candidate arms the marker thinned. */
+        final String readIdentity;
+        /** The ordered scope the arms were ranked in: read plus use. */
+        final String orderScope;
+        /** Arms the marker made unselectable, in program order. */
+        final List<String> idledArms;
+        /**
+         * The latest arm the marker left selectable, or empty when it left
+         * none -- the starved read {@link
+         * ConcolicSmtComposer#FAULT_IDLE_NO_RETAINED_ARM} reports.
+         */
+        final String retainedArm;
+
+        RetainedVersion(String readIdentity, String orderScope,
+                        List<String> idledArms, String retainedArm) {
+            this.readIdentity = readIdentity;
+            this.orderScope = orderScope;
+            this.idledArms = Collections.unmodifiableList(
+                    new ArrayList<>(idledArms));
+            this.retainedArm = retainedArm;
+        }
+    }
+
+    /**
+     * What each read keeps when a marker idles one of its writers.
+     *
+     * <p>Idling is not writing a bottom value: the arm whose writer case the
+     * marker forces false simply cannot be selected, and last-writer-wins
+     * then hands the read the latest candidate that is still active -- its
+     * predecessor in the order, or the location's INITIAL arm when the
+     * marker idles every tracked writer.  {@code orders} is each scope's
+     * arms earliest first, so the surviving arm scanned last is the latest
+     * one, which is the version the fault retained.</p>
+     *
+     * <p>Only scopes the marker actually thinned are reported; a read none
+     * of whose arms the marker touches keeps exactly the encoding it had and
+     * has nothing to narrate.</p>
+     *
+     * Pure encoding shared by final composition and focused regression tests.
+     */
+    static List<RetainedVersion> retainedVersions(
+            Map<String, ? extends List<String>> orders,
+            Map<String, ? extends Map<String, ? extends Collection<String>>>
+                    readArmWriterCases,
+            Collection<String> idledCaseSelectors) {
+        List<RetainedVersion> retained = new ArrayList<>();
+        for (Map.Entry<String, ? extends List<String>> entry
+                : orders.entrySet()) {
+            String scope = entry.getKey();
+            int split = scope.indexOf('\n');
+            String read = split < 0 ? scope : scope.substring(0, split);
+            Map<String, ? extends Collection<String>> byArm =
+                    readArmWriterCases.get(read);
+            if (byArm == null) continue;
+            List<String> idledArms = new ArrayList<>();
+            String surviving = "";
+            for (String selector : entry.getValue()) {
+                Collection<String> writerCases = byArm.get(selector);
+                if (writerCases == null) continue;
+                if (Collections.disjoint(writerCases, idledCaseSelectors)) {
+                    surviving = selector;
+                } else {
+                    idledArms.add(selector);
+                }
+            }
+            if (idledArms.isEmpty()) continue;
+            retained.add(new RetainedVersion(read, scope, idledArms,
+                    surviving));
+        }
+        return retained;
+    }
+
     /**
      * The first container arm that says nothing about its container, or -1.
      *
@@ -2455,6 +2529,7 @@ public final class ConcolicSmtComposer {
                     GSON.toJsonTree(closure.idledCaseSelectors));
             row.add("starvedReads",
                     GSON.toJsonTree(closure.starvedReads));
+            row.add("retained", retainedRows(closure));
             faultControlClosureRows.add(row);
             for (String read : closure.starvedReads) {
                 faultControlGap(FAULT_IDLE_NO_RETAINED_ARM, read,
@@ -2464,6 +2539,54 @@ public final class ConcolicSmtComposer {
                                 + " the reading case with nothing to observe"
                                 + " (marker " + marker + ")");
             }
+        }
+
+        /**
+         * The retained pairs this marker leaves behind, with their evidence.
+         *
+         * <p>{@link ConcolicSmtComposer#retainedVersions} decides which arm
+         * survives; this adds what a reader narrating the witness needs to
+         * see next to it -- the location the fault left a stale version in,
+         * the field that names it, and the term the surviving arm binds.  An
+         * empty {@code retainedArm} is a read the marker starved, which
+         * {@link ConcolicSmtComposer#FAULT_IDLE_NO_RETAINED_ARM} reports as
+         * a gap as well.</p>
+         */
+        private JsonArray retainedRows(FaultIdleClosure closure) {
+            Map<String, JsonObject> arms = new LinkedHashMap<>();
+            for (JsonElement element : guardedReadChoices) {
+                if (!element.isJsonObject()) continue;
+                JsonObject arm = element.getAsJsonObject();
+                arms.put(optionalString(arm, "readIdentity") + "\n"
+                        + optionalString(arm, "selector"), arm);
+            }
+            JsonArray rows = new JsonArray();
+            for (RetainedVersion retained : retainedVersions(
+                    guardedReadOrders, guardedReadArmWriterCases,
+                    closure.idledCaseSelectors)) {
+                JsonObject arm = arms.get(retained.readIdentity + "\n"
+                        + retained.retainedArm);
+                JsonObject idled = arms.get(retained.readIdentity + "\n"
+                        + retained.idledArms.get(0));
+                JsonObject row = new JsonObject();
+                row.addProperty("readIdentity", retained.readIdentity);
+                row.addProperty("orderScope", retained.orderScope);
+                row.addProperty("locationKey", optionalString(
+                        idled == null ? arm : idled, "locationKey"));
+                row.addProperty("declaredField", optionalString(
+                        idled == null ? arm : idled, "declaredField"));
+                row.add("idledArms", GSON.toJsonTree(retained.idledArms));
+                row.addProperty("retainedArm", retained.retainedArm);
+                String owner = optionalString(arm, "writerCaseOwner");
+                row.addProperty("retainedWriterCaseOwner", owner);
+                row.addProperty("retainedIsInitialVersion",
+                        owner.startsWith(SymbolicPropagationClosure
+                                .INITIAL_SOURCE_CASE_PREFIX));
+                row.addProperty("retainedValueTerm",
+                        optionalString(arm, "valueTerm"));
+                rows.add(row);
+            }
+            return rows;
         }
 
         private void faultControlGap(String reason, String subject,
