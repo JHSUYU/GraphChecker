@@ -49,6 +49,23 @@ public final class SymbolicSourceEvidence {
     public static final String REUSED = "reused";
     /** The runtime's own name for this root, when it published one. */
     public static final String SYMBOL = "symbol";
+    /**
+     * What the field actually held when this mint read it.
+     *
+     * <p>A configured source is a root the recording <em>observed</em> rather
+     * than one the experiment planted, so its recorded value is the only
+     * thing that says which polarity the run had.  Without it a reader has to
+     * guess, and guessing inverts every statement about which value reached
+     * the target: HDFS-17960's epoch-1 NameNode records
+     * {@code snapshot.deletion.ordered = false}, and a default of
+     * {@code true} turns a witness that reproduces the recorded failure into
+     * a counterfactual that flips it.</p>
+     *
+     * <p>Optional, and honestly so: a replay that overwrote the field with a
+     * model assignment before reading it observed the model's value and not
+     * the recording's, so it states none.</p>
+     */
+    public static final String RECORDED_VALUE = "recordedValue";
     private static final Pattern FIELD_SIGNATURE = Pattern.compile(
             "^<[^:]+:\\s+([^()<>\\s]+)\\s+[^()<>\\s]+>(?:#.*)?$");
 
@@ -77,6 +94,26 @@ public final class SymbolicSourceEvidence {
                                    JsonElement expression,
                                    int ordinal, boolean reused,
                                    String symbol) {
+        return event(sourcePhaseId, sourceId, occurrenceId, fieldSignature,
+                expression, ordinal, reused, symbol, null);
+    }
+
+    /**
+     * One mint, with the concrete value the field held when it was read.
+     *
+     * @param recordedValue what the field held at this mint, or null/"" when
+     *                      the runtime could not state it -- a replay that
+     *                      had already written a model assignment into the
+     *                      field reads the model's value, not the
+     *                      recording's, and must say nothing rather than
+     *                      publish the model's value as a recording
+     */
+    public static JsonObject event(String sourcePhaseId, String sourceId,
+                                   String occurrenceId,
+                                   String fieldSignature,
+                                   JsonElement expression,
+                                   int ordinal, boolean reused,
+                                   String symbol, String recordedValue) {
         JsonObject row = new JsonObject();
         row.addProperty("schemaVersion", SCHEMA_VERSION);
         row.addProperty("kind", KIND);
@@ -102,7 +139,15 @@ public final class SymbolicSourceEvidence {
         if (symbol != null && !symbol.trim().isEmpty()) {
             row.addProperty(SYMBOL, symbol.trim());
         }
+        if (recordedValue != null && !recordedValue.isEmpty()) {
+            row.addProperty(RECORDED_VALUE, recordedValue);
+        }
         return row;
+    }
+
+    /** What the field held at this mint, or "" when the row states none. */
+    public static String recordedValueOf(JsonObject event) {
+        return event == null ? "" : optionalString(event, RECORDED_VALUE);
     }
 
     /** One root minted by an explicit task {@code SYMBOLIC} input action. */
@@ -327,7 +372,7 @@ public final class SymbolicSourceEvidence {
                     "javaType", "expression", ORDINAL, REUSED));
     private static final Set<String> OPTIONAL_MEMBERS =
             new LinkedHashSet<>(java.util.Arrays.asList(SYMBOL, "portId",
-                    "sourceIdentity"));
+                    "sourceIdentity", RECORDED_VALUE));
     private static final Set<String> MANUAL_REQUIRED_MEMBERS =
             new LinkedHashSet<>(java.util.Arrays.asList("schemaVersion",
                     "kind", "authority", "portId", "sourceOccurrenceId",

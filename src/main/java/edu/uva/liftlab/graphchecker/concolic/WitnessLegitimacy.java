@@ -272,6 +272,11 @@ public final class WitnessLegitimacy {
             }
         }
         row.add("markerAssignment", assignment);
+        // Whether the polarities these markers are being compared against
+        // were recorded at all. A defaulted polarity makes "flips" a guess,
+        // and the narrative says so rather than asserting the flip.
+        row.addProperty("recordedPolarityStated",
+                everyRecordedPolarityStated(assignment));
         row.add("flippedMarkers", flipped);
         row.addProperty("flippedMarkerCount", flipped.size());
         // The world as the recording had it: every declared marker left alone.
@@ -284,7 +289,7 @@ public final class WitnessLegitimacy {
             row.addProperty("verdict", EXPLAINED);
             row.add("mechanisms", legitimate);
             row.add("freedoms", new JsonArray());
-            row.addProperty("narrative", markerPrefix(flipped)
+            row.addProperty("narrative", markerPrefix(flipped, assignment)
                     + narrative(status, legitimate, freedoms));
             return row;
         }
@@ -322,9 +327,23 @@ public final class WitnessLegitimacy {
             freedomRows.add(freedom.toJson());
         }
         row.add("freedoms", freedomRows);
-        row.addProperty("narrative", markerPrefix(flipped)
+        row.addProperty("narrative", markerPrefix(flipped, assignment)
                 + narrative(status, legitimate, freedoms));
         return row;
+    }
+
+    /** Whether every marker here was compared against a recorded value. */
+    private static boolean everyRecordedPolarityStated(JsonArray assignment) {
+        for (JsonElement element : assignment) {
+            if (!element.isJsonObject()
+                    || !element.getAsJsonObject()
+                    .has("recordedPolarityStated")
+                    || !element.getAsJsonObject()
+                    .get("recordedPolarityStated").getAsBoolean()) {
+                return false;
+            }
+        }
+        return assignment.size() > 0;
     }
 
     /**
@@ -335,9 +354,10 @@ public final class WitnessLegitimacy {
      * getBlockKeys" is the whole finding, and an occurrence id is what tells
      * them apart.</p>
      */
-    private static String markerPrefix(JsonArray flipped) {
+    private static String markerPrefix(JsonArray flipped,
+                                       JsonArray assignment) {
         if (flipped.size() == 0) {
-            return "";
+            return recordedPrefix(assignment);
         }
         StringBuilder text = new StringBuilder("flips ");
         for (int index = 0; index < flipped.size(); index++) {
@@ -345,8 +365,7 @@ public final class WitnessLegitimacy {
                 text.append(" and ");
             }
             JsonObject marker = flipped.get(index).getAsJsonObject();
-            text.append(firstNonEmpty(optionalString(marker,
-                    "sourceIdentity"), optionalString(marker, "solverTerm")));
+            text.append(name(marker));
             String where = firstNonEmpty(optionalString(marker, "siteId"),
                     optionalString(marker, "portId"));
             if (!where.isEmpty()) {
@@ -356,8 +375,53 @@ public final class WitnessLegitimacy {
             if (!occurrence.isEmpty()) {
                 text.append(" at ").append(occurrence);
             }
+            // A flip is a comparison, and a comparison against a value
+            // nobody recorded is a guess. Said here rather than left for a
+            // reader to find in the marker row.
+            if (!marker.has("recordedPolarityStated")
+                    || !marker.get("recordedPolarityStated").getAsBoolean()) {
+                text.append(" off an unstated recorded value (assumed ")
+                        .append(!marker.has("recordedPolarity")
+                                || marker.get("recordedPolarity")
+                                .getAsBoolean())
+                        .append(")");
+            }
         }
         return text.append("; ").toString();
+    }
+
+    /**
+     * The front of a narrative whose valuation moved nothing.
+     *
+     * <p>"No marker flipped" and "every marker sat at the value the
+     * recording had" are the same fact, and only the second one is a
+     * finding a reader can act on: it says the witness reproduces the
+     * recorded case. It is stated only where the recorded values actually
+     * were recorded -- a defaulted polarity would make it a claim about a
+     * recording nobody read.</p>
+     */
+    private static String recordedPrefix(JsonArray assignment) {
+        if (!everyRecordedPolarityStated(assignment)) {
+            return "";
+        }
+        StringBuilder text = new StringBuilder(
+                "every declared root at its recorded value (");
+        for (int index = 0; index < assignment.size(); index++) {
+            if (index > 0) {
+                text.append(", ");
+            }
+            JsonObject marker = assignment.get(index).getAsJsonObject();
+            text.append(name(marker)).append(" = ")
+                    .append(marker.has("value")
+                            && marker.get("value").getAsBoolean());
+        }
+        return text.append("); ").toString();
+    }
+
+    /** How a marker row names itself. */
+    private static String name(JsonObject marker) {
+        return firstNonEmpty(optionalString(marker, "sourceIdentity"),
+                optionalString(marker, "solverTerm"));
     }
 
     /**

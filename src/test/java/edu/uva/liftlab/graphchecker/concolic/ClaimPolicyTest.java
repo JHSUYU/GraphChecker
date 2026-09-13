@@ -1204,7 +1204,18 @@ public class ClaimPolicyTest {
                         "MANUAL.updater"));
     }
 
-    /** With no flipped valuation satisfiable, there is no buggy polarity. */
+    /**
+     * With no flipped valuation satisfiable, a planted marker has no buggy
+     * polarity, and the run is withheld.
+     *
+     * <p>What the markers <em>are</em> shown to do is published all the
+     * same: the recorded world is satisfiable and every flip of it is
+     * refuted, so each marker decides the target at the value it recorded.
+     * That is the opposite of {@link ClaimPolicy#NOT_A_MECHANISM}, which is
+     * a marker no polarity of which reaches the target, and reporting it
+     * here said the run rested on neither marker while the recorded
+     * valuation was the satisfying one.</p>
+     */
     @Test
     public void noFlippedMarkerWitnessIsNotAnAcceptedClaim() {
         JsonObject claim = ClaimPolicy.decide(twoMarkerManifest(),
@@ -1218,10 +1229,19 @@ public class ClaimPolicyTest {
                 gap.get("subject").getAsString());
         assertTrue(gap.get("detail").getAsString()
                 .contains("over 2 declared marker(s)"));
-        assertNotNull(findingOrNull(claim, ClaimPolicy.NOT_A_MECHANISM,
-                "MANUAL.updater"));
-        assertNotNull(findingOrNull(claim, ClaimPolicy.NOT_A_MECHANISM,
-                "MANUAL.constructor"));
+        JsonObject markers = claim.getAsJsonObject("rootSpace")
+                .getAsJsonObject("faultMarkers");
+        for (String identity : new String[] {"MANUAL.updater",
+                "MANUAL.constructor"}) {
+            JsonObject row = markerByIdentity(markers, identity);
+            assertTrue(identity + " decides the target",
+                    row.get("polarityDecides").getAsBoolean());
+            assertTrue(identity + " decides it at its recorded value",
+                    row.get("reachesAtRecordedValue").getAsBoolean());
+            assertNull("a marker that decides is not NOT_A_MECHANISM",
+                    findingOrNull(claim, ClaimPolicy.NOT_A_MECHANISM,
+                            identity));
+        }
     }
 
     /**
@@ -1443,6 +1463,213 @@ public class ClaimPolicyTest {
         JsonObject marker = markerRow(claim);
         assertTrue(marker.get("recordedPolarity").getAsBoolean());
         assertFalse(marker.get("recordedPolarityStated").getAsBoolean());
+    }
+
+    // ---------------------------------------------------------------
+    // HDFS-17960: one configured source, recorded false, reproduced.
+    // ---------------------------------------------------------------
+
+    private static final String ORDERED_FIELD = "<org.apache.hadoop.hdfs"
+            + ".server.namenode.snapshot.SnapshotManager:"
+            + " boolean snapshotDeletionOrdered>";
+    private static final String ORDERED_SOURCE =
+            "HDFS.CONFIG.SNAPSHOT_DELETION_ORDERED";
+    private static final String ORDERED_OCCURRENCE = "hdfs-17960/nn0#epoch1"
+            + "/region/REGION.9492ec77#1#a1";
+    private static final String ORDERED_TERM = "sym__ordered__1";
+
+    /**
+     * A configured source's recorded value reaches the gate.
+     *
+     * <p>It has no port, so the plan's {@code symbolize} fallback is keyed by
+     * something a configured root never carries and can never fire for one;
+     * the value arrives on the materialization row the Composer publishes
+     * instead. Without it HDFS-17960's root defaults to {@code true} while
+     * the epoch-1 NameNode recorded {@code false}.</p>
+     */
+    @Test
+    public void aConfiguredSourceStatesItsRecordedValue() {
+        JsonObject claim = ClaimPolicy.decide(orderedManifest("false"),
+                orderedReach("sat", "unsat"), noFlows());
+
+        JsonObject marker = markerRow(claim);
+        assertFalse("the epoch-1 NameNode recorded false",
+                marker.get("recordedPolarity").getAsBoolean());
+        assertTrue("and the manifest states it",
+                marker.get("recordedPolarityStated").getAsBoolean());
+        assertEquals("a configured root is named by its field, not its term",
+                ORDERED_SOURCE, marker.get("sourceIdentity").getAsString());
+        assertEquals(ORDERED_FIELD, marker.get("siteId").getAsString());
+        assertEquals(ORDERED_OCCURRENCE,
+                marker.get("occurrenceId").getAsString());
+    }
+
+    /** The recorded-root ledger stays the authority where it states one. */
+    @Test
+    public void theRecordedRootLedgerOutranksTheMaterializationRow() {
+        JsonObject manifest = orderedManifest("false");
+        manifest.add(ConcolicSmtComposer.RECORDED_ROOT_VALUES, parseArray(
+                "[{\"solverTerm\":\"" + ORDERED_TERM + "\","
+                + "\"recordedValue\":\"true\",\"wallClock\":false,"
+                + "\"siteId\":\"" + ORDERED_FIELD + "\"}]"));
+
+        assertTrue("the ledger says true",
+                markerRow(ClaimPolicy.decide(manifest,
+                        orderedReach("sat", "unsat"), noFlows()))
+                        .get("recordedPolarity").getAsBoolean());
+    }
+
+    /**
+     * A witness at the recorded value is the finding, not a missing flip.
+     *
+     * <p>HDFS-17960 injects nothing: its only root is the program's own
+     * configuration field, the recording already threw at the target, and the
+     * satisfying valuation is the recorded {@code false}. Demanding a flip of
+     * it refused the run for reproducing its own recording, and the defaulted
+     * polarity hid that by reporting the reproduction as a flip.</p>
+     */
+    @Test
+    public void aConfiguredSourceWitnessAtItsRecordedValueIsAccepted() {
+        JsonObject claim = ClaimPolicy.decide(orderedManifest("false"),
+                orderedReach("sat", "unsat"), noFlows());
+
+        assertEquals(ClaimPolicy.SAT_CANDIDATE,
+                claim.get("claim").getAsString());
+        assertEquals(0, claim.getAsJsonArray("blockers").size());
+        JsonObject rootSpace = claim.getAsJsonObject("rootSpace");
+        assertEquals(ClaimPolicy.RECORDED_ROOT_VALUES_REPRODUCED,
+                rootSpace.get("acceptedWitnessKind").getAsString());
+        assertEquals("nothing was planted here",
+                0, rootSpace.get("plantedMarkers").getAsInt());
+        assertEquals(0, rootSpace.get("acceptedValuationOrdinal").getAsInt());
+
+        JsonObject accepted = witnessFinding(claim, 0);
+        assertEquals(0, accepted.get("flippedMarkerCount").getAsInt());
+        assertTrue(accepted.get("allRecorded").getAsBoolean());
+        assertTrue(accepted.get("narrative").getAsString(),
+                accepted.get("narrative").getAsString().contains(
+                        "every declared root at its recorded value ("
+                        + ORDERED_SOURCE + " = false)"));
+        JsonObject marker = markerRow(claim);
+        assertTrue(marker.get("polarityDecides").getAsBoolean());
+        assertTrue(marker.get("reachesAtRecordedValue").getAsBoolean());
+    }
+
+    /** The reason names the valuation, the roots and the reproduction. */
+    @Test
+    public void theClaimReasonNamesTheReproducedRecordedCase() {
+        String reason = ClaimPolicy.decide(orderedManifest("false"),
+                orderedReach("sat", "unsat"), noFlows())
+                .get("claimReason").getAsString();
+
+        assertTrue(reason, reason.startsWith("valuation 0 satisfies the"
+                + " target predicate inside the recorded model"));
+        assertTrue(reason, reason.contains("with every declared root at the"
+                + " value the recording had (" + ORDERED_SOURCE + " ("
+                + ORDERED_FIELD + ") = false)"));
+        assertTrue(reason, reason.contains("reproduces the recorded case"
+                + " rather than a counterfactual"));
+        assertTrue(reason, reason.contains("no named mechanism was needed"));
+        assertTrue(reason, reason.contains(ORDERED_SOURCE
+                + " reaches the target at its recorded value and at no"
+                + " other"));
+        assertFalse("nothing flipped, so nothing may say one did",
+                reason.contains("flips"));
+    }
+
+    /** With nothing stating a recorded value, the reason says it guessed. */
+    @Test
+    public void theClaimReasonSaysWhenAPolarityWasNotRecorded() {
+        JsonObject claim = ClaimPolicy.decide(orderedManifest(""),
+                orderedReach("sat", "unsat"), noFlows());
+
+        JsonObject marker = markerRow(claim);
+        assertTrue("defaulted, because nothing recorded it",
+                marker.get("recordedPolarity").getAsBoolean());
+        assertFalse(marker.get("recordedPolarityStated").getAsBoolean());
+        String reason = claim.get("claimReason").getAsString();
+        assertTrue(reason, reason.contains(
+                "[recorded value unstated, assumed true]"));
+        String narrative = witnessFinding(claim, 0).get("narrative")
+                .getAsString();
+        assertTrue(narrative, narrative.contains(
+                "off an unstated recorded value (assumed true)"));
+        assertEquals("moved against a default is neither of the other two",
+                ClaimPolicy.UNPLANTED_ROOT_MOVED,
+                claim.getAsJsonObject("rootSpace")
+                        .get("acceptedWitnessKind").getAsString());
+    }
+
+    /** The reason for a flipped planted marker names the flip and why. */
+    @Test
+    public void theClaimReasonNamesTheFlippedPlantedMarker() {
+        JsonObject reach = markerReach(true, "-300000");
+        reach.getAsJsonArray("valuations").get(0).getAsJsonObject()
+                .addProperty("status", "unsat");
+
+        JsonObject claim = ClaimPolicy.decide(markerManifest(), reach,
+                noFlows());
+        String reason = claim.get("claimReason").getAsString();
+
+        assertEquals(ClaimPolicy.FLIPPED_PLANTED_MARKER,
+                claim.getAsJsonObject("rootSpace")
+                        .get("acceptedWitnessKind").getAsString());
+        assertTrue(reason, reason.startsWith("valuation 1 satisfies"));
+        assertTrue(reason, reason.contains(
+                "moves 1 declared root(s) off what they recorded:"
+                + " MANUAL.fault"));
+        assertTrue(reason, reason.contains("explained by MARKER_FLIPPED"));
+        assertTrue(reason, reason.contains(
+                "the root space decides the target"));
+        assertTrue(reason, reason.contains("MANUAL.fault reaches the target"
+                + " only when moved off what it recorded"));
+    }
+
+    /**
+     * One configured Boolean source, materialized with a recorded value.
+     *
+     * @param recordedValue what the field held, or "" to state none
+     */
+    private static JsonObject orderedManifest(String recordedValue) {
+        JsonObject manifest = manifest();
+        manifest.add(ConcolicSmtComposer.RECORDED_ROOT_VALUES,
+                new JsonArray());
+        manifest.add(ConcolicSmtComposer
+                .CONFIGURED_SOURCE_MATERIALIZATION_FIELD, parseArray(
+                "[{\"kind\":\"" + ConcolicSmtComposer
+                        .CONFIGURED_SOURCE_MATERIALIZATION_KIND + "\","
+                + "\"sourceKey\":\"hdfs-17960/nn0#epoch1\","
+                + "\"sourceId\":\"" + ORDERED_SOURCE + "\","
+                + "\"sourceOccurrenceId\":\"" + ORDERED_OCCURRENCE + "\","
+                + "\"fieldSignature\":\"" + ORDERED_FIELD + "\","
+                + "\"javaTypeDescriptor\":\"Z\",\"sort\":\"BOOL\","
+                + (recordedValue.isEmpty() ? ""
+                        : "\"" + ConcolicSmtComposer.RECORDED_SOURCE_VALUE
+                        + "\":\"" + recordedValue + "\",")
+                + "\"solverTerm\":\"" + ORDERED_TERM + "\"}]"));
+        manifest.add(ClockRootPhysics.MANIFEST_FIELD, parse(
+                "{\"schemaVersion\":1,\"kind\":\"CLOCK_ROOT_PHYSICS\","
+                + "\"clockSkewMillis\":300000,\"clockReads\":[]}"));
+        return manifest;
+    }
+
+    /** The two polarities of that source, in enumeration order. */
+    private static JsonObject orderedReach(String atFalse, String atTrue) {
+        JsonObject reach = reach();
+        reach.add("roots", parse(
+                "{\"booleanInputs\":["
+                + "{\"inputKind\":\"CONFIGURED_SOURCE_FIELD\","
+                + "\"sourceKey\":\"hdfs-17960/nn0#epoch1\","
+                + "\"sourceId\":\"" + ORDERED_SOURCE + "\","
+                + "\"sourceOccurrenceId\":\"" + ORDERED_OCCURRENCE + "\","
+                + "\"fieldSignature\":\"" + ORDERED_FIELD + "\","
+                + "\"javaTypeDescriptor\":\"Z\","
+                + "\"solverTerm\":\"" + ORDERED_TERM + "\"}],"
+                + "\"existentialInputs\":[]}"));
+        reach.add("valuations", parseArray(
+                "[{\"values\":[false],\"status\":\"" + atFalse + "\"},"
+                + "{\"values\":[true],\"status\":\"" + atTrue + "\"}]"));
+        return reach;
     }
 
     private static final String PLANNED_SITE =

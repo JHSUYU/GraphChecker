@@ -162,6 +162,16 @@ public final class ConcolicSmtComposer {
     /** Whether all selected producer and target path sets were explored. */
     /** Per lowered root: what it returned when it was recorded. */
     public static final String RECORDED_ROOT_VALUES = "recordedRootValues";
+    /**
+     * On a configured-source materialization: what the field actually held.
+     *
+     * <p>Carried from the runtime's own mint, which is the only place the
+     * concrete value exists -- a configured source has no port and no
+     * {@code symbolize} row, so the plan states nothing about it. Without
+     * this the recorded-root ledger can say nothing about a configured root
+     * and a reader has to default its polarity.</p>
+     */
+    public static final String RECORDED_SOURCE_VALUE = "recordedValue";
     /** Per declared value handoff: whether its family reached a term. */
     public static final String WIRE_FLOW_BINDINGS = "wireFlowBindings";
     /**
@@ -2877,10 +2887,22 @@ public final class ConcolicSmtComposer {
          * clock skew.  Without the recorded value a reader cannot tell either
          * from an ordinary free choice, which is how {@code Long.MIN_VALUE}
          * clocks were reported as mechanisms.</p>
+         *
+         * <p>Two kinds of root reach it by two routes, because the recording
+         * states them in two places.  A manual root is planned: the plan's
+         * own {@code symbolize} row carries the {@code primitiveValue} the
+         * call returned, keyed by the port that returned it.  A configured
+         * source has no port and no plan row -- the value exists only at the
+         * VM mint that read the field -- so it arrives on its materialization
+         * row instead, and is keyed by the solver term both routes agree on.
+         * A configured source that states none is left out rather than
+         * defaulted: a ledger with no row is what tells a reader the polarity
+         * is unknown.</p>
          */
         private JsonArray recordedRootLedger(List<JsonObject> planRows) {
             JsonArray rows = new JsonArray();
             Set<String> seen = new LinkedHashSet<>();
+            Set<String> seenTerms = new LinkedHashSet<>();
             for (JsonObject plan : planRows == null
                     ? Collections.<JsonObject>emptyList() : planRows) {
                 if (plan == null) continue;
@@ -2900,7 +2922,7 @@ public final class ConcolicSmtComposer {
                         String raw = manualRawByPort.get(port);
                         String term = raw == null ? ""
                                 : firstNonBlank(manualRootNames.get(raw));
-                        if (term.isEmpty()) continue;
+                        if (term.isEmpty() || !seenTerms.add(term)) continue;
                         JsonObject out = new JsonObject();
                         out.addProperty("portId", port);
                         out.addProperty("sourceKey",
@@ -2919,6 +2941,39 @@ public final class ConcolicSmtComposer {
                         rows.add(out);
                     }
                 }
+            }
+            for (JsonObject source
+                    : configuredSourceMaterializations.values()) {
+                String term = optionalString(source, "solverTerm");
+                String recorded = optionalString(source,
+                        RECORDED_SOURCE_VALUE);
+                if (term.isEmpty() || recorded.isEmpty()
+                        || !seenTerms.add(term)) {
+                    continue;
+                }
+                JsonObject out = new JsonObject();
+                // A configured source has no port; the field it reads is
+                // where a reader chasing "which value was this" has to land,
+                // so the field signature is its site.
+                out.addProperty("portId", "");
+                out.addProperty("sourceKey",
+                        optionalString(source, "sourceKey"));
+                out.addProperty("siteId",
+                        optionalString(source, "fieldSignature"));
+                out.addProperty("sourceId", optionalString(source,
+                        "sourceId"));
+                out.addProperty("sourceOccurrenceId",
+                        optionalString(source, "sourceOccurrenceId"));
+                out.addProperty("fieldSignature",
+                        optionalString(source, "fieldSignature"));
+                out.addProperty("javaType",
+                        optionalString(source, "javaTypeDescriptor"));
+                out.addProperty("eventSeq", -1L);
+                out.addProperty("recordedValue", recorded);
+                out.addProperty("solverTerm", term);
+                // A configuration field is not a clock, whatever it holds.
+                out.addProperty("wallClock", false);
+                rows.add(out);
             }
             return rows;
         }
@@ -6270,9 +6325,45 @@ public final class ConcolicSmtComposer {
             }
             JsonObject held = configuredSourceMaterializations.putIfAbsent(
                     identity, row);
-            if (held != null && !held.equals(row)) {
+            // The recorded value is merged onto the stored row rather than
+            // compared with it, and the conflict check ignores it: one
+            // identity is observed by every replay of the same entry, and
+            // only the activations that read the field as the program left
+            // it state one.  A row that states none is the same
+            // materialization as a row that does.
+            if (held != null && !withoutRecordedValue(held).equals(row)) {
                 unsupported.add("ConfiguredSourceMaterializationConflict:"
                         + optionalString(event, "sourceId"));
+                return;
+            }
+            mergeRecordedSourceValue(held == null ? row : held,
+                    SymbolicSourceEvidence.recordedValueOf(event));
+        }
+
+        /** The materialization a row states, with its recording set aside. */
+        private JsonObject withoutRecordedValue(JsonObject row) {
+            if (!row.has(RECORDED_SOURCE_VALUE)) return row;
+            JsonObject copy = row.deepCopy();
+            copy.remove(RECORDED_SOURCE_VALUE);
+            return copy;
+        }
+
+        /**
+         * Records what a configured source's field held, or leaves it
+         * unstated.
+         *
+         * <p>Two observations of one entry that disagree are not a value to
+         * pick between: the row drops back to stating none, which reads
+         * downstream as "unknown" rather than as a recording.</p>
+         */
+        private void mergeRecordedSourceValue(JsonObject row,
+                                              String recordedValue) {
+            if (recordedValue == null || recordedValue.isEmpty()) return;
+            String held = optionalString(row, RECORDED_SOURCE_VALUE);
+            if (held.isEmpty()) {
+                row.addProperty(RECORDED_SOURCE_VALUE, recordedValue);
+            } else if (!held.equals(recordedValue)) {
+                row.remove(RECORDED_SOURCE_VALUE);
             }
         }
 
@@ -6741,7 +6832,7 @@ public final class ConcolicSmtComposer {
         }
 
         /**
-         * Refuses a merged consumer boundary whose dispatch is not total.
+         * Records whether each merged consumer boundary dispatches totally.
          *
          * <p>A merge is total when this formula already forbids every arm
          * being false at once.  Two partitions say that unconditionally: a
@@ -6752,11 +6843,20 @@ public final class ConcolicSmtComposer {
          * arm the recording observed, and the value it carries is the value
          * the wire carried under that observation.</p>
          *
-         * <p>A merge whose arms sit in neither is a wire the composition
-         * cannot bind: the model may satisfy no arm and read the
-         * fall-through term, which nothing pins.  Reporting the value
-         * anyway is how a witness came to rest on a key id that never
-         * existed, so this fails closed instead.</p>
+         * <p>A merge whose arms sit in neither may satisfy no arm and read
+         * the fall-through term, which nothing pins.  That is the shape, not
+         * an exception: since {@code fix/17897-model} most boundaries are
+         * lowered as {@code ite(case_selector, rf_value, unbound_boundary)}
+         * and are non-total by design -- 12 of 18 on hdfs-17960, both fatal
+         * ones included -- because the selector that makes them total is
+         * asserted elsewhere.  So this refuses nothing and pins nothing: it
+         * publishes one {@link #BOUNDARY_DISPATCH_TOTALITY} row per merge and
+         * leaves the reading to the model.  A non-total dispatch becomes a
+         * finding only when a model actually falls through it --
+         * {@code BooleanReachConditionExtractor.witnessFreedoms} raises
+         * {@link WitnessLegitimacy#UNBOUND_WIRE_VALUE_TAKEN} for a model that
+         * satisfies no arm while a consumer of the merged term stays
+         * active.</p>
          */
         private void requireTotalBoundaryDispatch() {
             List<Set<String>> partitions = new ArrayList<>();
