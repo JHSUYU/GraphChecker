@@ -308,6 +308,18 @@ public final class ConcolicSummaryImporter {
                 }
             }
         }
+        if (!imported.contractViolations.isEmpty()) {
+            System.err.println("[concolic-import] publication contract: "
+                    + imported.contractViolations.size()
+                    + " blocking row(s); the corpus does not carry what the"
+                    + " plan asked for, so the campaign stops here rather"
+                    + " than meeting it as an unexecutable worklist");
+            for (String line : PublicationContract.table(
+                    imported.contractViolations)) {
+                System.err.println("[concolic-import]   " + line);
+            }
+            System.exit(3);
+        }
         if (imported.validSummaryCount == 0
                 && imported.rawResultCount > 0) {
             System.exit(2);
@@ -414,13 +426,21 @@ public final class ConcolicSummaryImporter {
         // "planned event that did not occur"; it is named, never dropped.
         delta.classifyUnobservedTasks(tasks.values());
 
+        // The contract runs last, over what was actually written: every
+        // check it makes is a statement the corpus can make about itself,
+        // and making it here is what keeps a missing publication from
+        // arriving at EXPLORE as an unexecutable worklist.
+        List<JsonObject> contract = PublicationContract.check(tasks,
+                summaries, diagnostics);
+        diagnostics.addAll(contract);
+
         ArtifactIO.replaceJsonl(outputFile, summaries);
         ArtifactIO.replaceJsonl(diagnosticFile, diagnostics);
         // Written even when empty: an absent file and an empty file must not
         // mean the same thing to the campaign that validates it.
         ArtifactIO.replaceJsonl(deltaFile, delta.rows());
         return new ImportResult(rawResults.size(), summaries.size(),
-                diagnostics.size());
+                diagnostics.size(), contract);
     }
 
     /** Converts the VM transport DAG, then interns portable content anchors. */
@@ -2461,12 +2481,16 @@ public final class ConcolicSummaryImporter {
         public final int rawResultCount;
         public final int validSummaryCount;
         public final int diagnosticCount;
+        /** Every way this publication is short of the plan, in plan order. */
+        public final List<JsonObject> contractViolations;
 
         private ImportResult(int rawResultCount, int validSummaryCount,
-                             int diagnosticCount) {
+                             int diagnosticCount,
+                             List<JsonObject> contractViolations) {
             this.rawResultCount = rawResultCount;
             this.validSummaryCount = validSummaryCount;
             this.diagnosticCount = diagnosticCount;
+            this.contractViolations = contractViolations;
         }
     }
 }

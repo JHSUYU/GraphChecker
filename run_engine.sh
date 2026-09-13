@@ -2063,6 +2063,14 @@ campaign_import_session() {
   import_diagnostics="${seed}/import_diagnostics.jsonl"
   import_topology_delta="${seed}/topology_delta.jsonl"
   run_capturing_status do_import "${iteration_id}"
+  # Exit 3 is the publication contract: the corpus imported, and it is short
+  # of what the plan asked for.  The importer has already printed the one
+  # summary table; stopping here is the point of the check, so that the same
+  # hole is not met at EXPLORE as an unexecutable worklist.
+  if [[ "${status}" -eq 3 ]]; then
+    campaign_fail IMPORT PublicationContract "${import_diagnostics}" \
+      "the replay wave published less than the plan asked for; see the"$'\n'"publication contract table above"
+  fi
   if [[ "${status}" -ne 0 ]]; then
     [[ ! -s "${import_diagnostics}" ]] \
       || jq -c . "${import_diagnostics}" >&2 || true

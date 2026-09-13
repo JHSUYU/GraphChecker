@@ -577,6 +577,27 @@ public final class GapLedger {
                         + " on the kept slice means the region the chain"
                         + " names never ran, and off it means the task was an"
                         + " over-approximation");
+        // ------------------------------------------------------------------
+        // IMPORT / PUBLICATION_CONTRACT -- one pass at the end of IMPORT over
+        // what the replay wave actually published.  Each code names a link
+        // the plan asked for and the corpus does not carry, so each is
+        // BLOCKING and the campaign stops before EXPLORE rather than meeting
+        // the same hole there as an unexecutable worklist.
+        // ------------------------------------------------------------------
+        String contract = "IMPORT/PUBLICATION_CONTRACT";
+        blocking(contract, "PUBLICATION_TASK_SILENT",
+                "a kept task published neither an activation nor a skip, so"
+                        + " its region states nothing at all");
+        blocking(contract, "PUBLICATION_BRANCH_PREFIX_UNPUBLISHED",
+                "no activation of the task decided a site its goal"
+                        + " addresses, so the path the plan asked for was"
+                        + " never replayed");
+        blocking(contract, "PUBLICATION_TARGET_PREDICATE_UNSTATED",
+                "the target reach event names no site, so the anchor has no"
+                        + " predicate to compose");
+        blocking(contract, "PUBLICATION_WRITE_LOG_INCOMPLETE",
+                "a published write log cannot be read back, so every read of"
+                        + " that location is unresolvable");
         blocking(importer, "REGION_REPLAY_PREFIX_UNMATCHED",
                 "the replay did not follow the prefix the plan addressed");
         onKeptSlice(importer, "REGION_TASK_NO_PUBLISHED_ACTIVATION",
