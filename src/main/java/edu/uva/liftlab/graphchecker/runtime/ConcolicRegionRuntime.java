@@ -3080,9 +3080,11 @@ public final class ConcolicRegionRuntime {
             RecordedBranch recorded = decision.recordPaused(active, api,
                     method, unitIndex, expression, prepared.occurrence,
                     vmEventId);
-            boolean replayTargetMatched = active.observeReplayDecision(
-                    branchSite, prepared.occurrence, decision,
-                    recorded.symbolicSupportDigest);
+            // Advances the replay contract and records a prefix mismatch;
+            // whether this decision consumed the contract's source event
+            // says nothing about whether the target site ran.
+            active.observeReplayDecision(branchSite, prepared.occurrence,
+                    decision, recorded.symbolicSupportDigest);
             replayContradicted = active.replayPrefixContradicted();
             // A bounded loop may have run the planned target occurrence at
             // another one.  targetReach is the planner's semantic source
@@ -3090,14 +3092,28 @@ public final class ConcolicRegionRuntime {
             // occurrence and symbolic support which matched that source.
             boolean permuted = decision.addressesPermutedTargetOccurrence()
                     && active.activation.replayContract != null;
-            if (recorded.solverWitness && replayTargetMatched
+            if (recorded.solverWitness
                     && !active.activation.targetBranchSite.isEmpty()
                     && active.activation.targetBranchSite.equals(branchSite)
                     && (permuted || active.activation.targetBranchOccurrence
                     == prepared.occurrence)) {
-                // Reaching the target is a fact of this case, never a reason
-                // to stop recording it: the RPC, state and throw effects the
-                // occurrence still owes all happen after this branch.
+                // Reaching the target is the site having executed, and
+                // nothing else.  The replay contract decides whether this
+                // activation followed the prefix it was asked to follow --
+                // a different question, and one whose answer is "no" at the
+                // target on every flip replay whose source branch is
+                // somewhere else, because the contract names no event here
+                // to consume.  Gating on it published the target event only
+                // from the recording, so every flip's disjunct was lost
+                // before composition ever saw it.  The composition wants
+                // them all: a flip that leaves the predicate false is the
+                // disjunct that contributes nothing, and a flip that
+                // diverges is still evidence that the branch was tried.
+                //
+                // Reaching the target is also a fact of this case, never a
+                // reason to stop recording it: the RPC, state and throw
+                // effects the occurrence still owes all happen after this
+                // branch.
                 active.recordTargetReach(
                         permuted ? active.activation.targetBranchSite
                                 : branchSite,
