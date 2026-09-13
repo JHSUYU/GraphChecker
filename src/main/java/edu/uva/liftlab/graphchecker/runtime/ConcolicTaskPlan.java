@@ -60,7 +60,7 @@ import static edu.uva.liftlab.graphchecker.runtime.ConcolicResultPublisher.regis
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.registeredSourceAnchorMatches;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.rootInvocationAddressMatches;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.safe;
-import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.sameRootMethod;
+import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.sameHookIdentity;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicResultPublisher.writeSkipped;
 
 /** The bounded campaign this JVM executes. */
@@ -235,7 +235,7 @@ final class ConcolicTaskPlan {
         for (RuntimeTask task : tasks) {
             if (!task.instrumentationSelector.equals(
                     safe(instrumentationSelector))
-                    || !sameRootMethod(task.rootMethod, rootMethod)) {
+                    || !sameHookIdentity(task.rootMethod, rootMethod)) {
                 continue;
             }
             if (selected != null && !selected.rootHookGroupKey().equals(
@@ -268,7 +268,7 @@ final class ConcolicTaskPlan {
             if (!task.loopBodyRoot
                     || !task.instrumentationSelector.equals(
                     safe(instrumentationSelector))
-                    || !sameRootMethod(task.rootMethod, rootMethod)) {
+                    || !sameHookIdentity(task.rootMethod, rootMethod)) {
                 continue;
             }
             selected = task;
