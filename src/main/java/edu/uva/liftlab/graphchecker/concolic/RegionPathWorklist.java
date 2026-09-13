@@ -639,10 +639,6 @@ public final class RegionPathWorklist {
             replay.addTo(task);
             if (path.scope().goalKind().capturesTargetReach()) {
                 VmHandoffEvidence.writeTo(task, path.vmHandoffEvents());
-                JsonArray bindings = path.edgeBindings();
-                if (bindings.size() > 0) {
-                    task.add("edgeBindings", bindings);
-                }
                 JsonObject sourceTask = taskById.get(path.sourceTaskId());
                 JsonObject selected = sourceTask == null
                         ? new JsonObject()

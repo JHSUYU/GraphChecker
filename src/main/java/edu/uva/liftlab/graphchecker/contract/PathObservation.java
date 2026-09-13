@@ -118,10 +118,6 @@ public final class PathObservation {
     public List<Integer> pathConditionPositions() {
         return pathConditionPositions;
     }
-    public JsonArray edgeBindings() {
-        return array(raw, "edgeBindings");
-    }
-
     public TargetReachEvent targetReachEvent() {
         JsonElement encoded = raw.get(TargetReachEvent.FIELD);
         return encoded == null ? null : TargetReachEvent.decode(encoded);

@@ -816,7 +816,7 @@ public final class ConcolicSummaryImporter {
                     manualInputs.observations);
         }
         // Graph edges describe topology; receiver boundaries carry values.
-        summary.add("edgeBindings", task.edgeBindings());
+
         summary.add("pathCondition", path.expressions);
         summary.add("branchMappings", mappings);
         if (targetReach.size() > 0) {
