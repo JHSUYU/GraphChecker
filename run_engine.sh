@@ -1977,6 +1977,41 @@ campaign_replay() {
     campaign_fail REPLAY WORKLOAD "${results}" \
       "the concolic replay published only skipped regions (exit ${status}); the workload terminated before its selected regions ran and its exception is in ${worker}/replay.log"
   fi
+  # Some region ran, but not the failure target.  ConcolicScheduler publishes
+  # a branch query for a TARGET_REACH goal only when an imported summary
+  # answers that occurrence (ConcolicScheduler: exactTargetSummary), so a seed
+  # replay that skipped every target occurrence leaves branch_queries.jsonl
+  # empty.  SEED_QUERY then records TARGET_QUERY_ABSENT, EXPLORE still plans
+  # the TARGET member the active-observed closure always keeps, and
+  # RegionPathWorklist refuses it as NO_OBSERVED_PATH_SEED -- four stages and
+  # one JVM wave away from the workload exception that caused it.  Name the
+  # unreached target here instead, beside the log that holds that exception.
+  if [[ "${region_results}" == required ]]; then
+    local unreached_targets
+    unreached_targets=$(jq -r -n --slurpfile plan "${plan}" \
+      --slurpfile ran "${results}" '
+        ($plan | map(select(.goalKind == "TARGET_REACH_CLOSURE") | .taskId)
+          | unique) as $targets
+        | ($ran | map(select(.event == "CONCOLIC_REGION_RESULT") | .taskId)
+          | unique) as $observed
+        | [$targets[] | select(IN($observed[]) | not)] as $missing
+        | if ($targets | length) == 0
+            or ($missing | length) != ($targets | length) then ""
+          else
+            ([$ran[] | select(.taskId | IN($missing[]))
+              | "\(.taskId) \(.skipKind // .event): \(.reason // "")"]
+              | unique) as $skips
+            # A planned task can publish no row at all; name it anyway.
+            | (if ($skips | length) > 0 then $skips
+               else [$missing[] | "\(.): no result row"] end)
+            | join("; ")
+          end') || campaign_fail REPLAY WORKLOAD "${results}" \
+        "the replay result could not be read for target coverage"
+    if [[ -n "${unreached_targets}" ]]; then
+      campaign_fail REPLAY WORKLOAD "${results}" \
+        "the concolic replay reached no TARGET_REACH occurrence (exit ${status}); every target task was skipped: ${unreached_targets}; the workload's terminating exception is in ${worker}/replay.log"
+    fi
+  fi
   campaign_log "replay role=${role} exit=${status} result=${results}"
 }
 
