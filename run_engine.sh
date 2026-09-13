@@ -3194,30 +3194,37 @@ campaign_write_coverage_gaps() {
     # The ledger names its exceptions; everything else is blocking, which is
     # the same default GapLedger.classOf applies in Java.
     ($ledger.diagnostic // []) as $diagnosticCodes |
-    ([$composed.finalStatusRefusals[]?
-         | {stage: "COMPOSE", source: "COMPOSER",
-            code: .code, subject: .subject, detail: .detail}]
-       + [$composed.gaps[]?
-           | {stage: "COMPOSE", source: "COMPOSER",
-              code: (.reason // .kind // ""),
-              subject: (.subject // ""), detail: (.detail // "")}]
+    # The acceptance gate publishes every emitter refusal under one
+    # COMPOSITION_GAP kind and spells the reason it actually named into the
+    # subject, as CODE[subject] or CODE:subject.  Left encoded, fifty
+    # distinct findings read as fifty rows of one code, the ledger could
+    # class none of them, and the same refusal arrived twice -- once
+    # generically here and once precisely from the array that raised it.
+    # So the spelling is decoded, and every COMPOSE row is published under
+    # one source so the two views of one refusal are one row.
+    def composeRow($row):
+      ($row.code // $row.reason // $row.kind // "") as $rawCode
+      | ($row.subject // "") as $rawSubject
+      | (if $rawCode == "COMPOSITION_GAP"
+           then ($rawSubject | capture("^(?<c>[A-Za-z_][A-Za-z0-9_]*)"
+                                      + "(\\[(?<b>.*)\\]|:(?<d>.*))$";
+                                      "s") // null)
+           else null end) as $named
+      | {stage: "COMPOSE", source: "COMPOSER",
+         code: (if $named == null then $rawCode else $named.c end),
+         subject: (if $named == null then $rawSubject
+                   else ($named.b // $named.d) end),
+         detail: ($row.detail // "")};
+    ([$composed.finalStatusRefusals[]? | composeRow(.)]
+       + [$composed.gaps[]? | composeRow(.)]
        + [if ($composed.pathSetComplete // false)
             then empty else
             {stage: "COMPOSE", source: "COVERAGE",
              code: "SELECTED_PATH_SET_INCOMPLETE", subject: "",
              detail: "required only for a closed UNSAT conclusion"} end]
-       + [$composed.boundedLoopComposition.gaps[]?
-           | {stage: "COMPOSE", source: "BOUNDED_LOOP",
-              code: (.reason // .kind // ""),
-              subject: (.subject // ""), detail: (.detail // "")}]
-       + [$composed.symbolicPropagationGaps[]?
-           | {stage: "COMPOSE", source: "SYMBOLIC_PROPAGATION",
-              code: (.reason // .kind // ""),
-              subject: (.subject // ""), detail: (.detail // "")}]
-       + [$composed.faultControlGaps[]?
-           | {stage: "COMPOSE", source: "FAULT_CONTROL",
-              code: (.reason // .kind // ""),
-              subject: (.subject // ""), detail: (.detail // "")}]
+       + [$composed.boundedLoopComposition.gaps[]? | composeRow(.)]
+       + [$composed.symbolicPropagationGaps[]? | composeRow(.)]
+       + [$composed.faultControlGaps[]? | composeRow(.)]
        + [$reach.gaps[]?
            | {stage: "SOLVE", source: "SOLVER", code: ., subject: "",
               detail: ""}]
@@ -3407,6 +3414,17 @@ campaign_emit() {
          (($c.casePathConditionDependencies // []) | length)},
      gapCount: $gapCount,
      telemetryCount: $telemetryCount,
+     # The claim is what ClaimPolicy decided; acceptance is that claim
+     # together with the gap ledger, because the stages the policy cannot
+     # see -- IMPORT, EXPLORE, CLASSIFY and the static plan -- raise their
+     # own blocking gaps and the ledger classes all of them from one
+     # table. This is the
+     # conjunction the exit code below already tests, published so a reader
+     # of result.json alone does not have to infer it from two numbers.
+     accepted: (($decided.claim == "SAT_CANDIDATE"
+                 or $decided.claim == "UNSAT_CLOSED")
+                and $gapCount == 0),
+     blockingGapCodes: ($gaps.byCode // {}),
      # What each satisfying witness named, and whether the policy read it as a
      # finding or as freedom nobody accounted for. A reader asking "why is this
      # sat" gets the mechanism narrative here rather than having to rebuild it
