@@ -195,6 +195,19 @@ public final class ConcolicSmtComposer {
      * and a reader has to default its polarity.</p>
      */
     public static final String RECORDED_SOURCE_VALUE = "recordedValue";
+    /**
+     * On a root whose observations disagree: every value some mint stated.
+     *
+     * <p>Two activations of one configured source that read different values
+     * are a contradiction about the recording, not a missing recording.
+     * Dropping the row back to stating nothing published the contradiction as
+     * an absence, and the claim layer then had nothing to compare a witness
+     * against -- which is where a defaulted polarity came in. Both values are
+     * carried instead, and {@code ClaimPolicy} withholds the claim naming
+     * them.</p>
+     */
+    public static final String RECORDED_VALUE_CONFLICT =
+            "recordedValueConflict";
     /** Per declared value handoff: whether its family reached a term. */
     public static final String WIRE_FLOW_BINDINGS = "wireFlowBindings";
     /**
@@ -3265,7 +3278,14 @@ public final class ConcolicSmtComposer {
                 String term = optionalString(source, "solverTerm");
                 String recorded = optionalString(source,
                         RECORDED_SOURCE_VALUE);
-                if (term.isEmpty() || recorded.isEmpty()
+                String conflict = optionalString(source,
+                        RECORDED_VALUE_CONFLICT);
+                // A row whose observations disagree still belongs in the
+                // ledger: "these two mints read different values" is a
+                // statement the claim layer has to see, and leaving the row
+                // out states nothing at all.
+                if (term.isEmpty()
+                        || (recorded.isEmpty() && conflict.isEmpty())
                         || !seenTerms.add(term)) {
                     continue;
                 }
@@ -3288,6 +3308,9 @@ public final class ConcolicSmtComposer {
                         optionalString(source, "javaTypeDescriptor"));
                 out.addProperty("eventSeq", -1L);
                 out.addProperty("recordedValue", recorded);
+                if (!conflict.isEmpty()) {
+                    out.addProperty(RECORDED_VALUE_CONFLICT, conflict);
+                }
                 out.addProperty("solverTerm", term);
                 // A configuration field is not a clock, whatever it holds.
                 out.addProperty("wallClock", false);
@@ -6693,12 +6716,15 @@ public final class ConcolicSmtComposer {
         }
 
         /**
-         * Records what a configured source's field held, or leaves it
-         * unstated.
+         * Records what a configured source's field held.
          *
          * <p>Two observations of one entry that disagree are not a value to
-         * pick between: the row drops back to stating none, which reads
-         * downstream as "unknown" rather than as a recording.</p>
+         * pick between -- but they are not an absence either. The row used
+         * to drop back to stating none, which read downstream as "nobody
+         * recorded this" and let the claim layer default the polarity of a
+         * root two activations had actually read. Both values are published
+         * instead, under {@link #RECORDED_VALUE_CONFLICT}, and the claim
+         * layer refuses naming them.</p>
          */
         private void mergeRecordedSourceValue(JsonObject row,
                                               String recordedValue) {
@@ -6706,9 +6732,18 @@ public final class ConcolicSmtComposer {
             String held = optionalString(row, RECORDED_SOURCE_VALUE);
             if (held.isEmpty()) {
                 row.addProperty(RECORDED_SOURCE_VALUE, recordedValue);
-            } else if (!held.equals(recordedValue)) {
-                row.remove(RECORDED_SOURCE_VALUE);
+                return;
             }
+            if (held.equals(recordedValue)) return;
+            String conflict = optionalString(row, RECORDED_VALUE_CONFLICT);
+            Set<String> values = new LinkedHashSet<>();
+            if (!conflict.isEmpty()) {
+                values.addAll(Arrays.asList(conflict.split(",")));
+            }
+            values.add(held);
+            values.add(recordedValue);
+            row.addProperty(RECORDED_VALUE_CONFLICT,
+                    String.join(",", values));
         }
 
         /**

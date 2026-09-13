@@ -300,6 +300,198 @@ public class BooleanReachConditionExtractorSolverTest {
                 .getAsJsonArray("aliases").size());
     }
 
+    /**
+     * Every necessity row says which valuation it answered for.
+     *
+     * <p>The marker path used to build its row inline and leave
+     * {@code valuationOrdinal} off, so ClaimPolicy's map keyed by ordinal
+     * was empty on every real run, {@code CLOCK_NOT_NECESSARY} could not
+     * fire and every clock group read as {@code UNKNOWN} -- which was
+     * accepted as the witness's mechanism. Here the target reaches with the
+     * clock pinned back to what it recorded, so the probe's answer is "not
+     * necessary" and the clock is freedom rather than a cause.</p>
+     */
+    @Test
+    public void clockNecessityAnswersAreKeyedByValuation() throws Exception {
+        Assume.assumeTrue(z3Available());
+        JsonObject manifest = clockManifest("false");
+        // The marker decides the target; the clock is free beside it.
+        String smt = "(set-logic ALL)\n"
+                + "(declare-const manual_enabled Bool)\n"
+                + "(declare-const clock_now Int)\n"
+                + "(assert (and manual_enabled (>= clock_now 0)))\n"
+                + "(check-sat)\n";
+
+        JsonObject report = BooleanReachConditionExtractor.extract(smt,
+                manifest, new BooleanReachConditionExtractor.Z3Solver(
+                        "z3", 20_000L, new JsonArray(), 1), 8, 64);
+
+        JsonArray necessity = report.getAsJsonObject(
+                BooleanReachConditionExtractor.MECHANISM_NECESSITY)
+                .getAsJsonArray("mechanisms");
+        assertTrue("the probe ran", necessity.size() > 0);
+        JsonObject clock = null;
+        for (com.google.gson.JsonElement element : necessity) {
+            JsonObject row = element.getAsJsonObject();
+            assertTrue("every row states the valuation it answered for: "
+                            + row, row.has("valuationOrdinal")
+                            && row.get("valuationOrdinal").getAsInt() >= 0);
+            if ("CLOCK_SKEW".equals(row.get("mechanism").getAsString())) {
+                clock = row;
+            }
+        }
+        assertTrue("the witness moved the clock, so it was asked about",
+                clock != null);
+        assertFalse("the target reaches with the clock back on record",
+                clock.get("necessary").getAsBoolean());
+
+        JsonObject claim = report.getAsJsonObject(ClaimPolicy.CLAIM);
+        JsonObject accepted = witnessAt(claim,
+                clock.get("valuationOrdinal").getAsInt());
+        assertEquals(WitnessLegitimacy.CLOCK_NOT_NECESSARY,
+                freedomCode(accepted));
+        assertEquals("the marker is still what this witness is a finding of",
+                WitnessLegitimacy.MARKER_FLIPPED,
+                accepted.get(WitnessLegitimacy.FINDING_KIND).getAsString());
+    }
+
+    /**
+     * A clock the target cannot reach without is the finding it names.
+     *
+     * <p>Nothing is flipped here -- the marker sits at what it recorded --
+     * and the window the recording anchors the clock in is what lets the
+     * comparison go the other way. The probe pins the clock back and the
+     * formula dies, which is the only evidence that the move carried the
+     * witness rather than accompanied it.</p>
+     */
+    @Test
+    public void aNecessaryClockInsideItsWindowIsTheFinding() throws Exception {
+        Assume.assumeTrue(z3Available());
+        // A configured source, not a planted marker: nothing was injected,
+        // so the run is not asked to show a flip and the clock is the whole
+        // of what it claims.
+        JsonObject manifest = clockManifest("true");
+        manifest.add(ConcolicSmtComposer.MANUAL_SOURCE_MATERIALIZATION_FIELD,
+                singleton(manualClock()));
+        manifest.add(ConcolicSmtComposer
+                .CONFIGURED_SOURCE_MATERIALIZATION_FIELD,
+                singleton(configuredBoolean()));
+        String smt = "(set-logic ALL)\n"
+                + "(declare-const sym_enabled Bool)\n"
+                + "(declare-const clock_now Int)\n"
+                + "(assert (and sym_enabled (> clock_now 5000)"
+                + " (< clock_now 6000)))\n"
+                + "(check-sat)\n";
+
+        JsonObject report = BooleanReachConditionExtractor.extract(smt,
+                manifest, new BooleanReachConditionExtractor.Z3Solver(
+                        "z3", 20_000L, new JsonArray(), 1), 8, 64);
+
+        JsonObject claim = report.getAsJsonObject(ClaimPolicy.CLAIM);
+        JsonObject rootSpace = claim.getAsJsonObject("rootSpace");
+        assertEquals(claim.getAsJsonArray("blockers").toString(),
+                ClaimPolicy.SAT_CANDIDATE, claim.get("claim").getAsString());
+        assertEquals(WitnessLegitimacy.CLOCK_SKEW,
+                rootSpace.get("acceptedFindingKind").getAsString());
+    }
+
+    /** One Boolean marker and one wall clock, each with what it recorded. */
+    private static JsonObject clockManifest(String recordedMarker) {
+        JsonObject manifest = candidateManifest();
+        JsonArray manual = new JsonArray();
+        manual.add(manualBoolean());
+        manual.add(manualClock());
+        manifest.add(ConcolicSmtComposer.MANUAL_SOURCE_MATERIALIZATION_FIELD,
+                manual);
+        manifest.add(ConcolicSmtComposer.RECORDED_ROOT_VALUES,
+                recordedRoots(recordedMarker));
+        JsonObject physics = new JsonObject();
+        physics.addProperty("schemaVersion", 1);
+        physics.addProperty("kind", "CLOCK_ROOT_PHYSICS");
+        physics.addProperty("clockSkewMillis", 300000);
+        physics.add("clockReads", new JsonArray());
+        manifest.add(ClockRootPhysics.MANIFEST_FIELD, physics);
+        return manifest;
+    }
+
+    /** The configured Boolean root the necessary-clock fixture reads. */
+    private static JsonObject configuredBoolean() {
+        JsonObject row = new JsonObject();
+        row.addProperty("schemaVersion", 3);
+        row.addProperty("kind",
+                ConcolicSmtComposer.CONFIGURED_SOURCE_MATERIALIZATION_KIND);
+        row.addProperty("authority", ConcolicSmtComposer
+                .CONFIGURED_SOURCE_MATERIALIZATION_AUTHORITY);
+        row.addProperty("sourceKey", "hdfs/nn0#epoch1");
+        row.addProperty("sourceId", "TEST.CONFIG.ENABLED");
+        row.addProperty("sourcePhaseId", "SOURCE_PHASE.fixture");
+        row.addProperty("sourceOccurrenceId",
+                "node/nn0#1/region/REGION.0#1#a1");
+        row.addProperty("fieldSignature", "<Test: boolean enabled>");
+        row.addProperty("javaTypeDescriptor", "Z");
+        row.addProperty("sort", "BOOL");
+        row.addProperty("smtSort", "Bool");
+        row.addProperty("solverTerm", "sym_enabled");
+        row.addProperty(ConcolicSmtComposer.RECORDED_SOURCE_VALUE, "true");
+        return row;
+    }
+
+    private static JsonArray singleton(JsonObject row) {
+        JsonArray rows = new JsonArray();
+        rows.add(row);
+        return rows;
+    }
+
+    private static JsonArray recordedRoots(String recordedMarker) {
+        JsonObject marker = new JsonObject();
+        marker.addProperty("portId", "REGION.0.in.enabled");
+        marker.addProperty("siteId", "<Test: boolean enabled>");
+        marker.addProperty("recordedValue", recordedMarker);
+        marker.addProperty("solverTerm", "manual_enabled");
+        marker.addProperty("wallClock", false);
+        JsonObject clock = new JsonObject();
+        clock.addProperty("portId", "REGION.0.in.now");
+        clock.addProperty("siteId", "<Test: long now>");
+        clock.addProperty("recordedValue", "1000");
+        clock.addProperty("solverTerm", "clock_now");
+        clock.addProperty("wallClock", true);
+        JsonArray rows = new JsonArray();
+        rows.add(marker);
+        rows.add(clock);
+        return rows;
+    }
+
+    private static JsonObject manualClock() {
+        JsonObject row = manualBoolean();
+        row.addProperty("portId", "REGION.0.in.now");
+        row.addProperty("fieldSignature", "<Test: long now>");
+        row.addProperty("javaTypeDescriptor", "J");
+        row.addProperty("sort", "INT");
+        row.addProperty("smtSort", "Int");
+        row.addProperty("solverTerm", "clock_now");
+        row.addProperty("sourceIdentity", "manual-root-now");
+        return row;
+    }
+
+    /** The classified witness row at one valuation ordinal. */
+    private static JsonObject witnessAt(JsonObject claim, int ordinal) {
+        for (com.google.gson.JsonElement element
+                : claim.getAsJsonArray(WitnessLegitimacy.FINDINGS)) {
+            JsonObject row = element.getAsJsonObject();
+            if (row.get("valuationOrdinal").getAsInt() == ordinal) {
+                return row;
+            }
+        }
+        throw new AssertionError("no witness row at ordinal " + ordinal);
+    }
+
+    /** The one freedom code a witness row names, or "". */
+    private static String freedomCode(JsonObject witness) {
+        JsonArray freedoms = witness.getAsJsonArray("freedoms");
+        return freedoms.size() == 0 ? ""
+                : freedoms.get(0).getAsJsonObject().get("code").getAsString();
+    }
+
     private static JsonObject candidateManifest() {
         JsonObject manifest = new JsonObject();
         manifest.addProperty("schemaVersion", 2);

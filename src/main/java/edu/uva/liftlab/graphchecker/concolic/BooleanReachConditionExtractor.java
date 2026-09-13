@@ -2574,64 +2574,88 @@ public final class BooleanReachConditionExtractor {
         if (recorded.isEmpty()) {
             return result;
         }
-        // A run with no declared marker still has a mechanism to answer for.
-        // The clock cases plant no Boolean fault: the whole claim is that a
-        // wall clock decided the target, and an empty necessity ledger used
-        // to read as "nothing to ask" rather than as "the clock was never
-        // shown to matter". The satisfying valuations are then probed on
-        // their own, with no marker literal to hold.
-        if (markers.isEmpty()) {
-            for (int ordinal = 0; ordinal < valuations.size(); ordinal++) {
-                JsonObject valuation = valuationRow(valuations,
-                        ordinal);
-                if (valuation == null || !"sat".equals(optionalString(
-                        valuation, "status"))) {
-                    continue;
-                }
-                for (Map.Entry<String, Set<String>> group
-                        : mechanismRoots(valuation, clocks).entrySet()) {
-                    rows.add(necessityRow(solver, base, recorded, "", "",
-                            true, ordinal, group));
-                }
-            }
-            return result;
-        }
+        // Every row states which valuation it answered for.  It used to
+        // state it on one path only: the marker path built its row inline
+        // and left {@code valuationOrdinal} off, so every consumer keying by
+        // ordinal -- ClaimPolicy's clock-necessity map above all -- saw
+        // nothing, CLOCK_NOT_NECESSARY could not fire, and a witness's clock
+        // moves were accepted as its mechanism with the probe's own "not
+        // necessary" answer sitting unread in the report.
+        Set<Integer> answered = new LinkedHashSet<>();
         for (int index = 0; index < markers.size(); index++) {
             RootInput marker = markers.get(index);
-            boolean polarity = !"false".equals(recorded.get(
-                    marker.solverTerm));
-            JsonObject valuation = valuationAt(valuations, index, polarity);
+            String recordedValue = recorded.get(marker.solverTerm);
+            if (recordedValue == null || recordedValue.isEmpty()) {
+                // Nothing observed what this root recorded, so "the recorded
+                // polarity" names no valuation to probe.  Assuming one is
+                // what ClaimPolicy stopped doing; this asks no question
+                // rather than asking the wrong one.
+                continue;
+            }
+            boolean polarity = !"false".equals(recordedValue);
+            int ordinal = valuationOrdinalAt(valuations, index, polarity);
+            JsonObject valuation = valuationRow(valuations, ordinal);
             if (valuation == null || !"sat".equals(optionalString(valuation,
                     "status"))) {
                 continue;
             }
+            answered.add(ordinal);
             for (Map.Entry<String, Set<String>> group
                     : mechanismRoots(valuation, clocks).entrySet()) {
-                JsonObject row = new JsonObject();
-                row.addProperty("marker", marker.solverTerm);
-                row.addProperty("sourceIdentity", marker.sourceIdentity);
-                row.addProperty("polarity", polarity);
-                row.addProperty("mechanism", group.getKey());
-                row.addProperty("pinnedRoots", group.getValue().size());
-                StringBuilder query = new StringBuilder(base);
-                query.append("(assert ").append(marker.literal(polarity))
-                        .append(")").append(System.lineSeparator());
-                for (String term : group.getValue()) {
-                    query.append("(assert (= ").append(term).append(' ')
-                            .append(smtLiteral(recorded.get(term)))
-                            .append("))").append(System.lineSeparator());
-                }
-                query.append("(check-sat)").append(System.lineSeparator());
-                solver.check(query.toString());
-                String answerStatus = solver.lastStatus();
-                row.addProperty("status", answerStatus);
-                // Necessity rests on a refutation, and an unsat this
-                // driver's own frontier decided is not one.
-                row.addProperty("necessary", "unsat".equals(answerStatus));
-                rows.add(row);
+                rows.add(necessityRow(solver, base, recorded,
+                        marker.solverTerm, marker.literal(polarity),
+                        marker.sourceIdentity, polarity, ordinal, group));
+            }
+        }
+        // Every other satisfying valuation is a witness too, and its own
+        // mechanisms have to answer for themselves.  A run with no declared
+        // marker -- the clock cases, whose whole claim is that a wall clock
+        // decided the target -- is entirely this loop, with that valuation's
+        // Boolean assignment (empty, there) as the literal to hold.
+        for (int ordinal = 0; ordinal < valuations.size(); ordinal++) {
+            if (answered.contains(ordinal)) {
+                continue;
+            }
+            JsonObject valuation = valuationRow(valuations, ordinal);
+            if (valuation == null || !"sat".equals(optionalString(
+                    valuation, "status"))) {
+                continue;
+            }
+            String held = assignmentLiteral(markers, valuation);
+            for (Map.Entry<String, Set<String>> group
+                    : mechanismRoots(valuation, clocks).entrySet()) {
+                rows.add(necessityRow(solver, base, recorded, "", held, "",
+                        true, ordinal, group));
             }
         }
         return result;
+    }
+
+    /**
+     * This valuation's own Boolean assignment, as one literal to assert.
+     *
+     * <p>"Does the target still reach without the clock" is a question about
+     * one witness, so the witness's own roots are what the probe holds while
+     * it asks.  Holding one marker instead answers about whichever sibling
+     * marker that row also moved.</p>
+     */
+    private static String assignmentLiteral(List<RootInput> markers,
+                                            JsonObject valuation) {
+        JsonArray values = array(valuation, "values");
+        List<String> literals = new ArrayList<>();
+        for (int index = 0; index < markers.size()
+                && index < values.size(); index++) {
+            if (!values.get(index).isJsonPrimitive()) {
+                continue;
+            }
+            literals.add(markers.get(index).literal(
+                    values.get(index).getAsBoolean()));
+        }
+        if (literals.isEmpty()) {
+            return "";
+        }
+        return literals.size() == 1 ? literals.get(0)
+                : "(and " + String.join(" ", literals) + ")";
     }
 
     /**
@@ -2643,12 +2667,13 @@ public final class BooleanReachConditionExtractor {
      */
     private static JsonObject necessityRow(
             Z3Solver solver, String base, Map<String, String> recorded,
-            String markerTerm, String markerLiteral, boolean polarity,
-            int ordinal, Map.Entry<String, Set<String>> group)
+            String markerTerm, String markerLiteral, String sourceIdentity,
+            boolean polarity, int ordinal,
+            Map.Entry<String, Set<String>> group)
             throws IOException, InterruptedException {
         JsonObject row = new JsonObject();
         row.addProperty("marker", markerTerm);
-        row.addProperty("sourceIdentity", "");
+        row.addProperty("sourceIdentity", sourceIdentity);
         row.addProperty("polarity", polarity);
         row.addProperty("valuationOrdinal", ordinal);
         row.addProperty("mechanism", group.getKey());
@@ -2710,20 +2735,27 @@ public final class BooleanReachConditionExtractor {
         return element.isJsonObject() ? element.getAsJsonObject() : null;
     }
 
-    /** The valuation that gives this Boolean root that polarity. */
-    private static JsonObject valuationAt(JsonArray valuations, int index,
+    /**
+     * Where the valuation giving this Boolean root that polarity sits.
+     *
+     * <p>The ordinal, not the row: every necessity answer is published
+     * against the valuation it was asked of, and a row found by scanning had
+     * no position to state.</p>
+     */
+    private static int valuationOrdinalAt(JsonArray valuations, int index,
                                           boolean polarity) {
-        for (JsonElement element : valuations) {
+        for (int ordinal = 0; ordinal < valuations.size(); ordinal++) {
+            JsonElement element = valuations.get(ordinal);
             if (!element.isJsonObject()) {
                 continue;
             }
             JsonArray values = array(element.getAsJsonObject(), "values");
             if (index < values.size() && values.get(index).isJsonPrimitive()
                     && values.get(index).getAsBoolean() == polarity) {
-                return element.getAsJsonObject();
+                return ordinal;
             }
         }
-        return null;
+        return -1;
     }
 
     /** A ledger value spells -5 as "-5"; a query needs "(- 5)". */
