@@ -5157,6 +5157,8 @@ public final class ConcolicRegionRuntime {
          * answer, and the row says which containers it is honest about.
          */
         final List<JsonObject> initialSnapshotSkips = new ArrayList<>();
+        /** Whole-state carriers whose initial content this run did state. */
+        final List<JsonObject> initialSnapshotStates = new ArrayList<>();
 
         /** Read-out batch every record of this activation is stamped with. */
         private long evidenceSnapshot;

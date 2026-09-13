@@ -501,6 +501,13 @@ final class ConcolicResultPublisher {
             result.add("initialSnapshotSkips",
                     stamped(active.initialSnapshotSkips, identity));
         }
+        // The other half: which containers this run did state, and with how
+        // many members.  Without it an absent snapshot and a snapshot that
+        // was never offered read alike.
+        if (!active.initialSnapshotStates.isEmpty()) {
+            result.add("initialSnapshotStates",
+                    stamped(active.initialSnapshotStates, identity));
+        }
     }
 
     static void addResultIdentity(
