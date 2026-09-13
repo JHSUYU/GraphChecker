@@ -186,6 +186,8 @@ public final class PathMergeComposer {
             }
             JsonElement phi = resolve(resolver, anchor.fatalPredicate(),
                     unresolvedReasons);
+            String literalCut = literalOverCarriers(anchor);
+            if (!literalCut.isEmpty()) unresolvedReasons.add(literalCut);
             row.addProperty("pathConditionTerms", resolved.size());
             if (!unresolvedReasons.isEmpty()) {
                 row.addProperty("admitted", false);
@@ -341,6 +343,47 @@ public final class PathMergeComposer {
         JsonElement resolved = resolver.resolve(expression);
         collectUnresolved(resolved, reasons);
         return resolved;
+    }
+
+    /**
+     * The other shape of the cut: the value arrived already concrete.
+     *
+     * <p>If the predicate this replay published names no read, no boundary
+     * and no symbol at all, then nothing it compares came through
+     * propagation -- while the slice declares carriers this activation
+     * tracked.  That is a value owed as an expression and delivered as a
+     * literal, which is the cut whether or not the literal is right.</p>
+     */
+    private static String literalOverCarriers(TargetAnchorEvidence anchor) {
+        if (anchor.carriers().isEmpty()) return "";
+        return propagated(anchor.fatalPredicate()) ? ""
+                : "LiteralFatalPredicateOverCarriers:"
+                + anchor.carriers().size() + " declared carriers";
+    }
+
+    /** Whether an expression names anything propagation carried. */
+    private static boolean propagated(JsonElement expression) {
+        if (expression == null || expression.isJsonNull()) return false;
+        if (expression.isJsonArray()) {
+            for (JsonElement element : expression.getAsJsonArray()) {
+                if (propagated(element)) return true;
+            }
+            return false;
+        }
+        if (!expression.isJsonObject()) return false;
+        JsonObject node = expression.getAsJsonObject();
+        String type = optionalString(node, "_type");
+        if (SharedStateEvidence.GUARDED_READ_TYPE.equals(type)
+                || "SymbolExpression".equals(type)
+                || VmExpressionIr.CONSUMER_BOUNDARY_TYPE.equals(type)
+                || VmExpressionIr.CONSUMER_BOUNDARY_REFERENCE_TYPE
+                .equals(type)) {
+            return true;
+        }
+        for (Map.Entry<String, JsonElement> field : node.entrySet()) {
+            if (propagated(field.getValue())) return true;
+        }
+        return false;
     }
 
     private static void collectUnresolved(JsonElement resolved,
