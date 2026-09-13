@@ -107,6 +107,118 @@ abstract class VmLoweringCore implements VmTermLowering.Policy {
     /** Records that the query uses {@code java_int_to_string}. */
     abstract void noteJavaIntToString();
 
+    /** One recorded symbol. */
+    abstract Term symbolTerm(JsonObject expression, Sort expected,
+                             String origin);
+
+    /** One recorded environment placeholder. */
+    abstract Term placeholderTerm(JsonObject expression, String origin);
+
+    /** One recorded guarded read of shared state. */
+    abstract Term guardedReadTerm(JsonObject expression, Sort expected,
+                                  String origin);
+
+    /** One recorded merge of a value over its producer's cases. */
+    abstract Term caseMergeTerm(JsonObject expression, Sort expected,
+                                String origin);
+
+    /** One recorded container relation, or one field projection of one. */
+    abstract Term containerTerm(JsonObject expression, boolean field,
+                                String origin);
+
+    /** The Java String.split prefix round trip, which the two prove with
+     *  different amounts of evidence. */
+    abstract Term splitElementTerm(JsonObject expression, String origin);
+
+    /** The sort a refused MethodExpression still has to carry. */
+    abstract Sort methodResultSort(JsonObject expression, String origin);
+
+    // ------------------------------------------------------------------
+    // Dispatch.
+    // ------------------------------------------------------------------
+
+    /** Lowers one recorded VM expression of any kind. */
+    final Term dispatch(JsonElement expression, Sort expected,
+                        String origin) {
+        if (expression == null || expression.isJsonNull()
+                || !expression.isJsonObject()) {
+            return refuse(Reason.ABSENT_EXPRESSION, origin, "",
+                    expected == null ? Sort.REF : expected);
+        }
+        JsonObject object = expression.getAsJsonObject();
+        String type = optionalString(object, "_type");
+        if ("SymbolExpression".equals(type)) {
+            return symbolTerm(object, expected, origin);
+        }
+        if (ContainerSmtCodec.constantKind(type)) {
+            return constant(object, expected, origin);
+        }
+        if ("BinaryExpression".equals(type)) {
+            return binary(object, origin);
+        }
+        if ("OpStrExpression".equals(type)) {
+            return stringOperation(object, origin);
+        }
+        if ("NotExpression".equals(type)) {
+            Term operand = lower(object.get("_operand"), Sort.BOOL,
+                    origin + ":not");
+            if (operand == null || operand.sort != Sort.BOOL) {
+                return refuse(Reason.MALFORMED_NOT, origin, "", Sort.BOOL);
+            }
+            return result("(not " + operand.text + ")", Sort.BOOL, operand);
+        }
+        if ("PlaceholderExpression".equals(type)) {
+            return placeholderTerm(object, origin);
+        }
+        if ("TypeCastExpression".equals(type)) {
+            return VmTermLowering.typeCast(this, object, origin);
+        }
+        if (SharedStateEvidence.GUARDED_READ_TYPE.equals(type)) {
+            return guardedReadTerm(object, expected, origin);
+        }
+        if (SymbolicPropagationClosure.ITE_TYPE.equals(type)) {
+            return caseMergeTerm(object, expected, origin);
+        }
+        if (VmExpressionIr.CONSUMER_BOUNDARY_TYPE.equals(type)
+                || VmExpressionIr.CONSUMER_BOUNDARY_REFERENCE_TYPE
+                .equals(type)) {
+            // Online path flipping and non-final SMT uses see an anchor as
+            // the exact value already propagated by the VM.  Final
+            // composition normally replaces it with a case merge first.
+            return lower(object.get(VmExpressionIr.EXPRESSION), expected,
+                    origin + ":consumer-boundary");
+        }
+        if ("MethodExpression".equals(type)) {
+            return methodTerm(object, origin);
+        }
+        if (ContainerSmtCodec.handles(object)) {
+            return containerTerm(object, false, origin);
+        }
+        if (ContainerSmtCodec.handlesField(object)) {
+            return containerTerm(object, true, origin);
+        }
+        return refuse(Reason.UNKNOWN_EXPRESSION_TYPE, origin,
+                type.isEmpty() ? "MISSING_TYPE" : type,
+                expected == null ? Sort.VALUE : expected);
+    }
+
+    /**
+     * The two Java library methods whose exact value relation this lowering
+     * proves; every other call is a named gap.
+     */
+    final Term methodTerm(JsonObject expression, String origin) {
+        String method = optionalString(expression, "_name");
+        if (VmExpressionIr.isJavaParseInt(method)) {
+            return VmTermLowering.parseIntTerm(this, expression, origin);
+        }
+        if (VmExpressionIr.isJavaSplitElement(method)) {
+            return splitElementTerm(expression, origin);
+        }
+        return refuse(Reason.MODEL_SEMANTICS_MISSING, origin,
+                "MethodExpression:" + firstNonBlank(method, "unknown"),
+                methodResultSort(expression, origin));
+    }
+
     // ------------------------------------------------------------------
     // Binary operators.
     // ------------------------------------------------------------------

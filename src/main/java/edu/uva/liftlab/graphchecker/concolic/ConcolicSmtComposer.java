@@ -81,7 +81,6 @@ import static edu.uva.liftlab.graphchecker.concolic.VmExpressionIr.shiftOperator
  */
 public final class ConcolicSmtComposer {
     /** Expression node the VM serializes one guarded read-from arm as. */
-    static final String CASE_MERGE_TYPE = "CaseMergeExpression";
     /** Prefix of the one value term of one guarded read. */
     static final String READ_VALUE_PREFIX = "rf_value__";
     private static final Pattern SMT_ATOM = Pattern.compile("[^()\\s]+");
@@ -3315,82 +3314,65 @@ public final class ConcolicSmtComposer {
          * Lowers one recorded expression.
          */
         private Term term(JsonElement expression, Sort expected) {
-            return shareLargeTerm(lowerTerm(expression, expected));
+            return shareLargeTerm(dispatch(expression, expected, ""));
         }
 
-        /** Dispatch before the content-addressed SMT DAG boundary. */
-        private Term lowerTerm(JsonElement expression, Sort expected) {
-            if (expression == null || expression.isJsonNull()
-                    || !expression.isJsonObject()) {
-                unsupported.add("ABSENT_EXPRESSION");
-                return unsupportedTerm(expected == null
-                        ? Sort.REF : expected);
+        @Override
+        Term symbolTerm(JsonObject expression, Sort expected,
+                        String origin) {
+            return symbol(expression, expected);
+        }
+
+        /**
+         * The custom VM restarts placeholder ordinals for every replay
+         * task, so #1 identifies an event only inside one replay scope.
+         */
+        @Override
+        Term placeholderTerm(JsonObject expression, String origin) {
+            String function = optionalString(expression,
+                    "_place_holder_func");
+            int count = optionalInteger(expression, "_count", -1);
+            if (!"currentTimeMills".equals(function) || count < 1) {
+                unsupported.add("PlaceholderExpression:"
+                        + firstNonBlank(function, "unknown") + "#" + count);
+                return unsupportedTerm(Sort.INT);
             }
-            JsonObject object = expression.getAsJsonObject();
-            String type = optionalString(object, "_type");
-            if ("SymbolExpression".equals(type)) {
-                return symbol(object, expected);
-            }
-            if (ContainerSmtCodec.constantKind(type)) {
-                return constant(object, expected, "");
-            }
-            if ("BinaryExpression".equals(type)) {
-                return binary(object, "");
-            }
-            if ("OpStrExpression".equals(type)) {
-                return stringOperation(object, "");
-            }
-            if ("PlaceholderExpression".equals(type)) {
-                String function = optionalString(object, "_place_holder_func");
-                int count = optionalInteger(object, "_count", -1);
-                if (!"currentTimeMills".equals(function) || count < 1) {
-                    unsupported.add("PlaceholderExpression:"
-                            + firstNonBlank(function, "unknown") + "#"
-                            + count);
-                    return unsupportedTerm(Sort.INT);
-                }
-                // The custom VM restarts placeholder ordinals for every
-                // replay task.  Therefore #1 identifies an event only inside
-                String identity = function + "#" + count;
-                String scopedIdentity = currentSymbolScope + "\u0000"
-                        + identity;
-                String name = smtSymbols.mint(
-                        scopedName("environment", identity) + "__",
-                        scopedIdentity, 10);
-                declare(name, Sort.INT);
-                assertJavaIntegralDomain(name, Sort.INT, "J", identity);
-                return Term.of(name, Sort.INT,
-                        IntegralWidth.JAVA_LONG);
-            }
-            if ("TypeCastExpression".equals(type)) {
-                return VmTermLowering.typeCast(this, object, "");
-            }
-            if (SharedStateEvidence.GUARDED_READ_TYPE.equals(type)) {
-                return guardedReadTerm(object, expected);
-            }
-            if (CASE_MERGE_TYPE.equals(type)) {
-                return caseMergeTerm(object, expected);
-            }
-            if (VmExpressionIr.CONSUMER_BOUNDARY_TYPE.equals(type)
-                    || VmExpressionIr.CONSUMER_BOUNDARY_REFERENCE_TYPE
-                    .equals(type)) {
-                // Online path flipping and non-final SMT uses see an anchor
-                // as the exact value already propagated by the VM. Final
-                // composition normally replaces it with a case merge first.
-                return term(object.get(VmExpressionIr.EXPRESSION), expected);
-            }
-            if ("MethodExpression".equals(type)) {
-                return methodTerm(object);
-            }
-            if (ContainerSmtCodec.handles(object)) {
-                return containerTerm(object);
-            }
-            if (ContainerSmtCodec.handlesField(object)) {
-                return containerFieldTerm(object);
-            }
-            unsupported.add(type.isEmpty() ? "MISSING_TYPE" : type);
-            Sort sort = expected == null ? Sort.VALUE : expected;
-            return unsupportedTerm(sort);
+            String identity = function + "#" + count;
+            String name = smtSymbols.mint(
+                    scopedName("environment", identity) + "__",
+                    currentSymbolScope + "\u0000" + identity, 10);
+            declare(name, Sort.INT);
+            assertJavaIntegralDomain(name, Sort.INT, "J", identity);
+            return Term.of(name, Sort.INT, IntegralWidth.JAVA_LONG);
+        }
+
+        @Override
+        Term guardedReadTerm(JsonObject expression, Sort expected,
+                             String origin) {
+            return lowerGuardedReadTerm(expression, expected);
+        }
+
+        @Override
+        Term caseMergeTerm(JsonObject expression, Sort expected,
+                           String origin) {
+            return lowerCaseMergeTerm(expression, expected);
+        }
+
+        @Override
+        Term containerTerm(JsonObject expression, boolean field,
+                           String origin) {
+            return lowerContainerTerm(expression, field);
+        }
+
+        @Override
+        Term splitElementTerm(JsonObject expression, String origin) {
+            return lowerSplitElementTerm(expression);
+        }
+
+        /** A refused call still carries the sort of the value it returned. */
+        @Override
+        Sort methodResultSort(JsonObject expression, String origin) {
+            return term(expression.get("_res_exp"), null).sort;
         }
 
         /**
@@ -3434,7 +3416,7 @@ public final class ConcolicSmtComposer {
             return name;
         }
 
-        private Term guardedReadTerm(JsonObject node, Sort expected) {
+        private Term lowerGuardedReadTerm(JsonObject node, Sort expected) {
             JsonObject selectedViewState = ContainerSmtCodec
                     .selectedReadViewState(node);
             if (selectedViewState != null) {
@@ -4145,7 +4127,7 @@ public final class ConcolicSmtComposer {
         }
 
         /** Lowers one shared, n-ary guarded output without case products. */
-        private Term caseMergeTerm(JsonObject node, Sort expected) {
+        private Term lowerCaseMergeTerm(JsonObject node, Sort expected) {
             String mergeId = optionalString(node, "mergeId");
             JsonArray encoded = array(node, "arms");
             if (mergeId.isEmpty() || encoded.size() == 0) {
@@ -4297,14 +4279,6 @@ public final class ConcolicSmtComposer {
                 currentContainerRequirements = parentRequirements;
                 restoreGuard(previousGuard);
             }
-        }
-
-        private Term containerTerm(JsonObject expression) {
-            return lowerContainerTerm(expression, false);
-        }
-
-        private Term containerFieldTerm(JsonObject expression) {
-            return lowerContainerTerm(expression, true);
         }
 
         private Term lowerContainerTerm(JsonObject expression,
@@ -4993,7 +4967,7 @@ public final class ConcolicSmtComposer {
          * Recognizes the sound Java round trip
          */
 
-        private Term splitElementTerm(JsonObject expression) {
+        private Term lowerSplitElementTerm(JsonObject expression) {
             SplitSegment match = exactSplitSegment(expression);
             if (!match.complete()) {
                 return splitElementGap(match.gap);
@@ -5211,7 +5185,7 @@ public final class ConcolicSmtComposer {
             String name = optionalString(expression, "_name");
             if (isJavaParseInt(name) || isJavaSplitElement(name)) {
                 boolean split = isJavaSplitElement(name);
-                Term value = methodTerm(expression);
+                Term value = methodTerm(expression, "");
                 Term result = term(expression.get("_res_exp"),
                         split ? Sort.STRING : Sort.INT);
                 if (!split) {
@@ -5228,21 +5202,6 @@ public final class ConcolicSmtComposer {
             unsupported.add("MODEL_SEMANTICS_MISSING:MethodExpression:"
                     + firstNonBlank(name, "unknown"));
             return "false";
-        }
-
-        private Term methodTerm(JsonObject expression) {
-            String method = optionalString(expression, "_name");
-            if (isJavaParseInt(method)) {
-                return VmTermLowering.parseIntTerm(this, expression,
-                        "");
-            }
-            if (isJavaSplitElement(method)) {
-                return splitElementTerm(expression);
-            }
-            Term result = term(expression.get("_res_exp"), null);
-            unsupported.add("MODEL_SEMANTICS_MISSING:MethodExpression:"
-                    + firstNonBlank(method, "unknown"));
-            return unsupportedTerm(result.sort);
         }
 
         /** Lower every observed local path; boundary values are already merged. */

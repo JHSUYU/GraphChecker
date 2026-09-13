@@ -171,7 +171,13 @@ final class VmTermLowering {
         JAVA_STRING_NULLNESS_UNKNOWN("JavaStringNullnessUnknown", false),
 
         /** A term no container cell can carry. */
-        CANNOT_BOX("CannotBox", false);
+        CANNOT_BOX("CannotBox", false),
+
+        // Expression dispatch.
+        ABSENT_EXPRESSION("ABSENT_EXPRESSION", false),
+        MALFORMED_NOT("MalformedNot", false),
+        /** The composer names the type alone; the solver names it too. */
+        UNKNOWN_EXPRESSION_TYPE("", false);
 
         private final String composed;
         private final boolean composedNamesOrigin;

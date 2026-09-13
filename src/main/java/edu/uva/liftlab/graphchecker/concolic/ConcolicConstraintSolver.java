@@ -520,64 +520,29 @@ public final class ConcolicConstraintSolver {
 
         private Term term(JsonElement expression, Sort expected,
                           String origin) {
-            if (expression == null || expression.isJsonNull()
-                    || !expression.isJsonObject()) {
-                unsupported.add(origin + ":MISSING_OR_NON_OBJECT_EXPRESSION");
-                return null;
-            }
-            JsonObject object = expression.getAsJsonObject();
-            String type = optionalString(object, "_type");
-            if ("SymbolExpression".equals(type)) {
-                return symbol(object, origin);
-            }
-            if (ContainerSmtCodec.constantKind(type)) {
-                return constant(object, expected, origin);
-            }
-            if ("PlaceholderExpression".equals(type)) {
-                return placeholder(object, origin);
-            }
-            if ("BinaryExpression".equals(type)) {
-                return binary(object, origin);
-            }
-            if ("OpStrExpression".equals(type)) {
-                return stringOperation(object, origin);
-            }
-            if ("NotExpression".equals(type)) {
-                Term operand = term(object.get("_operand"), Sort.BOOL,
-                        origin + ":not");
-                if (operand == null || operand.sort != Sort.BOOL) {
-                    unsupported.add(origin + ":MALFORMED_NOT");
-                    return null;
-                }
-                return Term.vm("(not " + operand.text + ")", Sort.BOOL);
-            }
-            if ("TypeCastExpression".equals(type)) {
-                return VmTermLowering.typeCast(this, object,
-                        origin);
-            }
-            if ("MethodExpression".equals(type)) {
-                return methodTerm(object, origin);
-            }
-            if (SharedStateEvidence.GUARDED_READ_TYPE.equals(type)) {
-                return guardedReadTerm(object, expected, origin);
-            }
-            if (SymbolicPropagationClosure.ITE_TYPE.equals(type)) {
-                return consumerCaseMergeTerm(object, expected, origin);
-            }
-            if (VmExpressionIr.CONSUMER_BOUNDARY_TYPE.equals(type)
-                    || VmExpressionIr.CONSUMER_BOUNDARY_REFERENCE_TYPE
-                    .equals(type)) {
-                return term(object.get(VmExpressionIr.EXPRESSION), expected,
-                        origin + ":consumer-boundary");
-            }
-            if (ContainerSmtCodec.handles(object)) {
-                return containerTerm(object, origin);
-            }
-            if (ContainerSmtCodec.handlesField(object)) {
-                return containerFieldTerm(object, origin);
-            }
-            unsupported.add(origin + ":TYPE:" + firstNonBlank(type,
-                    "MISSING"));
+            return dispatch(expression, expected, origin);
+        }
+
+        @Override
+        Term symbolTerm(JsonObject expression, Sort expected,
+                        String origin) {
+            return symbol(expression, origin);
+        }
+
+        @Override
+        Term placeholderTerm(JsonObject expression, String origin) {
+            return placeholder(expression, origin);
+        }
+
+        @Override
+        Term caseMergeTerm(JsonObject expression, Sort expected,
+                           String origin) {
+            return consumerCaseMergeTerm(expression, expected, origin);
+        }
+
+        /** A refused call yields no term, so no sort is needed for it. */
+        @Override
+        Sort methodResultSort(JsonObject expression, String origin) {
             return null;
         }
 
@@ -1068,8 +1033,9 @@ public final class ConcolicConstraintSolver {
         }
 
         /** Lowers the VM's read-time candidate snapshot directly. */
-        private Term guardedReadTerm(JsonObject read, Sort expected,
-                                     String origin) {
+        @Override
+        Term guardedReadTerm(JsonObject read, Sort expected,
+                             String origin) {
             boolean targetMapRead = captureTargetContainerReads
                     && guardedReadDepth == 0
                     && SharedStateEvidence.LOCATION_KIND_MAP_STATE.equals(
@@ -1410,10 +1376,15 @@ public final class ConcolicConstraintSolver {
                     + predicate + ")");
         }
 
-        private Term containerTerm(JsonObject expression, String origin) {
-            ContainerSmtCodec.Term result = ContainerSmtCodec.term(
-                    expression, containerHost(origin));
-            Term value = fromContainerTerm(result, origin);
+        @Override
+        Term containerTerm(JsonObject expression, boolean field,
+                           String origin) {
+            if (field) {
+                return fromContainerTerm(ContainerSmtCodec.field(
+                        expression, containerHost(origin)), origin);
+            }
+            Term value = fromContainerTerm(ContainerSmtCodec.term(
+                    expression, containerHost(origin)), origin);
             if (captureTargetContainerReads && guardedReadDepth == 0
                     && value != null) {
                 InitialContainerObservation.Read read =
@@ -1430,12 +1401,6 @@ public final class ConcolicConstraintSolver {
                 }
             }
             return value;
-        }
-
-        private Term containerFieldTerm(
-                JsonObject expression, String origin) {
-            return fromContainerTerm(ContainerSmtCodec.field(
-                    expression, containerHost(origin)), origin);
         }
 
         private ContainerSmtCodec.Host containerHost(final String origin) {
@@ -1875,26 +1840,11 @@ public final class ConcolicConstraintSolver {
             return "(= " + result.text + " " + call.text + ")";
         }
 
-        private Term methodTerm(JsonObject expression, String origin) {
-            String method = firstNonBlank(optionalString(expression, "_name"),
-                    "unknown_method");
-            // splitElement and parseInt carry the same structural round-trip
-            // semantics the composition encoder proves; this mirrors
-            if (isJavaParseInt(method)) {
-                return VmTermLowering.parseIntTerm(this, expression,
-                        origin);
-            }
-            if (isJavaSplitElement(method)) {
-                return splitElementTerm(expression, origin);
-            }
-            unsupported.add(origin + ":METHOD_SEMANTICS_MISSING:" + method);
-            return null;
-        }
-
         /** Mirror of {@link ConcolicSmtComposer}'s {@code parseIntTerm}. */
 
         /** Mirror of {@link ConcolicSmtComposer}'s {@code splitElementTerm}. */
-        private Term splitElementTerm(JsonObject expression, String origin) {
+        @Override
+        Term splitElementTerm(JsonObject expression, String origin) {
             SplitPrefix match = exactSplitPrefix(expression);
             if (!match.complete()) {
                 return splitElementGap(match.gap);
