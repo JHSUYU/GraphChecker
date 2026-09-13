@@ -150,6 +150,29 @@ public final class ConcolicSmtComposer {
     public static final String CONSUMER_BOUNDARY_FAMILY_UNREFERENCED =
             "CONSUMER_BOUNDARY_FAMILY_UNREFERENCED";
     /**
+     * A read of the field a declared wire flow says its consumer assigns the
+     * value to, at the consuming node, that no arm ties to the wire.
+     *
+     * <p>{@link #WIRE_FLOW_VALUE_UNBOUND} asks the question once per port and
+     * one bound family answers it, because one flow is many handoffs and the
+     * causal slice only has to carry one of them.  That is the right question
+     * for the flow and the wrong one for the value: a receiver whose own
+     * handoff went unreferenced still has the field, and the composition
+     * serves it from whatever else the recording left at that location --
+     * here, the constant the deserialiser had already written into the
+     * message object before the region was entered.  The formula then reads
+     * as "the wire carried this" while the term is one execution's literal,
+     * free of the producer's expression and of every root behind it.</p>
+     *
+     * <p>Asked per read, on the consuming node only: the same field on the
+     * producer is where the value comes from, not where it arrives.</p>
+     */
+    public static final String WIRE_FLOW_CONSUMER_FIELD_UNATTACHED =
+            "WIRE_FLOW_CONSUMER_FIELD_UNATTACHED";
+    /** One row per (read, declared flow) the wire never reached. */
+    public static final String UNATTACHED_CONSUMER_READS_FIELD =
+            "unattachedConsumerReads";
+    /**
      * One merged consumer boundary whose case dispatch is not total: the
      * arms it carries are not covered by any partition this formula asserts
      * unconditionally, so a model may satisfy none of them and the merged
@@ -214,19 +237,26 @@ public final class ConcolicSmtComposer {
     public static final String FAULT_IDLE_INITIAL_HOST_IDLED =
             "FAULT_IDLE_INITIAL_HOST_IDLED";
     /**
-     * The recorded values of one program location disagree between replay
-     * executions that were merged into one formula.
+     * The replay executions merged into this formula recorded different
+     * values for one location.
      *
-     * <p>Every {@code REPLAY.GROUP} is one independent run of the workload.
-     * The closure keys a location's arms by replay-independent identities
-     * (reader case, writer case, INITIAL owner) and the composer merges the
-     * arms of all groups into one family or read.  That is sound only when
-     * the executions agree on what they recorded there: a workload that
-     * draws a fresh random per run gives the same location a different
-     * constant in every group, and a formula over the union of those
-     * constants describes no single execution.  The gate compares the
-     * literal values one group-independent identity received from each
-     * group and refuses when they differ.</p>
+     * <p>Every {@code REPLAY.GROUP} is one independent run of the workload,
+     * and a location's value in one run says nothing about its value in
+     * another.  The closure keys a location's arms by replay-independent
+     * identities (reader case, writer case, INITIAL owner) and the composer
+     * offers every group's literal at that identity, each behind its own
+     * observation selector, with nothing tying the group chosen here to the
+     * group chosen anywhere else.  A witness may therefore take one
+     * location's value from one run and the next location's from another,
+     * which is not a state any execution was ever in.</p>
+     *
+     * <p>The gate compares the literal each group recorded at one
+     * group-independent identity and refuses when they differ.  Agreement is
+     * what makes the merge harmless, so a workload pinned to one value per
+     * location passes; a value that is genuinely per-execution -- a wall
+     * clock, a fresh random -- has to enter as a symbolic root instead, and a
+     * root the experiment declared but the composition never minted shows up
+     * here as its constants.</p>
      */
     public static final String EXECUTION_DIVERGENCE = "EXECUTION_DIVERGENCE";
     /** One row per identity whose recorded values diverge across groups. */
@@ -328,6 +358,8 @@ public final class ConcolicSmtComposer {
         Emitter emitter = new Emitter(new InvocationKey(
                 optionalString(fatal, "regionId"),
                 optionalString(resolutionContext, "occurrenceId")));
+        emitter.registerInitialSnapshotHosts(
+                propagation.initialSnapshotHosts());
         emitter.registerConfiguredSourcePlan(runtimePlan.regionPlans());
         emitter.begin(fatal);
         // A configured source may reach a selected downstream relation
@@ -426,6 +458,8 @@ public final class ConcolicSmtComposer {
         manifest.add(ClockRootPhysics.MANIFEST_FIELD, clockPhysics);
         manifest.add(WIRE_FLOW_BINDINGS, wireFlowBindings);
         manifest.add(EXECUTION_DIVERGENCE_FIELD, emitter.executionDivergence);
+        manifest.add(UNATTACHED_CONSUMER_READS_FIELD,
+                emitter.unattachedConsumerReads);
         manifest.add(UNLINKED_WRITER_CASES_FIELD,
                 emitter.unlinkedWriterCases);
         manifest.add(BOUNDARY_DISPATCH_TOTALITY,
@@ -1327,6 +1361,35 @@ public final class ConcolicSmtComposer {
     }
 
     /** Region occurrence identity used only for case-local SMT scoping. */
+    /** One lowered writer arm of a read, as the consumer-field gate sees it. */
+    private static final class ConsumerArm {
+        private final String selector;
+        private final String term;
+        private final String sourceKey;
+        private final String occurrence;
+
+        private ConsumerArm(String selector, String term, String sourceKey,
+                            String occurrence) {
+            this.selector = selector;
+            this.term = term;
+            this.sourceKey = sourceKey;
+            this.occurrence = occurrence;
+        }
+    }
+
+    /**
+     * The node an occurrence address names, or "".
+     *
+     * <p>An occurrence is spelled {@code <sourceKey>/region/...}; the node is
+     * everything before that, which is how the wire flow's receiver and a
+     * read's writer are compared for "same side of the wire".</p>
+     */
+    static String occurrenceSourceKey(String occurrenceId) {
+        if (occurrenceId == null) return "";
+        int index = occurrenceId.indexOf("/region/");
+        return index < 0 ? "" : occurrenceId.substring(0, index);
+    }
+
     /** What each replay group recorded for one group-independent identity. */
     private static final class ExecutionRecording {
         private final String subject;
@@ -1977,8 +2040,11 @@ public final class ConcolicSmtComposer {
                 new LinkedHashMap<>();
         /** One row per identity whose groups disagree; see finish(). */
         private final JsonArray executionDivergence = new JsonArray();
-        /** INITIAL arm selector -> activation whose entry took its snapshot. */
-        private final Map<String, InvocationKey> guardedReadInitialHosts =
+        /** INITIAL arm selector -> activations whose entry took its snapshot. */
+        private final Map<String, Set<InvocationKey>> guardedReadInitialHosts =
+                new LinkedHashMap<>();
+        /** INITIAL source case owner -> the activations, from the closure. */
+        private final Map<String, Set<InvocationKey>> initialSnapshotHosts =
                 new LinkedHashMap<>();
         /** Read identity -> content-addressed location it reads. */
         private final Map<String, String> guardedReadLocations =
@@ -1994,6 +2060,14 @@ public final class ConcolicSmtComposer {
                 new LinkedHashMap<>();
         /** One row per (read, writer case with no arm); see finish(). */
         private final JsonArray unlinkedWriterCases = new JsonArray();
+        /** Read identity -> the declared field that read observes. */
+        private final Map<String, String> guardedReadFields =
+                new LinkedHashMap<>();
+        /** Read identity -> its non-INITIAL arms, as lowered. */
+        private final Map<String, List<ConsumerArm>> guardedReadWriterArms =
+                new LinkedHashMap<>();
+        /** One row per read a declared flow never reached; see finish(). */
+        private final JsonArray unattachedConsumerReads = new JsonArray();
         /** One allocated container cannot have two unrelated state shapes. */
         private final Map<String, Sort> structuralStateSorts =
                 new LinkedHashMap<>();
@@ -2477,7 +2551,9 @@ public final class ConcolicSmtComposer {
                 refuse(EXECUTION_DIVERGENCE + "[" + recording.subject + "]",
                         "the replay executions merged into this formula"
                                 + " recorded different values for one"
-                                + " location, so the merged arms describe no"
+                                + " location and nothing ties the group a"
+                                + " witness picks here to the one it picks"
+                                + " elsewhere, so the merged arms describe no"
                                 + " single execution: " + String.join("; ",
                                 narrated));
             }
@@ -2789,7 +2865,96 @@ public final class ConcolicSmtComposer {
                                 + " field its consumer assigns, so the value"
                                 + " the wire carried constrains nothing");
             }
+            checkUnattachedConsumerReads(rows, consumerFields);
             return rows;
+        }
+
+        /**
+         * Refuses every read of a declared flow's consumer field, on the
+         * consuming node, that no arm ties to that flow's wire.
+         *
+         * <p>The ledger says which handoffs were lowered; this asks the
+         * complementary question the ledger cannot: of the reads that carry
+         * the flow's value onward, which ones got it from the wire.  A read
+         * passes as soon as one writer arm is, or contains, the lowered term
+         * of an {@code RPC_ATTACH} family of a port that declares this field
+         * -- one handoff is enough, since the arms partition the executions
+         * and the cases.  A read all of whose arms avoid every such term is
+         * serving the field from something the wire did not carry.</p>
+         *
+         * <p>Only reads written on a node that receives the flow are asked.
+         * The producer assigns the same field from its own state, which is
+         * where the value is made, and refusing that would refuse the flow's
+         * own source.</p>
+         */
+        private void checkUnattachedConsumerReads(
+                JsonArray ledger, Map<String, String> consumerFields) {
+            Map<String, Set<String>> termsByField = new LinkedHashMap<>();
+            Map<String, Set<String>> receiverNodesByField =
+                    new LinkedHashMap<>();
+            Map<String, Set<String>> portsByField = new LinkedHashMap<>();
+            for (JsonElement element : ledger) {
+                if (!element.isJsonObject()) continue;
+                JsonObject row = element.getAsJsonObject();
+                String field = optionalString(row,
+                        ClaimPolicy.CONSUMER_FIELD);
+                if (field.isEmpty()) continue;
+                portsByField.computeIfAbsent(field,
+                        ignored -> new LinkedHashSet<>()).add(
+                        optionalString(row, "portId"));
+                String node = occurrenceSourceKey(optionalString(row,
+                        "receiverOccurrenceId"));
+                if (!node.isEmpty()) {
+                    receiverNodesByField.computeIfAbsent(field,
+                            ignored -> new LinkedHashSet<>()).add(node);
+                }
+                String term = optionalString(row, "solverTerm");
+                if (!term.isEmpty()) {
+                    termsByField.computeIfAbsent(field,
+                            ignored -> new LinkedHashSet<>()).add(term);
+                }
+            }
+            if (receiverNodesByField.isEmpty()) return;
+            for (Map.Entry<String, List<ConsumerArm>> read
+                    : guardedReadWriterArms.entrySet()) {
+                String field = guardedReadFields.getOrDefault(read.getKey(),
+                        "");
+                Set<String> nodes = receiverNodesByField.get(field);
+                if (nodes == null || read.getValue().isEmpty()) continue;
+                Set<String> terms = termsByField.getOrDefault(field,
+                        Collections.emptySet());
+                boolean consuming = false;
+                boolean attached = false;
+                Set<String> writers = new LinkedHashSet<>();
+                for (ConsumerArm arm : read.getValue()) {
+                    if (!nodes.contains(arm.sourceKey)) continue;
+                    consuming = true;
+                    writers.add(arm.occurrence);
+                    for (String term : terms) {
+                        if (arm.term.contains(term)) attached = true;
+                    }
+                }
+                if (!consuming || attached) continue;
+                JsonObject row = new JsonObject();
+                row.addProperty("schemaVersion", 1);
+                row.addProperty("kind", WIRE_FLOW_CONSUMER_FIELD_UNATTACHED);
+                row.addProperty("readIdentity", read.getKey());
+                row.addProperty(ClaimPolicy.CONSUMER_FIELD, field);
+                row.add("writerOccurrences", GSON.toJsonTree(writers));
+                row.add("declaredPorts", GSON.toJsonTree(
+                        portsByField.getOrDefault(field,
+                                Collections.emptySet())));
+                row.add("boundFlowTerms", GSON.toJsonTree(terms));
+                unattachedConsumerReads.add(row);
+                refuse(WIRE_FLOW_CONSUMER_FIELD_UNATTACHED + "[" + field
+                                + "@" + read.getKey() + "]",
+                        "this read observes the field a declared wire flow"
+                                + " assigns its value to, on the node that"
+                                + " receives the flow, and no writer arm of"
+                                + " it is that flow's boundary: the value it"
+                                + " serves was written at " + writers
+                                + " from something the wire did not carry");
+            }
         }
 
         /**
@@ -3050,11 +3215,23 @@ public final class ConcolicSmtComposer {
          */
         private Map<String, Set<String>> initialArmHostCases() {
             Map<String, Set<String>> hosts = new LinkedHashMap<>();
-            for (Map.Entry<String, InvocationKey> entry
+            for (Map.Entry<String, Set<InvocationKey>> entry
                     : guardedReadInitialHosts.entrySet()) {
-                Set<String> cases = casePartitions.get(entry.getValue());
-                if (cases == null || cases.isEmpty()) continue;
-                hosts.put(entry.getKey(), new LinkedHashSet<>(cases));
+                Set<String> cases = new LinkedHashSet<>();
+                boolean complete = true;
+                for (InvocationKey host : entry.getValue()) {
+                    Set<String> partition = casePartitions.get(host);
+                    // An activation this composition never lowered has no
+                    // cases to idle, so nothing can say it did not run: the
+                    // arm keeps whatever standing it had.
+                    if (partition == null || partition.isEmpty()) {
+                        complete = false;
+                        break;
+                    }
+                    cases.addAll(partition);
+                }
+                if (!complete || cases.isEmpty()) continue;
+                hosts.put(entry.getKey(), cases);
             }
             return hosts;
         }
@@ -3086,8 +3263,12 @@ public final class ConcolicSmtComposer {
                 if (hostIdled == null || hostIdled.isEmpty()) continue;
                 List<String> hosts = new ArrayList<>();
                 for (String arm : hostIdled) {
-                    InvocationKey host = guardedReadInitialHosts.get(arm);
-                    hosts.add(host == null ? arm : host.instanceId);
+                    Set<InvocationKey> host = guardedReadInitialHosts.get(arm);
+                    if (host == null || host.isEmpty()) {
+                        hosts.add(arm);
+                        continue;
+                    }
+                    for (InvocationKey key : host) hosts.add(key.instanceId);
                 }
                 String detail = "the marker idles every case of the"
                         + " activation whose entry took this read's INITIAL"
@@ -3209,6 +3390,31 @@ public final class ConcolicSmtComposer {
 
         JsonArray faultControlGaps() {
             return faultControlTelemetry.deepCopy();
+        }
+
+        /**
+         * Takes the closure's INITIAL snapshot hosts: which activation's
+         * region entry published each INITIAL source case.
+         */
+        private void registerInitialSnapshotHosts(JsonArray hosts) {
+            for (JsonElement element : hosts) {
+                if (!element.isJsonObject()) continue;
+                JsonObject row = element.getAsJsonObject();
+                String owner = optionalString(row,
+                        SymbolicPropagationClosure.INITIAL_HOST_OWNER);
+                String region = optionalString(row,
+                        SymbolicPropagationClosure.INITIAL_HOST_REGION_ID);
+                String occurrence = optionalString(row,
+                        SymbolicPropagationClosure
+                                .INITIAL_HOST_OCCURRENCE_ID);
+                if (owner.isEmpty() || region.isEmpty()
+                        || occurrence.isEmpty()) {
+                    continue;
+                }
+                initialSnapshotHosts.computeIfAbsent(owner,
+                        ignored -> new LinkedHashSet<>()).add(
+                        new InvocationKey(region, occurrence));
+            }
         }
 
         private void registerSymbolicSources(List<JsonObject> owners) {
@@ -4053,6 +4259,7 @@ public final class ConcolicSmtComposer {
                     || readProvenance.declaredField.isEmpty()
                     ? canonicalLocation : readProvenance.declaredField;
             guardedReadLocations.putIfAbsent(readIdentity, canonicalLocation);
+            guardedReadFields.putIfAbsent(readIdentity, readField);
             for (DirectReadArm arm : arms) {
                 selectors.add(arm.selector);
                 useSelectors.add(arm.selector);
@@ -4097,16 +4304,12 @@ public final class ConcolicSmtComposer {
                     armExecutionScope(candidate, owner), arm.selector,
                     arm.term);
             if (initial) {
-                String hostRegion = optionalString(candidate,
-                        SymbolicPropagationClosure.INITIAL_HOST_REGION_ID);
-                String hostOccurrence = optionalString(candidate,
-                        SymbolicPropagationClosure
-                                .INITIAL_HOST_OCCURRENCE_ID);
-                if (!hostRegion.isEmpty() && !hostOccurrence.isEmpty()
+                Set<InvocationKey> hosts = initialSnapshotHosts.get(owner);
+                if (hosts != null && !hosts.isEmpty()
                         && "INSTANCE_FIELD".equals(SharedStateEvidence
                         .locationKindOf(canonicalLocation))) {
                     guardedReadInitialHosts.putIfAbsent(arm.selector,
-                            new InvocationKey(hostRegion, hostOccurrence));
+                            new LinkedHashSet<>(hosts));
                 }
                 return;
             }
@@ -4125,6 +4328,10 @@ public final class ConcolicSmtComposer {
                     new InvocationKey(region, occurrence));
             guardedReadWriterSelectors.computeIfAbsent(readIdentity,
                     ignored -> new LinkedHashSet<>()).add(selector);
+            guardedReadWriterArms.computeIfAbsent(readIdentity,
+                    ignored -> new ArrayList<>()).add(new ConsumerArm(
+                    arm.selector, arm.term == null ? "" : arm.term.text,
+                    occurrenceSourceKey(occurrence), occurrence));
         }
 
         /**
