@@ -121,16 +121,23 @@ public final class SymbolicMessageEnvelope {
     /**
      * Replaces the receiver thread's current message with this exact wire.
      *
-     * <p>A message displaced rather than closed is dropped without a
-     * finding: a transport that reinstalls mid-exchange -- a handshake that
-     * carries the same values across several legs, say -- has not finished
-     * with them, and calling that a lost leaf would be an accusation the
-     * envelope cannot support.  {@link #clearInbound()} is where a message
-     * ends, and that is where its unclaimed elements are named.</p>
+     * <p>A different message displacing this one ends it as surely as a
+     * close does, and on the client half of an exchange it is the only
+     * ending there is: the caller installs the response it is about to
+     * decode and nothing closes it until the next call.  So a displaced
+     * message reports what nothing looked up, exactly as a closed one does
+     * -- unless the same wire is being reinstalled, which is a transport
+     * carrying one message across several legs rather than a new message,
+     * and which has not finished with its values.</p>
      */
     public static void installInbound(String wire) {
+        Inbound displaced = INBOUND.get();
         INBOUND.remove();
-        INBOUND.set(new Inbound(decode(wire)));
+        Inbound message = new Inbound(decode(wire), wire);
+        if (displaced != null && !displaced.wire.equals(message.wire)) {
+            displaced.reportUnattached();
+        }
+        INBOUND.set(message);
     }
 
     /**
@@ -193,11 +200,13 @@ public final class SymbolicMessageEnvelope {
     private static final class Inbound {
         private final List<Entry> entries;
         private final boolean[] lookedUp;
+        private final String wire;
         private final Map<String, Integer> next = new LinkedHashMap<>();
 
-        Inbound(List<Entry> entries) {
+        Inbound(List<Entry> entries, String wire) {
             this.entries = entries;
             this.lookedUp = new boolean[entries.size()];
+            this.wire = wire;
         }
 
         int nextOrdinal(String portId) {
@@ -238,9 +247,11 @@ public final class SymbolicMessageEnvelope {
             return left;
         }
 
+        /** Names every element nothing looked up; reports each once. */
         void reportUnattached() {
             for (int index = 0; index < entries.size(); index++) {
                 if (lookedUp[index]) continue;
+                lookedUp[index] = true;
                 Entry entry = entries.get(index);
                 ConcolicRegionRuntime.reportUnattachedMessageLeaf(
                         entry.portId, entry.ordinal,
