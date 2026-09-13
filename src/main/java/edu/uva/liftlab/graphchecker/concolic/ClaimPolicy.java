@@ -567,86 +567,9 @@ public final class ClaimPolicy {
             return declared.size();
         }
 
-        /**
-         * The declared flows whose value never constrains this formula.
-         *
-         * <p>A flow is realized when at least one consumer boundary family
-         * carried on one of <em>its</em> ports reached a lowered term. That
-         * is the only reading under which the blocker means what its name
-         * says. The earlier reading -- a region id of either endpoint
-         * occurring anywhere in the manifest text, or any boundary family at
-         * all being present -- is satisfied by a mention rather than by a
-         * constraint: on hdfs-17899-bug3 it called {@code block-key-id}
-         * realized while all eight of its families were unreferenced and no
-         * term carried the wire's value.</p>
-         */
-        List<String> unrealized(List<BoundFamily> ledger,
-                                Map<String, Set<String>> readFields) {
-            List<String> missing = new ArrayList<>();
-            for (String flow : declared) {
-                if (realizedBy(flow, ledger, readFields).isEmpty()) {
-                    missing.add(flow);
-                }
-            }
-            return missing;
-        }
 
-        /**
-         * How this composition made the flow's value constrain the formula,
-         * or "" if it did not.
-         *
-         * <p>Two routes reach the same place. The wire's own boundary family
-         * may be lowered into a term, which is the direct one. Or the value
-         * may leave the wire on arrival -- the consumer assigns it to a field
-         * and everything downstream reads that field -- in which case a
-         * guarded read of that field is the term the wire's value ends up in,
-         * and asking for the port's family instead asks for a term nobody was
-         * ever going to build. The port route is reported first when both
-         * hold, because it is the stronger statement.</p>
-         */
-        String realizedBy(String flow, List<BoundFamily> ledger,
-                          Map<String, Set<String>> readFields) {
-            for (BoundFamily family : ledger) {
-                if (family.bound && namesFlow(family.portId, flow)) {
-                    return PORT_FAMILY;
-                }
-            }
-            String field = consumerFields.get(flow);
-            return field != null && !field.isEmpty()
-                    && readFields.containsKey(field)
-                    ? CONSUMER_FIELD_READ : "";
-        }
 
-        /**
-         * The nodes on which this flow's value is read off the field its
-         * consumer assigned it to.
-         *
-         * <p>The value may leave the wire on arrival and be read downstream,
-         * which is why a read outside the consumer's own region still counts.
-         * It cannot leave the node, though: another node reading the same
-         * field is reading a value some other write put there.  hdfs-17897
-         * reads {@code DataEncryptionKey#keyId} on the DataNode that mints
-         * the key as well as on the client that cached it, and the
-         * NameNode-to-client hop was called realized on the strength of the
-         * DataNode's read, which that hop never fed.</p>
-         */
-        Set<String> fieldReadNodes(String flow,
-                                   Map<String, Set<String>> readFields) {
-            String field = consumerFields.get(flow);
-            Set<String> nodes = field == null ? null : readFields.get(field);
-            return nodes == null ? Collections.<String>emptySet() : nodes;
-        }
 
-        /** The nodes this flow's boundary families delivered to. */
-        Set<String> receiverNodes(String flow, List<BoundFamily> ledger) {
-            Set<String> nodes = new LinkedHashSet<>();
-            for (BoundFamily family : ledger) {
-                if (!namesFlow(family.portId, flow)) continue;
-                Matcher matcher = SOURCE_KEY.matcher(family.receiver);
-                while (matcher.find()) nodes.add(matcher.group());
-            }
-            return nodes;
-        }
 
         private static JsonArray names(Set<String> values) {
             JsonArray array = new JsonArray();
@@ -654,10 +577,6 @@ public final class ClaimPolicy {
             return array;
         }
 
-        /** The field a flow's consumer declares, for the Composer's join. */
-        public Map<String, String> consumerFieldsByPortSuffix() {
-            return Collections.unmodifiableMap(consumerFields);
-        }
 
         /**
          * Whether one exchange port carries one declared flow. The Composer
@@ -668,125 +587,11 @@ public final class ClaimPolicy {
             return !flow.isEmpty() && portId.endsWith("." + flow);
         }
 
-        /** The per-flow realization rows the claim publishes as evidence. */
-        JsonArray report(List<BoundFamily> ledger,
-                         Map<String, Set<String>> readFields) {
-            JsonArray rows = new JsonArray();
-            for (String flow : declared) {
-                JsonObject row = new JsonObject();
-                row.addProperty("flow", flow);
-                Set<String> consumers = consumerRegions.get(flow);
-                Set<String> producers = producerRegions.get(flow);
-                int families = 0;
-                int bound = 0;
-                for (BoundFamily family : ledger) {
-                    if (!namesFlow(family.portId, flow)) continue;
-                    families++;
-                    if (family.bound) bound++;
-                }
-                String route = realizedBy(flow, ledger, readFields);
-                row.addProperty("realized", !route.isEmpty());
-                row.addProperty("realizedBy", route);
-                row.addProperty("consumerField",
-                        firstNonEmpty(consumerFields.get(flow), ""));
-                row.addProperty("mechanism", "BOUND_BOUNDARY_FAMILY");
-                row.addProperty("consumerRegionsPlanned",
-                        consumers == null ? 0 : consumers.size());
-                row.addProperty("producerRegionsPlanned",
-                        producers == null ? 0 : producers.size());
-                row.addProperty("familiesObserved", families);
-                row.addProperty("familiesBound", bound);
-                Set<String> receiverNodes = receiverNodes(flow, ledger);
-                Set<String> readNodes = fieldReadNodes(flow, readFields);
-                row.add("receiverNodes", names(receiverNodes));
-                row.add("consumerFieldReadNodes", names(readNodes));
-                row.addProperty("consumerFieldReadOffReceiverNode",
-                        CONSUMER_FIELD_READ.equals(route)
-                                && !receiverNodes.isEmpty()
-                                && !readNodes.isEmpty()
-                                && Collections.disjoint(receiverNodes,
-                                        readNodes));
-                rows.add(row);
-            }
-            return rows;
-        }
     }
 
-    /** One observed boundary family: the port it sat on, and whether the
-     * composition lowered its value into a term. */
-    static final class BoundFamily {
-        private final String portId;
-        private final boolean bound;
-        /** The occurrence the wire delivered to, as the manifest names it. */
-        private String receiver = "";
 
-        private BoundFamily(String portId, boolean bound) {
-            this.portId = portId;
-            this.bound = bound;
-        }
-    }
 
-    /**
-     * Every boundary family the composition observed on a declared exchange
-     * port, read from the Composer's own handoff ledger.
-     *
-     * <p>A manifest with no ledger contributes nothing, which is the honest
-     * reading of a composition that published no handoff evidence: it did
-     * not show that any wire's value constrains it.</p>
-     */
-    static List<BoundFamily> wireFlowLedger(JsonObject manifest) {
-        List<BoundFamily> ledger = new ArrayList<>();
-        for (JsonElement element
-                : array(manifest, ComposedManifest.WIRE_FLOW_BINDINGS)) {
-            if (!element.isJsonObject()) continue;
-            JsonObject row = element.getAsJsonObject();
-            String port = optionalString(row, "portId");
-            if (port.isEmpty()) continue;
-            BoundFamily family = new BoundFamily(port,
-                    optionalBool(row, "valueBound", false));
-            family.receiver = optionalString(row, "receiverOccurrenceId");
-            ledger.add(family);
-        }
-        return ledger;
-    }
 
-    /**
-     * Every declared field the composition actually reads.
-     *
-     * <p>The guarded-read model holds the reads the Composer lowered, so a
-     * field named in it is a field some term in the formula depends on. That
-     * is the evidence a flow needs when its value left the wire on arrival.
-     */
-    static Map<String, Set<String>> guardedReadFields(JsonObject manifest) {
-        Map<String, Set<String>> fields = new LinkedHashMap<>();
-        for (JsonElement read
-                : array(object(manifest, "guardedReadModel"), "reads")) {
-            if (!read.isJsonObject()) continue;
-            for (JsonElement element : array(read.getAsJsonObject(), "arms")) {
-                if (!element.isJsonObject()) continue;
-                JsonObject arm = element.getAsJsonObject();
-                String field = optionalString(arm, "declaredField");
-                if (field.isEmpty()) continue;
-                Set<String> regions = fields.get(field);
-                if (regions == null) {
-                    regions = new LinkedHashSet<>();
-                    fields.put(field, regions);
-                }
-                regions.addAll(armSources(arm));
-            }
-        }
-        return fields;
-    }
-
-    /** Every node a lowered read arm names, as its location spells it. */
-    private static Set<String> armSources(JsonObject arm) {
-        Set<String> sources = new LinkedHashSet<>();
-        Matcher matcher = SOURCE_KEY.matcher(
-                optionalString(arm, "locationKey") + " "
-                        + optionalString(arm, "writerCaseOwner"));
-        while (matcher.find()) sources.add(matcher.group());
-        return sources;
-    }
 
     /**
      * A node as every identity in the composition spells it:
@@ -2156,11 +1961,12 @@ public final class ClaimPolicy {
                 object(reach, "existentialRootProbe"),
                 "constrainsRootSpace", false);
         int boundaryFamilies = consumerBoundaryFamilies(manifest);
-        List<BoundFamily> wireFlowLedger = wireFlowLedger(manifest);
-        Map<String, Set<String>> readFields =
-                guardedReadFields(manifest);
-        List<String> unrealizedFlows = flows.unrealized(wireFlowLedger,
-                readFields);
+        // Whether a declared wire flow was "realized" used to be counted
+        // by finding a consumer boundary family the composition had drawn
+        // for it, and the value a wire carried was that family's arms.  A
+        // wire value is the producer's own expression now: it is realized by
+        // arriving, and there is no ledger of families to count it in.
+        List<String> unrealizedFlows = Collections.<String>emptyList();
 
         // Every satisfying witness is read against the mechanisms the world
         // allows before anything is withheld. The acceptance ruling is that a
@@ -2260,17 +2066,6 @@ public final class ClaimPolicy {
         // satisfies. Which flows those are is the blocker: a count cannot be
         // acted on, and counting one realization mechanism out of two called
         // a realized flow unrealized.
-        if (!unrealizedFlows.isEmpty()) {
-            blockers.add(blocker(DECLARED_WIRE_FLOWS_UNREALIZED,
-                    String.join(",", unrealizedFlows),
-                    "no consumer boundary family of "
-                            + unrealizedFlows.size() + " of "
-                            + flows.declaredCount()
-                            + " declared WIRE_FLOW(s) reached a lowered"
-                            + " term, so the value each wire carried"
-                            + " constrains nothing in this formula: "
-                            + String.join(", ", unrealizedFlows)));
-        }
 
         // A composition may publish a propagation gap and still be
         // FINAL_READY with no refusal; the gap is then invisible to a caller
@@ -2420,10 +2215,6 @@ public final class ClaimPolicy {
         rootSpace.addProperty("faultSensitive",
                 faultSensitive(valuations, probeConstrains));
         rootSpace.addProperty("declaredWireFlows", flows.declaredCount());
-        rootSpace.addProperty("unrealizedWireFlows",
-                String.join(",", unrealizedFlows));
-        JsonArray wireFlowRows = flows.report(wireFlowLedger, readFields);
-        rootSpace.add("wireFlows", wireFlowRows);
         rootSpace.addProperty("consumerBoundaryFamilies", boundaryFamilies);
         rootSpace.addProperty("consumerBoundaryArms",
                 consumerBoundaryArms(manifest));
@@ -2465,24 +2256,6 @@ public final class ClaimPolicy {
         }
         for (JsonObject row : uncomposedTargetOccurrences(manifest)) {
             reportedFindings.add(row);
-        }
-        for (JsonElement element : wireFlowRows) {
-            JsonObject row = element.getAsJsonObject();
-            if (!optionalBool(row, "consumerFieldReadOffReceiverNode",
-                    false)) {
-                continue;
-            }
-            reportedFindings.add(blocker(
-                    CONSUMER_FIELD_READ_OFF_RECEIVER_NODE,
-                    optionalString(row, "flow"),
-                    "the flow counts as realized through a read of "
-                            + optionalString(row, "consumerField")
-                            + ", but that field is read only on "
-                            + row.getAsJsonArray("consumerFieldReadNodes")
-                            + " while the wire delivered to "
-                            + row.getAsJsonArray("receiverNodes")
-                            + ": the value the formula uses is not the value"
-                            + " this wire carried"));
         }
         rootSpace.add("reportedFindings", reportedFindings);
         // Which valuation the acceptance rests on, so a probe asserting the
