@@ -550,6 +550,18 @@ public final class GapLedger {
         // downstream read.
         // ------------------------------------------------------------------
         String plan = "PLAN/STATIC";
+        diagnostic(plan, "BOUNDED_LOOP_FIXED_COUNT_BOUND_UNDECLARED",
+                "an array-indexed loop's trip count is its array length, and"
+                        + " BoundedLoopComposition checks every replayed case"
+                        + " of it against a dense exact cardinality vector"
+                        + " covering the body count -- raising the blocking"
+                        + " PATH_LOCAL_ARRAY_CARDINALITY_MISSING where the"
+                        + " replay published none, and the blocking"
+                        + " BOUNDED_LOOP_OBSERVED_UNDECLARED where no bounded"
+                        + " loop was admitted for it at all -- so this static"
+                        + " row names which loops rest on that check and the"
+                        + " case where the count is missing is withheld by"
+                        + " name");
         blocking(plan, "BOUND_INSUFFICIENT",
                 "one static site demanded more activation-local accesses"
                         + " than the finalizer retains, so the port below it"
