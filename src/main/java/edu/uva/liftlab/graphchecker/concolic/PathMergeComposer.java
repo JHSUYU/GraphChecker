@@ -81,6 +81,20 @@ public final class PathMergeComposer {
     /** A root in the formula states no recorded value. */
     public static final String RECORDED_ROOT_VALUE_UNSTATED =
             "RECORDED_ROOT_VALUE_UNSTATED";
+    /**
+     * A root the recording minted that no admitted path's condition or fatal
+     * predicate mentions.
+     *
+     * <p>The formula is then a statement about the program with the program's
+     * own free variable missing from it: whatever the solver answers, it
+     * answers about constants, and the claim cannot rest on a root it never
+     * constrained.  This is the {@code roots: 0} shape, which used to travel
+     * all the way to the {@code FINDING_MECHANISM_UNNAMED} blocker after
+     * SOLVE -- a statement about the finding rather than about the
+     * composition that could not carry one.</p>
+     */
+    public static final String ROOT_NOT_ON_ANY_PATH =
+            "ROOT_NOT_ON_ANY_PATH";
 
     private static final Gson GSON = new GsonBuilder()
             .disableHtmlEscaping().setPrettyPrinting().create();
@@ -182,14 +196,18 @@ public final class PathMergeComposer {
                 pathRows.add(row);
                 continue;
             }
+            List<JsonObject> replayGroup = replayRows(replays, path, fatal);
             InSessionReadResolver resolver = InSessionReadResolver.of(
-                    replayRows(replays, path, fatal));
+                    replayGroup);
             List<JsonElement> resolved = new ArrayList<>();
             List<String> unresolvedReasons = new ArrayList<>();
             for (JsonElement constraint : anchor.pathCondition()) {
                 resolved.add(resolve(resolver, constraint,
                         unresolvedReasons));
             }
+            resolved.addAll(replayRootDecisions(replayGroup, anchor,
+                    resolver, roots.byRawSymbol.keySet(),
+                    unresolvedReasons));
             JsonElement phi = resolve(resolver, anchor.fatalPredicate(),
                     unresolvedReasons);
             String literalCut = literalOverCarriers(anchor);
@@ -277,6 +295,24 @@ public final class PathMergeComposer {
             }
         }
 
+        // Every root the recording minted, against the roots the merge
+        // actually lowered.  A minted root outside every pi_p and phi_p is
+        // not a smaller formula, it is a different question.
+        Set<String> loweredRoots = new LinkedHashSet<>(
+                lowering.rootTerms().values());
+        for (Map.Entry<String, JsonObject> declared
+                : roots.byRawSymbol.entrySet()) {
+            if (loweredRoots.contains(declared.getKey())
+                    || !roots.minted(declared.getKey())) {
+                continue;
+            }
+            gate(gates, ROOT_NOT_ON_ANY_PATH, "root "
+                    + roots.name(declared.getKey())
+                    + " was minted at " + roots.sourceKeyOf(declared.getKey())
+                    + " and is in no path condition and no fatal predicate"
+                    + " of any path admitted at " + site + "#" + occurrence);
+        }
+
         BoundedLoopComposition loops = boundedLoops(regionPlans, fatal);
         JsonObject manifest = manifest(arguments, fatal, site, occurrence,
                 required, pathRows, rootRows, reachLedger, gates,
@@ -353,6 +389,82 @@ public final class PathMergeComposer {
         rows.add(versionRow(path));
         rows.add(fatal);
         return rows;
+    }
+
+    /**
+     * The rest of this replay's root-dependent decisions.
+     *
+     * <p>A path condition is the replay's, not a region's.  The anchor's own
+     * activation publishes the decisions it took, and the composer used to
+     * stop there -- so on HDFS-17960 the one decision the whole claim rests
+     * on, {@code isSnapshotDeletionOrdered()} inside {@code deleteSnapshot},
+     * never entered any pi_p: it is published by a different activation, in
+     * a different region, of the same replay.  The formula then constrained
+     * no root, and the run said so only after SOLVE.</p>
+     *
+     * <p>So every activation of this replay group is read, and every
+     * decision whose resolved guard mentions a root the recording minted is
+     * conjoined.  Conjunction is order-free, which is why this needs no
+     * ordering to be correct about what it includes.  What it cannot do
+     * today is exclude a decision taken <em>after</em> the anchor: no
+     * published member gives one order over the decisions of two
+     * activations.  Including one is the safe direction -- a conjunct can
+     * only make a disjunct harder to satisfy, never invent a path -- and the
+     * exact cut needs a per-replay monotone event id on each decision.</p>
+     *
+     * <p>A decision that mentions a root and does not resolve is the cut:
+     * the replay took it over a value this session cannot state.</p>
+     */
+    private static List<JsonElement> replayRootDecisions(
+            List<JsonObject> replayGroup, TargetAnchorEvidence anchor,
+            InSessionReadResolver resolver, Set<String> rootSymbols,
+            List<String> unresolvedReasons) {
+        List<JsonElement> decisions = new ArrayList<>();
+        if (rootSymbols.isEmpty()) return decisions;
+        Set<String> held = new LinkedHashSet<>();
+        for (JsonElement element : anchor.pathCondition()) {
+            held.add(CanonicalJson.render(element));
+        }
+        for (JsonObject summary : replayGroup) {
+            String occurrence = optionalString(summary, "occurrenceId");
+            for (JsonElement constraint : array(summary, "pathCondition")) {
+                if (!held.add(CanonicalJson.render(constraint))) continue;
+                List<String> reasons = new ArrayList<>();
+                JsonElement decision = resolve(resolver, constraint, reasons);
+                if (!reasons.isEmpty()) {
+                    if (mentionsRoot(constraint, rootSymbols)) {
+                        unresolvedReasons.add(occurrence
+                                + " took a root-dependent decision over a"
+                                + " value this replay did not state: "
+                                + reasons.get(0));
+                    }
+                    continue;
+                }
+                if (mentionsRoot(decision, rootSymbols)) {
+                    decisions.add(decision);
+                }
+            }
+        }
+        return decisions;
+    }
+
+    /** Whether one expression names a root the recording minted. */
+    private static boolean mentionsRoot(JsonElement expression,
+                                        Set<String> rootSymbols) {
+        if (expression == null || expression.isJsonNull()) return false;
+        if (expression.isJsonArray()) {
+            for (JsonElement child : expression.getAsJsonArray()) {
+                if (mentionsRoot(child, rootSymbols)) return true;
+            }
+            return false;
+        }
+        if (!expression.isJsonObject()) return false;
+        JsonObject node = expression.getAsJsonObject();
+        if (rootSymbols.contains(optionalString(node, "_exp"))) return true;
+        for (Map.Entry<String, JsonElement> member : node.entrySet()) {
+            if (mentionsRoot(member.getValue(), rootSymbols)) return true;
+        }
+        return false;
     }
 
     private static JsonObject versionRow(JsonObject owner) {
@@ -475,6 +587,26 @@ public final class PathMergeComposer {
                 }
             }
             return inventory;
+        }
+
+        /** Whether the recording states a value this root was minted at. */
+        boolean minted(String rawSymbol) {
+            return !firstNonBlank(recorded.get(rawSymbol)).isEmpty()
+                    || disagreed.contains(rawSymbol);
+        }
+
+        /** The node and epoch whose recording minted this root. */
+        String sourceKeyOf(String rawSymbol) {
+            return firstNonBlank(sourceKeys.get(rawSymbol));
+        }
+
+        /** What a reader calls this root: its port, field, or raw symbol. */
+        String name(String rawSymbol) {
+            JsonObject declared = byRawSymbol.get(rawSymbol);
+            if (declared == null) return rawSymbol;
+            return firstNonBlank(optionalString(declared, "portId"),
+                    firstNonBlank(optionalString(declared, "fieldSignature"),
+                            rawSymbol));
         }
 
         /** One manifest row for one root, as the claim policy reads it. */

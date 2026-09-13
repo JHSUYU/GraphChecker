@@ -135,12 +135,121 @@ public class PathMergeComposerTest {
                 ComposedManifest.FINAL_STATUS).getAsString());
     }
 
+    /**
+     * The recording minted a root and the merged formula does not mention it.
+     *
+     * <p>Then the solver is answering about constants.  The composition is
+     * refused here rather than letting a SAT over no root travel to SOLVE and
+     * come back as a statement about the finding.</p>
+     */
+    @Test
+    public void aMintedRootOnNoPathRefusesTheComposition() throws Exception {
+        Path directory = Files.createTempDirectory("path-merge-no-root");
+        JsonObject query = query();
+        query.getAsJsonArray("paths").add(path("seed", "GROUP.SEED",
+                notEqual(constant(1), constant(0)),
+                notEqual(constant(1), constant(0))));
+        PathMergeComposer.Result result = compose(directory, query);
+
+        JsonObject merge = result.manifest.getAsJsonObject(
+                PathMergeComposer.MANIFEST_FIELD);
+        JsonArray gates = merge.getAsJsonArray("gates");
+        assertEquals(1, gates.size());
+        assertEquals(PathMergeComposer.ROOT_NOT_ON_ANY_PATH,
+                gates.get(0).getAsJsonObject().get("kind").getAsString());
+        assertTrue(gates.get(0).getAsJsonObject().get("detail").getAsString()
+                .contains(FIELD_SIGNATURE));
+        assertEquals(0, merge.getAsJsonArray("roots").size());
+        assertEquals("FINAL_REFUSED", result.manifest.get(
+                ComposedManifest.FINAL_STATUS).getAsString());
+    }
+
+    /** A root the path condition mentions is on a path, and nothing refuses. */
+    @Test
+    public void aRootOnOnePathConditionIsNotRefused() throws Exception {
+        Path directory = Files.createTempDirectory("path-merge-root-on");
+        JsonObject query = query();
+        query.getAsJsonArray("paths").add(path("seed", "GROUP.SEED",
+                rootIs(true), notEqual(constant(1), constant(0))));
+        PathMergeComposer.Result result = compose(directory, query);
+
+        JsonObject merge = result.manifest.getAsJsonObject(
+                PathMergeComposer.MANIFEST_FIELD);
+        assertEquals(0, merge.getAsJsonArray("gates").size());
+        assertEquals(1, merge.getAsJsonArray("roots").size());
+    }
+
     // ------------------------------------------------------------------
     // Fixtures.
     // ------------------------------------------------------------------
 
+    /**
+     * The decision is in one region and the anchor in another, one replay.
+     *
+     * <p>A path condition is the replay's, not a region's.  HDFS-17960's one
+     * root-dependent decision is taken inside {@code deleteSnapshot} and its
+     * anchor is inside {@code serializeSnapshotSection}: two regions, two
+     * activations, one replay.  Reading only the anchor region's conditions
+     * left the root out of every pi_p and the formula constrained nothing.
+     */
+    @Test
+    public void aDecisionInAnotherRegionOfTheReplayIsInThisPathCondition()
+            throws Exception {
+        Path directory = Files.createTempDirectory("path-merge-cross");
+        JsonObject query = query();
+        query.getAsJsonArray("paths").add(path("seed", "GROUP.SEED",
+                notEqual(constant(1), constant(0)),
+                notEqual(constant(1), constant(0))));
+        PathMergeComposer.Result result = compose(directory, query,
+                decision("GROUP.SEED", rootIs(true)));
+
+        JsonObject merge = result.manifest.getAsJsonObject(
+                PathMergeComposer.MANIFEST_FIELD);
+        assertEquals(0, merge.getAsJsonArray("gates").size());
+        assertEquals(1, merge.getAsJsonArray("roots").size());
+        JsonObject path = merge.getAsJsonArray("paths").get(0)
+                .getAsJsonObject();
+        assertTrue(result.smtLib.contains(ROOT_TERM));
+
+        // The same query without that activation: the root is in no path
+        // condition at all, and the composition says so rather than
+        // answering about constants.
+        JsonObject bare = query();
+        bare.getAsJsonArray("paths").add(path("seed", "GROUP.SEED",
+                notEqual(constant(1), constant(0)),
+                notEqual(constant(1), constant(0))));
+        PathMergeComposer.Result alone = compose(
+                Files.createTempDirectory("path-merge-cross-alone"), bare);
+        JsonObject withoutIt = alone.manifest.getAsJsonObject(
+                PathMergeComposer.MANIFEST_FIELD);
+        assertEquals(0, withoutIt.getAsJsonArray("roots").size());
+        assertTrue(path.get("pathConditionTerms").getAsInt()
+                > withoutIt.getAsJsonArray("paths").get(0).getAsJsonObject()
+                .get("pathConditionTerms").getAsInt());
+    }
+
+    /** One other activation of a replay, with one decision of its own. */
+    private static JsonObject decision(String group, JsonObject condition) {
+        JsonObject summary = new JsonObject();
+        summary.addProperty("replayGroupId", group);
+        summary.addProperty("regionId", "REGION.other");
+        summary.addProperty("occurrenceId",
+                "node0/region/REGION.other#1#a1");
+        JsonArray conditions = new JsonArray();
+        conditions.add(condition);
+        summary.add("pathCondition", conditions);
+        return summary;
+    }
+
     private static PathMergeComposer.Result compose(Path directory,
                                                     JsonObject query)
+            throws IOException {
+        return compose(directory, query, null);
+    }
+
+    private static PathMergeComposer.Result compose(Path directory,
+                                                    JsonObject query,
+                                                    JsonObject extra)
             throws IOException {
         Path queryFile = directory.resolve("reach_query.jsonl");
         write(queryFile, JsonFields.WRITER.toJson(
@@ -151,6 +260,10 @@ public class PathMergeComposerTest {
             rows.append(JsonFields.WRITER.toJson(
                     SharedExpressionTable.compact(summary(group))))
                     .append('\n');
+        }
+        if (extra != null) {
+            rows.append(JsonFields.WRITER.toJson(
+                    SharedExpressionTable.compact(extra))).append('\n');
         }
         write(summaries, rows.toString());
         PathMergeComposer.Arguments arguments =
