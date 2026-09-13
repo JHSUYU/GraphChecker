@@ -1069,8 +1069,13 @@ final class ConcolicTaskPlan {
          */
         final Map<String, String> attachProducerOccurrenceByPort =
                 new LinkedHashMap<>();
-        /** Exact consumer occurrence of each protocol value this task sends. */
-        final Map<String, String> exportConsumerOccurrenceByPort =
+        /**
+         * Planned consumer occurrences of each protocol value this task
+         * sends, in the order the plan's edges name them.  A producer rooted
+         * at a loop body exports one value per iteration onto one message, so
+         * one port legitimately addresses one consumer occurrence per value.
+         */
+        final Map<String, List<String>> exportConsumerOccurrenceByPort =
                 new LinkedHashMap<>();
         /** OUT ports allowed to establish an otherwise absent producer source. */
         final Set<String> deferredOutgoingSourcePorts =
@@ -1275,7 +1280,7 @@ final class ConcolicTaskPlan {
                 }
             }
             indexAttachProducerOccurrences(edgeBindings);
-            indexExportConsumerOccurrences(edgeBindings);
+            indexExportConsumerOccurrences(task, edgeBindings);
             for (JsonElement element : task.sharedCarriers()) {
                 if (element.isJsonObject()) {
                     sharedCarriers.add(new SharedCarrierRequest(
@@ -1439,30 +1444,37 @@ final class ConcolicTaskPlan {
             return safe(attachProducerOccurrenceByPort.get(safe(portId)));
         }
 
-        /** Indexes the exact consumer named by each outgoing protocol edge. */
-        void indexExportConsumerOccurrences(JsonArray bindings) {
+        /**
+         * Indexes the consumers named by this occurrence's outgoing protocol
+         * edges.  The plan's own decode has already refused a port whose
+         * consumers span two execution sources; what is read here is which
+         * planned consumer occurrences one delivery may be attached by.
+         */
+        void indexExportConsumerOccurrences(ExecutionTask task,
+                                            JsonArray bindings) {
             for (CommunicationHandoffSpec site
                     : communicationHandoffs.values()) {
                 if (!site.outgoing()) continue;
                 String portId = site.portId();
-                String consumerOccurrence = "";
+                List<String> consumers = task.exportConsumerOccurrences(
+                        portId);
+                if (consumers.isEmpty()) continue;
+                // The edges are re-walked only to decide exactness: an OUT
+                // site may establish an absent producer source when every
+                // edge that carries it is this root's own traced exchange.
                 boolean exactSourceCandidate = true;
-                boolean found = false;
                 for (JsonElement element : bindings) {
                     if (!element.isJsonObject()) continue;
                     JsonObject binding = element.getAsJsonObject();
                     if (!"RUNTIME_PROTOCOL_FLOW".equals(
                             optionalString(binding, "kind"))
                             || !portId.equals(
-                            optionalString(binding, "fromOutputPort"))) {
+                            optionalString(binding, "fromOutputPort"))
+                            || !occurrenceId.equals(OccurrenceId.parse(
+                            optionalString(binding, "fromOccurrenceId"))
+                            .planned())) {
                         continue;
                     }
-                    String producer = OccurrenceId.parse(optionalString(
-                            binding, "fromOccurrenceId")).planned();
-                    if (!occurrenceId.equals(producer)) {
-                        continue;
-                    }
-                    found = true;
                     if (!"TRACED_RPC_EXCHANGE_CORRELATION_V1".equals(
                             optionalString(binding, "correlationAuthority"))
                             || !rootContextSelector.requestKey.equals(
@@ -1471,30 +1483,20 @@ final class ConcolicTaskPlan {
                             optionalString(binding, "requestApi"))) {
                         exactSourceCandidate = false;
                     }
-                    String candidate = OccurrenceId.parse(optionalString(
-                            binding, "toOccurrenceId")).planned();
-                    if (candidate.isEmpty()) continue;
-                    if (!consumerOccurrence.isEmpty()
-                            && !consumerOccurrence.equals(candidate)) {
-                        throw new IllegalArgumentException(
-                                "communication export port has two consumer "
-                                        + "occurrences in " + taskId + ": "
-                                        + portId);
-                    }
-                    consumerOccurrence = candidate;
                 }
-                if (!consumerOccurrence.isEmpty()) {
-                    exportConsumerOccurrenceByPort.put(portId,
-                            consumerOccurrence);
-                    if (found && exactSourceCandidate) {
-                        exactOutgoingSourceCandidatePorts.add(portId);
-                    }
+                exportConsumerOccurrenceByPort.put(portId, consumers);
+                if (exactSourceCandidate) {
+                    exactOutgoingSourceCandidatePorts.add(portId);
                 }
             }
         }
 
-        String exportConsumerOccurrence(String portId) {
-            return safe(exportConsumerOccurrenceByPort.get(safe(portId)));
+        /** The planned consumer occurrences one exported port may address. */
+        List<String> exportConsumerOccurrences(String portId) {
+            List<String> consumers = exportConsumerOccurrenceByPort.get(
+                    safe(portId));
+            return consumers == null ? Collections.<String>emptyList()
+                    : consumers;
         }
 
         String outgoingSourceScope(String portId) {

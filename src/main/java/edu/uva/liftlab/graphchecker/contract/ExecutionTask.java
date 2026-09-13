@@ -6,9 +6,12 @@ import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.concolic.BranchReplayContract;
 import edu.uva.liftlab.graphchecker.concolic.SharedExpressionTable;
 
+import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
@@ -32,6 +35,7 @@ public final class ExecutionTask extends PlanRow {
     private final String rootLoopSiteId;
     private final Set<String> rootLoopControlSites;
     private final Set<String> fixedCountLoopSites;
+    private final Map<String, List<String>> exportConsumerOccurrences;
     private JsonElement expandedReplayContract;
 
     /** {@code bound} and {@code phases} are the values
@@ -70,6 +74,86 @@ public final class ExecutionTask extends PlanRow {
                 LoopBoundPolicy.LOOP_CONTROL_SITE_IDS);
         rootLoopSiteId = optionalString(rootLoop, LoopBoundPolicy.LOOP_SITE_ID);
         fixedCountLoopSites = fixedCountLoopSites(encoded);
+        exportConsumerOccurrences = exportConsumerOccurrences(this);
+    }
+
+    /**
+     * The planned consumer occurrences of each outgoing communication port,
+     * in the order the plan's edges name them.
+     *
+     * <p>A producer occurrence rooted at a loop body exports one value per
+     * iteration onto one message, so one outgoing port legitimately has as
+     * many planned consumer occurrences as the delivery carries values --
+     * one per-element consumer occurrence on the receiving side.  What is
+     * <em>not</em> legitimate is a port whose consumers sit on more than one
+     * execution source: one message is sent to one peer, so a second source
+     * means the plan has merged two deliveries into one export and neither
+     * the envelope nor the attach could say which value belongs to which.
+     * That is refused here, in the one decode both the PLAN stage
+     * ({@link #create}) and the replay JVM ({@link #decode}) pass through,
+     * so a plan the runtime could not execute never reaches REPLAY.</p>
+     */
+    private static Map<String, List<String>> exportConsumerOccurrences(
+            ExecutionTask task) {
+        Set<String> outgoing = new LinkedHashSet<>();
+        for (CommunicationHandoffSpec site : task.communicationHandoffs()) {
+            if (site.outgoing()) outgoing.add(site.portId());
+        }
+        if (outgoing.isEmpty()) {
+            return Collections.emptyMap();
+        }
+        String producer = OccurrenceId.parse(task.occurrenceId()).planned();
+        Map<String, List<String>> byPort = new LinkedHashMap<>();
+        for (JsonElement element : task.edgeBindings()) {
+            if (!element.isJsonObject()) continue;
+            JsonObject binding = element.getAsJsonObject();
+            String portId = optionalString(binding, "fromOutputPort");
+            if (!"RUNTIME_PROTOCOL_FLOW".equals(
+                    optionalString(binding, "kind"))
+                    || !outgoing.contains(portId)
+                    || !producer.equals(OccurrenceId.parse(optionalString(
+                            binding, "fromOccurrenceId")).planned())) {
+                continue;
+            }
+            OccurrenceId consumer = OccurrenceId.parse(
+                    optionalString(binding, "toOccurrenceId"));
+            if (consumer.planned().isEmpty()) continue;
+            List<String> consumers = byPort.computeIfAbsent(portId,
+                    ignored -> new ArrayList<String>());
+            if (!consumers.contains(consumer.planned())) {
+                consumers.add(consumer.planned());
+            }
+        }
+        for (Map.Entry<String, List<String>> port : byPort.entrySet()) {
+            Set<String> sources = new LinkedHashSet<>();
+            for (String consumer : port.getValue()) {
+                sources.add(OccurrenceId.parse(consumer).sourceKey());
+            }
+            if (sources.size() > 1) {
+                throw new IllegalArgumentException(
+                        "communication export port has consumer occurrences "
+                                + "on more than one source in "
+                                + task.taskId() + ": " + port.getKey() + " "
+                                + sources);
+            }
+            port.setValue(Collections.unmodifiableList(port.getValue()));
+        }
+        return Collections.unmodifiableMap(byPort);
+    }
+
+    /**
+     * The planned consumer occurrences of one outgoing port, empty when the
+     * plan binds none.
+     */
+    public List<String> exportConsumerOccurrences(String portId) {
+        List<String> consumers = exportConsumerOccurrences.get(
+                portId == null ? "" : portId);
+        return consumers == null ? Collections.<String>emptyList() : consumers;
+    }
+
+    /** Every outgoing port the plan bound to at least one consumer. */
+    public Set<String> boundExportPorts() {
+        return exportConsumerOccurrences.keySet();
     }
 
     public static ExecutionTask decode(JsonObject encoded) {
