@@ -610,6 +610,28 @@ The manifest's `deadCaseLemmas` ledger lists every probe with its status and
 elapsed time, and every lemma with the partition it decides. Without `--z3` the
 formula is untouched and the ledger says `skipped: NO_SOLVER`.
 
+**Unnamed elements.** `P_L'<class>'_` is the VM's placeholder for an operand
+oop no shadow names: `MethodSymbolizerHandle` observes an argument without
+allocating anything, so a reference that never carried a symbolic value
+reaches the recording with its class and no identity. It is not a root
+(nothing declared it, nothing the solver may move), so refusing it as
+`SymbolicSourceAuthorityMissing` refuses a whole composition for an identity
+the formula only has to keep distinct. HDFS-17960 met it the moment
+`snapshotCounter` left the carrier set: the `Snapshot` inserted into
+`snapshotsByNames` used to be shadowed (`M_L'Snapshot'_46`) only because its
+`id` field had received a versioned value. The placeholder carries no oop id,
+so it cannot be one witness everywhere it appears -- two distinct objects
+render the same text -- but the mutation that stored it is unique: one
+insertion event, one element. `ContainerSmtCodec` therefore hands the stored
+element of an `APPEND` / `INSERT` / `WRITE` / `PUT` to the host together with
+the mutation node (`Host.element`), and the composer names an unnamed
+reference there as an execution-local `structural_ref` scoped by the replay
+scope and the content digest of that mutation, minted once per insertion and
+reused wherever the insertion is lowered. It gets no distinctness
+constraints, which over-approximates; the placeholder anywhere else keeps its
+refusal. The manifest's `untrackedElementWitnesses` ledger lists every witness
+with its placeholder, mutation and use count.
+
 **Containers.** A Java container is lowered as a state witness, not as a fresh
 symbol per access: `AssocState` for maps (`assoc_present`, `assoc_values`,
 `assoc_order`, `assoc_position`) and `IndexedState` for lists and arrays. Size
