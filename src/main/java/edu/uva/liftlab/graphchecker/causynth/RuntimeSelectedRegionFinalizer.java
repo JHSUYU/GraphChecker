@@ -1798,7 +1798,6 @@ public final class RuntimeSelectedRegionFinalizer {
                     fresh.put("kind", DEMAND_PRUNED_UNCARED_KIND);
                     fresh.put(SharedFieldFlow.EDGE_LOCATION, location);
                     fresh.put("readerOccurrenceId", consumer);
-                    fresh.put("readerRegionId", regionId);
                     return fresh;
                 });
         row.put(DEMAND_DEPTH, readerDepth);
@@ -2455,8 +2454,6 @@ public final class RuntimeSelectedRegionFinalizer {
                     continue;
                 }
                 input.put("symbolicDemand", "BOUNDED_STATE_FRONTIER");
-                input.put("boundedStateFrontierAuthority",
-                        "STATIC_VALUE_SEMANTIC_MUTATION_GUARD_V1");
                 addUniqueValue(input, "boundedMutationOutputCells",
                         outputCell);
                 addUniqueValue(input, "boundedMutationOutputPorts",

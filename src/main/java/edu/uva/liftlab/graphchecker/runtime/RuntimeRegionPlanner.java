@@ -340,9 +340,6 @@ final class RuntimeRegionPlanner {
             link.put("transport", stringValue(exported.get("transport")));
             link.put("requestKey", requestKey);
             link.put("requestApi", stringValue(exported.get("requestApi")));
-            link.put("crossThread",
-                    !String.valueOf(activation.get("threadId")).equals(
-                            String.valueOf(toActivation.get("threadId"))));
             link.put("authority", DELIVERY_LINK_AUTHORITY);
             result.occurrenceLinks.add(link);
         }
@@ -1162,17 +1159,7 @@ final class RuntimeRegionPlanner {
             plan.put("kind", "CONCOLIC_REGION_PLAN");
             // The semantic source of this activation - sourceKey, sourceKind,
             // sourceRole, sourceId and sourceEpoch - is published once, by
-            // putTraceContext below.  Where that source came FROM is this
-            // row's own diagnostic: an activation the pipeline could not
-            // attribute to any source is a named gap, never an authority.
-            plan.put("sourceAuthority",
-                    occurrenceTarget && semanticContext != root
-                            && semanticContext.source != null
-                            ? "SELECTED_TARGET_EVENT_SOURCE"
-                            : semanticContext.source != null
-                            ? "EXPLICIT_TRACE_SOURCE"
-                            : stamped.size() == 1 ? UPGRADED_SOURCE_AUTHORITY
-                            : GAP_RUNTIME_SOURCE_UNSTAMPED);
+            // putTraceContext below.
             plan.put("occurrenceId", occurrenceId);
             plan.put("regionId", region.regionId);
             // The once-only-root rule (README "Loops"): a region rooted on a
@@ -2362,66 +2349,12 @@ final class RuntimeRegionPlanner {
                 branch.put("selectedRuntimeEventSeq", selected.seq);
                 branch.put("selectedCallId", selected.callId);
             }
-            if (requiredDeclared) {
-                stateRequiredOutcomeSelection(branch, requiredObserved,
-                        occurrences.size(), site);
-            }
             branch.put("occurrences", encoded);
             result.add(branch);
         }
         return result;
     }
 
-    /**
-     * States how the occurrence of a required-outcome policy was chosen.
-     *
-     * <p>The loop above searches the recorded occurrences for one that took
-     * the required outcome.  When the search fails, {@code selectedIndex} is
-     * still 0 -- and the row used to say nothing at all about that, so a
-     * policy whose required outcome no occurrence took was published
-     * indistinguishably from one whose first occurrence took it.  Downstream
-     * that reads as "occurrence #1 is the one the policy means", which for a
-     * failure target is the fatal cutoff being supplied by a guard that never
-     * took the failing arm.</p>
-     *
-     * <p>So the row now states the fact:
-     * {@code requiredOutcomeObserved} answers the question the search asked,
-     * and {@code selectedOccurrenceAuthority} says which of three things the
-     * published ordinal is -- the occurrence that took the required outcome,
-     * the only occurrence there was, or a choice among several that nothing
-     * in the recording decides.  The third is the invented one, and it is
-     * named as {@link ConcolicRegionRuntime#TARGET_REACH_NOT_OBSERVED} on the
-     * row so a consumer can refuse it.</p>
-     *
-     * <p>The ordinal itself is left in place.  Withholding it would take the
-     * fatal-prefix boundary out from under a replay that is otherwise sound
-     * ({@code FATAL_PREFIX_BOUNDARY_MISSING}), and the blocking answer to an
-     * unwitnessed target belongs at replay time, where {@code
-     * ConcolicResultPublisher.targetReachedByActivation} requires the
-     * declared occurrence to have actually been decided.</p>
-     */
-    private static void stateRequiredOutcomeSelection(
-            Map<String, Object> branch, boolean requiredObserved,
-            int occurrenceCount, String site) {
-        branch.put("requiredOutcomeObserved", requiredObserved);
-        if (requiredObserved) {
-            branch.put("selectedOccurrenceAuthority", "REQUIRED_OUTCOME");
-            return;
-        }
-        if (occurrenceCount <= 1) {
-            branch.put("selectedOccurrenceAuthority",
-                    "SOLE_RECORDED_OCCURRENCE");
-            return;
-        }
-        branch.put("selectedOccurrenceAuthority",
-                ConcolicRegionRuntime.TARGET_REACH_NOT_OBSERVED);
-        branch.put("selectedOccurrenceGap",
-                ConcolicRegionRuntime.TARGET_REACH_NOT_OBSERVED
-                + ": none of the " + occurrenceCount + " recorded "
-                + "occurrences of " + site + " took the required outcome, so "
-                + "which one this policy names is not decided by the "
-                + "recording");
-    }
 
     /** Copies a complete switch successor authority into a task occurrence. */
     private static void addExactSwitchDecision(
