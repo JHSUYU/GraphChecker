@@ -2579,11 +2579,16 @@ obligation(s) as the wave before it with no new verdict"
   rm -f "${summaries}.path-closures"
   mv "${summaries}.closed" "${summaries}"
 
-  # Final consumers all read the identical closure-wide fixed point.
+  # Final consumers all read the identical closure-wide fixed point, so link
+  # it rather than copy it.  One copy per member is the largest thing a
+  # campaign writes: measured on recorded runs, l1/out5 held 25 copies of one
+  # 130.7 MB corpus (3266.9 MB) and 25 of one 24.6 MB task set (615.6 MB).
+  # Both files are published above by an atomic rename and nothing rewrites a
+  # member's entry in place, so the link cannot carry an edit between members.
   while IFS=$'\t' read -r role campaign_id region occurrence goal task; do
     member="${iteration_dir}/workers/${task}"
-    cp -f "${summaries}" "${member}/observed_path_summaries.jsonl"
-    cp -f "${tasks}" "${member}/observed_execution_tasks.jsonl"
+    ln -f "${summaries}" "${member}/observed_path_summaries.jsonl"
+    ln -f "${tasks}" "${member}/observed_execution_tasks.jsonl"
   done <<<"${campaign_member_rows}"
   campaign_target_reach_query "${iteration_dir}" "${target_task}"
   campaign_log "closure exploration stopped after ${wave} global wave(s)"
