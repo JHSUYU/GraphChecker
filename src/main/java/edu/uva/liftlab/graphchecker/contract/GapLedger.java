@@ -239,18 +239,14 @@ public final class GapLedger {
                 "SelectedTargetReachEventMismatch",
                 "SelectedTargetReachEventMissing",
                 "SelectedTargetSourceAttestationMalformed",
-                // The guarded-read refusals: a read whose arms, writer
-                // closure, choice or candidate identity the lowering could
-                // not state.
-                "GuardedReadArmMissing",
-                "GuardedReadArmSortConflict",
-                "GuardedReadCandidateIdentity",
-                "GuardedReadChoiceMissing",
-                "GuardedReadUseMissing",
-                "GuardedReadWriterClosure",
-                "GuardedReadWriterGuardMissing",
-                "RecursiveGuardedRead",
-                "UnadmittedGuardedRead",
+                // A value the replay did not determine, and a merge over
+                // another region's cases: both are the propagation cut
+                // arriving at a lowering, refused rather than chosen
+                // between.  The nine refusals that used to name which part
+                // of a read's arm set could not be stated are retired with
+                // the arms.
+                "UNRESOLVED_SHARED_READ",
+                "CASE_MERGE_IN_PATH",
                 "UnconstrainedContainerRead"}) {
             blocking(composer, code,
                     "a refusal the composer made: the step it refused is not in"

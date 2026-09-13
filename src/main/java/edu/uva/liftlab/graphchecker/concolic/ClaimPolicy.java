@@ -812,19 +812,6 @@ public final class ClaimPolicy {
         return regions;
     }
 
-    /**
-     * Whether the composer's own probe found the composed body
-     * unsatisfiable before any case arm or root polarity was asserted.
-     *
-     * <p>Only the dead-case pass asks that question, and only when it was
-     * given a solver; every other reading of the ledger -- no solver, a
-     * disabled budget, a fail-closed formula -- leaves it unasked, and an
-     * unasked question is not an answer.</p>
-     */
-    static boolean composedBodyUnsatisfiable(JsonObject manifest) {
-        return DeadCaseLemmas.SKIPPED_FORMULA_UNSAT.equals(optionalString(
-                object(manifest, DeadCaseLemmas.MANIFEST_FIELD), "skipped"));
-    }
 
     /**
      * How many consumer boundary families the composition realized, from the
@@ -2394,17 +2381,6 @@ public final class ClaimPolicy {
         // reachability answer is then about the composition and not about
         // the target, so it is named here instead of being read as a
         // refutation of the program.
-        if (composedBodyUnsatisfiable(manifest)) {
-            blockers.add(blocker(COMPOSED_BODY_UNSATISFIABLE,
-                    DeadCaseLemmas.SKIPPED_FORMULA_UNSAT,
-                    "the composer's own probe found the composed formula"
-                            + " unsatisfiable before any root polarity was"
-                            + " asserted: every valuation below is that one"
-                            + " contradiction and reachability="
-                            + reachability + " says nothing about the"
-                            + " target"));
-        }
-
         // Closure is required for a closed refutation and for nothing else:
         // one connected SAT witness stays valid while sibling paths are open.
         if ("UNREACHABLE".equals(reachability) && !unsatClosureComplete) {

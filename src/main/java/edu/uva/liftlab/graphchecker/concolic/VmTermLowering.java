@@ -321,19 +321,6 @@ final class VmTermLowering {
         return lines;
     }
 
-    /** Records one read-time use, refusing a doubly-claimed identity. */
-    static void recordGuardedReadUse(
-            Map<String, Map<String, GuardedReadUse>> uses,
-            String readIdentity, String projectionIdentity,
-            String activation, Collection<String> selectors,
-            Consumer<String> ambiguous) {
-        String identity = GuardedReadNaming.useIdentity(projectionIdentity,
-                activation);
-        GuardedReadUse use = new GuardedReadUse(activation, selectors);
-        GuardedReadUse held = uses.computeIfAbsent(readIdentity,
-                ignored -> new LinkedHashMap<>()).putIfAbsent(identity, use);
-        if (held != null && !held.same(use)) ambiguous.accept(identity);
-    }
 
     /** The integer an element exactly renders, or the gap that stopped it. */
     static final class RenderedInteger {

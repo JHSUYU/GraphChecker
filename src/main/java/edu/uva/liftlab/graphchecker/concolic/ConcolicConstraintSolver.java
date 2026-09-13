@@ -1,7 +1,6 @@
 package edu.uva.liftlab.graphchecker.concolic;
 
 import edu.uva.liftlab.graphchecker.concolic.JavaPrimitiveSmtSemantics.IntegralWidth;
-import edu.uva.liftlab.graphchecker.concolic.VmTermLowering.GuardedReadUse;
 import edu.uva.liftlab.graphchecker.concolic.VmTermLowering.Sort;
 import edu.uva.liftlab.graphchecker.concolic.VmTermLowering.Term;
 import edu.uva.liftlab.graphchecker.concolic.JavaPrimitiveSmtSemantics.FloatingKind;
