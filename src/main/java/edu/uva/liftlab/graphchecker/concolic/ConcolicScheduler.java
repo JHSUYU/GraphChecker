@@ -2129,7 +2129,8 @@ public final class ConcolicScheduler {
                     if (minted(regionId, action)) {
                         // The Java hook mints this exact root once.
                         retained.addProperty("mode", "CONCRETE");
-                        retained.addProperty("symbolicDemand",
+                        retained.addProperty(
+                                InputActionCatalog.SYMBOLIC_DEMAND,
                                 "CONFIGURED_SYMBOLIC_SOURCE_FIELD_OWNED");
                     } else if (workloadOwnedSymbol(action)) {
                         // The workload itself wrote this symbol into the
@@ -2137,7 +2138,8 @@ public final class ConcolicScheduler {
                         // sense a CausynthSymbolicSource hook is one, so an
                         // allowlist that narrows the automatic candidates
                         // must not silently delete it.
-                        retained.addProperty("symbolicDemand",
+                        retained.addProperty(
+                                InputActionCatalog.SYMBOLIC_DEMAND,
                                 "WORKLOAD_DECLARED_SYMBOLIC_FAULT");
                     } else if (declaredCutPort(action)) {
                         // A wire-flow cut port mints no root at all: it
@@ -2165,11 +2167,13 @@ public final class ConcolicScheduler {
                         // Concretizing it instead deletes the whole family:
                         // a read the plan never symbolizes publishes no
                         // candidates for the composer to admit.
-                        retained.addProperty("symbolicDemand",
+                        retained.addProperty(
+                                InputActionCatalog.SYMBOLIC_DEMAND,
                                 "DECLARED_SYMBOLIC_CARRIER");
                     } else if (!admits(regionId, action)) {
                         retained.addProperty("mode", "CONCRETE");
-                        retained.addProperty("symbolicDemand",
+                        retained.addProperty(
+                                InputActionCatalog.SYMBOLIC_DEMAND,
                                 "CONFIGURED_SYMBOLIC_INPUT_UNSELECTED");
                         suppressed.add(suppressedCandidate(regionId, action));
                     } else {
