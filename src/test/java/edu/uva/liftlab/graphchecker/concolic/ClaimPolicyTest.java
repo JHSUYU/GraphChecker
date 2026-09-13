@@ -337,40 +337,6 @@ public class ClaimPolicyTest {
         return JsonParser.parseString(json).getAsJsonArray();
     }
 
-    private static JsonObject truncatedManifest() {
-        JsonObject manifest = manifest();
-        manifest.add("symbolicPropagationGaps", parseArray(
-                "[{\"schemaVersion\":2,"
-                + "\"reason\":\"INITIAL_CONTAINER_SNAPSHOT_TRUNCATED\","
-                + "\"subject\":\"MAP_STATE/140#-3\","
-                + "\"detail\":\"no complete initial content snapshot\"}]"));
-        return manifest;
-    }
-
-    /** A reach report whose fatal read names one initial and one writer arm. */
-    private static JsonObject selectionReach(boolean initialArmSelected) {
-        JsonObject reach = reach();
-        reach.add(BooleanReachConditionExtractor.FATAL_STATE_SELECTION, parse(
-                "{\"schemaVersion\":1,"
-                + "\"kind\":\"FATAL_READ_STATE_SELECTION\","
-                + "\"authority\":\"SOLVER_SELECTED_GUARDED_READ_ARM_V1\","
-                + "\"resolved\":true,\"arms\":["
-                + "{\"selector\":\"read_selector__initial\","
-                + "\"readIdentity\":\"RFC.fatal\","
-                + "\"sessionLocationKey\":\"MAP_STATE/140#-3\","
-                + "\"locationKey\":\"MAP_STATE/18ffea7d#-3\","
-                + "\"writerCaseOwner\":\"INITIAL_SOURCE.a706a1a\","
-                + "\"initialState\":true,\"modelled\":true,"
-                + "\"selected\":" + initialArmSelected + "},"
-                + "{\"selector\":\"read_selector__writer\","
-                + "\"readIdentity\":\"RFC.fatal\","
-                + "\"sessionLocationKey\":\"MAP_STATE/140#-3\","
-                + "\"locationKey\":\"MAP_STATE/18ffea7d#-3\","
-                + "\"writerCaseOwner\":\"region:REGION.addKeys\","
-                + "\"initialState\":false,\"modelled\":true,"
-                + "\"selected\":" + !initialArmSelected + "}]}"));
-        return reach;
-    }
 
     /**
      * The same run with the clock one millisecond past its window is not.

@@ -86,33 +86,6 @@ public class RootSliceObligationTest {
         assertTrue(row.get("recordedOutcome").getAsBoolean());
     }
 
-    /**
-     * A guarded read reaches its value through writer arms. A condition whose
-     * only root is inside one of those arms is still root-dependent, so the
-     * support walk has to descend into them.
-     */
-    @Test
-    public void aRootInsideAGuardedReadArmIsStillARoot() {
-        JsonObject arm = new JsonObject();
-        arm.addProperty("selector", "read_selector__fixture");
-        JsonObject leaf = new JsonObject();
-        leaf.addProperty("_type", "SymbolExpression");
-        leaf.addProperty("_java_type", "I");
-        leaf.addProperty("_exp", ROOT_SYMBOL);
-        arm.add("expression", leaf);
-        JsonArray candidates = new JsonArray();
-        candidates.add(arm);
-        JsonObject read = new JsonObject();
-        read.addProperty("_type", SharedStateEvidence.GUARDED_READ_TYPE);
-        read.addProperty("_java_type", "I");
-        read.add("candidates", candidates);
-
-        Set<String> support = BranchPredicateAlgebra.symbolicSupport(read);
-        assertEquals(1, support.size());
-        assertTrue(support.contains(
-                SymbolicRootInventory.leafKey("I", ROOT_SYMBOL)));
-    }
-
     private static RegionPathWorklist.Result plan(JsonObject summary,
                                                   JsonObject task,
                                                   SymbolicRootInventory roots) {

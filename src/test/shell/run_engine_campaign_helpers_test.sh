@@ -82,12 +82,7 @@ emit_fixture() {
     symbolicPropagationComplete: false,
     symbolicPropagation: [{armCount: 2}],
     symbolicPropagationGaps: [],
-    boundedLoopComposition: {gaps: []},
-    guardedReadModelComplete: false,
-    guardedReadModel: {
-      schemaVersion: 1, kind: "DIRECT_GUARDED_READ_MODEL",
-      authority: "VM_READ_TIME_CANDIDATE_SNAPSHOT_V1",
-      complete: true, reads: []}, gaps: []}' \
+    boundedLoopComposition: {gaps: []}, gaps: []}' \
     >"${composition_manifest}"
   # The reach report carries the ClaimPolicy decision the solver stage made
   # from it. EMIT publishes that decision; it does not re-derive one, so the
@@ -192,7 +187,6 @@ run_emit
   || fail "the result names a different frozen config"
 jq -e '.evidence.symbolicPropagationComplete == false
   and .evidence.consumerBoundaryArms == 2
-  and .evidence.guardedReadModelComplete == false
   and .gapCount == 0
   and .telemetryCount >= 2' \
   "${campaign_final}/result.json" >/dev/null \

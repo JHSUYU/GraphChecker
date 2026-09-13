@@ -3491,13 +3491,6 @@ campaign_emit() {
          ($decided.rootSpace.consumerBoundaryFamilies // 0),
        consumerBoundaryArms:
          ($decided.rootSpace.consumerBoundaryArms // 0),
-       guardedReadModelComplete:
-         ($c.guardedReadModelComplete // false),
-       guardedReads:
-         (($c.guardedReadModel.reads // []) | length),
-       guardedReadCandidates:
-         ([$c.guardedReadModel.reads[]? | ((.arms // []) | length)]
-          | add // 0),
        unsatClosureComplete: $unsatClosureComplete,
        casePathConditionFamilies:
          (($c.casePathConditionDependencies // []) | length)},
