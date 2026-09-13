@@ -83,6 +83,15 @@ public final class ConcolicSmtComposer {
     /** Expression node the VM serializes one guarded read-from arm as. */
     /** Prefix of the one value term of one guarded read. */
     static final String READ_VALUE_PREFIX = "rf_value__";
+    /** Prefix of one dependent read through a reference-typed carrier. */
+    static final String REFERENCE_FIELD_PREFIX = "reference_field__";
+    /**
+     * The pseudo-scope content-addressed map states are canonicalized under.
+     * It is deliberately not one replay execution, so identities in it say
+     * nothing about which objects a single JVM allocated.
+     */
+    private static final String CANONICAL_MAP_STATE_SCOPE =
+            "canonical-map-state";
     private static final Pattern SMT_ATOM = Pattern.compile("[^()\\s]+");
 
     /** Identity of one value selected by a recorded selector family. */
@@ -1790,6 +1799,31 @@ public final class ConcolicSmtComposer {
         /** One allocated container cannot have two unrelated state shapes. */
         private final Map<String, Sort> structuralStateSorts =
                 new LinkedHashMap<>();
+        /**
+         * Dependent reads through a reference-typed carrier, held until
+         * every guarded read has been lowered.
+         *
+         * <p>The owner of such a read is a choice between the object
+         * identities the recorded writers installed, and the field it
+         * projects may itself be a carrier of the object that was installed.
+         * Which families exist is only known once the whole formula has been
+         * lowered -- relation order decides nothing about it -- so the read
+         * lowers to a declared constant here and the constant is bound to
+         * its owner-indexed value in {@link #finish()}.</p>
+         */
+        private final List<ReferenceFieldRead> referenceFieldReads =
+                new ArrayList<>();
+        /**
+         * {@code executionScope \0 oop:<ownerSymRid> \0 slot \0 descriptor}
+         * -> the lowered value of that object's own guarded read of the
+         * field.  This is the family a dependent read routes to when its
+         * owner turns out to be that object.
+         */
+        private final Map<String, String> guardedReadFieldFamilies =
+                new LinkedHashMap<>();
+        /** Execution scopes in which some read arms over object identity. */
+        private final Set<String> referenceRoutedScopes =
+                new LinkedHashSet<>();
         /**
          * Java references whose declared type is String need two solver
          */
@@ -3618,6 +3652,7 @@ public final class ConcolicSmtComposer {
                 guardedReadTerms.put(projectionIdentity, result);
             }
 
+            recordGuardedReadFieldFamily(node, result);
             guardedReadActivations.computeIfAbsent(readIdentity,
                     ignored -> new LinkedHashSet<>()).add(activation);
             Set<String> selectors = guardedReadSelectors.computeIfAbsent(
@@ -4231,6 +4266,38 @@ public final class ConcolicSmtComposer {
             return model;
         }
 
+        /** One dependent read through a reference-typed carrier. */
+        private static final class ReferenceFieldRead {
+            private final String name;
+            private final Sort sort;
+            private final String javaType;
+            private final int fieldOffset;
+            private final String executionScope;
+            private final String owner;
+            private final String concreteOwner;
+            private final String observed;
+            private final String projection;
+            private final String guard;
+
+            private ReferenceFieldRead(String name, Sort sort,
+                                       String javaType, int fieldOffset,
+                                       String executionScope, String owner,
+                                       String concreteOwner,
+                                       String observed, String projection,
+                                       String guard) {
+                this.name = name;
+                this.sort = sort;
+                this.javaType = javaType;
+                this.fieldOffset = fieldOffset;
+                this.executionScope = executionScope;
+                this.owner = owner;
+                this.concreteOwner = concreteOwner;
+                this.observed = observed;
+                this.projection = projection;
+                this.guard = guard;
+            }
+        }
+
         private static final class DirectReadArm {
             private final JsonObject candidate;
             private final String candidateIdentity;
@@ -4570,6 +4637,23 @@ public final class ConcolicSmtComposer {
                 }
 
                 @Override
+                public ContainerSmtCodec.Term field(
+                        ContainerSmtCodec.Term owner, String ownerClass,
+                        int fieldOffset, String javaType,
+                        ContainerSmtCodec.Term concreteOwner,
+                        ContainerSmtCodec.Term concreteValue) {
+                    ContainerSmtCodec.Term projection =
+                            field(owner, ownerClass, fieldOffset, javaType);
+                    ContainerSmtCodec.Term routed = routedReferenceField(
+                            projection, owner, ownerClass, fieldOffset,
+                            javaType, concreteOwner, concreteValue);
+                    // A shape this emitter cannot route is still a correct
+                    // projection; it is only a weaker one, so the observed
+                    // pair is dropped rather than the read refused.
+                    return routed != null ? routed : projection;
+                }
+
+                @Override
                 public void unsupported(String reason) {
                     Emitter.this.unsupported.add(
                             "MODEL_SEMANTICS_MISSING:" + reason);
@@ -4643,6 +4727,184 @@ public final class ConcolicSmtComposer {
             return scopedSymbol(raw, "sym", sort, javaType,
                     "configured_symbol_" + smtName(raw),
                     "ConfiguredSymbol", "configured:");
+        }
+
+        /**
+         * Lowers a dependent read whose owner is a choice over object
+         * identities, or null when this emitter cannot state the choice.
+         *
+         * <p>An uninterpreted {@code container_field__} projection of such
+         * an owner is sound and empty: it says the value is some function of
+         * whichever object was installed, and nothing about what that
+         * function returns for any of them.  That emptiness is what let a
+         * fault-idle candidate hand the wire a key id of zero.  The read is
+         * therefore lowered as a declared constant, bound in {@link #finish}
+         * to an owner-indexed value: the object this execution actually read
+         * from yields what it was observed to hold, an object with a
+         * versioned family of its own yields that family's value, and an
+         * identity with neither remains the free projection -- a named
+         * freedom, never a default.</p>
+         */
+        private ContainerSmtCodec.Term routedReferenceField(
+                ContainerSmtCodec.Term plainProjection,
+                ContainerSmtCodec.Term owner, String ownerClass,
+                int fieldOffset, String javaType,
+                ContainerSmtCodec.Term concreteOwner,
+                ContainerSmtCodec.Term concreteValue) {
+            Sort result = sortOfJava(javaType);
+            if (plainProjection == null || owner == null
+                    || concreteOwner == null
+                    || concreteValue == null
+                    || owner.sort != ContainerSmtCodec.Sort.REF
+                    || concreteOwner.sort != ContainerSmtCodec.Sort.REF
+                    || fieldOffset < 0 || result == Sort.VALUE
+                    || result == Sort.UNKNOWN || result == Sort.MAP
+                    || result == Sort.ARRAY_VALUE) {
+                return null;
+            }
+            Term observed = fromContainerTerm(concreteValue);
+            if (observed == null || observed.sort != result) return null;
+            String executionScope =
+                    executionScopesByCase.get(currentSymbolScope);
+            if (executionScope == null || executionScope.isEmpty()
+                    || CANONICAL_MAP_STATE_SCOPE.equals(executionScope)) {
+                return null;
+            }
+            Term projection = fromContainerTerm(plainProjection);
+            if (projection == null || projection.sort != result) return null;
+            String identity = executionScope + "\u0000" + ownerClass
+                    + "\u0000" + fieldOffset + "\u0000" + javaType
+                    + "\u0000" + owner.text + "\u0000" + concreteOwner.text
+                    + "\u0000" + observed.text + "\u0000" + currentGuard;
+            String name = smtSymbols.mint(REFERENCE_FIELD_PREFIX,
+                    identity, 16);
+            declare(name, result);
+            referenceFieldReads.add(new ReferenceFieldRead(name, result,
+                    javaType, fieldOffset, executionScope, owner.text,
+                    concreteOwner.text, observed.text, projection.text,
+                    currentGuard));
+            referenceRoutedScopes.add(executionScope);
+            return toContainerTerm(Term.of(name, result,
+                    JavaPrimitiveSmtSemantics.widthOfJavaType(javaType)));
+        }
+
+        /**
+         * Remembers that one object's own field has a versioned family, so a
+         * dependent read that selects that object routes to it instead of to
+         * a free projection.
+         */
+        private void recordGuardedReadFieldFamily(JsonObject node,
+                                                  Term value) {
+            if (value == null || value.text.isEmpty()) return;
+            String location = SharedStateEvidence.locationKey(node);
+            if (!"INSTANCE_FIELD".equals(
+                    SharedStateEvidence.locationKindOf(location))) return;
+            long owner = SharedStateEvidence.locationOwnerOf(location);
+            int slot = SharedStateEvidence.locationSlotOf(location);
+            if (owner == 0L || slot < 0) return;
+            String executionScope =
+                    executionScopesByCase.get(currentSymbolScope);
+            if (executionScope == null || executionScope.isEmpty()) return;
+            guardedReadFieldFamilies.putIfAbsent(
+                    fieldFamilyKey(executionScope, "oop:" + owner, slot,
+                            guardedReadJavaType(node)),
+                    value.text);
+        }
+
+        private static String fieldFamilyKey(String executionScope,
+                                             String referenceIdentity,
+                                             int slot, String javaType) {
+            return executionScope + "\u0000" + referenceIdentity
+                    + "\u0000" + slot + "\u0000"
+                    + JavaPrimitiveSmtSemantics.javaTypeDescriptor(javaType);
+        }
+
+        /**
+         * Binds every dependent reference-carrier read to its owner.
+         *
+         * <p>Outermost arm first: the object this execution read from is the
+         * one the run has direct evidence about, so it wins over a family
+         * that merely describes the same slot of some other identity.</p>
+         */
+        private void emitReferenceFieldRoutings() {
+            for (ReferenceFieldRead read : referenceFieldReads) {
+                String body = read.projection;
+                List<String[]> routes = new ArrayList<>();
+                for (Map.Entry<String, Term> entry
+                        : structuralWitnesses.entrySet()) {
+                    String[] parts = entry.getKey().split("\u0000", -1);
+                    if (parts.length != 3
+                            || !Sort.REF.name().equals(parts[1])
+                            || !read.executionScope.equals(parts[0])) {
+                        continue;
+                    }
+                    String witness = entry.getValue().text;
+                    if (witness.equals(read.concreteOwner)) continue;
+                    String family = guardedReadFieldFamilies.get(
+                            fieldFamilyKey(read.executionScope, parts[2],
+                                    read.fieldOffset, read.javaType));
+                    if (family == null) continue;
+                    routes.add(new String[]{witness, family});
+                }
+                for (int index = routes.size() - 1; index >= 0; index--) {
+                    body = "(ite (= " + read.owner + " "
+                            + routes.get(index)[0] + ") "
+                            + routes.get(index)[1] + " " + body + ")";
+                }
+                body = "(ite (= " + read.owner + " " + read.concreteOwner
+                        + ") " + read.observed + " " + body + ")";
+                String previousGuard = enterGuard(read.guard);
+                try {
+                    assertNamed(smtSymbols.mint(
+                                    "reference_field_binding_",
+                                    read.name, 16),
+                            "(= " + read.name + " " + body + ")");
+                } finally {
+                    restoreGuard(previousGuard);
+                }
+            }
+        }
+
+        /**
+         * Two distinct VM objects of one replay execution are two distinct
+         * solver references.
+         *
+         * <p>The engine states this nowhere else, and nothing else needed
+         * it: a structural witness was only ever a name to hang recorded
+         * relations on.  A read that arms over object identity does need it
+         * -- without it the solver may equate the identity a writer
+         * installed with the one the execution read from and take an arm the
+         * run refutes -- so it is stated exactly for the execution scopes
+         * that carry such a read, and for no others.</p>
+         */
+        private void emitReferenceIdentityDistinctness() {
+            if (referenceRoutedScopes.isEmpty()) return;
+            Map<String, List<String>> byScope = new LinkedHashMap<>();
+            for (Map.Entry<String, Term> entry
+                    : structuralWitnesses.entrySet()) {
+                String[] parts = entry.getKey().split("\u0000", -1);
+                if (parts.length != 3
+                        || !Sort.REF.name().equals(parts[1])
+                        || !referenceRoutedScopes.contains(parts[0])) {
+                    continue;
+                }
+                byScope.computeIfAbsent(parts[0],
+                        ignored -> new ArrayList<>())
+                        .add(entry.getValue().text);
+            }
+            for (Map.Entry<String, List<String>> entry
+                    : byScope.entrySet()) {
+                if (entry.getValue().size() < 2) continue;
+                StringBuilder text = new StringBuilder("(distinct");
+                for (String witness : entry.getValue()) {
+                    text.append(' ').append(witness);
+                }
+                text.append(')');
+                assertWithoutCurrentGuard(smtSymbols.mint(
+                                "reference_identity_distinct_",
+                                entry.getKey(), 16),
+                        text.toString());
+            }
         }
 
         /**
@@ -5695,6 +5957,8 @@ public final class ConcolicSmtComposer {
                                 + smtName(entry.getKey()),
                         sum.toString());
             }
+            emitReferenceFieldRoutings();
+            emitReferenceIdentityDistinctness();
             emitRequestFaultControl();
             requireTotalBoundaryDispatch();
             for (Map.Entry<InvocationKey, Set<String>> entry

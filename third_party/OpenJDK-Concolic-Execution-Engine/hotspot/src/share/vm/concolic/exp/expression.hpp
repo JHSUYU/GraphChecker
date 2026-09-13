@@ -65,6 +65,16 @@ public:
   // RTTI, so the downcast is declared here instead of guessed at.
   virtual ContainerExpression *as_container_expression() { return NULL; }
 
+  // True for the value of a read through a *reference-typed* selected shared
+  // location: a choice between the object identities the recorded writers
+  // installed, rather than between scalars.  A dependent field read on such
+  // a receiver is not a read of the concrete object the run happened to
+  // land on -- it is a read of whichever object the selected writer put
+  // there -- so getfield asks this before deciding whose field it names.
+  // Declared here, and not answered by RTTI, because HotSpot is built
+  // without it.
+  virtual bool is_guarded_reference_read() { return false; }
+
   // The exact jint this node denotes, written to `value`, or false when it
   // denotes anything else.  Undoing a recorded INSERT to recover the content
   // a container held before it needs the position the insert happened at, and

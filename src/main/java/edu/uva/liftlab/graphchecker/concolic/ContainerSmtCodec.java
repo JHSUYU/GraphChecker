@@ -319,8 +319,27 @@ public final class ContainerSmtCodec {
         if (boxedPrimitiveValue(owner, ownerClass, javaType)) {
             return owner;
         }
-        return host.field(owner, ownerClass,
-                JsonFields.optionalInteger(expression, "fieldOffset", -1), javaType);
+        int offset = JsonFields.optionalInteger(
+                expression, "fieldOffset", -1);
+        // Both members are written together by the VM or not at all; a
+        // half-present pair is a payload this codec does not recognise and
+        // is dropped rather than guessed at.
+        JsonElement concreteOwnerNode = expression.get("concreteOwner");
+        JsonElement concreteValueNode = expression.get("concreteValue");
+        if (concreteOwnerNode == null || concreteValueNode == null
+                || concreteOwnerNode.isJsonNull()
+                || concreteValueNode.isJsonNull()) {
+            return host.field(owner, ownerClass, offset, javaType);
+        }
+        Term concreteOwner = host.operand(concreteOwnerNode, Sort.REF);
+        // No expectation: the observed value carries its own Java type and
+        // the host's own table is the authority on the sort it lowers to.
+        Term concreteValue = host.operand(concreteValueNode, null);
+        if (concreteOwner == null || concreteValue == null) {
+            return host.field(owner, ownerClass, offset, javaType);
+        }
+        return host.field(owner, ownerClass, offset, javaType,
+                concreteOwner, concreteValue);
     }
 
     private static boolean boxedPrimitiveValue(
@@ -2206,6 +2225,21 @@ public final class ContainerSmtCodec {
 
         Term field(Term owner, String ownerClass, int fieldOffset,
                    String javaType);
+
+        /**
+         * The same projection, with the pair of facts a read through a
+         * reference-typed shared carrier also recorded: the object this
+         * execution actually read from, and what its field then held.
+         *
+         * <p>A host that has no representation for the owner's choice
+         * ignores them and answers exactly as before -- the projection is
+         * still correct, merely free where the run had evidence.</p>
+         */
+        default Term field(Term owner, String ownerClass, int fieldOffset,
+                           String javaType, Term concreteOwner,
+                           Term concreteValue) {
+            return field(owner, ownerClass, fieldOffset, javaType);
+        }
 
         void unsupported(String reason);
 

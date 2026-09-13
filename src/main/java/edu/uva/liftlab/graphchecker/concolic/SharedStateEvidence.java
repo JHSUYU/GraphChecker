@@ -308,6 +308,23 @@ public final class SharedStateEvidence {
         return LOCATION_KINDS.contains(kind) ? kind : "";
     }
 
+    /**
+     * The slot -- a field offset or an array index -- encoded in a location
+     * key, or -1 when the key names none.  A whole-state location's slot is
+     * the negative sentinel and is reported as it stands.
+     */
+    public static int locationSlotOf(String locationKey) {
+        if (locationKindOf(locationKey).isEmpty()) return -1;
+        int slash = locationKey.indexOf('/');
+        int slot = locationKey.indexOf('#', slash + 1);
+        if (slot <= slash + 1) return -1;
+        try {
+            return Integer.parseInt(locationKey.substring(slot + 1));
+        } catch (NumberFormatException invalid) {
+            return -1;
+        }
+    }
+
     /** The VM session's symbolic owner encoded in a location key. */
     public static long locationOwnerOf(String locationKey) {
         if (locationKindOf(locationKey).isEmpty()) return 0L;
