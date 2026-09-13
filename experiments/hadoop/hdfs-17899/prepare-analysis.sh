@@ -29,6 +29,7 @@ client=${repo}/hadoop-hdfs-project/hadoop-hdfs-client/target/classes
 hdfs=${module}/target/classes
 
 copy_family "${common}" org/apache/hadoop/ipc/CausynthMessagePropagation
+copy_family "${common}" org/apache/hadoop/ipc/CausynthSymbolicSource
 copy_family "${common}" org/apache/hadoop/ipc/Client
 copy_family "${common}" org/apache/hadoop/security/token/delegation/DelegationKey
 copy_family "${client}" org/apache/hadoop/hdfs/protocol/datatransfer/sasl/DataTransferSaslUtil
