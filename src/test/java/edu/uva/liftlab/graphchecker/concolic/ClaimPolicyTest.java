@@ -1555,6 +1555,47 @@ public class ClaimPolicyTest {
         assertTrue(marker.get("reachesAtRecordedValue").getAsBoolean());
     }
 
+    /**
+     * The witness row the claim rests on says so itself.
+     *
+     * <p>The ordinal alone made every consumer carry it in from another
+     * document to read one row -- the acceptance probe had to open
+     * z3-result.json for it while holding result.json.  Every row states the
+     * answer now, so an absent flag is an artifact older than the field
+     * rather than a row nobody classified.</p>
+     */
+    @Test
+    public void theAcceptedWitnessRowIsFlaggedOnTheRowItself() {
+        JsonObject claim = ClaimPolicy.decide(orderedManifest("false"),
+                orderedReach("sat", "unsat"), noFlows());
+        JsonArray findings = claim.getAsJsonArray(
+                WitnessLegitimacy.FINDINGS);
+        assertEquals(0, claim.getAsJsonObject("rootSpace")
+                .get("acceptedValuationOrdinal").getAsInt());
+        assertTrue(findings.get(0).getAsJsonObject().get("accepted")
+                .getAsBoolean());
+        for (int index = 1; index < findings.size(); index++) {
+            assertTrue("only one row carries the acceptance",
+                    !findings.get(index).getAsJsonObject().get("accepted")
+                            .getAsBoolean());
+        }
+    }
+
+    /** A run the policy accepted nothing from flags no row. */
+    @Test
+    public void anUnacceptedRunFlagsNoWitnessRow() {
+        JsonObject claim = ClaimPolicy.decide(orderedManifest("false"),
+                orderedReach("unsat", "unsat"), noFlows());
+        assertEquals(-1, claim.getAsJsonObject("rootSpace")
+                .get("acceptedValuationOrdinal").getAsInt());
+        for (JsonElement element
+                : claim.getAsJsonArray(WitnessLegitimacy.FINDINGS)) {
+            assertTrue("an unaccepted run flagged a witness",
+                    !element.getAsJsonObject().get("accepted")
+                            .getAsBoolean());
+        }
+    }
+
     /** The reason names the valuation, the roots and the reproduction. */
     @Test
     public void theClaimReasonNamesTheReproducedRecordedCase() {
