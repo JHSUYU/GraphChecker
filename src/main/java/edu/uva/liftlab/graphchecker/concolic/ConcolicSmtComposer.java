@@ -106,6 +106,26 @@ public final class ConcolicSmtComposer {
      * evidence about this very read beats a family that merely describes the
      * same slot of some other object.</p>
      *
+     * <p>The arms are <em>ordered</em>, and deliberately carry no claim that
+     * the identities they name are different objects.  The engine briefly
+     * asserted one -- {@code (distinct ...)} over every {@code REF}
+     * structural witness of each scope carrying such a read -- so that an
+     * inner arm could not be swallowed by an outer one.  Nothing recorded
+     * supports it: a structural witness is scoped by the replay
+     * <em>group</em>, which on HDFS-17899 is 27 to 36 executions, and the
+     * axiom made the bug3 composition {@code unsat} in every polarity
+     * (plain, both marker flips and all four root valuations), its whole
+     * unsat core being those four {@code distinct} rows.  What it collided
+     * with is real and is not this binding's to fix: several recorded
+     * {@code BlockKey#keyId} reads are read-from one merged boundary value,
+     * so the model must identify key objects the recording separates.
+     * Until that holds, arm order is an over-approximation -- an inner arm
+     * may collapse onto the observed value -- which admits models rather
+     * than refuting them, and that is the safe direction for a tool whose
+     * {@code unsat} is the strong claim.  The bug the routing was built for
+     * is unaffected: an owner this formula knows nothing about still keeps
+     * the free projection, never the Java default zero.</p>
+     *
      * @param routes owner-witness/value pairs, each {@code {witness, value}}
      */
     static String referenceFieldBinding(String owner, String concreteOwner,
@@ -2161,9 +2181,6 @@ public final class ConcolicSmtComposer {
          */
         private final Map<String, String> guardedReadFieldFamilies =
                 new LinkedHashMap<>();
-        /** Execution scopes in which some read arms over object identity. */
-        private final Set<String> referenceRoutedScopes =
-                new LinkedHashSet<>();
         /**
          * Java references whose declared type is String need two solver
          */
@@ -5683,7 +5700,6 @@ public final class ConcolicSmtComposer {
                     javaType, fieldOffset, executionScope, owner.text,
                     concreteOwner.text, observed.text, projection.text,
                     currentGuard));
-            referenceRoutedScopes.add(executionScope);
             return toContainerTerm(Term.of(name, result,
                     JavaPrimitiveSmtSemantics.widthOfJavaType(javaType)));
         }
@@ -5757,48 +5773,6 @@ public final class ConcolicSmtComposer {
                 } finally {
                     restoreGuard(previousGuard);
                 }
-            }
-        }
-
-        /**
-         * Two distinct VM objects of one replay execution are two distinct
-         * solver references.
-         *
-         * <p>The engine states this nowhere else, and nothing else needed
-         * it: a structural witness was only ever a name to hang recorded
-         * relations on.  A read that arms over object identity does need it
-         * -- without it the solver may equate the identity a writer
-         * installed with the one the execution read from and take an arm the
-         * run refutes -- so it is stated exactly for the execution scopes
-         * that carry such a read, and for no others.</p>
-         */
-        private void emitReferenceIdentityDistinctness() {
-            if (referenceRoutedScopes.isEmpty()) return;
-            Map<String, List<String>> byScope = new LinkedHashMap<>();
-            for (Map.Entry<String, Term> entry
-                    : structuralWitnesses.entrySet()) {
-                String[] parts = entry.getKey().split("\u0000", -1);
-                if (parts.length != 3
-                        || !Sort.REF.name().equals(parts[1])
-                        || !referenceRoutedScopes.contains(parts[0])) {
-                    continue;
-                }
-                byScope.computeIfAbsent(parts[0],
-                        ignored -> new ArrayList<>())
-                        .add(entry.getValue().text);
-            }
-            for (Map.Entry<String, List<String>> entry
-                    : byScope.entrySet()) {
-                if (entry.getValue().size() < 2) continue;
-                StringBuilder text = new StringBuilder("(distinct");
-                for (String witness : entry.getValue()) {
-                    text.append(' ').append(witness);
-                }
-                text.append(')');
-                assertWithoutCurrentGuard(smtSymbols.mint(
-                                "reference_identity_distinct_",
-                                entry.getKey(), 16),
-                        text.toString());
             }
         }
 
@@ -6977,7 +6951,6 @@ public final class ConcolicSmtComposer {
                         sum.toString());
             }
             emitReferenceFieldRoutings();
-            emitReferenceIdentityDistinctness();
             emitRequestFaultControl();
             requireTotalBoundaryDispatch();
             checkExecutionDivergence();

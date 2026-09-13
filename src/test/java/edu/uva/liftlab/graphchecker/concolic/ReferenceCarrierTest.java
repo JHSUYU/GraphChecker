@@ -9,6 +9,8 @@ import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -151,15 +153,26 @@ public class ReferenceCarrierTest {
     }
 
     /**
-     * What the binding plus identity distinctness actually buys.
+     * What the binding is worth once the identities are separate, and what
+     * it is worth when nothing says they are.
      *
-     * <p>Three facts, stated as the composer states them: the owner is one
-     * of the two identities the writers installed, the two identities are
-     * distinct objects of one execution, and this execution read 23 out of
-     * the one it walked.  The consequence is that selecting the <em>other</em>
-     * writer's arm cannot also yield 23 for free -- it yields that object's
-     * own versioned key id -- which is precisely the inference an
-     * uninterpreted projection of an unconstrained owner could not make.</p>
+     * <p>Given that the owner is one of the two identities the writers
+     * installed, that those two are different objects, and that this
+     * execution read 23 out of the one it walked, selecting the
+     * <em>other</em> writer's arm cannot also yield 23 for free -- it yields
+     * that object's own versioned key id, which is precisely the inference
+     * an uninterpreted projection of an unconstrained owner could not
+     * make.</p>
+     *
+     * <p>The separation is a <em>premise</em> here, never an axiom the
+     * composer asserts.  It briefly did assert one, over every {@code REF}
+     * witness of a replay <em>group</em> -- dozens of executions -- and
+     * HDFS-17899 bug3 then had no model at all, in any polarity, with those
+     * rows as its entire unsat core.  Without the premise the arms are
+     * merely ordered, so the inner one may collapse onto the observed value:
+     * an over-approximation, which admits a model rather than refuting one.
+     * The last case pins that, so a future sharpening has to state which
+     * direction it moves in.</p>
      */
     @Test
     public void theBindingSeparatesTheWritersItArmsOver() throws Exception {
@@ -190,13 +203,41 @@ public class ReferenceCarrierTest {
         assertEquals("unsat", solve(model
                 + "(assert (= owner observed_ref))\n"
                 + "(assert (not (= read 23)))\n"));
-        // Without distinctness the two arms may be the same object, and the
-        // installed writer's key id collapses onto the observed value.
+        // With nothing separating the two arms they may be one object, and
+        // the installed writer's key id collapses onto the observed value.
         assertEquals("sat", solve(model.replace(
                         "(assert (distinct observed_ref installed_ref))\n", "")
                 + "(assert (= owner installed_ref))\n"
                 + "(assert (not (= installed_key_id 23)))\n"
                 + "(assert (= read 23))\n"));
+    }
+
+    /**
+     * The composed formula states no object-identity axiom of its own.
+     *
+     * <p>A structural witness is scoped by the replay group, so a
+     * {@code distinct} over the witnesses of one scope says that dozens of
+     * executions allocated dozens of different objects -- which no recording
+     * claims, and which refuted HDFS-17899 bug3 outright.  The binding
+     * therefore carries the arms and nothing else, and the composer emits no
+     * identity row anywhere.</p>
+     */
+    @Test
+    public void theComposerAssertsNoObjectIdentityAxiom() throws Exception {
+        String binding = ConcolicSmtComposer.referenceFieldBinding("owner",
+                "observed_ref", "23", "(container_field__x owner)",
+                Collections.singletonList(new String[]{
+                        "installed_ref", "installed_key_id"}));
+
+        assertFalse(binding, binding.contains("distinct"));
+
+        String source = new String(Files.readAllBytes(Paths.get(
+                        "src/main/java/edu/uva/liftlab/graphchecker"
+                                + "/concolic/ConcolicSmtComposer.java")),
+                StandardCharsets.UTF_8);
+        assertFalse("reference_identity_distinct is unsound over a replay"
+                        + " group and must not come back unexamined",
+                source.contains("reference_identity_distinct"));
     }
 
     // ------------------------------------------------------------- helpers
