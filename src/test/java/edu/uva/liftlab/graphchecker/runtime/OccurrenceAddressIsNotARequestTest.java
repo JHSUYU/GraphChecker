@@ -1,0 +1,82 @@
+package edu.uva.liftlab.graphchecker.runtime;
+
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
+import edu.uva.liftlab.graphchecker.contract.ExecutionTask;
+import org.junit.Test;
+
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
+
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
+
+/**
+ * An occurrence is (node, epoch, region, k-th activation) -- not a request.
+ *
+ * <p>The request an activation was reached under used to veto the match.  That
+ * was the stitcher's addressing: it merged replays and needed the RPC exchange
+ * to tell two runs of one region apart.  It refused flip replays whose
+ * activation is the seed's own -- same node, same region, same ordinal --
+ * because the workload arrived there under a different request the second time,
+ * and on hdfs-17960 that skipped every activation whose decisions are the ones
+ * over the root.</p>
+ *
+ * <p>The difference is still described, because where an occurrence was
+ * reached from is worth saying; it just no longer withholds the address.</p>
+ */
+public class OccurrenceAddressIsNotARequestTest {
+
+    /** Noting the request an activation entered is not a refusal. */
+    @Test
+    public void aDifferentRequestDoesNotUnaddressTheOccurrence() {
+        ConcolicTaskPlan.RuntimeTask task = task();
+
+        task.noteRequestContext("matching root entered request "
+                + "client#epoch0/record-ordered-deletes#1 instead of "
+                + "nn0#epoch1/restart-namenode#1");
+
+        assertTrue("a request note leaves the address answered",
+                task.unansweredAddress().startsWith(
+                        "0 compatible activation(s)"));
+    }
+
+    /** A candidate that really was not this address still says so. */
+    @Test
+    public void anUnaddressedCandidateStillCounts() {
+        ConcolicTaskPlan.RuntimeTask task = task();
+
+        task.noteUnaddressedCandidate("matching root ran on another node");
+
+        assertTrue(task.unansweredAddress().startsWith(
+                "1 compatible activation(s)"));
+        assertTrue(task.unansweredAddress().contains("another node"));
+    }
+
+    /** The planned occurrence still names node, epoch, region and ordinal. */
+    @Test
+    public void theAddressIsNodeEpochRegionAndOrdinal() {
+        assertEquals("hdfs-17899/nn0#epoch0/region/"
+                        + "REGION.2392e4b7-aa01-3487-85a3-ac776965f7f7#1",
+                task().occurrenceId);
+    }
+
+    private static ConcolicTaskPlan.RuntimeTask task() {
+        return new ConcolicTaskPlan.RuntimeTask(ExecutionTask.decode(
+                row("plans/hdfs-17899-bug3-loop-body-producer.json")));
+    }
+
+    private static JsonObject row(String resource) {
+        try (InputStream bytes = OccurrenceAddressIsNotARequestTest.class
+                .getClassLoader().getResourceAsStream(resource)) {
+            if (bytes == null) {
+                throw new IllegalStateException("missing " + resource);
+            }
+            return new JsonParser().parse(new InputStreamReader(bytes,
+                    StandardCharsets.UTF_8)).getAsJsonObject();
+        } catch (Exception failure) {
+            throw new IllegalStateException(failure);
+        }
+    }
+}
