@@ -110,6 +110,38 @@ public final class ClaimPolicy {
      */
     static final String FAULT_MARKER_NOT_DETERMINING =
             "FAULT_MARKER_NOT_DETERMINING";
+    /**
+     * A satisfying witness rests on freedom no named mechanism accounts for.
+     *
+     * <p>This is the blocker the acceptance ruling leaves: a SAT witness is a
+     * finding when everything it moved is something the world does -- a marker
+     * flip, drift inside the recorded clock window, a rotation race the
+     * recorded write order states -- and is withheld only where the witness
+     * was free in a way nobody wrote down. The freedoms that already carry a
+     * blocker of their own ({@link #UNDECIDED_ROOT_SPACE},
+     * {@link #UNDETERMINED_INITIAL_STATE},
+     * {@link #DECLARED_WIRE_FLOWS_UNREALIZED}) are not named twice; this one
+     * covers the freedom that lives in the witness itself.</p>
+     */
+    static final String WITNESS_FREEDOM_UNEXPLAINED =
+            "WITNESS_FREEDOM_UNEXPLAINED";
+    /**
+     * The experiment plants a fault and the polarity that has it is not a
+     * satisfied, explained witness.
+     *
+     * <p>Accepting a SAT candidate is a statement about the bug the campaign
+     * went looking for, so the buggy polarity has to be the one that produced
+     * an explained witness. A run whose only witness is in the other polarity
+     * is a finding about that polarity and not the claim this campaign made.
+     * </p>
+     */
+    static final String FAULT_POLARITY_NOT_WITNESSED =
+            "FAULT_POLARITY_NOT_WITNESSED";
+    /**
+     * Where the initial-state evidence names the arms that are both selected
+     * by the model and the untouched initial content of a truncated carrier.
+     */
+    static final String FREE_INITIAL_ARMS = "freeInitialArmsOnSelectedPath";
 
     private static final Gson GSON = new GsonBuilder()
             .disableHtmlEscaping().setPrettyPrinting().create();
@@ -629,6 +661,19 @@ public final class ClaimPolicy {
         }
         evidence.add("onSelectedPath", onPath);
         evidence.add("offSelectedPath", offPath);
+        // The arms that are both selected and initial: the witness reading a
+        // container nobody reconstructed. A selected writer arm of the same
+        // truncated carrier is a different thing -- it rests on a write the
+        // recording carries -- so the two are counted apart rather than
+        // together under "this read touched a truncated carrier".
+        JsonArray freeInitial = new JsonArray();
+        for (JsonElement element : onPath) {
+            if (element.isJsonObject() && optionalBool(
+                    element.getAsJsonObject(), "initialState", false)) {
+                freeInitial.add(element);
+            }
+        }
+        evidence.add(FREE_INITIAL_ARMS, freeInitial);
         evidence.addProperty("fatalCarrierTruncated",
                 onPath.size() + offPath.size() > 0);
         return evidence;
@@ -637,44 +682,37 @@ public final class ClaimPolicy {
     /**
      * The blocker that evidence justifies, or null when it justifies none.
      *
-     * <p>Which arm the witness picked does not save a fatal read whose own
-     * container was never reconstructed. A truncated snapshot makes
-     * {@code assoc_has} over that container free, so "the key was not there"
-     * is a zero-cost premise available under every arm and every polarity --
-     * the witness that happens to use a writer arm this time is one solver
-     * decision away from not needing it. The gap is the read's, so the read
-     * is blocked while it stands.</p>
+     * <p>Which arm the witness picked is what decides it. A truncated snapshot
+     * makes {@code assoc_has} over that container free, and a witness that
+     * <em>takes</em> that arm satisfies the target out of an admitted hole
+     * rather than out of the program -- that is unexplained freedom and it
+     * blocks. A witness that took a reconstructed writer arm instead rests on
+     * a write the recording carries; the untaken initial arm beside it is a
+     * fact about the formula, reported as a finding. The earlier reading
+     * blocked both, which withheld every run whose fatal read happened to
+     * share a container with a truncated snapshot even when no model went near
+     * it.</p>
      */
     private static JsonObject initialStateBlocker(JsonObject evidence) {
-        JsonArray onPath = array(evidence, "onSelectedPath");
-        JsonArray offPath = array(evidence, "offSelectedPath");
-        if (onPath.size() + offPath.size() == 0) {
+        JsonArray freeInitial = array(evidence, FREE_INITIAL_ARMS);
+        if (freeInitial.size() == 0) {
             return null;
         }
         Set<String> carriers = new LinkedHashSet<>();
         List<String> where = new ArrayList<>();
-        for (JsonArray arms : Arrays.asList(onPath, offPath)) {
-            for (JsonElement element : arms) {
-                if (!element.isJsonObject()) {
-                    continue;
-                }
-                JsonObject row = element.getAsJsonObject();
-                carriers.add(optionalString(row, "sessionLocationKey"));
-                if (arms == onPath || optionalBool(row, "initialState",
-                        false)) {
-                    where.add(optionalString(row, "selector")
-                            + (arms == onPath ? " (selected" : " (available")
-                            + (optionalBool(row, "initialState", false)
-                                    ? ", initial state)" : ")"));
-                }
+        for (JsonElement element : freeInitial) {
+            if (!element.isJsonObject()) {
+                continue;
             }
+            JsonObject row = element.getAsJsonObject();
+            carriers.add(optionalString(row, "sessionLocationKey"));
+            where.add(optionalString(row, "selector")
+                    + " (selected, initial state)");
         }
-        String how = onPath.size() > 0
-                ? "the witness reads the fatal value from"
-                : "the fatal read can take its value from";
         return blocker(UNDETERMINED_INITIAL_STATE,
                 String.join(",", carriers),
-                how + " the initial state of " + carriers.size()
+                "the witness reads the fatal value from the initial state of "
+                        + carriers.size()
                         + " carrier(s) whose initial content the composition"
                         + " reported truncated, so membership there is a free"
                         + " choice rather than the program's: "
@@ -732,23 +770,24 @@ public final class ClaimPolicy {
      * <p>An experiment that injects a marker states a hypothesis: with the
      * fault the target is reached, without it the target is not. The formula
      * answers that in one way only -- the marker's two polarities disagree on
-     * satisfiability. When both polarities are satisfiable the hypothesis is
-     * refuted unless the composition can say, in mechanism terms, what else
-     * reached the target in the polarity that has no fault; and a clock
-     * pressed flat against its own window bound says nothing, because a
-     * saturated bound is the window's answer and not the program's. So the
-     * other polarity has to be explained by a named mechanism strictly inside
-     * what the recording allows, or the marker is not determining and no
-     * accepted claim may rest on it.</p>
+     * satisfiability. Both polarities satisfiable therefore means the marker
+     * did not decide the target, and that is what this evidence records.</p>
      *
-     * <p>"Explained" is measured, not inferred from the witness. A model
-     * assigns every free root, so a witness always names something; the
-     * extractor's {@code mechanismNecessity} probe puts each named
-     * mechanism's roots back to what they recorded and asks whether the
-     * polarity survives. A mechanism the polarity survives without is
-     * decoration, whatever its skew reads. The saturation census is kept
-     * beside it because a reader deciding how much to trust a mechanism still
-     * wants to see how much of it was pressed against the window.</p>
+     * <p>It is not by itself a refusal. Under the acceptance ruling a witness
+     * in the polarity that has no fault is a real finding whenever every
+     * mechanism it names is one the world does -- drift inside the recorded
+     * clock window included, boundary values included, since the window is the
+     * recording's statement about what that clock could have read and a value
+     * on it is inside it. Whether this row blocks is decided by
+     * {@link WitnessLegitimacy}: it blocks while some satisfying witness rests
+     * on freedom nobody accounted for, and is reported as a finding otherwise.
+     * </p>
+     *
+     * <p>The {@code mechanismNecessity} probe stays beside it as evidence a
+     * reader may weigh -- a mechanism the polarity survives without carried
+     * less than one it cannot do without -- and decides nothing on its own.
+     * The census of how many named mechanisms sit inside the window is kept
+     * for the same reason.</p>
      */
     static JsonObject faultMarkerEvidence(JsonObject manifest,
                                           JsonObject reach) {
@@ -819,19 +858,8 @@ public final class ClaimPolicy {
     /** The valuation that assigns this Boolean root that polarity. */
     private static JsonObject polarity(JsonArray valuations, int index,
                                        boolean value) {
-        for (int ordinal = 0; ordinal < valuations.size(); ordinal++) {
-            JsonObject candidate = row(valuations, ordinal);
-            if (candidate == null) {
-                continue;
-            }
-            JsonArray values = array(candidate, "values");
-            if (index < values.size()
-                    && values.get(index).isJsonPrimitive()
-                    && values.get(index).getAsBoolean() == value) {
-                return candidate;
-            }
-        }
-        return null;
+        int ordinal = polarityOrdinal(valuations, index, value);
+        return ordinal < 0 ? null : row(valuations, ordinal);
     }
 
     /**
@@ -863,10 +891,13 @@ public final class ClaimPolicy {
     }
 
     /**
-     * Mechanism rows that name something the recording leaves room for. A
-     * clock at exactly its window bound is excluded: the bound is the
-     * analysis's own parameter, so a witness that saturates it has been
-     * pushed there by the search rather than by the program.
+     * Mechanism rows that name something the recording leaves room for.
+     *
+     * <p>"Inside the window" is inclusive of its bound, which is the same
+     * reading {@link WitnessLegitimacy} decides legitimacy by: the window is
+     * the recording's own statement of what that clock could have read, so a
+     * value on it is a value it could have read. The two must agree or the
+     * census beside a marker row would contradict the verdict above it.</p>
      */
     private static JsonArray unsaturatedMechanisms(JsonObject valuation,
                                                    long window) {
@@ -886,7 +917,7 @@ public final class ClaimPolicy {
             if (mechanism.has("skewMillis")) {
                 long skew = Math.abs(optionalLongInteger(mechanism,
                         "skewMillis", 0L));
-                if (skew >= window) {
+                if (skew > window) {
                     continue;
                 }
             }
@@ -895,8 +926,19 @@ public final class ClaimPolicy {
         return named;
     }
 
-    /** The blocker a non-determining marker justifies, or null. */
-    private static JsonObject faultMarkerBlocker(JsonObject evidence) {
+    /**
+     * The finding a non-determining marker justifies, or null.
+     *
+     * <p>Both polarities satisfiable is a finding and not by itself a refusal:
+     * the acceptance ruling is that a witness in the polarity without the
+     * fault is a real thing about the program when everything it names is
+     * something the world does. What decides whether this row is a blocker is
+     * therefore not the polarity count but whether any satisfying witness
+     * rested on freedom nobody accounted for -- the caller passes that in as
+     * {@code freedom}, and an empty {@code freedom} makes this a finding.</p>
+     */
+    private static JsonObject faultMarkerBlocker(JsonObject evidence,
+                                                 String freedom) {
         List<String> undetermined = new ArrayList<>();
         List<String> detail = new ArrayList<>();
         for (JsonElement element : array(evidence, "markers")) {
@@ -932,9 +974,174 @@ public final class ClaimPolicy {
                 String.join(",", undetermined),
                 "the target is reachable in both polarities of "
                         + undetermined.size() + " declared fault marker(s)"
-                        + " and no named mechanism inside the recorded window"
-                        + " explains the polarity without the fault: "
+                        + (freedom == null || freedom.isEmpty()
+                                ? " and the polarity without the fault is a"
+                                + " witness this composition explains, so"
+                                + " this is a finding: "
+                                : " and a satisfying witness rests on"
+                                + " unexplained freedom (" + freedom + "): ")
                         + String.join("; ", detail));
+    }
+
+    /**
+     * Reads every enumerated valuation against the mechanisms the world
+     * allows, and says what is left over.
+     *
+     * <p>The result carries one row per valuation -- the finding a reader
+     * puts in a report -- plus the three summaries the decision needs: whether
+     * any satisfying witness was left unexplained, which freedoms those were,
+     * and which of them live in the witness itself rather than in a gap the
+     * composition already publishes under a blocker of its own.</p>
+     *
+     * <p>The buggy polarity is the flip of what the marker recorded: an
+     * experiment that records {@code false} and injects {@code true} is asking
+     * about {@code true}. Where a manifest carries no recorded value the
+     * recorded polarity reads as {@code true}, which is what makes 17960's
+     * configured {@code ordered=false} its buggy polarity. A run with no
+     * Boolean root at all -- the clock cases -- asks only that some satisfying
+     * witness be explained.</p>
+     */
+    private static JsonObject witnessLegitimacy(
+            JsonObject manifest, JsonObject reach, JsonArray valuations,
+            String degeneracy, JsonObject initialState,
+            List<String> unrealizedFlows) {
+        long window = Math.max(0L, ClockRootPhysics.skewOf(manifest));
+        List<WitnessLegitimacy.Freedom> composition =
+                WitnessLegitimacy.compositionFreedoms(degeneracy,
+                        array(initialState, FREE_INITIAL_ARMS),
+                        unrealizedFlows);
+        JsonArray findings = new JsonArray();
+        Set<String> freedoms = new LinkedHashSet<>();
+        Set<String> witnessLocal = new LinkedHashSet<>();
+        boolean someSatUnexplained = false;
+        boolean someSatWitnessExplained = false;
+        // Per valuation: satisfied, and free of the freedom that lives in the
+        // witness itself. Composition freedoms are excluded here because each
+        // already withholds acceptance under its own blocker, and asking the
+        // buggy polarity to answer for them too would name one fact twice.
+        List<Boolean> witnessExplained = new ArrayList<>();
+        for (int index = 0; index < valuations.size(); index++) {
+            JsonObject candidate = row(valuations, index);
+            JsonObject finding = WitnessLegitimacy.classify(candidate, index,
+                    window, composition);
+            findings.add(finding);
+            Set<String> local = new LinkedHashSet<>();
+            for (JsonElement element : array(finding, "freedoms")) {
+                if (!element.isJsonObject()) {
+                    continue;
+                }
+                String code = optionalString(element.getAsJsonObject(),
+                        "code");
+                if (witnessLocal(code)) {
+                    local.add(code);
+                }
+            }
+            boolean satisfying = candidate != null && satisfied(candidate);
+            witnessExplained.add(satisfying && local.isEmpty());
+            if (!satisfying) {
+                continue;
+            }
+            if (local.isEmpty()) {
+                someSatWitnessExplained = true;
+            }
+            if (WitnessLegitimacy.UNEXPLAINED.equals(
+                    optionalString(finding, "verdict"))) {
+                someSatUnexplained = true;
+                for (JsonElement element : array(finding, "freedoms")) {
+                    if (element.isJsonObject()) {
+                        freedoms.add(optionalString(
+                                element.getAsJsonObject(), "code"));
+                    }
+                }
+                witnessLocal.addAll(local);
+            }
+        }
+        JsonObject result = new JsonObject();
+        result.add("valuations", findings);
+        result.addProperty("someSatisfyingWitnessUnexplained",
+                someSatUnexplained);
+        result.addProperty("freedomCodes", String.join(",", freedoms));
+        result.addProperty("witnessLocalFreedomCodes",
+                String.join(",", witnessLocal));
+        result.addProperty("faultPolarityNotWitnessed",
+                unwitnessedFaultPolarity(manifest, reach, valuations,
+                        witnessExplained, someSatWitnessExplained));
+        return result;
+    }
+
+    /**
+     * Whether this freedom is one no other blocker already names.
+     *
+     * <p>An unenumerated root space, a selected free initial arm and an
+     * unbound wire each have a blocker of their own, so naming them a second
+     * time under {@link #WITNESS_FREEDOM_UNEXPLAINED} would report one fact
+     * twice. What is left is the freedom that lives in the witness itself.</p>
+     */
+    private static boolean witnessLocal(String code) {
+        return WitnessLegitimacy.CLOCK_OUTSIDE_WINDOW.equals(code)
+                || WitnessLegitimacy.ABSURD_CLOCK_VALUE.equals(code)
+                || WitnessLegitimacy.UNEXPLAINED_ROOT_MOVE.equals(code);
+    }
+
+    /**
+     * The declared fault markers whose buggy polarity produced no explained
+     * witness, as one subject string, or empty when every one of them did.
+     */
+    private static String unwitnessedFaultPolarity(
+            JsonObject manifest, JsonObject reach, JsonArray valuations,
+            List<Boolean> witnessExplained,
+            boolean someSatWitnessExplained) {
+        JsonArray markers = array(object(reach, "roots"), "booleanInputs");
+        if (markers.size() == 0) {
+            // No Boolean root: the mechanism is the finding, so one satisfying
+            // witness the composition explains is the whole requirement.
+            return someSatWitnessExplained ? "" : "the enumerated valuations";
+        }
+        Map<String, String> recorded = new LinkedHashMap<>();
+        for (JsonElement element
+                : array(manifest, ConcolicSmtComposer.RECORDED_ROOT_VALUES)) {
+            if (element.isJsonObject()) {
+                recorded.put(optionalString(element.getAsJsonObject(),
+                        "solverTerm"), optionalString(
+                        element.getAsJsonObject(), "recordedValue"));
+            }
+        }
+        List<String> unwitnessed = new ArrayList<>();
+        for (int index = 0; index < markers.size(); index++) {
+            if (!markers.get(index).isJsonObject()) {
+                continue;
+            }
+            JsonObject marker = markers.get(index).getAsJsonObject();
+            boolean recordedPolarity = !"false".equals(recorded.get(
+                    optionalString(marker, "solverTerm")));
+            int ordinal = polarityOrdinal(valuations, index,
+                    !recordedPolarity);
+            if (ordinal < 0 || ordinal >= witnessExplained.size()
+                    || !witnessExplained.get(ordinal)) {
+                unwitnessed.add(firstNonEmpty(
+                        optionalString(marker, "sourceIdentity"),
+                        optionalString(marker, "solverTerm")));
+            }
+        }
+        return String.join(",", unwitnessed);
+    }
+
+    /** Where the valuation assigning this root that polarity sits. */
+    private static int polarityOrdinal(JsonArray valuations, int index,
+                                       boolean value) {
+        for (int ordinal = 0; ordinal < valuations.size(); ordinal++) {
+            JsonObject candidate = row(valuations, ordinal);
+            if (candidate == null) {
+                continue;
+            }
+            JsonArray values = array(candidate, "values");
+            if (index < values.size()
+                    && values.get(index).isJsonPrimitive()
+                    && values.get(index).getAsBoolean() == value) {
+                return ordinal;
+            }
+        }
+        return -1;
     }
 
     /**
@@ -965,6 +1172,21 @@ public final class ClaimPolicy {
         Set<String> readFields = guardedReadFields(manifest);
         List<String> unrealizedFlows = flows.unrealized(wireFlowLedger,
                 readFields);
+
+        // Every satisfying witness is read against the mechanisms the world
+        // allows before anything is withheld. The acceptance ruling is that a
+        // SAT witness is a finding -- in either polarity -- when everything it
+        // moved is a marker flip, drift inside the recorded clock window, or a
+        // rotation race the recorded write order states; only freedom nobody
+        // accounted for blocks.
+        JsonObject initialState = initialStateEvidence(manifest, reach);
+        JsonObject legitimacy = witnessLegitimacy(manifest, reach, valuations,
+                degeneracy, initialState, unrealizedFlows);
+        boolean someSatUnexplained = optionalBool(legitimacy,
+                "someSatisfyingWitnessUnexplained", false);
+        String witnessFreedom = optionalString(legitimacy, "freedomCodes");
+        String witnessLocalFreedom = optionalString(legitimacy,
+                "witnessLocalFreedomCodes");
 
         List<JsonObject> blockers = new ArrayList<>();
 
@@ -1013,13 +1235,19 @@ public final class ClaimPolicy {
         // root. Two enumerated valuations that differ in one Boolean root and
         // disagree on satisfiability show that dependence exactly; so does a
         // rejected existential perturbation. Without either, the formula and
-        // the roots are disconnected and the witness names nothing.
-        if ("REACHABLE".equals(reachability)
-                && !faultSensitive(valuations, probeConstrains)) {
-            blockers.add(blocker(TARGET_UNCONSTRAINED_BY_ROOTS, "",
+        // the roots are disconnected -- but a witness whose every mechanism is
+        // one the recording allows says what happened whether or not a root
+        // flips it, so this is a blocker only while some satisfying witness is
+        // still unexplained.
+        boolean unconstrained = "REACHABLE".equals(reachability)
+                && !faultSensitive(valuations, probeConstrains);
+        if (unconstrained && someSatUnexplained) {
+            blockers.add(blocker(TARGET_UNCONSTRAINED_BY_ROOTS,
+                    witnessFreedom,
                     "no symbolic root flips the target predicate across the"
-                            + " enumerated valuations, so the witness is not"
-                            + " fault-sensitive"));
+                            + " enumerated valuations and a satisfying witness"
+                            + " rests on unexplained freedom ("
+                            + witnessFreedom + ")"));
         }
 
         // A declared flow the composition never drew either side of is not
@@ -1043,7 +1271,6 @@ public final class ClaimPolicy {
         // FINAL_READY with no refusal; the gap is then invisible to a caller
         // that reads only finalStatusRefusals and the solver's own gaps. One
         // such gap changes what a witness means, so it is read here.
-        JsonObject initialState = initialStateEvidence(manifest, reach);
         JsonObject initialStateGap = initialStateBlocker(initialState);
         if (initialStateGap != null) {
             blockers.add(initialStateGap);
@@ -1053,9 +1280,32 @@ public final class ClaimPolicy {
         // root the verdict has to rest on. A rejected perturbation of some
         // other root is evidence about that root and no answer about this one.
         JsonObject faultMarkers = faultMarkerEvidence(manifest, reach);
-        JsonObject markerGap = faultMarkerBlocker(faultMarkers);
-        if (markerGap != null) {
+        JsonObject markerGap = faultMarkerBlocker(faultMarkers,
+                someSatUnexplained ? witnessFreedom : "");
+        if (markerGap != null && someSatUnexplained) {
             blockers.add(markerGap);
+        }
+
+        // The freedom that lives in the witness itself, rather than in a gap
+        // the composition already published under its own blocker.
+        if (!witnessLocalFreedom.isEmpty()) {
+            blockers.add(blocker(WITNESS_FREEDOM_UNEXPLAINED,
+                    witnessLocalFreedom,
+                    "a satisfying witness moved a root with no mechanism the"
+                            + " recording allows behind it: "
+                            + witnessLocalFreedom));
+        }
+
+        // The campaign's own hypothesis: the buggy polarity is the one that
+        // has to have produced an explained witness.
+        String unwitnessedFault = optionalString(legitimacy,
+                "faultPolarityNotWitnessed");
+        if ("REACHABLE".equals(reachability) && !unwitnessedFault.isEmpty()) {
+            blockers.add(blocker(FAULT_POLARITY_NOT_WITNESSED,
+                    unwitnessedFault,
+                    "the buggy polarity of " + unwitnessedFault
+                            + " is not a satisfied witness this composition"
+                            + " explains, so no accepted claim rests on it"));
         }
 
         JsonObject witnessGap = witnessBlocker(valuations, probeConstrains);
@@ -1120,6 +1370,33 @@ public final class ClaimPolicy {
                 realizedRegions(manifest).size());
         rootSpace.add("initialState", initialState);
         rootSpace.add("faultMarkers", faultMarkers);
+        // Findings the ruling reports rather than blocks: a marker satisfiable
+        // in both polarities whose other polarity is explained is one of them,
+        // so it is published here instead of vanishing with its blocker.
+        JsonArray reportedFindings = new JsonArray();
+        if (markerGap != null && !someSatUnexplained) {
+            reportedFindings.add(markerGap);
+        }
+        if (unconstrained && !someSatUnexplained) {
+            reportedFindings.add(blocker(TARGET_UNCONSTRAINED_BY_ROOTS, "",
+                    "no symbolic root flips the target predicate across the"
+                            + " enumerated valuations, and every satisfying"
+                            + " witness is explained: a finding about the"
+                            + " mechanism rather than about the marker"));
+        }
+        JsonArray untakenInitial = array(initialState, "onSelectedPath");
+        if (array(initialState, FREE_INITIAL_ARMS).size() == 0
+                && array(initialState, "offSelectedPath").size()
+                + untakenInitial.size() > 0) {
+            reportedFindings.add(blocker(UNDETERMINED_INITIAL_STATE, "",
+                    "the fatal read shares a carrier with a truncated initial"
+                            + " snapshot, and the witness took a reconstructed"
+                            + " writer arm rather than that carrier's initial"
+                            + " content"));
+        }
+        rootSpace.add("reportedFindings", reportedFindings);
+        result.add(WitnessLegitimacy.FINDINGS,
+                legitimacy.getAsJsonArray("valuations"));
         rootSpace.add("probedRoot", probedRoot(reach));
         rootSpace.addProperty(ConcolicSmtComposer.UNSAT_CLOSURE_COMPLETE,
                 unsatClosureComplete);

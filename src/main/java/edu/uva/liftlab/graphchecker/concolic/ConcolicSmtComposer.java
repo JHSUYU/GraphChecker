@@ -3890,6 +3890,18 @@ public final class ConcolicSmtComposer {
                     provenance == null ? "" : provenance.declaredField);
             evidence.addProperty("writerCaseOwner", optionalString(candidate,
                     SymbolicPropagationClosure.WRITER_CASE_OWNER));
+            // The recorded order, kept where a reader of the manifest can use
+            // it: the session-monotonic version this writer published and the
+            // event id of the read that retained it. A read's own arms are all
+            // below its event id, so "written after this read" is only ever
+            // visible by comparing one read's event against another read's
+            // arms -- which is exactly the rotation race in HDFS-17899, where
+            // the target datanode installs the fresh key after the allKeys
+            // read that goes looking for it.
+            evidence.addProperty(RecordedOrderRace.WRITER_VERSION,
+                    optionalLongInteger(candidate, "fieldVersionId", -1L));
+            evidence.addProperty(RecordedOrderRace.READ_EVENT,
+                    optionalLongInteger(node, "readEventId", -1L));
             evidence.addProperty("writerCaseSelector", writerCaseSelector);
             evidence.add("writerCaseClosure",
                     GSON.toJsonTree(arm.writerCaseClosure));
