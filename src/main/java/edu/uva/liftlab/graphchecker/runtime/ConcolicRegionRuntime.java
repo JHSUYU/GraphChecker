@@ -1713,10 +1713,16 @@ public final class ConcolicRegionRuntime {
             } catch (Throwable unsymbolized) {
                 carried = null;
             }
-            // A constant answer (the VM folds an unsymbolized primitive to a
-            // ConstExpr) is no expression of its own: only a tree that names
-            // at least one non-constant node was propagated here.
-            boolean reused = VmExpressionIr.carriesPropagatedValue(carried);
+            // A hook site is a declared primitive root by construction: the
+            // entry above refuses anything else.  So it asks the strict
+            // question, the same one a declared plan action asks in
+            // carriesInputAuthority.  The loose rule would answer "already
+            // propagated" for any field a shared-state carrier has wrapped in
+            // a ReadFrom -- which every field the hook stands on eventually
+            // is -- and the mint would never fire, leaving the declared
+            // source concrete.  Only a tree that actually names a VM symbol
+            // root inside those wrappers is an expression of its own.
+            boolean reused = configuredSourceCarriesAuthority(carried);
             // The application's Map re-key reads the modeled value back
             // through this same path, so the model is written first.
             ModelAssignment assignment = reused ? null
@@ -4221,6 +4227,21 @@ public final class ConcolicRegionRuntime {
                 && primitiveDescriptor(action.javaType)
                 ? VmExpressionIr.carriesSymbolicValue(expression)
                 : VmExpressionIr.carriesPropagatedValue(expression);
+    }
+
+    /**
+     * The same question for the {@code CausynthSymbolicSource} hook path.
+     *
+     * <p>{@link #symbolizeConfiguredSourceField} accepts only a declared
+     * primitive field, so it is exactly the case
+     * {@link #carriesInputAuthority} narrows: the strict rule, with no
+     * action row to consult.  Keeping it a named seam is what the
+     * declared-mint contract test asserts against, because the hook itself
+     * cannot run without a live VM and an active region.</p>
+     */
+    /** Package-visible for the declared-mint contract test. */
+    static boolean configuredSourceCarriesAuthority(JsonElement carried) {
+        return VmExpressionIr.carriesSymbolicValue(carried);
     }
 
     /**

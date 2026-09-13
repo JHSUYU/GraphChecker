@@ -77,6 +77,70 @@ public class DeclaredSymbolicRootMintTest {
     }
 
     /**
+     * The {@code CausynthSymbolicSource} hook path asks the same question.
+     *
+     * <p>HDFS-17899 declares {@code BlockTokenSecretManager.serialNo} through
+     * the Java hook rather than a plan action.  By the time
+     * {@code updateKeys()} calls {@code symbolize(...)}, an earlier
+     * activation has already installed a shared-state carrier on the field,
+     * so the value arrives as a {@code ReadFrom} over the constant chain the
+     * increment built.  Under the loose rule the hook reported {@code reused}
+     * every time: no {@code sym__HDFS_BLOCK_KEY_SERIAL_NO__*} root, no
+     * {@code CONFIGURED_SYMBOLIC_SOURCE_FIELD} evidence row, and an empty
+     * {@code configuredSourceMaterializations} in the composed formula.</p>
+     */
+    @Test
+    public void theHookMintsOverACarrierWrappedConstant() {
+        assertFalse("a carrier-wrapped constant is not the hook's authority",
+                ConcolicRegionRuntime.configuredSourceCarriesAuthority(
+                        readFromConstant()));
+    }
+
+    @Test
+    public void theHookStillDefersToARealUpstreamSymbol() {
+        assertTrue("a root minted upstream flows through this read",
+                ConcolicRegionRuntime.configuredSourceCarriesAuthority(
+                        readFromSymbol()));
+    }
+
+    /** The exact serialNo shape: (ReadFrom + 1) % ReadFrom + ReadFrom. */
+    @Test
+    public void theHookMintsOverAnArithmeticChainOfCarrierReads() {
+        JsonObject increment = binary("+", readFromConstant(), constant());
+        JsonObject wrapped = binary("%", increment, readFromConstant());
+        JsonObject chain = binary("+", wrapped, readFromConstant());
+        assertTrue("the loose rule sees three wrappers",
+                VmExpressionIr.carriesPropagatedValue(chain));
+        assertFalse("but no symbol is inside any of them",
+                ConcolicRegionRuntime.configuredSourceCarriesAuthority(chain));
+    }
+
+    @Test
+    public void theHookDefersWhenOneLeafOfTheChainIsSymbolic() {
+        JsonObject chain = binary("+",
+                binary("%", readFromConstant(), readFromSymbol()),
+                constant());
+        assertTrue(ConcolicRegionRuntime.configuredSourceCarriesAuthority(
+                chain));
+    }
+
+    @Test
+    public void theHookReadsNothingAsNoAuthority() {
+        assertFalse("an unsymbolized field answers \"no\"",
+                ConcolicRegionRuntime.configuredSourceCarriesAuthority(null));
+    }
+
+    private static JsonObject binary(String op, JsonObject left,
+                                     JsonObject right) {
+        JsonObject node = new JsonObject();
+        node.addProperty("_type", "BinaryExpression");
+        node.addProperty("_op", op);
+        node.add("_left", left);
+        node.add("_right", right);
+        return node;
+    }
+
+    /**
      * A tracked carrier the plan did not make mint-eligible.
      *
      * <p>The scheduler now symbolizes every carrier so the VM keeps
