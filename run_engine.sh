@@ -1935,38 +1935,16 @@ campaign_instrument() {
 # alone loads no workload class it did not rewrite.
 campaign_replay() {
   local role=$1 plan=$2 ids=$3 classes=$4 results=$5 worker=$6
-  local status=0 replay_group plan_digest replay_group_seed
+  local status=0
   require_nonempty "concolic execution task plan" "${plan}"
   [[ ! -e "${results}" ]] || die \
     "replay output already exists; worker directories are written once: ${results}"
   mkdir -p "${worker}" "$(dirname "${results}")"
-  # Every task in one workload JVM shares one propagation ledger. Replayed
-  # bundles already name that group in their tasks; the initial linked plan
-  # does not, so give the whole invocation one identity here.
-  if ! replay_group=$(jq -e -r -s '
-      ([.[] | (.linkedReplayGroupId // "")]) as $all
-      | ($all | map(select(length > 0)) | unique) as $named
-      | if ($named | length) == 0 then ""
-        elif ($named | length) == 1
-             and ($all | all(length > 0)) then $named[0]
-        else error("linked replay plan has mixed or conflicting group ids")
-        end
-    ' "${plan}"); then
-    die "linked replay plan has mixed or conflicting group ids: ${plan}"
-  fi
-  if [[ -z "${replay_group}" ]]; then
-    # The group names one propagation ledger, so it is seeded from what the
-    # ledger is over: the plan these tasks came from and the task ids this
-    # invocation replays. The worker directory used to be in the seed and is
-    # not: it is a per-iteration filesystem path, so the same plan and the
-    # same task ids were given a different group id in every iteration and in
-    # every campaign root, which no reader could join across two runs.
-    plan_digest=$(campaign_digest "${plan}") \
-      || die "failed to digest linked replay plan: ${plan}"
-    replay_group_seed=$(printf '%s\0' "${plan_digest}" "${ids}" \
-      | sha256sum | awk '{print $1}')
-    replay_group="REPLAY.GROUP.${replay_group_seed}"
-  fi
+  # Every task in one workload JVM shares one propagation ledger, and the plan
+  # names it: ConcolicScheduler stamps the seed replay's tasks and
+  # PathReplayTaskFactory stamps every flip bundle's, both as
+  # REPLAY.GROUP.<sha256>. One authority mints it, so nothing is derived or
+  # cross-checked here.
   run_capturing_status \
     campaign_run_adapter "replay(${role})" "${concolic_replay_command}" \
     "CAUSYNTH_CONCOLIC_ROLE=${role}" \
@@ -1975,7 +1953,6 @@ campaign_replay() {
     "CAUSYNTH_CONCOLIC_RESULTS=${results}" \
     "CAUSYNTH_CONCOLIC_CLASSES=${classes}" \
     "CAUSYNTH_CONCOLIC_WORKER_DIR=${worker}" \
-    "CAUSYNTH_CONCOLIC_REPLAY_GROUP_ID=${replay_group}" \
     "CAUSYNTH_CONCOLIC_MAX_TASKS=${schedule_max_jobs}" \
     "CAUSYNTH_TRACE_TEST=${trace_test}" >"${worker}/replay.log" 2>&1
   # A workload whose target branch throws exits nonzero by design, so the gate
