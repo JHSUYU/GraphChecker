@@ -246,15 +246,18 @@ public final class ConcolicScheduler {
                 : RuntimeWorkflowDiscovery.rankedWorkflow(
                         loaded.regionPlans);
         // The replay task set is narrowed against the same slice every
-        // selection narrows its inputs against, seeded once here.  An
-        // occurrence no root can reach replays only what the recording
-        // observed, so it is published as pruned rather than scheduled; the
-        // decision is a pure function of the plan, the graph and the roots,
-        // so a later active-observed schedule takes the same subset.
+        // selection narrows its inputs against, seeded once here, and then
+        // against the backward slice of the read that fails.  An occurrence
+        // no root can reach -- or whose write that read never consults --
+        // replays only what the recording observed, so it is published as
+        // pruned rather than scheduled; the decision is a pure function of
+        // the plan, the graph and the roots, so a later active-observed
+        // schedule takes the same subset.
         loaded.symbolicInputs.seedCarrierSlice(loaded.refinedGraph,
                 rawProposals(loaded.regionPlans));
         ReplayTaskSlice replaySlice = ReplayTaskSlice.decide(
-                loaded.regionPlans, loaded.symbolicInputs);
+                loaded.regionPlans, loaded.symbolicInputs,
+                loaded.refinedGraph, arguments.replayTaskBudget);
         List<String> selectedOccurrences = new ArrayList<>();
         for (RuntimeWorkflowDiscovery.Selection selection
                 : workflow.selections()) {
@@ -2296,6 +2299,67 @@ public final class ConcolicScheduler {
         }
 
         /**
+         * This slice narrowed to what the failing read can still consume.
+         *
+         * <p>The forward closure says which cells a root can move; it does
+         * not say which of them the failure ever looks at.  A location the
+         * roots reach but the fatal read's backward slice does not is a
+         * constant <em>for this failure</em>: the recording fixed it, every
+         * replay arm writes the value it observed, and versioning it grows
+         * the campaign without adding an arm.  Intersecting the two is what
+         * makes "carries a root" mean "carries a root <em>to the read that
+         * throws</em>".</p>
+         *
+         * <p>The admitted action locations survive the narrowing: they are
+         * the fields of the actions this slice already carries, named as
+         * {@code owner#field} keys rather than as cells, so the backward
+         * walk over cells has no opinion about them and refusing them here
+         * would narrow by an absence of evidence.  A withheld slice and an
+         * unnamed fatal read both leave the slice exactly as it was.</p>
+         */
+        RootDependenceSlice reachingFatalRead(
+                List<JsonObject> refinedGraph, Set<String> fatalCells) {
+            if (!usable() || fatalCells == null || fatalCells.isEmpty()) {
+                return this;
+            }
+            Map<String, Set<String>> backward = new LinkedHashMap<>();
+            Set<String> known = new LinkedHashSet<>();
+            for (JsonObject edge : refinedGraph == null
+                    ? Collections.<JsonObject>emptyList() : refinedGraph) {
+                String from = optionalString(edge, "fromCell");
+                String to = optionalString(edge, "toCell");
+                if (from.isEmpty() || to.isEmpty()) continue;
+                backward.computeIfAbsent(to,
+                        ignored -> new LinkedHashSet<>()).add(from);
+                known.add(from);
+                known.add(to);
+            }
+            Set<String> seeds = new LinkedHashSet<>();
+            for (String cell : fatalCells) {
+                if (known.contains(cell)) seeds.add(cell);
+            }
+            // A fatal read the graph has no cell for states nothing about
+            // what reaches it, so it narrows nothing rather than everything.
+            if (seeds.isEmpty()) return this;
+            Set<String> consumed = new LinkedHashSet<>(seeds);
+            Deque<String> pending = new ArrayDeque<>(seeds);
+            while (!pending.isEmpty()) {
+                for (String next : backward.getOrDefault(pending.removeFirst(),
+                        Collections.<String>emptySet())) {
+                    if (consumed.add(next)) pending.addLast(next);
+                }
+            }
+            Set<String> narrowed = new LinkedHashSet<>(reachable);
+            narrowed.retainAll(consumed);
+            // The roots themselves stay on the slice: a root the failure
+            // reads only through a cell the graph did not resolve is still
+            // this campaign's root.
+            narrowed.addAll(roots);
+            return new RootDependenceSlice(narrowed, roots,
+                    admittedLocations);
+        }
+
+        /**
          * The forward closure of {@code rootCells} over the refined graph.
          *
          * <p>Seeds the graph does not name are dropped rather than kept as
@@ -2988,13 +3052,16 @@ public final class ConcolicScheduler {
         public final int maxJobs;
         public final int maxLoopIterations;
         public final Path symbolicInputs;
+        /** The expected kept replay-task count, or 0 when unstated. */
+        public final int replayTaskBudget;
         private final ClosureMode closureMode;
 
         private Arguments(Path regionPlan, Path refinedGraph, Path summaries,
                           Path outputDirectory, String regionId,
                           String occurrenceId, String goalId,
                           int maxJobs, int maxLoopIterations,
-                          Path symbolicInputs, ClosureMode closureMode) {
+                          Path symbolicInputs, ClosureMode closureMode,
+                          int replayTaskBudget) {
             this.regionPlan = regionPlan;
             this.refinedGraph = refinedGraph;
             this.summaries = summaries;
@@ -3006,13 +3073,16 @@ public final class ConcolicScheduler {
             this.maxLoopIterations = maxLoopIterations;
             this.symbolicInputs = symbolicInputs;
             this.closureMode = closureMode;
+            // An unstated budget is no expectation, not an expectation of
+            // zero: the telemetry then reports the count and judges nothing.
+            this.replayTaskBudget = Math.max(0, replayTaskBudget);
         }
 
         public static Arguments parse(String[] args) {
             Map<String, String> values = parseArgs(args, "region-plan",
                     "refined-graph", "summaries", "output-dir", "max-jobs",
                     "symbolic-inputs", "max-loop-iterations",
-                    "closure-mode");
+                    "closure-mode", "replay-task-budget");
             Path regionPlan = requiredPath(values, "region-plan");
             Path output = Paths.get(firstNonBlank(values.get("output-dir"),
                     ArtifactIO.sibling(regionPlan,
@@ -3029,7 +3099,8 @@ public final class ConcolicScheduler {
                     positiveInt(values.get("max-loop-iterations"),
                             LoopBoundPolicy.MAX_LOOP_BODY_ITERATIONS,
                             "max-loop-iterations"),
-                    symbolicInputs, closureMode);
+                    symbolicInputs, closureMode,
+                    parseInt(values.get("replay-task-budget"), 0));
         }
 
         private static Path requiredPath(Map<String, String> values,
@@ -3076,7 +3147,7 @@ public final class ConcolicScheduler {
                     summaries, outputDirectory,
                     selection.regionId, selection.occurrenceId,
                     selection.goalId, 1, maxLoopIterations,
-                    symbolicInputs, closureMode);
+                    symbolicInputs, closureMode, replayTaskBudget);
         }
 
     }
