@@ -6,13 +6,22 @@ ports that cache predicate to the same current tracing and RPC interfaces used
 by the other experiments.
 
 The Balancer caches a key before two ordinary NameNode key rotations. DataNodes
-refresh through the block-key RPC. The manually selected NameNode-side
-`keyId` and `allKeys` values remain explicit symbolic roots. The custom JDK
-propagates their expressions through the fixed sequence of replies into the
-Balancer and DataNode state. Consumer anchors retain each receive boundary,
-and selected shared reads retain bounded GuardedRead snapshots of their writer
-expressions. The target is a DataNode lookup that cannot find the Balancer's
-cached key.
+refresh through the block-key RPC. The declared symbolic roots are the two
+clock/expiry families in `symbolic-inputs.jsonl`:
+`<org.apache.hadoop.security.token.delegation.DelegationKey: long expiryDate>`
+(the field `BlockKey` inherits) and
+`<org.apache.hadoop.util.Timer: long now()>.return`. Neither `keyId` nor
+`allKeys` is a declared root: `keyId` is a *propagated* wire value, carried by
+the `block-key-id` and `data-encryption-key-id` flows in
+`communication-mappings.jsonl`, and `allKeys` is shared state reconstructed
+from its retained writers. There is no Boolean fault marker in this workload --
+`/opt/hadoop-hdfs-11741` contains no `Debug.makeSymbolicBoolean` anywhere -- so
+the only thing that can open the target branch is the symbolic clock. The
+custom JDK propagates the root expressions through the fixed sequence of
+replies into the Balancer and DataNode state. Consumer anchors retain each
+receive boundary, and selected shared reads retain bounded GuardedRead
+snapshots of their writer expressions. The target is a DataNode lookup that
+cannot find the Balancer's cached key.
 
 The causal graph selects this closure and its instrumentation sites. Each
 region contributes its own path condition; the composer recursively merges the
