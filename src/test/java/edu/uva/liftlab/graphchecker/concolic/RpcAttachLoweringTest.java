@@ -474,30 +474,36 @@ public class RpcAttachLoweringTest {
                 ConcolicSmtComposer.unboundDeclaredPorts(ledger));
     }
 
-    /** The value left the wire on arrival, and the field it landed in is read. */
+    /**
+     * A read of the consumer's field does not realize the flow.
+     *
+     * <p>It says the field was read, never that what it served came off this
+     * wire: on hdfs-17899 the {@code block-key-expiry-date} flow was excused
+     * by such a read while every one of its families went unreferenced, and
+     * the composition then answered that field out of a per-run INITIAL
+     * snapshot.  Only a lowered boundary family realizes a flow.</p>
+     */
     @Test
-    public void theConsumerFieldRouteAlsoRealizesTheFlow() {
+    public void theConsumerFieldRouteDoesNotRealizeTheFlow() {
         JsonArray ledger = new JsonArray();
         ledger.add(ledgerRow(PORT, true, false, false));
         ledger.add(ledgerRow(PORT, true, false, true));
 
-        assertEquals(java.util.Collections.emptyList(),
+        assertEquals(java.util.Collections.singletonList(PORT),
                 ConcolicSmtComposer.unboundDeclaredPorts(ledger));
     }
 
     /**
-     * Only a read on a node the wire reached realizes it.
+     * The ledger's consumer-field note is scoped to a receiving node.
      *
-     * <p>The producer assigns the consumer's field from its own state before
-     * the value is ever sent, so a read there is the flow's source, not its
-     * arrival. hdfs-17899-bug3 and hdfs-17897 both excused an unbound
-     * {@code block-key-expiry-date} on a read of
-     * {@code DelegationKey#expiryDate} that happens only on the NameNode,
-     * while the wire delivered to the DataNodes -- and the DataNode's own
-     * expiry reads then served recorded constants no wire carried.</p>
+     * <p>It no longer excuses an unbound flow -- only a lowered boundary
+     * family realizes one -- but it stays in the ledger as telemetry, and a
+     * note that the producer read its own field says nothing about what
+     * arrived.  The producer assigns the consumer's field from its own state
+     * before the value is ever sent.</p>
      */
     @Test
-    public void onlyAReadOnAReceivingNodeRealizesAFlow() {
+    public void theConsumerFieldNoteIsScopedToAReceivingNode() {
         String field = "org.apache.hadoop.security.token.delegation"
                 + ".DelegationKey#expiryDate";
         Map<String, Set<String>> readOnProducer = java.util.Collections
@@ -530,10 +536,10 @@ public class RpcAttachLoweringTest {
 
         assertEquals(java.util.Collections.emptyList(),
                 ConcolicSmtComposer.unboundDeclaredPorts(ledger));
-        // The rule itself, stated on one flow's two facts.
-        assertTrue(ConcolicSmtComposer.wireFlowRefusable(false, false));
-        assertFalse(ConcolicSmtComposer.wireFlowRefusable(true, false));
-        assertFalse(ConcolicSmtComposer.wireFlowRefusable(false, true));
+        // The rule itself: a flow is realized by a bound family or by
+        // nothing.
+        assertTrue(ConcolicSmtComposer.wireFlowRefusable(false));
+        assertFalse(ConcolicSmtComposer.wireFlowRefusable(true));
     }
 
     private static JsonObject ledgerRow(String port, boolean declared,
