@@ -36,8 +36,6 @@ public final class BoundedLoopComposition {
     public static final String MANIFEST_FIELD = "boundedLoopComposition";
     public static final String PLAN_FIELD = "retainedLoops";
     public static final String GAP_KIND = "BOUNDED_LOOP_COMPOSITION_GAP";
-    public static final String GAP_AUTHORITY =
-            "BOUNDED_LOOP_COMPOSITION_GAP_V1";
 
     public static final String LOOP_BODY_BOUND_DISAGREES =
             "BOUNDED_LOOP_BODY_BOUND_DISAGREES";
@@ -393,7 +391,6 @@ public final class BoundedLoopComposition {
         JsonObject row = new JsonObject();
         row.addProperty("kind", GAP_KIND);
         row.addProperty("schemaVersion", SCHEMA_VERSION);
-        row.addProperty("authority", GAP_AUTHORITY);
         row.addProperty("reason", reason);
         row.addProperty("subject", subject);
         row.addProperty("detail", detail);

@@ -60,6 +60,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Predicate;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -315,13 +316,20 @@ public final class ConcolicRegionRuntime {
     }
 
     /**
+     * The innermost activation, or null while observation is muted: a hook
+     * reached from GraphChecker's own bookkeeping accounts for nothing.
+     */
+    private static ActiveRegion observingActiveRegion() {
+        return OBSERVATION_PAUSE_DEPTH.get() > 0 ? null : activeRegion();
+    }
+
+    /**
      * Accounts for one attempted traversal of an instrumented normal CFG
      * backedge.
      */
     public static void checkLoopBackedge(
             String backedgeId, int instrumentedMaxTraversals) {
-        if (OBSERVATION_PAUSE_DEPTH.get() > 0) return;
-        ActiveRegion active = activeRegion();
+        ActiveRegion active = observingActiveRegion();
         if (active == null) return;
 
         ConcolicVmBroker api = engine();
@@ -348,19 +356,10 @@ public final class ConcolicRegionRuntime {
                     instrumentedMaxTraversals,
                     "BOUND_HOOK_FAILURE:" + rootCause(failure));
         } finally {
-            if (paused) {
-                try {
-                    api.resumePathCondition();
-                } catch (Throwable failure) {
-                    active.addUnresolvedOnce(
-                            "loop-bound path-condition resume failed: "
-                                    + rootCause(failure));
-                    if (cut == null) {
-                        cut = active.loopBoundCut(safe(backedgeId),
-                                instrumentedMaxTraversals,
-                                "BOUND_HOOK_RESUME_FAILURE");
-                    }
-                }
+            if (resumeLoopAccounting(active, api, paused) && cut == null) {
+                cut = active.loopBoundCut(safe(backedgeId),
+                        instrumentedMaxTraversals,
+                        "BOUND_HOOK_RESUME_FAILURE");
             }
         }
         endAtCut(active, cut);
@@ -372,8 +371,7 @@ public final class ConcolicRegionRuntime {
      */
     public static void checkReplayLoopBody(
             String loopId, int instrumentedMaxTraversals) {
-        if (OBSERVATION_PAUSE_DEPTH.get() > 0) return;
-        ActiveRegion active = activeRegion();
+        ActiveRegion active = observingActiveRegion();
         if (active == null) return;
 
         ConcolicVmBroker api = engine();
@@ -399,15 +397,7 @@ public final class ConcolicRegionRuntime {
             active.addUnresolvedOnce("replay loop resource hook failed: "
                     + rootCause(failure));
         } finally {
-            if (paused) {
-                try {
-                    api.resumePathCondition();
-                } catch (Throwable failure) {
-                    active.addUnresolvedOnce(
-                            "loop-bound path-condition resume failed: "
-                                    + rootCause(failure));
-                }
-            }
+            resumeLoopAccounting(active, api, paused);
         }
         endAtCut(active, cut);
     }
@@ -418,8 +408,7 @@ public final class ConcolicRegionRuntime {
      */
     public static void recordLoopCardinality(
             String loopId, int cardinality) {
-        if (OBSERVATION_PAUSE_DEPTH.get() > 0) return;
-        ActiveRegion active = activeRegion();
+        ActiveRegion active = observingActiveRegion();
         if (active == null) return;
         beginBookkeeping();
         try {
@@ -431,14 +420,30 @@ public final class ConcolicRegionRuntime {
 
     /** Ends the current dynamic occurrence of one fixed-count loop. */
     public static void completeLoopCardinality(String loopId) {
-        if (OBSERVATION_PAUSE_DEPTH.get() > 0) return;
-        ActiveRegion active = activeRegion();
+        ActiveRegion active = observingActiveRegion();
         if (active == null) return;
         beginBookkeeping();
         try {
             active.completeLoopCardinality(safe(loopId));
         } finally {
             endBookkeeping();
+        }
+    }
+
+    /**
+     * Restores the path condition a loop-accounting hook paused.  True when
+     * the resume was lost, leaving the workload's own observation muted.
+     */
+    private static boolean resumeLoopAccounting(
+            ActiveRegion active, ConcolicVmBroker api, boolean paused) {
+        if (!paused) return false;
+        try {
+            api.resumePathCondition();
+            return false;
+        } catch (Throwable failure) {
+            active.addUnresolvedOnce("loop-bound path-condition resume "
+                    + "failed: " + rootCause(failure));
+            return true;
         }
     }
 
@@ -1046,11 +1051,8 @@ public final class ConcolicRegionRuntime {
         return false;
     }
 
-    private static boolean sameSelector(String left, String right) {
-        return left == null ? right == null : left.equals(right);
-    }
-
-    static boolean sameRootMethod(String left, String right) {
+    /** Null-safe equality for either string naming one root hook. */
+    static boolean sameHookIdentity(String left, String right) {
         return left == null ? right == null : left.equals(right);
     }
 
@@ -1150,17 +1152,9 @@ public final class ConcolicRegionRuntime {
                         boxedOrReference, null);
             }
             if (boxedOrReference == null) {
-                ModelAssignment assignment = active.assignment(action, null);
-                if (assignment == null) return null;
-                Object modeled = assignment.referenceValue(null);
-                if (modeled == UnsupportedReplayValue.INSTANCE) {
-                    active.unresolved.add(action.symbol
-                            + ": unsupported root reference model "
-                            + assignment.valueType + "=" + assignment.value);
-                    return null;
-                }
-                active.recordModelAssignment(assignment);
-                return modeled;
+                Object modeled = modeledReference(active, action, null,
+                        "root reference");
+                return unmodeled(modeled) ? null : modeled;
             }
             if ("ARGUMENT_FIELD_PATH".equals(action.location)) {
                 for (List<String> path : action.fieldPaths) {
@@ -1168,27 +1162,14 @@ public final class ConcolicRegionRuntime {
                             path);
                 }
             } else {
-                ModelAssignment assignment = active.assignment(action, null);
-                if (assignment != null) {
-                    Object modeled = assignment.referenceValue(
-                            boxedOrReference);
-                    if (modeled != UnsupportedReplayValue.INSTANCE) {
-                        active.recordModelAssignment(assignment);
-                        if (containerValue(modeled)
-                                && active.materialized.add(action.symbol)) {
-                            symbolize(active, action, modeled, engine());
-                        }
-                        return modeled;
-                    }
-                    active.unresolved.add(action.symbol
-                            + ": unsupported root reference model "
-                            + assignment.valueType + "=" + assignment.value);
+                Object modeled = modeledReference(active, action,
+                        boxedOrReference, "root reference");
+                if (!unmodeled(modeled)) {
+                    trackMaterializedContainer(active, action, modeled);
+                    return modeled;
                 }
             }
-            if (containerValue(boxedOrReference)
-                    && active.materialized.add(action.symbol)) {
-                symbolize(active, action, boxedOrReference, engine());
-            }
+            trackMaterializedContainer(active, action, boxedOrReference);
         }
         return boxedOrReference;
     }
@@ -1212,24 +1193,14 @@ public final class ConcolicRegionRuntime {
                 return materializePrimitiveValue(active, action,
                         boxedOrReference, null);
             }
-            Object materialized = boxedOrReference;
-            ModelAssignment assignment = active.assignment(action, null);
-            if (assignment != null) {
-                Object modeled = assignment.referenceValue(boxedOrReference);
-                if (modeled == UnsupportedReplayValue.INSTANCE) {
-                    active.unresolved.add(action.symbol
-                            + ": unsupported method argument model "
-                            + assignment.valueType + "="
-                            + assignment.value);
-                    return boxedOrReference;
-                }
-                materialized = modeled;
-                active.recordModelAssignment(assignment);
+            Object modeled = modeledReference(active, action,
+                    boxedOrReference, "method argument");
+            if (modeled == UnsupportedReplayValue.INSTANCE) {
+                return boxedOrReference;
             }
-            if (containerValue(materialized)
-                    && active.materialized.add(action.symbol)) {
-                symbolize(active, action, materialized, engine());
-            }
+            Object materialized = modeled == MissingValue.INSTANCE
+                    ? boxedOrReference : modeled;
+            trackMaterializedContainer(active, action, materialized);
             return materialized;
         }
         return boxedOrReference;
@@ -2477,10 +2448,9 @@ public final class ConcolicRegionRuntime {
             ROOT_INVOCATION_FRAMES.remove();
             return null;
         }
-        boolean matches = sameSelector(frame.instrumentationSelector,
+        boolean matches = sameHookIdentity(frame.instrumentationSelector,
                 instrumentationSelector)
-                && (rootMethod == null ? frame.rootMethod == null
-                : rootMethod.equals(frame.rootMethod));
+                && sameHookIdentity(frame.rootMethod, rootMethod);
         if (!matches) {
             // Never guess ownership.  In particular, do not expose or close
             // an outer selected frame when instrumentation is malformed.
@@ -2493,31 +2463,44 @@ public final class ConcolicRegionRuntime {
         return frame;
     }
 
-    private static final class RootInvocationFrame {
+    /**
+     * The sibling-hook accounting both root stacks share: one physical entry
+     * emits one hook per plan row, and only the first is an activation.
+     */
+    private static class SiblingHookGroupEntry {
+        final String groupKey;
+        private int remainingSiblingHooks;
+
+        SiblingHookGroupEntry(String groupKey, int remainingSiblingHooks) {
+            this.groupKey = safe(groupKey);
+            this.remainingSiblingHooks = remainingSiblingHooks;
+        }
+
+        /** Absorbs one further hook emitted at this same physical entry. */
+        final boolean claimsSiblingHook(String actualGroupKey) {
+            if (remainingSiblingHooks <= 0
+                    || !groupKey.equals(safe(actualGroupKey))) {
+                return false;
+            }
+            remainingSiblingHooks--;
+            return true;
+        }
+    }
+
+    private static final class RootInvocationFrame
+            extends SiblingHookGroupEntry {
         private final String instrumentationSelector;
         private final String rootMethod;
-        private final String rootHookGroupKey;
-        private int remainingSiblingHooks;
         private long token;
 
         private RootInvocationFrame(String instrumentationSelector,
                                     String rootMethod, String rootHookGroupKey,
                                     int remainingSiblingHooks,
                                     long token) {
+            super(rootHookGroupKey, remainingSiblingHooks);
             this.instrumentationSelector = instrumentationSelector;
             this.rootMethod = rootMethod;
-            this.rootHookGroupKey = safe(rootHookGroupKey);
-            this.remainingSiblingHooks = remainingSiblingHooks;
             this.token = token;
-        }
-
-        private boolean claimsSiblingHook(String actualGroupKey) {
-            if (remainingSiblingHooks <= 0
-                    || !rootHookGroupKey.equals(safe(actualGroupKey))) {
-                return false;
-            }
-            remainingSiblingHooks--;
-            return true;
         }
     }
 
@@ -2533,29 +2516,18 @@ public final class ConcolicRegionRuntime {
     }
 
     /** One real enclosing method invocation for bounded body activations. */
-    private static final class LoopRootInvocationContext {
+    private static final class LoopRootInvocationContext
+            extends SiblingHookGroupEntry {
         private final long token;
-        private final String groupKey;
-        private int remainingSiblingHooks;
         private final Set<String> admittedTaskIds;
 
         private LoopRootInvocationContext(
                 long token, String groupKey, int remainingSiblingHooks,
                 Set<String> admittedTaskIds) {
+            super(groupKey, remainingSiblingHooks);
             this.token = token;
-            this.groupKey = safe(groupKey);
-            this.remainingSiblingHooks = remainingSiblingHooks;
             this.admittedTaskIds = Collections.unmodifiableSet(
                     new LinkedHashSet<>(admittedTaskIds));
-        }
-
-        private boolean claimsSiblingHook(String actualGroupKey) {
-            if (remainingSiblingHooks <= 0
-                    || !groupKey.equals(safe(actualGroupKey))) {
-                return false;
-            }
-            remainingSiblingHooks--;
-            return true;
         }
     }
 
@@ -3610,8 +3582,10 @@ public final class ConcolicRegionRuntime {
                                             SymbolizeAction action,
                                             Object root,
                                             List<String> path) {
-        ModelAssignment assignment = active.assignment(action, path);
-        if (assignment == null || path == null || path.isEmpty()) return;
+        if (path == null || path.isEmpty()
+                || active.assignment(action, path) == null) {
+            return;
+        }
         Object owner = resolveFieldPathLeafOwner(root, path);
         if (owner == null || owner == MissingValue.INSTANCE) {
             active.unresolved.add(action.symbol + "." + FieldPathSpec.join(path)
@@ -3633,6 +3607,42 @@ public final class ConcolicRegionRuntime {
             return;
         }
         active.recordModelAssignment(assignment);
+    }
+
+    /**
+     * Applies the solve's reference model for one action.  Returns the
+     * replacement (possibly null), {@code MissingValue} when the solve named
+     * no assignment, or {@code UnsupportedReplayValue} when it cannot be
+     * replayed as a reference - which is also filed as unresolved.
+     */
+    private static Object modeledReference(
+            ActiveRegion active, SymbolizeAction action, Object concrete,
+            String label) {
+        ModelAssignment assignment = active.assignment(action, null);
+        if (assignment == null) return MissingValue.INSTANCE;
+        Object modeled = assignment.referenceValue(concrete);
+        if (modeled == UnsupportedReplayValue.INSTANCE) {
+            active.unresolved.add(action.symbol + ": unsupported " + label
+                    + " model " + assignment.valueType + "="
+                    + assignment.value);
+            return UnsupportedReplayValue.INSTANCE;
+        }
+        active.recordModelAssignment(assignment);
+        return modeled;
+    }
+
+    /** True for both {@link #modeledReference} outcomes that model nothing. */
+    private static boolean unmodeled(Object modeled) {
+        return modeled == MissingValue.INSTANCE
+                || modeled == UnsupportedReplayValue.INSTANCE;
+    }
+
+    /** Symbolizes a materialized container the first time an action claims it. */
+    private static void trackMaterializedContainer(
+            ActiveRegion active, SymbolizeAction action, Object value) {
+        if (containerValue(value) && active.materialized.add(action.symbol)) {
+            symbolize(active, action, value, engine());
+        }
     }
 
     private static Object materializePrimitiveValue(
@@ -3740,11 +3750,8 @@ public final class ConcolicRegionRuntime {
                 List<Object> values = (List<Object>) container;
                 if (index >= values.size()) return false;
                 Object current = values.get(index);
-                Object modeled = "NULL".equals(valueType)
-                        ? null : current == null
-                        ? UnsupportedReplayValue.INSTANCE
-                        : coerceModelValue(valueType, value,
-                                current.getClass());
+                Object modeled = modeledContainerValue(current, valueType,
+                        value);
                 if (modeled == UnsupportedReplayValue.INSTANCE) {
                     return false;
                 }
@@ -3795,11 +3802,7 @@ public final class ConcolicRegionRuntime {
             return "NULL".equals(assignment.valueType);
         }
         Object current = map.get(key);
-        Object modeled = "NULL".equals(assignment.valueType)
-                ? null : current == null
-                ? UnsupportedReplayValue.INSTANCE
-                : coerceModelValue(assignment.valueType,
-                        assignment.value, current.getClass());
+        Object modeled = modeledContainerValue(current, assignment);
         if (modeled == UnsupportedReplayValue.INSTANCE) return false;
         map.put(key, modeled);
         return true;
@@ -3819,9 +3822,8 @@ public final class ConcolicRegionRuntime {
                 Object current = values.get(index);
                 Object modeled = modeledContainerValue(current, assignment);
                 if (modeled == UnsupportedReplayValue.INSTANCE) return false;
-                if (!(current == null ? modeled == null
-                        : current.equals(modeled))
-                        && ((Set<?>) container).contains(modeled)) {
+                if (collidesWithLiveElement(current, modeled,
+                        ((Set<?>) container).contains(modeled))) {
                     return false;
                 }
                 values.set(index, modeled);
@@ -3858,9 +3860,8 @@ public final class ConcolicRegionRuntime {
             Object current = selected.getKey();
             Object modeled = modeledContainerValue(current, assignment);
             if (modeled == UnsupportedReplayValue.INSTANCE) return false;
-            if (!(current == null ? modeled == null
-                    : current.equals(modeled))
-                    && target.containsKey(modeled)) {
+            if (collidesWithLiveElement(current, modeled,
+                    target.containsKey(modeled))) {
                 return false;
             }
             target.clear();
@@ -3877,10 +3878,27 @@ public final class ConcolicRegionRuntime {
 
     private static Object modeledContainerValue(
             Object current, ModelAssignment assignment) {
-        if ("NULL".equals(assignment.valueType)) return null;
+        return modeledContainerValue(current, assignment.valueType,
+                assignment.value);
+    }
+
+    /**
+     * The replacement a model names for a live container element.  A model
+     * may null an element out or re-coerce a present one; an absent element
+     * has no Java type to coerce against.
+     */
+    private static Object modeledContainerValue(
+            Object current, String valueType, String value) {
+        if ("NULL".equals(valueType)) return null;
         return current == null ? UnsupportedReplayValue.INSTANCE
-                : coerceModelValue(assignment.valueType,
-                assignment.value, current.getClass());
+                : coerceModelValue(valueType, value, current.getClass());
+    }
+
+    /** True when this write would merge two distinct live entries into one. */
+    private static boolean collidesWithLiveElement(
+            Object current, Object modeled, boolean alreadyPresent) {
+        return alreadyPresent && !(current == null ? modeled == null
+                : current.equals(modeled));
     }
 
     private static Object containerKey(String javaType, String value) {
@@ -4362,39 +4380,37 @@ public final class ConcolicRegionRuntime {
         CURRENT_TOKENS.get().push(active.token);
     }
 
-    /** True only when {@code active} is the innermost region with a caller. */
-    private static boolean hasEnclosingActiveRegion(ActiveRegion active) {
+    /** The stack, having proved {@code active} is its innermost entry. */
+    private static Deque<Long> innermostActiveRegionStack(
+            ActiveRegion active, String violation) {
         Deque<Long> tokens = CURRENT_TOKENS.get();
         Long current = tokens.peek();
         if (current == null || current.longValue() != active.token) {
-            throw new IllegalStateException(
-                    "selected regions must close in strict LIFO order");
+            throw new IllegalStateException(violation);
         }
-        return tokens.size() > 1;
+        return tokens;
+    }
+
+    /** True only when {@code active} is the innermost region with a caller. */
+    private static boolean hasEnclosingActiveRegion(ActiveRegion active) {
+        return innermostActiveRegionStack(active,
+                "selected regions must close in strict LIFO order").size() > 1;
     }
 
     /** The exact selected caller of the current innermost activation. */
     private static ActiveRegion enclosingActiveRegion(ActiveRegion active) {
-        Deque<Long> tokens = CURRENT_TOKENS.get();
+        Deque<Long> tokens = innermostActiveRegionStack(active,
+                "selected regions must inspect callers in strict LIFO order");
         java.util.Iterator<Long> iterator = tokens.iterator();
-        Long current = iterator.hasNext() ? iterator.next() : null;
-        if (current == null || current.longValue() != active.token) {
-            throw new IllegalStateException(
-                    "selected regions must inspect callers in strict LIFO "
-                            + "order");
-        }
+        iterator.next();
         Long enclosingToken = iterator.hasNext() ? iterator.next() : null;
         return enclosingToken == null ? null : ownerRegion(enclosingToken);
     }
 
     /** Pops the exact innermost activation; an ownership mismatch is fatal. */
     private static void popActiveRegion(ActiveRegion active) {
-        Deque<Long> tokens = CURRENT_TOKENS.get();
-        Long current = tokens.peek();
-        if (current == null || current.longValue() != active.token) {
-            throw new IllegalStateException(
-                    "selected region stack does not own token " + active.token);
-        }
+        Deque<Long> tokens = innermostActiveRegionStack(active,
+                "selected region stack does not own token " + active.token);
         tokens.pop();
         if (tokens.isEmpty()) CURRENT_TOKENS.remove();
     }
@@ -5463,8 +5479,6 @@ public final class ConcolicRegionRuntime {
         private void loopCardinalityGap(String reason, String loopId,
                                         int occurrence, String detail) {
             JsonObject row = new JsonObject();
-            row.addProperty("kind", "LOOP_CARDINALITY_COVERAGE_GAP");
-            row.addProperty("authority", "RUNTIME_LOOP_CARDINALITY_GAP_V1");
             row.addProperty("reason", reason);
             row.addProperty(LoopBoundPolicy.RUNTIME_LOOP_ID, loopId);
             if (occurrence > 0) {
@@ -5883,18 +5897,21 @@ public final class ConcolicRegionRuntime {
                     || previous.equals(symbol) ? symbol : "");
         }
 
-        private ModelAssignment assignment(SymbolizeAction action,
-                                           List<String> path) {
+        /**
+         * The one unspent assignment matching {@code matcher}.  Two survivors
+         * address nothing, so the ambiguity is filed and neither applies.
+         */
+        private ModelAssignment uniqueAssignment(
+                Predicate<ModelAssignment> matcher, boolean reusable,
+                String subject, String ambiguity) {
             ModelAssignment selected = null;
             for (ModelAssignment candidate : activation.modelAssignments) {
-                if (!candidate.matches(action, path)
-                        || !action.repeatedPrimitiveAccessor()
+                if (!matcher.test(candidate) || !reusable
                         && appliedModelAssignments.contains(candidate.key)) {
                     continue;
                 }
                 if (selected != null) {
-                    addUnresolvedOnce(action.symbol
-                            + ": ambiguous model assignments");
+                    addUnresolvedOnce(subject + ambiguity);
                     return null;
                 }
                 selected = candidate;
@@ -5902,25 +5919,23 @@ public final class ConcolicRegionRuntime {
             return selected;
         }
 
+        private ModelAssignment assignment(SymbolizeAction action,
+                                           List<String> path) {
+            return uniqueAssignment(
+                    candidate -> candidate.matches(action, path),
+                    action.repeatedPrimitiveAccessor(), action.symbol,
+                    ": ambiguous model assignments");
+        }
+
         /** One solver value for one exact configured source hook. */
         private ModelAssignment configuredSourceAssignment(
                 String sourcePhaseId, String sourceId,
                 String fieldSignature) {
-            ModelAssignment selected = null;
-            for (ModelAssignment candidate : activation.modelAssignments) {
-                if (!candidate.matchesConfiguredSource(sourcePhaseId,
-                        sourceId, fieldSignature)
-                        || appliedModelAssignments.contains(candidate.key)) {
-                    continue;
-                }
-                if (selected != null) {
-                    addUnresolvedOnce(sourcePhaseId
-                            + ": ambiguous configured source models");
-                    return null;
-                }
-                selected = candidate;
-            }
-            return selected;
+            return uniqueAssignment(
+                    candidate -> candidate.matchesConfiguredSource(
+                            sourcePhaseId, sourceId, fieldSignature),
+                    false, sourcePhaseId,
+                    ": ambiguous configured source models");
         }
 
         private boolean hasAppliedExactNullReferenceAssignment(

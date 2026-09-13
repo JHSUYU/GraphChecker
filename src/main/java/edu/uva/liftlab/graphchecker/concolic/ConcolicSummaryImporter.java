@@ -1145,8 +1145,6 @@ public final class ConcolicSummaryImporter {
 
         private void gap(String reason, String subject, String detail) {
             JsonObject row = new JsonObject();
-            row.addProperty("kind", "PATH_LOCAL_LOOP_COUNT_GAP");
-            row.addProperty("authority", "PATH_LOCAL_LOOP_COUNT_GAP_V1");
             row.addProperty("reason", reason);
             row.addProperty("subject", subject);
             row.addProperty("detail", detail);
