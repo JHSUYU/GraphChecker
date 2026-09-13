@@ -37,6 +37,19 @@ final class InitialContainerSnapshot {
     static final String SKIPPED_EVENT = "INITIAL_SNAPSHOT_SKIPPED";
 
     /**
+     * Telemetry event naming one container whose base was recovered from the
+     * mutation history the recorder had already watched.
+     *
+     * <p>Its own row, not a {@link #STATED_EVENT} one, because the two are
+     * different facts about the run: a stated container was untouched when it
+     * was offered, a rebased one had already been changed inside a recording
+     * region and the engine had to undo that change to say what it started
+     * with. Both publish a base; only the second says the campaign is
+     * selecting carriers after the workload has begun mutating them.</p>
+     */
+    static final String REBASED_EVENT = "INITIAL_SNAPSHOT_REBASED";
+
+    /**
      * Telemetry event naming one container this run did state.
      *
      * <p>A declined container has always said so; an accepted one said
@@ -58,6 +71,31 @@ final class InitialContainerSnapshot {
     static final int KIND_INDEXED = 0;
     static final int KIND_ASSOCIATIVE = 1;
 
+    // What the VM did with one offer.  These mirror
+    // ConcolicMngr::InitialSnapshotAnswer and cross the JNI boundary as the
+    // int the native method answers.
+    //
+    // The call used to answer a bool, and three of these answered the same
+    // `true`: INSTALLED, KEPT_EXISTING_HISTORY and REFUSED_OVER_BOUND.  This
+    // side mapped all three to "installed", so a carrier whose INITIAL
+    // version carried no base at all was recorded as carrying a complete one
+    // - and a free INITIAL arm is a whole container the solver has to search
+    // over, which is what turned one Boolean root into twelve 180 s timeouts
+    // on the recorded HDFS-17960 corpus.
+
+    /** Nothing was stated and nothing is claimed. */
+    static final int NOT_SELECTABLE = 0;
+    /** The chain was installed; the state now states the content. */
+    static final int INSTALLED = 1;
+    /** A recorded mutation history was kept; its base is unrecoverable. */
+    static final int KEPT_EXISTING_HISTORY = 2;
+    /** The content held more members than the VM's entry bound admits. */
+    static final int REFUSED_OVER_BOUND = 3;
+    /** The recorded history was rebuilt on a recovered, stated base. */
+    static final int REBASED_UNDER_HISTORY = 4;
+    /** An earlier offer already stated this container's content. */
+    static final int ALREADY_STATED = 5;
+
     // The declined reasons.  One vocabulary, because a reader of the
     // telemetry has to be able to tell "held nothing" from each separate way
     // of not having said what it held.
@@ -67,6 +105,14 @@ final class InitialContainerSnapshot {
     static final String OVER_BOUND = "over bound";
     static final String CONTENT_RACED = "content changed while it was read";
     static final String VM_DECLINED = "the VM declined the snapshot";
+    // The VM's own answers, one reason each.  A single "the VM said no" hides
+    // exactly the distinction this call was changed to make.
+    static final String VM_KEPT_HISTORY =
+            "the recorded mutation history has no recoverable base";
+    static final String VM_OVER_BOUND =
+            "the VM refused the content over its own entry bound";
+    static final String VM_NOT_SELECTABLE =
+            "the VM does not carry this container's state";
 
     /**
      * Concrete classes whose contents this runtime knows how to enumerate
@@ -131,25 +177,42 @@ final class InitialContainerSnapshot {
     private InitialContainerSnapshot() {
     }
 
-    /** The VM call, isolated so a test can observe exactly what was sent. */
+    /**
+     * The VM call, isolated so a test can observe exactly what was sent.
+     *
+     * <p>Answers one of the constants above, never a bool: which of the VM's
+     * outcomes happened decides whether the INITIAL version has a base.</p>
+     */
     interface Installer {
-        boolean install(Object container, Object[] keys, Object[] values,
-                        int kind) throws Exception;
+        int install(Object container, Object[] keys, Object[] values,
+                    int kind) throws Exception;
     }
 
     /** What one attempt did, and why it did not do more. */
     static final class Outcome {
-        /** Whether the VM installed a chain for this container. */
-        final boolean installed;
+        /** The VM's answer, or {@link #NOT_SELECTABLE} if it was not asked. */
+        final int answer;
+        /**
+         * Whether the container's INITIAL version now states its content.
+         *
+         * <p>Three of the VM's answers state it - an installed chain, a
+         * history rebuilt on a recovered base, and a container an earlier
+         * offer already stated - and every other answer leaves the content
+         * unknown. Nothing here treats "the call returned" as "the content is
+         * stated": that conflation is the defect this vocabulary exists to
+         * remove.</p>
+         */
+        final boolean stated;
         /** Empty when nothing needed saying; a declined reason otherwise. */
         final String reason;
         final String detail;
         /** Members stated, or the count that was refused; -1 when unknown. */
         final int entries;
 
-        private Outcome(boolean installed, String reason, String detail,
-                        int entries) {
-            this.installed = installed;
+        private Outcome(int answer, boolean stated, String reason,
+                        String detail, int entries) {
+            this.answer = answer;
+            this.stated = stated;
             this.reason = reason;
             this.detail = detail;
             this.entries = entries;
@@ -157,16 +220,70 @@ final class InitialContainerSnapshot {
 
         /** Whether this outcome is worth a telemetry row. */
         boolean declined() {
-            return !installed && !reason.isEmpty();
+            return !stated && !reason.isEmpty();
+        }
+
+        /** The event a stated outcome is filed under. */
+        String statedEvent() {
+            return answer == REBASED_UNDER_HISTORY
+                    ? REBASED_EVENT : STATED_EVENT;
         }
     }
 
     private static final Outcome SILENT =
-            new Outcome(false, "", "", -1);
+            new Outcome(NOT_SELECTABLE, false, "", "", -1);
 
     private static Outcome declined(String reason, String detail,
                                     int entries) {
-        return new Outcome(false, reason, detail, entries);
+        return declined(NOT_SELECTABLE, reason, detail, entries);
+    }
+
+    private static Outcome declined(int answer, String reason, String detail,
+                                    int entries) {
+        return new Outcome(answer, false, reason, detail, entries);
+    }
+
+    /**
+     * The outcome of one VM answer, with the content the walk handed over.
+     *
+     * <p>Each answer gets its own reason, so a corpus can be grepped for
+     * which of them happened instead of being scanned for an absent field on
+     * every version row.</p>
+     */
+    private static Outcome answered(int answer, String contentClass,
+                                    int size) {
+        switch (answer) {
+            case INSTALLED:
+            case ALREADY_STATED:
+            case REBASED_UNDER_HISTORY:
+                return new Outcome(answer, true, "", contentClass, size);
+            case KEPT_EXISTING_HISTORY:
+                return declined(answer, VM_KEPT_HISTORY, contentClass, -1);
+            case REFUSED_OVER_BOUND:
+                return declined(answer, VM_OVER_BOUND, contentClass, size);
+            case NOT_SELECTABLE:
+                return declined(answer, VM_NOT_SELECTABLE, contentClass,
+                        size);
+            default:
+                // An answer this runtime does not know is not an answer it
+                // may read as "stated": a newer VM may have added an outcome
+                // that carries no base.
+                return declined(answer, VM_DECLINED,
+                        contentClass + " answered " + answer, size);
+        }
+    }
+
+    /** The VM answer as a name, for a telemetry row a person reads. */
+    static String answerName(int answer) {
+        switch (answer) {
+            case NOT_SELECTABLE: return "NOT_SELECTABLE";
+            case INSTALLED: return "INSTALLED";
+            case KEPT_EXISTING_HISTORY: return "KEPT_EXISTING_HISTORY";
+            case REFUSED_OVER_BOUND: return "REFUSED_OVER_BOUND";
+            case REBASED_UNDER_HISTORY: return "REBASED_UNDER_HISTORY";
+            case ALREADY_STATED: return "ALREADY_STATED";
+            default: return "UNKNOWN_" + answer;
+        }
     }
 
     /**
@@ -246,13 +363,11 @@ final class InitialContainerSnapshot {
                             "size " + size + " but " + values.size()
                                     + " members", values.size());
                 }
-                boolean answered = installer.install(container,
+                int answer = installer.install(container,
                         associative ? keys.toArray() : null,
                         values.toArray(),
                         associative ? KIND_ASSOCIATIVE : KIND_INDEXED);
-                return answered
-                        ? new Outcome(true, "", contentClass, size)
-                        : declined(VM_DECLINED, contentClass, size);
+                return answered(answer, contentClass, size);
             }
         } catch (Throwable failed) {
             // A ConcurrentModificationException, a wrapper whose delegate
@@ -330,6 +445,7 @@ final class InitialContainerSnapshot {
         row.addProperty("kind", SKIPPED_EVENT);
         row.addProperty("schemaVersion", 1);
         row.addProperty("reason", outcome.reason);
+        row.addProperty("answer", answerName(outcome.answer));
         row.addProperty("detail", ConcolicRegionRuntime.safe(outcome.detail));
         row.addProperty("carrier",
                 ConcolicRegionRuntime.safe(locationDescription));
@@ -341,20 +457,23 @@ final class InitialContainerSnapshot {
     /**
      * The row for a container this run did state.
      *
-     * <p>{@code entries} is what the walk handed the VM. Note what the row
-     * cannot say: {@code ConcolicMngr::snapshotContainerExpression} answers
-     * the same {@code true} three ways - it installed the chain, it already
-     * held a recorded mutation history for the container and kept that
-     * instead, or it refused the content over its own bound and noted the
-     * refusal in the versions ledger. So this row states that the offer was
-     * accepted, not that the INITIAL version now carries a base. That answer
-     * is the version's own, via
-     * {@code SharedStateEvidence.declaresInitialSnapshot}.</p>
+     * <p>{@code entries} is what the walk handed the VM, and {@code answer}
+     * names which of the VM's outcomes stated it - an installed chain, a
+     * history rebuilt on a recovered base, or a container an earlier offer
+     * had already stated. The row is filed under {@link #REBASED_EVENT} for
+     * the middle one and {@link #STATED_EVENT} otherwise.</p>
+     *
+     * <p>This row says the content was stated. It does not replace the
+     * version's own answer - {@code
+     * SharedStateEvidence.declaresInitialSnapshot} - which remains
+     * authoritative, because it is read off the value the solver will
+     * actually see.</p>
      */
     static JsonObject statedRow(Outcome outcome, String locationDescription) {
         JsonObject row = new JsonObject();
-        row.addProperty("kind", STATED_EVENT);
+        row.addProperty("kind", outcome.statedEvent());
         row.addProperty("schemaVersion", 1);
+        row.addProperty("answer", answerName(outcome.answer));
         row.addProperty("detail", ConcolicRegionRuntime.safe(outcome.detail));
         row.addProperty("carrier",
                 ConcolicRegionRuntime.safe(locationDescription));

@@ -646,18 +646,101 @@ int ConcolicMngr::initialSnapshotMaxEntries() {
   return resolved;
 }
 
-bool ConcolicMngr::snapshotContainerExpression(
+// Records what one offer answered for `target`, so the selection that follows
+// can publish it.  The container must already be rooted: the record is keyed
+// by the canonical container id, and a container with no shadow has none.
+static void note_snapshot_answer(oop target, int answer, int entries) {
+  SharedFieldVersions::note_initial_snapshot(
+      ConcolicMngr::ctx->canonical_container_id(target), answer, entries);
+}
+
+/**
+ * Recovers the content an already-mutated container started with, and rebuilds
+ * the recorded history on top of it.
+ *
+ * The problem this solves: a container the recorder has already watched change
+ * carries a chain of mutations standing on an opaque STATE root.  That chain
+ * is the one thing that relates the container to this activation's inputs, so
+ * replacing it with the observed content would pin the container to the
+ * recorded path - which is why the offer used to be dropped whenever a history
+ * existed.  But dropping it leaves the STATE root at the bottom, and a solver
+ * reading the INITIAL version is then free to answer "absent" for every member
+ * the container already held.
+ *
+ * Both facts are recoverable together.  The offered members are the content at
+ * selection, the history says exactly which mutations produced that content
+ * from the root, and an APPEND or a positional INSERT each carries its own
+ * inverse - so undoing them against the observed content yields the content
+ * the root denotes.  Standing the history back up on a SNAPSHOT_BASE of that
+ * content gives a chain that denotes the same value as before, states its
+ * base, and keeps every recorded mutation's expressions exactly as recorded.
+ *
+ * A record that does not carry its inverse (WRITE, REMOVE, CLEAR, an INSERT at
+ * a symbolic position, an associative PUT whose displaced value is gone) makes
+ * the base unrecoverable, and then the honest answer is that it is unknown.
+ * Nothing here guesses: a base that states a member the container did not hold
+ * is a false premise about the recorded execution.
+ */
+static jint rebase_recorded_history(oop target, const char *shape,
+                                    bool indexed, Expression *recorded,
+                                    objArrayOop snapshot_values) {
+  const int entries = snapshot_values->length();
+  // Only the indexed algebra records inverses.  An associative PUT overwrote
+  // whatever the key held, and the record does not carry it, so no map with a
+  // recorded history has a recoverable base.
+  if (!indexed) {
+    note_snapshot_answer(target, ConcolicMngr::SNAPSHOT_KEPT_EXISTING_HISTORY,
+                         -1);
+    return ConcolicMngr::SNAPSHOT_KEPT_EXISTING_HISTORY;
+  }
+  Expression *root = NULL;
+  std::vector<ContainerExpression *> history;
+  std::vector<int> base_members;
+  if (!ContainerSupport::recorded_history(recorded, &root, &history)
+      || !ContainerSupport::undo_indexed_history(history, entries,
+                                                 &base_members)) {
+    note_snapshot_answer(target, ConcolicMngr::SNAPSHOT_KEPT_EXISTING_HISTORY,
+                         -1);
+    return ConcolicMngr::SNAPSHOT_KEPT_EXISTING_HISTORY;
+  }
+
+  // The base stands on this container's own STATE root, exactly as a freshly
+  // installed snapshot does, so the two shapes are the same shape.
+  exp_list_t no_arguments;
+  Expression *state = new ContainerExpression(
+      shape, "SNAPSHOT_BASE", root, no_arguments);
+  for (size_t member = 0; member < base_members.size(); ++member) {
+    exp_list_t arguments;
+    arguments.push_back(ContainerSupport::concrete_value(
+        snapshot_values->obj_at(base_members[member])));
+    state = new ContainerExpression(shape, "APPEND", state, arguments);
+  }
+  // Expression nodes are immutable, so the history is rebuilt rather than
+  // re-rooted in place.  Every mutation keeps its own recorded arguments and
+  // guard: only what it stands on changes.
+  for (size_t step = 0; step < history.size(); ++step) {
+    state = history[step]->rebuilt_on(state);
+  }
+  ConcolicMngr::ctx->set_container_state(target, state);
+  // `entries` and not the base size: the INITIAL version's value is this whole
+  // chain, and what it denotes is the content at selection.
+  note_snapshot_answer(target, ConcolicMngr::SNAPSHOT_REBASED_UNDER_HISTORY,
+                       entries);
+  return ConcolicMngr::SNAPSHOT_REBASED_UNDER_HISTORY;
+}
+
+jint ConcolicMngr::snapshotContainerExpression(
     Handle container, Handle keys, Handle values, jint kind) {
   if (!has_active_context() || container.is_null() || values.is_null()
       || !values()->is_objArray()) {
-    return false;
+    return SNAPSHOT_NOT_SELECTABLE;
   }
 
   oop target = container();
   objArrayOop snapshot_values = objArrayOop(values());
   objArrayOop snapshot_keys = NULL;
   if (!keys.is_null()) {
-    if (!keys()->is_objArray()) return false;
+    if (!keys()->is_objArray()) return SNAPSHOT_NOT_SELECTABLE;
     snapshot_keys = objArrayOop(keys());
   }
 
@@ -668,9 +751,15 @@ bool ConcolicMngr::snapshotContainerExpression(
   if (kind == 3) {
     if (!target->is_array()
         || snapshot_values->length() != ((arrayOop)target)->length()) {
-      return false;
+      return SNAPSHOT_NOT_SELECTABLE;
     }
-    if (ctx->find_container_state(target) != NULL) return true;
+    // An array's elements have their own locations and it is never a
+    // whole-state carrier, so this answer is read by the caller and never by
+    // a selection.  It is still said exactly: an array that already carries
+    // state kept it, and nothing here states what it held.
+    if (ctx->find_container_state(target) != NULL) {
+      return SNAPSHOT_KEPT_EXISTING_HISTORY;
+    }
     arrayOop array = arrayOop(target);
     ctx->container_state(target, "INDEXED");
     for (int index = 0; index < snapshot_values->length(); ++index) {
@@ -678,7 +767,8 @@ bool ConcolicMngr::snapshotContainerExpression(
           ContainerSupport::concrete_value(
               snapshot_values->obj_at(index)));
     }
-    return ctx->find_container_state(target) != NULL;
+    return ctx->find_container_state(target) != NULL
+        ? SNAPSHOT_INSTALLED : SNAPSHOT_NOT_SELECTABLE;
   }
 
   // The Java runtime has already inspected the actual final value as a
@@ -687,25 +777,21 @@ bool ConcolicMngr::snapshotContainerExpression(
   // Method-level symbolic handlers remain deliberately narrower.
   bool indexed = kind == 0;
   bool associative = kind == 1 || kind == 2;
-  if (!indexed && !associative) return false;
+  if (!indexed && !associative) return SNAPSHOT_NOT_SELECTABLE;
   const char *shape = indexed ? "INDEXED" : "ASSOCIATIVE";
   if (associative
       && (snapshot_keys == NULL
           || snapshot_keys->length() != snapshot_values->length())) {
-    return false;
+    return SNAPSHOT_NOT_SELECTABLE;
   }
 
-  // A container the recorder has already watched change carries its contents
-  // in those operations, so it does not need to be told what it holds -- and
-  // telling it would replace a history that relates the container to this
-  // activation's inputs with a constant that holds only on the recorded path.
-  // That is the same judgement the array branch above makes.  A container
-  // whose state is still the bare STATE root has no such history, and is
-  // exactly the unconstrained symbolic collection the empty base exists to
-  // replace, so it is still snapshotted; so is any state that does not say.
+  // An earlier offer already stated this container's content.  Restating it
+  // would install a second base under a chain that already has one; the first
+  // offer's record is the one that describes the value, so leave it alone.
   Expression *recorded = ctx->find_container_state(target);
-  if (recorded != NULL && recorded->is_recorded_container_mutation()) {
-    return true;
+  if (recorded != NULL
+      && ContainerSupport::states_initial_content(recorded)) {
+    return SNAPSHOT_ALREADY_STATED;
   }
 
   // SNAPSHOT_BASE(STATE) is an exact empty collection: its size is zero and
@@ -720,6 +806,10 @@ bool ConcolicMngr::snapshotContainerExpression(
   // refusal is the whole difference between "held nothing" and "held
   // something this engine declined to state": a reader that cannot tell
   // them apart would solve with an empty container.
+  //
+  // Checked before the history is looked at, because the rebase below states
+  // the same members a fresh install would and must not slip past the bound
+  // the fresh install obeys.
   const int entries = snapshot_values->length();
   if (entries > initialSnapshotMaxEntries()) {
     // Root the container before recording the refusal: the record is keyed
@@ -728,9 +818,19 @@ bool ConcolicMngr::snapshotContainerExpression(
     // selection of this container would do a moment later - the refusal
     // withholds the contents, not the container's identity.
     ctx->container_state(target, shape);
-    SharedFieldVersions::note_refused_initial_snapshot(
-        ctx->canonical_container_id(target), entries);
-    return true;
+    note_snapshot_answer(target, SNAPSHOT_REFUSED_OVER_BOUND, entries);
+    return SNAPSHOT_REFUSED_OVER_BOUND;
+  }
+
+  // A container the recorder has already watched change carries those
+  // mutations in a chain standing on an opaque root, and that chain is what
+  // relates the container to this activation's inputs.  Overwriting it with
+  // the observed content would pin the container to the recorded path; but
+  // leaving the root opaque leaves the members it already held unconstrained.
+  // Recovering the base from the history keeps both.
+  if (recorded != NULL && recorded->is_recorded_container_mutation()) {
+    return rebase_recorded_history(target, shape, indexed, recorded,
+                                   snapshot_values);
   }
 
   exp_list_t no_arguments;
@@ -758,7 +858,11 @@ bool ConcolicMngr::snapshotContainerExpression(
     }
     ctx->set_container_state(target, state);
   }
-  return ctx->find_container_state(target) != NULL;
+  if (ctx->find_container_state(target) == NULL) {
+    return SNAPSHOT_NOT_SELECTABLE;
+  }
+  note_snapshot_answer(target, SNAPSHOT_INSTALLED, entries);
+  return SNAPSHOT_INSTALLED;
 }
 
 std::string ConcolicMngr::getRegionSummary() {

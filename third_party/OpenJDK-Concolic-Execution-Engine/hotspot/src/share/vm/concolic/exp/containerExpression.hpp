@@ -48,6 +48,16 @@ class ContainerExpression : public Expression {
   const std::string &get_shape() const { return _shape; }
   Expression *get_receiver() const { return _receiver; }
   Expression *get_guard() const { return _guard; }
+  const exp_list_t &get_arguments() const { return _arguments; }
+
+  // This same relation, applied to a different receiver.
+  //
+  // An expression node is immutable once constructed (see expression.hpp), so
+  // re-rooting a recorded mutation history onto a stated base rebuilds the
+  // chain rather than editing it.  Everything but the receiver is copied,
+  // including the guard: a conditionally recorded removal is still
+  // conditional when it stands on a different base.
+  ContainerExpression *rebuilt_on(Expression *receiver) const;
 
   virtual void serialize_internal(
       rapidjson::Writer<rapidjson::StringBuffer> &writer);

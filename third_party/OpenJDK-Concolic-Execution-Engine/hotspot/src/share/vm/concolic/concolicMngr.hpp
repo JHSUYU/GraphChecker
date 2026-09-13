@@ -268,7 +268,47 @@ public:
   /** Members past which an initial snapshot keeps the opaque state root. */
   static int initialSnapshotMaxEntries();
 
-  static bool snapshotContainerExpression(
+  /**
+   * What one initial-snapshot offer did.
+   *
+   * This used to be a bool, and three different situations answered `true`:
+   * the chain was installed, a recorded mutation history for the container
+   * was kept instead, and the content was refused over the entry bound.  The
+   * caller mapped all three to "snapshot installed", so a carrier whose
+   * INITIAL version carried no base content at all was published as though it
+   * carried a complete one - a free INITIAL arm the solver then has to search
+   * over, which is what turns one Boolean root into twelve 180 s timeouts.
+   *
+   * The values are stable: they cross the JNI boundary as the int
+   * `System.snapshotContainerExpression` answers, and
+   * `InitialContainerSnapshot` names the same numbers on the Java side.  0
+   * and 1 keep the old bool's meaning so an older runtime paired with a newer
+   * VM still reads a refusal as a refusal.
+   */
+  enum InitialSnapshotAnswer {
+    // Nothing was stated and nothing is claimed: no active context, a null or
+    // mis-shaped argument, or a container this engine does not carry.
+    SNAPSHOT_NOT_SELECTABLE = 0,
+    // The chain was installed; the container's state now states its content.
+    SNAPSHOT_INSTALLED = 1,
+    // The container already carried a recorded mutation history and the
+    // content it started with cannot be recovered from that record, so the
+    // history was kept and the base is unknown.
+    SNAPSHOT_KEPT_EXISTING_HISTORY = 2,
+    // The content held more members than the entry bound admits, so the
+    // opaque state root was kept and the refusal recorded.
+    SNAPSHOT_REFUSED_OVER_BOUND = 3,
+    // The container already carried a recorded mutation history, that history
+    // was undone against the offered content to recover the base, and the
+    // history was rebuilt on top of the stated base.  Both facts survive: the
+    // content is stated and the mutations still relate the container to this
+    // activation's inputs.
+    SNAPSHOT_REBASED_UNDER_HISTORY = 4,
+    // An earlier offer already stated this container's content.
+    SNAPSHOT_ALREADY_STATED = 5
+  };
+
+  static jint snapshotContainerExpression(
       Handle container, Handle keys, Handle values, jint kind);
   static std::string getRegionSummary();
   static void symbolize(Handle handle, const char* prefix);

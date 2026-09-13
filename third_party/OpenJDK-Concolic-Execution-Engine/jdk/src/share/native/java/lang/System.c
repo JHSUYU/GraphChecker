@@ -75,7 +75,7 @@ static JNINativeMethod methods[] = {
                                                         (void *)&JVM_GetSymbolicFieldExpression},
     {"trackContainerExpression", "(" OBJ "Ljava/lang/String;)Z",
                                                         (void *)&JVM_TrackContainerExpression},
-    {"snapshotContainerExpression", "(" OBJ "[" OBJ "[" OBJ "I)Z",
+    {"snapshotContainerExpression", "(" OBJ "[" OBJ "[" OBJ "I)I",
                                                         (void *)&JVM_SnapshotContainerExpression},
     {"exportExpression",
         "(" OBJ "Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;[J)J",

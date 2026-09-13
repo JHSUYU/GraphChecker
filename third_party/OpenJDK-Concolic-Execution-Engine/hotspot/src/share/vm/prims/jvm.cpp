@@ -651,21 +651,27 @@ JVM_ENTRY(jboolean, JVM_TrackContainerExpression(
 #endif
 JVM_END
 
-JVM_ENTRY(jboolean, JVM_SnapshotContainerExpression(
+// One ConcolicMngr::InitialSnapshotAnswer, not a bool.  Three different
+// outcomes used to answer the same `true` here -- installed, kept an existing
+// mutation history, refused over the entry bound -- and a caller that cannot
+// tell them apart publishes a carrier with no stated base as though it had a
+// complete one.
+JVM_ENTRY(jint, JVM_SnapshotContainerExpression(
     JNIEnv *env, jclass ignored, jobject container, jobjectArray keys,
     jobjectArray values, jint kind))
   JVMWrapper("JVM_SnapshotContainerExpression");
 #ifdef ENABLE_CONCOLIC
-  if (container == NULL || values == NULL) return JNI_FALSE;
+  if (container == NULL || values == NULL) {
+    return ConcolicMngr::SNAPSHOT_NOT_SELECTABLE;
+  }
   HandleMark hm;
   Handle target(THREAD, JNIHandles::resolve_non_null(container));
   Handle snapshot_keys(THREAD, JNIHandles::resolve(keys));
   Handle snapshot_values(THREAD, JNIHandles::resolve_non_null(values));
   return ConcolicMngr::snapshotContainerExpression(
-      target, snapshot_keys, snapshot_values, kind)
-      ? JNI_TRUE : JNI_FALSE;
+      target, snapshot_keys, snapshot_values, kind);
 #else
-  return JNI_FALSE;
+  return 0;
 #endif
 JVM_END
 

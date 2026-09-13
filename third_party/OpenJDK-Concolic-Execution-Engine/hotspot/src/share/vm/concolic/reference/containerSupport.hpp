@@ -7,7 +7,9 @@
 #include "concolic/sharedFieldVersions.hpp"
 #include "oops/oop.inline.hpp"
 #include <string>
+#include <vector>
 
+class ContainerExpression;
 class MethodSymbolizerHandle;
 
 namespace ContainerSupport {
@@ -79,12 +81,44 @@ std::string unsupported(const char *category,
 // each of them does is the store's own one-counter early-out, so an unselected
 // workload keeps exactly its old cost.
 
-// Members a recorded initial snapshot states, or 0 when `state` is not one.
+// Members a recorded initial snapshot states, or -1 when `state` is not one.
 //
 // A snapshot is a SNAPSHOT_BASE base with one PUT/APPEND per member, which
 // is the same node shape every later state version uses, so counting the
 // chain down to its base is exactly counting what the snapshot said.
+//
+// Zero is a real answer and -1 is not.  A container that held nothing states
+// a bare SNAPSHOT_BASE, which is the exact empty collection and the most
+// constrained initial state there is; reporting that as the same 0 an opaque
+// root reports would publish no snapshot block for it and leave the one
+// carrier nobody has to reconstruct marked unknown.
 int snapshot_entry_count(Expression *state);
+
+// Whether `state` stands on a base this recorder stated, however many
+// recorded mutations sit on top of it.  A chain that bottoms out in the bare
+// STATE root does not, and is the state whose contents are unknown.
+bool states_initial_content(Expression *state);
+
+// The mutations the recorder watched, oldest first, and the opaque STATE root
+// they stand on.  False when `state` is not a chain of container relations
+// bottoming out in a STATE root -- which includes a chain that already stands
+// on a stated base, and a chain rooted in another container's state.
+bool recorded_history(Expression *state, Expression **root,
+                      std::vector<ContainerExpression *> *history);
+
+// Undoes an indexed `history` against the `member_count` members the
+// container holds now, answering which of them -- by index, in order -- the
+// container already held at the history's root.
+//
+// Only a record that carries its own inverse is undone.  APPEND put one
+// member at the end, so dropping the last member undoes it; INSERT at a
+// recorded concrete position put one member there, so dropping that position
+// undoes it.  WRITE, REMOVE and CLEAR each destroyed a member this record
+// does not carry, so they have no inverse and the answer is false: the base
+// is unknown and must be reported unknown rather than guessed.
+bool undo_indexed_history(const std::vector<ContainerExpression *> &history,
+                          int member_count,
+                          std::vector<int> *base_members);
 
 // Whether this container's whole state may be selected as one carrier.
 //

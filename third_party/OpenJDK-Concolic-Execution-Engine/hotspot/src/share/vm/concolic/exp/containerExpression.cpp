@@ -19,6 +19,15 @@ ContainerExpression::ContainerExpression(
 
 ContainerExpression::~ContainerExpression() {}
 
+ContainerExpression *ContainerExpression::rebuilt_on(
+    Expression *receiver) const {
+  // _java_type is never empty -- the constructor derives one from the result
+  // type when it is -- so passing it back reproduces this node's own type
+  // whatever the T_OBJECT placeholder says.
+  return new ContainerExpression(_shape.c_str(), _operation.c_str(), receiver,
+                                 _arguments, T_OBJECT, _java_type, _guard);
+}
+
 void ContainerExpression::serialize_internal(
     rapidjson::Writer<rapidjson::StringBuffer> &writer) {
   writer.Key("_type");
