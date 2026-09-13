@@ -13,7 +13,6 @@ import edu.uva.liftlab.graphchecker.contract.ConfiguredSourcePhaseContract;
 import edu.uva.liftlab.graphchecker.runtime.OccurrenceMinter;
 import edu.uva.liftlab.graphchecker.contract.SiteId;
 
-import java.io.File;
 import java.io.IOException;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -34,7 +33,6 @@ import static edu.uva.liftlab.graphchecker.causynth.MapFields.booleanValue;
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.longNumber;
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.number;
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.firstNonEmpty;
-import static edu.uva.liftlab.graphchecker.causynth.MapFields.readRows;
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.rows;
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.strings;
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.text;
@@ -157,7 +155,8 @@ public final class RuntimeSelectedRegionFinalizer {
      */
     public static Result finalizeRegions(
             List<Map<String, Object>> graph,
-            File selectedSkeletons, Collection<String> observedMethods,
+            List<StaticProgram.RegionRow> selectedSkeletons,
+            String skeletonSource, Collection<String> observedMethods,
             Collection<Map<String, Object>> runtimeInstances,
             Collection<Map<String, Object>> runtimeObservations,
             Collection<Map<String, Object>> runtimeOccurrenceLinks)
@@ -169,22 +168,15 @@ public final class RuntimeSelectedRegionFinalizer {
 
         StaticProgram program = new StaticProgram();
         program.refinedGraph = graph;
-        // One decode of the selected skeletons: consumers below take the
-        // typed row, nobody re-reads the map behind it.
-        Map<String, StaticProgram.RegionRow> skeletonRows =
-                new LinkedHashMap<>();
-        for (StaticProgram.RegionRow skeleton : StaticProgram.regionRows(
-                readRows(selectedSkeletons), SKELETON_KIND,
-                selectedSkeletons)) {
-            skeletonRows.put(skeleton.regionId, skeleton);
-            program.skeletons.put(skeleton.regionId, skeleton.json);
+        for (StaticProgram.RegionRow skeleton : selectedSkeletons) {
+            program.skeletons.put(skeleton.regionId, skeleton);
         }
 
         // Activation identity is minted before the first port of a region is
         // built.
         Map<String, List<Map<String, Object>>> targetPoliciesByRegion =
                 new LinkedHashMap<>();
-        for (Map.Entry<String, Map<String, Object>> entry
+        for (Map.Entry<String, StaticProgram.RegionRow> entry
                 : program.skeletons.entrySet()) {
             if (!selectedRegion(entry.getValue(), observed)) continue;
             targetPoliciesByRegion.put(entry.getKey(), failureTargetPolicies(
@@ -193,15 +185,14 @@ public final class RuntimeSelectedRegionFinalizer {
         List<Map<String, Object>> branchOrder = orderedBranchObservations(
                 runtimeObservations);
         mintOccurrences(program, targetPoliciesByRegion, runtimeInstances,
-                branchOrder, selectedSkeletons);
+                branchOrder, skeletonSource);
         Map<String, String> occurrenceByRecordedRootCall =
                 recordedRootCallIndex(program.activations);
 
-        for (Map.Entry<String, Map<String, Object>> entry
+        for (Map.Entry<String, StaticProgram.RegionRow> entry
                 : program.skeletons.entrySet()) {
             String regionId = entry.getKey();
-            Map<String, Object> skeleton = entry.getValue();
-            List<String> methods = strings(skeleton.get("methods"));
+            StaticProgram.RegionRow skeleton = entry.getValue();
             if (!selectedRegion(skeleton, observed)) {
                 continue;
             }
@@ -210,9 +201,9 @@ public final class RuntimeSelectedRegionFinalizer {
             region.put("kind", "SYMBOLIC_REGION");
             region.put("graphKind", REFINED_KIND);
             region.put("regionId", regionId);
-            region.put("rootMethod", skeleton.get("rootMethod"));
-            if (!text(skeleton.get("rootAuthority")).isEmpty()) {
-                region.put("rootAuthority", skeleton.get("rootAuthority"));
+            region.put("rootMethod", skeleton.rootMethod);
+            if (!skeleton.rootAuthority.isEmpty()) {
+                region.put("rootAuthority", skeleton.rootAuthority);
             }
             // The once-only-root rule: a service loop's iteration, not the
             // one entry above it, is the activation this region describes.
@@ -222,26 +213,20 @@ public final class RuntimeSelectedRegionFinalizer {
                 region.put("rootAuthority", LoopBoundPolicy.LOOP_BODY_ROOT);
                 region.put(LoopBoundPolicy.ROOT_LOOP, rootLoop);
             }
-            region.put("anchorMethod", skeleton.get("anchorMethod"));
-            if (skeleton.containsKey("anchorMethods")) {
-                region.put("anchorMethods", skeleton.get("anchorMethods"));
+            region.put("anchorMethod", skeleton.anchorMethod);
+            if (skeleton.json.containsKey("anchorMethods")) {
+                region.put("anchorMethods",
+                        skeleton.json.get("anchorMethods"));
             }
-            region.put("selection", skeleton.get("selection"));
-            region.put("methods", methods);
+            region.put("selection", skeleton.selection);
+            region.put("methods", new ArrayList<>(skeleton.methods));
             // The refined row is built fresh, so anything the skeleton carries
             // has to be carried over by name.
-            if (skeleton.get(RETAINED_LOOPS) != null) {
-                region.put(RETAINED_LOOPS, skeleton.get(RETAINED_LOOPS));
-            }
-            if (skeleton.get(StaticSymbolicSourceDeclaration.FIELD) != null) {
-                region.put(StaticSymbolicSourceDeclaration.FIELD,
-                        skeleton.get(StaticSymbolicSourceDeclaration.FIELD));
-            }
-            if (skeleton.get(
-                    ConfiguredSourcePhaseContract.DECLARATION_FIELD) != null) {
-                region.put(ConfiguredSourcePhaseContract.DECLARATION_FIELD,
-                        skeleton.get(ConfiguredSourcePhaseContract
-                                .DECLARATION_FIELD));
+            for (String carried : new String[]{RETAINED_LOOPS,
+                    StaticSymbolicSourceDeclaration.FIELD,
+                    ConfiguredSourcePhaseContract.DECLARATION_FIELD}) {
+                Object value = skeleton.json.get(carried);
+                if (value != null) region.put(carried, value);
             }
 
             List<Map<String, Object>> regionGraph =
@@ -252,8 +237,7 @@ public final class RuntimeSelectedRegionFinalizer {
             outputs.removeIf(RuntimeSelectedRegionFinalizer
                     ::toolBookkeepingPort);
             List<Map<String, Object>> branchPolicies = branches(program,
-                    regionId, demandScope(skeletonRows.get(regionId),
-                            outputs));
+                    regionId, demandScope(skeleton, outputs));
             List<Map<String, Object>> inputs = statePorts(program,
                     regionId, "HEAP_READ", "IN",
                     occurrenceByRecordedRootCall);
@@ -285,7 +269,8 @@ public final class RuntimeSelectedRegionFinalizer {
         // or payload guess.  applyClosure removes every declaration and edge
         // not reached by the target-directed walk; the declaration pass after
         // it restores only the region-level catalog rows used downstream.
-        declareCommunicationPorts(program, skeletonRows);
+        Map<String, List<CutPort>> cutPorts = declaredCutPorts(program);
+        declareCommunicationPorts(program, cutPorts);
         program.regionEdges.addAll(recordedOccurrenceProducerFlows(
                 program, runtimeOccurrenceLinks));
         // One index over the region catalog: the occurrence-owned ports are
@@ -294,7 +279,7 @@ public final class RuntimeSelectedRegionFinalizer {
         RegionDemandIndex demands = new RegionDemandIndex(program.regions,
                 program.refinedGraph);
         ClosureWalk closure = failureDirectedClosure(program, demands,
-                selectedSkeletons);
+                skeletonSource);
         program.regionEdges.addAll(retainExactRequestFaultControls(
                 program, closure, runtimeOccurrenceLinks));
         applyClosure(program, closure);
@@ -302,7 +287,7 @@ public final class RuntimeSelectedRegionFinalizer {
         // its exact declared mutation-to-read flow.
         markBoundedContainerStatePorts(program);
         // Declared last, and deliberately after the closure filter.
-        declareCommunicationPorts(program, skeletonRows);
+        declareCommunicationPorts(program, cutPorts);
         canonicalizeRegionEdges(program);
         return new Result(program.regions, program.regionEdges,
                 new ArrayList<>(program.demandPruned.values()));
@@ -329,16 +314,57 @@ public final class RuntimeSelectedRegionFinalizer {
         program.regionEdges.addAll(canonical);
     }
 
+    /** One declared cut port of one region, built once from its skeleton. */
+    private static final class CutPort {
+        private final String side;
+        private final String portId;
+        private final Map<String, Object> row;
+
+        private CutPort(String side, String portId,
+                        Map<String, Object> row) {
+            this.side = side;
+            this.portId = portId;
+            this.row = row;
+        }
+    }
+
+    /**
+     * The cut ports every region declares, derived once.  The closure filter
+     * drops the region-level declarations it cannot reach, so the catalog is
+     * published again after it from this same table rather than rebuilt.
+     */
+    private static Map<String, List<CutPort>> declaredCutPorts(
+            StaticProgram program) {
+        Map<String, List<CutPort>> byRegion = new LinkedHashMap<>();
+        for (StaticProgram.RegionRow skeleton : program.skeletons.values()) {
+            List<CutPort> ports = new ArrayList<>();
+            for (Map<String, Object> port : skeleton.communicationPorts) {
+                String portId = text(port.get("portId"));
+                if (portId.isEmpty()) {
+                    continue;
+                }
+                Map<String, Object> row = new LinkedHashMap<>(port);
+                row.remove(REGION_PORT_SIDE);
+                Set<String> cells = callReturnValueCells(
+                        program.regionGraph(skeleton.regionId), row);
+                if (cells.size() == 1) {
+                    row.put("dependencyCells", new ArrayList<>(cells));
+                }
+                ports.add(new CutPort(text(port.get(REGION_PORT_SIDE)),
+                        portId, row));
+            }
+            if (!ports.isEmpty()) byRegion.put(skeleton.regionId, ports);
+        }
+        return byRegion;
+    }
+
     /** Publishes the ports of every cut this region holds a side of. */
     private static void declareCommunicationPorts(StaticProgram program,
-            Map<String, StaticProgram.RegionRow> skeletons) {
+            Map<String, List<CutPort>> declaredByRegion) {
         for (Map<String, Object> region : program.regions) {
-            StaticProgram.RegionRow skeleton = skeletons.get(
+            List<CutPort> declared = declaredByRegion.get(
                     text(region.get("regionId")));
-            List<Map<String, Object>> declared = skeleton == null
-                    ? Collections.<Map<String, Object>>emptyList()
-                    : skeleton.communicationPorts;
-            if (declared.isEmpty()) {
+            if (declared == null) {
                 continue;
             }
             List<Map<String, Object>> inputs = rows(
@@ -348,24 +374,15 @@ public final class RuntimeSelectedRegionFinalizer {
             // occurrence-owned instances of that declaration.
             Set<String> inputIds = declaredPortIds(inputs);
             Set<String> outputIds = declaredPortIds(outputs);
-            for (Map<String, Object> port : declared) {
-                String portId = text(port.get("portId"));
-                String side = text(port.get(REGION_PORT_SIDE));
-                if (portId.isEmpty()) {
-                    continue;
-                }
-                Map<String, Object> row = new LinkedHashMap<>(port);
-                row.remove(REGION_PORT_SIDE);
-                Set<String> cells = callReturnValueCells(
-                        program.regionGraph(text(region.get("regionId"))),
-                        row);
-                if (cells.size() == 1) {
-                    row.put("dependencyCells", new ArrayList<>(cells));
-                }
-                if ("IN".equals(side)) {
-                    if (inputIds.add(portId)) inputs.add(row);
-                } else if ("OUT".equals(side)) {
-                    if (outputIds.add(portId)) outputs.add(row);
+            for (CutPort port : declared) {
+                if ("IN".equals(port.side)) {
+                    if (inputIds.add(port.portId)) {
+                        inputs.add(new LinkedHashMap<>(port.row));
+                    }
+                } else if ("OUT".equals(port.side)) {
+                    if (outputIds.add(port.portId)) {
+                        outputs.add(new LinkedHashMap<>(port.row));
+                    }
                 }
             }
             region.put("symbolicInputs", inputs);
@@ -785,7 +802,7 @@ public final class RuntimeSelectedRegionFinalizer {
             Map<String, List<Map<String, Object>>> targetPoliciesByRegion,
             Collection<Map<String, Object>> runtimeInstances,
             List<Map<String, Object>> observations,
-            File source) throws IOException {
+            String source) throws IOException {
         OccurrenceMinter minter = new OccurrenceMinter();
         for (Map<String, Object> instance : canonicalRuntimeActivations(
                 runtimeInstances, source)) {
@@ -812,7 +829,7 @@ public final class RuntimeSelectedRegionFinalizer {
 
     /** Canonical activation records at the trace-aggregation boundary. */
     private static List<Map<String, Object>> canonicalRuntimeActivations(
-            Collection<Map<String, Object>> runtimeInstances, File source)
+            Collection<Map<String, Object>> runtimeInstances, String source)
             throws IOException {
         Map<String, Map<String, Object>> byRecordedActivation =
                 new LinkedHashMap<>();
@@ -842,12 +859,11 @@ public final class RuntimeSelectedRegionFinalizer {
     }
 
     /** True when this skeleton's methods were observed in the trace. */
-    private static boolean selectedRegion(Map<String, Object> skeleton,
+    private static boolean selectedRegion(StaticProgram.RegionRow skeleton,
                                           Set<String> observed) {
-        List<String> methods = strings(skeleton.get("methods"));
-        return !methods.isEmpty()
+        return !skeleton.methods.isEmpty()
                 && (observed.isEmpty()
-                || !Collections.disjoint(methods, observed));
+                || !Collections.disjoint(skeleton.methods, observed));
     }
 
     /**
@@ -1034,7 +1050,7 @@ public final class RuntimeSelectedRegionFinalizer {
      * observed exception through confirmed heap or protocol flow.
      */
     private static ClosureWalk failureDirectedClosure(
-            StaticProgram program, RegionDemandIndex demands, File source)
+            StaticProgram program, RegionDemandIndex demands, String source)
             throws IOException {
         Map<String, Map<String, Object>> instances = program.activations;
         if (instances.isEmpty()) {

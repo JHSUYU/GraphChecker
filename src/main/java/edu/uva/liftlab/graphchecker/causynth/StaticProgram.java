@@ -77,8 +77,8 @@ public final class StaticProgram {
      */
     final Map<String, Map<String, Object>> demandPruned =
             new LinkedHashMap<>();
-    /** The selected region skeletons, by region id. */
-    final Map<String, Map<String, Object>> skeletons = new LinkedHashMap<>();
+    /** The selected region skeletons, decoded once, by region id. */
+    final Map<String, RegionRow> skeletons = new LinkedHashMap<>();
     /** Minted region activations, by occurrence id. */
     final Map<String, Map<String, Object>> activations =
             new LinkedHashMap<>();
@@ -294,11 +294,11 @@ public final class StaticProgram {
      * instrumenter key on.</p>
      */
     Map<String, Object> loopBodyRoot(
-            Map<String, Object> skeleton,
+            RegionRow skeleton,
             Collection<Map<String, Object>> regionActivations,
             List<Map<String, Object>> branchObservations) {
-        String anchor = text(skeleton.get("anchorMethod"));
-        String root = text(skeleton.get("rootMethod"));
+        String anchor = skeleton.anchorMethod;
+        String root = skeleton.rootMethod;
         Map<String, List<Map<String, Object>>> loopsByMethod =
                 serviceLoops(skeleton);
         if (anchor.isEmpty() || loopsByMethod.isEmpty()) {
@@ -310,7 +310,7 @@ public final class StaticProgram {
             return null;
         }
         Map<String, List<String>> callSites = callSitesByCallee(
-                text(skeleton.get("regionId")));
+                skeleton.regionId);
         Set<String> visited = new LinkedHashSet<>();
         List<String> frontier = Collections.singletonList(anchor);
         while (!frontier.isEmpty()) {
@@ -364,11 +364,10 @@ public final class StaticProgram {
 
     /** The region's retained loops that could be a service loop, by owner. */
     private static Map<String, List<Map<String, Object>>> serviceLoops(
-            Map<String, Object> skeleton) {
+            RegionRow skeleton) {
         Map<String, List<Map<String, Object>>> byMethod =
                 new LinkedHashMap<>();
-        for (Map<String, Object> loop : rows(skeleton.get(
-                RuntimeSelectedRegionFinalizer.RETAINED_LOOPS))) {
+        for (Map<String, Object> loop : skeleton.retainedLoops) {
             String owner = text(loop.get("enclosingMethod"));
             if (owner.isEmpty() || !LoopBoundPolicy.LOOP_CONDITION_BOUNDED
                     .equals(text(loop.get(

@@ -7,6 +7,7 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.google.gson.JsonPrimitive;
 import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
+import edu.uva.liftlab.graphchecker.causynth.StaticProgram;
 import edu.uva.liftlab.graphchecker.concolic.ArtifactIO;
 import com.google.gson.Gson;
 import edu.uva.liftlab.graphchecker.concolic.CanonicalJson;
@@ -966,13 +967,22 @@ public final class CausynthTraceRecorder {
             for (RuntimeRegionPlanner.MethodEvent event : trace.methods) {
                 observedMethods.add(event.method);
             }
+            // One decode of the selected skeletons for the whole bridge: the
+            // activation planner, the graph refiner and the region finalizer
+            // all take these rows, so the artifact is parsed and validated
+            // once rather than once per stage.
+            List<StaticProgram.RegionRow> skeletons =
+                    StaticProgram.regionRows(
+                            MapFields.readRows(selectedSkeletons),
+                            RuntimeSelectedRegionFinalizer.SKELETON_KIND,
+                            selectedSkeletons);
             RuntimeRegionPlanner.Result activationGraph =
                     RuntimeRegionPlanner.planSkeletonGraph(
-                            selectedSkeletons, trace.methods,
+                            skeletons, trace.methods,
                             trace.execution, trace.protocol);
             RuntimeRefinedGraphBuilder.Result refinement =
                     RuntimeRefinedGraphBuilder.refine(candidateGraph,
-                            selectedSkeletons,
+                            skeletons,
                             activationGraph.runtimeInstances,
                             trace.methods, trace.execution,
                             trace.fields,
@@ -986,7 +996,8 @@ public final class CausynthTraceRecorder {
                             refinedGraph);
             RuntimeSelectedRegionFinalizer.Result closure =
                     RuntimeSelectedRegionFinalizer.finalizeRegions(
-                    refinement.rows, selectedSkeletons,
+                    refinement.rows, skeletons,
+                    String.valueOf(selectedSkeletons),
                     observedMethods, activationGraph.runtimeInstances,
                     runtimeObservations(trace.execution, trace.methods),
                     activationGraph.occurrenceLinks);
@@ -1084,7 +1095,12 @@ public final class CausynthTraceRecorder {
             }
             RuntimeRegionPlanner.Result graph =
                     RuntimeRegionPlanner.planSkeletonGraph(
-                            candidateSkeletons, trace.methods,
+                            StaticProgram.regionRows(
+                                    MapFields.readRows(candidateSkeletons),
+                                    RuntimeSelectedRegionFinalizer
+                                            .SKELETON_KIND,
+                                    candidateSkeletons),
+                            trace.methods,
                             Collections.emptyList(),
                             Collections.emptyList());
             if (graph.staticRegionCount == 0) {
@@ -1875,19 +1891,17 @@ public final class CausynthTraceRecorder {
     }
 
     /** Binds frozen static regions to concrete same-thread invocations. */
-    private static RuntimeRegionPlanner.Result writeRuntimeRegionPlans(
+    private static void writeRuntimeRegionPlans(
             File directory, RuntimeRegionPlanner.RefinedFlowIndex flowIndex,
             List<Map<String, Object>> regions,
             List<Map<String, Object>> regionEdges, TraceData trace,
             Collection<Map<String, Object>> runtimeSeeds) throws IOException {
-        RuntimeRegionPlanner.Result planned = RuntimeRegionPlanner.plan(
-                regions, regionEdges, flowIndex,
-                "runtime region closure", "runtime region edge closure",
-                runtimeSeeds, trace.methods,
-                trace.execution, trace.fields, trace.protocol);
         writeFile(new File(directory, "concolic_region_plan.jsonl"),
-                planned.runtimePlanJsonl());
-        return planned;
+                RuntimeRegionPlanner.plan(regions, regionEdges, flowIndex,
+                        "runtime region closure",
+                        "runtime region edge closure",
+                        runtimeSeeds, trace.methods, trace.execution,
+                        trace.fields, trace.protocol).runtimePlanJsonl());
     }
 
     /** One reusable encoder for the telemetry rows below. */

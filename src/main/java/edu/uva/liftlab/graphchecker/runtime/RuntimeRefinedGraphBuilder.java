@@ -7,7 +7,7 @@ import com.google.gson.reflect.TypeToken;
 import edu.uva.liftlab.graphchecker.annotation.Debug;
 import edu.uva.liftlab.graphchecker.causynth.MapFields;
 import edu.uva.liftlab.graphchecker.concolic.JsonFields;
-import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
+import edu.uva.liftlab.graphchecker.causynth.StaticProgram;
 import edu.uva.liftlab.graphchecker.contract.JavaContainerTypes;
 
 import edu.uva.liftlab.graphchecker.contract.SiteId;
@@ -61,7 +61,8 @@ final class RuntimeRefinedGraphBuilder {
     private RuntimeRefinedGraphBuilder() {
     }
 
-    static Result refine(File candidateGraph, File selectedSkeletons,
+    static Result refine(File candidateGraph,
+                         List<StaticProgram.RegionRow> selectedSkeletons,
                          Collection<Map<String, Object>> runtimeInstances,
                          List<RuntimeRegionPlanner.MethodEvent> methods,
                          List<RuntimeRegionPlanner.RuntimeEvent> runtime,
@@ -71,12 +72,7 @@ final class RuntimeRefinedGraphBuilder {
             throw new IOException("candidate static graph not found: "
                     + candidateGraph);
         }
-        if (selectedSkeletons == null || !selectedSkeletons.isFile()) {
-            throw new IOException("selected region skeletons not found: "
-                    + selectedSkeletons);
-        }
-
-        SkeletonCatalog skeletons = SkeletonCatalog.read(selectedSkeletons);
+        SkeletonCatalog skeletons = SkeletonCatalog.of(selectedSkeletons);
         Set<String> selectedMethods = skeletons.methods;
         List<RuntimeRegionPlanner.MethodEvent> methodEvents = sortedMethods(
                 methods);
@@ -478,11 +474,10 @@ final class RuntimeRefinedGraphBuilder {
                         + "to refinement");
             }
             String regionId = stringValue(instance.get("regionId"));
-            Skeleton skeleton = skeletons.byRegion.get(regionId);
             long rootCallId = longNumber(instance.get("rootCallId"), -1L);
             RuntimeRegionPlanner.MethodEvent root =
                     methodByCall.get(rootCallId);
-            if (skeleton == null || root == null) {
+            if (!skeletons.regions.contains(regionId) || root == null) {
                 throw new IOException("runtime activation cannot be bound to "
                         + "selected skeleton: " + regionId + "#call"
                         + rootCallId);
@@ -492,7 +487,7 @@ final class RuntimeRefinedGraphBuilder {
                 throw new IOException("runtime activation has no rooted call "
                         + "subtree: " + regionId + "#call" + rootCallId);
             }
-            result.add(new Activation(skeleton, root, calls));
+            result.add(new Activation(regionId, root, calls));
         }
         if (result.isEmpty()) {
             throw new IOException("runtime refinement requires selected "
@@ -758,59 +753,29 @@ final class RuntimeRefinedGraphBuilder {
         }
     }
 
+    /** The two method indexes refinement needs, over the decoded skeletons. */
     private static final class SkeletonCatalog {
         private final Set<String> methods = new LinkedHashSet<>();
-        private final Map<String, Skeleton> byRegion = new LinkedHashMap<>();
+        private final Set<String> regions = new LinkedHashSet<>();
         private final Map<String, List<String>> regionsByMethod =
                 new LinkedHashMap<>();
 
-        private static SkeletonCatalog read(File file) throws IOException {
+        private static SkeletonCatalog of(
+                List<StaticProgram.RegionRow> skeletons) throws IOException {
             SkeletonCatalog result = new SkeletonCatalog();
-            for (Map<String, Object> row : MapFields.readRows(file)) {
-                if (integer(row.get("schemaVersion"), -1)
-                        != RuntimeSelectedRegionFinalizer
-                        .REGION_SCHEMA_VERSION
-                        || !RuntimeSelectedRegionFinalizer.SKELETON_KIND
-                        .equals(stringValue(row.get("kind")))) {
-                    throw new IOException("invalid selected skeleton row in "
-                            + file);
-                }
-                String region = stringValue(row.get("regionId"));
-                String root = stringValue(row.get("rootMethod"));
-                if (region.isEmpty() || root.isEmpty()) {
-                    throw new IOException("selected skeleton requires regionId"
-                            + " and rootMethod: " + file);
-                }
-                Object methods = row.get("methods");
-                if (!(methods instanceof Collection<?>)) {
-                    throw new IOException("selected skeleton requires methods: "
-                            + file);
-                }
-                for (Object value : (Collection<?>) methods) {
-                    String method = stringValue(value);
-                    if (method.isEmpty()) {
-                        continue;
-                    }
+            for (StaticProgram.RegionRow skeleton : skeletons) {
+                result.regions.add(skeleton.regionId);
+                for (String method : skeleton.methods) {
                     result.methods.add(method);
                     result.regionsByMethod.computeIfAbsent(method,
-                            ignored -> new ArrayList<>()).add(region);
+                            ignored -> new ArrayList<>())
+                            .add(skeleton.regionId);
                 }
-                Skeleton skeleton = new Skeleton(region);
-                result.byRegion.put(region, skeleton);
             }
             if (result.methods.isEmpty()) {
-                throw new IOException("selected skeletons contain no methods: "
-                        + file);
+                throw new IOException("selected skeletons contain no methods");
             }
             return result;
-        }
-    }
-
-    private static final class Skeleton {
-        private final String regionId;
-
-        private Skeleton(String regionId) {
-            this.regionId = regionId;
         }
     }
 
@@ -818,10 +783,10 @@ final class RuntimeRefinedGraphBuilder {
         private final String regionId;
         private final RuntimeRegionPlanner.MethodEvent root;
         private final Set<Long> calls;
-        private Activation(Skeleton skeleton,
+        private Activation(String regionId,
                            RuntimeRegionPlanner.MethodEvent root,
                            Set<Long> calls) {
-            this.regionId = skeleton.regionId;
+            this.regionId = regionId;
             this.root = root;
             this.calls = calls;
         }
