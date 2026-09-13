@@ -303,6 +303,13 @@ public final class ConcolicScheduler {
         Result result = new Result();
         result.executionTasks.addAll(sortedValues(tasks));
         result.queries.addAll(sortedValues(queries));
+        // The planner declared every shared field a region touches; the
+        // task versions only the ones a root can still reach, the same
+        // slice its inputs and its replay set were narrowed against.
+        SharedCarrierSlice carrierSlice = SharedCarrierSlice.apply(
+                result.executionTasks, loaded.symbolicInputs);
+        ArtifactIO.replaceJsonl(arguments.outputDirectory.resolve(
+                SharedCarrierSlice.ARTIFACT), carrierSlice.rows());
         Path taskPlan = arguments.outputDirectory.resolve(
                 "execution_task_plan.jsonl");
         List<JsonObject> taskRows = new ArrayList<>();
@@ -327,6 +334,7 @@ public final class ConcolicScheduler {
                 loaded.regionPlanIdentity, taskPlanIdentity);
         index.add("replayTaskSlice",
                 replaySlice.telemetry(selectedOccurrences));
+        index.add("sharedCarrierSlice", carrierSlice.telemetry());
         requireArtifactIdentity(arguments.regionPlan,
                 loaded.regionPlanIdentity,
                 "region plan changed while scheduling");
@@ -2099,16 +2107,103 @@ public final class ConcolicScheduler {
         private final Set<String> reachable;
         /** The root cells this graph actually named. */
         private final Set<String> roots;
+        /**
+         * Location keys ({@code owner#field}) admitted beside the reachable
+         * cells: the fields of the proposed actions the slice carries.
+         *
+         * <p>A library leaf such as {@code AtomicInteger#value} is a source
+         * cell of its own and meets its receiver's field only at the local
+         * the accessor's value lands in, so it is on the slice as an action
+         * ({@link #carries}) without its field ever being a reachable cell.
+         * A location decision -- which shared carriers a task declares,
+         * which flows carry root dependence -- must give the same answer as
+         * the action decision, so those fields are admitted here.</p>
+         */
+        private final Set<String> admittedLocations;
 
         private RootDependenceSlice(Set<String> reachable, Set<String> roots) {
+            this(reachable, roots, Collections.<String>emptySet());
+        }
+
+        private RootDependenceSlice(Set<String> reachable, Set<String> roots,
+                                    Set<String> admittedLocations) {
             this.reachable = reachable;
             this.roots = roots;
+            this.admittedLocations = admittedLocations;
         }
 
         /** The withheld slice: it narrows nothing. */
         static RootDependenceSlice withheld() {
             return new RootDependenceSlice(Collections.<String>emptySet(),
                     Collections.<String>emptySet());
+        }
+
+        /**
+         * This slice with the locations of the carried actions admitted.
+         *
+         * <p>Every action in {@code proposals} that {@link #carries} or that
+         * {@code root} calls a root contributes the fields it names -- the
+         * declared, access and leaf signatures, the last field-path
+         * declaration and the Atomic value leaf behind a declared atomic
+         * mutator -- as {@code owner#field} keys.  A withheld slice stays
+         * withheld.</p>
+         */
+        RootDependenceSlice admittingActionLocations(
+                Iterable<Map.Entry<String, JsonArray>> proposals,
+                java.util.function.BiPredicate<String, JsonObject> root) {
+            if (!usable()) return this;
+            Set<String> admitted = new LinkedHashSet<>(admittedLocations);
+            for (Map.Entry<String, JsonArray> proposal : proposals == null
+                    ? Collections.<Map.Entry<String, JsonArray>>emptyList()
+                    : proposals) {
+                for (JsonElement element : proposal.getValue()) {
+                    if (!element.isJsonObject()) continue;
+                    JsonObject action = element.getAsJsonObject();
+                    if (!carries(action)
+                            && !root.test(proposal.getKey(), action)) {
+                        continue;
+                    }
+                    admitted.addAll(actionLocations(action));
+                }
+            }
+            return new RootDependenceSlice(reachable, roots, admitted);
+        }
+
+        /**
+         * The {@code owner#field} keys of every field one action names,
+         * spelled as the planner spells a shared carrier.
+         */
+        static Set<String> actionLocations(JsonObject action) {
+            Set<String> keys = new LinkedHashSet<>();
+            List<String> declarations = new ArrayList<>();
+            for (String member : new String[]{"declaredFieldSignature",
+                    "accessFieldSignature", "leafFieldSignature"}) {
+                String value = optionalString(action, member);
+                if (!value.isEmpty()) declarations.add(value);
+            }
+            JsonArray paths = array(action, "fieldPathDeclarations");
+            if (paths.size() > 0
+                    && paths.get(paths.size() - 1).isJsonPrimitive()) {
+                declarations.add(
+                        paths.get(paths.size() - 1).getAsString().trim());
+            }
+            String callee = optionalString(action, "declaredCallee");
+            for (String declaration : declarations) {
+                FieldPathSpec.DeclaredField field =
+                        FieldPathSpec.declaredField(declaration);
+                if (field == null) continue;
+                String key = SharedFieldFlow.fieldKey(field.owner(),
+                        field.name());
+                if (!key.isEmpty()) keys.add(key);
+                FieldPathSpec.DeclaredField atomic = FieldPathSpec
+                        .declaredField(SharedFieldFlow.atomicValueField(
+                                field.signature(), callee));
+                if (atomic != null) {
+                    keys.add(SharedFieldFlow.fieldKey(atomic.owner(),
+                            atomic.name()));
+                }
+            }
+            return keys;
         }
 
         /**
@@ -2185,8 +2280,12 @@ public final class ConcolicScheduler {
 
         private Set<String> locations;
 
-        /** The reachable cells that are declared fields, as location keys. */
-        private Set<String> reachableLocations() {
+        /**
+         * Every location a root can still reach, as {@code owner#field}
+         * keys: the reachable cells that are declared fields, and the
+         * locations admitted for the carried actions.
+         */
+        Set<String> reachableLocations() {
             if (locations == null) {
                 Set<String> keys = new LinkedHashSet<>();
                 for (String cell : reachable) {
@@ -2197,7 +2296,8 @@ public final class ConcolicScheduler {
                             field.name());
                     if (!key.isEmpty()) keys.add(key);
                 }
-                locations = keys;
+                keys.addAll(admittedLocations);
+                locations = Collections.unmodifiableSet(keys);
             }
             return locations;
         }
@@ -2463,7 +2563,8 @@ public final class ConcolicScheduler {
                             RootDependenceSlice.actionCells(action));
                 }
             }
-            slice = RootDependenceSlice.forward(refinedGraph, rootCells);
+            slice = RootDependenceSlice.forward(refinedGraph, rootCells)
+                    .admittingActionLocations(proposals, this::rootAction);
         }
 
         /** What the roots reach, for the policy artifact. */
