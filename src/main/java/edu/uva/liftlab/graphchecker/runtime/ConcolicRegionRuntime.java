@@ -2579,11 +2579,38 @@ public final class ConcolicRegionRuntime {
                         + safe(producerOccurrenceId)));
     }
 
-    /** Files one handoff gap with the active region, when there is one. */
+    /**
+     * A gap raised with no region running, held for the next one.
+     *
+     * <p>A message ends in the transport, below every selected region, so the
+     * finding that nothing decoded one of its elements has no activation to
+     * belong to at the moment it is made.  Dropping it there would make the
+     * refusal invisible in the corpus and the whole vocabulary decorative;
+     * holding it until a region publishes puts it in front of the reader that
+     * has to act on it.</p>
+     */
+    private static final List<JsonObject> UNOWNED_HANDOFF_GAPS =
+            Collections.synchronizedList(new ArrayList<JsonObject>());
+
+    /** Files one handoff gap with the active region, or holds it. */
     private static void recordHandoffGap(JsonObject gap) {
         ActiveRegion active = activeRegion();
-        if (active != null) active.rpcHandoffGaps.add(gap);
+        if (active != null) {
+            drainUnownedHandoffGaps(active);
+            active.rpcHandoffGaps.add(gap);
+        } else {
+            UNOWNED_HANDOFF_GAPS.add(gap);
+        }
         diag(RpcExpressionHandoff.GAP_KIND, String.valueOf(gap));
+    }
+
+    /** Moves the gaps raised below every region into this one. */
+    private static void drainUnownedHandoffGaps(ActiveRegion active) {
+        if (UNOWNED_HANDOFF_GAPS.isEmpty()) return;
+        synchronized (UNOWNED_HANDOFF_GAPS) {
+            active.rpcHandoffGaps.addAll(UNOWNED_HANDOFF_GAPS);
+            UNOWNED_HANDOFF_GAPS.clear();
+        }
     }
 
     private static HandoffResult attach(
@@ -2665,6 +2692,7 @@ public final class ConcolicRegionRuntime {
      */
     private static HandoffResult record(HandoffResult result) {
         ActiveRegion active = activeRegion();
+        if (active != null) drainUnownedHandoffGaps(active);
         if (active != null && !result.ok()) {
             active.rpcHandoffGaps.add(result.record);
         }
