@@ -543,11 +543,33 @@ public final class PathMergeComposer {
         manifest.add("caseSelectorPartitions", partitions);
         manifest.add(ConcolicSmtComposer.CONDITIONAL_CASE_PARTITIONS,
                 new JsonArray());
-        manifest.add("configuredSourceMaterializations", rootRows);
+        manifest.add(ConcolicSmtComposer.CONFIGURED_SOURCE_MATERIALIZATION_FIELD,
+                rootRows);
+        manifest.add(ConcolicSmtComposer.MANUAL_SOURCE_MATERIALIZATION_FIELD,
+                new JsonArray());
         manifest.add(ConcolicSmtComposer.RECORDED_ROOT_VALUES,
                 recordedRootValues(rootRows));
         manifest.add(LoopBoundPolicy.PATH_LOOP_COUNTS,
                 loopCounts(fatal));
+        manifest.add(ClockRootPhysics.MANIFEST_FIELD,
+                ClockRootPhysics.manifest(arguments.clockSkewMillis,
+                        new ArrayList<JsonObject>()));
+        // Ledgers the read-from reconstruction used to publish.  The merge
+        // builds no such model, so each one is empty rather than absent:
+        // a reader of this artifact must see "there is none", not "the
+        // composer forgot to say".
+        manifest.addProperty("guardedReadModelComplete", true);
+        manifest.add("casePathConditionDependencies", new JsonArray());
+        manifest.add(ConcolicSmtComposer.BOUNDARY_DISPATCH_TOTALITY,
+                new JsonArray());
+        manifest.add(ConcolicSmtComposer.ABSENT_KEY_DEFAULTS,
+                new JsonArray());
+        manifest.add(ConcolicSmtComposer.WIRE_FLOW_BINDINGS,
+                new JsonArray());
+        manifest.add(ConcolicSmtComposer.FAULT_CONTROL_GAPS_FIELD,
+                new JsonArray());
+        manifest.add(ConcolicSmtComposer.TARGET_REACH_OCCURRENCES,
+                targetReachOccurrences(fatal, site, occurrence));
 
         JsonObject merge = new JsonObject();
         merge.addProperty("schemaVersion", 1);
@@ -590,10 +612,36 @@ public final class PathMergeComposer {
         for (JsonElement row : gates) refusals.add(row.deepCopy());
         manifest.add("finalStatusRefusals", refusals);
         manifest.addProperty("pathSetComplete", pathSetComplete(fatal));
+        boolean closed = ready && pathSetComplete(fatal);
+        manifest.addProperty(ConcolicSmtComposer.UNSAT_CLOSURE_COMPLETE,
+                closed);
+        JsonObject closure = new JsonObject();
+        closure.addProperty("schemaVersion", 1);
+        closure.addProperty("kind", "UNSAT_CLOSURE_EVIDENCE");
+        closure.addProperty("authority", COMPOSER);
+        closure.addProperty("targetPathsClosed", pathSetComplete(fatal));
+        closure.addProperty("finalStatusReady", ready);
+        manifest.add(ConcolicSmtComposer.UNSAT_CLOSURE_EVIDENCE, closure);
         manifest.addProperty("symbolicPropagationComplete",
                 noCut(gates));
         manifest.add("symbolicPropagationGaps", cutRows(gates));
         return manifest;
+    }
+
+    /** The occurrences of the anchored site this artifact composed. */
+    private static JsonArray targetReachOccurrences(JsonObject fatal,
+                                                    String site,
+                                                    int occurrence) {
+        JsonArray rows = new JsonArray();
+        JsonObject row = new JsonObject();
+        row.addProperty("siteId", site);
+        row.addProperty("occurrence", occurrence);
+        row.addProperty("regionId", optionalString(fatal, "regionId"));
+        row.addProperty("occurrenceId",
+                optionalString(fatal, "occurrenceId"));
+        row.addProperty("composed", true);
+        rows.add(row);
+        return rows;
     }
 
     private static JsonArray recordedRootValues(JsonArray rootRows) {
