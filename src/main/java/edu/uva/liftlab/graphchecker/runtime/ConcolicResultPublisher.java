@@ -437,10 +437,6 @@ final class ConcolicResultPublisher {
             result.add("branchCoverageGaps",
                     sharedRows(active.branchCoverageGaps));
         }
-        if (!active.concreteBranchWitnesses.isEmpty()) {
-            result.add("concreteBranchWitnesses",
-                    sharedRows(active.concreteBranchWitnesses));
-        }
         // Every evidence row this activation publishes names the run, the
         // session, the activation, and the read-out batch it came from.
         VmHandoffEvidence.writeTo(result, active.vmHandoffEvents);

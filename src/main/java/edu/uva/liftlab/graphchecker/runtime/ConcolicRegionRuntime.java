@@ -2022,19 +2022,6 @@ public final class ConcolicRegionRuntime {
         return store.importEnvelope(envelope);
     }
 
-    /** Builds one concrete branch execution witness. */
-    static JsonObject concreteBranchWitness(String method, int unitIndex,
-                                            boolean outcome) {
-        JsonObject witness = new JsonObject();
-        witness.addProperty("kind", "CONCRETE_BRANCH_EXECUTION_WITNESS_V1");
-        witness.addProperty("schemaVersion", 1);
-        witness.addProperty("siteId", SiteId.render(method, unitIndex));
-        witness.addProperty("method", safe(method));
-        witness.addProperty("unitIndex", unitIndex);
-        witness.addProperty("sourceTakenOutcome", outcome);
-        return witness;
-    }
-
     /** Result of one VM symbolic-expression export or attach. */
     private static final class HandoffResult {
         private final String stage;
@@ -5330,19 +5317,6 @@ public final class ConcolicRegionRuntime {
             return expected == null;
         }
 
-        /** The pre-gate execution witness of an undeclared site. */
-        JsonObject concreteWitness(String method, int unitIndex) {
-            JsonObject witness = concreteBranchWitness(method, unitIndex,
-                    outcome);
-            if (expected == null) return witness;
-            witness.addProperty("branchKind", expected.branchKind);
-            JsonArray keys = new JsonArray();
-            for (Integer key : expected.caseKeys) keys.add(key);
-            witness.add("caseKeys", keys);
-            witness.addProperty("observedSuccessorIndex",
-                    expected.observedSuccessorIndex);
-            return witness;
-        }
     }
 
     private static final class VmBranchEventAttestation {
@@ -5579,14 +5553,6 @@ public final class ConcolicRegionRuntime {
         final List<JsonObject> branchMappings = new ArrayList<>();
         final List<JsonObject> branchCoverageGaps = new ArrayList<>();
         private final Set<String> branchCoverageGapKeys =
-                new LinkedHashSet<>();
-        /**
-         * Branches this activation executed before its symbolic gate opened.
-         */
-        final List<JsonObject> concreteBranchWitnesses =
-                new ArrayList<>();
-        /** Exact pre-gate decisions already emitted, including switch arms. */
-        private final Set<String> concreteBranchDecisionTokens =
                 new LinkedHashSet<>();
         /**
          * Case-local references into the VM's own handoff ledger: the
@@ -5859,23 +5825,13 @@ public final class ConcolicRegionRuntime {
         private ExactConcreteBranchObservation recordConcreteDecision(
                 String method, int unitIndex, BranchDecision decision) {
             try {
+                // observeDecision is the only caller and it has already
+                // returned for every undeclared site, so the site here is
+                // always one the plan named.
                 String site = SiteId.render(method, unitIndex);
-                boolean declared = activation.declaresBranch(site);
-                // An undeclared site publishes one witness per distinct
-                // decision rather than a row per execution, so it numbers no
-                // occurrence of its own.
                 ExactConcreteBranchObservation observation =
                         decision.observationAt(site, safe(method), unitIndex,
-                                declared ? nextBranchOccurrence(site) : 1);
-                if (!declared) {
-                    String token = site + "\u0000"
-                            + observation.exactDecisionToken();
-                    if (concreteBranchDecisionTokens.add(token)) {
-                        concreteBranchWitnesses.add(decision.concreteWitness(
-                                method, unitIndex));
-                    }
-                    return null;
-                }
+                                nextBranchOccurrence(site));
                 recordDecisionRow(method, unitIndex,
                         observation.occurrence(), observation);
                 if (activation.targetBranchSite.equals(site)
