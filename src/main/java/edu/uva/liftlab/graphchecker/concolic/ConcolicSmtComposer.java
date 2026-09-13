@@ -485,7 +485,7 @@ public final class ConcolicSmtComposer {
                 ClaimPolicy.WireFlowEvidence.read(arguments.mappings, "")
                         .consumerFieldsByPortSuffix(),
                 ClaimPolicy.guardedReadFields(guardedReadCarrier(
-                        guardedReads)).keySet());
+                        guardedReads)));
         emitter.finish();
         String composedSmt = emitter.render();
         // An arm the formula itself refutes is stated up front, so a solver
@@ -1252,10 +1252,36 @@ public final class ConcolicSmtComposer {
      * <p>The second route is the field the consumer assigns the value to: when
      * the value leaves the wire on arrival, a read of that field is where it
      * ends up and the port's own family is a term nobody was going to build.
+     * That route is only open on a node the wire delivered to; see {@link
+     * #consumerFieldReadOnReceiver}.
      */
     static boolean wireFlowRefusable(boolean anyFamilyBound,
                                      boolean consumerFieldRead) {
         return !anyFamilyBound && !consumerFieldRead;
+    }
+
+    /**
+     * Whether a read of the consumer's field stands for this delivery.
+     *
+     * <p>The producer assigns the same field from its own state, before the
+     * value is ever put on the wire, so a read there says nothing about what
+     * arrived: taking it as evidence excused a flow whose families all went
+     * unreferenced, and the formula then served the consumer's field from a
+     * value that never crossed. Only a read on a node this family's delivery
+     * reached realizes it.</p>
+     *
+     * Pure encoding shared by final composition and focused regression tests.
+     */
+    static boolean consumerFieldReadOnReceiver(
+            String consumerField, String receiverNode,
+            Map<String, Set<String>> readFieldNodes) {
+        if (consumerField == null || consumerField.isEmpty()
+                || receiverNode == null || receiverNode.isEmpty()
+                || readFieldNodes == null) {
+            return false;
+        }
+        Set<String> nodes = readFieldNodes.get(consumerField);
+        return nodes != null && nodes.contains(receiverNode);
     }
 
     /**
@@ -3191,10 +3217,10 @@ public final class ConcolicSmtComposer {
          * to: the wire's value then constrains nothing, silently, and the
          * consumer's own read is free.</p>
          */
-        private JsonArray wireFlowBindings(JsonArray dependencies,
-                                           Set<String> declaredPorts,
-                                           Map<String, String> consumerFields,
-                                           Set<String> readFields) {
+        private JsonArray wireFlowBindings(
+                JsonArray dependencies, Set<String> declaredPorts,
+                Map<String, String> consumerFields,
+                Map<String, Set<String>> readFieldNodes) {
             Map<String, JsonObject> byFamily = new LinkedHashMap<>();
             for (JsonElement element : dependencies) {
                 if (!element.isJsonObject()) continue;
@@ -3242,8 +3268,11 @@ public final class ConcolicSmtComposer {
                         familyKey, "");
                 boolean declared = declaredPorts.contains(port);
                 String consumerField = consumerFieldOf(port, consumerFields);
-                boolean fieldRead = !consumerField.isEmpty()
-                        && readFields.contains(consumerField);
+                String receiverNode = occurrenceSourceKey(
+                        boundaryReceiversByFamily.getOrDefault(familyKey,
+                                ""));
+                boolean fieldRead = consumerFieldReadOnReceiver(
+                        consumerField, receiverNode, readFieldNodes);
                 row.addProperty("declaredWireFlow", declared);
                 if (!consumerField.isEmpty()) {
                     row.addProperty(ClaimPolicy.CONSUMER_FIELD,
