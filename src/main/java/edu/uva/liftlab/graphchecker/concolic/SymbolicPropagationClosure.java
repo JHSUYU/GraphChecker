@@ -63,6 +63,17 @@ public final class SymbolicPropagationClosure {
     public static final String WRITER_CASE_OCCURRENCE_ID =
             "writerCaseOccurrenceId";
     /**
+     * The physical occurrence whose region entry published an INITIAL
+     * candidate's snapshot.  An INITIAL arm is owned by no region case, so
+     * these two fields are the only tie between the snapshot and the
+     * activation that took it -- which is what decides whether the snapshot
+     * still names a value once a fault marker idles that activation.
+     */
+    public static final String INITIAL_HOST_REGION_ID =
+            "initialHostRegionId";
+    public static final String INITIAL_HOST_OCCURRENCE_ID =
+            "initialHostOccurrenceId";
+    /**
      * Exact selected-region stack captured when a physical writer region was
      * entered. Runtime entries carry task/region/occurrence addresses; this
      * pass resolves them to replay-independent local cases.
@@ -1520,6 +1531,15 @@ public final class SymbolicPropagationClosure {
             candidate.addProperty(WRITER_CASE_REGION_ID, producer.region);
             candidate.addProperty(WRITER_CASE_OCCURRENCE_ID,
                     producer.occurrence);
+            if (initialVersion) {
+                // The snapshot's own host: the activation whose entry took
+                // it, not the synthetic INITIAL owner the arm is keyed by.
+                candidate.addProperty(INITIAL_HOST_REGION_ID,
+                        optionalString(version, "regionId"));
+                candidate.addProperty(INITIAL_HOST_OCCURRENCE_ID,
+                        optionalString(version,
+                                SharedStateEvidence.WRITER_OCCURRENCE_ID));
+            }
             // The propagated value is the exact writer observation's value.
             // Keep its JVM scope with the arm so allocation ids embedded in
             // that value are interpreted in the replay that produced them.

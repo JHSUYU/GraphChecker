@@ -193,6 +193,56 @@ public final class ConcolicSmtComposer {
             "FAULT_IDLE_NO_RETAINED_ARM";
     /** A fault-controlled selector the manifest still offers for pinning. */
     static final String FAULT_PARTITION_UNSPLIT = "FAULT_PARTITION_UNSPLIT";
+    /**
+     * An INITIAL arm the fault leaves as a read's only survivor while the
+     * marker idles the very activation whose entry took the snapshot.
+     *
+     * <p>The snapshot of an instance field is the value the object had when
+     * that activation was entered; an activation the marker says never ran
+     * never took it, and for an object the activation itself allocated the
+     * value is the JVM's zero default of a field nothing constructed.  Such
+     * an arm is not a retained prior version, so the read starves instead of
+     * materialising the default, and the composition refuses rather than
+     * present the default as the value the fault left behind.</p>
+     */
+    public static final String FAULT_IDLE_INITIAL_HOST_IDLED =
+            "FAULT_IDLE_INITIAL_HOST_IDLED";
+    /**
+     * The recorded values of one program location disagree between replay
+     * executions that were merged into one formula.
+     *
+     * <p>Every {@code REPLAY.GROUP} is one independent run of the workload.
+     * The closure keys a location's arms by replay-independent identities
+     * (reader case, writer case, INITIAL owner) and the composer merges the
+     * arms of all groups into one family or read.  That is sound only when
+     * the executions agree on what they recorded there: a workload that
+     * draws a fresh random per run gives the same location a different
+     * constant in every group, and a formula over the union of those
+     * constants describes no single execution.  The gate compares the
+     * literal values one group-independent identity received from each
+     * group and refuses when they differ.</p>
+     */
+    public static final String EXECUTION_DIVERGENCE = "EXECUTION_DIVERGENCE";
+    /** One row per identity whose recorded values diverge across groups. */
+    public static final String EXECUTION_DIVERGENCE_FIELD =
+            "executionDivergence";
+    /**
+     * A case of a writer occurrence that recorded a write to a read's
+     * location and owns no arm of that read.
+     *
+     * <p>The read's candidate arms are the versions retained at the read in
+     * the executions where its reader case was observed.  A case of the same
+     * writer occurrence that was only observed in other executions still
+     * enters the occurrence's exactly-one partition, so pinning it leaves
+     * every writer arm inactive and the read falls to INITIAL as if that case
+     * had not written -- while its own evidence says it did.  The gate names
+     * that case instead of letting the default stand in for its write.</p>
+     */
+    public static final String GUARDED_READ_WRITER_CASE_UNLINKED =
+            "GUARDED_READ_WRITER_CASE_UNLINKED";
+    /** One row per (read, unlinked writer case). */
+    public static final String UNLINKED_WRITER_CASES_FIELD =
+            "unlinkedWriterCases";
     public static final String PATH_SET_COMPLETE = "pathSetComplete";
     public static final String FINAL_READY = "FINAL_READY";
     /**
@@ -367,6 +417,9 @@ public final class ConcolicSmtComposer {
         }
         manifest.add(ClockRootPhysics.MANIFEST_FIELD, clockPhysics);
         manifest.add(WIRE_FLOW_BINDINGS, wireFlowBindings);
+        manifest.add(EXECUTION_DIVERGENCE_FIELD, emitter.executionDivergence);
+        manifest.add(UNLINKED_WRITER_CASES_FIELD,
+                emitter.unlinkedWriterCases);
         manifest.add(BOUNDARY_DISPATCH_TOTALITY,
                 emitter.boundaryDispatchTotality);
         manifest.add(ABSENT_KEY_DEFAULTS, emitter.absentKeyDefaults);
@@ -1266,6 +1319,41 @@ public final class ConcolicSmtComposer {
     }
 
     /** Region occurrence identity used only for case-local SMT scoping. */
+    /** What each replay group recorded for one group-independent identity. */
+    private static final class ExecutionRecording {
+        private final String subject;
+        private final Map<String, Set<String>> valuesByScope =
+                new LinkedHashMap<>();
+        private final Map<String, Set<String>> selectorsByScope =
+                new LinkedHashMap<>();
+
+        private ExecutionRecording(String subject) {
+            this.subject = subject;
+        }
+    }
+
+    private static final Pattern LITERAL_TERM = Pattern.compile(
+            "-?[0-9]+|\\(- [0-9]+\\)|true|false|\"(?:[^\"]|\"\")*\"|"
+                    + "\\(V(?:Int|Long|Bool|Str) (?:-?[0-9]+|\\(- [0-9]+\\)"
+                    + "|true|false|\"(?:[^\"]|\"\")*\")\\)");
+
+    /**
+     * Whether one lowered term is a recorded literal two replay groups can
+     * be compared on: an integer, Boolean or String constant, plain or in
+     * the container codec's value box.  Anything else is either the same
+     * symbolic expression in every group or a per-group VM witness.
+     */
+    static boolean isLiteralTerm(String text) {
+        return text != null && LITERAL_TERM.matcher(text.trim()).matches();
+    }
+
+    /** The local-case part of one case owner, for a readable subject. */
+    private static String caseTail(String owner) {
+        if (owner == null) return "";
+        int index = owner.lastIndexOf("case:");
+        return index < 0 ? owner : owner.substring(index + "case:".length());
+    }
+
     private static final class InvocationKey {
         private final String regionId;
         private final String instanceId;
@@ -1523,14 +1611,53 @@ public final class ConcolicSmtComposer {
         final Set<String> idledCaseSelectors;
         /** Reads the marker leaves with no surviving candidate writer. */
         final Set<String> starvedReads;
+        /**
+         * Read -> INITIAL arms the marker made unselectable by idling every
+         * case of the activation whose entry took the snapshot.
+         */
+        final Map<String, List<String>> hostIdledInitialArms;
 
         FaultIdleClosure(Set<String> idledCaseSelectors,
                          Set<String> starvedReads) {
+            this(idledCaseSelectors, starvedReads, Collections.emptyMap());
+        }
+
+        FaultIdleClosure(Set<String> idledCaseSelectors,
+                         Set<String> starvedReads,
+                         Map<String, ? extends List<String>>
+                                 hostIdledInitialArms) {
             this.idledCaseSelectors = Collections.unmodifiableSet(
                     new LinkedHashSet<>(idledCaseSelectors));
             this.starvedReads = Collections.unmodifiableSet(
                     new LinkedHashSet<>(starvedReads));
+            Map<String, List<String>> copy = new LinkedHashMap<>();
+            for (Map.Entry<String, ? extends List<String>> entry
+                    : hostIdledInitialArms.entrySet()) {
+                copy.put(entry.getKey(), Collections.unmodifiableList(
+                        new ArrayList<>(entry.getValue())));
+            }
+            this.hostIdledInitialArms = Collections.unmodifiableMap(copy);
         }
+    }
+
+    /**
+     * Whether a marker's idled set makes one arm unselectable.
+     *
+     * <p>A writer arm dies when any case of its writer closure is idled: the
+     * write happened inside those cases.  An INITIAL arm of an instance
+     * field dies when <em>every</em> case of the activation whose entry took
+     * the snapshot is idled: the activation never ran, so it never observed
+     * the object -- and for an object it allocated itself, there is no
+     * object.  {@code hostCases} is empty for arms without such a host.</p>
+     */
+    static boolean armIdled(Collection<String> writerCases,
+                            Collection<String> hostCases,
+                            Collection<String> idled) {
+        if (writerCases != null && !Collections.disjoint(writerCases, idled)) {
+            return true;
+        }
+        return hostCases != null && !hostCases.isEmpty()
+                && idled.containsAll(hostCases);
     }
 
     /**
@@ -1562,8 +1689,25 @@ public final class ConcolicSmtComposer {
             Map<String, ? extends Map<String, ? extends Collection<String>>>
                     readArmWriterCases,
             Map<String, ? extends Collection<String>> readOwnerCases) {
+        return faultIdleClosure(seedCaseSelectors, readArmWriterCases,
+                readOwnerCases, Collections.emptyMap());
+    }
+
+    /**
+     * As {@link #faultIdleClosure(Collection, Map, Map)}, with {@code
+     * initialArmHostCases} naming, per INITIAL arm selector, the case
+     * partition of the activation whose entry took that arm's snapshot; see
+     * {@link #armIdled}.
+     */
+    static FaultIdleClosure faultIdleClosure(
+            Collection<String> seedCaseSelectors,
+            Map<String, ? extends Map<String, ? extends Collection<String>>>
+                    readArmWriterCases,
+            Map<String, ? extends Collection<String>> readOwnerCases,
+            Map<String, ? extends Collection<String>> initialArmHostCases) {
         Set<String> idled = new LinkedHashSet<>(seedCaseSelectors);
         Set<String> starved = new LinkedHashSet<>();
+        Map<String, List<String>> hostIdled = new LinkedHashMap<>();
         boolean changed = true;
         while (changed) {
             changed = false;
@@ -1573,8 +1717,10 @@ public final class ConcolicSmtComposer {
                 if (read.getValue().isEmpty()) continue;
                 if (starved.contains(read.getKey())) continue;
                 boolean alive = false;
-                for (Collection<String> closure : read.getValue().values()) {
-                    if (Collections.disjoint(closure, idled)) {
+                for (Map.Entry<String, ? extends Collection<String>> arm
+                        : read.getValue().entrySet()) {
+                    if (!armIdled(arm.getValue(),
+                            initialArmHostCases.get(arm.getKey()), idled)) {
                         alive = true;
                         break;
                     }
@@ -1582,11 +1728,22 @@ public final class ConcolicSmtComposer {
                 if (alive) continue;
                 starved.add(read.getKey());
                 changed = true;
+                for (Map.Entry<String, ? extends Collection<String>> arm
+                        : read.getValue().entrySet()) {
+                    Collection<String> host = initialArmHostCases.get(
+                            arm.getKey());
+                    if (host == null || host.isEmpty()
+                            || !idled.containsAll(host)) {
+                        continue;
+                    }
+                    hostIdled.computeIfAbsent(read.getKey(),
+                            ignored -> new ArrayList<>()).add(arm.getKey());
+                }
                 Collection<String> owners = readOwnerCases.get(read.getKey());
                 if (owners != null) idled.addAll(owners);
             }
         }
-        return new FaultIdleClosure(idled, starved);
+        return new FaultIdleClosure(idled, starved, hostIdled);
     }
 
     /** One read's surviving version, once a marker idles some of its arms. */
@@ -1636,6 +1793,17 @@ public final class ConcolicSmtComposer {
             Map<String, ? extends Map<String, ? extends Collection<String>>>
                     readArmWriterCases,
             Collection<String> idledCaseSelectors) {
+        return retainedVersions(orders, readArmWriterCases,
+                idledCaseSelectors, Collections.emptyMap());
+    }
+
+    /** As above, honouring INITIAL arm hosts as {@link #armIdled} does. */
+    static List<RetainedVersion> retainedVersions(
+            Map<String, ? extends List<String>> orders,
+            Map<String, ? extends Map<String, ? extends Collection<String>>>
+                    readArmWriterCases,
+            Collection<String> idledCaseSelectors,
+            Map<String, ? extends Collection<String>> initialArmHostCases) {
         List<RetainedVersion> retained = new ArrayList<>();
         for (Map.Entry<String, ? extends List<String>> entry
                 : orders.entrySet()) {
@@ -1650,7 +1818,8 @@ public final class ConcolicSmtComposer {
             for (String selector : entry.getValue()) {
                 Collection<String> writerCases = byArm.get(selector);
                 if (writerCases == null) continue;
-                if (Collections.disjoint(writerCases, idledCaseSelectors)) {
+                if (!armIdled(writerCases, initialArmHostCases.get(selector),
+                        idledCaseSelectors)) {
                     surviving = selector;
                 } else {
                     idledArms.add(selector);
@@ -1787,6 +1956,28 @@ public final class ConcolicSmtComposer {
         /** Case/observation selector -> replay scope whose VM ids it owns. */
         private final Map<String, String> executionScopesByCase =
                 new LinkedHashMap<>();
+        /** Group-independent recording identity -> what each group recorded. */
+        private final Map<String, ExecutionRecording> executionRecordings =
+                new LinkedHashMap<>();
+        /** One row per identity whose groups disagree; see finish(). */
+        private final JsonArray executionDivergence = new JsonArray();
+        /** INITIAL arm selector -> activation whose entry took its snapshot. */
+        private final Map<String, InvocationKey> guardedReadInitialHosts =
+                new LinkedHashMap<>();
+        /** Read identity -> content-addressed location it reads. */
+        private final Map<String, String> guardedReadLocations =
+                new LinkedHashMap<>();
+        /** Read identity -> writer activations owning its non-INITIAL arms. */
+        private final Map<String, Set<InvocationKey>>
+                guardedReadWriterInvocations = new LinkedHashMap<>();
+        /** Read identity -> base case selectors owning its non-INITIAL arms. */
+        private final Map<String, Set<String>> guardedReadWriterSelectors =
+                new LinkedHashMap<>();
+        /** Base case selector -> content-addressed locations it wrote. */
+        private final Map<String, Set<String>> writtenLocationsByCase =
+                new LinkedHashMap<>();
+        /** One row per (read, writer case with no arm); see finish(). */
+        private final JsonArray unlinkedWriterCases = new JsonArray();
         /** One allocated container cannot have two unrelated state shapes. */
         private final Map<String, Sort> structuralStateSorts =
                 new LinkedHashMap<>();
@@ -2129,6 +2320,7 @@ public final class ConcolicSmtComposer {
                                 LocalCaseIdentity.OWNER),
                         LocalCaseIdentity.owner(summaryRow));
                 registerExecutionScope(owner, row, summaryRow);
+                indexWrittenLocations(owner, summaryRow);
             }
             int ordinal = 0;
             for (JsonElement element : array(fatal, "paths")) {
@@ -2154,6 +2346,173 @@ public final class ConcolicSmtComposer {
                     }
                     registerExecutionScope(optionalString(arm, "caseOwner"), arm,
                             dependency);
+                }
+            }
+        }
+
+        /**
+         * Which locations one case's own activation published a version of.
+         *
+         * <p>A summary's version store lists every version its activation
+         * observed, including versions other occurrences wrote; a case is a
+         * writer of a location only through versions its own occurrence
+         * published, and an INITIAL snapshot is an observation, not a
+         * write.</p>
+         */
+        private void indexWrittenLocations(String owner,
+                                           JsonObject summaryRow) {
+            if (owner.isEmpty() || summaryRow == null) return;
+            String selector = LocalCaseIdentity.selector(owner);
+            String occurrence = optionalString(summaryRow, "occurrenceId");
+            JsonObject recorded = object(summaryRow,
+                    SharedStateEvidence.RECORDED_FIELD);
+            for (JsonElement element : array(recorded, "versions")) {
+                if (!element.isJsonObject()) continue;
+                JsonObject row = element.getAsJsonObject();
+                String location = optionalString(row, "locationKey");
+                if (location.isEmpty()) continue;
+                for (JsonElement encoded : array(object(row, "envelope"),
+                        "versions")) {
+                    if (!encoded.isJsonObject()) continue;
+                    JsonObject version = encoded.getAsJsonObject();
+                    if ("INITIAL".equals(optionalString(version,
+                            "versionKind"))) {
+                        continue;
+                    }
+                    if (!occurrence.isEmpty() && !occurrence.equals(
+                            optionalString(version,
+                                    SharedStateEvidence
+                                            .WRITER_OCCURRENCE_ID))) {
+                        continue;
+                    }
+                    writtenLocationsByCase.computeIfAbsent(selector,
+                            ignored -> new LinkedHashSet<>()).add(location);
+                    break;
+                }
+            }
+        }
+
+        /** The replay scope one arm's recorded value came from, or "". */
+        private String armExecutionScope(JsonObject arm, String owner) {
+            String observationSelector = optionalString(arm,
+                    SymbolicPropagationClosure.OBSERVATION_SELECTOR);
+            return firstNonBlank(
+                    optionalString(arm,
+                            SymbolicPropagationClosure.OBSERVATION_SCOPE),
+                    optionalString(arm, "boundarySessionScope"),
+                    executionScopesByCase.getOrDefault(
+                            firstNonBlank(observationSelector, owner), ""));
+        }
+
+        /**
+         * Notes what one replay group recorded for one group-independent
+         * identity, when that value is a literal the groups can be compared
+         * on.  Symbolic values are the same expression in every group by
+         * construction; VM allocation witnesses are scoped per group and
+         * never compare.
+         */
+        private void noteExecutionRecording(String key, String subject,
+                                            String scope, String selector,
+                                            Term value) {
+            if (key.isEmpty() || scope.isEmpty() || value == null
+                    || !isLiteralTerm(value.text)) {
+                return;
+            }
+            ExecutionRecording recording = executionRecordings.computeIfAbsent(
+                    key, ignored -> new ExecutionRecording(subject));
+            recording.valuesByScope.computeIfAbsent(scope,
+                    ignored -> new LinkedHashSet<>()).add(value.text);
+            recording.selectorsByScope.computeIfAbsent(scope,
+                    ignored -> new LinkedHashSet<>()).add(selector);
+        }
+
+        /**
+         * Refuses every identity whose replay groups recorded different
+         * literals; see {@link ConcolicSmtComposer#EXECUTION_DIVERGENCE}.
+         */
+        private void checkExecutionDivergence() {
+            for (Map.Entry<String, ExecutionRecording> entry
+                    : executionRecordings.entrySet()) {
+                ExecutionRecording recording = entry.getValue();
+                if (recording.valuesByScope.size() < 2) continue;
+                Set<Set<String>> distinct = new LinkedHashSet<>(
+                        recording.valuesByScope.values());
+                if (distinct.size() < 2) continue;
+                JsonArray groups = new JsonArray();
+                List<String> narrated = new ArrayList<>();
+                for (Map.Entry<String, Set<String>> scope
+                        : recording.valuesByScope.entrySet()) {
+                    JsonObject row = new JsonObject();
+                    row.addProperty("replayScope", scope.getKey());
+                    row.add("values", GSON.toJsonTree(scope.getValue()));
+                    row.add("selectors", GSON.toJsonTree(
+                            recording.selectorsByScope.get(scope.getKey())));
+                    groups.add(row);
+                    narrated.add(scopeToken(scope.getKey()) + "="
+                            + scope.getValue());
+                }
+                JsonObject row = new JsonObject();
+                row.addProperty("schemaVersion", 1);
+                row.addProperty("kind", EXECUTION_DIVERGENCE);
+                row.addProperty("identity", entry.getKey());
+                row.addProperty("subject", recording.subject);
+                row.add("groups", groups);
+                executionDivergence.add(row);
+                refuse(EXECUTION_DIVERGENCE + "[" + recording.subject + "]",
+                        "the replay executions merged into this formula"
+                                + " recorded different values for one"
+                                + " location, so the merged arms describe no"
+                                + " single execution: " + String.join("; ",
+                                narrated));
+            }
+        }
+
+        /**
+         * Refuses every writer case that recorded a write to a read's
+         * location and owns no arm of the read; see {@link
+         * ConcolicSmtComposer#GUARDED_READ_WRITER_CASE_UNLINKED}.
+         */
+        private void checkUnlinkedWriterCases() {
+            for (Map.Entry<String, Set<InvocationKey>> entry
+                    : guardedReadWriterInvocations.entrySet()) {
+                String read = entry.getKey();
+                String location = guardedReadLocations.getOrDefault(read, "");
+                if (location.isEmpty()) continue;
+                Set<String> linked = guardedReadWriterSelectors.getOrDefault(
+                        read, Collections.emptySet());
+                for (InvocationKey writer : entry.getValue()) {
+                    Set<String> partition = casePartitions.get(writer);
+                    if (partition == null) continue;
+                    for (String caseSelector : partition) {
+                        if (linked.contains(caseSelector)) continue;
+                        Set<String> written = writtenLocationsByCase.get(
+                                caseSelector);
+                        if (written == null || !written.contains(location)) {
+                            continue;
+                        }
+                        JsonObject row = new JsonObject();
+                        row.addProperty("schemaVersion", 1);
+                        row.addProperty("kind",
+                                GUARDED_READ_WRITER_CASE_UNLINKED);
+                        row.addProperty("readIdentity", read);
+                        row.addProperty("locationKey", location);
+                        row.addProperty("writerRegionId", writer.regionId);
+                        row.addProperty("writerOccurrenceId",
+                                writer.instanceId);
+                        row.addProperty("caseSelector", caseSelector);
+                        row.add("linkedCaseSelectors",
+                                GSON.toJsonTree(linked));
+                        unlinkedWriterCases.add(row);
+                        refuse(GUARDED_READ_WRITER_CASE_UNLINKED + "["
+                                        + read + ":" + caseSelector + "]",
+                                "case " + caseSelector + " of writer "
+                                        + writer.instanceId + " recorded a"
+                                        + " write to " + location
+                                        + " but owns no arm of this read, so"
+                                        + " selecting it would let the read"
+                                        + " fall to INITIAL as if the case"
+                                        + " had not written");
+                    }
                 }
             }
         }
@@ -2624,7 +2983,8 @@ public final class ConcolicSmtComposer {
                     if (cases != null) seed.addAll(cases);
                 }
                 FaultIdleClosure closure = faultIdleClosure(seed,
-                        guardedReadArmWriterCases, guardedReadOwnerCases);
+                        guardedReadArmWriterCases, guardedReadOwnerCases,
+                        initialArmHostCases());
                 for (Map.Entry<InvocationKey, Set<String>> partition
                         : casePartitions.entrySet()) {
                     if (partition.getValue().isEmpty()) continue;
@@ -2667,6 +3027,22 @@ public final class ConcolicSmtComposer {
             }
         }
 
+        /**
+         * INITIAL arm selector -> case partition of the activation whose
+         * entry took the snapshot, for every INITIAL arm of an instance field
+         * whose host this composition lowered.
+         */
+        private Map<String, Set<String>> initialArmHostCases() {
+            Map<String, Set<String>> hosts = new LinkedHashMap<>();
+            for (Map.Entry<String, InvocationKey> entry
+                    : guardedReadInitialHosts.entrySet()) {
+                Set<String> cases = casePartitions.get(entry.getValue());
+                if (cases == null || cases.isEmpty()) continue;
+                hosts.put(entry.getKey(), new LinkedHashSet<>(cases));
+            }
+            return hosts;
+        }
+
         /** One auditable row per marker, plus a row per starved read. */
         private void recordFaultControlClosure(String marker,
                                                Set<String> seed,
@@ -2689,6 +3065,24 @@ public final class ConcolicSmtComposer {
                                 + " prior version, so the marker true leaves"
                                 + " the reading case with nothing to observe"
                                 + " (marker " + marker + ")");
+                List<String> hostIdled = closure.hostIdledInitialArms.get(
+                        read);
+                if (hostIdled == null || hostIdled.isEmpty()) continue;
+                List<String> hosts = new ArrayList<>();
+                for (String arm : hostIdled) {
+                    InvocationKey host = guardedReadInitialHosts.get(arm);
+                    hosts.add(host == null ? arm : host.instanceId);
+                }
+                String detail = "the marker idles every case of the"
+                        + " activation whose entry took this read's INITIAL"
+                        + " snapshot (" + String.join(", ", hosts) + "), so"
+                        + " the snapshot names no value of an object that"
+                        + " activation observed; the JVM default it holds is"
+                        + " not the version the fault retained (marker "
+                        + marker + ")";
+                faultControlGap(FAULT_IDLE_INITIAL_HOST_IDLED, read, detail);
+                refuse(FAULT_IDLE_INITIAL_HOST_IDLED + "[" + read + "]",
+                        detail);
             }
         }
 
@@ -2714,7 +3108,7 @@ public final class ConcolicSmtComposer {
             JsonArray rows = new JsonArray();
             for (RetainedVersion retained : retainedVersions(
                     guardedReadOrders, guardedReadArmWriterCases,
-                    closure.idledCaseSelectors)) {
+                    closure.idledCaseSelectors, initialArmHostCases())) {
                 JsonObject arm = arms.get(retained.readIdentity + "\n"
                         + retained.retainedArm);
                 JsonObject idled = arms.get(retained.readIdentity + "\n"
@@ -3634,11 +4028,22 @@ public final class ConcolicSmtComposer {
                         ignored -> new LinkedHashSet<>())
                         .add(currentCaseSelector);
             }
+            String readLocation = SharedStateEvidence.locationKey(node);
+            SharedStateEvidence.LocationProvenance readProvenance =
+                    locationProvenance.get(readLocation);
+            String canonicalLocation = readProvenance == null
+                    ? readLocation : readProvenance.locationKey;
+            String readField = readProvenance == null
+                    || readProvenance.declaredField.isEmpty()
+                    ? canonicalLocation : readProvenance.declaredField;
+            guardedReadLocations.putIfAbsent(readIdentity, canonicalLocation);
             for (DirectReadArm arm : arms) {
                 selectors.add(arm.selector);
                 useSelectors.add(arm.selector);
                 armWriterCases.put(arm.selector,
                         new ArrayList<>(arm.writerCaseClosure));
+                noteReadArmProvenance(readIdentity, readField,
+                        canonicalLocation, arm);
                 selectorGuards.computeIfAbsent(arm.selector,
                         ignored -> new LinkedHashSet<>()).add(activation);
                 emitDirectReadArm(node, readIdentity, projectionIdentity,
@@ -3649,6 +4054,61 @@ public final class ConcolicSmtComposer {
             recordGuardedReadUse(readIdentity, projectionIdentity, activation,
                     useSelectors);
             return result;
+        }
+
+        /**
+         * Records what one read arm says about its execution: the group it
+         * was recorded in and its literal value, for the divergence gate;
+         * its writer activation and case, for the unlinked-writer gate; and
+         * for an INITIAL arm of an instance field, the activation whose
+         * entry took the snapshot, for the fault-idle closure.
+         */
+        private void noteReadArmProvenance(String readIdentity,
+                                           String readField,
+                                           String canonicalLocation,
+                                           DirectReadArm arm) {
+            JsonObject candidate = arm.candidate;
+            String owner = optionalString(candidate,
+                    SymbolicPropagationClosure.WRITER_CASE_OWNER);
+            boolean initial = owner.startsWith(
+                    SymbolicPropagationClosure.INITIAL_SOURCE_CASE_PREFIX);
+            String version = initial
+                    ? SymbolicPropagationClosure.INITIAL_SOURCE_CASE_PREFIX
+                    : owner;
+            noteExecutionRecording("READ\n" + readIdentity + "\n" + version,
+                    readField + " read " + readIdentity + (initial
+                            ? " INITIAL" : " writer " + caseTail(owner)),
+                    armExecutionScope(candidate, owner), arm.selector,
+                    arm.term);
+            if (initial) {
+                String hostRegion = optionalString(candidate,
+                        SymbolicPropagationClosure.INITIAL_HOST_REGION_ID);
+                String hostOccurrence = optionalString(candidate,
+                        SymbolicPropagationClosure
+                                .INITIAL_HOST_OCCURRENCE_ID);
+                if (!hostRegion.isEmpty() && !hostOccurrence.isEmpty()
+                        && "INSTANCE_FIELD".equals(SharedStateEvidence
+                        .locationKindOf(canonicalLocation))) {
+                    guardedReadInitialHosts.putIfAbsent(arm.selector,
+                            new InvocationKey(hostRegion, hostOccurrence));
+                }
+                return;
+            }
+            String region = optionalString(candidate,
+                    SymbolicPropagationClosure.WRITER_CASE_REGION_ID);
+            String occurrence = optionalString(candidate,
+                    SymbolicPropagationClosure.WRITER_CASE_OCCURRENCE_ID);
+            String selector = optionalString(candidate,
+                    SymbolicPropagationClosure.WRITER_CASE_SELECTOR);
+            if (region.isEmpty() || occurrence.isEmpty()
+                    || selector.isEmpty()) {
+                return;
+            }
+            guardedReadWriterInvocations.computeIfAbsent(readIdentity,
+                    ignored -> new LinkedHashSet<>()).add(
+                    new InvocationKey(region, occurrence));
+            guardedReadWriterSelectors.computeIfAbsent(readIdentity,
+                    ignored -> new LinkedHashSet<>()).add(selector);
         }
 
         /**
@@ -4280,6 +4740,7 @@ public final class ConcolicSmtComposer {
             try {
                 List<String> selectors = new ArrayList<>();
                 List<Term> values = new ArrayList<>();
+                List<JsonObject> armRows = new ArrayList<>();
                 for (JsonElement element : encoded) {
                     if (!element.isJsonObject()) continue;
                     JsonObject arm = element.getAsJsonObject();
@@ -4305,6 +4766,7 @@ public final class ConcolicSmtComposer {
                     }
                     declare(selector, Sort.BOOL);
                     selectors.add(selector);
+                    armRows.add(arm);
                     values.add(lowerChoiceArm(selector, () -> {
                         InvocationKey previousInvocation = enterInvocation(
                                 new InvocationKey(optionalString(arm, "regionId"),
@@ -4323,6 +4785,21 @@ public final class ConcolicSmtComposer {
                     unsupported.add("GuardedMergeMalformed:" + mergeId);
                     return unsupportedTerm(expected == null
                             ? Sort.VALUE : expected);
+                }
+                String family = firstNonBlank(familyKey, mergeId);
+                String port = boundaryPortsByFamily.getOrDefault(familyKey,
+                        "");
+                for (int index = 0; index < armRows.size(); index++) {
+                    JsonObject arm = armRows.get(index);
+                    String owner = optionalString(arm, "caseOwner");
+                    String occurrence = optionalString(arm, "occurrenceId");
+                    noteExecutionRecording("MERGE\n" + family + "\n"
+                                    + occurrence + "\n" + owner,
+                            "family " + family + (port.isEmpty() ? ""
+                                    : " port " + port) + " at " + occurrence
+                                    + " case " + caseTail(owner),
+                            armExecutionScope(arm, owner),
+                            selectors.get(index), values.get(index));
                 }
                 Sort sort = values.get(0).sort;
                 IntegralWidth width = values.get(0).integralWidth;
@@ -5697,6 +6174,8 @@ public final class ConcolicSmtComposer {
             }
             emitRequestFaultControl();
             requireTotalBoundaryDispatch();
+            checkExecutionDivergence();
+            checkUnlinkedWriterCases();
             for (Map.Entry<InvocationKey, Set<String>> entry
                     : casePartitions.entrySet()) {
                 if (entry.getValue().isEmpty()) continue;
