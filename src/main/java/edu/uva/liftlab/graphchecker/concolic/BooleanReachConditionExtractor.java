@@ -155,10 +155,6 @@ public final class BooleanReachConditionExtractor {
         JsonObject report = new JsonObject();
         report.addProperty("schemaVersion", 4);
         report.addProperty("kind", "BOOLEAN_REACH_CONDITION_REPORT");
-        boolean guardedReadModelComplete =
-                optionalBool(manifest, "guardedReadModelComplete", false);
-        report.addProperty("guardedReadModelComplete",
-                guardedReadModelComplete);
         boolean unsatClosureComplete = unsatClosureComplete(manifest);
         report.addProperty(ComposedManifest.UNSAT_CLOSURE_COMPLETE,
                 unsatClosureComplete);
@@ -233,37 +229,17 @@ public final class BooleanReachConditionExtractor {
             base = lifted.toString();
         }
         report.addProperty("failClosedMarkersLifted", failClosed);
-        List<JsonObject> fatalArms = fatalReadArms(composedSmt, manifest);
-        List<String> fatalArmSelectors = new ArrayList<>();
-        for (JsonObject arm : fatalArms) {
-            fatalArmSelectors.add(optionalString(arm, "selector"));
-        }
-        // Two shapes a witness can rest on that no root move names, both
-        // decided by the model rather than by the formula: a merged wire
-        // boundary none of whose arms the model satisfied, and an
-        // associative read whose key nothing ever put.
-        List<String> witnessFreedomSymbols = new ArrayList<>();
-        Map<String, List<String>> boundaryConsumers =
-                boundaryConsumers(composedSmt, manifest);
-        for (JsonElement element
-                : array(manifest,
-                        ComposedManifest.BOUNDARY_DISPATCH_TOTALITY)) {
-            if (!element.isJsonObject()) continue;
-            JsonObject dispatch = element.getAsJsonObject();
-            for (JsonElement arm : array(dispatch, "armSelectors")) {
-                if (arm.isJsonPrimitive()) {
-                    witnessFreedomSymbols.add(arm.getAsString());
-                }
-            }
-            List<String> consumers = boundaryConsumers.get(
-                    optionalString(dispatch, "solverTerm"));
-            if (consumers != null) witnessFreedomSymbols.addAll(consumers);
-        }
+        // The one shape a witness can rest on that no root move names: an
+        // associative read whose key nothing ever put.  The other used to be
+        // a merged wire boundary none of whose arms the model satisfied --
+        // there are no arms and no merge node now, and a wire value is the
+        // producer's own expression.
+        List<JsonObject> fatalArms = Collections.<JsonObject>emptyList();
         Set<String> fatalAbsentKeyTerms = fatalAbsentKeyTerms(manifest,
                 fatalArms);
-        witnessFreedomSymbols.addAll(fatalAbsentKeyTerms);
-        List<String> modelSymbols = new ArrayList<>(fatalArmSelectors);
-        modelSymbols.addAll(witnessFreedomSymbols);
+        List<String> witnessFreedomSymbols =
+                new ArrayList<>(fatalAbsentKeyTerms);
+        List<String> modelSymbols = new ArrayList<>(witnessFreedomSymbols);
         report.add(FATAL_STATE_SELECTION, asEvidence(fatalStateSelection(
                 fatalArms, Collections.<String, String>emptyMap()),
                 evidenceOnly));
@@ -323,7 +299,7 @@ public final class BooleanReachConditionExtractor {
                     row.add("witnessMechanisms", mechanisms);
                 }
                 JsonArray witnessFreedoms = witnessFreedoms(manifest, model,
-                        boundaryConsumers, fatalAbsentKeyTerms);
+                        fatalAbsentKeyTerms);
                 if (witnessFreedoms.size() > 0) {
                     row.add(WITNESS_FREEDOMS, witnessFreedoms);
                 }
@@ -400,9 +376,7 @@ public final class BooleanReachConditionExtractor {
         if (observedUnderapproximation
                 && satisfyingValuations.isEmpty() && complete) {
             reachCondition.addProperty("coverageConclusion",
-                    guardedReadModelComplete
-                            ? "INCONCLUSIVE_OPEN_PATH_CLOSURE"
-                            : "INCONCLUSIVE_UNDERAPPROXIMATION");
+                    "INCONCLUSIVE_OPEN_PATH_CLOSURE");
         }
         String degeneracy = degeneracyCheck(formula, reachability,
                 inputs.size(),
@@ -498,246 +472,9 @@ public final class BooleanReachConditionExtractor {
                 || !"CANDIDATE_READY".equals(optionalString(manifest, "state"))) {
             gaps.add(COMPOSITION_NOT_ELIGIBLE);
         }
-        validatePropagationContract(composedSmt, manifest, gaps);
     }
 
-    /** Checks the selector-to-PC definitions used by the emitted formula. */
-    private static void validatePropagationContract(
-            String composedSmt, JsonObject manifest, List<String> gaps) {
-        JsonElement caseDependencies = manifest == null ? null
-                : manifest.get("casePathConditionDependencies");
-        if (caseDependencies == null || !caseDependencies.isJsonArray()) {
-            gaps.add("CASE_PATH_CONDITION_DEPENDENCIES_MISSING");
-        } else {
-            validateCasePathConditionDependencies(composedSmt, manifest,
-                    caseDependencies.getAsJsonArray(), gaps);
-        }
-    }
 
-    /**
-     * Proves that every propagated output arm still carries its own PC.
-     *
-     * <p>The propagation ledger may name an expression arm only when its
-     * base selector belongs to one occurrence-local exactly-one partition,
-     * the arm's owner deterministically names that base selector, and the
-     * emitted SMT contains the Composer's named {@code selector => PC}
-     * definition. Replay-specific arms may share the same owner only when
-     * they carry distinct observation selectors linked back to that base
-     * case. A selector with no definition would turn a guarded value into a
-     * free solver choice, so it remains a hard composition gap.</p>
-     */
-    private static void validateCasePathConditionDependencies(
-            String smt, JsonObject manifest, JsonArray dependencies,
-            List<String> gaps) {
-        JsonElement encodedPartitions = manifest == null ? null
-                : manifest.get("caseSelectorPartitions");
-        if (encodedPartitions == null
-                || !encodedPartitions.isJsonArray()) {
-            gaps.add("CASE_SELECTOR_PARTITIONS_MISSING");
-            return;
-        }
-
-        Map<String, List<Integer>> partitionsBySelector =
-                new LinkedHashMap<>();
-        // A conditional partition still declares its selectors and their
-        // definitions; it is only the unconditional exactly-one assertion it
-        // does not carry.  Validation covers both, pinning covers neither.
-        JsonArray partitions = new JsonArray();
-        partitions.addAll(encodedPartitions.getAsJsonArray());
-        partitions.addAll(array(manifest,
-                ComposedManifest.CONDITIONAL_CASE_PARTITIONS));
-        for (int partitionIndex = 0;
-             partitionIndex < partitions.size(); partitionIndex++) {
-            JsonElement encodedPartition = partitions.get(partitionIndex);
-            if (!encodedPartition.isJsonArray()) {
-                gaps.add("CASE_SELECTOR_PARTITION_MALFORMED:"
-                        + partitionIndex);
-                continue;
-            }
-            Set<String> local = new LinkedHashSet<>();
-            JsonArray partition = encodedPartition.getAsJsonArray();
-            for (JsonElement encodedSelector : partition) {
-                if (!encodedSelector.isJsonPrimitive()
-                        || !encodedSelector.getAsJsonPrimitive().isString()
-                        || firstNonBlank(encodedSelector.getAsString())
-                        .isEmpty()) {
-                    gaps.add("CASE_SELECTOR_PARTITION_MALFORMED:"
-                            + partitionIndex);
-                    continue;
-                }
-                String selector = encodedSelector.getAsString();
-                if (!local.add(selector)) {
-                    gaps.add("CASE_SELECTOR_PARTITION_DUPLICATE:"
-                            + selector);
-                    continue;
-                }
-                partitionsBySelector.computeIfAbsent(selector,
-                        ignored -> new ArrayList<>()).add(partitionIndex);
-            }
-        }
-
-        Map<String, Integer> targetReachGuards = new LinkedHashMap<>();
-        for (JsonElement encodedTarget : array(manifest,
-                "targetReachLedger")) {
-            if (!encodedTarget.isJsonObject()) continue;
-            String guard = optionalString(encodedTarget.getAsJsonObject(),
-                    "caseGuard");
-            if (!guard.isEmpty()) {
-                targetReachGuards.merge(guard, 1, Integer::sum);
-            }
-        }
-
-        Set<String> dependencyIdentities = new LinkedHashSet<>();
-        for (int dependencyIndex = 0;
-             dependencyIndex < dependencies.size(); dependencyIndex++) {
-            JsonElement encodedDependency = dependencies.get(dependencyIndex);
-            if (!encodedDependency.isJsonObject()) {
-                gaps.add("CASE_PATH_CONDITION_DEPENDENCY_MALFORMED:"
-                        + dependencyIndex);
-                continue;
-            }
-            JsonObject dependency = encodedDependency.getAsJsonObject();
-            String family = optionalString(dependency, VmExpressionIr.FAMILY_KEY);
-            String boundaryKind = optionalString(dependency, "boundaryKind");
-            String epoch = optionalString(dependency, VmExpressionIr.TOPOLOGY_EPOCH);
-            JsonElement encodedArms = dependency.get("arms");
-            if (optionalInteger(dependency, "schemaVersion", -1)
-                    != SymbolicPropagationClosure.SCHEMA_VERSION
-                    || !SymbolicPropagationClosure.DEPENDENCY_KIND.equals(
-                    optionalString(dependency, "kind"))
-                    || !"REGION_CASE_PC_V1".equals(
-                    optionalString(dependency, "authority"))
-                    || family.isEmpty() || epoch.isEmpty()
-                    || !(VmExpressionIr.RPC_ATTACH.equals(boundaryKind)
-                    || VmExpressionIr.FIELD_READ.equals(boundaryKind))
-                    || encodedArms == null || !encodedArms.isJsonArray()
-                    || encodedArms.getAsJsonArray().size() == 0
-                    || !dependencyIdentities.add(family)) {
-                gaps.add("CASE_PATH_CONDITION_DEPENDENCY_MALFORMED:"
-                        + dependencyIndex);
-                continue;
-            }
-
-            Set<String> armIdentities = new LinkedHashSet<>();
-            JsonArray arms = encodedArms.getAsJsonArray();
-            for (int armIndex = 0; armIndex < arms.size(); armIndex++) {
-                JsonElement encodedArm = arms.get(armIndex);
-                if (!encodedArm.isJsonObject()) {
-                    gaps.add("CASE_PATH_CONDITION_ARM_MALFORMED:"
-                            + dependencyIndex + ":" + armIndex);
-                    continue;
-                }
-                JsonObject arm = encodedArm.getAsJsonObject();
-                String owner = optionalString(arm, "caseOwner");
-                String baseSelector = optionalString(arm, "caseSelector");
-                String encodedSelector = optionalString(arm, "selector");
-                String observationSelector = optionalString(arm,
-                        SymbolicPropagationClosure.OBSERVATION_SELECTOR);
-                String selector = firstNonBlank(observationSelector,
-                        encodedSelector);
-                String region = optionalString(arm, "regionId");
-                String occurrence = optionalString(arm, "occurrenceId");
-                String armIdentity = owner + "\u0000" + selector;
-                boolean selectorShapeMatches = observationSelector.isEmpty()
-                        ? encodedSelector.equals(baseSelector)
-                        : encodedSelector.equals(observationSelector);
-                if (owner.isEmpty() || baseSelector.isEmpty()
-                        || selector.isEmpty()
-                        || region.isEmpty() || occurrence.isEmpty()
-                        || !armIdentities.add(armIdentity)
-                        || !selectorShapeMatches
-                        || !caseOwnerMatchesOccurrence(owner, region,
-                        occurrence)
-                        || !baseSelector.equals(
-                        LocalCaseIdentity.selector(owner))) {
-                    gaps.add("CASE_PATH_CONDITION_ARM_MALFORMED:"
-                            + dependencyIndex + ":" + armIndex);
-                    continue;
-                }
-
-                boolean initialSource =
-                        SymbolicPropagationClosure.isInitialSourceCase(
-                                owner, region, occurrence);
-                if (initialSource
-                        && !(VmExpressionIr.FIELD_READ.equals(boundaryKind)
-                        && SymbolicPropagationClosure
-                        .READ_FROM_DEPENDENCY_POLICY.equals(
-                                optionalString(dependency, "selectionPolicy"))
-                        && observationSelector.isEmpty()
-                        && selector.equals(baseSelector)
-                        && arm.has("pathCondition")
-                        && arm.get("pathCondition").isJsonArray()
-                        && arm.getAsJsonArray("pathCondition").size() == 0)) {
-                    gaps.add("INITIAL_SOURCE_DEPENDENCY_MALFORMED:"
-                            + selector);
-                    continue;
-                }
-
-                int targetReachGuardCount = targetReachGuards.getOrDefault(
-                        baseSelector, 0);
-                boolean targetOwned = targetReachGuardCount > 0;
-                if (initialSource) {
-                    // INITIAL is the value present when a location first
-                    // becomes symbolic.  Its empty PC is true; it has no
-                    // producer region, case partition, or case-PC assertion.
-                } else if (targetOwned) {
-                    if (targetReachGuardCount != 1) {
-                        gaps.add("CASE_DEPENDENCY_TARGET_GUARD_NOT_UNIQUE:"
-                                + baseSelector);
-                    }
-                } else {
-                    List<Integer> memberships = partitionsBySelector.get(
-                            baseSelector);
-                    if (memberships == null || memberships.size() != 1) {
-                        gaps.add(
-                                "CASE_DEPENDENCY_SELECTOR_PARTITION_NOT_UNIQUE:"
-                                        + baseSelector);
-                    }
-                }
-                // INITIAL_SOURCE is a provenance record for the value that
-                // existed when a location first became symbolic.  Its empty
-                // PC contributes true, so the synthetic case selector is not
-                // emitted unless the SMT actually uses it as a guard.  An
-                // absent selector is therefore no solver freedom to validate.
-                boolean selectorDeclared = smt.contains(
-                        "(declare-const " + selector + " Bool)");
-                if (initialSource && !selectorDeclared) {
-                    continue;
-                }
-                if (!selectorDeclared) {
-                    gaps.add("CASE_DEPENDENCY_SELECTOR_DECLARATION_MISSING:"
-                            + selector);
-                }
-                if (!selector.equals(baseSelector)
-                        && !smt.contains("(declare-const " + baseSelector
-                        + " Bool)")) {
-                    gaps.add(
-                            "CASE_DEPENDENCY_BASE_SELECTOR_DECLARATION_MISSING:"
-                                    + baseSelector);
-                }
-                if (initialSource) {
-                    // The guarded-read selector activates this source.  There
-                    // is no independent producer path to define.
-                } else if (targetOwned
-                        && !targetPathDefinitionDeclared(smt,
-                        baseSelector)) {
-                    gaps.add(
-                            "CASE_DEPENDENCY_TARGET_DEFINITION_MISSING:"
-                                    + baseSelector);
-                } else if (!targetOwned
-                        && !casePcDefinitionDeclared(smt, selector)) {
-                    gaps.add("CASE_DEPENDENCY_PC_DEFINITION_MISSING:"
-                            + selector);
-                }
-                if (!observationSelector.isEmpty()
-                        && !caseObservationPartitionDeclared(smt,
-                        baseSelector, observationSelector)) {
-                    gaps.add("CASE_DEPENDENCY_BASE_DEFINITION_MISSING:"
-                            + baseSelector + ":" + observationSelector);
-                }
-            }
-        }
-    }
 
     /** Matches either an activation owner or its stable planned address. */
     static boolean caseOwnerMatchesOccurrence(String owner, String region,
@@ -750,12 +487,6 @@ public final class BooleanReachConditionExtractor {
         return owner.startsWith(prefix + planned + "/case:");
     }
 
-    /** Exact assertion shape emitted by the Composer's case-PC authority. */
-    private static boolean casePcDefinitionDeclared(String smt,
-                                                     String selector) {
-        return selectorDefinitionDeclared(smt, selector,
-                "case_selector_definition_");
-    }
 
     /**
      * Whether the composed SMT defines {@code selector} under the named
@@ -775,27 +506,7 @@ public final class BooleanReachConditionExtractor {
         return false;
     }
 
-    /** Observation PCs refine, rather than replace, their base case. */
-    private static boolean caseObservationPartitionDeclared(
-            String smt, String baseSelector, String observationSelector) {
-        String baseTerm = "(ite " + baseSelector + " 1 0)";
-        String observationTerm = "(ite " + observationSelector + " 1 0)";
-        for (String line : firstNonBlank(smt).split("\\R")) {
-            if (line.contains(baseTerm) && line.contains(observationTerm)
-                    && line.contains(
-                    ":named region_case_observation_partition_")) {
-                return true;
-            }
-        }
-        return false;
-    }
 
-    /** Target cases are owned by the target ledger, not producer partitions. */
-    private static boolean targetPathDefinitionDeclared(String smt,
-                                                        String selector) {
-        return selectorDefinitionDeclared(smt, selector,
-                "target_path_selector_definition_");
-    }
 
     /** The Composer's single, internally consistent UNSAT closure claim. */
     private static boolean unsatClosureComplete(JsonObject manifest) {
@@ -814,10 +525,6 @@ public final class BooleanReachConditionExtractor {
                 optionalString(evidence, "kind"))
                 && ComposedManifest.UNSAT_CLOSURE_AUTHORITY.equals(
                 optionalString(evidence, "authority"))
-                // The manifest states the guarded-read verdict once; the
-                // remaining components are the closure itself, and their
-                // conjunction is what the evidence used to restate.
-                && optionalBool(manifest, "guardedReadModelComplete", false)
                 && optionalBool(evidence, "targetPathsClosed", false)
                 && optionalBool(evidence, "finalStatusReady", false)
                 && optionalInteger(evidence, "targetCoverageGapCount", -1) == 0
@@ -1914,58 +1621,8 @@ public final class BooleanReachConditionExtractor {
      */
     private static JsonArray witnessFreedoms(
             JsonObject manifest, Map<String, String> model,
-            Map<String, List<String>> boundaryConsumers,
             Set<String> fatalAbsentKeyTerms) {
         JsonArray rows = new JsonArray();
-        for (JsonElement element
-                : array(manifest,
-                        ComposedManifest.BOUNDARY_DISPATCH_TOTALITY)) {
-            if (!element.isJsonObject()) continue;
-            JsonObject dispatch = element.getAsJsonObject();
-            JsonArray arms = array(dispatch, "armSelectors");
-            if (arms.size() == 0) continue;
-            boolean anySatisfied = false;
-            boolean everyArmKnown = true;
-            for (JsonElement arm : arms) {
-                String value = model.get(arm.getAsString());
-                if (value == null) {
-                    everyArmKnown = false;
-                } else if ("true".equals(value)) {
-                    anySatisfied = true;
-                }
-            }
-            if (anySatisfied || !everyArmKnown) continue;
-            // No arm held.  That alone is not freedom: a boundary whose
-            // consumer never ran in this model is not read, and the merge
-            // carries its own definedness -- one arm must hold -- wherever
-            // composition threads it.  The freedom is the fall-through being
-            // read: some consumer of the merged term is active.
-            String merged = optionalString(dispatch, "solverTerm");
-            List<String> consumers = boundaryConsumers.get(merged);
-            String activeConsumer = "";
-            for (String consumer : consumers == null
-                    ? Collections.<String>emptyList() : consumers) {
-                if ("true".equals(model.get(consumer))) {
-                    activeConsumer = consumer;
-                    break;
-                }
-            }
-            if (activeConsumer.isEmpty()) continue;
-            JsonObject row = new JsonObject();
-            row.addProperty("code",
-                    WitnessLegitimacy.UNBOUND_WIRE_VALUE_TAKEN);
-            row.addProperty("subject", firstNonEmptyText(
-                    optionalString(dispatch, "familyKey"), merged));
-            row.addProperty("consumer", activeConsumer);
-            row.addProperty("detail",
-                    "this model satisfies none of the " + arms.size()
-                            + " case arm(s) of a merged consumer boundary"
-                            + " while its consumer " + activeConsumer
-                            + " is active, so " + merged
-                            + " was read as the unbound fall-through "
-                            + optionalString(dispatch, "unboundTerm"));
-            rows.add(row);
-        }
         for (JsonElement element
                 : array(manifest, ComposedManifest.ABSENT_KEY_DEFAULTS)) {
             if (!element.isJsonObject()) continue;
@@ -2032,60 +1689,6 @@ public final class BooleanReachConditionExtractor {
         return terms;
     }
 
-    /**
-     * Which selectors read each merged consumer boundary.
-     *
-     * <p>Read off the composed text rather than re-derived: a guarded read
-     * arm consumes the boundary under its read selector
-     * ({@code (=> read_selector (and ... (= rf_value merged)))}), and a
-     * merge consumes another merge under the arm's case selector
-     * ({@code (ite selector merged ...)}).  Either selector true in a model
-     * while no arm of the boundary holds is the fall-through being read.</p>
-     */
-    static Map<String, List<String>> boundaryConsumers(
-            String composedSmt, JsonObject manifest) {
-        Map<String, List<String>> result = new LinkedHashMap<>();
-        List<String> merged = new ArrayList<>();
-        for (JsonElement element
-                : array(manifest,
-                        ComposedManifest.BOUNDARY_DISPATCH_TOTALITY)) {
-            if (!element.isJsonObject()) continue;
-            JsonObject dispatch = element.getAsJsonObject();
-            if (optionalBool(dispatch, "totalDispatch", true)) continue;
-            String term = optionalString(dispatch, "solverTerm");
-            if (!term.isEmpty()) merged.add(term);
-        }
-        if (merged.isEmpty() || composedSmt == null) return result;
-        java.util.regex.Pattern implication = java.util.regex.Pattern
-                .compile("\\(=> ([A-Za-z_][A-Za-z0-9_]*) ");
-        for (String line : composedSmt.split("\\R")) {
-            if (!line.startsWith("(assert")) continue;
-            for (String term : merged) {
-                int at = line.indexOf(term);
-                if (at < 0) continue;
-                // The term's own definition is not a consumer of it.
-                if (line.startsWith("(assert (= " + term + " ")) continue;
-                if (!boundedSymbolAt(line, at, term.length())) continue;
-                List<String> consumers = result.computeIfAbsent(term,
-                        ignored -> new ArrayList<>());
-                java.util.regex.Matcher antecedent = implication.matcher(
-                        line);
-                if (antecedent.find()) {
-                    addUnique(consumers, antecedent.group(1));
-                }
-                int ite = line.lastIndexOf("(ite ", at);
-                if (ite >= 0) {
-                    String[] parts = line.substring(ite + 5, at).trim()
-                            .split("\\s+");
-                    if (parts.length == 1 && !parts[0].isEmpty()
-                            && !parts[0].startsWith("(")) {
-                        addUnique(consumers, parts[0]);
-                    }
-                }
-            }
-        }
-        return result;
-    }
 
     private static boolean boundedSymbolAt(String line, int at, int length) {
         int end = at + length;
@@ -2766,95 +2369,6 @@ public final class BooleanReachConditionExtractor {
                 ? "(- " + value.substring(1).trim() + ")" : value;
     }
 
-    /**
-     * Which guarded-read arms could have supplied the fatal predicate's value.
-     *
-     * <p>The fatal predicate tests one {@code merged_boundary__} constant, and
-     * a single equality binds that constant to one guarded read's value term.
-     * That read's arms are the states the target could have read from, and
-     * exactly one of their selectors is true in any model.  Which one it is
-     * decides whether a witness rests on a state the composition reconstructed
-     * or on one it reported it could not, so the arms are resolved here and
-     * their selection is published rather than left implicit in the model.</p>
-     */
-    static List<JsonObject> fatalReadArms(String composedSmt,
-                                          JsonObject manifest) {
-        Set<String> boundaries = new LinkedHashSet<>();
-        Map<String, String> boundaryValues = new LinkedHashMap<>();
-        for (String line : firstNonBlank(composedSmt).split("\\R")) {
-            String text = line.trim();
-            if (text.contains(FATAL_PATH_ASSERTION)) {
-                Matcher symbol = MERGED_BOUNDARY_SYMBOL.matcher(text);
-                while (symbol.find()) {
-                    boundaries.add(symbol.group());
-                }
-                continue;
-            }
-            Matcher binding = BOUNDARY_VALUE_BINDING.matcher(text);
-            if (binding.matches()) {
-                boundaryValues.put(binding.group(1), binding.group(2) != null
-                        ? binding.group(2) : binding.group(3));
-            }
-        }
-        Set<String> valueTerms = new LinkedHashSet<>();
-        for (String boundary : boundaries) {
-            String value = boundaryValues.get(boundary);
-            if (value != null) {
-                valueTerms.add(value);
-            }
-        }
-        List<JsonObject> arms = new ArrayList<>();
-        if (valueTerms.isEmpty()) {
-            return arms;
-        }
-        for (JsonElement read : array(object(manifest, "guardedReadModel"),
-                "reads")) {
-            if (!read.isJsonObject()) {
-                continue;
-            }
-            for (JsonElement element
-                    : array(read.getAsJsonObject(), "arms")) {
-                if (!element.isJsonObject()) {
-                    continue;
-                }
-                JsonObject arm = element.getAsJsonObject();
-                if (!valueTerms.contains(optionalString(arm, "valueTerm"))) {
-                    continue;
-                }
-                String selector = optionalString(arm, "selector");
-                if (selector.isEmpty()) {
-                    continue;
-                }
-                JsonObject row = new JsonObject();
-                row.addProperty("selector", selector);
-                row.addProperty("readIdentity",
-                        optionalString(arm, "readIdentity"));
-                row.addProperty("candidateIdentity",
-                        optionalString(arm, "candidateIdentity"));
-                row.addProperty("sessionLocationKey",
-                        optionalString(arm, "sessionLocationKey"));
-                row.addProperty("locationKey",
-                        optionalString(arm, "locationKey"));
-                row.addProperty("writerCaseOwner",
-                        optionalString(arm, "writerCaseOwner"));
-                // Carried through so the recorded write order stays readable
-                // from the selection alone: which version this arm names, and
-                // the read event that retained it.
-                row.addProperty(RecordedOrderRace.WRITER_VERSION,
-                        optionalLongInteger(arm,
-                                RecordedOrderRace.WRITER_VERSION, -1L));
-                row.addProperty(RecordedOrderRace.READ_EVENT,
-                        optionalLongInteger(arm,
-                                RecordedOrderRace.READ_EVENT, -1L));
-                row.addProperty("initialState",
-                        optionalString(arm, "writerCaseOwner").startsWith(
-                                SymbolicPropagationClosure
-                                        .INITIAL_SOURCE_CASE_PREFIX));
-                arms.add(row);
-            }
-        }
-        return arms;
-    }
 
     /** The published arms, with the model's choice marked on each. */
     private static JsonObject fatalStateSelection(List<JsonObject> arms,

@@ -588,10 +588,6 @@ public final class PathMergeComposer {
         // builds no such model, so each one is empty rather than absent:
         // a reader of this artifact must see "there is none", not "the
         // composer forgot to say".
-        manifest.addProperty("guardedReadModelComplete", true);
-        manifest.add("casePathConditionDependencies", new JsonArray());
-        manifest.add(ComposedManifest.BOUNDARY_DISPATCH_TOTALITY,
-                new JsonArray());
         JsonArray absentKeys = new JsonArray();
         for (JsonObject row : lowering.absentKeyDefaults()) absentKeys.add(row);
         manifest.add(ComposedManifest.ABSENT_KEY_DEFAULTS, absentKeys);
