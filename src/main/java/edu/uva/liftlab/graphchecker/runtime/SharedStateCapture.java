@@ -334,6 +334,11 @@ final class SharedStateCapture {
      * is what keeps "the program computed this" apart from "the recording
      * started after it".</p>
      */
+    /** The reduction, for a test that pins what a version publishes. */
+    static JsonObject reduceWriteLogForTest(JsonObject record) {
+        return writeLogRecord(record);
+    }
+
     private static JsonObject writeLogRecord(JsonObject record) {
         JsonObject envelope = object(record, "envelope");
         JsonObject published = new JsonObject();
@@ -353,6 +358,17 @@ final class SharedStateCapture {
             JsonObject entry = new JsonObject();
             copyIfPresent(version, entry, "fieldVersionId");
             copyIfPresent(version, entry, "versionKind");
+            // The VM event at which the region that wrote this version was
+            // entered: the same clock the decision rows and the target
+            // anchor publish.  A reader resolving "the latest write whose
+            // event precedes this access" needs the writes and the access
+            // expressed on one clock, and this is the only per-version
+            // member of the VM envelope that is on it.  It bounds a write
+            // rather than timing it -- every write made inside one region
+            // activation carries that activation's entry event -- so it
+            // separates writes from different activations and says nothing
+            // about the order of writes within one.  See VM_ASKS.md #1.
+            copyIfPresent(version, entry, "regionEnterEventId");
             copyIfPresent(version, entry, "expression");
             versions.add(entry);
         }

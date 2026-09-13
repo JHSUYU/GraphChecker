@@ -9,6 +9,7 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.util.Collections;
+import java.util.Set;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -185,6 +186,81 @@ public class OccurrenceAddressIsNotARequestTest {
 
         assertTrue("a named source is a recording window",
                 RuntimeTraceContext.recordingWindowOpen());
+    }
+
+    /**
+     * A pre-window activation is neither counted nor offered.
+     *
+     * <p>The counting pass already skips what ran before the workload named
+     * its first source.  The admitting pass used to run anyway, look that
+     * activation's ordinal up in a table the counting pass never wrote, and
+     * refuse it as "matching enclosing root was invocation null instead of
+     * 1" -- a comparison against an ordinal nobody assigned.  Lane BB shows
+     * the shape: the flip replay throws inside the workload before it
+     * restarts the NameNode, so the only {@code loadFSImage} activation it
+     * offers is the cluster start that happens before the window opens.
+     * The two passes now share one predicate, so such an activation is
+     * simply not a candidate and the run says the planned root did not
+     * execute.</p>
+     */
+    @Test
+    public void aPreWindowActivationIsNeitherCountedNorOffered() {
+        RuntimeTraceContext.resetForTests();
+        ConcolicTaskPlan.RuntimeTask task = task();
+
+        Set<String> admitted = plan(task).addressLoopRootInvocation(
+                task.rootMethod, task.rootMethod, null, new Object[0]);
+
+        assertTrue("nothing outside the window is admitted",
+                admitted.isEmpty());
+        assertFalse("and nothing is compared against a null ordinal",
+                task.unansweredAddress().contains("invocation null"));
+    }
+
+    /**
+     * A flip replay counts and matches the activation the seed did.
+     *
+     * <p>Both runs start the cluster before the workload names its source,
+     * so both offer one activation outside the recording window first.  The
+     * plan counted neither of them, and neither replay may let that
+     * activation take ordinal 1 from the activation the recording actually
+     * saw.  Running the identical sequence twice pins the property the
+     * refusals turned on: the window opens at the same moment on both
+     * sides, so the same physical activation answers the same address.</p>
+     */
+    @Test
+    public void aFlipReplayCountsAndMatchesLikeTheSeed() {
+        assertEquals("the flip admits what the seed admitted",
+                replayOnce(), replayOnce());
+    }
+
+    /** One replay: a cluster start outside the window, then the workload. */
+    private static Set<String> replayOnce() {
+        RuntimeTraceContext.resetForTests();
+        ConcolicTaskPlan.RuntimeTask task = task();
+        ConcolicTaskPlan plan = plan(task);
+
+        assertTrue("the cluster start is outside the window",
+                plan.addressLoopRootInvocation(task.rootMethod,
+                        task.rootMethod, null, new Object[0]).isEmpty());
+        assertTrue("and it is not a candidate that failed to answer",
+                task.unansweredAddress().startsWith(
+                        "0 compatible activation(s)"));
+
+        RuntimeTraceContext.registerSource(new Object(),
+                new SourceRef("CLUSTER_NODE", "NAMENODE", "hdfs/nn0", 0L));
+
+        Set<String> admitted = plan.addressLoopRootInvocation(
+                task.rootMethod, task.rootMethod, null, new Object[0]);
+        assertEquals("the first activation the recording saw is occurrence 1",
+                Collections.singleton(task.taskId), admitted);
+        return admitted;
+    }
+
+    private static ConcolicTaskPlan plan(
+            ConcolicTaskPlan.RuntimeTask task) {
+        return new ConcolicTaskPlan(null,
+                Collections.singletonList(task));
     }
 
     private static ConcolicTaskPlan.RuntimeTask task() {

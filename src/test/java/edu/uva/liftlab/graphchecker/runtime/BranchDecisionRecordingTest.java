@@ -17,6 +17,8 @@ import java.util.Collection;
 import java.util.Deque;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
 
 /**
  * Characterization of the branch-observation machinery a region runs for one
@@ -346,6 +348,162 @@ public class BranchDecisionRecordingTest {
         assertEquals("rows=[]\nunresolved=[]\n"
                 + "targetReach=none\nreturned=0\n",
                 transcript(multiway, successor));
+    }
+
+
+    // ---------- the published monotone clock ----------
+
+    /** One published decision row, as the runtime writes it. */
+    private static JsonObject row(int unitIndex, int occurrence,
+                                  long vmEventId) throws Exception {
+        Method mapping = ConcolicRegionRuntime.class.getDeclaredMethod(
+                "branchMapping", String.class, int.class, int.class,
+                long.class);
+        mapping.setAccessible(true);
+        return (JsonObject) mapping.invoke(null, METHOD, unitIndex,
+                occurrence, vmEventId);
+    }
+
+    private static long eventId(JsonObject row) {
+        return row.has("vmEventId")
+                ? row.get("vmEventId").getAsLong() : -1L;
+    }
+
+    /**
+     * Two activations' decisions order by the VM event id.
+     *
+     * <p>A composer building pi_p has to say which decisions were taken
+     * before the anchor and in what order two activations' decisions
+     * interleave.  Nothing else published answers that: {@code unitIndex} is
+     * a position inside a method and {@code occurrence} counts within one
+     * activation, so both repeat across activations -- the two decisions at
+     * {@code u4#1} below are different events with identical local indices.
+     * The VM's event sequence number is assigned once per event in the
+     * process, so it orders them.</p>
+     */
+    @Test
+    public void decisionsOfTwoActivationsOrderByTheVmEventId()
+            throws Exception {
+        ConcolicRegionRuntime.ActiveRegion first = region(true, true);
+        ConcolicRegionRuntime.ActiveRegion second = region(true, true);
+
+        // The two activations interleave: first, second, first again.
+        first.branchMappings.add(row(4, 1, 41L));
+        second.branchMappings.add(row(4, 1, 42L));
+        first.branchMappings.add(row(12, 1, 43L));
+
+        assertEquals("the local indices repeat across activations",
+                first.branchMappings.get(0).get("siteId"),
+                second.branchMappings.get(0).get("siteId"));
+        assertEquals(41L, eventId(first.branchMappings.get(0)));
+        assertEquals(42L, eventId(second.branchMappings.get(0)));
+        assertEquals(43L, eventId(first.branchMappings.get(1)));
+        assertTrue("one activation's decisions are ordered among themselves",
+                eventId(first.branchMappings.get(0))
+                        < eventId(first.branchMappings.get(1)));
+        assertTrue("and against the other activation's",
+                eventId(second.branchMappings.get(0))
+                        < eventId(first.branchMappings.get(1)));
+    }
+
+    /** The anchor is read on the same clock, so pi_p can exclude what follows. */
+    @Test
+    public void theTargetAnchorCarriesTheSameClock() throws Exception {
+        ConcolicRegionRuntime.ActiveRegion active = region(true, true);
+        active.branchMappings.add(row(4, 1, 41L));
+        active.branchMappings.add(row(12, 1, 43L));
+
+        call(active, "recordTargetReach", new Class<?>[] {String.class,
+                        int.class, boolean.class, long.class},
+                DECLARED, 1, true, 42L);
+
+        JsonObject reach = (JsonObject) rawField(active, "targetReach");
+        assertEquals(42L, reach.get("vmEventId").getAsLong());
+        assertTrue("the first decision precedes the anchor",
+                eventId(active.branchMappings.get(0))
+                        < reach.get("vmEventId").getAsLong());
+        assertTrue("the second follows it",
+                eventId(active.branchMappings.get(1))
+                        > reach.get("vmEventId").getAsLong());
+    }
+
+    /** A decision the VM assigned no event states no id rather than zero. */
+    @Test
+    public void aDecisionWithoutAVmEventStatesNoId() throws Exception {
+        assertFalse(row(4, 1, 0L).has("vmEventId"));
+    }
+
+
+    /**
+     * Write-log versions carry event ids on the decisions' clock.
+     *
+     * <p>The reader's rule for a field access that names no version is "the
+     * latest write whose event id precedes the access event".  That needs the
+     * writes and the access expressed on one clock.  {@code
+     * regionEnterEventId} is the VM event at which the region that wrote a
+     * version was entered -- a VM event id, the same clock {@code vmEventId}
+     * comes from -- and it is the only per-version member of the VM envelope
+     * that is on it, so the reduction must keep it.</p>
+     *
+     * <p>It bounds a write rather than timing it: writes made inside one
+     * region activation all carry that activation's entry event, so it
+     * separates writes from different activations and is silent about the
+     * order within one.  That limit is asserted here rather than papered
+     * over.</p>
+     */
+    @Test
+    public void writeLogVersionsCarryTheDecisionClock() throws Exception {
+        JsonObject published = SharedStateCapture.reduceWriteLogForTest(
+                writeLog(new long[] {2L, 2L, 60L}, new int[] {39, 41, 102}));
+
+        JsonArray versions = published.getAsJsonObject("envelope")
+                .getAsJsonArray("versions");
+        assertEquals(3, versions.size());
+        long previous = -1L;
+        for (int index = 0; index < versions.size(); index++) {
+            JsonObject version = versions.get(index).getAsJsonObject();
+            assertTrue("every version states the clock",
+                    version.has("regionEnterEventId"));
+            long event = version.get("regionEnterEventId").getAsLong();
+            assertTrue("and it never decreases", event >= previous);
+            previous = event;
+        }
+        assertEquals("writes of two activations are separated", 60L,
+                versions.get(2).getAsJsonObject()
+                        .get("regionEnterEventId").getAsLong());
+        assertEquals("two writes of one activation are not", 2L,
+                versions.get(1).getAsJsonObject()
+                        .get("regionEnterEventId").getAsLong());
+    }
+
+    private static JsonObject writeLog(long[] regionEnterEventIds,
+                                       int[] fieldVersionIds) {
+        JsonArray versions = new JsonArray();
+        for (int index = 0; index < regionEnterEventIds.length; index++) {
+            JsonObject version = new JsonObject();
+            version.addProperty("fieldVersionId", fieldVersionIds[index]);
+            version.addProperty("versionKind",
+                    index == 0 ? "INITIAL" : "WRITE");
+            version.addProperty("regionEnterEventId",
+                    regionEnterEventIds[index]);
+            version.addProperty("writerSourceKey", "dn0#epoch0");
+            JsonObject expression = new JsonObject();
+            expression.addProperty("_type", "ConstExpr");
+            expression.addProperty("value", index);
+            version.add("expression", expression);
+            versions.add(version);
+        }
+        JsonObject envelope = new JsonObject();
+        envelope.addProperty("kind", "SHARED_FIELD_VERSIONS");
+        envelope.addProperty("schemaVersion", 1);
+        envelope.addProperty("sessionId", 1);
+        envelope.add("versions", versions);
+        JsonObject record = new JsonObject();
+        record.addProperty("kind", "VM_SHARED_FIELD_VERSIONS_V1");
+        record.addProperty("authority", "VM_SHARED_STATE_EVIDENCE_V1");
+        record.addProperty("locationKey", "INSTANCE_FIELD/9#56");
+        record.add("envelope", envelope);
+        return record;
     }
 
     /** The transcript from {@code returned=} on: its rows are asserted by the

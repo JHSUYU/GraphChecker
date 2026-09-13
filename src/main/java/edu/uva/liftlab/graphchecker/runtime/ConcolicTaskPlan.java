@@ -357,6 +357,15 @@ final class ConcolicTaskPlan {
             }
         }
         Set<String> admitted = new LinkedHashSet<>();
+        // An activation the recording never saw is not a candidate here
+        // either.  The counting pass above skipped it, so looking its
+        // ordinal up would answer null and the run would report "invocation
+        // null instead of 1" -- a comparison against an ordinal nobody
+        // assigned, rather than the plain fact that this activation is
+        // outside the window.
+        if (!RuntimeTraceContext.recordingWindowOpen()) {
+            return admitted;
+        }
         for (RuntimeTask task : tasks) {
             if (!task.loopBodyRoot
                     || !task.loopRootHookGroupKey().equals(
@@ -468,6 +477,9 @@ final class ConcolicTaskPlan {
             }
         }
 
+        // Same rule as the counting pass: outside the recording window
+        // there is no candidate to select.
+        if (!RuntimeTraceContext.recordingWindowOpen()) return null;
         for (int index = 0; index < tasks.size(); index++) {
             RuntimeTask task = tasks.get(index);
             if (!task.rootHookGroupKey().equals(
