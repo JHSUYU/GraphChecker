@@ -28,6 +28,12 @@ import static org.junit.Assert.assertTrue;
  * file is a restrictive allowlist over them.  Two authorities are exempt: a
  * source hook's own field, and a fault marker the workload wrote into its own
  * program text.</p>
+ *
+ * <p>A row says one of two things about a name.  {@code fieldSignatures},
+ * {@code portIds} and {@code cells} declare a root: the search starts there,
+ * and the replay mints one even where a carrier already wraps the read.  The
+ * {@code carrier*} keys declare the opposite: keep this read symbolic so its
+ * candidates keep being published, but mint nothing.</p>
  */
 public class SymbolicRootPolicyTest {
 
@@ -238,6 +244,97 @@ public class SymbolicRootPolicyTest {
         // empty file that silently behaved like an absent one would report
         // nothing here.
         assertEquals(2, selection.suppressedRootCandidates().size());
+    }
+
+    /**
+     * A carrier row keeps the read symbolic without starting a search there.
+     *
+     * <p>Concretizing a read is not free: the plan then never symbolizes it,
+     * the VM publishes no {@code ReadFrom} candidates for it, and the guarded
+     * read family the composer needs has no writer cases to admit.  A carrier
+     * row is the third answer -- keep propagating through this field, mint
+     * nothing -- which is what HDFS-17960's counter needs while the
+     * configuration Boolean stays the only root.</p>
+     */
+    @Test
+    public void aCarrierRowStaysSymbolicWithoutTheMintMarker()
+            throws Exception {
+        ConcolicScheduler.SymbolicInputSelection selection =
+                ConcolicScheduler.SymbolicInputSelection.read(
+                        declarations("{\"regionId\":\"" + NN
+                                + "\",\"carrierFieldSignatures\":[\"" + KEY_ID
+                                + "\"]}"), catalog());
+
+        JsonArray selected = selection.select(NN, proposals());
+
+        assertEquals("the automatic clock is still concretized",
+                "CONCRETE", mode(selected, 0));
+        assertEquals("the carrier field keeps propagating",
+                "SYMBOLIC", mode(selected, 1));
+        assertEquals("DECLARED_SYMBOLIC_CARRIER", demand(selected, 1));
+        assertFalse("a carrier never carries the mint marker",
+                selected.get(1).getAsJsonObject().has(
+                        InputActionCatalog.DECLARED_SYMBOLIC_ROOT));
+        assertEquals("only the clock was refused",
+                1, selection.suppressedRootCandidates().size());
+    }
+
+    /** A carrier row governs only the region that declares it. */
+    @Test
+    public void aCarrierRowDoesNotReachAnotherRegion() throws Exception {
+        ConcolicScheduler.SymbolicInputSelection selection =
+                ConcolicScheduler.SymbolicInputSelection.read(
+                        declarations("{\"regionId\":\"" + NN
+                                + "\",\"carrierFieldSignatures\":[\"" + KEY_ID
+                                + "\"]}"), catalog());
+
+        JsonArray selected = selection.select(DN, proposals());
+
+        assertEquals("CONCRETE", mode(selected, 1));
+        assertEquals("CONFIGURED_SYMBOLIC_INPUT_UNSELECTED",
+                demand(selected, 1));
+    }
+
+    /**
+     * The hook's own field is exempt from a carrier row too.
+     *
+     * <p>This is the HDFS-17960 shape exactly: one carrier row, and the
+     * configured source still owns its field, so the campaign still has
+     * exactly one root.</p>
+     */
+    @Test
+    public void aCarrierRowLeavesTheConfiguredSourceExempt() throws Exception {
+        ConcolicScheduler.SymbolicInputSelection selection =
+                ConcolicScheduler.SymbolicInputSelection.read(
+                        declarations("{\"regionId\":\"" + NN
+                                + "\",\"carrierFieldSignatures\":[\"" + KEY_ID
+                                + "\"]}"), hookCatalog());
+
+        JsonArray selected = selection.select(NN, hookProposals());
+
+        assertEquals("the carrier propagates", "SYMBOLIC", mode(selected, 1));
+        assertEquals("the workload's own fault marker is exempt",
+                "SYMBOLIC", mode(selected, 2));
+        assertEquals("the hook still owns its field",
+                "CONCRETE", mode(selected, 3));
+        assertEquals("CONFIGURED_SYMBOLIC_SOURCE_FIELD_OWNED",
+                demand(selected, 3));
+    }
+
+    /** Root and carrier are opposite instructions about the same name. */
+    @Test
+    public void oneNameMayNotBeBothARootAndACarrier() throws Exception {
+        try {
+            ConcolicScheduler.SymbolicInputSelection.read(
+                    declarations("{\"regionId\":\"" + NN
+                            + "\",\"fieldSignatures\":[\"" + KEY_ID
+                            + "\"],\"carrierFieldSignatures\":[\"" + KEY_ID
+                            + "\"]}"), catalog());
+            org.junit.Assert.fail("a name declared twice must be refused");
+        } catch (IOException refused) {
+            assertTrue(refused.getMessage().contains("both a root and a "
+                    + "carrier"));
+        }
     }
 
     /** The same file, read as absent, narrows nothing at all. */
