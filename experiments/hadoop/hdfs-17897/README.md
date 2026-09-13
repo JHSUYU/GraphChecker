@@ -25,5 +25,25 @@ closure-wide waves. Each selected shared read carries a bounded GuardedRead
 snapshot of every retained writer expression; its exactly-one selector is
 coupled to the corresponding writer case and local path condition.
 
+## Clock window
+
+`clock_skew_ms=900000` (15 min), against the engine default of 300 000 ms.
+
+Both removals this experiment needs are `expiryDate < now` at
+`BlockTokenSecretManager:220`, and the workload runs with
+`keyUpdateInterval = tokenLifetime = 1 min`, so each key's expiry sits a
+small multiple of a minute past the clock that minted it.  Measured on the
+recorded corpus, the DataNode's `addKeys` case needs **+278.8 s** of skew
+for the registration-time copy of K1 -- inside a +/-300 s window, but with
+only 21 s of headroom -- while the two copies the recorded RPC refresh
+installed need **+653 s** and **+658 s**.  At the default width those two
+cases are decided before the solver sees them, so the window, not the
+mechanism, picks which copy of the key can expire.
+
+900 000 ms admits all three with room, and it is still a *skew*: every
+clock stays within 15 minutes of what that read actually returned, and the
+recorded per-node order is unchanged.  Every other experiment keeps the
+default; nothing here widens the window globally.
+
 Run `./run.sh campaign`.  Replay concurrency is fixed at 8 in
 `workflow.properties`.
