@@ -147,6 +147,134 @@ public class RuntimeWorkflowHandoffClosureTest {
                 targetOccurrence, writerOccurrence)), selected);
     }
 
+    /**
+     * A writer publishes its {@code writerActivationClosure} on its own
+     * summary, whose recorded envelope carries no read of its own.  The
+     * enclosing activation that closure names must still enter the active
+     * corpus: {@code SymbolicPropagationClosure.writerCaseClosure} resolves
+     * exactly that address later and fails closed when the task is absent.
+     */
+    @Test
+    public void retainsEnclosingActivationNamedByAWriterOwnClosure()
+            throws Exception {
+        String scope = "replay-group:one";
+        String targetOccurrence = "source/t/region/R.T#1";
+        String enclosingOccurrence = "source/e/region/R.E#1";
+        JsonArray graph = new JsonArray();
+        RegionInstancePlan target = plan("source/t", "R.T",
+                targetOccurrence, "G.T", true, graph);
+        RegionInstancePlan enclosing = plan("source/e", "R.E",
+                enclosingOccurrence, "G.E", false, graph);
+
+        JsonObject targetSummary = taskSummary(scope, "source/t", "R.T",
+                "G.T", "TASK.T", targetOccurrence + "#a1");
+        targetSummary.add(SharedStateEvidence.RECORDED_FIELD,
+                unreadWriterRecord(scope, targetOccurrence + "#a1",
+                        enclosingOccurrence + "#a3", true));
+
+        assertEquals(new LinkedHashSet<>(Arrays.asList(targetOccurrence,
+                enclosingOccurrence)), selectedOccurrences(
+                Arrays.asList(target, enclosing),
+                Arrays.asList(targetSummary, taskSummary(scope, "source/e",
+                        "R.E", "G.E", "TASK.E",
+                        enclosingOccurrence + "#a3"))));
+
+        // An incomplete closure names no case the composer may resolve, so it
+        // still admits nothing: the fix widens named evidence only.
+        JsonObject incomplete = taskSummary(scope, "source/t", "R.T", "G.T",
+                "TASK.T", targetOccurrence + "#a1");
+        incomplete.add(SharedStateEvidence.RECORDED_FIELD,
+                unreadWriterRecord(scope, targetOccurrence + "#a1",
+                        enclosingOccurrence + "#a3", false));
+        assertEquals(Collections.singleton(targetOccurrence),
+                selectedOccurrences(Arrays.asList(target, enclosing),
+                        Arrays.asList(incomplete, taskSummary(scope,
+                                "source/e", "R.E", "G.E", "TASK.E",
+                                enclosingOccurrence + "#a3"))));
+    }
+
+    private static Set<String> selectedOccurrences(
+            java.util.List<RegionInstancePlan> plans,
+            java.util.List<JsonObject> summaries) throws Exception {
+        Set<String> selected = new LinkedHashSet<>();
+        for (RuntimeWorkflowDiscovery.Selection selection
+                : RuntimeWorkflowDiscovery.rankedWorkflow(plans, summaries)
+                .selections()) {
+            selected.add(selection.occurrenceId);
+        }
+        return selected;
+    }
+
+    /**
+     * One recorded versions envelope owned by the writer itself: a WRITE
+     * version whose activation closure names an enclosing task, and an empty
+     * read log, which is what the writer's own summary carries.
+     */
+    private static JsonObject unreadWriterRecord(
+            String scope, String writerOccurrence,
+            String enclosingOccurrence, boolean complete) {
+        JsonObject expression = new JsonObject();
+        expression.addProperty("_type", "ConSymbolExp");
+        expression.addProperty("_java_type", "I");
+        expression.addProperty("_exp", "C_I_1");
+        JsonObject version = new JsonObject();
+        version.addProperty("fieldVersionId", 3L);
+        version.addProperty("versionKind", "WRITE");
+        version.addProperty("regionEnterEventId", 11L);
+        version.addProperty("regionId", "R.T");
+        version.addProperty("taskId", "TASK.T");
+        version.addProperty(SharedStateEvidence.WRITER_SOURCE_KEY,
+                "source/t");
+        version.addProperty(SharedStateEvidence.WRITER_OCCURRENCE_ID,
+                writerOccurrence);
+        version.add("expression", expression);
+        version.add("pathGuard", SharedStateEvidence.emptyConjunction());
+
+        JsonObject writerClosure = new JsonObject();
+        writerClosure.addProperty("authority", SymbolicPropagationClosure
+                .WRITER_ACTIVATION_CLOSURE_AUTHORITY);
+        writerClosure.addProperty("complete", complete);
+        JsonArray cases = new JsonArray();
+        JsonObject writerCase = activation("TASK.T", writerOccurrence);
+        writerCase.addProperty("regionId", "R.T");
+        cases.add(writerCase);
+        JsonObject enclosingCase = activation("TASK.E", enclosingOccurrence);
+        enclosingCase.addProperty("regionId", "R.E");
+        cases.add(enclosingCase);
+        writerClosure.add("cases", cases);
+        version.add(SymbolicPropagationClosure.WRITER_ACTIVATION_CLOSURE,
+                writerClosure);
+
+        JsonObject location = new JsonObject();
+        location.addProperty("locationKind", "INSTANCE_FIELD");
+        location.addProperty("ownerSymRid", 21L);
+        location.addProperty("slot", 4);
+        JsonObject envelope = new JsonObject();
+        envelope.addProperty("kind",
+                SharedStateEvidence.VERSIONS_ENVELOPE_KIND);
+        envelope.addProperty("schemaVersion",
+                SharedStateEvidence.SCHEMA_VERSION);
+        envelope.addProperty("selected", true);
+        envelope.add("location", location);
+        envelope.addProperty("writerSetComplete", true);
+        JsonArray versions = new JsonArray();
+        versions.add(version);
+        envelope.add("versions", versions);
+        envelope.addProperty("serializationTruncated", false);
+        // The writer's own envelope logs no read.
+        envelope.add("reads", new JsonArray());
+        envelope.addProperty("readLogTruncated", false);
+        JsonObject record = SharedStateEvidence.versionsRecord(
+                "INSTANCE_FIELD/21#4", envelope,
+                RecordedEvidenceIdentity.of("run", scope, "TASK.T",
+                        writerOccurrence, "source/t", 1L));
+        JsonArray records = new JsonArray();
+        records.add(record);
+        JsonObject recorded = new JsonObject();
+        recorded.add("versions", records);
+        return recorded;
+    }
+
     @Test
     public void retainsDistinctRoutesToTheSameFailureSite() throws Exception {
         String producerOccurrence = "source/p/region/R.P#1";

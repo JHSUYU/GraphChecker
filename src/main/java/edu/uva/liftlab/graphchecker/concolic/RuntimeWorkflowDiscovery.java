@@ -482,6 +482,31 @@ public final class RuntimeWorkflowDiscovery {
                 // authority; no derived resolution label is consulted.
                 guardedRead = true;
             }
+            // The writer-activation closure is a complete, authority-stamped
+            // statement of which replay tasks physically enclosed each
+            // recorded write.  It is published on the *writer's* own summary,
+            // whose envelope commonly carries no read of its own, so gating it
+            // on a matching reader address in this same summary discards it:
+            // the enclosing task then never enters the active corpus and
+            // SymbolicPropagationClosure.writerCaseClosure later fails closed
+            // on the exact #aN case it names.  Harvest it from every recorded
+            // envelope; the reads gate below still owns the weaker producer
+            // edges, which are inferences rather than named cases.
+            for (JsonElement versionElement : array(envelope, "versions")) {
+                if (!versionElement.isJsonObject()) continue;
+                JsonObject version = versionElement.getAsJsonObject();
+                // Exactly the versions the composer resolves through the
+                // closure: an INITIAL snapshot is answered by its reader's
+                // own boundary owner and names no enclosing write.
+                if ("INITIAL".equals(optionalString(version,
+                        "versionKind"))) {
+                    continue;
+                }
+                String enclosingScope = scopeOf(version, summaryScope);
+                for (String task : observedWriterActivationTasks(version)) {
+                    result.add(new ObservedTaskKey(enclosingScope, task));
+                }
+            }
             if (!guardedRead) continue;
             // The guarded expression chooses among every retained writer.
             // A per-read count is not an ordering prefix and cannot select
