@@ -2214,12 +2214,11 @@ public final class ConcolicRegionRuntime {
                 : active.activation.taskId;
         String producerOccurrence = active == null ? UNPLANNED_ENDPOINT
                 : active.occurrenceId();
-        List<String> consumerOccurrences = active == null
-                ? Collections.<String>emptyList()
-                : active.activation.exportConsumerOccurrences(portId);
-        if (consumerOccurrences.isEmpty()) {
-            consumerOccurrences = plannedExportConsumers(portId);
-        }
+        // The entry says which consumers the plan bound to this port, which
+        // is a property of the port and not of whoever is producing: asking
+        // the running task first only narrowed it to the subset that task
+        // happened to declare.
+        List<String> consumerOccurrences = plannedExportConsumers(portId);
         boolean staged = SymbolicMessageEnvelope.stage(
                 portId, handle, producerTask, producerOccurrence,
                 consumerOccurrences);
@@ -2386,15 +2385,6 @@ public final class ConcolicRegionRuntime {
             return;
         }
         ActiveRegion active = activeRegion();
-        // Whether this activation is the edge the plan drew is a fact about
-        // the plan, not about the value: the leaf is the one the sender put
-        // in this message at this element, and refusing it here left the
-        // receiver holding a literal.  Say it and attach.
-        if (leafCarried && active != null) {
-            acceptCommunicationEndpoint(active, site,
-                    carried.producerOccurrenceId(),
-                    carried.consumerOccurrenceIds());
-        }
         if (!leafCarried) {
             // The message does not have the element this decode asked for.
             // Ordinals address elements, so this is not "the queue ran dry":
@@ -2541,39 +2531,6 @@ public final class ConcolicRegionRuntime {
         ensurePathRecordingStarted(active);
     }
 
-    /** Checks that one message entry came from its planned producer. */
-    private static boolean acceptCommunicationEndpoint(
-            ActiveRegion active, CommunicationHandoffSpec site,
-            String producerOccurrenceId,
-            List<String> consumerOccurrenceIds) {
-        String expectedProducer = active.activation
-                .attachProducerOccurrence(site.portId());
-        String actualProducer = OccurrenceId.parse(
-                producerOccurrenceId).planned();
-        String expectedConsumer = active.activation.occurrenceId;
-        if (expectedProducer.isEmpty()
-                || !expectedProducer.equals(actualProducer)
-                || !addressesConsumer(consumerOccurrenceIds,
-                expectedConsumer)) {
-            diag("ATTACH_ENDPOINT_MISMATCH", "task="
-                    + safe(active.activation.taskId) + " port="
-                    + site.portId() + " expected=" + expectedProducer
-                    + " -> " + expectedConsumer + " actual="
-                    + actualProducer + " -> " + consumerOccurrenceIds);
-            return false;
-        }
-        return true;
-    }
-
-    /**
-     * Whether a staged entry is addressed to this exact consumer occurrence.
-     *
-     * <p>One delivery of a repeated field carries one value per element, and
-     * the plan names one consumer occurrence per element; the envelope is a
-     * queue, so the value a consumer takes is the one its own iteration is
-     * due.  Membership is what the plan authorises -- never a wildcard: an
-     * occurrence the plan did not bind to this port still refuses.</p>
-     */
     private static boolean addressesConsumer(List<String> consumers,
                                              String occurrenceId) {
         if (consumers == null || safe(occurrenceId).isEmpty()) return false;
