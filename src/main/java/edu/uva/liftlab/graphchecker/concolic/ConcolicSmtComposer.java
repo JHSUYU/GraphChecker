@@ -1415,6 +1415,57 @@ public final class ConcolicSmtComposer {
         return violations;
     }
 
+    /**
+     * What one confirmed request-fault control edge decides: which marker,
+     * raised on which node, inside which request transaction.
+     *
+     * <p>The edge id is not that identity.  One response message may carry
+     * several declared wire flows, and the finalizer mints one control edge
+     * per retained response value edge, so a single fault over a single
+     * request reaches one controlled occurrence once per flow -- rows
+     * identical but for {@code controlledResponseEdgeId}, and therefore for
+     * the {@code edgeId} hashed over it.  Comparing edge ids read that as an
+     * ambiguity and refused the whole composition, although both rows state
+     * the same control fact and the emitter asserts it once from the row it
+     * holds either way.  Two rows are genuinely ambiguous -- suppressing the
+     * occurrence on either would forbid a run the other allows -- only when
+     * the fault they name differs, which is what this compares.</p>
+     *
+     * <p>Pure encoding shared by final composition and focused regression
+     * tests.</p>
+     */
+    static String requestFaultIdentity(JsonObject edge) {
+        if (edge == null) return "";
+        return OccurrenceId.parse(
+                optionalString(edge, "fromOccurrenceId")).planned()
+                + "\n" + optionalString(edge, "faultPortId")
+                + "\n" + optionalString(edge, "symbolicName")
+                + "\n" + optionalString(edge, "sourceKey")
+                + "\n" + optionalString(edge, "requestKey")
+                + "\n" + optionalString(edge, "exchangeTransaction");
+    }
+
+    /**
+     * The VM address of a guarded read the closure left unnamed.
+     *
+     * <p>A read with no stable read/case identity used to be reported as
+     * {@code UnadmittedGuardedRead:unnamed}, which says that some read
+     * somewhere was refused and nothing more: every such refusal collapses
+     * onto one subject, so neither the count nor the site survives into the
+     * gap ledger.  The VM location and read event the node still carries are
+     * exactly what {@link SharedStateEvidence#guardedReadFault} already
+     * required of it, so a refused read can always say where it happened
+     * even when the closure could name no identity for it.</p>
+     */
+    static String vmReadAddress(JsonObject node) {
+        if (node == null) return "unnamed";
+        String location = SharedStateEvidence.locationKey(node);
+        long event = optionalLongInteger(node, "readEventId", 0L);
+        if (location.isEmpty() && event <= 0L) return "unnamed";
+        return (location.isEmpty() ? "unlocated" : location)
+                + "#event" + event;
+    }
+
     /** What one fault marker idles, once the consequences are followed. */
     static final class FaultIdleClosure {
         /** Region cases the marker forces false. */
@@ -2433,13 +2484,14 @@ public final class ConcolicSmtComposer {
                     if (controlled.isEmpty()) continue;
                     JsonObject held = requestFaultControlEdges.putIfAbsent(
                             controlled, edge);
-                    if (held != null && !optionalString(held, "edgeId")
-                            .equals(optionalString(edge, "edgeId"))) {
+                    if (held != null && !requestFaultIdentity(held)
+                            .equals(requestFaultIdentity(edge))) {
                         // Two faults controlling one occurrence: suppressing
                         // it on either would forbid a run the other allows.
                         refuse("RequestFaultControlAmbiguous:" + controlled,
                                 "one controlled occurrence has two confirmed"
-                                        + " request-fault control edges");
+                                        + " request-fault control edges naming"
+                                        + " different faults");
                     }
                 }
             }
@@ -3432,9 +3484,13 @@ public final class ConcolicSmtComposer {
             if (!fault.isEmpty() || readIdentity.isEmpty()
                     || readOwner.isEmpty()) {
                 refuseGuardedRead("UnadmittedGuardedRead:"
-                                + firstNonBlank(readIdentity, "unnamed"),
+                                + firstNonBlank(readIdentity,
+                                vmReadAddress(node)),
                         fault.isEmpty()
-                                ? "guarded read has no stable read/case identity"
+                                ? "guarded read has no stable "
+                                + (readIdentity.isEmpty()
+                                ? "read identity" : "reader case")
+                                + " (" + vmReadAddress(node) + ")"
                                 : fault);
                 return unsupportedTerm(expected == null
                         ? Sort.VALUE : expected);
