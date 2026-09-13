@@ -1,2 +1,2 @@
-{"regionId":"REGION.aaa1cfd7-659b-3340-8d12-c81925e1de94","fieldSignatures":["<org.apache.hadoop.security.token.delegation.DelegationKey: long expiryDate>"],"cells":["<org.apache.hadoop.util.Timer: long now()>.return"]}
+{"regionId":"REGION.aaa1cfd7-659b-3340-8d12-c81925e1de94","cells":["<org.apache.hadoop.util.Timer: long now()>.return"]}
 {"regionId":"REGION.ba3902cd-9721-3876-bd7c-d4f7d2fc0284","cells":["<org.apache.hadoop.util.Timer: long now()>.return"]}
