@@ -56,8 +56,15 @@ public final class TargetOccurrenceElection {
     static final String SAT_CANDIDATE = "SAT_CANDIDATE";
     static final String UNSAT_CLOSED = "UNSAT_CLOSED";
     static final String INCONCLUSIVE = "INCONCLUSIVE";
-    /** No formula to judge: refused by the Composer, or never composed. */
+    /** A formula the Composer refused: it states nothing about its
+     *  occurrence, but it exists, and a run whose every occurrence was
+     *  refused still publishes one refusal with its named blockers rather
+     *  than nothing at all. */
     static final String REFUSED = "REFUSED";
+    /** No formula at all: this occurrence was never composed, so there is
+     *  nothing here for a consumer to read.  It can never be elected while
+     *  any occurrence has artifacts. */
+    static final String NOT_COMPOSED = "NOT_COMPOSED";
 
     /** The occurrence was planned but its fatal read was never observed in
      *  any summary this run linked, so there was nothing to compose. */
@@ -65,7 +72,7 @@ public final class TargetOccurrenceElection {
     public static final String COMPOSED = "COMPOSED";
 
     private static final List<String> SUPPORT_ORDER = Arrays.asList(
-            REFUSED, INCONCLUSIVE, UNSAT_CLOSED, SAT_CANDIDATE,
+            NOT_COMPOSED, REFUSED, INCONCLUSIVE, UNSAT_CLOSED, SAT_CANDIDATE,
             SAT_CANDIDATE_EXPLAINED_WITNESS);
 
     private static final Gson GSON = new GsonBuilder()
@@ -172,7 +179,7 @@ public final class TargetOccurrenceElection {
             row.addProperty("solverState", "");
             row.addProperty("acceptedValuationOrdinal", -1);
             row.addProperty("acceptedWitnessKind", "");
-            row.addProperty("support", REFUSED);
+            row.addProperty("support", NOT_COMPOSED);
             return row;
         }
         JsonObject manifest = readRequired(report, "manifest",
@@ -216,7 +223,11 @@ public final class TargetOccurrenceElection {
      *
      * <p>A composition the Composer refused states nothing about the site,
      * whatever claim the solver stage then computed over the refusal stub, so
-     * it ranks with the occurrences that were never composed at all.</p>
+     * it ranks below every composed formula -- but above an occurrence that
+     * was never composed, which has no artifacts for a consumer to read at
+     * all.  A run whose every occurrence was refused therefore still
+     * publishes one refused composition with its named blockers, which is
+     * exactly what a run with one target occurrence has always published.</p>
      */
     static String support(String claim, String finalStatus, int refusals,
                           int acceptedValuationOrdinal) {

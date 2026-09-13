@@ -143,7 +143,36 @@ public class TargetOccurrenceElectionTest {
                 row(ledger, 1).get("status").getAsString());
         assertEquals("no linked summary carried its read",
                 row(ledger, 1).get("detail").getAsString());
+        assertEquals(TargetOccurrenceElection.NOT_COMPOSED,
+                row(ledger, 1).get("support").getAsString());
+    }
+
+    /**
+     * hdfs-17897's own shape on the delivered corpus: the one occurrence
+     * that composed was refused, and the other was never composed at all.
+     * A refusal is still a document with its named blockers, so the run
+     * publishes it rather than electing the occurrence that has no artifacts
+     * -- which is exactly what a run with one target occurrence has always
+     * published.
+     */
+    @Test
+    public void aRefusedCompositionIsElectedOverAnUncomposedOccurrence()
+            throws IOException {
+        JsonObject skipped = new JsonObject();
+        skipped.addProperty("occurrenceId", CLIENT_HANDSHAKE);
+        skipped.addProperty("status",
+                TargetOccurrenceElection.SKIPPED_UNOBSERVED);
+        JsonObject ledger = TargetOccurrenceElection.elect(Arrays.asList(
+                composed(DATANODE_HANDSHAKE, "FINAL_REFUSED", 27,
+                        ClaimPolicy.INCONCLUSIVE_PARTIAL, 6, -1),
+                skipped));
+        assertEquals(DATANODE_HANDSHAKE,
+                ledger.get("chosenOccurrenceId").getAsString());
         assertEquals(TargetOccurrenceElection.REFUSED,
+                ledger.get("chosenSupport").getAsString());
+        // The skipped row reports no blocker; that must not read as fewer.
+        assertEquals(0, row(ledger, 1).get("blockerCount").getAsInt());
+        assertEquals(TargetOccurrenceElection.NOT_COMPOSED,
                 row(ledger, 1).get("support").getAsString());
     }
 
