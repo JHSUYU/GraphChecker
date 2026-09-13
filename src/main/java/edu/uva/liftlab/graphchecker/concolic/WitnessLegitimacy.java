@@ -183,10 +183,14 @@ public final class WitnessLegitimacy {
      * @param ordinal its position among the enumerated valuations
      * @param windowMillis the configured clock skew, in milliseconds
      * @param composition the freedom the composition leaves every witness
+     * @param markerAssignment every declared fault marker's value under this
+     *                         valuation, each row flagged {@code flipped} when
+     *                         it differs from what that marker recorded
      */
     public static JsonObject classify(JsonObject valuation, int ordinal,
                                       long windowMillis,
-                                      List<Freedom> composition) {
+                                      List<Freedom> composition,
+                                      JsonArray markerAssignment) {
         JsonObject row = new JsonObject();
         row.addProperty("schemaVersion", 1);
         row.addProperty("kind", KIND);
@@ -198,6 +202,26 @@ public final class WitnessLegitimacy {
         if (valuation != null && valuation.has("values")) {
             row.add("values", valuation.get("values"));
         }
+        // Which markers this valuation moved, named where they sit. A reader
+        // of a two-marker case has to be able to say which call was made to
+        // fail, and "values: [false, true]" does not say it.
+        JsonArray assignment = markerAssignment == null ? new JsonArray()
+                : markerAssignment;
+        JsonArray flipped = new JsonArray();
+        for (JsonElement element : assignment) {
+            if (element.isJsonObject() && element.getAsJsonObject()
+                    .has("flipped")
+                    && element.getAsJsonObject().get("flipped")
+                            .getAsBoolean()) {
+                flipped.add(element);
+            }
+        }
+        row.add("markerAssignment", assignment);
+        row.add("flippedMarkers", flipped);
+        row.addProperty("flippedMarkerCount", flipped.size());
+        // The world as the recording had it: every declared marker left alone.
+        row.addProperty("allRecorded",
+                assignment.size() > 0 && flipped.size() == 0);
         JsonArray legitimate = new JsonArray();
         List<Freedom> freedoms = new ArrayList<>();
         if (!"sat".equals(status)) {
@@ -205,8 +229,8 @@ public final class WitnessLegitimacy {
             row.addProperty("verdict", EXPLAINED);
             row.add("mechanisms", legitimate);
             row.add("freedoms", new JsonArray());
-            row.addProperty("narrative", narrative(status, legitimate,
-                    freedoms));
+            row.addProperty("narrative", markerPrefix(flipped)
+                    + narrative(status, legitimate, freedoms));
             return row;
         }
         freedoms.addAll(composition == null
@@ -231,8 +255,42 @@ public final class WitnessLegitimacy {
             freedomRows.add(freedom.toJson());
         }
         row.add("freedoms", freedomRows);
-        row.addProperty("narrative", narrative(status, legitimate, freedoms));
+        row.addProperty("narrative", markerPrefix(flipped)
+                + narrative(status, legitimate, freedoms));
         return row;
+    }
+
+    /**
+     * Which markers this valuation moved, as the front of its narrative.
+     *
+     * <p>Named, not counted: with two markers on one region the difference
+     * between "the constructor's updateBlockKeys" and "the updater thread's
+     * getBlockKeys" is the whole finding, and an occurrence id is what tells
+     * them apart.</p>
+     */
+    private static String markerPrefix(JsonArray flipped) {
+        if (flipped.size() == 0) {
+            return "";
+        }
+        StringBuilder text = new StringBuilder("flips ");
+        for (int index = 0; index < flipped.size(); index++) {
+            if (index > 0) {
+                text.append(" and ");
+            }
+            JsonObject marker = flipped.get(index).getAsJsonObject();
+            text.append(firstNonEmpty(optionalString(marker,
+                    "sourceIdentity"), optionalString(marker, "solverTerm")));
+            String where = firstNonEmpty(optionalString(marker, "siteId"),
+                    optionalString(marker, "portId"));
+            if (!where.isEmpty()) {
+                text.append(" (").append(where).append(")");
+            }
+            String occurrence = optionalString(marker, "occurrenceId");
+            if (!occurrence.isEmpty()) {
+                text.append(" at ").append(occurrence);
+            }
+        }
+        return text.append("; ").toString();
     }
 
     /**
