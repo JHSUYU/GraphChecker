@@ -433,6 +433,79 @@ public class BranchDecisionRecordingTest {
         assertFalse(row(4, 1, 0L).has("vmEventId"));
     }
 
+
+    /**
+     * Write-log versions carry event ids on the decisions' clock.
+     *
+     * <p>The reader's rule for a field access that names no version is "the
+     * latest write whose event id precedes the access event".  That needs the
+     * writes and the access expressed on one clock.  {@code
+     * regionEnterEventId} is the VM event at which the region that wrote a
+     * version was entered -- a VM event id, the same clock {@code vmEventId}
+     * comes from -- and it is the only per-version member of the VM envelope
+     * that is on it, so the reduction must keep it.</p>
+     *
+     * <p>It bounds a write rather than timing it: writes made inside one
+     * region activation all carry that activation's entry event, so it
+     * separates writes from different activations and is silent about the
+     * order within one.  That limit is asserted here rather than papered
+     * over.</p>
+     */
+    @Test
+    public void writeLogVersionsCarryTheDecisionClock() throws Exception {
+        JsonObject published = SharedStateCapture.reduceWriteLogForTest(
+                writeLog(new long[] {2L, 2L, 60L}, new int[] {39, 41, 102}));
+
+        JsonArray versions = published.getAsJsonObject("envelope")
+                .getAsJsonArray("versions");
+        assertEquals(3, versions.size());
+        long previous = -1L;
+        for (int index = 0; index < versions.size(); index++) {
+            JsonObject version = versions.get(index).getAsJsonObject();
+            assertTrue("every version states the clock",
+                    version.has("regionEnterEventId"));
+            long event = version.get("regionEnterEventId").getAsLong();
+            assertTrue("and it never decreases", event >= previous);
+            previous = event;
+        }
+        assertEquals("writes of two activations are separated", 60L,
+                versions.get(2).getAsJsonObject()
+                        .get("regionEnterEventId").getAsLong());
+        assertEquals("two writes of one activation are not", 2L,
+                versions.get(1).getAsJsonObject()
+                        .get("regionEnterEventId").getAsLong());
+    }
+
+    private static JsonObject writeLog(long[] regionEnterEventIds,
+                                       int[] fieldVersionIds) {
+        JsonArray versions = new JsonArray();
+        for (int index = 0; index < regionEnterEventIds.length; index++) {
+            JsonObject version = new JsonObject();
+            version.addProperty("fieldVersionId", fieldVersionIds[index]);
+            version.addProperty("versionKind",
+                    index == 0 ? "INITIAL" : "WRITE");
+            version.addProperty("regionEnterEventId",
+                    regionEnterEventIds[index]);
+            version.addProperty("writerSourceKey", "dn0#epoch0");
+            JsonObject expression = new JsonObject();
+            expression.addProperty("_type", "ConstExpr");
+            expression.addProperty("value", index);
+            version.add("expression", expression);
+            versions.add(version);
+        }
+        JsonObject envelope = new JsonObject();
+        envelope.addProperty("kind", "SHARED_FIELD_VERSIONS");
+        envelope.addProperty("schemaVersion", 1);
+        envelope.addProperty("sessionId", 1);
+        envelope.add("versions", versions);
+        JsonObject record = new JsonObject();
+        record.addProperty("kind", "VM_SHARED_FIELD_VERSIONS_V1");
+        record.addProperty("authority", "VM_SHARED_STATE_EVIDENCE_V1");
+        record.addProperty("locationKey", "INSTANCE_FIELD/9#56");
+        record.add("envelope", envelope);
+        return record;
+    }
+
     /** The transcript from {@code returned=} on: its rows are asserted by the
      *  concrete-decision tests, and repeating them here adds no evidence. */
     private static String tail(String transcript) {
