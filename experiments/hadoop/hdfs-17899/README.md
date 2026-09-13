@@ -11,6 +11,17 @@ local path condition. Closure-wide symbolic merging combines those cases, and
 each selected shared read retains a complete bounded GuardedRead snapshot of
 the writer expressions available to the SMT choice.
 
+The symbolic roots come from two authorities. The block key's expiry,
+`<org.apache.hadoop.security.token.delegation.DelegationKey: long expiryDate>`
+(the field `BlockKey` inherits), is minted by the configured-source hook
+`CausynthSymbolicSource.symbolize("HDFS.BLOCK_KEY.EXPIRY_DATE", nextKey, ...)`
+in `BlockTokenSecretManager.updateKeys`, not by `symbolic-inputs.jsonl`. The
+hook site owns that field: every competing field-read candidate for it is
+stamped `CONFIGURED_SYMBOLIC_SOURCE_FIELD_OWNED` and left concrete, so the root
+is minted once, at the hook. `symbolic-inputs.jsonl` still declares the clock,
+`<org.apache.hadoop.util.Timer: long now()>.return`, for both regions, and the
+same file is shared by all three cases.
+
 | Case | Request flow | Hadoop worktree |
 | --- | --- | --- |
 | `bug1` | NameNode -> Balancer -> DataNode | `/opt/hadoop-hdfs-17899-bug1` |

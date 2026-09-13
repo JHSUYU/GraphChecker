@@ -25,5 +25,17 @@ closure-wide waves. Each selected shared read carries a bounded GuardedRead
 snapshot of every retained writer expression; its exactly-one selector is
 coupled to the corresponding writer case and local path condition.
 
+The symbolic roots come from two authorities. The block key's expiry,
+`<org.apache.hadoop.security.token.delegation.DelegationKey: long expiryDate>`
+(the field `BlockKey` inherits), is minted by the configured-source hook
+`CausynthSymbolicSource.symbolize("HDFS.BLOCK_KEY.EXPIRY_DATE", nextKey, ...)`
+in `BlockTokenSecretManager.updateKeys`, not by `symbolic-inputs.jsonl`. The
+hook site owns that field: every competing field-read candidate for it is
+stamped `CONFIGURED_SYMBOLIC_SOURCE_FIELD_OWNED` and left concrete, so the root
+is minted once, at the hook. `symbolic-inputs.jsonl` still declares the clock,
+`<org.apache.hadoop.util.Timer: long now()>.return`, for both regions. The wire
+key IDs and `allKeys` are carriers, not roots: the file narrows which inputs may
+*mint*, never which are symbolized.
+
 Run `./run.sh campaign`.  Replay concurrency is fixed at 8 in
 `workflow.properties`.
