@@ -145,13 +145,45 @@ public class ClaimPolicyTest {
     public void witnessNoRootFlipsIsUnconstrainedByRoots() {
         JsonObject reach = reach();
         reach.add("valuations", parseArray(
+                "[{\"values\":[false],\"status\":\"sat\","
+                        + "\"witnessMechanisms\":[{\"kind\":\"ROOT_MOVED\","
+                        + "\"solverTerm\":\"r0\",\"recordedValue\":\"3\","
+                        + "\"witnessValue\":\"9\"}]},"
+                        + "{\"values\":[true],\"status\":\"sat\"}]"));
+
+        JsonObject claim = ClaimPolicy.decide(manifest(), reach, noFlows());
+
+        assertEquals(codes(ClaimPolicy.TARGET_UNCONSTRAINED_BY_ROOTS,
+                ClaimPolicy.WITNESS_FREEDOM_UNEXPLAINED), codes(claim));
+        assertFalse(claim.getAsJsonObject("rootSpace").get("faultSensitive")
+                .getAsBoolean());
+        assertEquals(WitnessLegitimacy.UNEXPLAINED_ROOT_MOVE,
+                blocker(claim, ClaimPolicy.TARGET_UNCONSTRAINED_BY_ROOTS)
+                        .get("subject").getAsString());
+    }
+
+    /**
+     * The same shape with nothing unexplained in it is a finding.
+     *
+     * <p>No root flips the target, so the campaign cannot say the fault
+     * decided it -- but the witness moved nothing the recording does not
+     * allow, and withholding it discards a real statement about the program.
+     * The row is reported under its own name instead of blocking.</p>
+     */
+    @Test
+    public void anExplainedWitnessWithNoRootFlipIsAFinding() {
+        JsonObject reach = reach();
+        reach.add("valuations", parseArray(
                 "[{\"values\":[false],\"status\":\"sat\"},"
                         + "{\"values\":[true],\"status\":\"sat\"}]"));
 
         JsonObject claim = ClaimPolicy.decide(manifest(), reach, noFlows());
 
-        assertEquals(codes(ClaimPolicy.TARGET_UNCONSTRAINED_BY_ROOTS),
-                codes(claim));
+        assertEquals(ClaimPolicy.SAT_CANDIDATE,
+                claim.get("claim").getAsString());
+        assertEquals(ClaimPolicy.TARGET_UNCONSTRAINED_BY_ROOTS,
+                finding(claim, ClaimPolicy.TARGET_UNCONSTRAINED_BY_ROOTS)
+                        .get("code").getAsString());
         assertFalse(claim.getAsJsonObject("rootSpace").get("faultSensitive")
                 .getAsBoolean());
     }
@@ -633,6 +665,36 @@ public class ClaimPolicyTest {
         return reach;
     }
 
+    /** One reported finding, by code. */
+    private static JsonObject finding(JsonObject claim, String code) {
+        for (JsonElement element : claim.getAsJsonObject("rootSpace")
+                .getAsJsonArray("reportedFindings")) {
+            JsonObject row = element.getAsJsonObject();
+            if (code.equals(row.get("code").getAsString())) {
+                return row;
+            }
+        }
+        throw new AssertionError("no reported finding named " + code + " in "
+                + claim.getAsJsonObject("rootSpace")
+                        .getAsJsonArray("reportedFindings"));
+    }
+
+    /** One valuation's legitimacy row. */
+    private static JsonObject witnessFinding(JsonObject claim, int ordinal) {
+        return claim.getAsJsonArray(WitnessLegitimacy.FINDINGS)
+                .get(ordinal).getAsJsonObject();
+    }
+
+    private static JsonObject blockerOrNull(JsonObject claim, String code) {
+        for (JsonElement element : claim.getAsJsonArray("blockers")) {
+            JsonObject row = element.getAsJsonObject();
+            if (code.equals(row.get("code").getAsString())) {
+                return row;
+            }
+        }
+        return null;
+    }
+
     private static JsonObject blocker(JsonObject claim, String code) {
         for (JsonElement element : claim.getAsJsonArray("blockers")) {
             JsonObject row = element.getAsJsonObject();
@@ -699,21 +761,22 @@ public class ClaimPolicyTest {
      * blocked whichever arm this particular model happened to take.
      */
     @Test
-    public void truncatedCarrierOfTheFatalReadBlocksWhicheverArmIsSelected() {
+    public void truncatedCarrierIsAFindingWhenAWriterArmWasTaken() {
         JsonObject claim = ClaimPolicy.decide(truncatedManifest(),
                 selectionReach(false), noFlows());
 
-        assertEquals(ClaimPolicy.INCONCLUSIVE_PARTIAL,
+        assertEquals(ClaimPolicy.SAT_CANDIDATE,
                 claim.get("claim").getAsString());
-        JsonObject gap = blocker(claim,
-                ClaimPolicy.UNDETERMINED_INITIAL_STATE);
-        assertEquals("MAP_STATE/140#-3", gap.get("subject").getAsString());
-        assertTrue("the unselected initial arm is named as available",
-                gap.get("detail").getAsString().contains("initial state)"));
+        assertEquals("the untaken initial arm is reported, not blocked",
+                ClaimPolicy.UNDETERMINED_INITIAL_STATE,
+                finding(claim, ClaimPolicy.UNDETERMINED_INITIAL_STATE)
+                        .get("code").getAsString());
         JsonObject initialState = claim.getAsJsonObject("rootSpace")
                 .getAsJsonObject("initialState");
         assertEquals(1, initialState.getAsJsonArray("onSelectedPath").size());
         assertEquals(1, initialState.getAsJsonArray("offSelectedPath").size());
+        assertEquals(0, initialState
+                .getAsJsonArray(ClaimPolicy.FREE_INITIAL_ARMS).size());
         assertTrue(initialState.get("fatalCarrierTruncated").getAsBoolean());
     }
 
@@ -783,18 +846,140 @@ public class ClaimPolicyTest {
      * hypothesis; a clock three hops away is not an answer about it.
      */
     @Test
-    public void faultMarkerSatisfiableInBothPolaritiesIsBlocked() {
+    public void faultMarkerSatisfiableInBothPolaritiesIsAFinding() {
         JsonObject claim = ClaimPolicy.decide(markerManifest(),
                 markerReach(true, "-300000"), noFlows());
 
+        assertEquals(ClaimPolicy.SAT_CANDIDATE,
+                claim.get("claim").getAsString());
+        JsonObject reported = finding(claim,
+                ClaimPolicy.FAULT_MARKER_NOT_DETERMINING);
+        assertEquals("MANUAL.fault", reported.get("subject").getAsString());
+        assertTrue(reported.get("detail").getAsString()
+                .contains("this is a finding"));
+        assertTrue("the clock at the window bound is inside it",
+                witnessFinding(claim, 0).get("narrative").getAsString()
+                        .contains("CLOCK_SKEW"));
+        assertEquals(WitnessLegitimacy.EXPLAINED,
+                witnessFinding(claim, 0).get("verdict").getAsString());
+    }
+
+    /**
+     * The same run with the clock one millisecond past its window is not.
+     *
+     * <p>The window is the recording's own statement about what that clock
+     * could have read. Outside it the witness is the search's answer rather
+     * than the program's, and that is the freedom the ruling still blocks --
+     * under its own name, with the marker row now saying which freedom it
+     * was.</p>
+     */
+    @Test
+    public void aClockOutsideItsWindowIsUnexplainedFreedom() {
+        JsonObject claim = ClaimPolicy.decide(markerManifest(),
+                markerReach(true, "-300001"), noFlows());
+
         assertEquals(ClaimPolicy.INCONCLUSIVE_PARTIAL,
                 claim.get("claim").getAsString());
-        JsonObject gap = blocker(claim,
-                ClaimPolicy.FAULT_MARKER_NOT_DETERMINING);
-        assertEquals("MANUAL.fault", gap.get("subject").getAsString());
-        assertTrue(gap.get("detail").getAsString()
-                .contains("both polarities")
-                || gap.get("detail").getAsString().contains("recorded polarity sat"));
+        assertEquals(WitnessLegitimacy.CLOCK_OUTSIDE_WINDOW,
+                blocker(claim, ClaimPolicy.WITNESS_FREEDOM_UNEXPLAINED)
+                        .get("subject").getAsString());
+        assertTrue(blocker(claim, ClaimPolicy.FAULT_MARKER_NOT_DETERMINING)
+                .get("detail").getAsString()
+                .contains(WitnessLegitimacy.CLOCK_OUTSIDE_WINDOW));
+        assertEquals(WitnessLegitimacy.UNEXPLAINED,
+                witnessFinding(claim, 0).get("verdict").getAsString());
+    }
+
+    /** A wall clock at a negative time is not a clock reading at all. */
+    @Test
+    public void anAbsurdClockValueIsUnexplainedFreedom() {
+        JsonObject reach = markerReach(true, "-5");
+        reach.getAsJsonArray("valuations").get(0).getAsJsonObject()
+                .getAsJsonArray("witnessMechanisms").get(0).getAsJsonObject()
+                .addProperty("witnessValue", "(- 9223372036854775808)");
+
+        JsonObject claim = ClaimPolicy.decide(markerManifest(), reach,
+                noFlows());
+
+        assertEquals(ClaimPolicy.INCONCLUSIVE_PARTIAL,
+                claim.get("claim").getAsString());
+        assertEquals(WitnessLegitimacy.ABSURD_CLOCK_VALUE,
+                blocker(claim, ClaimPolicy.WITNESS_FREEDOM_UNEXPLAINED)
+                        .get("subject").getAsString());
+    }
+
+    /**
+     * The rotation race HDFS-17899 is about, read as the finding it is.
+     *
+     * <p>The witness in the polarity without the fault names one mechanism:
+     * the fatal read took the target datanode's own last {@code addKeys} while
+     * the key the wire named is installed a few events later. That is a thing
+     * that happens, so the run is accepted and the narrative says so.</p>
+     */
+    @Test
+    public void aRotationRaceOnTheOtherPolarityIsALegitimateFinding() {
+        JsonObject reach = markerReach(true, "0");
+        reach.getAsJsonArray("valuations").get(0).getAsJsonObject()
+                .add("witnessMechanisms", parseArray(
+                        "[{\"kind\":\"ROTATION_RACE\","
+                        + "\"sessionLocationKey\":\"MAP_STATE/100#-3\","
+                        + "\"readEventId\":233,"
+                        + "\"laterWriterVersionId\":247}]"));
+
+        JsonObject claim = ClaimPolicy.decide(markerManifest(), reach,
+                noFlows());
+
+        assertEquals(ClaimPolicy.SAT_CANDIDATE,
+                claim.get("claim").getAsString());
+        assertEquals(WitnessLegitimacy.EXPLAINED,
+                witnessFinding(claim, 0).get("verdict").getAsString());
+        assertTrue(witnessFinding(claim, 0).get("narrative").getAsString()
+                .contains("ROTATION_RACE at MAP_STATE/100#-3"));
+    }
+
+    /**
+     * An unenumerated existential root space is freedom nobody wrote down, so
+     * it still blocks -- and now the marker row names it as the reason rather
+     * than saying nothing explains the other polarity.
+     */
+    @Test
+    public void unenumeratedRootsKeepTheMarkerRowBlockingAndNameTheFreedom() {
+        JsonObject reach = markerReach(true, "-300000");
+        reach.getAsJsonObject("reachCondition").addProperty("degeneracyCheck",
+                "UNDECIDED_UNENUMERATED_EXISTENTIAL_ROOTS:14");
+
+        JsonObject claim = ClaimPolicy.decide(markerManifest(), reach,
+                noFlows());
+
+        assertEquals(ClaimPolicy.INCONCLUSIVE_PARTIAL,
+                claim.get("claim").getAsString());
+        assertEquals(codes(ClaimPolicy.UNDECIDED_ROOT_SPACE,
+                ClaimPolicy.FAULT_MARKER_NOT_DETERMINING), codes(claim));
+        assertTrue(blocker(claim, ClaimPolicy.FAULT_MARKER_NOT_DETERMINING)
+                .get("detail").getAsString()
+                .contains(WitnessLegitimacy.UNENUMERATED_EXISTENTIAL_ROOT));
+        assertEquals("the freedom is named once, under its own blocker",
+                "", blockerOrNull(claim,
+                        ClaimPolicy.WITNESS_FREEDOM_UNEXPLAINED) == null
+                        ? "" : "WITNESS_FREEDOM_UNEXPLAINED");
+    }
+
+    /** The buggy polarity is the one an accepted claim has to rest on. */
+    @Test
+    public void aFaultPolarityWithNoWitnessIsNotAnAcceptedClaim() {
+        JsonObject reach = markerReach(true, "-300000");
+        // The marker records false, so true is the buggy polarity.
+        reach.getAsJsonArray("valuations").get(1).getAsJsonObject()
+                .addProperty("status", "unsat");
+
+        JsonObject claim = ClaimPolicy.decide(markerManifest(), reach,
+                noFlows());
+
+        assertEquals(ClaimPolicy.INCONCLUSIVE_PARTIAL,
+                claim.get("claim").getAsString());
+        assertEquals("MANUAL.fault",
+                blocker(claim, ClaimPolicy.FAULT_POLARITY_NOT_WITNESSED)
+                        .get("subject").getAsString());
     }
 
     /** The marker deciding the verdict is what an accepted claim rests on. */
@@ -813,27 +998,35 @@ public class ClaimPolicyTest {
     }
 
     /**
-     * A second mechanism may carry the polarity that has no fault, but only
-     * one the target cannot do without. hdfs-17899-bug3's witness named six
-     * clock rows strictly inside the window and the target reached its fault
-     * site with every clock back at its recorded value, so those six carried
-     * nothing. Interior is not evidence; necessary is.
+     * Interior clock skew on the polarity without the fault is a finding.
+     *
+     * <p>The earlier reading asked the solver to show the polarity died with
+     * the mechanism's roots pinned back, and called a clock that survived that
+     * "decoration". A clock inside its recorded window is drift that happened;
+     * whether the target could also have been reached some other way is a
+     * different question and not a reason to discard this witness. The
+     * necessity probe stays in the report as evidence a reader may weigh, and
+     * decides nothing.</p>
      */
     @Test
-    public void otherPolarityNeedsAMechanismTheTargetCannotDoWithout() {
-        JsonObject decoration = ClaimPolicy.decide(markerManifest(),
+    public void interiorClockSkewOnTheOtherPolarityIsALegitimateFinding() {
+        JsonObject claim = ClaimPolicy.decide(markerManifest(),
                 markerReach(true, "245021"), noFlows());
-        assertEquals(ClaimPolicy.INCONCLUSIVE_PARTIAL,
-                decoration.get("claim").getAsString());
-        // The row is inside the window and still explains nothing.
-        assertEquals(1, markerRow(decoration)
-                .getAsJsonArray("otherPolarityMechanisms").size());
-        assertEquals(0, markerRow(decoration)
-                .getAsJsonArray("necessaryMechanisms").size());
-        assertTrue(blocker(decoration, ClaimPolicy.FAULT_MARKER_NOT_DETERMINING)
-                .get("detail").getAsString()
-                .contains("0 necessary mechanism(s) of 1 named"));
 
+        assertEquals(ClaimPolicy.SAT_CANDIDATE,
+                claim.get("claim").getAsString());
+        assertEquals(1, markerRow(claim)
+                .getAsJsonArray("otherPolarityMechanisms").size());
+        assertEquals("no necessity row is needed to accept the run",
+                0, markerRow(claim).getAsJsonArray("necessaryMechanisms")
+                        .size());
+        assertEquals(WitnessLegitimacy.EXPLAINED,
+                witnessFinding(claim, 0).get("verdict").getAsString());
+    }
+
+    /** The necessity probe is still published, for a reader to weigh. */
+    @Test
+    public void mechanismNecessityStaysInTheReportAsEvidence() {
         JsonObject reach = markerReach(true, "245021");
         reach.add(BooleanReachConditionExtractor.MECHANISM_NECESSITY, parse(
                 "{\"schemaVersion\":1,"
@@ -844,29 +1037,12 @@ public class ClaimPolicyTest {
                 + "\"pinnedRoots\":4,\"status\":\"unsat\","
                 + "\"necessary\":true}]}"));
 
-        JsonObject carried = ClaimPolicy.decide(markerManifest(), reach,
-                noFlows());
-        assertEquals(ClaimPolicy.SAT_CANDIDATE,
-                carried.get("claim").getAsString());
-        assertEquals(1, markerRow(carried)
-                .getAsJsonArray("necessaryMechanisms").size());
-    }
-
-    /** A necessity row for the other polarity answers a different question. */
-    @Test
-    public void necessityOfTheFaultPolarityDoesNotExcuseTheOther() {
-        JsonObject reach = markerReach(true, "245021");
-        reach.add(BooleanReachConditionExtractor.MECHANISM_NECESSITY, parse(
-                "{\"mechanisms\":[{\"marker\":\"manual__fault\","
-                + "\"polarity\":true,\"mechanism\":\"CLOCK_SKEW\","
-                + "\"status\":\"unsat\",\"necessary\":true}]}"));
-
         JsonObject claim = ClaimPolicy.decide(markerManifest(), reach,
                 noFlows());
 
-        assertEquals(ClaimPolicy.INCONCLUSIVE_PARTIAL,
+        assertEquals(ClaimPolicy.SAT_CANDIDATE,
                 claim.get("claim").getAsString());
-        assertEquals(0, markerRow(claim)
+        assertEquals(1, markerRow(claim)
                 .getAsJsonArray("necessaryMechanisms").size());
     }
 

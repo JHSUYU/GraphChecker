@@ -256,6 +256,103 @@ public class SymbolicRootPolicyTest {
         assertEquals("BOUNDED_CONTAINER_STATE", demand(selected, 4));
     }
 
+    /**
+     * A root declaration governs the region that names it and no other.
+     *
+     * <p>HDFS-17899 declares {@code DelegationKey#expiryDate} in the
+     * NameNode's key-update region, and the same field is where the
+     * DataNodes' {@code PBHelper.convert(BlockKeyProto)} stores the value the
+     * wire delivered.  Matching a declaration by field signature alone would
+     * stamp the consumer's store as a mint site and give every DataNode its
+     * own free clock.</p>
+     */
+    @Test
+    public void aRootDeclarationDoesNotReachAnotherRegionsStore()
+            throws Exception {
+        ConcolicScheduler.SymbolicInputSelection selection =
+                ConcolicScheduler.SymbolicInputSelection.read(
+                        declarations("{\"regionId\":\"" + NN
+                                + "\",\"fieldSignatures\":[\"" + KEY_ID
+                                + "\"]}"), catalog());
+
+        JsonArray declaring = selection.select(NN, proposals());
+        JsonArray consuming = selection.select(DN, proposals());
+
+        assertTrue("the declaring region mints",
+                declaring.get(1).getAsJsonObject().get(
+                        InputActionCatalog.DECLARED_SYMBOLIC_ROOT)
+                        .getAsBoolean());
+        assertFalse("another region's store of the same field does not",
+                consuming.get(1).getAsJsonObject().get(
+                        "mintEligible").getAsBoolean());
+        assertFalse(consuming.get(1).getAsJsonObject().has(
+                InputActionCatalog.DECLARED_SYMBOLIC_ROOT));
+    }
+
+    /**
+     * Naming a cut port in the selection file still mints nothing there.
+     *
+     * <p>A cut port is not mint-eligible because it is neither declared nor
+     * workload-owned, which is an accident of the arithmetic rather than a
+     * decision.  Declare the port by name and the arithmetic flips -- and
+     * the consumer of a wire flow becomes a root, which is the whole defect.
+     * The port's own verdict has to outrank the file.</p>
+     */
+    @Test
+    public void aDeclaredPortIdDoesNotMakeACutPortMintEligible()
+            throws Exception {
+        JsonArray actions = proposals();
+        JsonObject cut = action("COMMUNICATION_SITE_PORT",
+                "<C: int getKeyId()>#u2");
+        actions.add(cut);
+        ConcolicScheduler.SymbolicInputSelection selection =
+                ConcolicScheduler.SymbolicInputSelection.read(
+                        declarations("{\"regionId\":\"" + DN
+                                + "\",\"portIds\":[\"port.<C: int getKeyId()>#u2\"]}"),
+                        catalog());
+
+        JsonArray selected = selection.select(DN, actions);
+
+        assertEquals("the wire value is still tracked",
+                "SYMBOLIC", mode(selected, 3));
+        assertFalse("but the declaration cannot make it a root",
+                selected.get(3).getAsJsonObject()
+                        .get("mintEligible").getAsBoolean());
+        assertFalse(selected.get(3).getAsJsonObject().has(
+                InputActionCatalog.DECLARED_SYMBOLIC_ROOT));
+    }
+
+    /** One row shape: the cut port's exemption is a decision row like any
+     *  other, not a list of its own. */
+    @Test
+    public void theDecisionRowNamesTheCutPortVerdict() throws Exception {
+        Path path = declarations("{\"regionId\":\"" + NN + "\",\"cells\":[\""
+                + CLOCK_CELL + "\"]}");
+        ConcolicScheduler.SymbolicInputSelection selection =
+                ConcolicScheduler.SymbolicInputSelection.read(path, catalog());
+        JsonArray actions = proposals();
+        actions.add(action("COMMUNICATION_SITE_PORT",
+                "<C: int getKeyId()>#u2"));
+
+        selection.select(DN, actions);
+
+        JsonObject cutPortRow = null;
+        for (com.google.gson.JsonElement element
+                : selection.rootDecisions()) {
+            JsonObject row = element.getAsJsonObject();
+            if ("COMMUNICATION_SITE_PORT".equals(
+                    row.get("sourceKind").getAsString())) {
+                cutPortRow = row;
+            }
+        }
+        assertTrue("the cut port has a decision row", cutPortRow != null);
+        assertEquals(InputActionCatalog.DECLARED_COMMUNICATION_CUT_PORT,
+                cutPortRow.get("verdict").getAsString());
+        assertTrue(cutPortRow.get("tracked").getAsBoolean());
+        assertFalse(cutPortRow.get("mintEligible").getAsBoolean());
+        assertFalse(cutPortRow.get("declared").getAsBoolean());
+    }
+
     @Test
     public void telemetryNamesEveryRefusedCandidate() throws Exception {
         Path path = declarations("{\"regionId\":\"" + NN + "\",\"cells\":[\""
