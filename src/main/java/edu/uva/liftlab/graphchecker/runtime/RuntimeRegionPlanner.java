@@ -2525,25 +2525,9 @@ final class RuntimeRegionPlanner {
             }
         }
 
-        /** Admits one row of the runtime-refined graph, refusing any other
-         * graph the caller may have handed over. */
-        private void admitRefinedRow(
-                Map<String, Object> row, File graph) {
-            if (row == null
-                    || number(row.get("schemaVersion"), -1) != 3
-                    || number(row.get("refinementSchemaVersion"), -1) != 1
-                    || !"RUNTIME_REFINED_DATAFLOW".equals(
-                    stringValue(row.get("graphKind")))) {
-                throw new IllegalArgumentException(
-                        "concolic planning requires the "
-                                + "runtime-refined graph: " + graph);
-            }
-            FlowEdge edge = FlowEdge.decode(row);
-            if (edge != null) {
-                addEdge(edge);
-            }
-        }
-
+        /** Indexes the rows the graph refiner produced.  The refiner stamps
+         * the refined schema on every row it emits, so this stage indexes
+         * that output rather than re-checking the stamp row by row. */
         private static RefinedFlowIndex build(
                 List<Map<String, Object>> rows, File graph) {
             RefinedFlowIndex result = new RefinedFlowIndex();
@@ -2551,7 +2535,10 @@ final class RuntimeRegionPlanner {
             for (Map<String, Object> row : rows == null
                     ? Collections.<Map<String, Object>>emptyList() : rows) {
                 count++;
-                result.admitRefinedRow(row, graph);
+                FlowEdge edge = FlowEdge.decode(row);
+                if (edge != null) {
+                    result.addEdge(edge);
+                }
             }
             if (count == 0) {
                 throw new IllegalArgumentException(

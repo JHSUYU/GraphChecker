@@ -1242,11 +1242,7 @@ public final class RuntimeSelectedRegionFinalizer {
             return Collections.emptyList();
         }
         Map<String, Map<String, Object>> activationsById =
-                new LinkedHashMap<>();
-        for (Map<String, Object> activation : program.activations.values()) {
-            String id = text(activation.get("activationId"));
-            if (!id.isEmpty()) activationsById.put(id, activation);
-        }
+                program.activationsByActivationId();
         Map<String, Map<String, Object>> regions = program.regionsById();
         List<Map<String, Object>> requestLinks = new ArrayList<>();
         for (Map<String, Object> link : occurrenceLinks == null
