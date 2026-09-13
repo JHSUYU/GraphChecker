@@ -592,8 +592,9 @@ public final class PathMergeComposer {
         manifest.add("casePathConditionDependencies", new JsonArray());
         manifest.add(ComposedManifest.BOUNDARY_DISPATCH_TOTALITY,
                 new JsonArray());
-        manifest.add(ComposedManifest.ABSENT_KEY_DEFAULTS,
-                new JsonArray());
+        JsonArray absentKeys = new JsonArray();
+        for (JsonObject row : lowering.absentKeyDefaults()) absentKeys.add(row);
+        manifest.add(ComposedManifest.ABSENT_KEY_DEFAULTS, absentKeys);
         manifest.add(ComposedManifest.WIRE_FLOW_BINDINGS,
                 new JsonArray());
         manifest.add(ComposedManifest.FAULT_CONTROL_GAPS_FIELD,

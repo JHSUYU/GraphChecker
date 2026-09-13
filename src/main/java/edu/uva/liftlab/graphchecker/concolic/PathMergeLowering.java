@@ -5,6 +5,7 @@ import com.google.gson.JsonObject;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -70,6 +71,18 @@ final class PathMergeLowering extends VmLoweringCore {
             new LinkedHashMap<>();
     /** Subjects refused because a value was owed and a placeholder came. */
     private final Set<String> cuts = new LinkedHashSet<>();
+    /**
+     * Associative reads that answered out of the absent-key default.
+     *
+     * <p>A key a writer removed is absent <em>because</em> of the removal,
+     * and a witness resting on it says something about the program.  A key
+     * nothing ever put is absent in the recording too: its null is the
+     * default of an untouched map, and a witness resting on that has
+     * explained nothing.  Each such read is named here with the condition
+     * under which it missed, so the claim can tell the two apart.</p>
+     */
+    private final Map<String, JsonObject> absentKeyDefaults =
+            new LinkedHashMap<>();
     private final Set<String> integralDomains = new LinkedHashSet<>();
     private boolean usesJavaIntString;
 
@@ -428,6 +441,28 @@ final class PathMergeLowering extends VmLoweringCore {
             }
 
             @Override
+            public void noteAbsentKeyDefault(String keyTerm,
+                                             String absentCondition) {
+                if (keyTerm == null || keyTerm.isEmpty()
+                        || absentCondition == null
+                        || absentCondition.isEmpty()) {
+                    return;
+                }
+                String identity = keyTerm + "\u0000" + absentCondition;
+                if (absentKeyDefaults.containsKey(identity)) return;
+                String name = symbols.mint("absent_key_default__",
+                        identity, 16);
+                declare(name, Sort.BOOL);
+                assertions.add("(assert (= " + name + " "
+                        + absentCondition + "))");
+                JsonObject row = new JsonObject();
+                row.addProperty("solverTerm", name);
+                row.addProperty("keyTerm", keyTerm);
+                row.addProperty("origin", origin);
+                absentKeyDefaults.put(identity, row);
+            }
+
+            @Override
             public void require(String predicate) {
                 if (predicate == null || predicate.isEmpty()
                         || "true".equals(predicate)) {
@@ -571,6 +606,11 @@ final class PathMergeLowering extends VmLoweringCore {
 
     Map<String, String> rootTerms() {
         return rootTerms;
+    }
+
+    /** One row per associative read that answered out of the default. */
+    Collection<JsonObject> absentKeyDefaults() {
+        return absentKeyDefaults.values();
     }
 
     /** The whole query: preamble, declarations, assertions, check-sat. */
