@@ -314,22 +314,8 @@ public final class ConcolicConstraintSolver {
         private final Set<String> softAssertions = new LinkedHashSet<>();
         private final Set<String> unsupported = new LinkedHashSet<>();
         private final Set<String> controlledSymbols = new LinkedHashSet<>();
-        private final Set<String> additionalModelNames =
-                new LinkedHashSet<>();
         private final Set<String> javaIntRangeAssertions =
                 new LinkedHashSet<>();
-        private final Set<String> usedConsumerFamilies =
-                new LinkedHashSet<>();
-        private final Set<String> boundConsumerFamilies =
-                new LinkedHashSet<>();
-        private final Set<String> activeConsumerMerges =
-                new LinkedHashSet<>();
-        /** A family chooses a case only where its propagated value is used. */
-        private final Map<String, Set<String>> consumerFamilyActivations =
-                new LinkedHashMap<>();
-        private final Map<String, Set<String>> consumerFamilySelectors =
-                new LinkedHashMap<>();
-        private String currentReadActivationGuard = "true";
         private boolean usesJavaIntString;
         private Set<String> currentConstraintSymbols;
 
@@ -402,7 +388,7 @@ public final class ConcolicConstraintSolver {
                     return null;
                 }
                 if (!"false".equals(value.stringNullness)) {
-                    requireUnderCurrentGuard(
+                    assertions.add(
                             "(not " + value.stringNullness + ")");
                 }
             }
@@ -506,124 +492,6 @@ public final class ConcolicConstraintSolver {
         }
 
 
-        /**
-         * Shares the value term of equivalent propagated families while the
-         * family keys themselves remain independent dependency authorities.
-         * Every occurrence is still lowered above, so nested families and
-         * read activation guards are discovered for each audited family.
-         */
-        private Term shareConsumerMergeTerm(Term value) {
-            String sharedValue = shareSemanticTerm(value.text, value.sort);
-            String nullness = value.stringNullness;
-            if (value.sort == Sort.STRING && !nullness.isEmpty()) {
-                nullness = shareSemanticTerm(nullness, Sort.BOOL);
-            }
-            return Term.vm(sharedValue, value.sort, value.integralWidth,
-                    nullness, value.stringReferenceOrigin);
-        }
-
-        private String shareSemanticTerm(String text, Sort sort) {
-            if (text == null || text.isEmpty() || text.charAt(0) != '(') {
-                return text;
-            }
-            String identity = "CONSUMER_MERGE_TERM_V1\u0000"
-                    + sort.replayName() + "\u0000" + text;
-            String digest = sha256(identity);
-            SharedTermDefinition definition = sharedTerms.get(digest);
-            if (definition == null) {
-                definition = new SharedTermDefinition(
-                        smtSymbols.mintFromDigest(SHARED_TERM_PREFIX,
-                                digest, identity, 24),
-                        sort, text);
-                sharedTerms.put(digest, definition);
-            }
-            return definition.name;
-        }
-
-
-
-
-        /** Enables each case family only while one of its values is used. */
-        private void finishConsumerFamilySelections() {
-            List<String> families = new ArrayList<>(
-                    consumerFamilySelectors.keySet());
-            Collections.sort(families);
-            for (String family : families) {
-                Set<String> activations = consumerFamilyActivations.get(
-                        family);
-                Set<String> selectors = consumerFamilySelectors.get(family);
-                if (activations == null || activations.isEmpty()
-                        || selectors == null || selectors.isEmpty()) {
-                    unsupported.add("CONSUMER_FAMILY_ACTIVATION_MISSING:"
-                            + family);
-                    continue;
-                }
-                List<String> orderedActivations = new ArrayList<>(activations);
-                List<String> orderedSelectors = new ArrayList<>(selectors);
-                Collections.sort(orderedActivations);
-                Collections.sort(orderedSelectors);
-                assertions.add("(=> " + orTerms(orderedActivations) + " "
-                        + orTerms(orderedSelectors) + ")");
-            }
-        }
-
-        /** Lowers one exact PC under the selector which owns its payload. */
-        private void bindConsumerPathCondition(
-                String family, String selector, JsonArray path,
-                Set<String> symbols, String sourceActivationOccurrenceId,
-                String occurrenceId, int observationIndex) {
-            // This query replaces the selected activation's observed path
-            // with replayContract(prefix + flipped predicate). Keep its value
-            // arm, but do not pin the old whole-case PC.
-            if (!sourceActivationOccurrenceId.isEmpty()
-                    && sourceActivationOccurrenceId.equals(occurrenceId)) {
-                return;
-            }
-            List<String> conditions = new ArrayList<>();
-            for (int index = 0; index < path.size(); index++) {
-                Set<String> previousFrontier = currentConstraintSymbols;
-                currentConstraintSymbols = new LinkedHashSet<>();
-                Term condition;
-                String previousReadGuard = currentReadActivationGuard;
-                currentReadActivationGuard = andGuard(previousReadGuard,
-                        selector);
-                try {
-                    condition = term(path.get(index), Sort.BOOL,
-                            "consumer_family_" + family + "_"
-                                    + (observationIndex < 0 ? "arm"
-                                    : "observation_" + observationIndex)
-                                    + "_" + index);
-                    symbols.addAll(currentConstraintSymbols);
-                } finally {
-                    currentReadActivationGuard = previousReadGuard;
-                    currentConstraintSymbols = previousFrontier;
-                }
-                if (condition == null || condition.sort != Sort.BOOL) {
-                    unsupported.add("CONSUMER_FAMILY_PC_MALFORMED:"
-                            + family);
-                    continue;
-                }
-                conditions.add(condition.text);
-            }
-            assertions.add("(=> " + selector + " "
-                    + andTerms(conditions) + ")");
-        }
-
-
-
-
-
-        private static String andTerms(List<String> terms) {
-            if (terms.isEmpty()) return "true";
-            if (terms.size() == 1) return terms.get(0);
-            return "(and " + String.join(" ", terms) + ")";
-        }
-
-        private static String orTerms(List<String> terms) {
-            if (terms.size() == 1) return terms.get(0);
-            return "(or " + String.join(" ", terms) + ")";
-        }
-
         /** Lowers the VM's read-time candidate snapshot directly. */
         @Override
         Term guardedReadTerm(JsonObject read, Sort expected,
@@ -639,28 +507,6 @@ public final class ConcolicConstraintSolver {
         }
 
 
-
-
-
-
-
-
-        private static String andGuard(String left, String right) {
-            if (left == null || left.isEmpty() || "true".equals(left)) {
-                return right == null || right.isEmpty() ? "true" : right;
-            }
-            if (right == null || right.isEmpty() || "true".equals(right)) {
-                return left;
-            }
-            if (left.equals(right)) return left;
-            return "(and " + left + " " + right + ")";
-        }
-
-        private void requireUnderCurrentGuard(String predicate) {
-            assertions.add("true".equals(currentReadActivationGuard)
-                    ? predicate : "(=> " + currentReadActivationGuard + " "
-                    + predicate + ")");
-        }
 
         @Override
         Term containerTerm(JsonObject expression, boolean field,
@@ -770,7 +616,7 @@ public final class ConcolicConstraintSolver {
 
                 @Override
                 public void require(String predicate) {
-                    requireUnderCurrentGuard(predicate);
+                    assertions.add(predicate);
                 }
 
                 @Override
@@ -914,7 +760,6 @@ public final class ConcolicConstraintSolver {
         private SymbolNames names(String raw) {
             return names.get(raw);
         }
-
 
 
         private void constrainIntegralInput(String name,
@@ -1344,7 +1189,6 @@ public final class ConcolicConstraintSolver {
                     }
                 }
             }
-            modelNames.addAll(additionalModelNames);
             Collections.sort(modelNames);
             if (!modelNames.isEmpty()) {
                 result.append("(get-value (");

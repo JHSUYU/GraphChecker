@@ -2178,21 +2178,6 @@ public final class ContainerSmtCodec {
         return normalized;
     }
 
-    /**
-     * Canonical map-state form for eager read-from cataloguing.
-     *
-     * <p>The composer catalogs recorded reads before it sees their iterator
-     * use.  Exposing the same normalization used by {@link #associativeState}
-     * prevents that eager pass from memoizing a common map view as a plain
-     * Java reference.</p>
-     */
-    static JsonObject selectedReadViewState(JsonObject read) {
-        String kind = selectedReadViewKind(read);
-        JsonElement normalized = kind.isEmpty()
-                ? null : selectedViewState(read, kind);
-        return normalized == null || !normalized.isJsonObject()
-                ? null : normalized.getAsJsonObject();
-    }
 
     /**
      * The one lowering of a boxed container {@code Value} back to the Java

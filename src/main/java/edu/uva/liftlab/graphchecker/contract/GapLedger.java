@@ -265,18 +265,30 @@ public final class GapLedger {
         blocking(loops, "BOUNDED_LOOP_BODY_BOUND_DISAGREES",
                 "two declarations state different K_L for one loop, so the"
                         + " modelled prefix is not the one the replay ran");
-        blocking(loops, "BOUNDED_LOOP_BODY_BOUND_UNDECLARED",
+        // Under path merging each path is one concrete execution, in which
+        // every loop ran a definite number of times; the formula states that
+        // execution, not a modelled prefix of it.  Completeness over
+        // root-dependent behaviour is CLOSURE_INCOMPLETE instead -- a loop
+        // guard that depends on a root is a branch, and a branch gets
+        // flipped.  An undeclared bound on a loop no root reaches changes no
+        // element of the chain, so this is a coverage note.
+        diagnostic(loops, "BOUNDED_LOOP_BODY_BOUND_UNDECLARED",
                 "a loop runs under an inherited resource ceiling nobody"
-                        + " declared, so its prefix is unstated");
+                        + " declared: each merged path ran it a definite"
+                        + " number of times, and a root-dependent guard is"
+                        + " a branch the exploration flips, so what is"
+                        + " unstated here is coverage rather than a step"
+                        + " of the chain");
         blocking(loops, "BOUNDED_LOOP_CLASSIFICATION_UNDECLARED",
                 "a retained loop has no supported classification, so nothing"
                         + " decides how its body count is bounded");
         blocking(loops, "BOUNDED_LOOP_CLASSIFICATION_DISAGREES",
                 "declarations disagree on a loop's kind");
-        blocking(loops, "BOUNDED_LOOP_CLASSIFICATION_INCONSISTENT",
+        diagnostic(loops, "BOUNDED_LOOP_CLASSIFICATION_INCONSISTENT",
                 "one nest's guards classify differently, so the nest has no"
                         + " single kind and its published kind is the weaker"
-                        + " of two answers");
+                        + " of two answers -- which decides how a bound would"
+                        + " be checked, not what any merged path executed");
         blocking(loops, "BOUNDED_LOOP_OBSERVED_UNDECLARED",
                 "the replay traversed a retained loop this composition"
                         + " declared no bound for");

@@ -524,7 +524,43 @@ final class RuntimeRegionPlanner {
         putRecordedTraceIds(activation, root);
         activation.put("callIds", new ArrayList<>(calls));
         activation.put("observedMethods", new ArrayList<>(observed));
+        activation.put(
+                RuntimeSelectedRegionFinalizer
+                        .OBSERVED_COMMUNICATION_CAPTURES,
+                observedCommunicationCaptures(skeleton, calls, trace));
         activationByCall.put(root.callId, activation);
+    }
+
+    /** Exact configured cut captures that executed in this activation. */
+    private static List<Map<String, Object>> observedCommunicationCaptures(
+            StaticProgram.RegionRow skeleton, Set<Long> calls,
+            TraceIndex trace) {
+        List<RuntimeEvent> events = trace.runtime(calls);
+        List<Map<String, Object>> observed = new ArrayList<>();
+        for (Map<String, Object> port : skeleton.communicationPorts) {
+            String side = stringValue(port.get(
+                    RuntimeSelectedRegionFinalizer.REGION_PORT_SIDE));
+            String portId = stringValue(port.get(
+                    CommunicationCatalogContract.PORT_ID));
+            String direction = stringValue(port.get(
+                    CommunicationCatalogContract.PORT_DIRECTION));
+            if (!("IN".equals(side) || "OUT".equals(side))
+                    || portId.isEmpty() || direction.isEmpty()) {
+                continue;
+            }
+            for (RuntimeEvent event : events) {
+                if (!communicationCaptureEvent(port, event)) continue;
+                Map<String, Object> capture = new LinkedHashMap<>();
+                capture.put("side", side);
+                capture.put("portId", portId);
+                capture.put("direction", direction);
+                capture.put("transport", port.get(
+                        CommunicationCatalogContract.TRANSPORT));
+                capture.put("eventSeq", event.seq);
+                observed.add(capture);
+            }
+        }
+        return observed;
     }
 
     private static boolean communicationCaptureEvent(

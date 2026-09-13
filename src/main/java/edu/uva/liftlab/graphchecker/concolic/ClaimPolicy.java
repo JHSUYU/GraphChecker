@@ -384,12 +384,6 @@ public final class ClaimPolicy {
                     new LinkedHashMap<String, Set<String>>());
         }
 
-        /** Declared flows whose ports no plan bound, named in order. */
-        public static WireFlowEvidence declaredOnly(List<String> flows) {
-            return new WireFlowEvidence(new ArrayList<>(flows),
-                    new LinkedHashMap<String, Set<String>>(),
-                    new LinkedHashMap<String, Set<String>>());
-        }
 
         /**
          * Reads the declared flows from the communication mappings and their
@@ -550,14 +544,6 @@ public final class ClaimPolicy {
         }
 
 
-        /**
-         * Whether one exchange port carries one declared flow. The Composer
-         * spells a port {@code XCH.<site>.<req|resp>.<flow>}, and a flow id
-         * may itself contain '-' but never the '.' that delimits it here.
-         */
-        private static boolean namesFlow(String portId, String flow) {
-            return !flow.isEmpty() && portId.endsWith("." + flow);
-        }
 
     }
 

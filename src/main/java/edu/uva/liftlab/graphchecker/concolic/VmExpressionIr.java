@@ -261,46 +261,7 @@ public final class VmExpressionIr {
                 || isCanonicalMapStateReference(raw);
     }
 
-    /**
-     * Identity shared by all serialized views of the same allocated oop.
-     * Array versions deliberately collapse here because mutating an array
-     * changes its state while retaining its Java reference identity.
-     */
-    static String allocatedReferenceIdentity(String raw) {
-        if (raw == null) return "";
-        java.util.regex.Matcher instance =
-                ALLOCATED_INSTANCE_REFERENCE.matcher(raw);
-        if (instance.matches()) return "oop:" + instance.group(1);
-        java.util.regex.Matcher array =
-                ALLOCATED_ARRAY_REFERENCE.matcher(raw);
-        if (array.matches()) return "oop:" + array.group(1);
-        return isCanonicalMapStateReference(raw)
-                ? "map-state:" + raw.substring(
-                SharedStateEvidence.MAP_STATE_SYMBOL_PREFIX.length()) : "";
-    }
 
-    /**
-     * Rewrites only the VM-local oop component of an allocated-reference
-     * symbol.  The caller supplies an alpha name; the Java class and an
-     * array's state version remain exact.  Stable map-state anchors are not
-     * allocated-reference symbols and therefore pass through unchanged.
-     */
-    static String alphaAllocatedReference(String raw, String alphaName) {
-        if (raw == null || alphaName == null || alphaName.isEmpty()) {
-            return raw;
-        }
-        java.util.regex.Matcher instance =
-                ALLOCATED_INSTANCE_REFERENCE.matcher(raw);
-        if (instance.matches()) {
-            return raw.substring(0, instance.start(1)) + alphaName;
-        }
-        java.util.regex.Matcher array = ALLOCATED_ARRAY_REFERENCE.matcher(raw);
-        if (array.matches()) {
-            return raw.substring(0, array.start(1)) + alphaName + "-"
-                    + array.group(2);
-        }
-        return raw;
-    }
 
     static boolean isJavaParseInt(String name) {
         return "java/lang/Integer parseInt".equals(firstNonBlank(name));

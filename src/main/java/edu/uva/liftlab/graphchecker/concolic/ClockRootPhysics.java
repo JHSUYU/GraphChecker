@@ -195,10 +195,6 @@ public final class ClockRootPhysics {
         return row;
     }
 
-    /** Whether the plan declares any wall-clock root at all. */
-    public static boolean declaresClock(Collection<JsonObject> planRows) {
-        return !readsByNode(planRows).isEmpty();
-    }
 
     /** Reads the configured skew from a manifest row, for consumers. */
     public static long skewOf(JsonObject manifest) {
