@@ -11,16 +11,23 @@ local path condition. Closure-wide symbolic merging combines those cases, and
 each selected shared read retains a complete bounded GuardedRead snapshot of
 the writer expressions available to the SMT choice.
 
-The symbolic roots come from two authorities. The block key's expiry,
-`<org.apache.hadoop.security.token.delegation.DelegationKey: long expiryDate>`
-(the field `BlockKey` inherits), is minted by the configured-source hook
+The manual symbolic roots are the NameNode's key id, time and expiry, and they
+come from two authorities. Two are minted by configured-source hooks in
+`BlockTokenSecretManager.updateKeys`:
+`CausynthSymbolicSource.symbolize("HDFS.BLOCK_KEY.SERIAL_NO", this, ...)` roots
+`<org.apache.hadoop.hdfs.security.token.block.BlockTokenSecretManager: int
+serialNo>`, the counter each new `BlockKey` takes its id from, and
 `CausynthSymbolicSource.symbolize("HDFS.BLOCK_KEY.EXPIRY_DATE", nextKey, ...)`
-in `BlockTokenSecretManager.updateKeys`, not by `symbolic-inputs.jsonl`. The
-hook site owns that field: every competing field-read candidate for it is
-stamped `CONFIGURED_SYMBOLIC_SOURCE_FIELD_OWNED` and left concrete, so the root
-is minted once, at the hook. `symbolic-inputs.jsonl` still declares the clock,
-`<org.apache.hadoop.util.Timer: long now()>.return`, for both regions, and the
-same file is shared by all three cases.
+roots `<org.apache.hadoop.security.token.delegation.DelegationKey: long
+expiryDate>` (the field `BlockKey` inherits). A hook site owns its field: every
+competing field-read candidate for it is stamped
+`CONFIGURED_SYMBOLIC_SOURCE_FIELD_OWNED` and left concrete, so each root is
+minted once, at its hook -- which is why neither field is listed in
+`symbolic-inputs.jsonl`. The third root, the clock
+`<org.apache.hadoop.util.Timer: long now()>.return`, has no hook and is still
+declared there for both regions; the same file is shared by all three cases.
+The key ids observed on the wire are carriers, not roots of their own: they
+carry the NameNode's minted `serialNo`.
 
 | Case | Request flow | Hadoop worktree |
 | --- | --- | --- |

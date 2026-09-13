@@ -13,6 +13,7 @@ import edu.uva.liftlab.graphchecker.concolic.BranchPredicateAlgebra;
 import edu.uva.liftlab.graphchecker.concolic.BranchReplayContract;
 import edu.uva.liftlab.graphchecker.concolic.BranchWitness;
 import edu.uva.liftlab.graphchecker.concolic.CanonicalJson;
+import edu.uva.liftlab.graphchecker.concolic.ClockRootPhysics;
 import edu.uva.liftlab.graphchecker.concolic.CoverageDivergence;
 import edu.uva.liftlab.graphchecker.concolic.ExactConcreteBranchObservation;
 import edu.uva.liftlab.graphchecker.concolic.RecordedEvidenceIdentity;
@@ -3688,6 +3689,94 @@ public final class ConcolicRegionRuntime {
         }
     }
 
+    /**
+     * The literal one declared root must return on this replay.
+     *
+     * <p>For every root but a clock this is the solver's value verbatim: an
+     * identity, a key id or a length has no run-relative reading, and the
+     * model means exactly the number it states.</p>
+     *
+     * <p>A wall clock is the exception, and it is why a clock-only
+     * experiment could not be won.  The model for a clock is an absolute
+     * millisecond stamp the solver derived from the constants the
+     * <em>seed</em> recording carried -- an expiry, a deadline, a lease.  A
+     * flip replay is a fresh JVM: it mints its own copies of those constants
+     * minutes later, so replaying the stamp literally puts the clock behind
+     * its own run, the flipped comparison keeps its recorded outcome, and
+     * the replay is refused with {@code REPLAY_PREFIX_UNMATCHED} -- "still
+     * waiting for the flipped source decision".  No flipped case is ever
+     * recorded, so the composer's exactly-one partition over observed cases
+     * keeps asserting the recorded polarity of that branch and no window,
+     * however wide, can admit the other one.</p>
+     *
+     * <p>What the solver actually chose is the <em>offset</em> from the
+     * value this read returned, which is what {@link ClockRootPhysics}
+     * bounds with a window and orders with monotonicity, and what a
+     * cross-node skew mechanism means in the first place.  Carrying that
+     * offset onto this run's own read reproduces the decision the model
+     * asked for against this run's own constants and keeps the replayed
+     * clock monotone with the rest of the JVM.  When the live read equals
+     * the recorded one the two readings coincide, so nothing changes for a
+     * replay that reproduces its recording.</p>
+     *
+     * <p>Soundness is unaffected: no injected value is ever asserted.  The
+     * replay records a new real case with its own recorded constants and its
+     * own path conditions, which the composer lowers as it lowers any other
+     * observed case.  Injection only steers the search, exactly as a fault
+     * marker's model does.</p>
+     */
+    static String replayModelLiteral(SymbolizeAction action,
+                                     ModelAssignment assignment,
+                                     Object concrete) {
+        String modeled = assignment == null ? "" : safe(assignment.value).trim();
+        if (action == null || modeled.isEmpty()
+                || !action.declaresWallClockRead()) {
+            return modeled;
+        }
+        return clockSkewLiteral(action.recordedPrimitiveValue, modeled,
+                concrete);
+    }
+
+    /**
+     * This run's clock, moved by the offset the model asked of the recorded
+     * one.  Anything that is not an exact integral triple replays the model
+     * value unchanged.
+     */
+    static String clockSkewLiteral(String recordedValue, String modelValue,
+                                   Object liveValue) {
+        String modeled = safe(modelValue).trim();
+        Long recorded = integralLiteral(safe(recordedValue).trim());
+        Long model = integralLiteral(modeled);
+        Long live = integralValue(liveValue);
+        if (recorded == null || model == null || live == null) {
+            return modeled;
+        }
+        try {
+            return Long.toString(Math.addExact(live,
+                    Math.subtractExact(model, recorded)));
+        } catch (ArithmeticException outsideTheDomain) {
+            // A skew a long cannot hold is not a clock any run could read.
+            return modeled;
+        }
+    }
+
+    private static Long integralLiteral(String value) {
+        if (value == null || value.isEmpty()) return null;
+        try {
+            return Long.valueOf(value);
+        } catch (NumberFormatException notIntegral) {
+            return null;
+        }
+    }
+
+    private static Long integralValue(Object value) {
+        if (value instanceof Long || value instanceof Integer
+                || value instanceof Short || value instanceof Byte) {
+            return ((Number) value).longValue();
+        }
+        return null;
+    }
+
     private static Object materializePrimitiveValue(
             ActiveRegion active, SymbolizeAction action, Object concrete,
             List<String> path) {
@@ -3710,13 +3799,13 @@ public final class ConcolicRegionRuntime {
         ModelAssignment applied = null;
         Object modeled = concrete;
         if (assignment != null) {
-            modeled = coerceModelValue(assignment.valueType,
-                    assignment.value, concrete == null
-                            ? null : concrete.getClass());
+            String literal = replayModelLiteral(action, assignment, concrete);
+            modeled = coerceModelValue(assignment.valueType, literal,
+                    concrete == null ? null : concrete.getClass());
             if (modeled == UnsupportedReplayValue.INSTANCE) {
                 active.unresolved.add(action.symbol
                         + ": unsupported primitive model "
-                        + assignment.valueType + "=" + assignment.value);
+                        + assignment.valueType + "=" + literal);
                 modeled = concrete;
             } else {
                 applied = assignment;
@@ -6237,6 +6326,10 @@ public final class ConcolicRegionRuntime {
         final String symbolicDemand;
         /** How the finalizer classified the port that minted this action. */
         final String sourceKind;
+        /** The external call whose return this action symbolizes, or "". */
+        final String declaredCallee;
+        /** What this read returned in the recording, or "" when unobserved. */
+        final String recordedPrimitiveValue;
         /** The selection file named this input by hand: mint, do not reuse. */
         final boolean declaredSymbolicRoot;
         /**
@@ -6307,6 +6400,9 @@ public final class ConcolicRegionRuntime {
                     "accessorImplementationMethod");
             this.symbolicDemand = optionalString(json, "symbolicDemand");
             this.sourceKind = optionalString(json, "sourceKind");
+            this.declaredCallee = optionalString(json, "declaredCallee");
+            this.recordedPrimitiveValue = optionalBool(json, "observed", false)
+                    ? optionalString(json, "primitiveValue") : "";
             this.declaredSymbolicRoot = optionalBool(json,
                     InputActionCatalog.DECLARED_SYMBOLIC_ROOT, false);
             this.mintEligible = optionalBool(json, "mintEligible", true);
@@ -6407,6 +6503,21 @@ public final class ConcolicRegionRuntime {
             return "LOCAL_DEFINITION".equals(bindingMode)
                     && "CALL_RETURN".equals(location)
                     && JavaPrimitiveBoxing.unboxReturn(cell);
+        }
+
+        /**
+         * Whether this root is a wall-clock read whose recorded answer is
+         * known.
+         *
+         * <p>{@link ClockRootPhysics} already names the callees whose return
+         * is a millisecond clock; it is the same list that anchors each
+         * read's window and order in the composed formula, so a root it
+         * classifies as a clock here is exactly a root the composer lets
+         * move within a skew of what it read.</p>
+         */
+        boolean declaresWallClockRead() {
+            return ClockRootPhysics.clockCallee(declaredCallee)
+                    && !recordedPrimitiveValue.isEmpty();
         }
 
         boolean matchesStaticField(String actualMethod,

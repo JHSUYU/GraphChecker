@@ -106,6 +106,26 @@ public final class ConcolicSmtComposer {
      * evidence about this very read beats a family that merely describes the
      * same slot of some other object.</p>
      *
+     * <p>The arms are <em>ordered</em>, and deliberately carry no claim that
+     * the identities they name are different objects.  The engine briefly
+     * asserted one -- {@code (distinct ...)} over every {@code REF}
+     * structural witness of each scope carrying such a read -- so that an
+     * inner arm could not be swallowed by an outer one.  Nothing recorded
+     * supports it: a structural witness is scoped by the replay
+     * <em>group</em>, which on HDFS-17899 is 27 to 36 executions, and the
+     * axiom made the bug3 composition {@code unsat} in every polarity
+     * (plain, both marker flips and all four root valuations), its whole
+     * unsat core being those four {@code distinct} rows.  What it collided
+     * with is real and is not this binding's to fix: several recorded
+     * {@code BlockKey#keyId} reads are read-from one merged boundary value,
+     * so the model must identify key objects the recording separates.
+     * Until that holds, arm order is an over-approximation -- an inner arm
+     * may collapse onto the observed value -- which admits models rather
+     * than refuting them, and that is the safe direction for a tool whose
+     * {@code unsat} is the strong claim.  The bug the routing was built for
+     * is unaffected: an owner this formula knows nothing about still keeps
+     * the free projection, never the Java default zero.</p>
+     *
      * @param routes owner-witness/value pairs, each {@code {witness, value}}
      */
     static String referenceFieldBinding(String owner, String concreteOwner,
@@ -138,6 +158,9 @@ public final class ConcolicSmtComposer {
     /** The target published no reach query this composition could start at. */
     static final String TARGET_REACH_QUERY_ABSENT =
             "TARGET_REACH_QUERY_ABSENT";
+    /** Every observed occurrence of the annotated target, and its status. */
+    public static final String TARGET_REACH_OCCURRENCES =
+            "targetReachOccurrences";
     static final String CONFIGURED_SOURCE_MATERIALIZATION_FIELD =
             "configuredSourceMaterializations";
     static final String CONFIGURED_SOURCE_MATERIALIZATION_KIND =
@@ -480,6 +503,8 @@ public final class ConcolicSmtComposer {
         manifest.add("casePathConditionDependencies",
                 propagation.caseDependencies());
         manifest.add("targetReachLedger", emitter.targetReachLedger());
+        manifest.add(TARGET_REACH_OCCURRENCES,
+                targetReachOccurrences(runtimePlan.regionPlans(), fatal));
         // Only the partitions the formula asserts unconditionally.  A
         // consumer that pins one of these is restating something the formula
         // already says; pinning a conditional one silently decides the
@@ -700,6 +725,7 @@ public final class ConcolicSmtComposer {
                 new JsonArray());
         manifest.add(MANUAL_SOURCE_MATERIALIZATION_FIELD,
                 new JsonArray());
+        manifest.add(TARGET_REACH_OCCURRENCES, new JsonArray());
         // No port was occupied and no model was produced, so this artifact
         // is not a candidate model a later stage may conclude from.
         manifest.addProperty("state", "CANDIDATE_WITH_GAPS");
@@ -1394,6 +1420,81 @@ public final class ConcolicSmtComposer {
                                 + "authority");
             }
         }
+    }
+
+    /**
+     * Every observed occurrence of the annotated target, and which one this
+     * composition lowered.
+     *
+     * <p>An annotated failure site executes as many times as the workload
+     * runs it, and the planner plants a {@code TARGET_REACH_CLOSURE} goal on
+     * each of those occurrences -- hdfs-17897 observes the SASL handshake
+     * twice, hdfs-11741 four times.  Everything downstream then narrows to
+     * one of them: {@code RuntimeWorkflowDiscovery} elects a single
+     * {@code TARGET} member, the campaign builds a reach query for that
+     * member alone, and this composition is handed exactly that query.  The
+     * narrowing is invisible in the published artifacts, so a verdict about
+     * one execution of the site reads as a verdict about the site -- and
+     * when the elected occurrence is the wrong one, the chain the experiment
+     * is about is off the slice entirely, with nothing naming why.
+     * hdfs-17897 elected {@code REGION.53092d3e#2}, the DataNode's own
+     * handshake, while the bug ends at {@code #1}, the client's.</p>
+     *
+     * <p>So the composition states the whole set: one row per planned target
+     * occurrence, naming its goal, its failure sites, and whether this
+     * formula lowered it.  Nothing about the lowered formula changes -- the
+     * SMT is byte-identical -- but the claim can report per occurrence, and
+     * {@link ClaimPolicy} raises a finding for every occurrence the
+     * composition did not reach.</p>
+     */
+    static JsonArray targetReachOccurrences(
+            List<RegionInstancePlan> regionPlans, JsonObject fatal) {
+        String composedOccurrence = OccurrenceId.parse(
+                optionalString(fatal, "occurrenceId")).planned();
+        String composedGoal = optionalString(fatal, "goalId");
+        JsonArray result = new JsonArray();
+        for (RegionInstancePlan plan : regionPlans) {
+            for (RegionInstancePlan.Goal goal : plan.goals()) {
+                if (!goal.kind().capturesTargetReach()) continue;
+                String occurrence = OccurrenceId.parse(
+                        plan.occurrenceId()).planned();
+                JsonObject row = new JsonObject();
+                row.addProperty("occurrenceId", occurrence);
+                row.addProperty("regionId", plan.regionId());
+                row.addProperty("goalId", goal.goalId());
+                row.add("failureSites", observedFailureSites(goal));
+                // The goal is the exact address; the occurrence is the
+                // fallback for a query that names no goal of its own.
+                row.addProperty("composed", composedGoal.isEmpty()
+                        ? occurrence.equals(composedOccurrence)
+                        : composedGoal.equals(goal.goalId()));
+                result.add(row);
+            }
+        }
+        return result;
+    }
+
+    /** The failure guards this goal actually observed taking a decision. */
+    private static JsonArray observedFailureSites(
+            RegionInstancePlan.Goal goal) {
+        Set<String> sites = new java.util.LinkedHashSet<>();
+        for (JsonElement element : goal.branches()) {
+            if (!element.isJsonObject()) continue;
+            JsonObject branch = element.getAsJsonObject();
+            if (!JsonFields.optionalBool(branch, "failureTarget", false)
+                    || JsonFields.optionalBool(branch, "loopControlGuard",
+                    false)
+                    || !JsonFields.optionalBool(branch, "observed", false)
+                    || !branch.has("requiredOutcome")
+                    || branch.get("requiredOutcome").isJsonNull()) {
+                continue;
+            }
+            String site = optionalString(branch, "siteId");
+            if (!site.isEmpty()) sites.add(site);
+        }
+        JsonArray result = new JsonArray();
+        for (String site : sites) result.add(site);
+        return result;
     }
 
     private static JsonObject selectFatalQuery(List<JsonObject> rows,
@@ -2161,9 +2262,6 @@ public final class ConcolicSmtComposer {
          */
         private final Map<String, String> guardedReadFieldFamilies =
                 new LinkedHashMap<>();
-        /** Execution scopes in which some read arms over object identity. */
-        private final Set<String> referenceRoutedScopes =
-                new LinkedHashSet<>();
         /**
          * Java references whose declared type is String need two solver
          */
@@ -5683,7 +5781,6 @@ public final class ConcolicSmtComposer {
                     javaType, fieldOffset, executionScope, owner.text,
                     concreteOwner.text, observed.text, projection.text,
                     currentGuard));
-            referenceRoutedScopes.add(executionScope);
             return toContainerTerm(Term.of(name, result,
                     JavaPrimitiveSmtSemantics.widthOfJavaType(javaType)));
         }
@@ -5757,48 +5854,6 @@ public final class ConcolicSmtComposer {
                 } finally {
                     restoreGuard(previousGuard);
                 }
-            }
-        }
-
-        /**
-         * Two distinct VM objects of one replay execution are two distinct
-         * solver references.
-         *
-         * <p>The engine states this nowhere else, and nothing else needed
-         * it: a structural witness was only ever a name to hang recorded
-         * relations on.  A read that arms over object identity does need it
-         * -- without it the solver may equate the identity a writer
-         * installed with the one the execution read from and take an arm the
-         * run refutes -- so it is stated exactly for the execution scopes
-         * that carry such a read, and for no others.</p>
-         */
-        private void emitReferenceIdentityDistinctness() {
-            if (referenceRoutedScopes.isEmpty()) return;
-            Map<String, List<String>> byScope = new LinkedHashMap<>();
-            for (Map.Entry<String, Term> entry
-                    : structuralWitnesses.entrySet()) {
-                String[] parts = entry.getKey().split("\u0000", -1);
-                if (parts.length != 3
-                        || !Sort.REF.name().equals(parts[1])
-                        || !referenceRoutedScopes.contains(parts[0])) {
-                    continue;
-                }
-                byScope.computeIfAbsent(parts[0],
-                        ignored -> new ArrayList<>())
-                        .add(entry.getValue().text);
-            }
-            for (Map.Entry<String, List<String>> entry
-                    : byScope.entrySet()) {
-                if (entry.getValue().size() < 2) continue;
-                StringBuilder text = new StringBuilder("(distinct");
-                for (String witness : entry.getValue()) {
-                    text.append(' ').append(witness);
-                }
-                text.append(')');
-                assertWithoutCurrentGuard(smtSymbols.mint(
-                                "reference_identity_distinct_",
-                                entry.getKey(), 16),
-                        text.toString());
             }
         }
 
@@ -6977,7 +7032,6 @@ public final class ConcolicSmtComposer {
                         sum.toString());
             }
             emitReferenceFieldRoutings();
-            emitReferenceIdentityDistinctness();
             emitRequestFaultControl();
             requireTotalBoundaryDispatch();
             checkExecutionDivergence();
