@@ -240,6 +240,30 @@ public final class ContainerSmtCodec {
                 + " s))";
     }
 
+    /**
+     * The versions a read node offers.
+     *
+     * <p>A read node published under the current schema names the one
+     * version it observed, and nothing about the versions it did not; the
+     * older schema named every version retained at the read and left the
+     * choice to a solver.  Either way what the codec projects through is a
+     * list of versions, and the current one has a single element.</p>
+     */
+    private static JsonArray readVersions(JsonObject read) {
+        JsonObject observed = JsonFields.object(read,
+                InSessionReadResolver.OBSERVED_VERSION);
+        if (observed.size() == 0) return array(read, "candidates");
+        JsonArray one = new JsonArray();
+        one.add(observed);
+        return one;
+    }
+
+    /** Whether one version of a read must name a selector to be projected. */
+    private static boolean needsSelector(JsonObject read) {
+        return JsonFields.object(read,
+                InSessionReadResolver.OBSERVED_VERSION).size() == 0;
+    }
+
     public static boolean handles(JsonElement expression) {
         return expression != null && expression.isJsonObject()
                 && EXPRESSION_TYPE.equals(
@@ -458,11 +482,12 @@ public final class ContainerSmtCodec {
             return projected;
         }
         String type = optionalString(root, "_type");
+        boolean read = SharedStateEvidence.GUARDED_READ_TYPE.equals(type);
         String armsField = SymbolicPropagationClosure.ITE_TYPE.equals(type)
-                ? "arms" : SharedStateEvidence.GUARDED_READ_TYPE.equals(type)
-                ? "candidates" : "";
+                ? "arms" : read ? "candidates" : "";
         if (!armsField.isEmpty()) {
-            JsonArray arms = array(root, armsField);
+            JsonArray arms = read ? readVersions(root)
+                    : array(root, armsField);
             if (arms.size() == 0) return null;
             JsonObject projected = copyWithout(root, armsField);
             projected.addProperty("_java_type", selectedJavaType);
@@ -470,7 +495,9 @@ public final class ContainerSmtCodec {
             for (JsonElement element : arms) {
                 if (!element.isJsonObject()) return null;
                 JsonObject arm = element.getAsJsonObject();
-                if (optionalString(arm, "selector").isEmpty()
+                if (read && needsSelector(root)
+                        && optionalString(arm, "selector").isEmpty()
+                        || !read && optionalString(arm, "selector").isEmpty()
                         || arm.get("expression") == null) {
                     return null;
                 }
@@ -1632,11 +1659,12 @@ public final class ContainerSmtCodec {
             return projected;
         }
         String type = optionalString(root, "_type");
+        boolean read = SharedStateEvidence.GUARDED_READ_TYPE.equals(type);
         String armsField = SymbolicPropagationClosure.ITE_TYPE.equals(type)
-                ? "arms" : SharedStateEvidence.GUARDED_READ_TYPE.equals(type)
-                ? "candidates" : "";
+                ? "arms" : read ? "candidates" : "";
         if (!armsField.isEmpty()) {
-            JsonArray arms = array(root, armsField);
+            JsonArray arms = read ? readVersions(root)
+                    : array(root, armsField);
             if (arms.size() == 0) return null;
             JsonObject projected = copyWithout(root, armsField);
             projected.addProperty("_java_type", projectedJavaType);
@@ -1644,7 +1672,9 @@ public final class ContainerSmtCodec {
             for (JsonElement element : arms) {
                 if (!element.isJsonObject()) return null;
                 JsonObject arm = element.getAsJsonObject();
-                if (optionalString(arm, "selector").isEmpty()
+                if (read && needsSelector(root)
+                        && optionalString(arm, "selector").isEmpty()
+                        || !read && optionalString(arm, "selector").isEmpty()
                         || arm.get("expression") == null) return null;
                 JsonElement payload = projectChoice(
                         arm.get("expression"), index, viewKind,
@@ -1986,7 +2016,7 @@ public final class ContainerSmtCodec {
         if (SymbolicPropagationClosure.ITE_TYPE.equals(type)) {
             arms = array(object, "arms");
         } else if (SharedStateEvidence.GUARDED_READ_TYPE.equals(type)) {
-            arms = array(object, "candidates");
+            arms = readVersions(object);
         } else {
             return "";
         }
@@ -2047,16 +2077,19 @@ public final class ContainerSmtCodec {
         if (SymbolicPropagationClosure.ITE_TYPE.equals(type)) {
             arms = array(object, "arms");
         } else if ("ReadFromExpression".equals(type)) {
-            arms = array(object, "candidates");
+            arms = readVersions(object);
         } else {
             return "";
         }
         if (arms.size() == 0) return "";
+        boolean selectorRequired = !"ReadFromExpression".equals(type)
+                || needsSelector(object);
         String selected = "";
         for (JsonElement element : arms) {
             if (!element.isJsonObject()) return "";
             JsonObject arm = element.getAsJsonObject();
-            if (optionalString(arm, "selector").isEmpty()) return "";
+            if (selectorRequired
+                    && optionalString(arm, "selector").isEmpty()) return "";
             JsonElement armExpression = arm.get("expression");
             if (armExpression == null || !armExpression.isJsonObject()) {
                 return "";
@@ -2129,7 +2162,9 @@ public final class ContainerSmtCodec {
         } else {
             return null;
         }
-        JsonArray arms = array(object, armsField);
+        boolean readNode = "ReadFromExpression".equals(type);
+        JsonArray arms = readNode ? readVersions(object)
+                : array(object, armsField);
         if (arms.size() == 0) return null;
         JsonObject normalized = JsonFields.shallowCopy(object);
         normalized.addProperty("_java_type", "java/util/Map");
@@ -2137,7 +2172,8 @@ public final class ContainerSmtCodec {
         for (JsonElement element : arms) {
             if (!element.isJsonObject()) return null;
             JsonObject arm = element.getAsJsonObject();
-            if (optionalString(arm, "selector").isEmpty()) return null;
+            if ((!readNode || needsSelector(object))
+                    && optionalString(arm, "selector").isEmpty()) return null;
             JsonElement projectedArm = selectedViewState(
                     arm.get("expression"), kind, memo);
             if (projectedArm == null) return null;

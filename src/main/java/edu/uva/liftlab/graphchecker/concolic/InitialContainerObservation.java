@@ -193,16 +193,26 @@ public final class InitialContainerObservation {
             return result;
         }
         String type = optionalString(expression, "_type");
-        String armsField;
+        final JsonArray arms;
         if (SharedStateEvidence.GUARDED_READ_TYPE.equals(type)) {
-            armsField = "candidates";
+            // A read node published under the current schema names the one
+            // version it observed; the older schema named every version
+            // retained at it.
+            JsonObject observed = JsonFields.object(expression,
+                    InSessionReadResolver.OBSERVED_VERSION);
+            if (observed.size() > 0) {
+                arms = new JsonArray();
+                arms.add(observed);
+            } else {
+                arms = JsonFields.array(expression, "candidates");
+            }
         } else if (SymbolicPropagationClosure.ITE_TYPE.equals(type)) {
-            armsField = "arms";
+            arms = JsonFields.array(expression, "arms");
         } else {
             return null;
         }
         JsonArray result = new JsonArray();
-        for (JsonElement encoded : JsonFields.array(expression, armsField)) {
+        for (JsonElement encoded : arms) {
             if (!encoded.isJsonObject()) return new JsonArray();
             JsonElement value = encoded.getAsJsonObject().get("expression");
             if (value == null) return new JsonArray();
