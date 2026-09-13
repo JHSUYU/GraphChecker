@@ -1359,6 +1359,82 @@ public final class CausynthPipeline {
         for (CommunicationHandoffSpec site : sites.values()) {
             instrumentCommunicationHandoff(site, refs);
         }
+        Map<String, Boolean> frames = new LinkedHashMap<>();
+        for (CommunicationHandoffSpec site : sites.values()) {
+            if (site.frameMethod().isEmpty()) continue;
+            Boolean outgoing = frames.get(site.frameMethod());
+            if (outgoing != null && outgoing != site.outgoing()) {
+                throw new IllegalStateException(
+                        "COMMUNICATION_FRAME_SIDE_CONFLICT: "
+                                + site.frameMethod());
+            }
+            frames.put(site.frameMethod(), site.outgoing());
+        }
+        for (Map.Entry<String, Boolean> frame : frames.entrySet()) {
+            instrumentCommunicationFrame(frame.getKey(), frame.getValue(),
+                    refs);
+        }
+    }
+
+    /**
+     * Brackets the one call that builds one message instance.
+     *
+     * <p>A declared port is one pair of bytecode sites, and a protocol sends
+     * many unrelated values of that shape through it: without a frame the
+     * receiver can only address a leaf by its position in the whole message,
+     * and two groups of the same shape run together.  The frame method is the
+     * one whose single call builds one instance of the value the port belongs
+     * to, and its mirror on the other side decodes that same instance, so the
+     * k-th frame means the same thing on both sides.  A port that declares no
+     * frame keeps being addressed within its RPC message.</p>
+     */
+    private void instrumentCommunicationFrame(String frameMethod,
+                                              boolean outgoing,
+                                              HookCatalog refs) {
+        SootMethod method = concreteSelected(frameMethod,
+                "COMMUNICATION_FRAME_METHOD_UNAVAILABLE: " + frameMethod,
+                "COMMUNICATION_FRAME_METHOD_NOT_CONCRETE: " + frameMethod);
+        Body body = method.retrieveActiveBody();
+        Unit insertionPoint = safeInstrumentationEntry(body, method);
+        if (insertionPoint == null) {
+            throw new IllegalStateException(
+                    "COMMUNICATION_FRAME_METHOD_HAS_NO_SAFE_ENTRY: "
+                            + frameMethod);
+        }
+        Hook open = outgoing ? Hook.PUSH_OUTBOUND_MESSAGE_FRAME
+                : Hook.PUSH_INBOUND_MESSAGE_FRAME;
+        Hook close = outgoing ? Hook.POP_OUTBOUND_MESSAGE_FRAME
+                : Hook.POP_INBOUND_MESSAGE_FRAME;
+        List<Unit> originalUnits = snapshotUnits(body);
+        List<Unit> entry = new ArrayList<>();
+        emit(entry, refs.ref(open));
+        Unit opened = entry.get(entry.size() - 1);
+        insertBeforeOrAppendNoRedirect(body, insertionPoint, entry);
+        for (Unit unit : originalUnits) {
+            if (!(unit instanceof ReturnStmt)
+                    && !(unit instanceof ReturnVoidStmt)) {
+                continue;
+            }
+            List<Unit> exit = new ArrayList<>();
+            emit(exit, refs.ref(close));
+            insertBeforeSequence(body, unit, exit);
+        }
+        // A frame left open by a throw would swallow every later message of
+        // this thread into it, so the close is on both ways out.  The close
+        // hook takes no argument, so the trap is written here rather than
+        // through addThrowHandler, which hands the caught throwable on.
+        Local caught = newTraceLocal(body, RefType.v("java.lang.Throwable"),
+                "$causynthMessageFrameThrown");
+        List<Unit> trap = new ArrayList<>();
+        trap.add(Jimple.v().newIdentityStmt(caught,
+                Jimple.v().newCaughtExceptionRef()));
+        emit(trap, refs.ref(close));
+        trap.add(Jimple.v().newThrowStmt(caught));
+        Unit handler = trap.get(0);
+        for (Unit unit : trap) body.getUnits().add(unit);
+        body.getTraps().add(Jimple.v().newTrap(
+                Scene.v().getSootClass("java.lang.Throwable"), opened,
+                handler, handler));
     }
 
     private void instrumentCommunicationHandoff(
@@ -3338,6 +3414,10 @@ public final class CausynthPipeline {
         RECORD_FIELD_WRITE,
         EXPORT_COMMUNICATION_LEAF,
         ATTACH_COMMUNICATION_LEAF,
+        PUSH_OUTBOUND_MESSAGE_FRAME,
+        POP_OUTBOUND_MESSAGE_FRAME,
+        PUSH_INBOUND_MESSAGE_FRAME,
+        POP_INBOUND_MESSAGE_FRAME,
         PAUSE_OBSERVATION,
         RESUME_OBSERVATION,
         PAUSE_VM_PATH_CONDITION,
@@ -3501,6 +3581,14 @@ public final class CausynthPipeline {
                     .add(Hook.ATTACH_COMMUNICATION_LEAF, runtime,
                             "attachCommunicationLeaf", VoidType.v(), string,
                             object, string, string)
+                    .add(Hook.PUSH_OUTBOUND_MESSAGE_FRAME, runtime,
+                            "pushOutboundMessageFrame", VoidType.v())
+                    .add(Hook.POP_OUTBOUND_MESSAGE_FRAME, runtime,
+                            "popOutboundMessageFrame", VoidType.v())
+                    .add(Hook.PUSH_INBOUND_MESSAGE_FRAME, runtime,
+                            "pushInboundMessageFrame", VoidType.v())
+                    .add(Hook.POP_INBOUND_MESSAGE_FRAME, runtime,
+                            "popInboundMessageFrame", VoidType.v())
                     .add(Hook.PAUSE_OBSERVATION, runtime, "pauseObservation",
                             VoidType.v())
                     .add(Hook.RESUME_OBSERVATION, runtime, "resumeObservation",

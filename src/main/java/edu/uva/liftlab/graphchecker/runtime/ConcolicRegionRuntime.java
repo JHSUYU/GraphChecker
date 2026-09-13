@@ -2207,14 +2207,23 @@ public final class ConcolicRegionRuntime {
     private static boolean stageMessageExpression(String portId,
                                                   long handle) {
         ActiveRegion active = activeRegion();
-        if (active == null) return false;
-        List<String> consumerOccurrences = active.activation
-                .exportConsumerOccurrences(portId);
-        boolean staged = !consumerOccurrences.isEmpty()
-                && SymbolicMessageEnvelope.stage(
-                portId, handle, active.activation.taskId,
-                active.occurrenceId(), consumerOccurrences);
-        if (staged) {
+        // The producer site ran, so the message carries the value.  Which
+        // occurrence produced it and which the plan addressed are what the
+        // entry says about itself, not conditions on saying it.
+        String producerTask = active == null ? UNPLANNED_ENDPOINT
+                : active.activation.taskId;
+        String producerOccurrence = active == null ? UNPLANNED_ENDPOINT
+                : active.occurrenceId();
+        List<String> consumerOccurrences = active == null
+                ? Collections.<String>emptyList()
+                : active.activation.exportConsumerOccurrences(portId);
+        if (consumerOccurrences.isEmpty()) {
+            consumerOccurrences = plannedExportConsumers(portId);
+        }
+        boolean staged = SymbolicMessageEnvelope.stage(
+                portId, handle, producerTask, producerOccurrence,
+                consumerOccurrences);
+        if (staged && active != null) {
             beginBookkeeping();
             try {
                 active.observeOutgoingSourceAnchor(portId);
@@ -2225,9 +2234,84 @@ public final class ConcolicRegionRuntime {
         return staged;
     }
 
+    /**
+     * Stands in for an endpoint no plan named.
+     *
+     * <p>A leaf may be staged or taken under an identity the plan did not
+     * select.  The value is still the value; the entry says plainly that its
+     * endpoint was not planned rather than pretending to an occurrence.</p>
+     */
+    static final String UNPLANNED_ENDPOINT = "UNPLANNED";
+
+    /** Every consumer occurrence any plan bound to this port. */
+    private static List<String> plannedExportConsumers(String portId) {
+        List<String> consumers = new ArrayList<>();
+        for (ConcolicTaskPlan.RuntimeTask task : configuration().tasks) {
+            for (String consumer : task.exportConsumerOccurrences(portId)) {
+                if (!consumers.contains(consumer)) consumers.add(consumer);
+            }
+        }
+        if (consumers.isEmpty()) consumers.add(UNPLANNED_ENDPOINT);
+        return consumers;
+    }
+
     // ------------------------------------------------------------------
     // Declared communication ports
     // ------------------------------------------------------------------
+
+    /**
+     * Opens the frame around one message instance being serialized.
+     *
+     * <p>A declared port is one pair of bytecode sites, and a protocol sends
+     * many unrelated values of that shape through it.  The frame is the thing
+     * whose single construction builds one instance of the value the port
+     * belongs to; leaves staged inside it are addressed within it, so two
+     * groups of the same shape in one message stay apart.</p>
+     */
+    public static void pushOutboundMessageFrame() {
+        beginBookkeeping();
+        try {
+            SymbolicMessageEnvelope.pushOutboundFrame();
+        } finally {
+            endBookkeeping();
+        }
+    }
+
+    /** Closes the frame {@link #pushOutboundMessageFrame} opened. */
+    public static void popOutboundMessageFrame() {
+        beginBookkeeping();
+        try {
+            SymbolicMessageEnvelope.popOutboundFrame();
+        } finally {
+            endBookkeeping();
+        }
+    }
+
+    /**
+     * Opens the frame around one message instance being decoded.
+     *
+     * <p>The mirror of {@link #pushOutboundMessageFrame}: the receiver counts
+     * its frames the way the sender counted theirs, so the k-th frame means
+     * the same thing on both sides without either naming the other.</p>
+     */
+    public static void pushInboundMessageFrame() {
+        beginBookkeeping();
+        try {
+            SymbolicMessageEnvelope.pushInboundFrame();
+        } finally {
+            endBookkeeping();
+        }
+    }
+
+    /** Closes the frame {@link #pushInboundMessageFrame} opened. */
+    public static void popInboundMessageFrame() {
+        beginBookkeeping();
+        try {
+            SymbolicMessageEnvelope.popInboundFrame();
+        } finally {
+            endBookkeeping();
+        }
+    }
 
     /**
      * Exports the live expression of one declared communication port.
@@ -2302,15 +2386,25 @@ public final class ConcolicRegionRuntime {
             return;
         }
         ActiveRegion active = activeRegion();
-        if (leafCarried && !acceptCommunicationEndpoint(active, site,
-                carried.producerOccurrenceId(),
-                carried.consumerOccurrenceIds())) {
+        // Whether this activation is the edge the plan drew is a fact about
+        // the plan, not about the value: the leaf is the one the sender put
+        // in this message at this element, and refusing it here left the
+        // receiver holding a literal.  Say it and attach.
+        if (leafCarried && active != null) {
+            acceptCommunicationEndpoint(active, site,
+                    carried.producerOccurrenceId(),
+                    carried.consumerOccurrenceIds());
+        }
+        if (!leafCarried) {
+            // The message does not have the element this decode asked for.
+            // Ordinals address elements, so this is not "the queue ran dry":
+            // it is the two sides disagreeing about what the message holds.
             recordHandoffGap(RpcExpressionHandoff.gap(
+                    RpcExpressionHandoff.LEAF_MISSING,
                     RpcExpressionHandoff.STAGE_ATTACH,
-                    RpcExpressionHandoff.MISSING_METADATA, handle,
-                    "message entry names a different planned edge: "
-                            + carried.producerOccurrenceId() + " -> "
-                            + carried.consumerOccurrenceIds()));
+                    RpcExpressionHandoff.MISSING_METADATA, 0L,
+                    "message carries no element for this decode: "
+                            + site.portId()));
             return;
         }
         if (handle <= 0L) {
@@ -2326,11 +2420,34 @@ public final class ConcolicRegionRuntime {
     }
 
     /** The declared site of {@code portId} in this occurrence's plan. */
+    /**
+     * The declared site of {@code portId}, whoever is running.
+     *
+     * <p>Propagation is a property of the value, not of the activation that
+     * happens to be on the stack.  The same conversion runs under several
+     * region identities -- the one the plan selected for the port and the
+     * ones that merely call the same helper -- and the leaf crossing the
+     * wire is the same leaf in all of them.  Asking only the active task
+     * meant a value arriving under an unselected identity was dropped, which
+     * is how the four conversions that fill a DataNode's key map received no
+     * producer expression at all.  Occurrences decide what gets published,
+     * never whether a value propagates.</p>
+     */
     private static CommunicationHandoffSpec communicationHandoffSite(
             String portId, boolean exporting) {
+        if (safe(portId).isEmpty()) return null;
         ActiveRegion active = activeRegion();
-        if (active == null || safe(portId).isEmpty()) return null;
-        return active.activation.communicationHandoff(portId, exporting);
+        if (active != null) {
+            CommunicationHandoffSpec declared =
+                    active.activation.communicationHandoff(portId, exporting);
+            if (declared != null) return declared;
+        }
+        for (ConcolicTaskPlan.RuntimeTask task : configuration().tasks) {
+            CommunicationHandoffSpec declared =
+                    task.communicationHandoff(portId, exporting);
+            if (declared != null) return declared;
+        }
+        return null;
     }
 
     /**
@@ -2547,11 +2664,58 @@ public final class ConcolicRegionRuntime {
                 consumerOccurrenceId);
     }
 
-    /** Files one handoff gap with the active region, when there is one. */
+    /**
+     * Names one element of a closing message that no decode looked up.
+     *
+     * <p>Called by {@link SymbolicMessageEnvelope} as the receiver drops the
+     * message: at that point nothing else will ever ask for the element, so
+     * the value it was carrying reaches whatever it feeds as a leaf with no
+     * producer.  Refusing here rather than at the reader is what keeps the
+     * loss named instead of inferred later from a literal.</p>
+     */
+    static void reportUnattachedMessageLeaf(String portId, int ordinal,
+                                            String producerOccurrenceId) {
+        recordHandoffGap(RpcExpressionHandoff.gap(
+                RpcExpressionHandoff.LEAVES_UNATTACHED,
+                RpcExpressionHandoff.STAGE_ATTACH,
+                RpcExpressionHandoff.MISSING_METADATA, 0L,
+                "message element nothing decoded: " + safe(portId)
+                        + " element " + ordinal + " from "
+                        + safe(producerOccurrenceId)));
+    }
+
+    /**
+     * A gap raised with no region running, held for the next one.
+     *
+     * <p>A message ends in the transport, below every selected region, so the
+     * finding that nothing decoded one of its elements has no activation to
+     * belong to at the moment it is made.  Dropping it there would make the
+     * refusal invisible in the corpus and the whole vocabulary decorative;
+     * holding it until a region publishes puts it in front of the reader that
+     * has to act on it.</p>
+     */
+    private static final List<JsonObject> UNOWNED_HANDOFF_GAPS =
+            Collections.synchronizedList(new ArrayList<JsonObject>());
+
+    /** Files one handoff gap with the active region, or holds it. */
     private static void recordHandoffGap(JsonObject gap) {
         ActiveRegion active = activeRegion();
-        if (active != null) active.rpcHandoffGaps.add(gap);
+        if (active != null) {
+            drainUnownedHandoffGaps(active);
+            active.rpcHandoffGaps.add(gap);
+        } else {
+            UNOWNED_HANDOFF_GAPS.add(gap);
+        }
         diag(RpcExpressionHandoff.GAP_KIND, String.valueOf(gap));
+    }
+
+    /** Moves the gaps raised below every region into this one. */
+    private static void drainUnownedHandoffGaps(ActiveRegion active) {
+        if (UNOWNED_HANDOFF_GAPS.isEmpty()) return;
+        synchronized (UNOWNED_HANDOFF_GAPS) {
+            active.rpcHandoffGaps.addAll(UNOWNED_HANDOFF_GAPS);
+            UNOWNED_HANDOFF_GAPS.clear();
+        }
     }
 
     private static HandoffResult attach(
@@ -2633,6 +2797,7 @@ public final class ConcolicRegionRuntime {
      */
     private static HandoffResult record(HandoffResult result) {
         ActiveRegion active = activeRegion();
+        if (active != null) drainUnownedHandoffGaps(active);
         if (active != null && !result.ok()) {
             active.rpcHandoffGaps.add(result.record);
         }

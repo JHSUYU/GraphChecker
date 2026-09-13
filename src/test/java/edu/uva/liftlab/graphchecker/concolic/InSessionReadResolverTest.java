@@ -58,22 +58,67 @@ public class InSessionReadResolverTest {
                 new JsonArray()));
     }
 
-    /** A value that arrived over a wire resolves to the producer's own. */
+    /**
+     * A value that arrived over a wire resolves to the producer's own.
+     *
+     * <p>The VM substituted the sender's term into the boundary when the
+     * value arrived, so the boundary's inner expression already names the
+     * <em>producer's</em> location in the producer's numbering -- here the
+     * NameNode's key field, whose write this replay also published.  The
+     * matching {@code vmHandoffEvents} row records that the hop happened
+     * and who produced it; it points back at this same boundary rather than
+     * carrying a second expression, which is why following it instead would
+     * re-enter the node and refuse a determined value.</p>
+     */
     @Test
     public void aWireArrivalResolvesToTheProducerExpression() {
-        JsonObject consumer = row(versions("INSTANCE_FIELD", 31, 32,
-                version(142, "INITIAL", constant(119982))));
-        consumer.add("vmHandoffEvents", handoffs(handoff(144,
-                symbol(ROOT))));
+        // The producer's side of the wire: the NameNode wrote the key id.
+        JsonObject producer = row(versions("INSTANCE_FIELD", 24, 32,
+                version(81, "WRITE", symbol(ROOT))));
+        JsonObject consumer = row(versions("INSTANCE_FIELD", 91, 32,
+                version(195, "INITIAL", constant(0))));
+        consumer.add("vmHandoffEvents", handoffs(handoff(193,
+                boundary("RPC_ATTACH", 193, null))));
         InSessionReadResolver resolver = InSessionReadResolver.of(
-                Arrays.asList(consumer));
+                Arrays.asList(producer, consumer));
 
-        // What the consumer holds is its own literal read; what the wire
-        // carried is the producer's expression, and that is the value.
-        JsonElement resolved = resolver.resolve(boundary("RPC_ATTACH", 144,
-                read("INSTANCE_FIELD", 31, 32, 143,
-                        candidate(142, "INITIAL", constant(119982)))));
+        JsonElement resolved = resolver.resolve(boundary("RPC_ATTACH", 193,
+                read("INSTANCE_FIELD", 24, 32, 192,
+                        candidate(81, "WRITE", symbol(ROOT)))));
 
+        assertEquals(ROOT, resolved.getAsJsonObject().get("_exp")
+                .getAsString());
+        assertFalse("a hop is not a cycle",
+                InSessionReadResolver.unresolved(resolved));
+    }
+
+    /** A handoff row that points back at its own boundary is not a cycle. */
+    @Test
+    public void aHandoffPointingAtItsOwnBoundaryIsNotACycle() {
+        JsonObject producer = row(versions("INSTANCE_FIELD", 24, 32,
+                version(81, "WRITE", symbol(ROOT))));
+        JsonObject consumer = new JsonObject();
+        // Exactly the shape hdfs-17899-bug3 records: the event's expression
+        // is a reference to the anchor that defines the boundary itself.
+        JsonObject inner = read("INSTANCE_FIELD", 24, 32, 192,
+                candidate(81, "WRITE", symbol(ROOT)));
+        JsonObject self = boundary("RPC_ATTACH", 193, inner);
+        JsonObject definition = new JsonObject();
+        definition.addProperty("expressionAnchor", "EXPR.attach");
+        definition.add("expression", self);
+        JsonArray definitions = new JsonArray();
+        definitions.add(definition);
+        JsonObject table = new JsonObject();
+        table.add("definitions", definitions);
+        consumer.add("sharedExpressionTable", table);
+        consumer.add("vmHandoffEvents", handoffs(handoff(193,
+                reference("EXPR.attach"))));
+
+        JsonElement resolved = InSessionReadResolver.of(
+                Arrays.asList(producer, consumer)).resolve(
+                reference("EXPR.attach"));
+
+        assertFalse(InSessionReadResolver.unresolved(resolved));
         assertEquals(ROOT, resolved.getAsJsonObject().get("_exp")
                 .getAsString());
     }
@@ -129,7 +174,88 @@ public class InSessionReadResolverTest {
         assertTrue(InSessionReadResolver.unresolved(resolved));
     }
 
+    /**
+     * A key id crosses two objects and a wire, and lands on the root.
+     *
+     * <p>The shape hdfs-17899-bug3 records at the fatal read: the value the
+     * DataNode received projects the sender's {@code DataEncryptionKey},
+     * whose own field projects the imported {@code BlockKey}, whose own field
+     * is the serial number the NameNode minted.  Three projections, one
+     * replay, no arms -- each owner is a symbolic object reference, and each
+     * reference plus offset names a location this replay published.</p>
+     */
+    @Test
+    public void aProjectionThroughObjectReferencesReachesTheRoot() {
+        JsonObject minted = row(versions("INSTANCE_FIELD", 17, 32,
+                version(47, "INITIAL", constant(0)),
+                version(48, "WRITE", symbol(ROOT))));
+        JsonObject imported = row(versions("INSTANCE_FIELD", 159, 32,
+                version(299, "INITIAL", constant(0)),
+                version(300, "WRITE", projection(17, 32))));
+        JsonObject sent = row(versions("INSTANCE_FIELD", 178, 32,
+                version(342, "INITIAL", constant(0)),
+                version(343, "WRITE", projection(159, 32))));
+        InSessionReadResolver resolver = InSessionReadResolver.of(
+                Arrays.asList(minted, imported, sent));
+
+        JsonElement resolved = resolver.resolve(projection(178, 32));
+
+        assertFalse(InSessionReadResolver.unresolved(resolved));
+        assertEquals("SymbolExpression",
+                resolved.getAsJsonObject().get("_type").getAsString());
+        assertEquals(ROOT, resolved.getAsJsonObject().get("_exp")
+                .getAsString());
+    }
+
+    /** A field this replay wrote twice does not say which write was seen. */
+    @Test
+    public void aProjectionOfATwiceWrittenFieldIsRefused() {
+        JsonObject row = row(versions("INSTANCE_FIELD", 9, 56,
+                version(39, "INITIAL", constant(0)),
+                version(41, "WRITE", constant(119982)),
+                version(44, "WRITE", symbol(ROOT))));
+
+        JsonElement resolved = InSessionReadResolver.of(
+                Collections.singletonList(row)).resolve(projection(9, 56));
+
+        assertTrue(InSessionReadResolver.unresolved(resolved));
+        assertTrue(resolved.getAsJsonObject()
+                .get(InSessionReadResolver.UNRESOLVED_REASON).getAsString()
+                .contains("written 2 times"));
+    }
+
+    /** A projection over something that is not an object stays a projection. */
+    @Test
+    public void aProjectionOverANonReferenceIsLeftAlone() {
+        assertEquals(-1L, InSessionReadResolver.referencedObject(
+                symbol("M_I_field_SRC.serialNo")));
+        assertEquals(-1L, InSessionReadResolver.referencedObject(
+                constant(3)));
+        assertEquals(159L, InSessionReadResolver.referencedObject(
+                symbol("M_L'org/apache/hadoop/A'_159")));
+
+        JsonObject over = new JsonObject();
+        over.addProperty("_type", "FieldAccessExpression");
+        over.addProperty("fieldOffset", 32);
+        over.add("owner", constant(7));
+        JsonElement resolved = InSessionReadResolver.of(
+                Collections.<JsonObject>emptyList()).resolve(over);
+
+        assertFalse(InSessionReadResolver.unresolved(resolved));
+        assertEquals("FieldAccessExpression",
+                resolved.getAsJsonObject().get("_type").getAsString());
+    }
+
     // ---- fixtures -------------------------------------------------------
+
+    private static JsonObject projection(long ownerRid, long offset) {
+        JsonObject node = new JsonObject();
+        node.addProperty("_type", "FieldAccessExpression");
+        node.addProperty("ownerClass", "org/apache/hadoop/A");
+        node.addProperty("fieldOffset", offset);
+        node.add("owner", symbol("M_L'org/apache/hadoop/A'_" + ownerRid));
+        return node;
+    }
 
     private static JsonObject symbol(String name) {
         JsonObject node = new JsonObject();

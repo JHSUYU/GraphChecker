@@ -1,13 +1,14 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
 import java.nio.charset.StandardCharsets;
-import java.util.Base64;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.Collections;
 import java.util.Deque;
-import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Message-carried symbolic values shared by every request/response transport.
@@ -16,9 +17,38 @@ import java.util.List;
  * installs that exact string on the receiver thread.  Consumers only take
  * entries from the installed message; correlation ids are deliberately not
  * an expression lookup mechanism.</p>
+ *
+ * <p>An expression belongs to a <em>value inside the message</em>, not to a
+ * queue.  A port is declared on one pair of bytecode sites and a protocol
+ * routes every value of that shape through them, so one message serializes
+ * many unrelated values through one port: a receiver that took the head of a
+ * shared queue paired whichever leaf happened to be first with whichever
+ * decode happened to run first, and any asymmetry between the two sides
+ * silently shifted every pairing after it.  Each leaf is therefore addressed
+ * by {@code (message, port, element ordinal within that message)} -- the
+ * ordinal travels on the wire -- and a decode looks its element up rather
+ * than consuming a head.</p>
+ *
+ * <p>A message is divided into <em>frames</em>, and the ordinal counts within
+ * one frame: the key is {@code (frame, port, ordinal)}.  A frame is the thing
+ * whose single construction builds one instance of the value the port belongs
+ * to -- the mapping names the method on each side, and the two are mirrors, so
+ * the k-th frame the sender opens is the k-th the receiver opens.  Framing is
+ * what keeps two unrelated groups of the same shape apart inside one message.
+ * A port that declares no frame uses frame 0, which is the RPC message itself,
+ * and behaves exactly as it did before frames existed.</p>
+ *
+ * <p>Within a frame the ordinal is the honest approximation of the value's
+ * field path.  The exact key would be the repeated field and index the value
+ * was set on, but a declared port names a bytecode site, not a proto field.
+ * Ordinals agree with field paths whenever both sides walk one frame's
+ * elements in the same order, which is what a generated serializer and its
+ * generated parser do; they disagree exactly when one side visits a value the
+ * other does not, and that disagreement is reported rather than absorbed: a
+ * leaf nothing looked up, and a lookup with no leaf, are both named.</p>
  */
 public final class SymbolicMessageEnvelope {
-    private static final String SCHEMA = "CSE3";
+    private static final String SCHEMA = "CSE4";
     /** Separator between the consumer occurrences of one entry. */
     private static final String CONSUMERS = "\n";
     private static final int MAX_ENTRIES = 64;
@@ -26,10 +56,11 @@ public final class SymbolicMessageEnvelope {
     private static final Base64.Encoder ENCODER =
             Base64.getUrlEncoder().withoutPadding();
     private static final Base64.Decoder DECODER = Base64.getUrlDecoder();
-    private static final ThreadLocal<Deque<Entry>> OUTBOUND =
-            new ThreadLocal<>();
-    private static final ThreadLocal<Deque<Entry>> INBOUND =
-            new ThreadLocal<>();
+    private static final int MAX_FRAMES = 64;
+    /** The message this thread is building. */
+    private static final ThreadLocal<Outbound> OUTBOUND = new ThreadLocal<>();
+    /** The message this thread is decoding. */
+    private static final ThreadLocal<Inbound> INBOUND = new ThreadLocal<>();
 
     private SymbolicMessageEnvelope() {
     }
@@ -47,7 +78,6 @@ public final class SymbolicMessageEnvelope {
                                 String producerTaskId,
                                 String producerOccurrenceId,
                                 List<String> consumerOccurrenceIds) {
-        Deque<Entry> entries = OUTBOUND.get();
         if (empty(portId) || handle < 0L || empty(producerTaskId)
                 || empty(producerOccurrenceId)
                 || consumerOccurrenceIds == null
@@ -57,17 +87,35 @@ public final class SymbolicMessageEnvelope {
         for (String consumer : consumerOccurrenceIds) {
             if (empty(consumer) || consumer.contains(CONSUMERS)) return false;
         }
-        if (entries == null) {
-            entries = new ArrayDeque<>();
-            OUTBOUND.set(entries);
+        Outbound message = OUTBOUND.get();
+        if (message == null) {
+            message = new Outbound();
+            OUTBOUND.set(message);
         }
-        if (entries.size() >= MAX_ENTRIES) {
-            return false;
+        return message.stage(portId, handle, producerTaskId,
+                producerOccurrenceId, unmodifiableCopy(consumerOccurrenceIds));
+    }
+
+    /**
+     * Opens a frame around the value this thread is about to serialize.
+     *
+     * <p>Frames are numbered in the order they open, and the receiver numbers
+     * its own the same way, so the k-th frame of a message means the same
+     * thing on both sides without either naming the other.</p>
+     */
+    public static void pushOutboundFrame() {
+        Outbound message = OUTBOUND.get();
+        if (message == null) {
+            message = new Outbound();
+            OUTBOUND.set(message);
         }
-        entries.addLast(new Entry(true, portId, handle,
-                producerTaskId, producerOccurrenceId,
-                unmodifiableCopy(consumerOccurrenceIds)));
-        return true;
+        message.push();
+    }
+
+    /** Closes the innermost outbound frame. */
+    public static void popOutboundFrame() {
+        Outbound message = OUTBOUND.get();
+        if (message != null) message.pop();
     }
 
     /**
@@ -75,94 +123,272 @@ public final class SymbolicMessageEnvelope {
      * An empty string means the message carries no symbolic envelope.
      */
     public static String takeOutbound() {
-        Deque<Entry> entries = OUTBOUND.get();
+        Outbound message = OUTBOUND.get();
         OUTBOUND.remove();
-        if (entries == null || entries.isEmpty()) return "";
+        if (message == null || message.entries.isEmpty()) return "";
         StringBuilder wire = new StringBuilder(SCHEMA);
-        for (Entry entry : entries) {
+        for (Entry entry : message.entries) {
             wire.append(';').append(token(entry.portId)).append(',')
                     .append(entry.handle).append(',')
                     .append(token(entry.producerTaskId)).append(',')
                     .append(token(entry.producerOccurrenceId)).append(',')
-                    .append(token(join(entry.consumerOccurrenceIds)));
+                    .append(token(join(entry.consumerOccurrenceIds)))
+                    .append(',').append(entry.frame)
+                    .append(',').append(entry.ordinal);
         }
         return wire.toString();
     }
 
-    /** Replaces the receiver thread's current message with this exact wire. */
+    /**
+     * Replaces the receiver thread's current message with this exact wire.
+     *
+     * <p>A different message displacing this one ends it as surely as a
+     * close does, and on the client half of an exchange it is the only
+     * ending there is: the caller installs the response it is about to
+     * decode and nothing closes it until the next call.  So a displaced
+     * message reports what nothing looked up, exactly as a closed one does
+     * -- unless the same wire is being reinstalled, which is a transport
+     * carrying one message across several legs rather than a new message,
+     * and which has not finished with its values.</p>
+     */
     public static void installInbound(String wire) {
+        Inbound displaced = INBOUND.get();
         INBOUND.remove();
-        INBOUND.set(decode(wire));
-    }
-
-    /** Clears a receiver when the concrete message has no envelope header. */
-    public static void clearInbound() {
-        INBOUND.remove();
+        Inbound message = new Inbound(decode(wire), wire);
+        if (displaced != null && !displaced.wire.equals(message.wire)) {
+            displaced.reportUnattached();
+        }
+        INBOUND.set(message);
     }
 
     /**
-     * Observes the next entry for {@code portId} without consuming it.
+     * Clears a receiver when the concrete message has no envelope header.
+     *
+     * <p>Closing a message is the moment its unclaimed leaves become
+     * findings: the sender put a value in the message and no decode on this
+     * side asked for it, so whatever that value fed is not connected to its
+     * producer any more.  They are reported here, once, with the message.</p>
+     */
+    public static void clearInbound() {
+        Inbound message = INBOUND.get();
+        INBOUND.remove();
+        if (message != null) message.reportUnattached();
+    }
+
+    /**
+     * Opens the next frame of the message being decoded.
+     *
+     * <p>The receiver counts its frames the way the sender counted theirs, so
+     * this needs no name from the wire.  A message that declares no such
+     * frame leaves the decode in frame 0, which is the message itself.</p>
+     */
+    public static void pushInboundFrame() {
+        Inbound message = INBOUND.get();
+        if (message != null) message.push();
+    }
+
+    /** Closes the innermost inbound frame. */
+    public static void popInboundFrame() {
+        Inbound message = INBOUND.get();
+        if (message != null) message.pop();
+    }
+
+    /**
+     * Observes the element this port would take next, without taking it.
      * Admission uses the concrete message's producer occurrence before the
      * selected region starts; the attach hook remains the sole consumer.
      */
     public static Entry peek(String portId) {
-        Deque<Entry> entries = INBOUND.get();
-        if (entries == null || empty(portId)) return Entry.MISSING;
-        for (Entry entry : entries) {
-            if (portId.equals(entry.portId)) return entry;
-        }
-        return Entry.MISSING;
+        Inbound message = INBOUND.get();
+        if (message == null || empty(portId)) return Entry.MISSING;
+        return message.at(portId, message.nextOrdinal(portId));
     }
 
-    /** Consumes one port from the current inbound message, or returns absent. */
+    /**
+     * Takes the element of this message this port is decoding next.
+     *
+     * <p>The lookup is by ordinal, not by position: an element already
+     * looked up is not handed out again, and an element the sender never
+     * staged answers absent instead of borrowing the next value along.</p>
+     */
     public static Entry take(String portId) {
-        Deque<Entry> entries = INBOUND.get();
-        if (entries == null || empty(portId)) return Entry.MISSING;
-        for (Iterator<Entry> iterator = entries.iterator();
-             iterator.hasNext();) {
-            Entry entry = iterator.next();
-            if (!portId.equals(entry.portId)) continue;
-            iterator.remove();
-            if (entries.isEmpty()) INBOUND.remove();
-            return entry;
-        }
-        return Entry.MISSING;
+        Inbound message = INBOUND.get();
+        if (message == null || empty(portId)) return Entry.MISSING;
+        return message.take(portId);
     }
 
-    /** Clears test/workload thread state without retaining a sent message. */
+    /** Elements of the current message no decode has looked up. */
+    public static int inboundUnattached() {
+        Inbound message = INBOUND.get();
+        return message == null ? 0 : message.unattached();
+    }
+
+    /**
+     * Clears test/workload thread state without retaining a sent message.
+     *
+     * <p>A session boundary, not a message boundary: nothing is reported,
+     * because what a session drops was never a message this side agreed to
+     * decode.</p>
+     */
     public static void clear() {
         OUTBOUND.remove();
         INBOUND.remove();
     }
 
-    private static Deque<Entry> decode(String wire) {
+    /** One decoded message and how much of it has been looked up. */
+    private static final class Inbound {
+        private final List<Entry> entries;
+        private final boolean[] lookedUp;
+        private final String wire;
+        /** "frame\nport" -> the element this frame decodes next. */
+        private final Map<String, Integer> next = new LinkedHashMap<>();
+        private final Deque<Integer> open = new ArrayDeque<>();
+        private int opened;
+
+        Inbound(List<Entry> entries, String wire) {
+            this.entries = entries;
+            this.lookedUp = new boolean[entries.size()];
+            this.wire = wire;
+        }
+
+        void push() {
+            if (opened >= MAX_FRAMES) return;
+            open.addLast(++opened);
+        }
+
+        void pop() {
+            if (!open.isEmpty()) open.removeLast();
+        }
+
+        int frame() {
+            return open.isEmpty() ? 0 : open.peekLast();
+        }
+
+        int nextOrdinal(String portId) {
+            Integer ordinal = next.get(frame() + "\n" + portId);
+            return ordinal == null ? 0 : ordinal;
+        }
+
+        Entry at(String portId, int ordinal) {
+            int frame = frame();
+            for (int index = 0; index < entries.size(); index++) {
+                Entry entry = entries.get(index);
+                if (entry.frame == frame && entry.ordinal == ordinal
+                        && portId.equals(entry.portId)) {
+                    return entry;
+                }
+            }
+            return Entry.MISSING;
+        }
+
+        Entry take(String portId) {
+            int frame = frame();
+            int ordinal = nextOrdinal(portId);
+            next.put(frame + "\n" + portId, ordinal + 1);
+            for (int index = 0; index < entries.size(); index++) {
+                Entry entry = entries.get(index);
+                if (entry.frame != frame || entry.ordinal != ordinal
+                        || !portId.equals(entry.portId)) continue;
+                if (lookedUp[index]) break;
+                lookedUp[index] = true;
+                return entry;
+            }
+            return Entry.MISSING;
+        }
+
+        int unattached() {
+            int left = 0;
+            for (boolean taken : lookedUp) {
+                if (!taken) left++;
+            }
+            return left;
+        }
+
+        /** Names every element nothing looked up; reports each once. */
+        void reportUnattached() {
+            for (int index = 0; index < entries.size(); index++) {
+                if (lookedUp[index]) continue;
+                lookedUp[index] = true;
+                Entry entry = entries.get(index);
+                ConcolicRegionRuntime.reportUnattachedMessageLeaf(
+                        entry.portId, entry.ordinal,
+                        entry.producerOccurrenceId);
+            }
+        }
+    }
+
+    /** One message being built, and the frames open inside it. */
+    private static final class Outbound {
+        private final List<Entry> entries = new ArrayList<>();
+        private final Map<String, Integer> next = new LinkedHashMap<>();
+        private final Deque<Integer> open = new ArrayDeque<>();
+        private int opened;
+
+        void push() {
+            if (opened >= MAX_FRAMES) return;
+            open.addLast(++opened);
+        }
+
+        void pop() {
+            if (!open.isEmpty()) open.removeLast();
+        }
+
+        int frame() {
+            return open.isEmpty() ? 0 : open.peekLast();
+        }
+
+        boolean stage(String portId, long handle, String producerTaskId,
+                      String producerOccurrenceId,
+                      List<String> consumerOccurrenceIds) {
+            if (entries.size() >= MAX_ENTRIES) return false;
+            int frame = frame();
+            String counter = frame + "\n" + portId;
+            Integer held = next.get(counter);
+            int ordinal = held == null ? 0 : held;
+            next.put(counter, ordinal + 1);
+            entries.add(new Entry(true, portId, handle, producerTaskId,
+                    producerOccurrenceId, consumerOccurrenceIds, frame,
+                    ordinal));
+            return true;
+        }
+    }
+
+    private static List<Entry> decode(String wire) {
         if (wire == null || wire.length() > MAX_WIRE_LENGTH) {
             throw malformed();
         }
         String[] rows = wire.split(";", -1);
         if (rows.length < 2 || !SCHEMA.equals(rows[0])
                 || rows.length - 1 > MAX_ENTRIES) throw malformed();
-        Deque<Entry> entries = new ArrayDeque<>();
+        List<Entry> entries = new ArrayList<>();
         for (int index = 1; index < rows.length; index++) {
             String[] fields = rows[index].split(",", -1);
-            if (fields.length != 5) throw malformed();
+            if (fields.length != 7) throw malformed();
             String portId = text(fields[0]);
             String producerTaskId = text(fields[2]);
             String producerOccurrenceId = text(fields[3]);
             List<String> consumerOccurrenceIds = split(text(fields[4]));
             long handle;
+            int frame;
+            int ordinal;
             try {
                 handle = Long.parseLong(fields[1]);
+                frame = Integer.parseInt(fields[5]);
+                ordinal = Integer.parseInt(fields[6]);
             } catch (NumberFormatException invalid) {
                 throw malformed();
             }
             if (handle < 0L || !Long.toString(handle).equals(fields[1])
+                    || frame < 0 || frame > MAX_FRAMES
+                    || !Integer.toString(frame).equals(fields[5])
+                    || ordinal < 0 || ordinal >= MAX_ENTRIES
+                    || !Integer.toString(ordinal).equals(fields[6])
                     || empty(portId) || empty(producerTaskId)
                     || empty(producerOccurrenceId)
                     || consumerOccurrenceIds.isEmpty()) throw malformed();
-            entries.addLast(new Entry(true, portId, handle,
+            entries.add(new Entry(true, portId, handle,
                     producerTaskId, producerOccurrenceId,
-                    consumerOccurrenceIds));
+                    consumerOccurrenceIds, frame, ordinal));
         }
         return entries;
     }
@@ -220,23 +446,28 @@ public final class SymbolicMessageEnvelope {
     public static final class Entry {
         private static final Entry MISSING =
                 new Entry(false, "", 0L, "", "",
-                        Collections.<String>emptyList());
+                        Collections.<String>emptyList(), -1, -1);
         private final boolean present;
         private final String portId;
         private final long handle;
         private final String producerTaskId;
         private final String producerOccurrenceId;
         private final List<String> consumerOccurrenceIds;
+        private final int frame;
+        private final int ordinal;
 
         private Entry(boolean present, String portId, long handle,
                       String producerTaskId, String producerOccurrenceId,
-                      List<String> consumerOccurrenceIds) {
+                      List<String> consumerOccurrenceIds, int frame,
+                      int ordinal) {
             this.present = present;
             this.portId = portId;
             this.handle = handle;
             this.producerTaskId = producerTaskId;
             this.producerOccurrenceId = producerOccurrenceId;
             this.consumerOccurrenceIds = consumerOccurrenceIds;
+            this.frame = frame;
+            this.ordinal = ordinal;
         }
 
         public boolean present() { return present; }
@@ -248,6 +479,12 @@ public final class SymbolicMessageEnvelope {
         public String producerOccurrenceId() {
             return producerOccurrenceId;
         }
+
+        /** Which frame of the message this value was built in. */
+        public int frame() { return frame; }
+
+        /** Which element of that frame and port the value was set on. */
+        public int ordinal() { return ordinal; }
 
         /** The planned consumer occurrences the plan bound to this port. */
         public List<String> consumerOccurrenceIds() {
