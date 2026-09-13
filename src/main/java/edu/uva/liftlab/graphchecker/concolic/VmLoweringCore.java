@@ -816,6 +816,66 @@ abstract class VmLoweringCore implements VmTermLowering.Policy {
     // Boxed container cells.
     // ------------------------------------------------------------------
 
+    /**
+     * Boxes one lowered value into a container cell.  {@code valueText} is
+     * the spelling the caller wants inside the box: the composer's own
+     * text, or the solver's shared alias for it.  A String is never
+     * aliased, because the box has to read its nullness companion too.
+     */
+    final Term asValue(Term value, String javaType, String valueText,
+                       String origin) {
+        if (value == null) return null;
+        if (value.sort == Sort.VALUE) return value;
+        String boxed;
+        if (value.sort == Sort.INT) {
+            boxed = firstNonBlank(ContainerSmtCodec.boxIntegral(valueText,
+                    javaType), "(VInt " + valueText + ")");
+        } else if (value.sort == Sort.BOOL) {
+            boxed = "(VBool " + valueText + ")";
+        } else if (value.sort == Sort.FLOAT32) {
+            boxed = "(VFloat " + valueText + ")";
+        } else if (value.sort == Sort.FLOAT64) {
+            boxed = "(VDouble " + valueText + ")";
+        } else if (value.sort == Sort.REF) {
+            boxed = "(VRef " + valueText + ")";
+        } else if (value.sort == Sort.STRING) {
+            if (value.stringNullness.isEmpty()) {
+                return refuse(Reason.JAVA_STRING_NULLNESS_UNKNOWN, origin,
+                        "BOX", Sort.VALUE);
+            }
+            boxed = "false".equals(value.stringNullness)
+                    ? "(VString " + value.text + ")"
+                    : "(ite " + value.stringNullness
+                    + " (VRef nullRef) (VString " + value.text + "))";
+        } else {
+            return refuse(Reason.CANNOT_BOX, origin,
+                    String.valueOf(value.sort), Sort.VALUE);
+        }
+        return result(boxed, Sort.VALUE, value);
+    }
+
+    /** The lowered sort one container-codec operand is expected at, or
+     *  null where the codec states no expectation. */
+    static Sort nativeSortOf(ContainerSmtCodec.Sort expected) {
+        return expected == ContainerSmtCodec.Sort.INT ? Sort.INT
+                : expected == ContainerSmtCodec.Sort.BOOL ? Sort.BOOL
+                : expected == ContainerSmtCodec.Sort.REF ? Sort.REF
+                : expected == ContainerSmtCodec.Sort.INDEXED
+                ? Sort.ARRAY_VALUE
+                : expected == ContainerSmtCodec.Sort.ASSOCIATIVE ? Sort.MAP
+                : null;
+    }
+
+    /** The container state an already-lowered reference denotes. */
+    static ContainerSmtCodec.Term stateOfReference(String reference,
+                                                   ContainerSmtCodec.Sort
+                                                           shape) {
+        return new ContainerSmtCodec.Term(
+                (shape == ContainerSmtCodec.Sort.INDEXED
+                        ? "(indexed_state_of " : "(assoc_state_of ")
+                        + reference + ")", shape);
+    }
+
     /** Unboxes one container cell by the element's declared Java type. */
     final Term fromValue(Term value, String javaType, String origin) {
         if (value == null || value.sort != Sort.VALUE) return value;

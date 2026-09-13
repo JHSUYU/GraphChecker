@@ -1435,11 +1435,7 @@ public final class ConcolicConstraintSolver {
                         unsupported("ContainerStateIdentity:" + shape);
                         return null;
                     }
-                    return new ContainerSmtCodec.Term(
-                            (shape == ContainerSmtCodec.Sort.INDEXED
-                                    ? "(indexed_state_of "
-                                    : "(assoc_state_of ")
-                                    + reference.text + ")", shape);
+                    return stateOfReference(reference.text, shape);
                 }
 
                 @Override
@@ -1462,18 +1458,8 @@ public final class ConcolicConstraintSolver {
                         return shareTerm(ContainerSmtCodec.field(
                                 expression.getAsJsonObject(), this));
                     }
-                    Sort nativeExpected = expected == ContainerSmtCodec.Sort.INT
-                            ? Sort.INT
-                            : expected == ContainerSmtCodec.Sort.BOOL
-                            ? Sort.BOOL
-                            : expected == ContainerSmtCodec.Sort.REF
-                            ? Sort.REF
-                            : expected == ContainerSmtCodec.Sort.INDEXED
-                            ? Sort.ARRAY_VALUE
-                            : expected == ContainerSmtCodec.Sort.ASSOCIATIVE
-                            ? Sort.MAP : null;
                     return shareTerm(toContainerTerm(term(expression,
-                            nativeExpected,
+                            nativeSortOf(expected),
                             origin + ":container-operand")));
                 }
 
@@ -1488,47 +1474,19 @@ public final class ConcolicConstraintSolver {
                     Term value = term(expression, null,
                             origin + ":container-value");
                     if (value == null) return null;
+                    // A String box reads its nullness companion, so it is
+                    // spelled out; every other value goes in as its alias.
                     String valueText = value.text;
                     if (value.sort != Sort.STRING) {
                         ContainerSmtCodec.Term shared = shareTerm(
                                 toContainerTerm(value));
                         if (shared != null) valueText = shared.text;
                     }
-                    String integralValue = value.sort == Sort.INT
-                            ? ContainerSmtCodec.boxIntegral(valueText,
-                            VmTermLowering.expressionJavaType(expression)) : "";
-                    String stringValue = "";
-                    if (value.sort == Sort.STRING) {
-                        if (value.stringNullness.isEmpty()) {
-                            unsupported("ContainerStringNullness");
-                            return null;
-                        }
-                        stringValue = "false".equals(
-                                value.stringNullness)
-                                ? "(VString " + value.text + ")"
-                                : "(ite " + value.stringNullness
-                                + " (VRef nullRef) (VString "
-                                + value.text + "))";
-                    }
-                    String boxed = value.sort == Sort.INT
-                            ? firstNonBlank(integralValue,
-                            "(VInt " + valueText + ")")
-                            : value.sort == Sort.BOOL
-                            ? "(VBool " + valueText + ")"
-                            : value.sort == Sort.REF
-                            ? "(VRef " + valueText + ")"
-                            : value.sort == Sort.STRING
-                            ? stringValue
-                            : value.sort == Sort.FLOAT32
-                            ? "(VFloat " + valueText + ")"
-                            : value.sort == Sort.FLOAT64
-                            ? "(VDouble " + valueText + ")" : "";
-                    if (boxed.isEmpty()) {
-                        unsupported("ContainerBox:" + value.sort);
-                        return null;
-                    }
-                    return shareTerm(new ContainerSmtCodec.Term(boxed,
-                            ContainerSmtCodec.Sort.VALUE));
+                    Term boxed = asValue(value,
+                            VmTermLowering.expressionJavaType(expression),
+                            valueText, origin);
+                    return boxed == null ? null
+                            : shareTerm(toContainerTerm(boxed));
                 }
 
                 @Override

@@ -4318,12 +4318,7 @@ public final class ConcolicSmtComposer {
                         unsupported("ContainerStateIdentity:" + shape);
                         return null;
                     }
-                    return new ContainerSmtCodec.Term(
-                            (shape == ContainerSmtCodec.Sort.INDEXED
-                                    ? "(indexed_state_of "
-                                    : "(assoc_state_of ")
-                                    + identityTerm.text + ")",
-                            shape);
+                    return stateOfReference(identityTerm.text, shape);
                 }
 
                 @Override
@@ -4352,18 +4347,8 @@ public final class ConcolicSmtComposer {
                                 fromContainerTerm(ContainerSmtCodec.field(
                                 expression.getAsJsonObject(), this))));
                     }
-                    Sort nativeExpected = expected == ContainerSmtCodec.Sort.INT
-                            ? Sort.INT
-                            : expected == ContainerSmtCodec.Sort.BOOL
-                            ? Sort.BOOL
-                            : expected == ContainerSmtCodec.Sort.REF
-                            ? Sort.REF
-                            : expected == ContainerSmtCodec.Sort.INDEXED
-                            ? Sort.ARRAY_VALUE
-                            : expected
-                            == ContainerSmtCodec.Sort.ASSOCIATIVE
-                            ? Sort.MAP : null;
-                    return toContainerTerm(term(expression, nativeExpected));
+                    return toContainerTerm(term(expression,
+                            nativeSortOf(expected)));
                 }
 
                 @Override
@@ -4375,8 +4360,10 @@ public final class ConcolicSmtComposer {
 
                 @Override
                 public ContainerSmtCodec.Term box(JsonElement expression) {
-                    return toContainerTerm(asValue(term(expression, null),
-                            VmTermLowering.expressionJavaType(expression)));
+                    Term value = term(expression, null);
+                    return toContainerTerm(asValue(value,
+                            VmTermLowering.expressionJavaType(expression),
+                            value.text, ""));
                 }
 
                 @Override
@@ -5193,8 +5180,8 @@ public final class ConcolicSmtComposer {
                             value.precondition, "(= " + result.text + " "
                                     + value.text + ")"));
                 }
-                Term boxedPrefix = asValue(value, "");
-                Term boxedResult = asValue(result, "");
+                Term boxedPrefix = asValue(value, "", value.text, "");
+                Term boxedResult = asValue(result, "", result.text, "");
                 return and(Arrays.asList(boxedPrefix.precondition,
                         boxedResult.precondition, "(= " + boxedResult.text
                                 + " " + boxedPrefix.text + ")"));
@@ -5271,35 +5258,6 @@ public final class ConcolicSmtComposer {
         /** Lowers one selected region occurrence's guarded relation. */
         private void lowerRelation(RelationSummary selection) {
             regionSummary(selection);
-        }
-
-        /** Boxes a primitive term for container and reference expressions. */
-        private Term asValue(Term term, String javaType) {
-            if (term.sort == Sort.VALUE) return term;
-            if (term.sort == Sort.INT) {
-                String boxed = ContainerSmtCodec.boxIntegral(
-                        term.text, javaType);
-                return dependent(Term.of(firstNonBlank(boxed,
-                        "(VInt " + term.text + ")"), Sort.VALUE), term);
-            }
-            if (term.sort == Sort.FLOAT32) return dependent(Term.of(
-                    "(VFloat " + term.text + ")", Sort.VALUE), term);
-            if (term.sort == Sort.FLOAT64) return dependent(Term.of(
-                    "(VDouble " + term.text + ")", Sort.VALUE), term);
-            if (term.sort == Sort.BOOL) return dependent(Term.of("(VBool "
-                    + term.text + ")", Sort.VALUE), term);
-            if (term.sort == Sort.STRING) {
-                String boxed = "false".equals(term.stringNullness)
-                        ? "(VString " + term.text + ")"
-                        : "(ite " + term.stringNullness
-                                + " (VRef nullRef) (VString "
-                                + term.text + "))";
-                return dependent(Term.of(boxed, Sort.VALUE), term);
-            }
-            if (term.sort == Sort.REF) return dependent(Term.of("(VRef "
-                    + term.text + ")", Sort.VALUE), term);
-            unsupported.add("CannotBox:" + term.sort);
-            return unsupportedTerm(Sort.VALUE);
         }
 
         private void declare(String name, Sort sort) {
