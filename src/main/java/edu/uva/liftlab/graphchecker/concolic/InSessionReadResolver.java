@@ -74,6 +74,8 @@ public final class InSessionReadResolver {
     /** Why an unresolved leaf could not be determined. */
     public static final String UNRESOLVED_REASON = "inSessionUnresolvedReason";
     private static final int MAX_DEPTH = 512;
+    /** The one version a read node says it observed. */
+    public static final String OBSERVED_VERSION = "observedVersion";
 
     /** Anchor -> definition, over every row of the replay. */
     private final Map<String, JsonElement> definitions;
@@ -323,19 +325,27 @@ public final class InSessionReadResolver {
 
     private JsonElement rewriteRead(JsonObject node,
                                     Set<JsonElement> visiting, int depth) {
+        // The version this read saw.  A node published under the current
+        // schema names it outright; one published under the older schema
+        // names every version retained at the read, of which the one it saw
+        // is the newest -- version ids are session-monotonic.
+        JsonObject observedVersion = object(node, OBSERVED_VERSION);
         JsonArray candidates = array(node, "candidates");
-        long observed = observedVersion(candidates);
+        long observed = observedVersion.size() > 0
+                ? optionalLongInteger(observedVersion, "fieldVersionId", -1L)
+                : observedVersion(candidates);
         String location = sessionLocation(object(node, "location"));
         if (observed < 0L) {
             return unresolved("read of " + location + " retained no version");
         }
         String key = location + "\n" + observed;
-        JsonObject candidate = candidateOf(candidates, observed);
+        JsonObject candidate = observedVersion.size() > 0
+                ? observedVersion : candidateOf(candidates, observed);
         boolean initial = initialVersions.contains(key)
                 || (candidate != null && "INITIAL".equals(
                 optionalString(candidate, "versionKind")));
-        // The candidate carries the write's own expression; the version
-        // table is the fallback for a node that published only the id.
+        // The version row carries the write's own expression; the write log
+        // is the fallback for a node that published only the id.
         JsonElement value = candidate == null
                 ? null : candidate.get(VmExpressionIr.EXPRESSION);
         if (value == null) value = writes.get(key);

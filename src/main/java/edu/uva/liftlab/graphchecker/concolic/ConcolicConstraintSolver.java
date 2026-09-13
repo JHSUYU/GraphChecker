@@ -1,7 +1,6 @@
 package edu.uva.liftlab.graphchecker.concolic;
 
 import edu.uva.liftlab.graphchecker.concolic.JavaPrimitiveSmtSemantics.IntegralWidth;
-import edu.uva.liftlab.graphchecker.concolic.VmTermLowering.GuardedReadUse;
 import edu.uva.liftlab.graphchecker.concolic.VmTermLowering.Sort;
 import edu.uva.liftlab.graphchecker.concolic.VmTermLowering.Term;
 import edu.uva.liftlab.graphchecker.concolic.JavaPrimitiveSmtSemantics.FloatingKind;
@@ -73,12 +72,29 @@ public final class ConcolicConstraintSolver {
         JsonObject activation = linked.inputs;
         PathQuery query = PathQuery.decode(task);
         BranchReplayContract replayContract = query.replayContract;
-        JsonArray branchConstraints = replayContract
-                .requiredPathPredicates();
-        JsonArray contextConstraints = query.pathContext.expressions();
+        // The obligation's path condition as the replay it was cut from
+        // valued it: roots, literals and containers over them, and no
+        // placeholder for this solver to choose a value for.  The planner
+        // resolved it, because only there does that replay still have its
+        // rows.
+        JsonObject resolved = ResolvedFlipQuery.of(task);
+        JsonArray unresolvedReasons = resolved == null
+                ? new JsonArray() : array(resolved, "unresolved");
+        JsonArray branchConstraints = resolved == null
+                ? replayContract.requiredPathPredicates()
+                : array(resolved, "predicates");
+        JsonArray contextConstraints = resolved == null
+                ? query.pathContext.expressions()
+                : array(resolved, "context");
+        if (unresolvedReasons.size() > 0) {
+            JsonObject cut = baseRecord(query.queryKey);
+            cut.add("unsupported", new JsonArray());
+            cut.addProperty("status", "MATERIALIZATION_GAP");
+            cut.addProperty("reason", ResolvedFlipQuery.UNRESOLVED_REASON);
+            cut.add("unresolvedPathCondition", unresolvedReasons.deepCopy());
+            return new Result(cut, "", new JsonArray(), replayContract);
+        }
         List<JsonObject> actions = materializationActions(activation);
-        List<JsonObject> targetActions = materializationActions(
-                primaryActivation);
         Encoder encoder = new Encoder();
         for (int index = 0; index < contextConstraints.size(); index++) {
             JsonElement constraint = contextConstraints.get(index);
@@ -90,22 +106,13 @@ public final class ConcolicConstraintSolver {
         Set<String> targetSymbols = new LinkedHashSet<>();
         for (int index = 0; index < branchConstraints.size(); index++) {
             boolean target = index + 1 == branchConstraints.size();
-            encoder.captureTargetContainerReads = target;
-            Set<String> symbols;
-            try {
-                symbols = encoder.addConstraint(branchConstraints.get(index),
-                        "q_branch_" + index);
-            } finally {
-                encoder.captureTargetContainerReads = false;
-            }
+            Set<String> symbols = encoder.addConstraint(
+                    branchConstraints.get(index), "q_branch_" + index);
             replayFrontier.addAll(symbols);
             if (target) {
                 targetSymbols.addAll(symbols);
             }
         }
-        replayFrontier.addAll(encoder.bindConsumerFamilyDependencies(
-                query.consumerAnchorCaseDependencies,
-                query.sourceActivationOccurrenceId));
         ReplaySupport targetSupport = classifyReplaySupport(
                 encoder, targetSymbols, actions,
                 linked.configuredSourcePhaseCatalogs);
@@ -116,24 +123,12 @@ public final class ConcolicConstraintSolver {
                 replaySupport.writableSymbols;
         preferObservedReplayControls(encoder,
                 writableReplayControlSymbols, actions);
-        encoder.finishGuardedReadSelections();
-        encoder.bindTargetContainerReads(targetActions);
         String smt = encoder.finish();
         JsonObject record = baseRecord(query.queryKey);
         record.add("unsupported", strings(encoder.unsupported));
         if (!encoder.unsupported.isEmpty()) {
             record.addProperty("status", "UNSUPPORTED");
             record.addProperty("reason", "UNSUPPORTED_EXPRESSION_IR");
-            return new Result(record, smt, new JsonArray(),
-                    replayContract);
-        }
-
-        if (!encoder.targetContainerGaps.isEmpty()) {
-            record.addProperty("status", "MATERIALIZATION_GAP");
-            record.addProperty("reason",
-                    "TARGET_CONTAINER_READ_IS_NOT_MATERIALIZABLE");
-            record.add("unresolvedTargetContainerReads",
-                    strings(encoder.targetContainerGaps));
             return new Result(record, smt, new JsonArray(),
                     replayContract);
         }
@@ -187,15 +182,8 @@ public final class ConcolicConstraintSolver {
         ModelProjection projection = modelAssignments(encoder, values,
                 actions, linked.configuredSourcePhaseCatalogs,
                 projectedSymbols);
-        ModelProjection containerProjection = targetContainerAssignments(
-                encoder, values, replayContract.source().occurrence());
-        for (JsonElement assignment : containerProjection.assignments) {
-            projection.assignments.add(assignment);
-        }
-        projection.unresolved.addAll(containerProjection.unresolved);
         JsonArray assignments = projection.assignments;
-        if (projectedSymbols.isEmpty()
-                && encoder.targetContainerModels.isEmpty()) {
+        if (projectedSymbols.isEmpty()) {
             record.addProperty("status", "MATERIALIZATION_GAP");
             record.addProperty("reason", "NO_REGION_INPUT_SYMBOL_IN_QUERY");
         } else if (!projection.unresolved.isEmpty()) {
@@ -341,40 +329,7 @@ public final class ConcolicConstraintSolver {
                 new LinkedHashMap<>();
         private final Map<String, Set<String>> consumerFamilySelectors =
                 new LinkedHashMap<>();
-        /** RF selector -> exact producer case, grouped by PC dependency. */
-        private final Map<String, Map<String, GuardedReadCaseBinding>>
-                readFromWriterCases = new LinkedHashMap<>();
-        /** Writer-case partition admitted for each RF dependency family. */
-        private final Map<String, Set<String>> readFromCaseSelectors =
-                new LinkedHashMap<>();
-        /** Replay observations which refine one stable local case. */
-        private final Map<String, Set<String>> caseObservationSelectors =
-                new LinkedHashMap<>();
-        /** One observation selector must never refine two base cases. */
-        private final Map<String, String> observationBaseCases =
-                new LinkedHashMap<>();
-        /** RF bindings are discovered while nested case PCs are lowered. */
-        private final Set<String> boundReadFromWriterBindings =
-                new LinkedHashSet<>();
-        private final Map<String, Set<String>> guardedReadSelectors =
-                new LinkedHashMap<>();
-        private final Map<String, Map<String, GuardedReadUse>> guardedReadUses =
-                new LinkedHashMap<>();
-        private final Map<String, Map<String, Set<String>>>
-                guardedSelectorActivationGuards = new LinkedHashMap<>();
-        /** Exact target reads whose propagated value can be replayed at the
-         * same live container access. */
-        private final Map<String, TargetContainerRead> targetContainerReads =
-                new LinkedHashMap<>();
-        private final List<TargetContainerRead> targetContainerModels =
-                new ArrayList<>();
-        private final Set<String> targetContainerGaps =
-                new LinkedHashSet<>();
-        private final SharedExpressionTable.Anchors targetReadAnchors =
-                new SharedExpressionTable.Anchors();
         private String currentReadActivationGuard = "true";
-        private boolean captureTargetContainerReads;
-        private int guardedReadDepth;
         private boolean usesJavaIntString;
         private Set<String> currentConstraintSymbols;
 
@@ -537,7 +492,11 @@ public final class ConcolicConstraintSolver {
         @Override
         Term caseMergeTerm(JsonObject expression, Sort expected,
                            String origin) {
-            return consumerCaseMergeTerm(expression, expected, origin);
+            // A value merged over another region's cases is a cross-replay
+            // object.  One obligation is one replay's path condition.
+            unsupported.add(origin + ":CASE_MERGE_IN_PATH:"
+                    + optionalString(expression, "mergeId"));
+            return null;
         }
 
         /** A refused call yields no term, so no sort is needed for it. */
@@ -546,111 +505,6 @@ public final class ConcolicConstraintSolver {
             return null;
         }
 
-        /** Lowers one receiver-owned value family without enumerating a
-         * product with the primary region's local paths. */
-        private Term consumerCaseMergeTerm(JsonObject merge, Sort expected,
-                                           String origin) {
-            String mergeId = optionalString(merge, "mergeId");
-            String family = optionalString(merge, VmExpressionIr.FAMILY_KEY);
-            JsonArray encoded = array(merge, "arms");
-            if (mergeId.isEmpty() || family.isEmpty()
-                    || encoded.size() == 0
-                    || !activeConsumerMerges.add(mergeId)) {
-                unsupported.add(origin + ":MALFORMED_OR_CYCLIC_"
-                        + SymbolicPropagationClosure.ITE_TYPE + ":"
-                        + firstNonBlank(mergeId, family));
-                return null;
-            }
-            usedConsumerFamilies.add(family);
-            consumerFamilyActivations.computeIfAbsent(family,
-                    ignored -> new LinkedHashSet<>()).add(firstNonBlank(
-                    currentReadActivationGuard, "true"));
-            try {
-                List<String> selectors = new ArrayList<>();
-                List<Term> values = new ArrayList<>();
-                Sort sort = expected;
-                List<JsonElement> orderedArms = new ArrayList<>();
-                for (JsonElement element : encoded) {
-                    orderedArms.add(element);
-                }
-                // Case selectors are stable content-addressed identities and
-                // already define the canonical arm order.  Re-rendering each
-                // arm recursively here expands the propagated DAG into a tree.
-                orderedArms.sort(Comparator.comparing(element ->
-                        element.isJsonObject()
-                                ? optionalString(element.getAsJsonObject(), "selector")
-                                : ""));
-                for (JsonElement element : orderedArms) {
-                    if (!element.isJsonObject()) {
-                        unsupported.add(origin
-                                + ":CONSUMER_MERGE_ARM_NOT_OBJECT");
-                        return null;
-                    }
-                    JsonObject arm = element.getAsJsonObject();
-                    String selector = optionalString(arm, "selector");
-                    JsonElement expression = arm.get("expression");
-                    if (selector.isEmpty() || expression == null) {
-                        unsupported.add(origin
-                                + ":CONSUMER_MERGE_ARM_INCOMPLETE");
-                        return null;
-                    }
-                    declarations.put(selector, Sort.BOOL);
-                    additionalModelNames.add(selector);
-                    String previousGuard = currentReadActivationGuard;
-                    currentReadActivationGuard = andGuard(previousGuard,
-                            selector);
-                    Term value;
-                    try {
-                        value = term(expression, sort,
-                                origin + ":consumer-arm:" + selector);
-                    } finally {
-                        currentReadActivationGuard = previousGuard;
-                    }
-                    if (value == null) return null;
-                    if (sort == null) sort = value.sort;
-                    if (value.sort != sort) {
-                        unsupported.add(origin
-                                + ":CONSUMER_MERGE_ARM_SORT_CONFLICT");
-                        return null;
-                    }
-                    selectors.add(selector);
-                    values.add(value);
-                }
-                String value = values.get(values.size() - 1).text;
-                IntegralWidth width = values.get(0).integralWidth;
-                String nullness = sort == Sort.STRING
-                        ? values.get(values.size() - 1).stringNullness : "";
-                for (Term arm : values) {
-                    if (arm.integralWidth != width) {
-                        width = IntegralWidth.NONE;
-                    }
-                    if (sort == Sort.STRING
-                            && arm.stringNullness.isEmpty()) {
-                        unsupported.add(origin
-                                + ":CONSUMER_MERGE_STRING_NULLNESS_MISSING");
-                        return null;
-                    }
-                }
-                for (int index = values.size() - 2; index >= 0; index--) {
-                    Term arm = values.get(index);
-                    boolean sameValue = arm.text.equals(value);
-                    boolean sameNullness = sort != Sort.STRING
-                            || arm.stringNullness.equals(nullness);
-                    if (sameValue && sameNullness) continue;
-                    value = "(ite " + selectors.get(index) + " "
-                            + arm.text + " " + value + ")";
-                    if (sort == Sort.STRING) {
-                        nullness = "(ite " + selectors.get(index) + " "
-                                + arm.stringNullness + " " + nullness
-                                + ")";
-                    }
-                }
-                Term merged = Term.vm(value, sort, width, nullness, "");
-                return shareConsumerMergeTerm(merged);
-            } finally {
-                activeConsumerMerges.remove(mergeId);
-            }
-        }
 
         /**
          * Shares the value term of equivalent propagated families while the
@@ -686,169 +540,8 @@ public final class ConcolicConstraintSolver {
             return definition.name;
         }
 
-        /** Defines only families reached from this flip's local expression.
-         * A partial family is an admissible under-approximation; its digest
-         * makes an UNSAT answer expire when another arm is observed. */
-        private Set<String> bindConsumerFamilyDependencies(
-                JsonArray encodedDependencies,
-                String sourceActivationOccurrenceId) {
-            Map<String, JsonObject> dependencies = new LinkedHashMap<>();
-            for (JsonElement element : encodedDependencies) {
-                if (!element.isJsonObject()) continue;
-                JsonObject dependency = element.getAsJsonObject();
-                String family = optionalString(dependency, VmExpressionIr.FAMILY_KEY);
-                if (!family.isEmpty()) dependencies.put(family, dependency);
-            }
-            Set<String> symbols = new LinkedHashSet<>();
-            while (true) {
-                List<String> pending = new ArrayList<>();
-                for (String family : usedConsumerFamilies) {
-                    if (!boundConsumerFamilies.contains(family)) {
-                        pending.add(family);
-                    }
-                }
-                Collections.sort(pending);
-                for (String family : pending) {
-                    JsonObject dependency = dependencies.get(family);
-                    if (dependency == null) {
-                        unsupported.add("CONSUMER_FAMILY_DEPENDENCY_MISSING:"
-                                + family);
-                        boundConsumerFamilies.add(family);
-                        continue;
-                    }
-                    bindConsumerFamilyDependency(dependency, symbols,
-                            sourceActivationOccurrenceId);
-                    boundConsumerFamilies.add(family);
-                }
-                // Lowering a dependency PC or writer path guard can expose a
-                // second read from a family whose case partition was already
-                // emitted.  Drain those per-read implications independently
-                // of the family work set so a nested multi-hop PC cannot leave
-                // its RF selector unconstrained.
-                List<String> readFamilies = new ArrayList<>(
-                        readFromCaseSelectors.keySet());
-                Collections.sort(readFamilies);
-                for (String family : readFamilies) {
-                    bindReadFromWriterCases(family,
-                            readFromCaseSelectors.get(family), symbols);
-                }
-                if (boundConsumerFamilies.containsAll(usedConsumerFamilies)
-                        && !hasUnboundReadFromWriterBindings()) {
-                    break;
-                }
-            }
-            // A recorded reason is evidence a human and a diff both read, so
-            // report the families in one order regardless of the order the
-            // wave's evidence was walked in.
-            List<String> readFamilies = new ArrayList<>(
-                    readFromCaseSelectors.keySet());
-            Collections.sort(readFamilies);
-            for (String family : readFamilies) {
-                Map<String, GuardedReadCaseBinding> bindings =
-                        readFromWriterCases.get(family);
-                if (bindings == null || bindings.isEmpty()) {
-                    unsupported.add("READ_FROM_WRITER_CASE_BINDING_MISSING:"
-                            + family);
-                }
-            }
-            List<String> writerFamilies = new ArrayList<>(
-                    readFromWriterCases.keySet());
-            Collections.sort(writerFamilies);
-            for (String family : writerFamilies) {
-                if (boundConsumerFamilies.contains(family)
-                        && !readFromCaseSelectors.containsKey(family)) {
-                    unsupported.add("READ_FROM_WRITER_CASE_DEPENDENCY_MISSING:"
-                            + family);
-                }
-            }
-            finishConsumerFamilySelections();
-            bindCaseObservationPartitions();
-            return symbols;
-        }
 
-        private boolean hasUnboundReadFromWriterBindings() {
-            for (Map.Entry<String, Set<String>> dependency
-                    : readFromCaseSelectors.entrySet()) {
-                for (GuardedReadCaseBinding binding
-                        : readFromWriterCases.getOrDefault(
-                        dependency.getKey(), Collections.emptyMap()).values()) {
-                    if (!boundReadFromWriterBindings.contains(
-                            readBindingIdentity(dependency.getKey(), binding))) {
-                        return true;
-                    }
-                }
-            }
-            return false;
-        }
 
-        private void bindConsumerFamilyDependency(JsonObject dependency,
-                                                  Set<String> symbols,
-                                                  String sourceActivationOccurrenceId) {
-            String family = optionalString(dependency, VmExpressionIr.FAMILY_KEY);
-            JsonArray arms = array(dependency, "arms");
-            List<String> selectors = new ArrayList<>();
-            Set<String> baseCaseSelectors = new LinkedHashSet<>();
-            for (JsonElement element : arms) {
-                if (!element.isJsonObject()) continue;
-                JsonObject arm = element.getAsJsonObject();
-                String selector = optionalString(arm, "selector");
-                String caseSelector = firstNonBlank(
-                        optionalString(arm, "caseSelector"), selector);
-                if (selector.isEmpty()) {
-                    unsupported.add("CONSUMER_FAMILY_ARM_UNNAMED:" + family);
-                    continue;
-                }
-                declarations.put(selector, Sort.BOOL);
-                additionalModelNames.add(selector);
-                selectors.add(selector);
-                declarations.put(caseSelector, Sort.BOOL);
-                additionalModelNames.add(caseSelector);
-                baseCaseSelectors.add(caseSelector);
-
-                String observationSelector = optionalString(arm,
-                        SymbolicPropagationClosure.OBSERVATION_SELECTOR);
-                if (!observationSelector.isEmpty()) {
-                    if (!selector.equals(observationSelector)) {
-                        unsupported.add("CONSUMER_FAMILY_OBSERVATION_SELECTOR_"
-                                + "MISMATCH:" + family);
-                    }
-                    noteCaseObservation(caseSelector, observationSelector,
-                            family);
-                }
-
-                bindConsumerPathCondition(family, selector,
-                        array(arm, "pathCondition"), symbols,
-                        sourceActivationOccurrenceId,
-                        optionalString(arm, "occurrenceId"), -1);
-            }
-            if (selectors.isEmpty()) {
-                unsupported.add("CONSUMER_FAMILY_HAS_NO_ARMS:" + family);
-                return;
-            }
-            Set<String> stableSelectors = new LinkedHashSet<>(selectors);
-            if (stableSelectors.size() != selectors.size()) {
-                unsupported.add("CONSUMER_FAMILY_DUPLICATE_SELECTOR:"
-                        + family);
-            }
-            Set<String> priorSelectors = consumerFamilySelectors.putIfAbsent(
-                    family, stableSelectors);
-            if (priorSelectors != null
-                    && !priorSelectors.equals(stableSelectors)) {
-                unsupported.add("CONSUMER_FAMILY_SELECTOR_SET_AMBIGUOUS:"
-                        + family);
-            }
-            for (int left = 0; left < selectors.size(); left++) {
-                for (int right = left + 1; right < selectors.size(); right++) {
-                    assertions.add("(not (and " + selectors.get(left) + " "
-                            + selectors.get(right) + "))");
-                }
-            }
-            if (SymbolicPropagationClosure.READ_FROM_DEPENDENCY_POLICY.equals(
-                    optionalString(dependency, "selectionPolicy"))) {
-                readFromCaseSelectors.put(family,
-                        new LinkedHashSet<>(baseCaseSelectors));
-            }
-        }
 
         /** Enables each case family only while one of its values is used. */
         private void finishConsumerFamilySelections() {
@@ -916,110 +609,9 @@ public final class ConcolicConstraintSolver {
                     + andTerms(conditions) + ")");
         }
 
-        private void noteCaseObservation(String caseSelector,
-                                         String observationSelector,
-                                         String family) {
-            if (caseSelector.isEmpty() || observationSelector.isEmpty()
-                    || caseSelector.equals(observationSelector)) {
-                return;
-            }
-            String prior = observationBaseCases.putIfAbsent(
-                    observationSelector, caseSelector);
-            if (prior != null && !prior.equals(caseSelector)) {
-                unsupported.add("CONSUMER_OBSERVATION_BASE_CASE_AMBIGUOUS:"
-                        + family + ":" + observationSelector);
-                return;
-            }
-            caseObservationSelectors.computeIfAbsent(caseSelector,
-                    ignored -> new LinkedHashSet<>()).add(
-                    observationSelector);
-        }
 
-        /** A selected base case chooses exactly one of its replay variants. */
-        private void bindCaseObservationPartitions() {
-            List<String> cases = new ArrayList<>(
-                    caseObservationSelectors.keySet());
-            Collections.sort(cases);
-            for (String caseSelector : cases) {
-                List<String> observations = new ArrayList<>(
-                        caseObservationSelectors.get(caseSelector));
-                Collections.sort(observations);
-                if (observations.isEmpty()) continue;
-                declarations.put(caseSelector, Sort.BOOL);
-                StringBuilder count = new StringBuilder("(+");
-                for (String observation : observations) {
-                    declarations.put(observation, Sort.BOOL);
-                    count.append(" (ite ").append(observation)
-                            .append(" 1 0)");
-                }
-                count.append(')');
-                assertions.add("(= " + count + " (ite " + caseSelector
-                        + " 1 0))");
-            }
-        }
 
-        /** Couples a VM read-from choice to the case that created its value. */
-        private void bindReadFromWriterCases(String family,
-                                             Set<String> caseSelectors,
-                                             Set<String> symbols) {
-            Map<String, GuardedReadCaseBinding> bindings =
-                    readFromWriterCases.get(family);
-            if (bindings == null || bindings.isEmpty()) return;
-            // The family work set above is drained in sorted order; drain each
-            // family's own bindings in sorted order too.  Discovery order here
-            // is the order the wave's evidence happened to be walked in, so
-            // leaving it unsorted permuted the read_selector => case_selector
-            // implications -- and the unsupported reasons below -- between two
-            // runs of the very same obligation.
-            List<String> owners = new ArrayList<>(bindings.keySet());
-            Collections.sort(owners);
-            for (String owner : owners) {
-                GuardedReadCaseBinding binding = bindings.get(owner);
-                String identity = readBindingIdentity(family, binding);
-                if (!boundReadFromWriterBindings.add(identity)) continue;
-                if (!caseSelectors.contains(binding.caseSelector)) {
-                    unsupported.add("READ_FROM_WRITER_CASE_NOT_IN_PARTITION:"
-                            + family + ":" + binding.owner);
-                    continue;
-                }
-                assertions.add("(=> " + binding.readSelector + " "
-                        + binding.caseSelector + ")");
-                if (binding.pathGuard == null) {
-                    unsupported.add("READ_FROM_WRITER_GUARD_MISSING:"
-                            + family + ":" + binding.owner);
-                    continue;
-                }
-                if (SharedStateEvidence.unguarded(binding.pathGuard)) {
-                    continue;
-                }
-                Set<String> previousFrontier = currentConstraintSymbols;
-                currentConstraintSymbols = new LinkedHashSet<>();
-                Term guard;
-                String previousReadGuard = currentReadActivationGuard;
-                currentReadActivationGuard = andGuard(previousReadGuard,
-                        binding.readSelector);
-                try {
-                    guard = term(binding.pathGuard, Sort.BOOL,
-                            "read_from_writer_guard:" + family);
-                    symbols.addAll(currentConstraintSymbols);
-                } finally {
-                    currentReadActivationGuard = previousReadGuard;
-                    currentConstraintSymbols = previousFrontier;
-                }
-                if (guard == null || guard.sort != Sort.BOOL) {
-                    unsupported.add("READ_FROM_WRITER_GUARD_MALFORMED:"
-                            + family + ":" + binding.owner);
-                    continue;
-                }
-                assertions.add("(=> " + binding.readSelector + " "
-                        + guard.text + ")");
-            }
-        }
 
-        private static String readBindingIdentity(
-                String family, GuardedReadCaseBinding binding) {
-            return family + "\n" + binding.identity();
-        }
 
         private static String andTerms(List<String> terms) {
             if (terms.isEmpty()) return "true";
@@ -1036,328 +628,22 @@ public final class ConcolicConstraintSolver {
         @Override
         Term guardedReadTerm(JsonObject read, Sort expected,
                              String origin) {
-            boolean targetMapRead = captureTargetContainerReads
-                    && guardedReadDepth == 0
-                    && SharedStateEvidence.LOCATION_KIND_MAP_STATE.equals(
-                    optionalString(object(read, "location"), "locationKind"));
-            guardedReadDepth++;
-            try {
-                Term value = lowerGuardedReadTerm(read, expected, origin);
-                if (targetMapRead && value != null) {
-                    captureTargetGuardedRead(read, value, origin);
-                }
-                return value;
-            } finally {
-                guardedReadDepth--;
-            }
+            // Every expression reaching this encoder was resolved inside its
+            // own replay, so a surviving read is a value that replay did not
+            // determine.  Choosing one here would be the solver inventing the
+            // history the flip is supposed to test.
+            unsupported.add(origin + ":UNRESOLVED_SHARED_READ:"
+                    + InSessionReadResolver.sessionLocation(
+                            object(read, "location")));
+            return null;
         }
 
-        private Term lowerGuardedReadTerm(JsonObject read, Sort expected,
-                                          String origin) {
-            JsonObject selectedViewState = ContainerSmtCodec
-                    .selectedReadViewState(read);
-            if (selectedViewState != null) {
-                read = selectedViewState;
-                expected = Sort.MAP;
-            }
-            String fault = SharedStateEvidence.guardedReadFault(read);
-            String readIdentity = optionalString(read,
-                    SymbolicPropagationClosure.READ_CHOICE_IDENTITY);
-            JsonArray candidates = array(read, "candidates");
-            Sort declared = sortOfJava(optionalString(read, "_java_type"));
-            Sort sort = expected != null && expected.containerState()
-                    ? expected : declared;
-            if (!fault.isEmpty() || readIdentity.isEmpty()
-                    || candidates.size() == 0 || sort == Sort.UNKNOWN
-                    || expected != null && expected != sort) {
-                unsupported.add(origin + ":UNADMITTED_GUARDED_READ:"
-                        + firstNonBlank(fault, readIdentity.isEmpty()
-                        ? "STABLE_READ_IDENTITY_MISSING" : "MALFORMED"));
-                return null;
-            }
 
-            String activation = firstNonBlank(
-                    currentReadActivationGuard, "true");
-            Set<String> selectorsForRead = guardedReadSelectors
-                    .computeIfAbsent(readIdentity,
-                            ignored -> new LinkedHashSet<>());
-            Map<String, Set<String>> selectorGuards =
-                    guardedSelectorActivationGuards.computeIfAbsent(
-                            readIdentity, ignored -> new LinkedHashMap<>());
-            List<String> selectors = new ArrayList<>();
-            List<Term> arms = new ArrayList<>();
-            for (JsonElement element : candidates) {
-                if (!element.isJsonObject()) {
-                    unsupported.add(origin
-                            + ":GUARDED_READ_CANDIDATE_NOT_OBJECT");
-                    return null;
-                }
-                JsonObject candidate = element.getAsJsonObject();
-                String candidateIdentity = optionalString(candidate,
-                        SymbolicPropagationClosure.READ_CANDIDATE_IDENTITY);
-                String selector = optionalString(candidate, "selector");
-                String expectedSelector = GuardedReadNaming.selector(
-                        readIdentity, candidateIdentity);
-                if (candidateIdentity.isEmpty()
-                        || !selector.equals(expectedSelector)) {
-                    unsupported.add(origin
-                            + ":GUARDED_READ_CANDIDATE_IDENTITY:" + selector);
-                    return null;
-                }
-                declarations.put(selector, Sort.BOOL);
-                additionalModelNames.add(selector);
-                selectors.add(selector);
-                selectorsForRead.add(selector);
-                selectorGuards.computeIfAbsent(selector,
-                        ignored -> new LinkedHashSet<>()).add(activation);
-                noteReadFromWriterCase(candidate, selector, origin);
 
-                Set<String> frontier = currentConstraintSymbols;
-                currentConstraintSymbols = new LinkedHashSet<>();
-                Term value;
-                String previousReadGuard = currentReadActivationGuard;
-                currentReadActivationGuard = andGuard(previousReadGuard,
-                        selector);
-                try {
-                    value = term(candidate.get("expression"), sort,
-                            origin + ":arm:" + candidateIdentity);
-                } finally {
-                    frontier.addAll(currentConstraintSymbols);
-                    currentReadActivationGuard = previousReadGuard;
-                    currentConstraintSymbols = frontier;
-                }
-                if (value == null || value.sort != sort) {
-                    unsupported.add(origin
-                            + ":GUARDED_READ_ARM_SORT:" + candidateIdentity);
-                    return null;
-                }
-                arms.add(value);
-            }
 
-            String value = arms.get(arms.size() - 1).text;
-            String nullness = sort == Sort.STRING
-                    ? arms.get(arms.size() - 1).stringNullness : "";
-            if (sort == Sort.STRING) {
-                for (Term arm : arms) {
-                    if (arm.stringNullness.isEmpty()) {
-                        unsupported.add(origin
-                                + ":GUARDED_READ_STRING_NULLNESS_MISSING");
-                        return null;
-                    }
-                }
-            }
-            for (int index = arms.size() - 2; index >= 0; index--) {
-                Term arm = arms.get(index);
-                boolean sameValue = arm.text.equals(value);
-                boolean sameNullness = sort != Sort.STRING
-                        || arm.stringNullness.equals(nullness);
-                if (sameValue && sameNullness) continue;
-                value = "(ite " + selectors.get(index) + " "
-                        + arm.text + " " + value + ")";
-                if (sort == Sort.STRING) {
-                    nullness = "(ite " + selectors.get(index) + " "
-                            + arm.stringNullness + " " + nullness + ")";
-                }
-            }
-            recordGuardedReadUse(readIdentity,
-                    GuardedReadNaming.projectionIdentity(read), activation,
-                    selectors);
-            return Term.vm(value, sort,
-                    JavaPrimitiveSmtSemantics.widthOfJavaType(
-                            optionalString(read, "_java_type")), nullness, "");
-        }
 
-        /**
-         * Retains the value already propagated to the target read. The graph
-         * has no role in rebuilding this value; it only has to be mapped back
-         * to the one exact live container which replay can update.
-         */
-        private void captureTargetGuardedRead(JsonObject read, Term value,
-                                              String origin) {
-            InitialContainerObservation.Read selected = null;
-            String selectorIdentity = "";
-            for (JsonElement element : array(read, "candidates")) {
-                if (!element.isJsonObject()) {
-                    targetContainerGaps.add(origin
-                            + ":TARGET_MAP_CANDIDATE_NOT_OBJECT");
-                    return;
-                }
-                JsonElement expression = element.getAsJsonObject()
-                        .get("expression");
-                InitialContainerObservation.Read candidate = expression != null
-                        && expression.isJsonObject()
-                        ? InitialContainerObservation.initialRead(
-                        expression.getAsJsonObject()) : null;
-                if (candidate == null
-                        || !"ASSOCIATIVE".equals(candidate.shape)) {
-                    targetContainerGaps.add(origin
-                            + ":TARGET_MAP_INITIAL_READ_MISSING");
-                    return;
-                }
-                String identity = targetSelectorIdentity(candidate);
-                if (identity.isEmpty()) {
-                    targetContainerGaps.add(origin
-                            + ":TARGET_MAP_SELECTOR_UNREPLAYABLE");
-                    return;
-                }
-                if (selected == null) {
-                    selected = candidate;
-                    selectorIdentity = identity;
-                } else if (!selected.stateSymbol.equals(
-                        candidate.stateSymbol)
-                        || !selectorIdentity.equals(identity)
-                        || !JavaPrimitiveSmtSemantics.javaTypeDescriptor(
-                        selected.javaType).equals(
-                        JavaPrimitiveSmtSemantics.javaTypeDescriptor(
-                                candidate.javaType))) {
-                    targetContainerGaps.add(origin
-                            + ":TARGET_MAP_CANDIDATES_DISAGREE");
-                    return;
-                }
-            }
-            if (selected == null) {
-                targetContainerGaps.add(origin
-                        + ":TARGET_MAP_CANDIDATES_EMPTY");
-                return;
-            }
-            recordTargetContainerRead(selected, selectorIdentity, value,
-                    origin);
-        }
 
-        private String targetSelectorIdentity(
-                InitialContainerObservation.Read read) {
-            try {
-                if (read.dynamicAssociativeSelector()) {
-                    return "ACCESS:" + targetReadAnchors.contentAnchor(
-                            read.selectorExpression);
-                }
-                if (read.selectorExpression != null) {
-                    return "KEY:" + targetReadAnchors.contentAnchor(
-                            read.selectorExpression);
-                }
-            } catch (IllegalArgumentException malformed) {
-                return "";
-            }
-            if (!read.iterationProjection.isEmpty() && read.index != null) {
-                return "ITERATION:" + read.iterationProjection + ':'
-                        + read.index;
-            }
-            return read.index == null ? "" : "INDEX:" + read.index;
-        }
 
-        private void recordTargetContainerRead(
-                InitialContainerObservation.Read read,
-                String selectorIdentity, Term value, String origin) {
-            if (!"ASSOCIATIVE".equals(read.shape)) {
-                targetContainerGaps.add(origin
-                        + ":TARGET_CONTAINER_SHAPE:" + read.shape);
-                return;
-            }
-            if (value.sort != Sort.REF && value.sort != Sort.INT
-                    && value.sort != Sort.BOOL) {
-                targetContainerGaps.add(origin
-                        + ":TARGET_CONTAINER_VALUE_SORT:" + value.sort);
-                return;
-            }
-            String identity = read.shape + '\u0000' + read.stateSymbol
-                    + '\u0000' + selectorIdentity;
-            TargetContainerRead candidate = new TargetContainerRead(
-                    identity, read, value);
-            TargetContainerRead held = targetContainerReads.putIfAbsent(
-                    identity, candidate);
-            if (held != null && !held.sameValue(candidate)) {
-                targetContainerGaps.add(origin
-                        + ":TARGET_CONTAINER_VALUE_AMBIGUOUS");
-            }
-        }
-
-        private void recordGuardedReadUse(String readIdentity,
-                                          String projectionIdentity,
-                                          String activation,
-                                          Collection<String> selectors) {
-            VmTermLowering.recordGuardedReadUse(guardedReadUses,
-                    readIdentity, projectionIdentity, activation, selectors,
-                    identity -> unsupported.add(
-                            "GUARDED_READ_USE_AMBIGUOUS:" + identity));
-        }
-
-        private void noteReadFromWriterCase(JsonObject candidate,
-                                            String readSelector,
-                                            String origin) {
-            String writerOwner = optionalString(candidate,
-                    SymbolicPropagationClosure.WRITER_CASE_OWNER);
-            String writerSelector = optionalString(candidate,
-                    SymbolicPropagationClosure.WRITER_CASE_SELECTOR);
-            JsonArray closure = array(candidate,
-                    SymbolicPropagationClosure.WRITER_CASE_CLOSURE);
-            boolean containsWriter = false;
-            Set<String> identities = new LinkedHashSet<>();
-            if (closure.size() == 0) {
-                unsupported.add(origin
-                        + ":READ_FROM_WRITER_CASE_UNRESOLVED:"
-                        + optionalString(candidate, "selector"));
-                return;
-            }
-            for (JsonElement encoded : closure) {
-                if (!encoded.isJsonObject()) {
-                    unsupported.add(origin
-                            + ":READ_FROM_WRITER_CASE_UNRESOLVED:"
-                            + optionalString(candidate, "selector"));
-                    return;
-                }
-                JsonObject localCase = encoded.getAsJsonObject();
-                String family = optionalString(localCase,
-                        SymbolicPropagationClosure.WRITER_CASE_FAMILY);
-                String owner = optionalString(localCase,
-                        SymbolicPropagationClosure.WRITER_CASE_OWNER);
-                String caseSelector = optionalString(localCase,
-                        SymbolicPropagationClosure.WRITER_CASE_SELECTOR);
-                String identity = family + "\n" + owner;
-                if (family.isEmpty() || owner.isEmpty()
-                        || !caseSelector.equals(
-                        LocalCaseIdentity.selector(owner))
-                        || !identities.add(identity)) {
-                    unsupported.add(origin
-                            + ":READ_FROM_WRITER_CASE_UNRESOLVED:"
-                            + optionalString(candidate, "selector"));
-                    return;
-                }
-                containsWriter |= owner.equals(writerOwner)
-                        && caseSelector.equals(writerSelector);
-                JsonElement pathGuard = owner.equals(writerOwner)
-                        ? candidate.get("pathGuard")
-                        : SharedStateEvidence.emptyConjunction();
-                registerReadFromWriterCase(family, owner, caseSelector,
-                        readSelector, pathGuard, origin, candidate);
-            }
-            if (!containsWriter) {
-                unsupported.add(origin
-                        + ":READ_FROM_WRITER_CASE_UNRESOLVED:"
-                        + optionalString(candidate, "selector"));
-            }
-        }
-
-        private void registerReadFromWriterCase(
-                String family, String owner, String caseSelector,
-                String readSelector, JsonElement pathGuard, String origin,
-                JsonObject candidate) {
-            usedConsumerFamilies.add(family);
-            consumerFamilyActivations.computeIfAbsent(family,
-                    ignored -> new LinkedHashSet<>()).add(readSelector);
-            GuardedReadCaseBinding binding =
-                    new GuardedReadCaseBinding(readSelector,
-                            caseSelector, owner, pathGuard);
-            Map<String, GuardedReadCaseBinding> bindings =
-                    readFromWriterCases.computeIfAbsent(family,
-                            ignored -> new LinkedHashMap<>());
-            GuardedReadCaseBinding held = bindings.putIfAbsent(
-                    binding.identity(), binding);
-            if (held != null && !held.same(binding)) {
-                unsupported.add(origin
-                        + ":READ_FROM_WRITER_CASE_AMBIGUOUS:"
-                        + optionalString(candidate, "selector"));
-            }
-        }
 
         private static String andGuard(String left, String right) {
             if (left == null || left.isEmpty() || "true".equals(left)) {
@@ -1383,24 +669,8 @@ public final class ConcolicConstraintSolver {
                 return fromContainerTerm(ContainerSmtCodec.field(
                         expression, containerHost(origin)), origin);
             }
-            Term value = fromContainerTerm(ContainerSmtCodec.term(
+            return fromContainerTerm(ContainerSmtCodec.term(
                     expression, containerHost(origin)), origin);
-            if (captureTargetContainerReads && guardedReadDepth == 0
-                    && value != null) {
-                InitialContainerObservation.Read read =
-                        InitialContainerObservation.initialRead(expression);
-                if (read != null) {
-                    String selector = targetSelectorIdentity(read);
-                    if (selector.isEmpty()) {
-                        targetContainerGaps.add(origin
-                                + ":TARGET_CONTAINER_SELECTOR_UNREPLAYABLE");
-                    } else {
-                        recordTargetContainerRead(read, selector, value,
-                                origin);
-                    }
-                }
-            }
-            return value;
         }
 
         private ContainerSmtCodec.Host containerHost(final String origin) {
@@ -1645,105 +915,7 @@ public final class ConcolicConstraintSolver {
             return names.get(raw);
         }
 
-        /** Binds read choice only while a consumer expression is active. */
-        private void finishGuardedReadSelections() {
-            List<String> reads = new ArrayList<>(
-                    guardedReadUses.keySet());
-            Collections.sort(reads);
-            for (String read : reads) {
-                List<String> selectors = new ArrayList<>(
-                        guardedReadSelectors.getOrDefault(read,
-                                Collections.emptySet()));
-                Collections.sort(selectors);
-                if (selectors.isEmpty()) {
-                    unsupported.add("GUARDED_READ_CHOICE_MISSING:" + read);
-                    continue;
-                }
-                Map<String, GuardedReadUse> uses = guardedReadUses.get(read);
-                if (uses == null || uses.isEmpty()) {
-                    unsupported.add("GUARDED_READ_USE_MISSING:" + read);
-                    continue;
-                }
-                List<String> useIds = new ArrayList<>(uses.keySet());
-                Collections.sort(useIds);
-                for (String useId : useIds) {
-                    GuardedReadUse use = uses.get(useId);
-                    assertions.add(SmtLibQueries
-                            .conditionalExactlyOne(use.activation,
-                                    use.selectors));
-                }
-                Map<String, Set<String>> selectorGuards =
-                        guardedSelectorActivationGuards.get(read);
-                for (String selector : selectors) {
-                    Set<String> guards = selectorGuards.get(selector);
-                    if (guards == null || guards.isEmpty()) {
-                        unsupported.add("GUARDED_READ_ARM_ACTIVATION_MISSING:"
-                                + read + ":" + selector);
-                        continue;
-                    }
-                    assertions.add("(=> " + selector + " "
-                            + orTerms(new ArrayList<>(guards)) + ")");
-                }
-            }
-        }
 
-        /** Binds each captured value to its content-addressed live map. */
-        private void bindTargetContainerReads(List<JsonObject> actions) {
-            Map<String, Integer> dynamicByInput = new LinkedHashMap<>();
-            for (TargetContainerRead read : targetContainerReads.values()) {
-                JsonObject match = null;
-                int matches = 0;
-                for (JsonObject action : actions) {
-                    if (!executable(action)
-                            || !"BOUNDED_CONTAINER_STATE".equals(
-                            optionalString(action, "symbolicDemand"))
-                            || !read.stateSymbol.equals(
-                            SharedStateEvidence.mapStateSymbolForAction(
-                                    action))) {
-                        continue;
-                    }
-                    matches++;
-                    match = action;
-                }
-                if (matches != 1) {
-                    targetContainerGaps.add(read.identity
-                            + ":EXACT_MAP_ACTION_NOT_UNIQUE");
-                    continue;
-                }
-                read.action = match;
-                if (read.dynamic()) {
-                    String input = optionalString(match, "symbol");
-                    int count = dynamicByInput.getOrDefault(input, 0) + 1;
-                    dynamicByInput.put(input, count);
-                }
-                String identity = read.identity + "\u0000"
-                        + read.value.sort + "\u0000" + read.value.text;
-                read.modelName = smtSymbols.mintFromDigest(
-                        "container_target__", sha256(identity), identity, 16);
-                if (read.value.sort == Sort.REF) {
-                    read.nullModelName = read.modelName + "__is_null";
-                    functionDeclarations.put(read.nullModelName,
-                            "(define-fun " + read.nullModelName
-                                    + " () Bool (= " + read.value.text
-                                    + " nullRef))");
-                    additionalModelNames.add(read.nullModelName);
-                } else {
-                    functionDeclarations.put(read.modelName,
-                            "(define-fun " + read.modelName + " () "
-                                    + read.value.sort.smt + " "
-                                    + read.value.text + ")");
-                    additionalModelNames.add(read.modelName);
-                }
-                targetContainerModels.add(read);
-            }
-            for (Map.Entry<String, Integer> entry
-                    : dynamicByInput.entrySet()) {
-                if (entry.getValue() > 1) {
-                    targetContainerGaps.add(entry.getKey()
-                            + ":MULTIPLE_TARGET_MAP_ACCESSES");
-                }
-            }
-        }
 
         private void constrainIntegralInput(String name,
                                             String javaType, Sort sort) {
@@ -2212,32 +1384,6 @@ public final class ConcolicConstraintSolver {
         }
     }
 
-    private static final class GuardedReadCaseBinding {
-        private final String readSelector;
-        private final String caseSelector;
-        private final String owner;
-        private final JsonElement pathGuard;
-
-        private GuardedReadCaseBinding(String readSelector,
-                                          String caseSelector,
-                                          String owner,
-                                          JsonElement pathGuard) {
-            this.readSelector = readSelector;
-            this.caseSelector = caseSelector;
-            this.owner = owner;
-            this.pathGuard = pathGuard;
-        }
-
-        private String identity() {
-            return readSelector + "\n" + caseSelector;
-        }
-
-        private boolean same(GuardedReadCaseBinding other) {
-            return other != null && readSelector.equals(other.readSelector)
-                    && caseSelector.equals(other.caseSelector)
-                    && owner.equals(other.owner);
-        }
-    }
 
     private static final class SharedTermDefinition {
         private final String name;
@@ -2251,64 +1397,6 @@ public final class ConcolicConstraintSolver {
         }
     }
 
-    /** One exact target-side container value already computed by propagation. */
-    private static final class TargetContainerRead {
-        private final String identity;
-        private final String stateSymbol;
-        private final Integer index;
-        private final JsonObject selector;
-        private final String iterationProjection;
-        private final boolean dynamic;
-        private final Term value;
-        private JsonObject action;
-        private String modelName = "";
-        private String nullModelName = "";
-
-        private TargetContainerRead(String identity,
-                                    InitialContainerObservation.Read read,
-                                    Term value) {
-            this.identity = identity;
-            this.stateSymbol = read.stateSymbol;
-            this.index = read.index;
-            this.selector = read.selector;
-            this.iterationProjection = read.iterationProjection;
-            this.dynamic = read.dynamicAssociativeSelector();
-            this.value = value;
-        }
-
-        private boolean dynamic() {
-            return dynamic;
-        }
-
-        private boolean sameValue(TargetContainerRead other) {
-            return other != null && value.sort == other.value.sort
-                    && value.text.equals(other.value.text);
-        }
-
-        private boolean addTarget(JsonObject target, int occurrence) {
-            target.addProperty("shape", "ASSOCIATIVE");
-            if (dynamic) {
-                if (occurrence < 1) return false;
-                target.addProperty("selectorKind", "ACCESS_ORDINAL");
-                target.addProperty("accessOrdinal", occurrence);
-                return true;
-            }
-            if (!iterationProjection.isEmpty()) {
-                if (index == null || index < 0) return false;
-                target.addProperty("selectorKind", "ITERATION_INDEX");
-                target.addProperty("index", index);
-                target.addProperty("projection", iterationProjection);
-                return true;
-            }
-            if (selector == null) return false;
-            String keyType = optionalString(selector, "_java_type");
-            String keyValue = constantPayload(optionalString(selector, "_exp"));
-            if (keyType.isEmpty() || keyValue.isEmpty()) return false;
-            target.addProperty("keyJavaType", keyType);
-            target.addProperty("keyValue", keyValue);
-            return true;
-        }
-    }
 
     /**
      * Prefer the concrete values from the observed execution while leaving
@@ -2422,63 +1510,6 @@ public final class ConcolicConstraintSolver {
         return new ModelProjection(result, unresolved);
     }
 
-    /** Projects only the final target value; its SMT term already contains
-     * the complete propagated map history and guarded case selection. */
-    private static ModelProjection targetContainerAssignments(
-            Encoder encoder, Map<String, String> values,
-            int targetOccurrence) {
-        JsonArray result = new JsonArray();
-        Set<String> unresolved = new LinkedHashSet<>();
-        for (TargetContainerRead read : encoder.targetContainerModels) {
-            String modelName = read.value.sort == Sort.REF
-                    ? read.nullModelName : read.modelName;
-            String modeled = values.get(modelName);
-            if (modeled == null || read.action == null) {
-                unresolved.add(modelName);
-                continue;
-            }
-            String valueType;
-            String value = "";
-            boolean modelIsNull = false;
-            if (read.value.sort == Sort.REF) {
-                if ("true".equals(modeled)) {
-                    valueType = "NULL";
-                    value = "null";
-                    modelIsNull = true;
-                } else if ("false".equals(modeled)) {
-                    // The branch only constrains non-nullness. Keep the live
-                    // reference rather than inventing an object identity.
-                    valueType = "UNCHANGED";
-                } else {
-                    unresolved.add(modelName);
-                    continue;
-                }
-            } else if (read.value.sort == Sort.INT
-                    || read.value.sort == Sort.BOOL) {
-                valueType = read.value.sort.replayName();
-                value = SmtModelValueCodec.normalizeScalar(modeled);
-            } else {
-                unresolved.add(modelName);
-                continue;
-            }
-            JsonObject target = new JsonObject();
-            if (!read.addTarget(target, targetOccurrence)) {
-                unresolved.add(modelName);
-                continue;
-            }
-            JsonObject assignment = new JsonObject();
-            assignment.addProperty("modelAssignmentKey", modelName);
-            assignment.addProperty("engineSymbol", modelName);
-            assignment.addProperty("inputSymbol",
-                    optionalString(read.action, "symbol"));
-            assignment.addProperty("valueType", valueType);
-            if (!value.isEmpty()) assignment.addProperty("value", value);
-            if (modelIsNull) assignment.addProperty("modelIsNull", true);
-            assignment.add("containerTarget", target);
-            result.add(assignment);
-        }
-        return new ModelProjection(result, unresolved);
-    }
 
     private static List<JsonObject> materializationActions(
             JsonObject activation) throws IOException {

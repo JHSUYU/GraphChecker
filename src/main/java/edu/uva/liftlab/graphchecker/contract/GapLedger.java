@@ -239,18 +239,14 @@ public final class GapLedger {
                 "SelectedTargetReachEventMismatch",
                 "SelectedTargetReachEventMissing",
                 "SelectedTargetSourceAttestationMalformed",
-                // The guarded-read refusals: a read whose arms, writer
-                // closure, choice or candidate identity the lowering could
-                // not state.
-                "GuardedReadArmMissing",
-                "GuardedReadArmSortConflict",
-                "GuardedReadCandidateIdentity",
-                "GuardedReadChoiceMissing",
-                "GuardedReadUseMissing",
-                "GuardedReadWriterClosure",
-                "GuardedReadWriterGuardMissing",
-                "RecursiveGuardedRead",
-                "UnadmittedGuardedRead",
+                // A value the replay did not determine, and a merge over
+                // another region's cases: both are the propagation cut
+                // arriving at a lowering, refused rather than chosen
+                // between.  The nine refusals that used to name which part
+                // of a read's arm set could not be stated are retired with
+                // the arms.
+                "UNRESOLVED_SHARED_READ",
+                "CASE_MERGE_IN_PATH",
                 "UnconstrainedContainerRead"}) {
             blocking(composer, code,
                     "a refusal the composer made: the step it refused is not in"
@@ -365,13 +361,11 @@ public final class GapLedger {
         }
 
         diagnostic(propagation, "INITIAL_CONTAINER_SNAPSHOT_TRUNCATED",
-                "ClaimPolicy already decides this one per read rather than"
-                        + " per composition: initialStateBlocker withholds"
-                        + " the claim under UNDETERMINED_INITIAL_STATE"
-                        + " exactly when the accepted witness reads out of"
-                        + " the truncated carrier's initial arm, and a"
-                        + " carrier the fatal read never touches is not on"
-                        + " the chain that witness stands on -- so promoting"
+                "a container whose initial content the recording did not"
+                        + " watch being produced: the value is still the"
+                        + " value, and a carrier the fatal read never touches"
+                        + " is not on the chain a witness stands on -- so"
+                        + " promoting"
                         + " the row itself would replace a per-witness proof"
                         + " with a coarser guess, not add one");
 
@@ -560,8 +554,11 @@ public final class GapLedger {
                         + " task was an over-approximation that produced"
                         + " nothing");
         blocking(importer, "TARGET_REACH_NO_ACTIVATION_REACHED_TARGET",
-                "no activation of this region reached the target, so the"
-                        + " region states nothing about the target");
+                "no activation of this region executed the target site, so"
+                        + " the region states nothing about the target --"
+                        + " an activation that ran the site and decided"
+                        + " against the failure has stated something, and is"
+                        + " not this");
         blocking(importer, "TARGET_REACH_NOT_OBSERVED",
                 "the replay published no observation of the target this"
                         + " task was addressed at");

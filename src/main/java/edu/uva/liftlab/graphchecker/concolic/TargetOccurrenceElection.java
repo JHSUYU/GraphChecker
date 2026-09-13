@@ -71,9 +71,6 @@ public final class TargetOccurrenceElection {
     public static final String SKIPPED_UNOBSERVED = "SKIPPED_UNOBSERVED";
     public static final String COMPOSED = "COMPOSED";
 
-    private static final List<String> SUPPORT_ORDER = Arrays.asList(
-            NOT_COMPOSED, REFUSED, INCONCLUSIVE, UNSAT_CLOSED, SAT_CANDIDATE,
-            SAT_CANDIDATE_EXPLAINED_WITNESS);
 
     private static final Gson GSON = new GsonBuilder()
             .disableHtmlEscaping().setPrettyPrinting().create();
@@ -247,28 +244,29 @@ public final class TargetOccurrenceElection {
         return REFUSED;
     }
 
-    /** Strictly better supported, on the published claim alone. */
+    /**
+     * An accepted answer displaces an unaccepted one, and nothing else does.
+     *
+     * <p>Each occurrence is its own question with its own answer, so there
+     * are only two things to say about a pair of them: one of them was
+     * accepted and the other was not, or neither was.  Ordering them by
+     * degree of support -- an explained witness over an unexplained one, an
+     * inconclusive run over a refused composition, fewer blockers over more
+     * -- decided which answer the campaign published by a measure nothing in
+     * the design defines, and could put a sibling's SAT in front of a
+     * refusal that mattered.  Equal standing leaves the order the schedule
+     * named them in.</p>
+     */
     private static boolean outranks(JsonObject candidate, JsonObject best) {
-        int left = SUPPORT_ORDER.indexOf(optionalString(candidate,
-                "support"));
-        int right = SUPPORT_ORDER.indexOf(optionalString(best, "support"));
-        if (left != right) {
-            return left > right;
-        }
-        int leftBlockers = optionalInteger(candidate, "blockerCount", 0);
-        int rightBlockers = optionalInteger(best, "blockerCount", 0);
-        if (leftBlockers != rightBlockers) {
-            return leftBlockers < rightBlockers;
-        }
-        int leftRefusals = optionalInteger(candidate, "finalStatusRefusals",
-                0);
-        int rightRefusals = optionalInteger(best, "finalStatusRefusals", 0);
-        if (leftRefusals != rightRefusals) {
-            return leftRefusals < rightRefusals;
-        }
-        // The order the schedule named them in.  Equal evidence leaves the
-        // first-named occurrence elected rather than the last one read.
-        return false;
+        return accepted(candidate) && !accepted(best);
+    }
+
+    /** Whether this occurrence's own artifacts carry an accepted claim. */
+    private static boolean accepted(JsonObject row) {
+        String support = optionalString(row, "support");
+        return SAT_CANDIDATE_EXPLAINED_WITNESS.equals(support)
+                || SAT_CANDIDATE.equals(support)
+                || UNSAT_CLOSED.equals(support);
     }
 
     private static String electionReason(List<JsonObject> rows, int elected) {

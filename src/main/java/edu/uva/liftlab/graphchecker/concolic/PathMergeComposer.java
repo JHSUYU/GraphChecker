@@ -208,12 +208,19 @@ public final class PathMergeComposer {
                 }
                 continue;
             }
+            // One selector per PATH, not per region-local case.  Two
+            // replays can traverse the same local case with different
+            // values -- that is the whole point of a flip -- and giving
+            // them one selector made the exactly-one partition count the
+            // same choice twice, which forces it false and leaves the
+            // disjunction resting on whatever is left.
             String selector = LocalCaseIdentity.selector(
                     firstNonBlank(optionalString(path,
                             LocalCaseIdentity.FIELD),
-                            "path#" + pathOrdinal));
+                            "path#" + pathOrdinal)
+                            + "\0" + optionalString(path, "replayGroupId"));
             lowering.declare(selector, VmTermLowering.Sort.BOOL);
-            lowering.beginPath();
+            lowering.beginPath(optionalString(path, "replayGroupId"));
             List<String> terms = new ArrayList<>();
             for (int index = 0; index < resolved.size(); index++) {
                 terms.add(lowering.condition(resolved.get(index),
@@ -588,12 +595,9 @@ public final class PathMergeComposer {
         // builds no such model, so each one is empty rather than absent:
         // a reader of this artifact must see "there is none", not "the
         // composer forgot to say".
-        manifest.addProperty("guardedReadModelComplete", true);
-        manifest.add("casePathConditionDependencies", new JsonArray());
-        manifest.add(ComposedManifest.BOUNDARY_DISPATCH_TOTALITY,
-                new JsonArray());
-        manifest.add(ComposedManifest.ABSENT_KEY_DEFAULTS,
-                new JsonArray());
+        JsonArray absentKeys = new JsonArray();
+        for (JsonObject row : lowering.absentKeyDefaults()) absentKeys.add(row);
+        manifest.add(ComposedManifest.ABSENT_KEY_DEFAULTS, absentKeys);
         manifest.add(ComposedManifest.WIRE_FLOW_BINDINGS,
                 new JsonArray());
         manifest.add(ComposedManifest.FAULT_CONTROL_GAPS_FIELD,

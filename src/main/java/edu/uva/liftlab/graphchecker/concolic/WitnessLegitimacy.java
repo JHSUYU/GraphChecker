@@ -220,9 +220,7 @@ public final class WitnessLegitimacy {
      *                        untouched initial content of a truncated carrier
      * @param unrealizedFlows declared wire flows whose value bound nothing
      */
-    public static List<Freedom> compositionFreedoms(
-            String degeneracy, JsonArray freeInitialArms,
-            List<String> unrealizedFlows) {
+    public static List<Freedom> compositionFreedoms(String degeneracy) {
         List<Freedom> freedoms = new ArrayList<>();
         if (degeneracy != null
                 && degeneracy.startsWith(UNENUMERATED_ROOTS_VERDICT)) {
@@ -231,30 +229,11 @@ public final class WitnessLegitimacy {
                             + " witness over it is free where the recording"
                             + " says nothing"));
         }
-        JsonArray onPath = freeInitialArms == null ? new JsonArray()
-                : freeInitialArms;
-        if (onPath.size() > 0) {
-            Set<String> carriers = new LinkedHashSet<>();
-            for (JsonElement element : onPath) {
-                if (element.isJsonObject()) {
-                    carriers.add(optionalString(element.getAsJsonObject(),
-                            SharedStateEvidence.SESSION_LOCATION_FIELD));
-                }
-            }
-            freedoms.add(new Freedom(FREE_INITIAL_ARM,
-                    String.join(",", carriers),
-                    "the witness reads the fatal value out of the initial"
-                            + " state of " + carriers.size() + " carrier(s)"
-                            + " whose initial content the composition reported"
-                            + " truncated"));
-        }
-        if (unrealizedFlows != null && !unrealizedFlows.isEmpty()) {
-            freedoms.add(new Freedom(UNBOUND_WIRE_VALUE,
-                    String.join(",", unrealizedFlows),
-                    "no consumer boundary family of " + unrealizedFlows.size()
-                            + " declared wire flow(s) reached a lowered term,"
-                            + " so the value each wire carried is unbound"));
-        }
+        // Two freedoms used to be read here and are gone with what produced
+        // them: a witness reading the fatal value out of a reconstructed
+        // INITIAL arm -- there are no arms, and the value is the write the
+        // replay made -- and a wire whose boundary family nothing lowered,
+        // where a wire value is now the producer's own expression.
         return freedoms;
     }
 

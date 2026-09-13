@@ -585,7 +585,13 @@ public final class ConcolicSummaryImporter {
                     census.duplicatesByTask.computeIfAbsent(taskId,
                             ignored -> new ArrayList<>()).add(ordinal);
                 }
-                if (optionalBool(raw, PathObservation.TARGET_REACHED, false)) {
+                // Reaching the target is the selected site having executed,
+                // which is what the reach event records.  targetReached is a
+                // different fact -- whether the activation left through the
+                // annotated throw -- and on a healthy recording it is false
+                // at every activation that nonetheless ran the site.  Reading
+                // it here refused the healthy disjunct as a missing one.
+                if (raw.has(PathObservation.TargetReachEvent.FIELD)) {
                     census.targetReachedTasks.add(taskId);
                 }
             }
@@ -627,7 +633,7 @@ public final class ConcolicSummaryImporter {
                         "TARGET_REACH_NO_ACTIVATION_REACHED_TARGET",
                         "none of the " + entry.getValue().size()
                         + " published activation(s) of this target task "
-                        + "exited through the selected target throw"));
+                        + "executed the selected target site"));
             }
         }
     }
@@ -695,7 +701,23 @@ public final class ConcolicSummaryImporter {
                     diagnostics, observation);
         }
         List<String> issues = new ArrayList<>();
+        JsonArray phaseNotes = new JsonArray();
         for (JsonElement unresolved : row.unresolvedInputs) {
+            String note = unresolved == null ? "" : unresolved.toString();
+            // A replay that reached a configured-source phase the plan did
+            // not address has still answered its roots: the mint it made
+            // carries the same phase and the same raw symbol as the
+            // recording's, and this activation's decisions are decisions
+            // about that root.  How many times a hook was reached is a fact
+            // about the path the replay took -- which is the thing a flip
+            // changes on purpose -- so it is recorded beside the summary.
+            // Refusing the activation for it threw away the only evidence
+            // tying the root to the outcome the flip produced.
+            if (note.contains("CONFIGURED_SOURCE_PHASE_EXTRA")
+                    || note.contains("CONFIGURED_SOURCE_PHASE_MISSING")) {
+                phaseNotes.add(note);
+                continue;
+            }
             issues.add("UNRESOLVED_INPUT:" + unresolved);
         }
 
@@ -810,7 +832,7 @@ public final class ConcolicSummaryImporter {
                     manualInputs.observations);
         }
         // Graph edges describe topology; receiver boundaries carry values.
-        summary.add("edgeBindings", task.edgeBindings());
+
         summary.add("pathCondition", path.expressions);
         summary.add("branchMappings", mappings);
         if (targetReach.size() > 0) {
@@ -827,6 +849,9 @@ public final class ConcolicSummaryImporter {
         }
         if (alignmentGaps.size() > 0) {
             summary.add("alignmentGaps", alignmentGaps);
+        }
+        if (phaseNotes.size() > 0) {
+            summary.add("configuredSourcePhaseGaps", phaseNotes);
         }
         if (recordedSharedState.size() > 0) {
             summary.add(SharedStateEvidence.RECORDED_FIELD,
@@ -896,6 +921,19 @@ public final class ConcolicSummaryImporter {
         }
         if (row.sourcePhaseGaps != null) {
             for (JsonElement gap : row.sourcePhaseGaps) {
+                // How many times a replay reached a root's hook is a
+                // property of the path it took, and taking a different path
+                // is what a flip is for: a replay that runs the hook twice
+                // where the recording ran it once has minted the same root
+                // at the same site, under the same phase id, and answered
+                // it.  That is recorded beside the summary.  Reaching it
+                // FEWER times is a different statement -- a root the plan
+                // expected may have gone unminted -- and still refuses.
+                if ("EXTRA".equals(optionalString(
+                        gap.isJsonObject() ? gap.getAsJsonObject()
+                                : new JsonObject(), "gapKind"))) {
+                    continue;
+                }
                 issues.add("SYMBOLIC_SOURCE_PHASE_RUNTIME_GAP:"
                         + CanonicalJson.render(gap));
             }

@@ -83,9 +83,6 @@ public final class ClaimPolicy {
     /** No root flip changed satisfiability: the witness is not fault-sensitive. */
     static final String TARGET_UNCONSTRAINED_BY_ROOTS =
             "TARGET_UNCONSTRAINED_BY_ROOTS";
-    /** The experiment declares wire flows the composition never realized. */
-    static final String DECLARED_WIRE_FLOWS_UNREALIZED =
-            "DECLARED_WIRE_FLOWS_UNREALIZED";
     /** The existential witness carries no information about the target. */
     static final String WITNESS_UNINFORMATIVE = "WITNESS_UNINFORMATIVE";
     /**
@@ -98,8 +95,6 @@ public final class ClaimPolicy {
     static final String PORT_FAMILY = "PORT_FAMILY";
     /** The field the consumer assigned it to is read in the formula. */
     static final String CONSUMER_FIELD_READ = "CONSUMER_FIELD_READ";
-    static final String UNDETERMINED_INITIAL_STATE =
-            "UNDETERMINED_INITIAL_STATE";
     /** The solver returned neither sat nor unsat on an enumerated valuation. */
     static final String SOLVER_UNDECIDED_VALUATIONS =
             "SOLVER_UNDECIDED_VALUATIONS";
@@ -138,10 +133,9 @@ public final class ClaimPolicy {
      * flip, drift inside the recorded clock window, a rotation race the
      * recorded write order states -- and is withheld only where the witness
      * was free in a way nobody wrote down. The freedoms that already carry a
-     * blocker of their own ({@link #UNDECIDED_ROOT_SPACE},
-     * {@link #UNDETERMINED_INITIAL_STATE},
-     * {@link #DECLARED_WIRE_FLOWS_UNREALIZED}) are not named twice; this one
-     * covers the freedom that lives in the witness itself.</p>
+     * blocker of their own ({@link #UNDECIDED_ROOT_SPACE}) are not named
+     * twice; this one covers the freedom that lives in the witness
+     * itself.</p>
      */
     static final String WITNESS_FREEDOM_UNEXPLAINED =
             "WITNESS_FREEDOM_UNEXPLAINED";
@@ -243,23 +237,6 @@ public final class ClaimPolicy {
      */
     static final String UNPLANTED_ROOT_MOVED = "UNPLANTED_ROOT_MOVED";
     /**
-     * A declared flow counted realized because the field its consumer assigns
-     * to is read -- but read only on a node the wire never delivered to.
-     *
-     * <p>A wire value may leave the wire on arrival and be read downstream,
-     * so a read outside the consumer's own region still carries it.  It
-     * cannot leave the node.  hdfs-17897 declares
-     * {@code namenode-data-encryption-key-id} from the NameNode to the
-     * client, and the only read of {@code DataEncryptionKey#keyId} in the
-     * composition is on the DataNode, which that hop never fed: the client's
-     * cached key is not in the formula, and the key id the target looks up is
-     * a block key the DataNode converted.  Reported rather than blocking,
-     * because the route it questions is the one a legitimate downstream read
-     * uses.</p>
-     */
-    static final String CONSUMER_FIELD_READ_OFF_RECEIVER_NODE =
-            "CONSUMER_FIELD_READ_OFF_RECEIVER_NODE";
-    /**
      * An observed occurrence of the annotated target that this composition
      * did not lower.
      *
@@ -278,11 +255,6 @@ public final class ClaimPolicy {
      */
     static final String TARGET_OCCURRENCE_NOT_COMPOSED =
             "TARGET_OCCURRENCE_NOT_COMPOSED";
-    /**
-     * Where the initial-state evidence names the arms that are both selected
-     * by the model and the untouched initial content of a truncated carrier.
-     */
-    static final String FREE_INITIAL_ARMS = "freeInitialArmsOnSelectedPath";
 
     private static final Gson GSON = new GsonBuilder()
             .disableHtmlEscaping().setPrettyPrinting().create();
@@ -567,86 +539,9 @@ public final class ClaimPolicy {
             return declared.size();
         }
 
-        /**
-         * The declared flows whose value never constrains this formula.
-         *
-         * <p>A flow is realized when at least one consumer boundary family
-         * carried on one of <em>its</em> ports reached a lowered term. That
-         * is the only reading under which the blocker means what its name
-         * says. The earlier reading -- a region id of either endpoint
-         * occurring anywhere in the manifest text, or any boundary family at
-         * all being present -- is satisfied by a mention rather than by a
-         * constraint: on hdfs-17899-bug3 it called {@code block-key-id}
-         * realized while all eight of its families were unreferenced and no
-         * term carried the wire's value.</p>
-         */
-        List<String> unrealized(List<BoundFamily> ledger,
-                                Map<String, Set<String>> readFields) {
-            List<String> missing = new ArrayList<>();
-            for (String flow : declared) {
-                if (realizedBy(flow, ledger, readFields).isEmpty()) {
-                    missing.add(flow);
-                }
-            }
-            return missing;
-        }
 
-        /**
-         * How this composition made the flow's value constrain the formula,
-         * or "" if it did not.
-         *
-         * <p>Two routes reach the same place. The wire's own boundary family
-         * may be lowered into a term, which is the direct one. Or the value
-         * may leave the wire on arrival -- the consumer assigns it to a field
-         * and everything downstream reads that field -- in which case a
-         * guarded read of that field is the term the wire's value ends up in,
-         * and asking for the port's family instead asks for a term nobody was
-         * ever going to build. The port route is reported first when both
-         * hold, because it is the stronger statement.</p>
-         */
-        String realizedBy(String flow, List<BoundFamily> ledger,
-                          Map<String, Set<String>> readFields) {
-            for (BoundFamily family : ledger) {
-                if (family.bound && namesFlow(family.portId, flow)) {
-                    return PORT_FAMILY;
-                }
-            }
-            String field = consumerFields.get(flow);
-            return field != null && !field.isEmpty()
-                    && readFields.containsKey(field)
-                    ? CONSUMER_FIELD_READ : "";
-        }
 
-        /**
-         * The nodes on which this flow's value is read off the field its
-         * consumer assigned it to.
-         *
-         * <p>The value may leave the wire on arrival and be read downstream,
-         * which is why a read outside the consumer's own region still counts.
-         * It cannot leave the node, though: another node reading the same
-         * field is reading a value some other write put there.  hdfs-17897
-         * reads {@code DataEncryptionKey#keyId} on the DataNode that mints
-         * the key as well as on the client that cached it, and the
-         * NameNode-to-client hop was called realized on the strength of the
-         * DataNode's read, which that hop never fed.</p>
-         */
-        Set<String> fieldReadNodes(String flow,
-                                   Map<String, Set<String>> readFields) {
-            String field = consumerFields.get(flow);
-            Set<String> nodes = field == null ? null : readFields.get(field);
-            return nodes == null ? Collections.<String>emptySet() : nodes;
-        }
 
-        /** The nodes this flow's boundary families delivered to. */
-        Set<String> receiverNodes(String flow, List<BoundFamily> ledger) {
-            Set<String> nodes = new LinkedHashSet<>();
-            for (BoundFamily family : ledger) {
-                if (!namesFlow(family.portId, flow)) continue;
-                Matcher matcher = SOURCE_KEY.matcher(family.receiver);
-                while (matcher.find()) nodes.add(matcher.group());
-            }
-            return nodes;
-        }
 
         private static JsonArray names(Set<String> values) {
             JsonArray array = new JsonArray();
@@ -654,10 +549,6 @@ public final class ClaimPolicy {
             return array;
         }
 
-        /** The field a flow's consumer declares, for the Composer's join. */
-        public Map<String, String> consumerFieldsByPortSuffix() {
-            return Collections.unmodifiableMap(consumerFields);
-        }
 
         /**
          * Whether one exchange port carries one declared flow. The Composer
@@ -668,125 +559,11 @@ public final class ClaimPolicy {
             return !flow.isEmpty() && portId.endsWith("." + flow);
         }
 
-        /** The per-flow realization rows the claim publishes as evidence. */
-        JsonArray report(List<BoundFamily> ledger,
-                         Map<String, Set<String>> readFields) {
-            JsonArray rows = new JsonArray();
-            for (String flow : declared) {
-                JsonObject row = new JsonObject();
-                row.addProperty("flow", flow);
-                Set<String> consumers = consumerRegions.get(flow);
-                Set<String> producers = producerRegions.get(flow);
-                int families = 0;
-                int bound = 0;
-                for (BoundFamily family : ledger) {
-                    if (!namesFlow(family.portId, flow)) continue;
-                    families++;
-                    if (family.bound) bound++;
-                }
-                String route = realizedBy(flow, ledger, readFields);
-                row.addProperty("realized", !route.isEmpty());
-                row.addProperty("realizedBy", route);
-                row.addProperty("consumerField",
-                        firstNonEmpty(consumerFields.get(flow), ""));
-                row.addProperty("mechanism", "BOUND_BOUNDARY_FAMILY");
-                row.addProperty("consumerRegionsPlanned",
-                        consumers == null ? 0 : consumers.size());
-                row.addProperty("producerRegionsPlanned",
-                        producers == null ? 0 : producers.size());
-                row.addProperty("familiesObserved", families);
-                row.addProperty("familiesBound", bound);
-                Set<String> receiverNodes = receiverNodes(flow, ledger);
-                Set<String> readNodes = fieldReadNodes(flow, readFields);
-                row.add("receiverNodes", names(receiverNodes));
-                row.add("consumerFieldReadNodes", names(readNodes));
-                row.addProperty("consumerFieldReadOffReceiverNode",
-                        CONSUMER_FIELD_READ.equals(route)
-                                && !receiverNodes.isEmpty()
-                                && !readNodes.isEmpty()
-                                && Collections.disjoint(receiverNodes,
-                                        readNodes));
-                rows.add(row);
-            }
-            return rows;
-        }
     }
 
-    /** One observed boundary family: the port it sat on, and whether the
-     * composition lowered its value into a term. */
-    static final class BoundFamily {
-        private final String portId;
-        private final boolean bound;
-        /** The occurrence the wire delivered to, as the manifest names it. */
-        private String receiver = "";
 
-        private BoundFamily(String portId, boolean bound) {
-            this.portId = portId;
-            this.bound = bound;
-        }
-    }
 
-    /**
-     * Every boundary family the composition observed on a declared exchange
-     * port, read from the Composer's own handoff ledger.
-     *
-     * <p>A manifest with no ledger contributes nothing, which is the honest
-     * reading of a composition that published no handoff evidence: it did
-     * not show that any wire's value constrains it.</p>
-     */
-    static List<BoundFamily> wireFlowLedger(JsonObject manifest) {
-        List<BoundFamily> ledger = new ArrayList<>();
-        for (JsonElement element
-                : array(manifest, ComposedManifest.WIRE_FLOW_BINDINGS)) {
-            if (!element.isJsonObject()) continue;
-            JsonObject row = element.getAsJsonObject();
-            String port = optionalString(row, "portId");
-            if (port.isEmpty()) continue;
-            BoundFamily family = new BoundFamily(port,
-                    optionalBool(row, "valueBound", false));
-            family.receiver = optionalString(row, "receiverOccurrenceId");
-            ledger.add(family);
-        }
-        return ledger;
-    }
 
-    /**
-     * Every declared field the composition actually reads.
-     *
-     * <p>The guarded-read model holds the reads the Composer lowered, so a
-     * field named in it is a field some term in the formula depends on. That
-     * is the evidence a flow needs when its value left the wire on arrival.
-     */
-    static Map<String, Set<String>> guardedReadFields(JsonObject manifest) {
-        Map<String, Set<String>> fields = new LinkedHashMap<>();
-        for (JsonElement read
-                : array(object(manifest, "guardedReadModel"), "reads")) {
-            if (!read.isJsonObject()) continue;
-            for (JsonElement element : array(read.getAsJsonObject(), "arms")) {
-                if (!element.isJsonObject()) continue;
-                JsonObject arm = element.getAsJsonObject();
-                String field = optionalString(arm, "declaredField");
-                if (field.isEmpty()) continue;
-                Set<String> regions = fields.get(field);
-                if (regions == null) {
-                    regions = new LinkedHashSet<>();
-                    fields.put(field, regions);
-                }
-                regions.addAll(armSources(arm));
-            }
-        }
-        return fields;
-    }
-
-    /** Every node a lowered read arm names, as its location spells it. */
-    private static Set<String> armSources(JsonObject arm) {
-        Set<String> sources = new LinkedHashSet<>();
-        Matcher matcher = SOURCE_KEY.matcher(
-                optionalString(arm, "locationKey") + " "
-                        + optionalString(arm, "writerCaseOwner"));
-        while (matcher.find()) sources.add(matcher.group());
-        return sources;
-    }
 
     /**
      * A node as every identity in the composition spells it:
@@ -812,19 +589,6 @@ public final class ClaimPolicy {
         return regions;
     }
 
-    /**
-     * Whether the composer's own probe found the composed body
-     * unsatisfiable before any case arm or root polarity was asserted.
-     *
-     * <p>Only the dead-case pass asks that question, and only when it was
-     * given a solver; every other reading of the ledger -- no solver, a
-     * disabled budget, a fail-closed formula -- leaves it unasked, and an
-     * unasked question is not an answer.</p>
-     */
-    static boolean composedBodyUnsatisfiable(JsonObject manifest) {
-        return DeadCaseLemmas.SKIPPED_FORMULA_UNSAT.equals(optionalString(
-                object(manifest, DeadCaseLemmas.MANIFEST_FIELD), "skipped"));
-    }
 
     /**
      * How many consumer boundary families the composition realized, from the
@@ -866,140 +630,8 @@ public final class ClaimPolicy {
         return arms;
     }
 
-    /**
-     * Carriers whose initial content the Composer reported it could not
-     * reconstruct, by the session location key its gap names.
-     */
-    static Set<String> truncatedCarriers(JsonObject manifest) {
-        Set<String> carriers = new LinkedHashSet<>();
-        for (JsonElement element
-                : array(manifest, "symbolicPropagationGaps")) {
-            if (!element.isJsonObject()) {
-                continue;
-            }
-            JsonObject gap = element.getAsJsonObject();
-            if (SymbolicPropagationClosure.INITIAL_CONTAINER_SNAPSHOT_TRUNCATED
-                    .equals(optionalString(gap, "reason"))) {
-                String subject = optionalString(gap, "subject");
-                if (!subject.isEmpty()) {
-                    carriers.add(subject);
-                }
-            }
-        }
-        return carriers;
-    }
 
-    /**
-     * Whether the witness reads the fatal value out of a state nobody
-     * reconstructed.
-     *
-     * <p>A truncated initial container snapshot makes membership over that
-     * container a free Boolean.  The Composer publishes that as a propagation
-     * gap and still emits the formula, which is right: the other arms of the
-     * same read are real, and a witness that uses one of them is unaffected.
-     * What must not pass is a witness whose fatal value comes from the
-     * <em>initial</em> arm of exactly such a carrier -- there the solver is
-     * free to answer "the container never held that key", and the target is
-     * satisfied by an admitted hole rather than by the program.  So the
-     * selected arm decides: on the path it is a blocker naming the carrier and
-     * the arm, off the path it is an information row.</p>
-     */
-    static JsonObject initialStateEvidence(JsonObject manifest,
-                                           JsonObject reach) {
-        Set<String> carriers = truncatedCarriers(manifest);
-        JsonObject selection = object(reach,
-                BooleanReachConditionExtractor.FATAL_STATE_SELECTION);
-        JsonObject evidence = new JsonObject();
-        evidence.addProperty("truncatedCarrierCount", carriers.size());
-        evidence.add("truncatedCarriers", GSON.toJsonTree(carriers));
-        evidence.addProperty("fatalArmsResolved",
-                optionalBool(selection, "resolved", false));
-        JsonArray onPath = new JsonArray();
-        JsonArray offPath = new JsonArray();
-        for (JsonElement element : array(selection, "arms")) {
-            if (!element.isJsonObject()) {
-                continue;
-            }
-            JsonObject arm = element.getAsJsonObject();
-            if (!carriers.contains(optionalString(arm,
-                    "sessionLocationKey"))) {
-                continue;
-            }
-            JsonObject row = new JsonObject();
-            row.addProperty("selector", optionalString(arm, "selector"));
-            row.addProperty("sessionLocationKey",
-                    optionalString(arm, "sessionLocationKey"));
-            row.addProperty("locationKey",
-                    optionalString(arm, "locationKey"));
-            row.addProperty("readIdentity",
-                    optionalString(arm, "readIdentity"));
-            row.addProperty("initialState",
-                    optionalBool(arm, "initialState", false));
-            if (optionalBool(arm, "selected", false)) {
-                onPath.add(row);
-            } else {
-                offPath.add(row);
-            }
-        }
-        evidence.add("onSelectedPath", onPath);
-        evidence.add("offSelectedPath", offPath);
-        // The arms that are both selected and initial: the witness reading a
-        // container nobody reconstructed. A selected writer arm of the same
-        // truncated carrier is a different thing -- it rests on a write the
-        // recording carries -- so the two are counted apart rather than
-        // together under "this read touched a truncated carrier".
-        JsonArray freeInitial = new JsonArray();
-        for (JsonElement element : onPath) {
-            if (element.isJsonObject() && optionalBool(
-                    element.getAsJsonObject(), "initialState", false)) {
-                freeInitial.add(element);
-            }
-        }
-        evidence.add(FREE_INITIAL_ARMS, freeInitial);
-        evidence.addProperty("fatalCarrierTruncated",
-                onPath.size() + offPath.size() > 0);
-        return evidence;
-    }
 
-    /**
-     * The blocker that evidence justifies, or null when it justifies none.
-     *
-     * <p>Which arm the witness picked is what decides it. A truncated snapshot
-     * makes {@code assoc_has} over that container free, and a witness that
-     * <em>takes</em> that arm satisfies the target out of an admitted hole
-     * rather than out of the program -- that is unexplained freedom and it
-     * blocks. A witness that took a reconstructed writer arm instead rests on
-     * a write the recording carries; the untaken initial arm beside it is a
-     * fact about the formula, reported as a finding. The earlier reading
-     * blocked both, which withheld every run whose fatal read happened to
-     * share a container with a truncated snapshot even when no model went near
-     * it.</p>
-     */
-    private static JsonObject initialStateBlocker(JsonObject evidence) {
-        JsonArray freeInitial = array(evidence, FREE_INITIAL_ARMS);
-        if (freeInitial.size() == 0) {
-            return null;
-        }
-        Set<String> carriers = new LinkedHashSet<>();
-        List<String> where = new ArrayList<>();
-        for (JsonElement element : freeInitial) {
-            if (!element.isJsonObject()) {
-                continue;
-            }
-            JsonObject row = element.getAsJsonObject();
-            carriers.add(optionalString(row, "sessionLocationKey"));
-            where.add(optionalString(row, "selector")
-                    + " (selected, initial state)");
-        }
-        return blocker(UNDETERMINED_INITIAL_STATE,
-                String.join(",", carriers),
-                "the witness reads the fatal value from the initial state of "
-                        + carriers.size()
-                        + " carrier(s) whose initial content the composition"
-                        + " reported truncated, so membership there is a free"
-                        + " choice rather than the program's: "
-                        + String.join("; ", where));
-    }
 
     /**
      * What the probe actually perturbed, so a reader can see which root the
@@ -1766,13 +1398,11 @@ public final class ClaimPolicy {
      */
     private static JsonObject witnessLegitimacy(
             JsonObject manifest, JsonObject reach, JsonArray valuations,
-            String degeneracy, JsonObject initialState,
+            String degeneracy,
             List<String> unrealizedFlows, WireFlowEvidence flows) {
         long window = Math.max(0L, ClockRootPhysics.skewOf(manifest));
         List<WitnessLegitimacy.Freedom> composition =
-                WitnessLegitimacy.compositionFreedoms(degeneracy,
-                        array(initialState, FREE_INITIAL_ARMS),
-                        unrealizedFlows);
+                WitnessLegitimacy.compositionFreedoms(degeneracy);
         List<Marker> markers = declaredMarkers(manifest, reach, flows);
         List<Marker> planted = new ArrayList<>();
         for (Marker marker : markers) {
@@ -2169,11 +1799,12 @@ public final class ClaimPolicy {
                 object(reach, "existentialRootProbe"),
                 "constrainsRootSpace", false);
         int boundaryFamilies = consumerBoundaryFamilies(manifest);
-        List<BoundFamily> wireFlowLedger = wireFlowLedger(manifest);
-        Map<String, Set<String>> readFields =
-                guardedReadFields(manifest);
-        List<String> unrealizedFlows = flows.unrealized(wireFlowLedger,
-                readFields);
+        // Whether a declared wire flow was "realized" used to be counted
+        // by finding a consumer boundary family the composition had drawn
+        // for it, and the value a wire carried was that family's arms.  A
+        // wire value is the producer's own expression now: it is realized by
+        // arriving, and there is no ledger of families to count it in.
+        List<String> unrealizedFlows = Collections.<String>emptyList();
 
         // Every satisfying witness is read against the mechanisms the world
         // allows before anything is withheld. The acceptance ruling is that a
@@ -2181,9 +1812,8 @@ public final class ClaimPolicy {
         // moved is a marker flip, drift inside the recorded clock window, or a
         // rotation race the recorded write order states; only freedom nobody
         // accounted for blocks.
-        JsonObject initialState = initialStateEvidence(manifest, reach);
         JsonObject legitimacy = witnessLegitimacy(manifest, reach, valuations,
-                degeneracy, initialState, unrealizedFlows, flows);
+                degeneracy, unrealizedFlows, flows);
         boolean someSatUnexplained = optionalBool(legitimacy,
                 "someSatisfyingWitnessUnexplained", false);
         String witnessFreedom = optionalString(legitimacy, "freedomCodes");
@@ -2273,26 +1903,6 @@ public final class ClaimPolicy {
         // satisfies. Which flows those are is the blocker: a count cannot be
         // acted on, and counting one realization mechanism out of two called
         // a realized flow unrealized.
-        if (!unrealizedFlows.isEmpty()) {
-            blockers.add(blocker(DECLARED_WIRE_FLOWS_UNREALIZED,
-                    String.join(",", unrealizedFlows),
-                    "no consumer boundary family of "
-                            + unrealizedFlows.size() + " of "
-                            + flows.declaredCount()
-                            + " declared WIRE_FLOW(s) reached a lowered"
-                            + " term, so the value each wire carried"
-                            + " constrains nothing in this formula: "
-                            + String.join(", ", unrealizedFlows)));
-        }
-
-        // A composition may publish a propagation gap and still be
-        // FINAL_READY with no refusal; the gap is then invisible to a caller
-        // that reads only finalStatusRefusals and the solver's own gaps. One
-        // such gap changes what a witness means, so it is read here.
-        JsonObject initialStateGap = initialStateBlocker(initialState);
-        if (initialStateGap != null) {
-            blockers.add(initialStateGap);
-        }
 
         // Nothing is compared against a value nobody observed. A declared
         // root whose recorded value no source states, and a root two sources
@@ -2394,17 +2004,6 @@ public final class ClaimPolicy {
         // reachability answer is then about the composition and not about
         // the target, so it is named here instead of being read as a
         // refutation of the program.
-        if (composedBodyUnsatisfiable(manifest)) {
-            blockers.add(blocker(COMPOSED_BODY_UNSATISFIABLE,
-                    DeadCaseLemmas.SKIPPED_FORMULA_UNSAT,
-                    "the composer's own probe found the composed formula"
-                            + " unsatisfiable before any root polarity was"
-                            + " asserted: every valuation below is that one"
-                            + " contradiction and reachability="
-                            + reachability + " says nothing about the"
-                            + " target"));
-        }
-
         // Closure is required for a closed refutation and for nothing else:
         // one connected SAT witness stays valid while sibling paths are open.
         if ("UNREACHABLE".equals(reachability) && !unsatClosureComplete) {
@@ -2444,16 +2043,11 @@ public final class ClaimPolicy {
         rootSpace.addProperty("faultSensitive",
                 faultSensitive(valuations, probeConstrains));
         rootSpace.addProperty("declaredWireFlows", flows.declaredCount());
-        rootSpace.addProperty("unrealizedWireFlows",
-                String.join(",", unrealizedFlows));
-        JsonArray wireFlowRows = flows.report(wireFlowLedger, readFields);
-        rootSpace.add("wireFlows", wireFlowRows);
         rootSpace.addProperty("consumerBoundaryFamilies", boundaryFamilies);
         rootSpace.addProperty("consumerBoundaryArms",
                 consumerBoundaryArms(manifest));
         rootSpace.addProperty("realizedRegions",
                 realizedRegions(manifest).size());
-        rootSpace.add("initialState", initialState);
         rootSpace.add("faultMarkers", faultMarkers);
         // Findings the ruling reports rather than blocks: a marker satisfiable
         // in both polarities whose other polarity is explained is one of them,
@@ -2469,16 +2063,6 @@ public final class ClaimPolicy {
                             + " witness is explained: a finding about the"
                             + " mechanism rather than about the marker"));
         }
-        JsonArray untakenInitial = array(initialState, "onSelectedPath");
-        if (array(initialState, FREE_INITIAL_ARMS).size() == 0
-                && array(initialState, "offSelectedPath").size()
-                + untakenInitial.size() > 0) {
-            reportedFindings.add(blocker(UNDETERMINED_INITIAL_STATE, "",
-                    "the fatal read shares a carrier with a truncated initial"
-                            + " snapshot, and the witness took a reconstructed"
-                            + " writer arm rather than that carrier's initial"
-                            + " content"));
-        }
         // A marker every flip of which is unsatisfiable is not the mechanism.
         // That is a statement about the experiment's own hypothesis, and it is
         // published rather than held against the run: hdfs-17899-bug1's
@@ -2489,24 +2073,6 @@ public final class ClaimPolicy {
         }
         for (JsonObject row : uncomposedTargetOccurrences(manifest)) {
             reportedFindings.add(row);
-        }
-        for (JsonElement element : wireFlowRows) {
-            JsonObject row = element.getAsJsonObject();
-            if (!optionalBool(row, "consumerFieldReadOffReceiverNode",
-                    false)) {
-                continue;
-            }
-            reportedFindings.add(blocker(
-                    CONSUMER_FIELD_READ_OFF_RECEIVER_NODE,
-                    optionalString(row, "flow"),
-                    "the flow counts as realized through a read of "
-                            + optionalString(row, "consumerField")
-                            + ", but that field is read only on "
-                            + row.getAsJsonArray("consumerFieldReadNodes")
-                            + " while the wire delivered to "
-                            + row.getAsJsonArray("receiverNodes")
-                            + ": the value the formula uses is not the value"
-                            + " this wire carried"));
         }
         rootSpace.add("reportedFindings", reportedFindings);
         // Which valuation the acceptance rests on, so a probe asserting the

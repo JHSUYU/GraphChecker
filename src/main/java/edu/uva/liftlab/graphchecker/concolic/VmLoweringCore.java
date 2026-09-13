@@ -176,9 +176,6 @@ abstract class VmLoweringCore implements VmTermLowering.Policy {
         if (SharedStateEvidence.GUARDED_READ_TYPE.equals(type)) {
             return guardedReadTerm(object, expected, origin);
         }
-        if (SymbolicPropagationClosure.ITE_TYPE.equals(type)) {
-            return caseMergeTerm(object, expected, origin);
-        }
         if (VmExpressionIr.CONSUMER_BOUNDARY_TYPE.equals(type)
                 || VmExpressionIr.CONSUMER_BOUNDARY_REFERENCE_TYPE
                 .equals(type)) {

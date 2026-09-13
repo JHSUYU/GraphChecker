@@ -296,6 +296,56 @@ public class InSessionReadResolverTest {
         return node;
     }
 
+    /**
+     * A read node that names the one version it observed.
+     *
+     * <p>The alternatives it did not take are not published any more, and
+     * nothing here needs them: the read has a value, not a choice.</p>
+     */
+    @Test
+    public void aReadNamesTheVersionItObservedAndNothingElse() {
+        JsonObject row = row(versions("INSTANCE_FIELD", 9, 56,
+                version(39, "INITIAL", constant(119981)),
+                version(44, "WRITE", symbol(ROOT))));
+        InSessionReadResolver resolver = InSessionReadResolver.of(
+                Collections.singletonList(row));
+
+        JsonElement resolved = resolver.resolve(
+                observedRead("INSTANCE_FIELD", 9, 56, 46,
+                        version(44, "WRITE", symbol(ROOT))));
+
+        assertEquals(ROOT, resolved.getAsJsonObject().get("_exp")
+                .getAsString());
+        assertFalse(InSessionReadResolver.unresolved(resolved));
+    }
+
+    /** The observed version still says when nothing watched it produced. */
+    @Test
+    public void anObservedInitialVersionIsStillMarked() {
+        JsonObject row = row(versions("INSTANCE_FIELD", 4, 32,
+                version(14, "INITIAL", constant(119980))));
+        InSessionReadResolver resolver = InSessionReadResolver.of(
+                Collections.singletonList(row));
+
+        JsonElement resolved = resolver.resolve(
+                observedRead("INSTANCE_FIELD", 4, 32, 15,
+                        version(14, "INITIAL", constant(119980))));
+
+        assertTrue(resolved.getAsJsonObject()
+                .get(InSessionReadResolver.INITIAL_TAG).getAsBoolean());
+    }
+
+    /** A read node carrying only the version it observed. */
+    private static JsonObject observedRead(String kind, long rid, long slot,
+                                           long event, JsonObject observed) {
+        JsonObject node = new JsonObject();
+        node.addProperty("_type", "ReadFromExpression");
+        node.addProperty("readEventId", event);
+        node.add("location", location(kind, rid, slot));
+        node.add(InSessionReadResolver.OBSERVED_VERSION, observed);
+        return node;
+    }
+
     private static JsonObject read(String kind, long rid, long slot,
                                    long event, JsonObject... candidates) {
         JsonObject node = new JsonObject();
