@@ -170,6 +170,64 @@ public class SymbolicRootPolicyTest {
 
         assertEquals("SYMBOLIC", mode(selected, 3));
         assertEquals("DECLARED_COMMUNICATION_CUT_PORT", demand(selected, 3));
+        assertFalse("an exempt port is not a declared root either",
+                selected.get(3).getAsJsonObject().has(
+                        InputActionCatalog.DECLARED_SYMBOLIC_ROOT));
+    }
+
+    /**
+     * A root declaration governs the region that names it and no other.
+     *
+     * <p>HDFS-17899 declares {@code DelegationKey#expiryDate} in the
+     * NameNode's key-update region, and the same field is where the
+     * DataNodes' {@code PBHelper.convert(BlockKeyProto)} stores the value the
+     * wire delivered.  Matching a declaration by field signature alone would
+     * stamp the consumer's store as a mint site and give every DataNode its
+     * own free clock.</p>
+     */
+    @Test
+    public void aRootDeclarationDoesNotReachAnotherRegionsStore()
+            throws Exception {
+        ConcolicScheduler.SymbolicInputSelection selection =
+                ConcolicScheduler.SymbolicInputSelection.read(
+                        declarations("{\"regionId\":\"" + NN
+                                + "\",\"fieldSignatures\":[\"" + KEY_ID
+                                + "\"]}"), catalog());
+
+        JsonArray declaring = selection.select(NN, proposals());
+        JsonArray consuming = selection.select(DN, proposals());
+
+        assertTrue("the declaring region mints",
+                declaring.get(1).getAsJsonObject().get(
+                        InputActionCatalog.DECLARED_SYMBOLIC_ROOT)
+                        .getAsBoolean());
+        assertEquals("another region's store of the same field does not",
+                "CONCRETE", mode(consuming, 1));
+        assertFalse(consuming.get(1).getAsJsonObject().has(
+                InputActionCatalog.DECLARED_SYMBOLIC_ROOT));
+    }
+
+    /** The plan must say which ports it exempted, or a later root count
+     *  cannot be read against it. */
+    @Test
+    public void telemetryNamesEveryExemptedCutPort() throws Exception {
+        Path path = declarations("{\"regionId\":\"" + NN + "\",\"cells\":[\""
+                + CLOCK_CELL + "\"]}");
+        ConcolicScheduler.SymbolicInputSelection selection =
+                ConcolicScheduler.SymbolicInputSelection.read(path, catalog());
+        JsonArray actions = proposals();
+        JsonObject cut = action("COMMUNICATION_SITE_PORT",
+                "<C: int getKeyId()>#u2");
+        actions.add(cut);
+
+        selection.select(DN, actions);
+
+        JsonObject telemetry = ConcolicScheduler.rootPolicyTelemetry(
+                path, selection);
+        assertEquals(1, telemetry.get("declaredCutPortCount").getAsInt());
+        assertEquals("port.<C: int getKeyId()>#u2",
+                telemetry.getAsJsonArray("declaredCutPorts").get(0)
+                        .getAsString());
     }
 
     @Test

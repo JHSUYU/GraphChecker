@@ -1942,6 +1942,11 @@ public final class ConcolicScheduler {
         JsonArray suppressed = selection.suppressedRootCandidates();
         row.addProperty("suppressedRootCandidateCount", suppressed.size());
         row.add("suppressedRootCandidates", suppressed);
+        // A cut port survives the narrowing but is never a root; saying so
+        // here is what lets a later root count be read against the plan.
+        JsonArray cutPorts = selection.declaredCutPorts();
+        row.addProperty("declaredCutPortCount", cutPorts.size());
+        row.add("declaredCutPorts", cutPorts);
         return row;
     }
 
@@ -1979,6 +1984,15 @@ public final class ConcolicScheduler {
         private final Map<String, Map<String, String>> minted;
         /** Every automatic candidate this selection refused, first-seen order. */
         private final Set<JsonObject> suppressed = new LinkedHashSet<>();
+        /**
+         * Every declared wire-flow cut port this selection exempted.
+         *
+         * <p>These ports stay SYMBOLIC while the allowlist concretizes their
+         * neighbours, so they are the rows most likely to be mistaken for
+         * roots downstream.  Naming them here makes the exemption auditable
+         * from the plan alone.</p>
+         */
+        private final Set<String> cutPorts = new LinkedHashSet<>();
 
         private SymbolicInputSelection(
                 boolean configured, Map<String, Set<String>> admitted,
@@ -2130,9 +2144,15 @@ public final class ConcolicScheduler {
                         // attaches the producer's already-propagated
                         // expression at the consumer.  Concretizing it would
                         // cut the propagation this file exists to focus,
-                        // while removing no root from the solver.
-                        retained.addProperty("symbolicDemand",
-                                "DECLARED_COMMUNICATION_CUT_PORT");
+                        // while removing no root from the solver.  The replay
+                        // reads the same demand back and refuses to mint at
+                        // the port, so the statement here is enforced rather
+                        // than merely intended.
+                        retained.addProperty(
+                                InputActionCatalog.SYMBOLIC_DEMAND,
+                                InputActionCatalog
+                                        .DECLARED_COMMUNICATION_CUT_PORT);
+                        cutPorts.add(actionPort(action));
                     } else if (carries(regionId, action)) {
                         // Named by hand as a carrier, not a root.  It stays
                         // symbolic so the VM keeps publishing this read's
@@ -2209,6 +2229,14 @@ public final class ConcolicScheduler {
         JsonArray suppressedRootCandidates() {
             JsonArray rows = new JsonArray();
             for (JsonObject row : suppressed) rows.add(row.deepCopy());
+            return rows;
+        }
+
+        /** The declared wire-flow cut ports this selection exempted, in
+         *  first-seen order; empty when no mapping file declared one. */
+        JsonArray declaredCutPorts() {
+            JsonArray rows = new JsonArray();
+            for (String port : cutPorts) rows.add(port);
             return rows;
         }
 

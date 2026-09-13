@@ -3554,6 +3554,7 @@ public final class ConcolicRegionRuntime {
                     exactFieldPath, leafFieldSignature)) {
                 return;
             }
+            if (refuseCutPortMint(active, action)) return;
             JsonElement expression;
             if (value != null && value != MissingValue.INSTANCE
                     && containerValue(value)) {
@@ -3653,6 +3654,7 @@ public final class ConcolicRegionRuntime {
                 action.symbol, exactPath, fieldSignature)) {
             return concrete;
         }
+        if (refuseCutPortMint(active, action)) return concrete;
         ModelAssignment assignment = active.assignment(action, path);
         ModelAssignment applied = null;
         Object modeled = concrete;
@@ -4037,6 +4039,7 @@ public final class ConcolicRegionRuntime {
                     action.symbol, Collections.<String>emptyList(), "")) {
                 return;
             }
+            if (refuseCutPortMint(active, action)) return;
             if (containerValue(value)) {
                 if (!trackContainerOrObserveConcrete(active, api, value,
                         action)) {
@@ -4143,6 +4146,62 @@ public final class ConcolicRegionRuntime {
                 ? VmExpressionIr.carriesSymbolicValue(expression)
                 : VmExpressionIr.carriesPropagatedValue(expression);
     }
+
+    /**
+     * Whether this action names a port {@code communication-mappings.jsonl}
+     * declared, on either side of the wire.
+     *
+     * <p>The finalizer stamps the classification on {@code sourceKind} when
+     * it mints the port; the scheduler restates it as the selection verdict
+     * {@code DECLARED_COMMUNICATION_CUT_PORT}.  Either spelling is the same
+     * fact, and a plan frozen before the verdict existed carries only the
+     * first, so both are read.</p>
+     */
+    static boolean declaredCommunicationCutPort(SymbolizeAction action) {
+        return action != null
+                && (RuntimeSelectedRegionFinalizer.COMMUNICATION_SITE_PORT
+                .equals(action.sourceKind)
+                || InputActionCatalog.DECLARED_COMMUNICATION_CUT_PORT
+                .equals(action.symbolicDemand));
+    }
+
+    /**
+     * Refuses to mint a root at a declared communication cut port.
+     *
+     * <p>The value at such a port is produced on the other side of the wire.
+     * The instrumented frame installs the producer's expression with
+     * {@link #attachCommunicationLeaf} <em>after</em> this materialization
+     * hook runs -- the handoff pass and the materialization pass both insert
+     * after the cut statement, so the later pass lands closer to it -- which
+     * means nothing symbolic has reached the local yet when the hook asks.
+     * Minting there creates a free variable that the attach then overwrites:
+     * the value the program goes on to use is the producer's, while the
+     * formula gains an existential root nothing constrains, and a reach
+     * condition with enough of those degenerates to {@code true}.</p>
+     *
+     * <p>So the port reuses the attached expression or it carries a concrete
+     * value, and never a root of its own.  A flow whose value never arrives
+     * is already named as a gap three times over -- by
+     * {@link #attachCommunicationLeaf}'s own handoff gap, by
+     * {@code SymbolicPropagationClosure.RPC_ATTACH_SENDER_EXPRESSION_MISSING}
+     * and by {@code ConcolicSmtComposer.WIRE_FLOW_VALUE_UNBOUND} -- and a
+     * mint here would hide all three behind a root that answers to nothing.
+     * </p>
+     *
+     * @return whether the caller must leave the value alone
+     */
+    private static boolean refuseCutPortMint(ActiveRegion active,
+                                             SymbolizeAction action) {
+        if (!declaredCommunicationCutPort(action)) return false;
+        diag(DECLARED_CUT_PORT_MINT_REFUSED, "port=" + safe(action.symbol)
+                + " occurrence=" + (active == null ? ""
+                : safe(active.activation.occurrenceId)));
+        return true;
+    }
+
+    /** Diagnostic name of one refused mint at a declared cut port. */
+    static final String DECLARED_CUT_PORT_MINT_REFUSED =
+            "DECLARED_CUT_PORT_MINT_REFUSED";
 
     private static boolean primitiveDescriptor(String javaType) {
         String descriptor = javaTypeDescriptor(javaType);

@@ -21,6 +21,24 @@ public final class InputActionCatalog {
      */
     public static final String DECLARED_SYMBOLIC_ROOT =
             "declaredSymbolicRoot";
+    /**
+     * The scheduler's selection verdict for one symbolic input.
+     *
+     * <p>Written by the planner and read by the replay; a row without one
+     * was never narrowed by a selection file.</p>
+     */
+    public static final String SYMBOLIC_DEMAND = "symbolicDemand";
+    /**
+     * The demand of a port {@code communication-mappings.jsonl} declared.
+     *
+     * <p>Such a port is a wire handoff, never a mint: the value it names is
+     * produced on the other side of the wire, and the consumer's copy is a
+     * carrier of the producer's expression.  Both the planner (which exempts
+     * the port from the root allowlist) and the replay (which refuses to mint
+     * at it) answer to this one name, so the policy is stated once.</p>
+     */
+    public static final String DECLARED_COMMUNICATION_CUT_PORT =
+            "DECLARED_COMMUNICATION_CUT_PORT";
 
     public enum Mode {
         SYMBOLIC, CONCRETE, DECLARATION_ONLY
