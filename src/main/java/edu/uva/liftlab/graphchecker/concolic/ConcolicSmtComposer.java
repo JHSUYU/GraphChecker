@@ -313,7 +313,7 @@ public final class ConcolicSmtComposer {
                 ClaimPolicy.WireFlowEvidence.read(arguments.mappings, "")
                         .consumerFieldsByPortSuffix(),
                 ClaimPolicy.guardedReadFields(guardedReadCarrier(
-                        guardedReads)));
+                        guardedReads)).keySet());
         emitter.finish();
         String composedSmt = emitter.render();
         // An arm the formula itself refutes is stated up front, so a solver

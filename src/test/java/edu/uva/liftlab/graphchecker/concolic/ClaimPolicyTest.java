@@ -627,6 +627,67 @@ public class ClaimPolicyTest {
     }
 
     /** A composition the Composer published as complete and candidate-ready. */
+    /**
+     * HDFS-17897: the probe reported "not admitted by any window up to
+     * 19200000ms" for a comparison the window never refused.  With the clock
+     * left unbounded the polarity is still unsat, so the window is not the
+     * cause and telling a reader to widen it sends them after the wrong
+     * thing; the refusal is named for what it is.
+     */
+    @Test
+    public void aDecisionNoWindowAdmitsIsNotReportedAsAWindowProblem() {
+        JsonObject claim = ClaimPolicy.decide(manifest(),
+                clockOnlyReach(BooleanReachConditionExtractor
+                        .CLOCK_DECISION_REFUSED_WITHOUT_WINDOW), noFlows());
+
+        String detail = blocker(claim,
+                ClaimPolicy.FAULT_POLARITY_NOT_WITNESSED)
+                .get("detail").getAsString();
+        assertTrue(detail.contains(BooleanReachConditionExtractor
+                .CLOCK_DECISION_REFUSED_WITHOUT_WINDOW));
+        assertTrue(detail.contains("no observed case taking the other"
+                + " branch"));
+        assertFalse(detail.contains("not admitted by any window"));
+    }
+
+    /** A decision the window really does refuse still names the window. */
+    @Test
+    public void aDecisionTheWindowRefusesStillNamesTheWindow() {
+        JsonObject claim = ClaimPolicy.decide(manifest(),
+                clockOnlyReach(BooleanReachConditionExtractor
+                        .CLOCK_DECISION_OUTSIDE_WINDOW), noFlows());
+
+        String detail = blocker(claim,
+                ClaimPolicy.FAULT_POLARITY_NOT_WITNESSED)
+                .get("detail").getAsString();
+        assertTrue(detail.contains(BooleanReachConditionExtractor
+                .CLOCK_DECISION_OUTSIDE_WINDOW));
+        assertTrue(detail.contains("not admitted by any window up to"));
+    }
+
+    /** A clock-only run whose one clock group the target does not need. */
+    private static JsonObject clockOnlyReach(String decisionCode) {
+        return parse("{\"schemaVersion\":4,"
+                + "\"kind\":\"BOOLEAN_REACH_CONDITION_REPORT\","
+                + "\"state\":\"CANDIDATE_READY\","
+                + "\"unsatClosureComplete\":true,"
+                + "\"gaps\":[],"
+                + "\"reachCondition\":{\"formula\":\"true\","
+                + "\"reachability\":\"REACHABLE\","
+                + "\"degeneracyCheck\":\"CONSTRAINED_ROOT_SPACE\"},"
+                + "\"mechanismNecessity\":{\"mechanisms\":[{"
+                + "\"mechanism\":\"CLOCK_SKEW\","
+                + "\"valuationOrdinal\":0,\"necessary\":false}]},"
+                + "\"clockDecisions\":{\"windowMillis\":300000,"
+                + "\"probed\":true,\"decisions\":[{"
+                + "\"atom\":\"(< expiry manual__MANUAL_dn)\","
+                + "\"sites\":[\"hdfs-17897/dn0#epoch0 removeExpiredKeys\"],"
+                + "\"decidedByWindow\":true,"
+                + "\"requiredWindowMillisAbove\":19200000,"
+                + "\"code\":\"" + decisionCode + "\"}]},"
+                + "\"valuations\":[{\"values\":[],\"status\":\"sat\"}]}");
+    }
+
     private static JsonObject manifest() {
         return parse("{\"schemaVersion\":2,"
                 + "\"kind\":\"CONCOLIC_COMPOSED_SMT\","
@@ -1539,6 +1600,66 @@ public class ClaimPolicyTest {
                 .get("realizedBy").getAsString());
     }
 
+    /**
+     * HDFS-17897: the same field is read on both sides of a wire, so a read
+     * anywhere is not necessarily this flow's value.  The
+     * NameNode-to-client hop counted as realized on the strength of a
+     * {@code DataEncryptionKey#keyId} read that only ever happened on the
+     * DataNode, which that hop never fed.  The route stands -- a downstream
+     * read is how a value that left the wire is carried -- and the node
+     * mismatch is reported.
+     */
+    @Test
+    public void aFieldReadOffTheReceiverNodeIsReported() throws IOException {
+        JsonObject manifest = flowManifest(false, true);
+        manifest.getAsJsonObject("guardedReadModel").add("reads",
+                readsOn(DEK_FIELD, "hdfs-17897/dn0#epoch0"));
+
+        JsonObject claim = ClaimPolicy.decide(manifest, reach(),
+                fieldFlows());
+
+        JsonObject flow = wireFlow(claim, "data-encryption-key-id");
+        assertTrue(flow.get("realized").getAsBoolean());
+        assertTrue(flow.get("consumerFieldReadOffReceiverNode")
+                .getAsBoolean());
+        assertNotNull(findingOrNull(claim,
+                ClaimPolicy.CONSUMER_FIELD_READ_OFF_RECEIVER_NODE,
+                "data-encryption-key-id"));
+    }
+
+    /** A downstream read on the node the wire delivered to is this value. */
+    @Test
+    public void aFieldReadOnTheReceiverNodeIsNotReported() throws IOException {
+        JsonObject manifest = flowManifest(false, true);
+        manifest.getAsJsonObject("guardedReadModel").add("reads",
+                readsOn(DEK_FIELD, "hdfs-17897/client#epoch0"));
+
+        JsonObject claim = ClaimPolicy.decide(manifest, reach(),
+                fieldFlows());
+
+        JsonObject flow = wireFlow(claim, "data-encryption-key-id");
+        assertFalse(flow.get("consumerFieldReadOffReceiverNode")
+                .getAsBoolean());
+        assertNull(findingOrNull(claim,
+                ClaimPolicy.CONSUMER_FIELD_READ_OFF_RECEIVER_NODE,
+                "data-encryption-key-id"));
+    }
+
+    private static JsonArray readsOn(String declaredField, String node) {
+        JsonObject arm = new JsonObject();
+        arm.addProperty("declaredField", declaredField);
+        arm.addProperty("locationKey", "INSTANCE_FIELD/" + node
+                + "/region/REGION.60480aef-4475-3abd-9303-ef693c04e7d0#1#a1"
+                + "@receiver:1@" + declaredField);
+        JsonArray arms = new JsonArray();
+        arms.add(arm);
+        JsonObject read = new JsonObject();
+        read.add("arms", arms);
+        JsonArray reads = new JsonArray();
+        reads.add(read);
+        return reads;
+    }
+
     /** One declared flow whose consumer names the field it assigns to. */
     private static ClaimPolicy.WireFlowEvidence fieldFlows()
             throws IOException {
@@ -1561,6 +1682,9 @@ public class ClaimPolicyTest {
         binding.addProperty("portId", "XCH.da84e470-fe7e-3068-b93f-"
                 + "caafeef64a70.req.data-encryption-key-id");
         binding.addProperty("valueBound", portBound);
+        binding.addProperty("receiverOccurrenceId",
+                "hdfs-17897/client#epoch0/region/REGION.ff9377c2-8f99-3a0c-"
+                        + "8f0b-c71ea893b3c5#1#a1");
         JsonArray bindings = new JsonArray();
         bindings.add(binding);
         manifest.add(ConcolicSmtComposer.WIRE_FLOW_BINDINGS, bindings);

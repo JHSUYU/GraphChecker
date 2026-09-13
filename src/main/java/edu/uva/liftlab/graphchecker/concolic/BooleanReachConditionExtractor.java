@@ -2114,12 +2114,28 @@ public final class BooleanReachConditionExtractor {
      */
     public static final String CLOCK_DECISION_OUTSIDE_WINDOW =
             "CLOCK_DECISION_OUTSIDE_WINDOW";
-    /** Comparison atoms probed per run; a slice rarely has more. */
+    /**
+     * A comparison on the fatal slice that involves a wall-clock root and
+     * still refuses one polarity when the clock is left unbounded: no window
+     * admits it, so the window is not what refuses it.  What refuses it is
+     * the rest of the composition -- in practice the recorded case path
+     * condition, which replays the observed outcome of the very branch the
+     * clock decides, so the region can only take a path some replay
+     * observed.  Widening the window cannot help; a flipped case for that
+     * branch is what is missing.
+     */
+    public static final String CLOCK_DECISION_REFUSED_WITHOUT_WINDOW =
+            "CLOCK_DECISION_REFUSED_WITHOUT_WINDOW";
+    /**
+     * Comparison atoms probed per run; a slice rarely has more, and never
+     * fewer than one per declared clock, so a two-node mechanism cannot have
+     * the node that decides it fall off the end of the list.
+     */
     private static final int MAX_CLOCK_DECISION_ATOMS = 8;
     /** Window doublings tried: 5 min becomes 5 h 20 min at the sixth. */
     private static final int MAX_CLOCK_WINDOW_DOUBLINGS = 6;
     /** Solver checks the probe may spend in total. */
-    private static final int MAX_CLOCK_DECISION_CHECKS = 40;
+    private static final int MAX_CLOCK_DECISION_CHECKS = 64;
 
     /** Whether the necessity ledger holds a necessary clock group. */
     private static boolean clockNecessary(JsonObject necessity) {
@@ -2189,11 +2205,12 @@ public final class BooleanReachConditionExtractor {
             return result;
         }
         List<String> atoms = clockComparisonAtoms(base, clocks.keySet(),
-                MAX_CLOCK_DECISION_ATOMS);
+                Math.max(MAX_CLOCK_DECISION_ATOMS, 2 * clocks.size()));
         result.addProperty("probed", true);
         result.addProperty("atoms", atoms.size());
         int checks = 0;
         int outside = 0;
+        int refused = 0;
         for (String atom : atoms) {
             if (checks + 2 > MAX_CLOCK_DECISION_CHECKS) {
                 result.addProperty("budgetExhausted", true);
@@ -2227,6 +2244,29 @@ public final class BooleanReachConditionExtractor {
             }
             row.addProperty("decidedByWindow", true);
             row.addProperty("blockedPolarity", blocked);
+            // Before blaming the window, ask the same polarity with no window
+            // at all.  A polarity the unbounded clock cannot take is refused
+            // by the rest of the composition -- in practice by a region case
+            // path condition replaying the branch this clock decides -- and
+            // no widening would ever admit it, so the ladder below would burn
+            // six checks to arrive at a number that means nothing.
+            String unbounded = "";
+            if (checks + 1 <= MAX_CLOCK_DECISION_CHECKS) {
+                unbounded = probeStatus(solver,
+                        dropClockWindows(base, clocks, skew), blocked);
+                checks++;
+            } else {
+                result.addProperty("budgetExhausted", true);
+            }
+            row.addProperty("unboundedClockStatus", unbounded);
+            if ("unsat".equals(unbounded)) {
+                row.addProperty("code",
+                        CLOCK_DECISION_REFUSED_WITHOUT_WINDOW);
+                row.add("pinnedBy", casePathConditionsOver(base, atom));
+                refused++;
+                rows.add(row);
+                continue;
+            }
             long admitted = -1L;
             long widest = skew;
             for (int doubling = 1; doubling <= MAX_CLOCK_WINDOW_DOUBLINGS;
@@ -2261,6 +2301,7 @@ public final class BooleanReachConditionExtractor {
         }
         result.addProperty("checks", checks);
         result.addProperty("outsideWindow", outside);
+        result.addProperty("refusedWithoutWindow", refused);
         return result;
     }
 
@@ -2271,6 +2312,54 @@ public final class BooleanReachConditionExtractor {
                 + System.lineSeparator() + "(check-sat)"
                 + System.lineSeparator());
         return solver.lastStatus();
+    }
+
+    /**
+     * The region case path conditions that carry this comparison.
+     *
+     * <p>A case's path condition replays the branch outcomes the recording
+     * observed, so a comparison inside one is pinned to the polarity some
+     * replay took.  When a clock decision is refused with the clock
+     * unbounded, these are the assertions that refuse it, and naming them
+     * says which region has no observed case taking the other branch.</p>
+     */
+    private static JsonArray casePathConditionsOver(String base, String atom) {
+        JsonArray names = new JsonArray();
+        for (String line : base.split("\n")) {
+            if (names.size() >= MAX_PINNING_CASES) break;
+            if (!line.contains(atom)) continue;
+            int at = line.indexOf(":named " + CASE_PATH_CONDITION_PREFIX);
+            if (at < 0) continue;
+            int from = at + ":named ".length();
+            int to = from;
+            while (to < line.length()
+                    && "() \t".indexOf(line.charAt(to)) < 0) {
+                to++;
+            }
+            names.add(line.substring(from, to));
+        }
+        return names;
+    }
+
+    /** How the Composer names a region case's path-condition assertion. */
+    private static final String CASE_PATH_CONDITION_PREFIX =
+            "case_selector_definition_";
+    /** Pinning assertions named per refused decision; one is usually all. */
+    private static final int MAX_PINNING_CASES = 4;
+
+    /** The base text with every clock window assertion removed. */
+    static String dropClockWindows(String base,
+                                   Map<String, JsonObject> clocks,
+                                   long skew) {
+        String text = base;
+        for (Map.Entry<String, JsonObject> clock : clocks.entrySet()) {
+            long recorded = optionalLongInteger(clock.getValue(),
+                    "recordedValue", 0L);
+            text = text.replace(
+                    ClockRootPhysics.window(clock.getKey(), recorded, skew),
+                    "true");
+        }
+        return text;
     }
 
     /** The base text with every clock window widened to the given skew. */
@@ -2299,24 +2388,63 @@ public final class BooleanReachConditionExtractor {
                                              int limit) {
         List<String> atoms = new ArrayList<>();
         Set<String> seen = new LinkedHashSet<>();
-        for (String term : clockTerms) {
-            int from = 0;
-            while (atoms.size() < limit) {
-                int at = text.indexOf(term, from);
-                if (at < 0) break;
-                from = at + term.length();
-                if (!boundedSymbolAt(text, at, term.length())) continue;
-                int open = enclosingComparison(text, at);
-                if (open < 0) continue;
-                int close = balancedEnd(text, open);
-                if (close < 0) continue;
-                String atom = text.substring(open, close + 1);
-                String key = comparisonKey(atom);
-                if (key.isEmpty() || !seen.add(key)) continue;
-                atoms.add(atom);
+        // One clock's comparisons must not spend the whole budget: a
+        // two-node mechanism needs a decision on each node, and the reads of
+        // the first node alone can easily fill the limit. Take the clocks in
+        // rounds, so every declared clock is asked about before any clock is
+        // asked about twice.
+        Map<String, Integer> cursor = new LinkedHashMap<>();
+        for (String term : clockTerms) cursor.put(term, 0);
+        boolean progress = true;
+        while (atoms.size() < limit && progress) {
+            progress = false;
+            for (String term : clockTerms) {
+                if (atoms.size() >= limit) break;
+                int from = cursor.get(term);
+                while (true) {
+                    int at = text.indexOf(term, from);
+                    if (at < 0) {
+                        from = text.length();
+                        break;
+                    }
+                    from = at + term.length();
+                    if (!boundedSymbolAt(text, at, term.length())) continue;
+                    if (clockPhysicsAssertion(text, at)) continue;
+                    int open = enclosingComparison(text, at);
+                    if (open < 0) continue;
+                    int close = balancedEnd(text, open);
+                    if (close < 0) continue;
+                    String atom = text.substring(open, close + 1);
+                    String key = comparisonKey(atom);
+                    if (key.isEmpty() || !seen.add(key)) continue;
+                    atoms.add(atom);
+                    progress = true;
+                    break;
+                }
+                cursor.put(term, from);
             }
         }
         return atoms;
+    }
+
+    /**
+     * Whether this occurrence sits in an assertion the composition emitted
+     * about the clock itself rather than about the program.
+     *
+     * <p>A clock's Java domain bound, its recorded window and its
+     * monotonic order are comparisons over the clock term, and asking the
+     * solver for both polarities of one of them asks whether a long can
+     * leave its range: the answer is always "no", which then reads as a
+     * decision the composition refuses.  The decisions worth naming are the
+     * program's own.</p>
+     */
+    private static boolean clockPhysicsAssertion(String text, int at) {
+        int start = text.lastIndexOf('\n', at) + 1;
+        int end = text.indexOf('\n', at);
+        String line = text.substring(start, end < 0 ? text.length() : end);
+        return line.contains(":named java_integral_domain_")
+                || line.contains(":named clock_window__")
+                || line.contains(":named clock_monotonic__");
     }
 
     private static boolean containsSymbol(String text, String symbol) {
