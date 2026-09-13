@@ -28,48 +28,41 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
  * <p>The runtime plan admits every occurrence in the target's dynamic
  * ancestry, and each one costs a symbolic activation inside the replayed
  * workload.  An occurrence earns its replay only when it can carry a root's
- * influence <em>to the read that fails</em>, which is two questions, not
- * one:</p>
+ * influence <em>to the read that fails</em>, which is one question asked in
+ * two directions.</p>
  *
- * <ol>
- *   <li><b>Bidirectional slice.</b>  A location matters only where the
- *   forward closure of the root cells meets the backward closure of the
- *   fatal read, taken over the refined dataflow graph and, between
- *   occurrences, over the plan's shared-location, protocol and
- *   request-control edges.  A writer outside that intersection is a
- *   recorded constant for this failure however root-dependent its value is:
- *   either no root can move it, or nothing the failing branch reads ever
- *   consults it.  Root dependence is therefore seeded at {@link #ROOT_SITE}
- *   alone; writing a cared location is a keep <em>reason</em>
- *   ({@link #CARRIER_WRITER}) and never a fresh source of root influence,
- *   because a write whose value the recording fixed replays that value on
- *   every arm.</li>
- *   <li><b>Sibling fold.</b>  A loop over the elements of a structure plans
- *   one occurrence of the same region per element, under the same source
- *   and the same request, and every one of them carries whatever the loop
- *   carries.  Siblings whose value is root-independent, or that no path
- *   reaches the fatal read from, are already constants and fall out above.
- *   Of the rest, arms differ only by which root sites produced the value,
- *   so a cohort of {@value #MIN_FANOUT_COHORT} or more such siblings
- *   replays one occurrence per distinct root provenance and publishes the
- *   others as {@link #FOLDED_SIBLING} naming the representative that stands
- *   for them.  A {@link #WIRE_CONSUMER} is never a cohort member: the
- *   deliveries of one port hand their receivers different elements of what
- *   the producer sent, all with the producer's own provenance, so
- *   provenance cannot tell them apart and which element the fatal read
- *   compares is a fact of the failing execution rather than of the plan.
- *   Folding them left one attach point per node and the rest of the wire's
- *   values bound to nothing.</li>
- * </ol>
+ * <p><b>Bidirectional slice.</b>  A location matters only where the forward
+ * closure of the root cells meets the backward closure of the fatal read,
+ * taken over the refined dataflow graph and, between occurrences, over the
+ * plan's shared-location, protocol and request-control edges.  A writer
+ * outside that intersection is a recorded constant for this failure however
+ * root-dependent its value is: either no root can move it, or nothing the
+ * failing branch reads ever consults it.  Root dependence is therefore
+ * seeded at {@link #ROOT_SITE} alone; writing a cared location is a keep
+ * <em>reason</em> ({@link #CARRIER_WRITER}) and never a fresh source of
+ * root influence, because a write whose value the recording fixed replays
+ * that value on every arm.</p>
  *
- * <p>Soundness is bounded by five rules the narrowing may never break: a
+ * <p>Repetition alone never narrows anything.  Two occurrences of one
+ * region under one source and one request used to be read as a loop
+ * stepping over the elements of a structure, whose arms differ only by
+ * which root sites produced the value, and a cohort of three or more
+ * replayed one occurrence per distinct root provenance.  But an occurrence
+ * reaches this point only by being root-dependent, and root-dependent
+ * siblings routinely write <em>different</em> derived values -- one key of
+ * a rotation and its successor share a provenance exactly -- so provenance
+ * could not tell the arms apart and the fold dropped evidence the failure
+ * needed.  On hdfs-17899-bug3 it collapsed the nine per-key
+ * {@code PBHelper.convert(BlockKeyProto)} deliveries to one per DataNode
+ * and left every other block-key consumer family bound to nothing.  Every
+ * occurrence the slice keeps is now replayed.</p>
+ *
+ * <p>Soundness is bounded by three rules the narrowing may never break: a
  * {@link #TARGET_REACH} occurrence, a {@link #ROOT_SITE} and an occurrence
  * whose write the fatal read itself consumes ({@link #FATAL_READ_WRITER})
- * are kept whatever else says, a root-dependent {@link #WIRE_CONSUMER} is
- * never folded away, a cohort never folds to nothing, and a withheld
- * carrier slice prunes nothing at all -- a root the graph does not name
- * cannot state what it reaches, and neither can a fatal read the graph has
- * no cell for.</p>
+ * are kept whatever else says, and a withheld carrier slice prunes nothing
+ * at all -- a root the graph does not name cannot state what it reaches,
+ * and neither can a fatal read the graph has no cell for.</p>
  *
  * <p>The kept count is published against an optional expected-shape hint
  * the experiment states ({@code replay_task_budget} in workflow.properties,
@@ -92,8 +85,6 @@ final class ReplayTaskSlice {
     static final String KEPT = "REPLAY_TASK_KEPT";
     /** Decision reason when the slice narrowed nothing. */
     static final String WITHHELD = "REPLAY_TASK_SLICE_WITHHELD";
-    /** Decision reason of a per-element sibling a representative stands for. */
-    static final String FOLDED_SIBLING = "REPLAY_TASK_FOLDED_SIBLING";
     /** Telemetry member: the kept count passed the expected-shape hint. */
     static final String BUDGET_EXCEEDED = "REPLAY_TASK_BUDGET_EXCEEDED";
     static final String TARGET_REACH = "TARGET_REACH";
@@ -102,19 +93,6 @@ final class ReplayTaskSlice {
     static final String ROOT_DEPENDENT_FLOW = "ROOT_DEPENDENT_FLOW";
     /** Keep reason of an occurrence the failing read consumes directly. */
     static final String FATAL_READ_WRITER = "FATAL_READ_WRITER";
-    /** Keep reason of a wire delivery's receiving occurrence. */
-    static final String WIRE_CONSUMER = "WIRE_CONSUMER";
-
-    /**
-     * How many repetitions of one case shape make a structure walk.
-     *
-     * <p>Two occurrences of one region under one source and one request are
-     * a before and an after -- a retry, a second phase -- and both are arms
-     * of their own.  Three or more are a loop stepping over the elements of
-     * one structure, where the arms differ only in which element they
-     * carry.  This is a property of plan shape, not of any workload.</p>
-     */
-    static final int MIN_FANOUT_COHORT = 3;
 
     private final boolean applied;
     private final String sliceReason;
@@ -122,20 +100,16 @@ final class ReplayTaskSlice {
     private final Map<String, RegionInstancePlan> plans;
     /** Planned occurrence -> why it is kept; empty means pruned. */
     private final Map<String, Set<String>> reasons;
-    /** Folded per-element sibling -> the representative kept for it. */
-    private final Map<String, String> folded;
     /** The expected kept count, or a non-positive number when unstated. */
     private final int budget;
 
     private ReplayTaskSlice(boolean applied, String sliceReason,
                             Map<String, RegionInstancePlan> plans,
-                            Map<String, Set<String>> reasons,
-                            Map<String, String> folded, int budget) {
+                            Map<String, Set<String>> reasons, int budget) {
         this.applied = applied;
         this.sliceReason = sliceReason;
         this.plans = plans;
         this.reasons = reasons;
-        this.folded = folded;
         this.budget = budget;
     }
 
@@ -201,7 +175,7 @@ final class ReplayTaskSlice {
         if (!slice.usable()) {
             return new ReplayTaskSlice(false,
                     "NO_ROOT_CELL_IN_REFINED_GRAPH", plans, reasons,
-                    Collections.<String, String>emptyMap(), budget);
+                    budget);
         }
         Set<String> targets = new LinkedHashSet<>();
         for (Map.Entry<String, Set<String>> entry : reasons.entrySet()) {
@@ -211,7 +185,6 @@ final class ReplayTaskSlice {
         }
         Map<String, Set<String>> forward = new LinkedHashMap<>();
         Set<String> writers = new LinkedHashSet<>();
-        Set<String> wireConsumers = new LinkedHashSet<>();
         for (JsonObject edge : edges.values()) {
             String from = planned(optionalString(edge, "fromOccurrenceId"));
             String to = planned(optionalString(edge, "toOccurrenceId"));
@@ -233,13 +206,6 @@ final class ReplayTaskSlice {
             if (targets.contains(to) && !targets.contains(from)) {
                 reasons.get(from).add(FATAL_READ_WRITER);
             }
-            // Each delivery of a wire hands its receiver one element of what
-            // the producer sent, and the receivers of one port are not
-            // interchangeable: which element the fatal read compares is a
-            // fact of the failing execution, not of the plan.
-            if (AutomaticRegionEdge.tracedExchangeCandidate(edge)) {
-                wireConsumers.add(to);
-            }
             // A wire delivery or request-fault control carries whatever its
             // producer carries, so it is walked from a root-dependent
             // producer and never from anything else.
@@ -257,21 +223,11 @@ final class ReplayTaskSlice {
                 pending.addLast(entry.getKey());
             }
         }
-        Map<String, Set<String>> provenance = new LinkedHashMap<>();
         while (!pending.isEmpty()) {
-            String current = pending.removeFirst();
-            Set<String> carried = reasons.get(current).contains(ROOT_SITE)
-                    ? Collections.singleton(current)
-                    : provenance.getOrDefault(current,
-                            Collections.<String>emptySet());
-            for (String next : forward.getOrDefault(current,
+            for (String next : forward.getOrDefault(pending.removeFirst(),
                     Collections.<String>emptySet())) {
-                boolean grew = provenance.computeIfAbsent(next,
-                        ignored -> new LinkedHashSet<>()).addAll(carried);
                 if (rootDependent.add(next)) {
                     reasons.get(next).add(ROOT_DEPENDENT_FLOW);
-                    pending.addLast(next);
-                } else if (grew && !reasons.get(next).contains(ROOT_SITE)) {
                     pending.addLast(next);
                 }
             }
@@ -279,11 +235,6 @@ final class ReplayTaskSlice {
         for (String writer : writers) {
             if (rootDependent.contains(writer)) {
                 reasons.get(writer).add(CARRIER_WRITER);
-            }
-        }
-        for (String consumer : wireConsumers) {
-            if (rootDependent.contains(consumer)) {
-                reasons.get(consumer).add(WIRE_CONSUMER);
             }
         }
         // The other half of the bidirectional rule, at occurrence grain: a
@@ -302,10 +253,8 @@ final class ReplayTaskSlice {
             }
             why.clear();
         }
-        Map<String, String> folded = foldFanOut(regionPlans, reasons,
-                provenance, wireConsumers);
         return new ReplayTaskSlice(true, "ROOT_DEPENDENT_CARRIERS", plans,
-                reasons, folded, budget);
+                reasons, budget);
     }
 
     /**
@@ -336,63 +285,6 @@ final class ReplayTaskSlice {
         return reaching;
     }
 
-    /**
-     * Folds each per-element cohort to one occurrence per root provenance.
-     *
-     * <p>A cohort is one region repeating under one source and one request:
-     * the plan's own statement that these occurrences are one case shape
-     * walked once per element.  Occurrences kept for a reason of their own
-     * -- a target, a root site, a write the fatal read consumes -- are never
-     * cohort members, so a fold can only ever remove an occurrence whose
-     * reason is that a root flowed into it and it can still reach the fatal
-     * read.  Among those the arms differ only by which root sites produced
-     * the value, so one representative per distinct provenance is replayed
-     * and its siblings record what it stands for.</p>
-     */
-    private static Map<String, String> foldFanOut(
-            List<RegionInstancePlan> regionPlans,
-            Map<String, Set<String>> reasons,
-            Map<String, Set<String>> provenance,
-            Set<String> wireConsumers) {
-        Map<String, List<String>> cohorts = new LinkedHashMap<>();
-        for (RegionInstancePlan plan : regionPlans) {
-            String occurrence = planned(plan.occurrenceId());
-            Set<String> why = reasons.get(occurrence);
-            // Writing a cared location is what every element of the fan-out
-            // does, so CARRIER_WRITER does not exempt an occurrence; the
-            // three reasons that do are the ones soundness names.
-            if (why == null || !why.contains(ROOT_DEPENDENT_FLOW)
-                    || why.contains(TARGET_REACH)
-                    || why.contains(ROOT_SITE)
-                    || why.contains(FATAL_READ_WRITER)
-                    || wireConsumers.contains(occurrence)) {
-                continue;
-            }
-            String cohort = plan.regionId() + "\n" + plan.sourceKey() + "\n"
-                    + optionalString(plan.json(), "requestKey");
-            cohorts.computeIfAbsent(cohort, ignored -> new ArrayList<>())
-                    .add(occurrence);
-        }
-        Map<String, String> folded = new LinkedHashMap<>();
-        for (List<String> members : cohorts.values()) {
-            if (members.size() < MIN_FANOUT_COHORT) continue;
-            Map<String, String> representative = new LinkedHashMap<>();
-            for (String member : members) {
-                String arm = CanonicalJson.render(sorted(
-                        provenance.getOrDefault(member,
-                                Collections.<String>emptySet())));
-                String kept = representative.putIfAbsent(arm, member);
-                // The first occurrence of an arm is the arm; the rest of the
-                // cohort replays nothing new, so it records the one that does.
-                if (kept != null) {
-                    folded.put(member, kept);
-                    reasons.get(member).clear();
-                }
-            }
-        }
-        return folded;
-    }
-
     /** The cells the failing branch of one target goal decides on. */
     private static Set<String> fatalReadCells(Goal goal) {
         Set<String> cells = new LinkedHashSet<>();
@@ -412,14 +304,6 @@ final class ReplayTaskSlice {
             }
         }
         return cells;
-    }
-
-    private static JsonArray sorted(Collection<String> values) {
-        List<String> ordered = new ArrayList<>(values);
-        Collections.sort(ordered);
-        JsonArray rows = new JsonArray();
-        for (String value : ordered) rows.add(value);
-        return rows;
     }
 
     /** False when narrowing was withheld; then every occurrence is kept. */
@@ -442,12 +326,6 @@ final class ReplayTaskSlice {
                 : Collections.unmodifiableSet(why);
     }
 
-    /** The representative a folded sibling replays through, or empty. */
-    String representative(String occurrenceId) {
-        String kept = folded.get(planned(occurrenceId));
-        return kept == null ? "" : kept;
-    }
-
     /**
      * The artifact rows: a telemetry summary, then one decision per
      * selected occurrence so "why did this task not replay" is answerable
@@ -460,7 +338,6 @@ final class ReplayTaskSlice {
         for (String occurrence : selectedOccurrences) {
             boolean keep = keeps(occurrence);
             if (keep) kept++;
-            String stands = representative(occurrence);
             JsonObject row = new JsonObject();
             row.addProperty("schemaVersion", 2);
             row.addProperty("kind", DECISION);
@@ -472,11 +349,7 @@ final class ReplayTaskSlice {
                     : optionalString(plan.json(), "targetMethod"));
             row.addProperty("decision", keep ? "KEEP" : "PRUNE");
             row.addProperty("reason", !applied ? WITHHELD
-                    : keep ? KEPT
-                    : !stands.isEmpty() ? FOLDED_SIBLING : PRUNED);
-            if (!stands.isEmpty()) {
-                row.addProperty("foldedInto", stands);
-            }
+                    : keep ? KEPT : PRUNED);
             JsonArray why = new JsonArray();
             for (String reason : reasons(occurrence)) {
                 why.add(reason);
@@ -514,12 +387,6 @@ final class ReplayTaskSlice {
         row.addProperty("selectedOccurrenceCount", selected);
         row.addProperty("keptOccurrenceCount", kept);
         row.addProperty("prunedOccurrenceCount", selected - kept);
-        int foldedCount = 0;
-        for (String sibling : folded.keySet()) {
-            if (plans.containsKey(sibling)) foldedCount++;
-        }
-        row.addProperty("foldedSiblingCount", foldedCount);
-        row.addProperty("fanOutCohortMinimum", MIN_FANOUT_COHORT);
         JsonObject byReason = new JsonObject();
         for (Map.Entry<String, Integer> entry : keptByReason.entrySet()) {
             byReason.addProperty(entry.getKey(), entry.getValue());

@@ -76,10 +76,8 @@ public class ReplayTaskSliceTest {
         assertEquals("the failing read consumes this write directly",
                 reasons(ReplayTaskSlice.FATAL_READ_WRITER),
                 slice.reasons(WRITER));
-        assertEquals("a wire whose producer is a root site carries it,"
-                        + " and its receiver is never interchangeable",
-                reasons(ReplayTaskSlice.ROOT_DEPENDENT_FLOW,
-                        ReplayTaskSlice.WIRE_CONSUMER),
+        assertEquals("a wire whose producer is a root site carries it",
+                reasons(ReplayTaskSlice.ROOT_DEPENDENT_FLOW),
                 slice.reasons(WIRE_CONSUMER));
         assertEquals("the hook published the root inside this activation",
                 reasons(ReplayTaskSlice.ROOT_SITE), slice.reasons(HOOK_PHASE));
@@ -161,72 +159,25 @@ public class ReplayTaskSliceTest {
     }
 
     /**
-     * A key rotation delivers one occurrence per element and every one of
-     * them carries the root.  The cohort replays one arm per rotation that
-     * produced an element, and the rest record which one stands for them.
-     */
-    @Test
-    public void aPerElementCohortFoldsToOneArmPerRootProvenance()
-            throws Exception {
-        String secondRoot = occurrence("REGION.root2");
-        List<RegionInstancePlan> plans = new ArrayList<>();
-        plans.add(plan(TARGET, "TARGET_REACH_CLOSURE", actions(), edges()));
-        JsonArray fromFirst = new JsonArray();
-        JsonArray fromSecond = new JsonArray();
-        for (int index = 1; index <= 4; index++) {
-            fromFirst.add(sharedFlow(ROOT_SITE, element(index), CARRIER,
-                    CARRIER_KEY));
-        }
-        fromSecond.add(sharedFlow(secondRoot, element(5), CARRIER,
-                CARRIER_KEY));
-        plans.add(plan(ROOT_SITE, "REGION_PATH_CLOSURE",
-                actions(fieldRead(ROOT)), fromFirst));
-        plans.add(plan(secondRoot, "REGION_PATH_CLOSURE",
-                actions(faultMarker()), fromSecond));
-        for (int index = 1; index <= 5; index++) {
-            plans.add(plan(element(index), "REGION_PATH_CLOSURE", actions(),
-                    edges(sharedFlow(element(index), COLLECTOR, CARRIER,
-                            CARRIER_KEY))));
-        }
-        plans.add(plan(COLLECTOR, "REGION_PATH_CLOSURE", actions(),
-                edges(wire(COLLECTOR, TARGET))));
-
-        ReplayTaskSlice slice = decide(plans, seeded());
-
-        assertTrue("the first element of an arm is the arm",
-                slice.keeps(element(1)));
-        assertFalse(slice.keeps(element(2)));
-        assertFalse(slice.keeps(element(3)));
-        assertFalse(slice.keeps(element(4)));
-        assertTrue("a different rotation is a different arm",
-                slice.keeps(element(5)));
-        assertEquals(element(1), slice.representative(element(3)));
-        assertEquals("a kept occurrence stands for nobody", "",
-                slice.representative(element(1)));
-        List<JsonObject> rows = slice.rows(
-                Arrays.asList(element(1), element(3)));
-        assertEquals(ReplayTaskSlice.FOLDED_SIBLING,
-                rows.get(2).get("reason").getAsString());
-        assertEquals(element(1), rows.get(2).get("foldedInto").getAsString());
-        assertEquals(3, rows.get(0).get("foldedSiblingCount").getAsInt());
-    }
-
-    /**
-     * The deliveries of one wire are not interchangeable.
+     * Repetition is not interchangeability: every sibling replays.
      *
-     * <p>A key rotation sends one structure and its receiver converts one
-     * element per delivery, so the receivers of one port share the
-     * producer's provenance exactly -- and the fold, which tells arms apart
-     * by provenance, sees one arm where there are five.  Which element the
-     * fatal read compares is a fact of the failing execution, so folding
-     * them left one attach point per node and bound the rest of the wire's
-     * values to nothing: on hdfs-17899-bug3 the nine per-key converts of
-     * {@code PBHelper.convert(BlockKeyProto)} collapsed to one per
-     * DataNode, and every block-key-id consumer family but that one stayed
-     * unreferenced.</p>
+     * <p>A key rotation plans one occurrence of the converting region per
+     * element and every one of them carries the same producer's root
+     * provenance, so a fold that told arms apart by provenance saw one arm
+     * where there were five.  They are not one arm: an occurrence reaches
+     * this point only by being root-dependent, and root-dependent siblings
+     * write different derived values -- one key of the rotation and its
+     * successor -- so dropping four of the five dropped four of the
+     * failure's own attach points.  On hdfs-17899-bug3 that left one
+     * per-key convert per DataNode and every other block-key consumer
+     * family bound to nothing.</p>
+     *
+     * <p>The slice narrows by root dependence and by the fatal read's
+     * backward slice, and by nothing else; what survives both is replayed,
+     * however many siblings share its shape.</p>
      */
     @Test
-    public void theDeliveriesOfOneWireAreNeverFolded() throws Exception {
+    public void everySiblingOfOneProvenanceIsReplayed() throws Exception {
         List<RegionInstancePlan> plans = new ArrayList<>();
         JsonArray deliveries = new JsonArray();
         for (int index = 1; index <= 5; index++) {
@@ -245,93 +196,22 @@ public class ReplayTaskSliceTest {
 
         ReplayTaskSlice slice = decide(plans, seeded());
 
+        List<String> cohort = new ArrayList<>();
         for (int index = 1; index <= 5; index++) {
-            assertTrue("delivery " + index + " carries its own element",
+            cohort.add(element(index));
+            assertTrue("sibling " + index + " carries its own element",
                     slice.keeps(element(index)));
-            assertTrue(slice.reasons(element(index))
-                    .contains(ReplayTaskSlice.WIRE_CONSUMER));
-            assertEquals("nothing stands for a delivery", "",
-                    slice.representative(element(index)));
+            assertEquals(reasons(ReplayTaskSlice.ROOT_DEPENDENT_FLOW,
+                            ReplayTaskSlice.CARRIER_WRITER),
+                    slice.reasons(element(index)));
         }
-        assertEquals(0, slice.telemetry(Arrays.asList(element(1), element(2),
-                element(3), element(4), element(5)))
-                .get("foldedSiblingCount").getAsInt());
-    }
-
-    /** Two repetitions are a before and an after, and both are real arms. */
-    @Test
-    public void acohortShorterThanTheFanOutMinimumIsNotAFanOut()
-            throws Exception {
-        List<RegionInstancePlan> plans = new ArrayList<>();
-        plans.add(plan(TARGET, "TARGET_REACH_CLOSURE", actions(), edges()));
-        JsonArray wires = new JsonArray();
-        for (int index = 1; index < ReplayTaskSlice.MIN_FANOUT_COHORT;
-             index++) {
-            wires.add(wire(ROOT_SITE, element(index)));
+        JsonObject telemetry = slice.telemetry(cohort);
+        assertEquals(5, telemetry.get("keptOccurrenceCount").getAsInt());
+        assertEquals(0, telemetry.get("prunedOccurrenceCount").getAsInt());
+        // Nothing in the artifact says an occurrence stands for another.
+        for (JsonObject row : slice.rows(cohort)) {
+            assertFalse(row.has("foldedInto"));
         }
-        plans.add(plan(ROOT_SITE, "REGION_PATH_CLOSURE",
-                actions(fieldRead(ROOT)), wires));
-        for (int index = 1; index < ReplayTaskSlice.MIN_FANOUT_COHORT;
-             index++) {
-            plans.add(plan(element(index), "REGION_PATH_CLOSURE", actions(),
-                    edges(wire(element(index), COLLECTOR))));
-        }
-        plans.add(plan(COLLECTOR, "REGION_PATH_CLOSURE", actions(),
-                edges(wire(COLLECTOR, TARGET))));
-
-        ReplayTaskSlice slice = decide(plans, seeded());
-
-        for (int index = 1; index < ReplayTaskSlice.MIN_FANOUT_COHORT;
-             index++) {
-            assertTrue(slice.keeps(element(index)));
-        }
-    }
-
-    /** The three reasons soundness names are never folded away. */
-    @Test
-    public void theFoldNeverRemovesATargetARootOrAFatalReadWriter()
-            throws Exception {
-        List<RegionInstancePlan> plans = new ArrayList<>();
-        JsonArray carried = new JsonArray();
-        for (int index = 1; index <= 5; index++) {
-            carried.add(sharedFlow(ROOT_SITE, element(index), CARRIER,
-                    CARRIER_KEY));
-        }
-        plans.add(plan(TARGET, "TARGET_REACH_CLOSURE", actions(), edges()));
-        plans.add(plan(ROOT_SITE, "REGION_PATH_CLOSURE",
-                actions(fieldRead(ROOT)), carried));
-        // Five siblings of one cohort: one writes what the failing read
-        // consumes, one is a root site of its own, three carry only a flow.
-        plans.add(plan(element(1), "REGION_PATH_CLOSURE", actions(),
-                edges(sharedFlow(element(1), TARGET, CARRIER, CARRIER_KEY))));
-        plans.add(plan(element(2), "REGION_PATH_CLOSURE",
-                actions(faultMarker()), edges(sharedFlow(element(2),
-                        COLLECTOR, CARRIER, CARRIER_KEY))));
-        plans.add(plan(element(3), "REGION_PATH_CLOSURE", actions(),
-                edges(sharedFlow(element(3), COLLECTOR, CARRIER,
-                        CARRIER_KEY))));
-        plans.add(plan(element(4), "REGION_PATH_CLOSURE", actions(),
-                edges(sharedFlow(element(4), COLLECTOR, CARRIER,
-                        CARRIER_KEY))));
-        plans.add(plan(element(5), "REGION_PATH_CLOSURE", actions(),
-                edges(sharedFlow(element(5), COLLECTOR, CARRIER,
-                        CARRIER_KEY))));
-        plans.add(plan(COLLECTOR, "REGION_PATH_CLOSURE", actions(),
-                edges(wire(COLLECTOR, TARGET))));
-
-        ReplayTaskSlice slice = decide(plans, seeded());
-
-        assertTrue(slice.keeps(TARGET));
-        assertTrue("a write the failing read consumes is never folded",
-                slice.keeps(element(1)));
-        assertTrue("a root site is never folded", slice.keeps(element(2)));
-        assertTrue("the first interchangeable sibling is the arm",
-                slice.keeps(element(3)));
-        assertFalse("the remaining siblings replay through it",
-                slice.keeps(element(4)));
-        assertFalse(slice.keeps(element(5)));
-        assertEquals(element(3), slice.representative(element(4)));
-        assertEquals(element(3), slice.representative(element(5)));
     }
 
     /**

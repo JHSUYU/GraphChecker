@@ -348,38 +348,37 @@ fixed replays that value on every arm.
 | `ROOT_DEPENDENT_FLOW` | a root site reaches it over the plan's own edges -- a shared-location flow the slice cares about, a wire delivery, a request-fault control -- *and* the same edges lead on from it to the target |
 | `CARRIER_WRITER` | it writes a cared shared location; an annotation on an occurrence some root already reaches, never a reason of its own |
 
-**Sibling fold.** A loop over the elements of a structure plans one
-occurrence of the same region per element, under one source and one request,
-and every one of them carries whatever the loop carries. Siblings whose value
-is root-independent, or that no path leads from to the fatal read, are
-already constants and fall out above. Of the rest, the arms differ only by
-which root sites produced the value, so a cohort of `MIN_FANOUT_COHORT` (3)
-or more such siblings replays one occurrence per distinct root provenance and
-publishes the others with `reason: REPLAY_TASK_FOLDED_SIBLING` and a
-`foldedInto` naming the representative that stands for them. Two repetitions
-are a before and an after -- a retry, a second phase -- and stay two arms.
+**Repetition never narrows anything.** A loop over the elements of a
+structure plans one occurrence of the same region per element, under one
+source and one request, and a fold used to read a cohort of three or more
+such siblings as one arm per distinct root provenance, replaying one and
+publishing the rest as `REPLAY_TASK_FOLDED_SIBLING`. That was unsound: an
+occurrence reaches the question only by being root-dependent, and
+root-dependent siblings routinely write *different* derived values -- one
+key of a rotation and its successor share a provenance exactly -- so
+provenance could not tell the arms apart. On HDFS-17899 bug3 it collapsed
+the nine per-key `PBHelper.convert(BlockKeyProto)` deliveries to one per
+DataNode and left every other block-key consumer family bound to nothing.
+There is no fold: every occurrence the slice keeps is replayed.
 
 Everything else replays only what the recording observed -- every arm
 writes the recorded value -- and is published in `replay_task_slice.jsonl`
 with `reason: REPLAY_TASK_PRUNED_NOT_ROOT_DEPENDENT`; the summary row and
 the schedule index's `replayTaskSlice` member carry the counts. The
 decision is a pure function of the plan, the refined graph and the roots, so
-the active-observed schedule of the seed query takes the same subset. Four
+the active-observed schedule of the seed query takes the same subset. Three
 rules bound it: a target, a root site and a write the fatal read consumes are
-kept whatever else says, a cohort never folds to nothing, and the whole
-narrowing is withheld -- `replayTaskSliceApplied: false`, nothing pruned --
-exactly when the carrier slice is, because a root the graph does not name
-cannot state what it reaches; a fatal read the graph has no cell for narrows
-nothing rather than everything.
+kept whatever else says, and the whole narrowing is withheld --
+`replayTaskSliceApplied: false`, nothing pruned -- exactly when the carrier
+slice is, because a root the graph does not name cannot state what it
+reaches; a fatal read the graph has no cell for narrows nothing rather than
+everything.
 
 Offline on the recorded plans it takes HDFS-17960 from 44 tasks to 18 -- the
 same 18 the forward-only rule kept, the loader and the whole fsimage save
-nest gone -- HDFS-17899 bug3 from 50 to 24, HDFS-17897 from 29 to 16 and
-HDFS-11741 from 88 to 32. Every occurrence on the four ground-truth causal
-chains survives in every case. What the key-rotation cases keep beyond that
-is `ROOT_DEPENDENT_FLOW` at distinct root provenance: a workload with many
-root sites has many arms to tell apart, and the fold refuses to merge two
-elements the root sites did not produce together.
+nest gone -- HDFS-17899 bug3 from 31 to 25 and HDFS-17897 from 23 to 20.
+Every occurrence on the ground-truth causal chains survives in every case,
+and so does every delivery of every declared wire flow.
 
 **Budgets are telemetry.** An experiment may state `replay_task_budget` in
 its workflow.properties, which `run_engine.sh` carries to the scheduler as
