@@ -1,7 +1,6 @@
 package edu.uva.liftlab.graphchecker.concolic;
 
 import edu.uva.liftlab.graphchecker.contract.ComposedManifest;
-import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceId;
 import edu.uva.liftlab.graphchecker.contract.RegionInstancePlan;
 import edu.uva.liftlab.graphchecker.contract.RuntimePlanArtifact;
@@ -271,9 +270,10 @@ public final class PathMergeComposer {
             }
         }
 
+        BoundedLoopComposition loops = boundedLoops(regionPlans, fatal);
         JsonObject manifest = manifest(arguments, fatal, site, occurrence,
                 required, pathRows, rootRows, reachLedger, gates,
-                selectors, lowering, regionPlans);
+                selectors, lowering, regionPlans, loops);
         return new Result(lowering.render(), manifest);
     }
 
@@ -553,7 +553,8 @@ public final class PathMergeComposer {
                                        JsonArray gates,
                                        List<String> selectors,
                                        PathMergeLowering lowering,
-                                       List<RegionInstancePlan> regionPlans)
+                                       List<RegionInstancePlan> regionPlans,
+                                       BoundedLoopComposition loops)
             throws IOException {
         JsonObject manifest = new JsonObject();
         manifest.addProperty("schemaVersion", SCHEMA_VERSION);
@@ -578,8 +579,8 @@ public final class PathMergeComposer {
                 new JsonArray());
         manifest.add(ComposedManifest.RECORDED_ROOT_VALUES,
                 recordedRootValues(rootRows));
-        manifest.add(LoopBoundPolicy.PATH_LOOP_COUNTS,
-                loopCounts(fatal));
+        manifest.add(BoundedLoopComposition.MANIFEST_FIELD,
+                loops.manifest());
         manifest.add(ClockRootPhysics.MANIFEST_FIELD,
                 ClockRootPhysics.manifest(arguments.clockSkewMillis,
                         new ArrayList<JsonObject>()));
@@ -622,6 +623,7 @@ public final class PathMergeComposer {
         manifest.add(MANIFEST_FIELD, merge);
 
         JsonArray gaps = new JsonArray();
+        for (JsonObject row : loops.compositionGaps()) gaps.add(row);
         for (String subject : lowering.unsupported()) {
             JsonObject gap = new JsonObject();
             gap.addProperty("kind", "COMPOSITION_GAP");
@@ -742,16 +744,43 @@ public final class PathMergeComposer {
         return values;
     }
 
-    private static JsonArray loopCounts(JsonObject fatal) {
-        JsonArray counts = new JsonArray();
-        for (JsonElement element : array(fatal, "paths")) {
-            if (!element.isJsonObject()) continue;
-            for (JsonElement row : array(element.getAsJsonObject(),
-                    LoopBoundPolicy.PATH_LOOP_COUNTS)) {
-                counts.add(row.deepCopy());
+    /**
+     * The loop-bound completeness audit over the target's own paths.
+     *
+     * <p>A merged path is straight-line work between declared bounds, so
+     * whether every retained loop of the anchored occurrence carries a
+     * count on every path is the one thing that decides whether the
+     * disjunction covers the whole behaviour.  It is a gate, not a term:
+     * nothing about the formula changes, only whether it may be believed.
+     * </p>
+     */
+    private static BoundedLoopComposition boundedLoops(
+            List<RegionInstancePlan> regionPlans, JsonObject fatal) {
+        String composed = OccurrenceId.parse(
+                optionalString(fatal, "occurrenceId")).planned();
+        List<JsonObject> scoped = new ArrayList<>();
+        Set<String> held = new LinkedHashSet<>();
+        for (RegionInstancePlan plan : regionPlans) {
+            String occurrence = OccurrenceId.parse(
+                    plan.occurrenceId()).planned();
+            if (!occurrence.equals(composed) || !held.add(occurrence)) {
+                continue;
             }
+            scoped.add(plan.json());
         }
-        return counts;
+        BoundedLoopComposition loops = BoundedLoopComposition.ofPlanRows(
+                scoped, Collections.singletonList(fatal));
+        JsonArray paths = array(fatal, "paths");
+        for (int index = 0; index < paths.size(); index++) {
+            if (!paths.get(index).isJsonObject()) continue;
+            JsonObject path = JsonFields.shallowCopy(
+                    paths.get(index).getAsJsonObject());
+            if (optionalString(path, "caseId").isEmpty()) {
+                path.addProperty("caseId", "TARGET_PATH." + index);
+            }
+            loops.observeCase(optionalString(fatal, "occurrenceId"), path);
+        }
+        return loops;
     }
 
     private static boolean pathSetComplete(JsonObject fatal) {
