@@ -71,6 +71,8 @@ public final class InSessionReadResolver {
     private final Map<String, JsonElement> writes;
     /** The same key -> whether that version predates tracking. */
     private final Set<String> initialVersions;
+    private final Map<String, JsonElement> resolvedReads =
+            new LinkedHashMap<>();
 
     private InSessionReadResolver(Map<String, JsonElement> definitions,
                                   Map<Long, JsonElement> handoffs,
@@ -268,7 +270,10 @@ public final class InSessionReadResolver {
             return unresolved("no write of " + location + " at version "
                     + observed);
         }
+        JsonElement memo = resolvedReads.get(key);
+        if (memo != null) return memo.deepCopy();
         JsonElement resolved = guarded("read:" + key, value, visiting, depth);
+        if (!unresolved(resolved)) resolvedReads.put(key, resolved);
         if (initial && resolved.isJsonObject()) {
             // A value the recording did not watch being produced is still
             // the value; saying so is what keeps it from being read as
