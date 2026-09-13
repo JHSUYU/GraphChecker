@@ -505,20 +505,6 @@ final class ConcolicResultPublisher {
             result.add("sharedStateGaps",
                     stamped(active.sharedStateGaps, identity));
         }
-        // Whole-state carriers whose initial content this run declined to
-        // state.  Not a gap: the opaque INITIAL root they keep is already
-        // the honest answer, and this says which containers it covers.
-        if (!active.initialSnapshotSkips.isEmpty()) {
-            result.add("initialSnapshotSkips",
-                    stamped(active.initialSnapshotSkips, identity));
-        }
-        // The other half: which containers this run did state, and with how
-        // many members.  Without it an absent snapshot and a snapshot that
-        // was never offered read alike.
-        if (!active.initialSnapshotStates.isEmpty()) {
-            result.add("initialSnapshotStates",
-                    stamped(active.initialSnapshotStates, identity));
-        }
     }
 
     static void addResultIdentity(

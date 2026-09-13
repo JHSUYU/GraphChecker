@@ -220,18 +220,20 @@ final class SharedStateCapture {
                     rootCause(unavailable));
         }
         if (outcome == null) return;
+        // Whether the initial content was stated is already in the write
+        // log: a container this run stated carries a SNAPSHOT_BASE over its
+        // members, and one it declined keeps the opaque INITIAL root.  The
+        // two telemetry rows that said the same thing a second time were
+        // read by nothing.
         if (outcome.stated) {
-            JsonObject stated = InitialContainerSnapshot.statedRow(outcome,
-                    carrier.describe());
-            diag(outcome.statedEvent(), stated.toString());
-            if (active != null) active.initialSnapshotStates.add(stated);
+            diag(outcome.statedEvent(), InitialContainerSnapshot.statedRow(
+                    outcome, carrier.describe()).toString());
             return;
         }
         if (!outcome.declined()) return;
-        JsonObject row = InitialContainerSnapshot.skipRow(outcome,
-                carrier.describe());
-        diag(InitialContainerSnapshot.SKIPPED_EVENT, row.toString());
-        if (active != null) active.initialSnapshotSkips.add(row);
+        diag(InitialContainerSnapshot.SKIPPED_EVENT,
+                InitialContainerSnapshot.skipRow(outcome,
+                        carrier.describe()).toString());
     }
 
     /**

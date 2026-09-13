@@ -5830,16 +5830,6 @@ public final class ConcolicRegionRuntime {
         final Map<String, JsonObject> sharedStateRecords =
                 new LinkedHashMap<>();
         final List<JsonObject> sharedStateGaps = new ArrayList<>();
-        /**
-         * Containers this activation selected as whole-state carriers and
-         * declined to state the initial content of. Telemetry, not a
-         * refusal: the opaque root that stays behind is already the honest
-         * answer, and the row says which containers it is honest about.
-         */
-        final List<JsonObject> initialSnapshotSkips = new ArrayList<>();
-        /** Whole-state carriers whose initial content this run did state. */
-        final List<JsonObject> initialSnapshotStates = new ArrayList<>();
-
         /** Read-out batch every record of this activation is stamped with. */
         private long evidenceSnapshot;
         private final Set<String> materialized = new LinkedHashSet<>();
