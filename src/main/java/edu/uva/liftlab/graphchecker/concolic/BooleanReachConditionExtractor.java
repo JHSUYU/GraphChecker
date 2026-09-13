@@ -56,9 +56,17 @@ public final class BooleanReachConditionExtractor {
     private static final Pattern MERGED_BOUNDARY_SYMBOL =
             Pattern.compile("merged_boundary__[A-Za-z0-9_]+");
     /** The one equality that binds a boundary constant to a read's value. */
+    /**
+     * A merged boundary bound to one guarded read's value: either the plain
+     * equality, or the single-arm dispatch every merge is emitted as now
+     * that its one arm carries its own guard and the fall-through is the
+     * named unbound term.
+     */
     private static final Pattern BOUNDARY_VALUE_BINDING = Pattern.compile(
-            "^\\(assert \\(= (merged_boundary__[A-Za-z0-9_]+)"
-            + " (rf_value__[A-Za-z0-9_]+)\\)\\)$");
+            "^\\(assert \\(= (merged_boundary__[A-Za-z0-9_]+) "
+            + "(?:(rf_value__[A-Za-z0-9_]+)"
+            + "|\\(ite [A-Za-z0-9_]+ (rf_value__[A-Za-z0-9_]+)"
+            + " unbound_boundary__[A-Za-z0-9_]+\\))\\)\\)$");
     /**
      * An unsat every probed attempt owed to the driver's own frontier.
      *
@@ -2623,7 +2631,8 @@ public final class BooleanReachConditionExtractor {
             }
             Matcher binding = BOUNDARY_VALUE_BINDING.matcher(text);
             if (binding.matches()) {
-                boundaryValues.put(binding.group(1), binding.group(2));
+                boundaryValues.put(binding.group(1), binding.group(2) != null
+                        ? binding.group(2) : binding.group(3));
             }
         }
         Set<String> valueTerms = new LinkedHashSet<>();
