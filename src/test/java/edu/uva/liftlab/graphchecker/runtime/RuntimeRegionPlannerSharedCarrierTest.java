@@ -67,6 +67,51 @@ public class RuntimeRegionPlannerSharedCarrierTest {
                         + "Ljava/util/concurrent/atomic/AtomicInteger;"));
     }
 
+    /**
+     * A plain object reference is declared; what already has a
+     * representation is not.
+     *
+     * <p>{@code BlockTokenSecretManager#currentKey} is shared state whose
+     * writers install competing objects, and the read that matters is a
+     * field <em>of the object that was installed</em>.  Declaring it here is
+     * what gives that read a writer set at all; the scheduler's root slice
+     * then drops it wherever no root moves it, exactly as it drops any
+     * other declared location.</p>
+     */
+    @Test
+    public void aPlainObjectReferenceIsDeclaredAsAnIdentityCarrier() {
+        Map<String, Map<String, Object>> carriers = new LinkedHashMap<>();
+
+        Map<String, Object> reference = port("<org.apache.hadoop.hdfs"
+                + ".security.token.block.BlockTokenSecretManager:"
+                + " org.apache.hadoop.hdfs.security.token.block.BlockKey"
+                + " currentKey>");
+        RuntimeRegionPlanner.addAccessOwnedCarriers(
+                carriers, reference, reference);
+        assertTrue(carriers.keySet().toString(), carriers.containsKey(
+                "DECLARED_FIELD\norg.apache.hadoop.hdfs.security.token.block"
+                        + ".BlockTokenSecretManager#currentKey:Lorg/apache"
+                        + "/hadoop/hdfs/security/token/block/BlockKey;"));
+
+        // An explicitly concrete access still names replay structure.
+        Map<String, Map<String, Object>> concrete = new LinkedHashMap<>();
+        Map<String, Object> captured = new LinkedHashMap<>();
+        captured.put("captureRootOnly", Boolean.TRUE);
+        RuntimeRegionPlanner.addAccessOwnedCarriers(
+                concrete, reference, captured);
+        assertTrue(concrete.isEmpty());
+
+        // And a reference the scalar contract already represents is left to
+        // it rather than given a second representation here.
+        Map<String, Map<String, Object>> boxed = new LinkedHashMap<>();
+        Map<String, Object> object = port("<example.State:"
+                + " java.lang.Object payload>");
+        object.put("dependencyRole",
+                DependencyRole.CONCRETE_STRUCTURE_CARRIER);
+        RuntimeRegionPlanner.addAccessOwnedCarriers(boxed, object, object);
+        assertTrue(boxed.isEmpty());
+    }
+
     private static Map<String, Object> port(String declaration) {
         Map<String, Object> port = new LinkedHashMap<>();
         port.put("fieldPathDeclarations",

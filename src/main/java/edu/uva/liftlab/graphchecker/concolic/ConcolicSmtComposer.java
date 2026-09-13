@@ -94,6 +94,32 @@ public final class ConcolicSmtComposer {
             "canonical-map-state";
     private static final Pattern SMT_ATOM = Pattern.compile("[^()\\s]+");
 
+    /**
+     * The value of one dependent read through a reference-typed carrier.
+     *
+     * <p>Read outward from the default: an owner identity this formula knows
+     * nothing else about keeps {@code projection}, the uninterpreted
+     * {@code container_field__} of that owner -- a named freedom, and never
+     * a Java default.  An identity whose own field is versioned takes that
+     * family's value.  The object this execution actually read from takes
+     * what it was observed to hold, and takes it outermost, because direct
+     * evidence about this very read beats a family that merely describes the
+     * same slot of some other object.</p>
+     *
+     * @param routes owner-witness/value pairs, each {@code {witness, value}}
+     */
+    static String referenceFieldBinding(String owner, String concreteOwner,
+                                        String observed, String projection,
+                                        List<String[]> routes) {
+        String body = projection;
+        for (int index = routes.size() - 1; index >= 0; index--) {
+            body = "(ite (= " + owner + " " + routes.get(index)[0] + ") "
+                    + routes.get(index)[1] + " " + body + ")";
+        }
+        return "(ite (= " + owner + " " + concreteOwner + ") " + observed
+                + " " + body + ")";
+    }
+
     /** Identity of one value selected by a recorded selector family. */
     private static String projectionTermIdentity(
             String kind, String authorityId, String expectedSort,
@@ -4828,7 +4854,6 @@ public final class ConcolicSmtComposer {
          */
         private void emitReferenceFieldRoutings() {
             for (ReferenceFieldRead read : referenceFieldReads) {
-                String body = read.projection;
                 List<String[]> routes = new ArrayList<>();
                 for (Map.Entry<String, Term> entry
                         : structuralWitnesses.entrySet()) {
@@ -4846,13 +4871,9 @@ public final class ConcolicSmtComposer {
                     if (family == null) continue;
                     routes.add(new String[]{witness, family});
                 }
-                for (int index = routes.size() - 1; index >= 0; index--) {
-                    body = "(ite (= " + read.owner + " "
-                            + routes.get(index)[0] + ") "
-                            + routes.get(index)[1] + " " + body + ")";
-                }
-                body = "(ite (= " + read.owner + " " + read.concreteOwner
-                        + ") " + read.observed + " " + body + ")";
+                String body = referenceFieldBinding(read.owner,
+                        read.concreteOwner, read.observed, read.projection,
+                        routes);
                 String previousGuard = enterGuard(read.guard);
                 try {
                     assertNamed(smtSymbols.mint(

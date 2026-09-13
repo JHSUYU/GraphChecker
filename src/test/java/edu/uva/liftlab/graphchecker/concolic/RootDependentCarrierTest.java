@@ -48,6 +48,11 @@ public class RootDependentCarrierTest {
             "<S: boolean snapshotDeletionOrdered>";
     private static final String GUARD_LOCAL = "<S: void deleteSnapshot()>::$z0";
     private static final String COUNTER = "<S: java.util.List snapshotsByNames>";
+    private static final String BLOCK_KEY = "org.apache.hadoop.hdfs"
+            + ".security.token.block.BlockKey";
+    /** bug3's own location: the reference whose writers a root decides. */
+    private static final String CURRENT_KEY = "<S: " + BLOCK_KEY
+            + " currentKey>";
     private static final String COUNTER_READ =
             "<S: int getNumSnapshots()>::$i0";
     private static final String UNRELATED = "<T: long heartbeatTime>";
@@ -256,17 +261,52 @@ public class RootDependentCarrierTest {
     }
 
     /**
-     * Clearing the role gate is not permission to lower a reference.
+     * An in-slice object reference is tracked as an identity carrier.
      *
-     * <p>An in-slice structure carrier whose leaf has no compact scalar
-     * representation -- bug3's {@code BlockKey currentKey} -- still stops,
-     * one gate later, at {@code CONCRETE_UNSUPPORTED_LEAF_TYPE}.  That gate
-     * states the VM/SMT contract, not a role heuristic, and lifting the role
-     * must not be read as lifting it.</p>
+     * <p>bug3's {@code BlockKey currentKey}: the scalar leaf contract has no
+     * compact representation for it, and that used to end the question at
+     * {@code CONCRETE_UNSUPPORTED_LEAF_TYPE}.  What the contract was missing
+     * is that the value of such a location is an <em>identity</em>, which
+     * the version store already records and the composer already names.  So
+     * the port is admitted with the reference demand -- tracked at its exact
+     * getfield, never minted -- while the exact-field-path half of the leaf
+     * contract still applies to it.</p>
      */
     @Test
-    public void anInSliceReferenceStillStopsAtTheLeafTypeContract()
+    public void anInSliceReferenceIsTrackedAsAnIdentityCarrier()
             throws Exception {
+        ConcolicScheduler.RootDependenceSlice slice =
+                ConcolicScheduler.RootDependenceSlice.forward(
+                        graph(edge(ORDERED, GUARD_LOCAL, "HEAP_READ"),
+                                edge(GUARD_LOCAL, CURRENT_KEY, "GUARD")),
+                        Collections.singleton(ORDERED));
+
+        JsonArray planned = ConcolicScheduler.materializationPlan(
+                goal(structureCarrier(CURRENT_KEY, BLOCK_KEY)),
+                actions(structureCarrier(CURRENT_KEY, BLOCK_KEY)),
+                ConcolicScheduler.DefinitionIndex.from(
+                        Collections.<JsonObject>emptyList()),
+                Collections.<String>emptySet(), new JsonArray(), slice);
+
+        assertEquals("SYMBOLIC", mode(planned, 0));
+        assertEquals(ConcolicScheduler.REFERENCE_CARRIER_DEMAND,
+                planned.get(0).getAsJsonObject()
+                        .get("symbolicDemand").getAsString());
+        assertTrue(planned.get(0).getAsJsonObject()
+                .get("rootDependentStructureCarrier").getAsBoolean());
+    }
+
+    /**
+     * The exact-field-path half of the leaf contract still binds.
+     *
+     * <p>Being exempt from the scalar type gate is not being exempt from
+     * naming the field that is read: a port whose declared leaf disagrees
+     * with the access it claims is refused exactly as before, because
+     * nothing downstream could say which location the identity belongs
+     * to.</p>
+     */
+    @Test
+    public void aReferenceCarrierStillNamesItsExactLeaf() throws Exception {
         ConcolicScheduler.RootDependenceSlice slice =
                 ConcolicScheduler.RootDependenceSlice.forward(
                         graph(edge(ORDERED, GUARD_LOCAL, "HEAP_READ"),
@@ -274,19 +314,42 @@ public class RootDependentCarrierTest {
                         Collections.singleton(ORDERED));
 
         JsonArray planned = ConcolicScheduler.materializationPlan(
-                goal(structureCarrier(COUNTER, "org.apache.hadoop.hdfs"
-                        + ".security.token.block.BlockKey")),
-                actions(structureCarrier(COUNTER, "org.apache.hadoop.hdfs"
-                        + ".security.token.block.BlockKey")),
+                goal(structureCarrier(COUNTER, BLOCK_KEY)),
+                actions(structureCarrier(COUNTER, BLOCK_KEY)),
                 ConcolicScheduler.DefinitionIndex.from(
                         Collections.<JsonObject>emptyList()),
                 Collections.<String>emptySet(), new JsonArray(), slice);
 
         assertEquals("CONCRETE", mode(planned, 0));
-        assertEquals("the role no longer refuses it; its leaf type does",
-                "CONCRETE_UNSUPPORTED_LEAF_TYPE", demand(planned, 0));
-        assertTrue(planned.get(0).getAsJsonObject()
-                .get("rootDependentStructureCarrier").getAsBoolean());
+        assertEquals("CONCRETE_FIELD_LEAF_TYPE_MISMATCH",
+                demand(planned, 0));
+    }
+
+    /**
+     * A container is not an identity carrier.
+     *
+     * <p>Its state, not its reference, is what a reader of a collection
+     * asks about, and the bounded container model is what answers that.
+     * Admitting it here would give one location two unrelated
+     * representations.</p>
+     */
+    @Test
+    public void anInSliceContainerIsNotAReferenceCarrier() throws Exception {
+        ConcolicScheduler.RootDependenceSlice slice =
+                ConcolicScheduler.RootDependenceSlice.forward(
+                        graph(edge(ORDERED, GUARD_LOCAL, "HEAP_READ"),
+                                edge(GUARD_LOCAL, COUNTER, "GUARD")),
+                        Collections.singleton(ORDERED));
+
+        JsonArray planned = ConcolicScheduler.materializationPlan(
+                goal(structureCarrier(COUNTER, "java.util.List")),
+                actions(structureCarrier(COUNTER, "java.util.List")),
+                ConcolicScheduler.DefinitionIndex.from(
+                        Collections.<JsonObject>emptyList()),
+                Collections.<String>emptySet(), new JsonArray(), slice);
+
+        assertEquals("CONCRETE", mode(planned, 0));
+        assertEquals("CONCRETE_UNSUPPORTED_LEAF_TYPE", demand(planned, 0));
     }
 
     // --- helpers ---------------------------------------------------------

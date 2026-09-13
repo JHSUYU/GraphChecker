@@ -1439,7 +1439,12 @@ final class RuntimeRegionPlanner {
         // leaf type, while retaining an explicit concrete runtime role.
         if (DependencyRole.VALUE_FRONTIER.equals(
                 sharedCarrierRuntimeRole(port, access, field.type()))
-                || referenceIdentityCarrier(port, access, field.type())) {
+                // An Atomic wrapper is not an identity to arm over: its
+                // own value leaf, declared just above, is the shared state,
+                // and versioning the holder as well would put one location
+                // in the formula twice.
+                || atomicField == null
+                && referenceIdentityCarrier(port, access, field.type())) {
             addAccessOwnedCarrier(carriers, field);
         }
     }
