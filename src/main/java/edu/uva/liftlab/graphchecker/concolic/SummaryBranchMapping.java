@@ -50,11 +50,30 @@ public final class SummaryBranchMapping {
     private final ExactConcreteBranchObservation concreteObservation;
     private final int summaryPcIndex;
     private final Policy policy;
+    /**
+     * The VM event sequence this decision was recorded at, or {@code 0}.
+     *
+     * <p>The one clock the whole replay is read on.  It rides the row rather
+     * than the witness because a concrete observation is a decision too, and
+     * a composer ordering two activations' decisions -- or asking which write
+     * of a field was live when one of them read it -- needs both on it.  It
+     * is stated only when the VM assigned one; a decision recorded with the
+     * symbolic gate closed has no VM event, and a zero would order it ahead
+     * of everything the VM did number.</p>
+     */
+    private final long vmEventId;
 
     private SummaryBranchMapping(
             BranchWitness witness,
             ExactConcreteBranchObservation concreteObservation,
             int summaryPcIndex, Policy policy) {
+        this(witness, concreteObservation, summaryPcIndex, policy, 0L);
+    }
+
+    private SummaryBranchMapping(
+            BranchWitness witness,
+            ExactConcreteBranchObservation concreteObservation,
+            int summaryPcIndex, Policy policy, long vmEventId) {
         if ((witness == null) == (concreteObservation == null)) {
             throw new IllegalArgumentException(
                     "exactly one branch authority is required");
@@ -74,6 +93,16 @@ public final class SummaryBranchMapping {
         this.concreteObservation = concreteObservation;
         this.summaryPcIndex = summaryPcIndex;
         this.policy = policy;
+        this.vmEventId = vmEventId;
+    }
+
+    /** The VM event this decision was recorded at, or 0 when unstated. */
+    public long vmEventId() { return vmEventId; }
+
+    /** The same decision, read on the replay's clock. */
+    public SummaryBranchMapping at(long clock) {
+        return clock == vmEventId ? this : new SummaryBranchMapping(
+                witness, concreteObservation, summaryPcIndex, policy, clock);
     }
 
     public static SummaryBranchMapping witnessed(
@@ -123,7 +152,8 @@ public final class SummaryBranchMapping {
                     encoded.getAsJsonObject())
                     : BranchWitness.fromJson(encoded.getAsJsonObject());
             return witnessed(witness,
-                    integer(json, "summaryPcIndex"), policy);
+                    integer(json, "summaryPcIndex"), policy)
+                    .at(clock(json));
         }
         JsonElement encoded = json.get("concreteObservation");
         if (encoded == null || !encoded.isJsonObject()) {
@@ -131,7 +161,24 @@ public final class SummaryBranchMapping {
                     "concreteObservation must be an object");
         }
         return concrete(ExactConcreteBranchObservation.fromJson(
-                encoded.getAsJsonObject()), policy);
+                encoded.getAsJsonObject()), policy).at(clock(json));
+    }
+
+    /** The replay clock this row states, or 0 when it states none. */
+    private static long clock(JsonObject json) {
+        JsonElement encoded = json.get(InSessionReadResolver.VM_EVENT_ID);
+        if (encoded == null || encoded.isJsonNull()) return 0L;
+        if (!encoded.isJsonPrimitive()
+                || !encoded.getAsJsonPrimitive().isNumber()) {
+            throw new IllegalArgumentException(
+                    InSessionReadResolver.VM_EVENT_ID + " must be a number");
+        }
+        long value = encoded.getAsLong();
+        if (value <= 0L) {
+            throw new IllegalArgumentException(
+                    InSessionReadResolver.VM_EVENT_ID + " must be positive");
+        }
+        return value;
     }
 
     /**
@@ -205,6 +252,9 @@ public final class SummaryBranchMapping {
                     concreteObservation.toJson());
         }
         result.addProperty("policy", policy.name());
+        if (vmEventId > 0L) {
+            result.addProperty(InSessionReadResolver.VM_EVENT_ID, vmEventId);
+        }
         return defensivePredicate
                 ? (JsonObject) CanonicalJson.copy(result) : result;
     }
