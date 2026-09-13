@@ -198,11 +198,48 @@ action alongside its summary row:
 | TRACK | symbolize the read: the VM publishes its `ReadFrom` candidates and container versions | the surviving `mode: SYMBOLIC` | the mechanism -- true for every carrier |
 | MINT | may become a *fresh* root, a free symbol the solver moves | `mintEligible` | the three declaring authorities below |
 
-A carrier is anything the replayed process itself wrote: instance-field
-reads, bounded container states, declared communication cut ports, accessor
-returns. All of them are tracked, and the allowlist cannot refuse them --
-refusing one removes no root and deletes the evidence. Three things, and
-nothing else, are mint-eligible:
+A carrier is a shared location this campaign's roots can still change. It is
+not something the file declares and not "every read the recording made":
+`ConcolicScheduler.RootDependenceSlice` derives it from the roots' own forward
+dependence over the runtime-refined dataflow graph, which states both halves
+of the relation the design asks for --
+
+- **data dependence**: a value edge (`field_write`, `field_mutation`,
+  `call_return`, `local_def_use`, `caller_argument`, the wire handoff kinds)
+  carries a root-dependent value into the cell it targets;
+- **control dependence**: a `GUARD` edge (`path_guard_dependency`,
+  `heap_mutation_path_guard`, `receiver_field_effect_path_guard`) runs from a
+  guard's operand to the definition that guard controls, so a write whose case
+  partition a root decides is reached by the same walk.
+
+-- so one transitive forward closure from the root cells answers both, and its
+fixed point *is* the carrier set: a read of a carrier that feeds another store
+lands on that store's cell on the next hop. Everything else is `CONCRETE` at
+its recorded value, with `symbolicDemand: NOT_ROOT_DEPENDENT` and a
+`symbolic_root_policy.jsonl` verdict of the same name. This is what selected
+HDFS-17960's `DirectorySnapshottableFeature#snapshotsByNames` and the
+`AtomicInteger#value` behind `SnapshotManager#numSnapshots` with nothing
+declaring either.
+
+Two properties fall out of the walk rather than being cases in it. **A field
+nothing writes is never a carrier** -- a static final appears only as a
+`fromCell`, is the target of no edge, and so cannot be reached from any root;
+that is what keeps `FSDirectory.DOT_RESERVED` and
+`NameNodeLayoutVersion.MINIMUM_COMPATIBLE_LAYOUT_VERSION` out of HDFS-17960's
+plan, where they used to be tracked and crashed INSTRUMENT with
+`STATIC_FIELD_MATERIALIZATION_UNSUPPORTED`. And **a campaign whose roots the
+graph does not name narrows nothing**: the slice reports
+`carrierSliceApplied: false`, `carrierSliceReason:
+NO_ROOT_CELL_IN_REFINED_GRAPH`, and every carrier stays tracked, because
+narrowing on an empty seed would concrete every read and delete the evidence
+rather than the waste.
+
+Carriers, so derived, are tracked and the allowlist cannot refuse them --
+refusing one removes no root and deletes the evidence. Declared communication
+cut ports are tracked whether or not the slice reaches them: the port is
+itself a manual declaration of the wire path, and the value it names is
+produced on the other side of the wire. Three things, and nothing else, are
+mint-eligible:
 
 - a name this file declares, through `fieldSignatures`, `portIds` or `cells`,
   for the region the action belongs to;
@@ -253,17 +290,22 @@ the counter flow as the constants it was recorded as.
 
 #### What tracking costs, and the fold that pays it back
 
-Tracking every carrier grows the plan. Re-running the PLAN stage offline over
-three recorded corpora, with each experiment's own file unchanged except
-HDFS-17960's (whose one carrier row is now redundant and removed):
+Tracking *every* carrier grows the plan; tracking the root-dependent ones does
+not. Re-running the PLAN stage offline over three recorded corpora, with each
+experiment's own file unchanged, gives three columns: what the old allowlist
+narrowed to, what "track every carrier" costs, and what the root slice keeps.
 
-| corpus | SYMBOLIC | CONCRETE | `BOUNDED_CONTAINER_STATE` symbolic | declared roots |
+| corpus | declared-only | every carrier | root-dependent | carrier locations |
 |---|---|---|---|---|
-| hdfs-17897 | 18 -> 97 | 97 -> 18 | 0 -> 5 | 16 -> 16 |
-| hdfs-17899-bug3 | 20 -> 121 | 130 -> 29 | 0 -> 5 | 17 -> 17 |
-| hdfs-17960 | 4 -> 80 | 212 -> 136 | 0 -> 31 | 0 -> 0 |
+| hdfs-17897 | 18 | 97 | **71** | 12 |
+| hdfs-17899-bug3 | 20 | 121 | **75** | 7 |
+| hdfs-17960 | 4 | 80 | **13** | 3 |
 
-The root set is unchanged in all three. Most of the new symbolic actions are
+The root set is unchanged in all three, and so is the chain each case needs:
+HDFS-17960 keeps `snapshotsByNames`, `AtomicInteger#value` and `Snapshot#id`
+and nothing else; bug3 and 17897 keep `BlockTokenSecretManager#allKeys`,
+`DelegationKey#keyId`/`#expiryDate` and the `BlockKeyProto` /
+`DataEncryptionKeyProto` copies on the wire path. Most of the new symbolic actions are
 reads of state written only from constants, and each becomes a guarded read
 whose arms all lower to the same literal. Such a family is free of any case:
 `ConcolicSmtComposer.guardedReadTerm` still mints a fresh `sym__read__` value
@@ -638,7 +680,7 @@ resolvable with `@config`, `@repo` and `@project`:
 
 | File | Role |
 | --- | --- |
-| `symbolic-inputs.jsonl` | the root allowlist, one `{"regionId", "fieldSignatures": [...]}` row per region: which observed application sources this case may mint as symbolic roots, plus `carrier*` names it keeps symbolic without minting. Configured with `causynth_symbolic_inputs`; when a case declares it, minting is narrowed to exactly those fields, which is what keeps a witness about the fault rather than about whatever else happened to be free. A case that declares none mints only the roots the plan's own symbolization actions name. |
+| `symbolic-inputs.jsonl` | the root allowlist, one `{"regionId", "fieldSignatures": [...]}` row per region: which observed application sources this case may mint as symbolic roots. Carriers are not named here -- they are derived from the roots' forward dependence. Configured with `causynth_symbolic_inputs`; when a case declares it, minting is narrowed to exactly those fields, which is what keeps a witness about the fault rather than about whatever else happened to be free. A case that declares none mints only the roots the plan's own symbolization actions name. |
 | `communication-mappings.jsonl` | one `WIRE_FLOW` row per declared cross-node value: `id`, `transport`, `direction`, `javaType`, an exact `producer` and `consumer` endpoint, and optionally `consumerField` -- the field the consumer assigns the received value to, which is the second route a flow can reach the formula by. |
 | `loop-bounds.jsonl` | the finite unroll for every retained condition-controlled loop. An empty file explicitly means the workload has no such loop. |
 | `target.yaml` | the `exception_target_id` the annotated throw site carries. |
