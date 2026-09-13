@@ -67,13 +67,6 @@ final class RuntimeRegionPlanner {
     /** Authority of one recorded exchange link between two occurrences. */
     static final String DELIVERY_LINK_AUTHORITY =
             "RECORDED_EXCHANGE_OCCURRENCE_LINK_V1";
-    /** A recorded activation this stage could not attribute to a source. */
-    static final String GAP_RUNTIME_SOURCE_UNSTAMPED =
-            "RUNTIME_ACTIVATION_SOURCE_UNSTAMPED";
-    /** Authority of a source taken from the first stamped frame inside the
-     * activation rather than from its root frame. */
-    static final String UPGRADED_SOURCE_AUTHORITY =
-            "FIRST_STAMPED_FRAME_INSIDE_ACTIVATION";
     /** The protocol server stub a run entered as its own region root. */
     static final String COMMUNICATION_ENTRY = "COMMUNICATION_ENTRY";
     private RuntimeRegionPlanner() {
@@ -323,14 +316,11 @@ final class RuntimeRegionPlanner {
             Map<String, Object> link = new LinkedHashMap<>();
             link.put("schemaVersion", 3);
             link.put("kind", "RUNTIME_OCCURRENCE_LINK");
-            link.put("linkKind", "SERVER_ENTRY");
             link.put("fromActivationId", activationId);
-            link.put("fromRegionId", stringValue(activation.get("regionId")));
             link.put("fromRootCallId", activation.get("rootCallId"));
             link.put("callSiteId", stringValue(exported.get("callSiteId")));
             link.put("toActivationId",
                     stringValue(toActivation.get("activationId")));
-            link.put("toRegionId", stringValue(toActivation.get("regionId")));
             link.put("toRootCallId", toActivation.get("rootCallId"));
             link.put("exchangeLeg", stringValue(exported.get("exchangeLeg")));
             link.put("senderEventSeq", exported.get("eventSeq"));
@@ -515,7 +505,6 @@ final class RuntimeRegionPlanner {
         activation.put("selection", skeleton.selection);
         activation.put("test", root.test);
         activation.put("thread", root.threadName);
-        activation.put("threadId", root.tid);
         putTraceContext(activation, root,
                 activationSource(root, stampedSources(calls, trace)));
         putRecordedTraceIds(activation, root);
@@ -1287,8 +1276,6 @@ final class RuntimeRegionPlanner {
                 }
                 Map<String, Object> evidence = edgeEvidenceRow(edge,
                         fromOccurrence, toOccurrence);
-                evidence.put("evidenceKind", AutomaticRegionEdge
-                        .EXACT_REQUEST_FAULT_CONTROL_AUTHORITY);
                 evidence.put("correlationAuthority", AutomaticRegionEdge
                         .EXACT_REQUEST_FAULT_CONTROL_AUTHORITY);
                 evidence.put("state", "CONFIRMED_REQUEST_CONTROL");
@@ -1307,9 +1294,6 @@ final class RuntimeRegionPlanner {
             evidence.remove("bindings");
             evidence.put("fromOutputPort", fromPort);
             evidence.put("toInputPort", toPort);
-            evidence.put("evidenceKind", protocol
-                    ? AutomaticRegionEdge.TRACED_EXCHANGE_AUTHORITY
-                    : SharedFieldFlow.LOCATION_MATCH_AUTHORITY);
             evidence.put("correlationAuthority", protocol
                     ? AutomaticRegionEdge.TRACED_EXCHANGE_AUTHORITY
                     : SharedFieldFlow.LOCATION_MATCH_AUTHORITY);
@@ -2475,9 +2459,6 @@ final class RuntimeRegionPlanner {
                 ? "" : semanticContext.requestApi);
     }
 
-    private static SourceRef source(MethodEvent event) {
-        return sourceOf(event.source);
-    }
 
     /** Every distinct logical source the frames of one activation carry, in
      * recorded order.
