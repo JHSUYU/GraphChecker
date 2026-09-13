@@ -798,6 +798,7 @@ campaign_require_claim() {
     and ((.campaignClaim.claim // "")
       | IN("SAT_CANDIDATE", "UNSAT_CLOSED", "INCONCLUSIVE_PARTIAL"))
     and (.campaignClaim.blockers | type) == "array"
+    and (.campaignClaim.blockerCount | type) == "number"
     and (.campaignClaim.claimReason | type) == "string"
     and (.campaignClaim.whyNotAccepted | type) == "string"' \
     "${path}" >/dev/null \
@@ -2924,7 +2925,9 @@ campaign_emit() {
      claim: $decided.claim,
      claimReason: $decided.claimReason,
      blockers: $decided.blockers,
-     blockerCount: ($decided.blockers | length),
+     # ClaimPolicy counts its own blockers; re-counting the array here let
+     # the published count drift from the policy that decided the claim.
+     blockerCount: $decided.blockerCount,
      whyNotAccepted: $decided.whyNotAccepted,
      reachability: $reachability,
      degeneracyCheck: $degeneracy,
