@@ -140,6 +140,11 @@ names, any of which admits an action:
 | `portIds` | `portId` or `symbol` |
 | `cells` | `cell` |
 
+Each has a `carrier`-prefixed twin -- `carrierFieldSignatures`,
+`carrierPortIds`, `carrierCells` -- which admits the action without declaring
+it a root: see "Carriers" below. A name may appear under one form or the
+other, never both.
+
 `cells` is how a call return is named, since it carries no field signature: an
 `EXTERNAL_CALL_RETURN` action's cell is `<callee signature>.return`, identical
 at every call site of that callee inside the region, so one entry declares
@@ -163,6 +168,32 @@ from it does not fork the chain: on the HDFS block-key experiments the clock
 is the mint and `DelegationKey#expiryDate` flows from it. Non-primitive
 declarations keep the loose rule, since a container or reference has no root
 to mint.
+
+### Carriers
+
+Concretizing a read is not the neutral option it looks like. A `CONCRETE`
+action is one the plan never symbolizes, so the VM publishes no `ReadFrom`
+candidates for it; the guarded read family the composer builds over a shared
+location then has no writer cases to admit, the observed closure has nothing
+to explore, and a configured-source root that only reaches the fatal predicate
+*through* that family never appears in `candidate.smt2` at all. HDFS-17960 is
+the recorded case: emptying its allowlist concretized the four reads of
+`AtomicInteger#value`, and the campaign went from 25 active observed tasks, 94
+consumer-boundary families and 46 guarded reads to 1, 2 and 0 -- with
+`configuredSourceMaterializations: []` and no root in the formula, though the
+narrowing never touched the hook's own field.
+
+The `carrier*` keys are the third answer. A carrier row admits the action like
+any declared name -- it stays `SYMBOLIC` and carries
+`symbolicDemand: DECLARED_SYMBOLIC_CARRIER` -- but it is never stamped
+`declaredSymbolicRoot`, so the replay asks the loose question and reuses the
+expression that already reached the read instead of minting beside it.
+Propagation continues; the root count does not move. Declare a carrier where
+a field must keep flowing but is not itself the thing the case varies:
+
+```json
+{"regionId":"REGION.f0132fca-...","carrierFieldSignatures":["<java.util.concurrent.atomic.AtomicInteger: int value>"]}
+```
 
 Which makes the choice of what to declare a soundness question, not a budget
 one. **A value whose earlier members are baked into concrete state elsewhere
@@ -547,7 +578,7 @@ resolvable with `@config`, `@repo` and `@project`:
 
 | File | Role |
 | --- | --- |
-| `symbolic-inputs.jsonl` | the root allowlist, one `{"regionId", "fieldSignatures": [...]}` row per region: which observed application sources this case may mint as symbolic roots. Configured with `causynth_symbolic_inputs`; when a case declares it, minting is narrowed to exactly those fields, which is what keeps a witness about the fault rather than about whatever else happened to be free. A case that declares none mints only the roots the plan's own symbolization actions name. |
+| `symbolic-inputs.jsonl` | the root allowlist, one `{"regionId", "fieldSignatures": [...]}` row per region: which observed application sources this case may mint as symbolic roots, plus `carrier*` names it keeps symbolic without minting. Configured with `causynth_symbolic_inputs`; when a case declares it, minting is narrowed to exactly those fields, which is what keeps a witness about the fault rather than about whatever else happened to be free. A case that declares none mints only the roots the plan's own symbolization actions name. |
 | `communication-mappings.jsonl` | one `WIRE_FLOW` row per declared cross-node value: `id`, `transport`, `direction`, `javaType`, an exact `producer` and `consumer` endpoint, and optionally `consumerField` -- the field the consumer assigns the received value to, which is the second route a flow can reach the formula by. |
 | `loop-bounds.jsonl` | the finite unroll for every retained condition-controlled loop. An empty file explicitly means the workload has no such loop. |
 | `target.yaml` | the `exception_target_id` the annotated throw site carries. |

@@ -1929,6 +1929,17 @@ public final class ConcolicScheduler {
         private final boolean configured;
         /** regionId -> the field signatures, port ids and cells it admits. */
         private final Map<String, Set<String>> admitted;
+        /**
+         * regionId -> the names it declares as carriers rather than roots.
+         *
+         * <p>A carrier survives the narrowing exactly as an admitted name
+         * does, but is never stamped as a declared root, so the replay keeps
+         * asking the loose question and reuses whatever expression already
+         * reached the read.  It is how an experiment says "keep propagating
+         * through this field" without also saying "and start a free search
+         * here".</p>
+         */
+        private final Map<String, Set<String>> carried;
         /** regionId -> sourceId -> the one field that hook site mints. */
         private final Map<String, Map<String, String>> minted;
         /** Every automatic candidate this selection refused, first-seen order. */
@@ -1936,9 +1947,11 @@ public final class ConcolicScheduler {
 
         private SymbolicInputSelection(
                 boolean configured, Map<String, Set<String>> admitted,
+                Map<String, Set<String>> carried,
                 Map<String, Map<String, String>> minted) {
             this.configured = configured;
             this.admitted = admitted;
+            this.carried = carried;
             this.minted = minted;
         }
 
@@ -1965,9 +1978,10 @@ public final class ConcolicScheduler {
                 }
             }
             Map<String, Set<String>> admitted = new LinkedHashMap<>();
+            Map<String, Set<String>> carried = new LinkedHashMap<>();
             if (path == null) {
                 return new SymbolicInputSelection(!minted.isEmpty(),
-                        admitted, minted);
+                        admitted, carried, minted);
             }
             requireFile(path, "symbolic input selection");
             for (JsonObject row : ArtifactIO.readJsonl(path)) {
@@ -1986,8 +2000,23 @@ public final class ConcolicScheduler {
                         "fieldSignatures", "portIds", "cells"}) {
                     addDeclaredNames(names, row, field);
                 }
+                Set<String> carriers = carried.computeIfAbsent(regionId,
+                        ignored -> new LinkedHashSet<>());
+                for (String field : new String[]{"carrierFieldSignatures",
+                        "carrierPortIds", "carrierCells"}) {
+                    addDeclaredNames(carriers, row, field);
+                }
+                // Root and carrier are opposite answers to "does the search
+                // start here", so one name may not carry both.
+                for (String name : carriers) {
+                    if (names.contains(name)) {
+                        throw new IOException("symbolic input selection "
+                                + "declares one name as both a root and a "
+                                + "carrier: " + name);
+                    }
+                }
             }
-            return new SymbolicInputSelection(true, admitted, minted);
+            return new SymbolicInputSelection(true, admitted, carried, minted);
         }
 
         /** An explicit source hook is itself the allowlist authority. */
@@ -2069,6 +2098,20 @@ public final class ConcolicScheduler {
                         // while removing no root from the solver.
                         retained.addProperty("symbolicDemand",
                                 "DECLARED_COMMUNICATION_CUT_PORT");
+                    } else if (carries(regionId, action)) {
+                        // Named by hand as a carrier, not a root.  It stays
+                        // symbolic so the VM keeps publishing this read's
+                        // ReadFrom candidates -- which is what gives the
+                        // guarded read over a shared counter its writer
+                        // cases, and what keeps the observed closure large
+                        // enough to explore them -- but it carries no mint
+                        // marker, so the replay asks the loose question and
+                        // reuses the expression that already arrived.
+                        // Concretizing it instead deletes the whole family:
+                        // a read the plan never symbolizes publishes no
+                        // candidates for the composer to admit.
+                        retained.addProperty("symbolicDemand",
+                                "DECLARED_SYMBOLIC_CARRIER");
                     } else if (!admits(regionId, action)) {
                         retained.addProperty("mode", "CONCRETE");
                         retained.addProperty("symbolicDemand",
@@ -2144,7 +2187,17 @@ public final class ConcolicScheduler {
         }
 
         private boolean admits(String regionId, JsonObject action) {
-            Set<String> names = admitted.get(safe(regionId));
+            return names(admitted, regionId, action);
+        }
+
+        /** Whether this region declares the action as a non-root carrier. */
+        private boolean carries(String regionId, JsonObject action) {
+            return names(carried, regionId, action);
+        }
+
+        private static boolean names(Map<String, Set<String>> declared,
+                                     String regionId, JsonObject action) {
+            Set<String> names = declared.get(safe(regionId));
             return names != null
                     && (names.contains(actionField(action))
                     || names.contains(actionPort(action))
