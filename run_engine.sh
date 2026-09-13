@@ -1930,8 +1930,15 @@ campaign_instrument() {
 # tree holds those owners and nothing else. The replay classpath is therefore
 # that tree in front of the project's own classes: a replay given the tree
 # alone loads no workload class it did not rewrite.
+# $7 says what an all-skipped result means to this caller. A seed replay is
+# the iteration's only source of observed cases, so "required" (the default)
+# makes REPLAY fail closed on one. A flip worker may legitimately replay a
+# model the workload never realized, and campaign_worker_task already records
+# that as REPLAY_NOT_ADMITTED, so it passes "tolerated" and keeps that
+# recorded outcome instead of ending the campaign.
 campaign_replay() {
   local role=$1 plan=$2 ids=$3 classes=$4 results=$5 worker=$6
+  local region_results=${7:-required}
   local status=0
   require_nonempty "concolic execution task plan" "${plan}"
   [[ ! -e "${results}" ]] || die \
@@ -1957,6 +1964,19 @@ campaign_replay() {
   # always a failure, and it is reported with the path that is empty.
   [[ -s "${results}" ]] || campaign_fail REPLAY WORKLOAD "${results}" \
     "the concolic replay published no result (exit ${status}); see ${worker}/replay.log"
+  # A workload that terminated before its selected regions ran still publishes
+  # one CONCOLIC_REGION_SKIPPED row per unreached region, so a non-empty file
+  # is not evidence that anything was replayed.  Only CONCOLIC_REGION_RESULT
+  # rows are importable (ConcolicSummaryImporter:354), so a result carrying
+  # none is a failed replay and is named here, beside the log that holds the
+  # workload's terminating exception -- not one stage later as a wall of
+  # anchor-miss rows the importer refuses.
+  if [[ "${region_results}" == required ]] \
+      && ! jq -e -n 'any(inputs; .event == "CONCOLIC_REGION_RESULT")' \
+        "${results}" >/dev/null; then
+    campaign_fail REPLAY WORKLOAD "${results}" \
+      "the concolic replay published only skipped regions (exit ${status}); the workload terminated before its selected regions ran and its exception is in ${worker}/replay.log"
+  fi
   campaign_log "replay role=${role} exit=${status} result=${results}"
 }
 
@@ -2154,7 +2174,7 @@ campaign_worker_task() {
     || die "the linked path solver emitted an empty replay bundle"
 
   campaign_replay worker "${worker}/execution_task_plan.jsonl" \
-    "${replay_tasks}" "${classes}" "${raw}" "${worker}"
+    "${replay_tasks}" "${classes}" "${raw}" "${worker}" tolerated
   raw_concolic_results="${raw}"
   import_task_plan="${worker}/execution_task_plan.jsonl"
   imported_summaries="${imported}"
