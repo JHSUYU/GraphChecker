@@ -2507,6 +2507,14 @@ public final class ClaimPolicy {
                 optionalString(legitimacy, WitnessLegitimacy.FINDING_KIND));
         rootSpace.addProperty("recordedFailureExplained",
                 optionalBool(legitimacy, "recordedFailureExplained", false));
+        // Whether this run's whole hypothesis is a clock, and whether the
+        // probe found one it needs. Both were decided and then discarded:
+        // the necessity map they are computed from was empty on every real
+        // run, so "clock only" was never true and "necessary" never asked.
+        rootSpace.addProperty("clockOnlyExperiment",
+                optionalBool(legitimacy, "clockOnlyExperiment", false));
+        rootSpace.addProperty("clockMechanismNecessary",
+                optionalBool(legitimacy, "clockMechanismNecessary", false));
         rootSpace.addProperty("unstatedRecordedRootValues",
                 optionalString(legitimacy, RECORDED_ROOT_VALUE_UNSTATED));
         rootSpace.addProperty("disagreeingRecordedRootValues",

@@ -1684,6 +1684,48 @@ public class ClaimPolicyTest {
     }
 
     /**
+     * A run whose only hypothesis is a clock has to have needed the clock.
+     *
+     * <p>{@code clockOnlyExperiment} is computed from the necessity map,
+     * which was empty on every real run while the probe published its rows
+     * without a {@code valuationOrdinal}: the flag was therefore never true
+     * and the demand it carries was never made. With the ordinals in place
+     * a clock-only run whose clocks the target reaches without is refused
+     * under the polarity blocker, naming the probe's answer.</p>
+     */
+    @Test
+    public void aClockOnlyRunNeedsANecessaryClock() {
+        JsonObject manifest = orderedManifest("false");
+        JsonArray ledger = manifest.getAsJsonArray(
+                ConcolicSmtComposer.RECORDED_ROOT_VALUES);
+        ledger.add(parse("{\"solverTerm\":\"clock_now\","
+                + "\"recordedValue\":\"1000\",\"wallClock\":true,"
+                + "\"siteId\":\"Timer.now()#u3\"}"));
+        JsonObject reach = orderedReach("sat", "unsat");
+        reach.getAsJsonArray("valuations").get(0).getAsJsonObject()
+                .add("witnessMechanisms", parseArray(
+                        "[{\"kind\":\"CLOCK_SKEW\",\"skewMillis\":4001,"
+                        + "\"solverTerm\":\"clock_now\","
+                        + "\"recordedValue\":\"1000\","
+                        + "\"witnessValue\":\"5001\","
+                        + "\"siteId\":\"Timer.now()#u3\"}]"));
+        reach.add(BooleanReachConditionExtractor.MECHANISM_NECESSITY,
+                clockNecessity(0, false));
+
+        JsonObject claim = ClaimPolicy.decide(manifest, reach, noFlows());
+        JsonObject rootSpace = claim.getAsJsonObject("rootSpace");
+
+        assertTrue("no marker is planted, and a clock group was probed",
+                rootSpace.get("clockOnlyExperiment").getAsBoolean());
+        assertFalse(rootSpace.get("clockMechanismNecessary").getAsBoolean());
+        assertEquals(ClaimPolicy.INCONCLUSIVE_PARTIAL,
+                claim.get("claim").getAsString());
+        assertTrue(blocker(claim, ClaimPolicy.FAULT_POLARITY_NOT_WITNESSED)
+                .get("subject").getAsString().contains(
+                        "no clock decision on the fatal slice is necessary"));
+    }
+
+    /**
      * Two sources naming different values state no value at all.
      *
      * <p>The ledger used to outrank the materialization row, so a
