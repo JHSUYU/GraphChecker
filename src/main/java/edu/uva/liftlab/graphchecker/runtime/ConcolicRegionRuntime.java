@@ -5479,8 +5479,6 @@ public final class ConcolicRegionRuntime {
         private void loopCardinalityGap(String reason, String loopId,
                                         int occurrence, String detail) {
             JsonObject row = new JsonObject();
-            row.addProperty("kind", "LOOP_CARDINALITY_COVERAGE_GAP");
-            row.addProperty("authority", "RUNTIME_LOOP_CARDINALITY_GAP_V1");
             row.addProperty("reason", reason);
             row.addProperty(LoopBoundPolicy.RUNTIME_LOOP_ID, loopId);
             if (occurrence > 0) {

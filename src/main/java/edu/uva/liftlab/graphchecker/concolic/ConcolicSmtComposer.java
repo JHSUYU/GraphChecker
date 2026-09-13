@@ -155,9 +155,6 @@ public final class ConcolicSmtComposer {
     /** Advisory rows from the fault-control closure, for gaps.json. */
     public static final String FAULT_CONTROL_GAPS_FIELD = "faultControlGaps";
     static final String FAULT_CONTROL_CLOSURE_KIND = "FAULT_CONTROL_CLOSURE";
-    static final String FAULT_CONTROL_GAP_KIND = "FAULT_CONTROL_GAP";
-    static final String FAULT_CONTROL_CLOSURE_AUTHORITY =
-            "COMPOSER_REQUEST_FAULT_IDLE_CLOSURE_V1";
     /**
      * A read every one of whose candidate writers the fault idles.
      *
@@ -2562,7 +2559,6 @@ public final class ConcolicSmtComposer {
             JsonObject row = new JsonObject();
             row.addProperty("schemaVersion", 1);
             row.addProperty("kind", FAULT_CONTROL_CLOSURE_KIND);
-            row.addProperty("authority", FAULT_CONTROL_CLOSURE_AUTHORITY);
             row.addProperty("marker", marker);
             row.add("directlyIdledCaseSelectors", GSON.toJsonTree(seed));
             row.add("idledCaseSelectors",
@@ -2634,8 +2630,6 @@ public final class ConcolicSmtComposer {
             if (!faultControlGapKeys.add(reason + "\n" + subject)) return;
             JsonObject row = new JsonObject();
             row.addProperty("schemaVersion", 1);
-            row.addProperty("kind", FAULT_CONTROL_GAP_KIND);
-            row.addProperty("authority", FAULT_CONTROL_CLOSURE_AUTHORITY);
             row.addProperty("reason", reason);
             row.addProperty("subject", subject);
             row.addProperty("detail", detail);
@@ -2683,7 +2677,6 @@ public final class ConcolicSmtComposer {
             JsonObject ledger = new JsonObject();
             ledger.addProperty("schemaVersion", 1);
             ledger.addProperty("kind", FAULT_CONTROL_CLOSURE_KIND);
-            ledger.addProperty("authority", FAULT_CONTROL_CLOSURE_AUTHORITY);
             ledger.add("markers", faultControlClosureRows.deepCopy());
             ledger.add("gaps", faultControlTelemetry.deepCopy());
             return ledger;

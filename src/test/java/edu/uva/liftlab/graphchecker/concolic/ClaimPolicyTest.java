@@ -805,8 +805,6 @@ public class ClaimPolicyTest {
         JsonObject manifest = manifest();
         manifest.add("symbolicPropagationGaps", parseArray(
                 "[{\"schemaVersion\":2,"
-                + "\"kind\":\"SYMBOLIC_PROPAGATION_GAP\","
-                + "\"authority\":\"CONSUMER_BOUNDARY_CLOSURE_V1\","
                 + "\"reason\":\"INITIAL_CONTAINER_SNAPSHOT_TRUNCATED\","
                 + "\"subject\":\"MAP_STATE/140#-3\","
                 + "\"detail\":\"no complete initial content snapshot\"}]"));

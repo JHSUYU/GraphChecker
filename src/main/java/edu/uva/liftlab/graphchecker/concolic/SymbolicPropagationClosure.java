@@ -126,9 +126,6 @@ public final class SymbolicPropagationClosure {
     public static final String BOUNDARY_DEPTH = "boundaryDepth";
     public static final String INITIAL_SOURCE_CASE_PREFIX =
             "INITIAL_SOURCE.";
-    public static final String GAP_KIND = "SYMBOLIC_PROPAGATION_GAP";
-    public static final String GAP_AUTHORITY =
-            "CONSUMER_BOUNDARY_CLOSURE_V1";
 
     private SymbolicPropagationClosure() {
     }
@@ -2423,8 +2420,6 @@ public final class SymbolicPropagationClosure {
         private void gap(String reason, String subject, String detail) {
             JsonObject row = new JsonObject();
             row.addProperty("schemaVersion", SCHEMA_VERSION);
-            row.addProperty("kind", GAP_KIND);
-            row.addProperty("authority", GAP_AUTHORITY);
             row.addProperty("reason", safe(reason));
             row.addProperty("subject", safe(subject));
             row.addProperty("detail", safe(detail));
