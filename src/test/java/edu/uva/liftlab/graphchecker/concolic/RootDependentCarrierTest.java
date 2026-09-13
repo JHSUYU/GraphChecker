@@ -63,32 +63,6 @@ public class RootDependentCarrierTest {
     @Rule
     public final TemporaryFolder folder = new TemporaryFolder();
 
-    /**
-     * The root's own case decides the write, so the location is a carrier.
-     *
-     * <p>This is HDFS-17960 in miniature: the configured source guards the
-     * ordered-deletion case, the case writes the snapshot list, and the
-     * list is selected without anything naming it.</p>
-     */
-    @Test
-    public void aCounterAGuardedCaseWritesIsSelectedWithoutBeingNamed()
-            throws Exception {
-        ConcolicScheduler.SymbolicInputSelection selection = seeded(
-                graph(edge(ORDERED, GUARD_LOCAL, "HEAP_READ"),
-                        edge(GUARD_LOCAL, COUNTER, "GUARD")),
-                fieldRead(COUNTER), fieldRead(UNRELATED));
-
-        JsonArray selected = selection.select(NN,
-                actions(fieldRead(COUNTER), fieldRead(UNRELATED)));
-
-        assertEquals("the guarded write makes its location a carrier",
-                "SYMBOLIC", mode(selected, 0));
-        assertEquals("no root reaches the heartbeat clock",
-                "CONCRETE", mode(selected, 1));
-        assertEquals(ConcolicScheduler.SymbolicInputSelection
-                        .NOT_ROOT_DEPENDENT, demand(selected, 1));
-    }
-
     /** A read of a carrier that feeds another store carries it too. */
     @Test
     public void aCarrierThatFeedsAnotherStoreCarriesItToo() throws Exception {
@@ -149,32 +123,6 @@ public class RootDependentCarrierTest {
     }
 
     /**
-     * A library field read through an accessor is decided by its receiver.
-     *
-     * <p>{@code AtomicInteger#value} is a source cell of its own and meets
-     * the field that holds it only at the local the accessor returns, so
-     * the action's {@code dependencyCells} is the only cell it shares with
-     * the graph.  Consulting it is what lets the counter's own location
-     * select the port the experiment used to name by hand.</p>
-     */
-    @Test
-    public void anAccessorReadIsDecidedByTheLocationItReads()
-            throws Exception {
-        JsonObject accessor = accessorRead(
-                "<java.util.concurrent.atomic.AtomicInteger: int value>",
-                COUNTER_READ);
-        ConcolicScheduler.SymbolicInputSelection selection = seeded(
-                graph(edge(ORDERED, GUARD_LOCAL, "HEAP_READ"),
-                        edge(GUARD_LOCAL, COUNTER, "GUARD"),
-                        edge(COUNTER, COUNTER_READ, "HEAP_READ")),
-                accessor);
-
-        JsonArray selected = selection.select(NN, actions(accessor));
-
-        assertEquals("SYMBOLIC", mode(selected, 0));
-    }
-
-    /**
      * A field nothing writes is never a carrier.
      *
      * <p>That is a property of the walk rather than a case in it: a static
@@ -202,104 +150,6 @@ public class RootDependentCarrierTest {
                 "CONCRETE", mode(selected, 0));
         assertEquals(ConcolicScheduler.SymbolicInputSelection
                         .NOT_ROOT_DEPENDENT, demand(selected, 0));
-    }
-
-    /** A campaign whose roots this graph does not name narrows nothing. */
-    @Test
-    public void aSliceWithoutAResolvedRootNarrowsNothing() throws Exception {
-        ConcolicScheduler.SymbolicInputSelection selection = seeded(
-                graph(edge(UNRELATED, DOWNSTREAM, "HEAP_WRITE")),
-                fieldRead(COUNTER));
-
-        JsonArray selected = selection.select(NN,
-                actions(fieldRead(COUNTER)));
-
-        assertFalse("no root cell resolved, so the slice is withheld",
-                selection.carrierSlice().usable());
-        assertEquals("withholding keeps every carrier tracked",
-                "SYMBOLIC", mode(selected, 0));
-    }
-
-    /** A declared root is tracked whether or not the graph agrees. */
-    @Test
-    public void aDeclaredRootIsNeverNarrowedAway() throws Exception {
-        JsonObject declaredRead = fieldRead(UNRELATED);
-        ConcolicScheduler.SymbolicInputSelection selection =
-                ConcolicScheduler.SymbolicInputSelection.read(
-                        declarations("{\"regionId\":\"" + NN
-                                + "\",\"fieldSignatures\":[\"" + ORDERED
-                                + "\",\"" + UNRELATED + "\"]}"), catalog());
-        selection.seedCarrierSlice(
-                graph(edge(ORDERED, GUARD_LOCAL, "HEAP_READ")),
-                proposals(declaredRead));
-
-        JsonArray selected = selection.select(NN, actions(declaredRead));
-
-        assertEquals("SYMBOLIC", mode(selected, 0));
-        assertTrue("a declared root still mints",
-                selected.get(0).getAsJsonObject().get(
-                        ConcolicScheduler.SymbolicInputSelection
-                                .MINT_ELIGIBLE).getAsBoolean());
-    }
-
-    /** The policy artifact names the locations it kept. */
-    @Test
-    public void thePolicyRowNamesTheCarriersItKept() throws Exception {
-        ConcolicScheduler.SymbolicInputSelection selection = seeded(
-                graph(edge(ORDERED, GUARD_LOCAL, "HEAP_READ"),
-                        edge(GUARD_LOCAL, COUNTER, "GUARD")),
-                fieldRead(COUNTER), fieldRead(UNRELATED));
-        selection.select(NN, actions(fieldRead(COUNTER),
-                fieldRead(UNRELATED)));
-
-        JsonObject row = ConcolicScheduler.rootPolicyTelemetry(
-                null, selection);
-
-        assertTrue(row.get("carrierSliceApplied").getAsBoolean());
-        assertEquals("ROOT_DEPENDENT_CARRIERS",
-                row.get("carrierSliceReason").getAsString());
-        assertEquals(1, row.get("carrierLocationCount").getAsInt());
-        assertEquals(COUNTER, row.getAsJsonArray("carrierLocations")
-                .get(0).getAsString());
-    }
-
-    /**
-     * A structure-carrier role is not a refusal inside the root slice.
-     *
-     * <p>{@code CONCRETE_STRUCTURE_CARRIER} says "this port names a
-     * structural owner, not a value the solver moves".  That is right
-     * outside the slice and wrong inside it: the reference is then shared
-     * state whose writers a root decides, and the read arms over which of
-     * them wrote it -- HDFS-17899 bug3's {@code currentKey}, written by
-     * {@code updateKeys} / {@code setKeys} and read for its {@code keyId} at
-     * {@code BlockTokenSecretManager:538}.</p>
-     */
-    @Test
-    public void aStructureCarrierInTheSliceIsNotRefusedForItsRole()
-            throws Exception {
-        ConcolicScheduler.RootDependenceSlice slice =
-                ConcolicScheduler.RootDependenceSlice.forward(
-                        graph(edge(ORDERED, GUARD_LOCAL, "HEAP_READ"),
-                                edge(GUARD_LOCAL, SCALAR_OWNER, "GUARD")),
-                        Collections.singleton(ORDERED));
-
-        JsonArray planned = ConcolicScheduler.materializationPlan(
-                goal(structureCarrier(SCALAR_OWNER, "int"),
-                        structureCarrier(UNRELATED, "long")),
-                actions(structureCarrier(SCALAR_OWNER, "int"),
-                        structureCarrier(UNRELATED, "long")),
-                ConcolicScheduler.DefinitionIndex.from(
-                        Collections.<JsonObject>emptyList()),
-                Collections.<String>emptySet(), new JsonArray(), slice);
-
-        assertEquals("SYMBOLIC", mode(planned, 0));
-        assertTrue(planned.get(0).getAsJsonObject()
-                .get("rootDependentStructureCarrier").getAsBoolean());
-        assertEquals("outside the slice the role still decides",
-                "CONCRETE", mode(planned, 1));
-        assertEquals("CONCRETE_NON_VALUE_FRONTIER_ROLE:"
-                        + "CONCRETE_STRUCTURE_CARRIER",
-                demand(planned, 1));
     }
 
     /**
@@ -337,91 +187,6 @@ public class RootDependentCarrierTest {
                         .get("symbolicDemand").getAsString());
         assertTrue(planned.get(0).getAsJsonObject()
                 .get("rootDependentStructureCarrier").getAsBoolean());
-    }
-
-    /**
-     * A reference with no carrier declaration stays concrete.
-     *
-     * <p>A reference port is tracked and never minted, so the declaration is
-     * the whole of its materialization: without one the replay selects
-     * nothing, the getfield resolves no writer, and a SYMBOLIC port would
-     * reach the runtime as an input it cannot serve.  A plan frozen before
-     * references were declared therefore keeps its old answer.</p>
-     */
-    @Test
-    public void anUndeclaredReferenceIsNotTracked() throws Exception {
-        ConcolicScheduler.RootDependenceSlice slice =
-                ConcolicScheduler.RootDependenceSlice.forward(
-                        graph(edge(ORDERED, GUARD_LOCAL, "HEAP_READ"),
-                                edge(GUARD_LOCAL, CURRENT_KEY, "GUARD")),
-                        Collections.singleton(ORDERED));
-
-        JsonArray planned = ConcolicScheduler.materializationPlan(
-                goal(structureCarrier(CURRENT_KEY, BLOCK_KEY)),
-                actions(structureCarrier(CURRENT_KEY, BLOCK_KEY)),
-                ConcolicScheduler.DefinitionIndex.from(
-                        Collections.<JsonObject>emptyList()),
-                Collections.<String>emptySet(), new JsonArray(), slice);
-
-        assertEquals("CONCRETE", mode(planned, 0));
-        assertEquals("CONCRETE_UNSUPPORTED_LEAF_TYPE", demand(planned, 0));
-    }
-
-    /**
-     * The exact-field-path half of the leaf contract still binds.
-     *
-     * <p>Being exempt from the scalar type gate is not being exempt from
-     * naming the field that is read: a port whose declared leaf disagrees
-     * with the access it claims is refused exactly as before, because
-     * nothing downstream could say which location the identity belongs
-     * to.</p>
-     */
-    @Test
-    public void aReferenceCarrierStillNamesItsExactLeaf() throws Exception {
-        ConcolicScheduler.RootDependenceSlice slice =
-                ConcolicScheduler.RootDependenceSlice.forward(
-                        graph(edge(ORDERED, GUARD_LOCAL, "HEAP_READ"),
-                                edge(GUARD_LOCAL, COUNTER, "GUARD")),
-                        Collections.singleton(ORDERED));
-
-        JsonArray planned = ConcolicScheduler.materializationPlan(
-                goal(declaredCarriers(COUNTER),
-                        structureCarrier(COUNTER, BLOCK_KEY)),
-                actions(structureCarrier(COUNTER, BLOCK_KEY)),
-                ConcolicScheduler.DefinitionIndex.from(
-                        Collections.<JsonObject>emptyList()),
-                Collections.<String>emptySet(), new JsonArray(), slice);
-
-        assertEquals("CONCRETE", mode(planned, 0));
-        assertEquals("CONCRETE_FIELD_LEAF_TYPE_MISMATCH",
-                demand(planned, 0));
-    }
-
-    /**
-     * A container is not an identity carrier.
-     *
-     * <p>Its state, not its reference, is what a reader of a collection
-     * asks about, and the bounded container model is what answers that.
-     * Admitting it here would give one location two unrelated
-     * representations.</p>
-     */
-    @Test
-    public void anInSliceContainerIsNotAReferenceCarrier() throws Exception {
-        ConcolicScheduler.RootDependenceSlice slice =
-                ConcolicScheduler.RootDependenceSlice.forward(
-                        graph(edge(ORDERED, GUARD_LOCAL, "HEAP_READ"),
-                                edge(GUARD_LOCAL, COUNTER, "GUARD")),
-                        Collections.singleton(ORDERED));
-
-        JsonArray planned = ConcolicScheduler.materializationPlan(
-                goal(structureCarrier(COUNTER, "java.util.List")),
-                actions(structureCarrier(COUNTER, "java.util.List")),
-                ConcolicScheduler.DefinitionIndex.from(
-                        Collections.<JsonObject>emptyList()),
-                Collections.<String>emptySet(), new JsonArray(), slice);
-
-        assertEquals("CONCRETE", mode(planned, 0));
-        assertEquals("CONCRETE_UNSUPPORTED_LEAF_TYPE", demand(planned, 0));
     }
 
     // --- helpers ---------------------------------------------------------

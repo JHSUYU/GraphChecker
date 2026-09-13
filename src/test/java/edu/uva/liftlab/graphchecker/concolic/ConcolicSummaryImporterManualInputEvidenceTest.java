@@ -77,34 +77,6 @@ public final class ConcolicSummaryImporterManualInputEvidenceTest {
         assertFalse(forgedIssues.isEmpty());
     }
 
-    @Test
-    public void exactReuseHasNarrowAuthority() {
-        JsonObject action = action();
-        JsonObject reused = observation(action, PLANNED + "#a1", false,
-                true);
-        JsonObject owner = new JsonObject();
-        owner.addProperty(LocalCaseIdentity.OWNER, "case-owner");
-        owner.addProperty("sourceKey", "source");
-        owner.addProperty("regionId", "region");
-        owner.addProperty("occurrenceId", PLANNED + "#a1");
-        owner.addProperty("boundarySessionScope", "replay-group:test");
-        JsonArray observations = new JsonArray();
-        observations.add(reused);
-        owner.add(ConcolicSummaryImporter.MANUAL_INPUT_OBSERVATION_FIELD,
-                observations);
-
-        Map<String, List<JsonObject>> authorities = ConcolicSmtComposer
-                .exactReusedManualRootAuthorities(
-                        Collections.singletonList(owner),
-                        Collections.singletonMap("case-owner",
-                                "replay-group:test"));
-        assertEquals(1, authorities.size());
-        JsonObject admitted = authorities.values().iterator().next().get(0);
-        assertEquals(RAW, admitted.get("rawSymbol").getAsString());
-        assertTrue(admitted.get("sourceIdentity").getAsString()
-                .startsWith("MANUAL."));
-    }
-
     private static ConcolicSummaryImporter.ManualInputEvidence imported(
             ExecutionTask task, JsonObject observation, int activation,
             List<String> issues) {

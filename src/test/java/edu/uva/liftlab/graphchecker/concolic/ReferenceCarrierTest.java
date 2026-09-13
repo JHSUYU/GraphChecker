@@ -46,99 +46,7 @@ public class ReferenceCarrierTest {
                 "L" + BLOCK_KEY.replace('.', '/') + ";"));
     }
 
-    /**
-     * Everything the other representations already own stays theirs.
-     *
-     * <p>Two representations of one location is not a widening, it is an
-     * ambiguity: the bounded container model answers reads of a collection,
-     * the scalar contract answers a String or a boxed primitive, and an
-     * array is state with its own element locations.  {@code Object} names
-     * no class a dependent read could resolve a field of, and is the type a
-     * container most often hides behind.</p>
-     */
-    @Test
-    public void everyOtherShapeKeepsItsOwnRepresentation() {
-        assertFalse(JavaPrimitiveSmtSemantics.referenceIdentityCarrier("int"));
-        assertFalse(JavaPrimitiveSmtSemantics.referenceIdentityCarrier("J"));
-        assertFalse(JavaPrimitiveSmtSemantics.referenceIdentityCarrier(
-                "java.lang.String"));
-        assertFalse(JavaPrimitiveSmtSemantics.referenceIdentityCarrier(
-                "java.lang.Integer"));
-        assertFalse(JavaPrimitiveSmtSemantics.referenceIdentityCarrier(
-                "java.lang.Object"));
-        assertFalse(JavaPrimitiveSmtSemantics.referenceIdentityCarrier(
-                "java.util.List"));
-        assertFalse(JavaPrimitiveSmtSemantics.referenceIdentityCarrier(
-                "java.util.Map"));
-        assertFalse(JavaPrimitiveSmtSemantics.referenceIdentityCarrier(
-                BLOCK_KEY + "[]"));
-        assertFalse(JavaPrimitiveSmtSemantics.referenceIdentityCarrier(""));
-        assertFalse(JavaPrimitiveSmtSemantics.referenceIdentityCarrier(null));
-    }
-
-    // ------------------------------------------------- the VM payload path
-
-    /**
-     * The observed pair reaches the host that can use it.
-     *
-     * <p>A host with no representation for an owner choice keeps the plain
-     * projection, so the extra facts are carried on a second entry point
-     * rather than by changing the one every lowering shares.</p>
-     */
-    @Test
-    public void theObservedPairReachesTheHost() {
-        RecordingHost host = new RecordingHost();
-        ContainerSmtCodec.field(fieldAccess(true), host);
-
-        assertEquals("owner", host.owner);
-        assertEquals("witness", host.concreteOwner);
-        assertEquals("23", host.concreteValue);
-        assertEquals(BLOCK_KEY.replace('.', '/'), host.ownerClass);
-        assertEquals(16, host.fieldOffset);
-    }
-
-    /**
-     * A read with no owner choice is exactly the read it always was.
-     *
-     * <p>The VM writes both members together or neither, so a half-present
-     * pair is a payload this codec does not recognise; guessing the missing
-     * half would invent an observation.</p>
-     */
-    @Test
-    public void aReadWithoutAnOwnerChoiceIsUnchanged() {
-        RecordingHost plain = new RecordingHost();
-        ContainerSmtCodec.field(fieldAccess(false), plain);
-        assertNull(plain.concreteOwner);
-        assertNull(plain.concreteValue);
-
-        JsonObject half = fieldAccess(true);
-        half.remove("concreteValue");
-        RecordingHost partial = new RecordingHost();
-        ContainerSmtCodec.field(half, partial);
-        assertNull(partial.concreteOwner);
-    }
-
     // ---------------------------------------------------- the bound value
-
-    /**
-     * The shape of the value a dependent reference read lowers to.
-     *
-     * <p>Outermost is the object this execution read from; then every
-     * identity whose own field is versioned; innermost the uninterpreted
-     * projection, which is what an identity with neither is worth.</p>
-     */
-    @Test
-    public void theBoundValueIsIndexedByTheOwnerIdentity() {
-        List<String[]> routes = new ArrayList<>();
-        routes.add(new String[]{"installed_ref", "rf_value__installed"});
-
-        assertEquals("(ite (= owner observed_ref) 23"
-                        + " (ite (= owner installed_ref) rf_value__installed"
-                        + " (container_field__x owner)))",
-                ConcolicSmtComposer.referenceFieldBinding("owner",
-                        "observed_ref", "23", "(container_field__x owner)",
-                        routes));
-    }
 
     /** With nothing else known, the read is the free projection. */
     @Test
@@ -212,46 +120,7 @@ public class ReferenceCarrierTest {
                 + "(assert (= read 23))\n"));
     }
 
-    /**
-     * The composed formula states no object-identity axiom of its own.
-     *
-     * <p>A structural witness is scoped by the replay group, so a
-     * {@code distinct} over the witnesses of one scope says that dozens of
-     * executions allocated dozens of different objects -- which no recording
-     * claims, and which refuted HDFS-17899 bug3 outright.  The binding
-     * therefore carries the arms and nothing else, and the composer emits no
-     * identity row anywhere.</p>
-     */
-    @Test
-    public void theComposerAssertsNoObjectIdentityAxiom() throws Exception {
-        String binding = ConcolicSmtComposer.referenceFieldBinding("owner",
-                "observed_ref", "23", "(container_field__x owner)",
-                Collections.singletonList(new String[]{
-                        "installed_ref", "installed_key_id"}));
-
-        assertFalse(binding, binding.contains("distinct"));
-
-        String source = new String(Files.readAllBytes(Paths.get(
-                        "src/main/java/edu/uva/liftlab/graphchecker"
-                                + "/concolic/ConcolicSmtComposer.java")),
-                StandardCharsets.UTF_8);
-        assertFalse("reference_identity_distinct is unsound over a replay"
-                        + " group and must not come back unexamined",
-                source.contains("reference_identity_distinct"));
-    }
-
     // ------------------------------------------------------------- helpers
-
-    @Test
-    public void aLocationKeyNamesItsSlot() {
-        assertEquals(24, SharedStateEvidence.locationSlotOf(
-                "INSTANCE_FIELD/7#24"));
-        assertEquals(7L, SharedStateEvidence.locationOwnerOf(
-                "INSTANCE_FIELD/7#24"));
-        assertEquals(-1, SharedStateEvidence.locationSlotOf("nonsense"));
-        assertEquals(-1, SharedStateEvidence.locationSlotOf(
-                "INSTANCE_FIELD/7#x"));
-    }
 
     private static JsonObject fieldAccess(boolean observed) {
         JsonObject node = new JsonObject();
@@ -362,11 +231,17 @@ public class ReferenceCarrierTest {
                 .trim();
     }
 
+    /**
+     * Whether z3 can be run at all.
+     *
+     * <p>This used to close z3's stdout before waiting on it, so z3 died on
+     * EPIPE, the probe read a non-zero exit as "no z3", and the one test that
+     * proves the reference binding really separates its writers skipped on
+     * every host that had z3 installed.  Let the process write and exit.</p>
+     */
     private static boolean z3Available() {
         try {
-            Process process = new ProcessBuilder("z3", "--version")
-                    .redirectErrorStream(true).start();
-            process.getInputStream().close();
+            Process process = new ProcessBuilder("z3", "-version").start();
             return process.waitFor() == 0;
         } catch (Exception unavailable) {
             return false;

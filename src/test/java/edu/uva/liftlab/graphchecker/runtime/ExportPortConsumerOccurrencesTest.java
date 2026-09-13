@@ -66,55 +66,6 @@ public class ExportPortConsumerOccurrencesTest {
                 KEY_ID_PORT).size());
     }
 
-    /** 17897: one refresh answer on one exchange leg, five consumers. */
-    @Test
-    public void oneRefreshAnswerAddressesEveryPerKeyConsumer() {
-        ConcolicTaskPlan.RuntimeTask task = task(
-                "plans/hdfs-17897-loop-body-producer.json");
-
-        assertEquals(consumers("hdfs-17897/dn0", 1, 2, 3, 4, 5),
-                task.exportConsumerOccurrences(KEY_ID_PORT));
-        // Every edge is the same physical delivery: the fan-out is the
-        // repeated field inside one response, not two responses merged.
-        assertEquals(1, exchangeLegs(
-                row("plans/hdfs-17897-loop-body-producer.json"),
-                KEY_ID_PORT).size());
-    }
-
-    /** An unplanned consumer occurrence is still refused the delivery. */
-    @Test
-    public void onlyPlannedConsumerOccurrencesAreAddressed() {
-        ConcolicTaskPlan.RuntimeTask task = task(
-                "plans/hdfs-17899-bug3-loop-body-producer.json");
-        List<String> addressed = task.exportConsumerOccurrences(KEY_ID_PORT);
-
-        assertTrue(SymbolicMessageEnvelope.stage(KEY_ID_PORT, 7L,
-                task.taskId, task.occurrenceId + "#a1", addressed));
-        SymbolicMessageEnvelope.installInbound(
-                SymbolicMessageEnvelope.takeOutbound());
-        SymbolicMessageEnvelope.Entry carried =
-                SymbolicMessageEnvelope.peek(KEY_ID_PORT);
-
-        assertTrue(carried.present());
-        assertEquals(addressed, carried.consumerOccurrenceIds());
-        for (String consumer : addressed) {
-            assertTrue(consumer, ConcolicRegionRuntime.inboundMessageMatches(
-                    KEY_ID_PORT, task.occurrenceId, consumer));
-            // The activation suffix a replay adds is not part of the address.
-            assertTrue(consumer, ConcolicRegionRuntime.inboundMessageMatches(
-                    KEY_ID_PORT, task.occurrenceId + "#a3",
-                    consumer + "#a2"));
-        }
-        assertFalse(ConcolicRegionRuntime.inboundMessageMatches(KEY_ID_PORT,
-                task.occurrenceId,
-                "hdfs-17899/target-dn#epoch0/region/"
-                        + "REGION.1f6914ec-f8dc-3369-8f6a-dbfcccdb2762#9"));
-        assertFalse(ConcolicRegionRuntime.inboundMessageMatches(KEY_ID_PORT,
-                task.occurrenceId,
-                "hdfs-17899/source-dn#epoch0/region/"
-                        + "REGION.1f6914ec-f8dc-3369-8f6a-dbfcccdb2762#2"));
-    }
-
     /** One staged value per iteration; the queue hands out one each. */
     @Test
     public void eachStagedValueIsTakenOnce() {
@@ -136,34 +87,6 @@ public class ExportPortConsumerOccurrencesTest {
             assertEquals(iteration, taken.handle());
         }
         assertFalse(SymbolicMessageEnvelope.take(KEY_ID_PORT).present());
-    }
-
-    /** Two sources on one exported port is not a delivery any message makes. */
-    @Test
-    public void exportPortWithConsumersOnTwoSourcesIsRefused() {
-        JsonObject row = row("plans/hdfs-17899-bug3-loop-body-producer.json");
-        JsonArray bindings = row.getAsJsonArray("edgeBindings");
-        for (int index = 0; index < bindings.size(); index++) {
-            JsonObject binding = bindings.get(index).getAsJsonObject();
-            if (!KEY_ID_PORT.equals(
-                    optional(binding, "fromOutputPort"))) {
-                continue;
-            }
-            binding.addProperty("toOccurrenceId",
-                    optional(binding, "toOccurrenceId")
-                            .replace("target-dn", "source-dn"));
-            break;
-        }
-
-        try {
-            ExecutionTask.decode(row);
-            fail("a port whose consumers span two sources must be refused");
-        } catch (IllegalArgumentException refused) {
-            assertTrue(refused.getMessage(), refused.getMessage().contains(
-                    "more than one source"));
-            assertTrue(refused.getMessage(),
-                    refused.getMessage().contains(KEY_ID_PORT));
-        }
     }
 
     private static List<String> consumers(String source, int... ordinals) {

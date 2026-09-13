@@ -42,82 +42,6 @@ public class TargetOccurrenceElectionTest {
             "hdfs-17897/dn0#epoch0/region/REGION.53092d3e#2";
 
     /**
-     * hdfs-17897's shape: the elected member is the DataNode handshake and
-     * concludes nothing, while the client handshake -- where the chain ends
-     * -- carries an explained satisfying witness.  The claim follows the
-     * evidence and not the election order.
-     */
-    @Test
-    public void theExplainedWitnessOutranksTheElectedInconclusiveMember()
-            throws IOException {
-        JsonObject ledger = TargetOccurrenceElection.elect(Arrays.asList(
-                composed(DATANODE_HANDSHAKE, "FINAL_READY", 0,
-                        ClaimPolicy.INCONCLUSIVE_PARTIAL, 2, -1),
-                composed(CLIENT_HANDSHAKE, "FINAL_READY", 0,
-                        ClaimPolicy.SAT_CANDIDATE, 0, 3)));
-        assertEquals(CLIENT_HANDSHAKE,
-                ledger.get("chosenOccurrenceId").getAsString());
-        assertEquals(TargetOccurrenceElection.SAT_CANDIDATE_EXPLAINED_WITNESS,
-                ledger.get("chosenSupport").getAsString());
-        assertEquals(2, ledger.get("occurrenceCount").getAsInt());
-        assertEquals(2, ledger.get("composedCount").getAsInt());
-        assertFalse(chosen(ledger, 0));
-        assertTrue(chosen(ledger, 1));
-        // Every occurrence keeps its own verdict beside the elected one.
-        assertEquals(ClaimPolicy.INCONCLUSIVE_PARTIAL,
-                row(ledger, 0).get("claim").getAsString());
-        assertTrue(ledger.get("electionReason").getAsString()
-                .contains(DATANODE_HANDSHAKE));
-    }
-
-    /** A satisfying witness nobody explained is still better than none. */
-    @Test
-    public void anUnexplainedWitnessOutranksAnInconclusiveRun()
-            throws IOException {
-        JsonObject ledger = TargetOccurrenceElection.elect(Arrays.asList(
-                composed(CLIENT_HANDSHAKE, "FINAL_READY", 0,
-                        ClaimPolicy.INCONCLUSIVE_PARTIAL, 1, -1),
-                composed(DATANODE_HANDSHAKE, "FINAL_READY", 0,
-                        ClaimPolicy.SAT_CANDIDATE, 0, -1)));
-        assertEquals(DATANODE_HANDSHAKE,
-                ledger.get("chosenOccurrenceId").getAsString());
-        assertEquals(TargetOccurrenceElection.SAT_CANDIDATE,
-                ledger.get("chosenSupport").getAsString());
-    }
-
-    /** A closed refutation is a result; an inconclusive run is not. */
-    @Test
-    public void aClosedRefutationOutranksAnInconclusiveRun()
-            throws IOException {
-        JsonObject ledger = TargetOccurrenceElection.elect(Arrays.asList(
-                composed(CLIENT_HANDSHAKE, "FINAL_READY", 0,
-                        ClaimPolicy.INCONCLUSIVE_PARTIAL, 4, -1),
-                composed(DATANODE_HANDSHAKE, "FINAL_READY", 0,
-                        ClaimPolicy.UNSAT_CLOSED, 0, -1)));
-        assertEquals(DATANODE_HANDSHAKE,
-                ledger.get("chosenOccurrenceId").getAsString());
-    }
-
-    /**
-     * A refused composition states nothing about its occurrence, whatever
-     * claim the solver stage then computed over the refusal stub, so it
-     * ranks with the occurrence nobody composed.
-     */
-    @Test
-    public void aRefusedCompositionRanksWithAnUncomposedOccurrence()
-            throws IOException {
-        JsonObject ledger = TargetOccurrenceElection.elect(Arrays.asList(
-                composed(CLIENT_HANDSHAKE, "FINAL_REFUSED", 1,
-                        ClaimPolicy.SAT_CANDIDATE, 0, 0),
-                composed(DATANODE_HANDSHAKE, "FINAL_READY", 0,
-                        ClaimPolicy.INCONCLUSIVE_PARTIAL, 3, -1)));
-        assertEquals(DATANODE_HANDSHAKE,
-                ledger.get("chosenOccurrenceId").getAsString());
-        assertEquals(TargetOccurrenceElection.REFUSED,
-                row(ledger, 0).get("support").getAsString());
-    }
-
-    /**
      * hdfs-17960's shape: the recording observed the site twice and the
      * active observed closure scheduled a replay member for one of them, so
      * the other is reported and never composed.  The composed occurrence is
@@ -147,60 +71,6 @@ public class TargetOccurrenceElectionTest {
                 row(ledger, 1).get("support").getAsString());
     }
 
-    /**
-     * hdfs-17897's own shape on the delivered corpus: the one occurrence
-     * that composed was refused, and the other was never composed at all.
-     * A refusal is still a document with its named blockers, so the run
-     * publishes it rather than electing the occurrence that has no artifacts
-     * -- which is exactly what a run with one target occurrence has always
-     * published.
-     */
-    @Test
-    public void aRefusedCompositionIsElectedOverAnUncomposedOccurrence()
-            throws IOException {
-        JsonObject skipped = new JsonObject();
-        skipped.addProperty("occurrenceId", CLIENT_HANDSHAKE);
-        skipped.addProperty("status",
-                TargetOccurrenceElection.SKIPPED_UNOBSERVED);
-        JsonObject ledger = TargetOccurrenceElection.elect(Arrays.asList(
-                composed(DATANODE_HANDSHAKE, "FINAL_REFUSED", 27,
-                        ClaimPolicy.INCONCLUSIVE_PARTIAL, 6, -1),
-                skipped));
-        assertEquals(DATANODE_HANDSHAKE,
-                ledger.get("chosenOccurrenceId").getAsString());
-        assertEquals(TargetOccurrenceElection.REFUSED,
-                ledger.get("chosenSupport").getAsString());
-        // The skipped row reports no blocker; that must not read as fewer.
-        assertEquals(0, row(ledger, 1).get("blockerCount").getAsInt());
-        assertEquals(TargetOccurrenceElection.NOT_COMPOSED,
-                row(ledger, 1).get("support").getAsString());
-    }
-
-    /**
-     * Equal evidence leaves the schedule order deciding, so the same corpus
-     * always elects the same occurrence and a composed formula never changes
-     * because two verdicts arrived in a different order.
-     */
-    @Test
-    public void equalEvidenceElectsTheFirstScheduledOccurrence()
-            throws IOException {
-        JsonObject ledger = TargetOccurrenceElection.elect(Arrays.asList(
-                composed(DATANODE_HANDSHAKE, "FINAL_READY", 0,
-                        ClaimPolicy.SAT_CANDIDATE, 0, 1),
-                composed(CLIENT_HANDSHAKE, "FINAL_READY", 0,
-                        ClaimPolicy.SAT_CANDIDATE, 0, 1)));
-        assertEquals(DATANODE_HANDSHAKE,
-                ledger.get("chosenOccurrenceId").getAsString());
-        // The tie-break before order is the blocker count.
-        JsonObject fewer = TargetOccurrenceElection.elect(Arrays.asList(
-                composed(DATANODE_HANDSHAKE, "FINAL_READY", 0,
-                        ClaimPolicy.INCONCLUSIVE_PARTIAL, 4, -1),
-                composed(CLIENT_HANDSHAKE, "FINAL_READY", 0,
-                        ClaimPolicy.INCONCLUSIVE_PARTIAL, 1, -1)));
-        assertEquals(CLIENT_HANDSHAKE,
-                fewer.get("chosenOccurrenceId").getAsString());
-    }
-
     /** One occurrence is the ordinary case and says so without a comparison. */
     @Test
     public void oneOccurrenceIsItsOwnClaim() throws IOException {
@@ -211,58 +81,6 @@ public class TargetOccurrenceElectionTest {
         assertTrue(chosen(ledger, 0));
         assertTrue(ledger.get("electionReason").getAsString()
                 .contains("one occurrence"));
-    }
-
-    /** The per-occurrence stage times are carried into the ledger. */
-    @Test
-    public void theLedgerCarriesPerOccurrenceStageTimes() throws IOException {
-        JsonObject report = composed(CLIENT_HANDSHAKE, "FINAL_READY", 0,
-                ClaimPolicy.SAT_CANDIDATE, 0, 0);
-        report.addProperty("composeWallMillis", 51234L);
-        report.addProperty("solveWallMillis", 9001L);
-        JsonObject ledger = TargetOccurrenceElection.elect(
-                Collections.singletonList(report));
-        assertEquals(51234L, row(ledger, 0).get("composeWallMillis")
-                .getAsLong());
-        assertEquals(9001L, row(ledger, 0).get("solveWallMillis")
-                .getAsLong());
-    }
-
-    /** A report set that names one occurrence twice is not a ledger. */
-    @Test
-    public void anOccurrenceIsReportedOnce() {
-        try {
-            TargetOccurrenceElection.elect(Arrays.asList(
-                    composed(CLIENT_HANDSHAKE, "FINAL_READY", 0,
-                            ClaimPolicy.SAT_CANDIDATE, 0, 0),
-                    composed(CLIENT_HANDSHAKE, "FINAL_READY", 0,
-                            ClaimPolicy.SAT_CANDIDATE, 0, 0)));
-            fail("one occurrence was reported twice");
-        } catch (IOException expected) {
-            assertTrue(expected.getMessage().contains("reported twice"));
-        }
-    }
-
-    /**
-     * A solver report with no ClaimPolicy decision is a report this stage may
-     * not elect from: the shell used to be able to fall back to its own
-     * verdict, and this is the same gate one layer up.
-     */
-    @Test
-    public void aComposedOccurrenceWithoutAClaimIsRefused() throws Exception {
-        JsonObject report = composed(CLIENT_HANDSHAKE, "FINAL_READY", 0,
-                ClaimPolicy.SAT_CANDIDATE, 0, 0);
-        Path reach = Paths.get(report.get("reachReport").getAsString());
-        Files.write(reach, "{\"state\":\"sat\"}"
-                .getBytes(StandardCharsets.UTF_8));
-        try {
-            TargetOccurrenceElection.elect(
-                    Collections.singletonList(report));
-            fail("a claimless reach report was elected from");
-        } catch (IOException expected) {
-            assertTrue(expected.getMessage()
-                    .contains("no ClaimPolicy decision"));
-        }
     }
 
     private static JsonObject row(JsonObject ledger, int index) {

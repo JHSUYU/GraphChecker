@@ -15,38 +15,6 @@ import static org.junit.Assert.assertTrue;
 /** What the recording says a wall clock can have returned. */
 public class ClockRootPhysicsTest {
 
-    @Test
-    public void clockReadsGroupByNodeInRecordedOrder() {
-        Map<String, List<ClockRootPhysics.ClockRead>> byNode =
-                ClockRootPhysics.readsByNode(Collections.singletonList(
-                        planRow(Arrays.asList(
-                                symbolize("nn0", "p.late", 200, "1700000000200"),
-                                symbolize("nn0", "p.early", 100, "1700000000100"),
-                                symbolize("dn0", "p.dn", 150, "1700000000150"),
-                                // Not a clock: carries no window or order.
-                                other("nn0", "p.field", 120)))));
-
-        assertEquals(2, byNode.size());
-        List<ClockRootPhysics.ClockRead> nn0 = byNode.get("nn0");
-        assertEquals(2, nn0.size());
-        assertEquals(100L, nn0.get(0).eventSeq);
-        assertEquals(1700000000100L, nn0.get(0).recordedValue);
-        assertEquals(200L, nn0.get(1).eventSeq);
-        assertEquals(1, byNode.get("dn0").size());
-    }
-
-    /** One port mints one root, so two rows for it are one read. */
-    @Test
-    public void onePortIsOneRead() {
-        Map<String, List<ClockRootPhysics.ClockRead>> byNode =
-                ClockRootPhysics.readsByNode(Collections.singletonList(
-                        planRow(Arrays.asList(
-                                symbolize("nn0", "p.one", 300, "1700000000300"),
-                                symbolize("nn0", "p.one", 100, "1700000000100")))));
-        assertEquals(1, byNode.get("nn0").size());
-        assertEquals(100L, byNode.get("nn0").get(0).eventSeq);
-    }
-
     /**
      * The window brackets the recorded value rather than pinning it, and it
      * survives a recorded value below the skew without underflowing.

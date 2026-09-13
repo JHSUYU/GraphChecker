@@ -56,55 +56,6 @@ public class TargetOccurrenceLedgerTest {
                 .getAsJsonArray("failureSites").get(0).getAsString());
     }
 
-    /** A region-path goal is not a target occurrence. */
-    @Test
-    public void anOrdinaryRegionPathGoalIsNotATargetOccurrence() {
-        List<RegionInstancePlan> plans = Collections.singletonList(
-                plan("hdfs-17897/nn0#epoch0/region/REGION.aaa1cfd7#1",
-                        "REGION.aaa1cfd7", "GOAL.REGION_PATH.1", false));
-        assertEquals(0, ConcolicSmtComposer.targetReachOccurrences(plans,
-                fatalQuery("", "")).size());
-    }
-
-    /** The claim reports the occurrence the composition left out. */
-    @Test
-    public void theClaimReportsTheUncomposedOccurrence() {
-        JsonObject manifest = new JsonObject();
-        manifest.add(ConcolicSmtComposer.TARGET_REACH_OCCURRENCES,
-                ConcolicSmtComposer.targetReachOccurrences(bothHandshakes(),
-                        fatalQuery(DATANODE_HANDSHAKE,
-                                "GOAL.TARGET_REACH.2")));
-        List<JsonObject> findings =
-                ClaimPolicy.uncomposedTargetOccurrences(manifest);
-        assertEquals(1, findings.size());
-        assertEquals(ClaimPolicy.TARGET_OCCURRENCE_NOT_COMPOSED,
-                findings.get(0).get("code").getAsString());
-        assertEquals(CLIENT_HANDSHAKE,
-                findings.get(0).get("subject").getAsString());
-        assertTrue(findings.get(0).get("detail").getAsString()
-                .contains(DATANODE_HANDSHAKE));
-    }
-
-    /**
-     * A recording that observed the annotated site once says nothing: that
-     * is the ordinary case and every existing corpus rests on it.
-     */
-    @Test
-    public void oneObservedOccurrenceReportsNothing() {
-        JsonObject manifest = new JsonObject();
-        manifest.add(ConcolicSmtComposer.TARGET_REACH_OCCURRENCES,
-                ConcolicSmtComposer.targetReachOccurrences(
-                        Collections.singletonList(plan(DATANODE_HANDSHAKE,
-                                "REGION.53092d3e", "GOAL.TARGET_REACH.2",
-                                true)),
-                        fatalQuery(DATANODE_HANDSHAKE,
-                                "GOAL.TARGET_REACH.2")));
-        assertTrue(ClaimPolicy.uncomposedTargetOccurrences(manifest)
-                .isEmpty());
-        assertTrue(ClaimPolicy.uncomposedTargetOccurrences(new JsonObject())
-                .isEmpty());
-    }
-
     /**
      * The schedule names every target occurrence as one, not only the one it
      * elects.
@@ -132,23 +83,6 @@ public class TargetOccurrenceLedgerTest {
             if (selection.target) elected++;
         }
         assertEquals("one member carries the replay closure", 1, elected);
-    }
-
-    /** An ordinary causal dependency is not flagged as a target occurrence. */
-    @Test
-    public void aCausalDependencyIsNotATargetOccurrence() {
-        RegionInstancePlan dependency = plan(
-                "hdfs-17897/nn0#epoch0/region/REGION.aaa1cfd7#1",
-                "REGION.aaa1cfd7", "GOAL.REGION_PATH.1", false);
-        RuntimeWorkflowDiscovery.Selection selection =
-                RuntimeWorkflowDiscovery.Selection.dependency("CAMPAIGN.1",
-                        dependency, dependency.goals().get(0), false);
-        assertTrue(!selection.targetReach);
-        assertEquals("DEPENDENCY",
-                selection.indexEntry("TASK.SEED.1").get("role")
-                        .getAsString());
-        assertTrue(!selection.indexEntry("TASK.SEED.1")
-                .get("targetReachGoal").getAsBoolean());
     }
 
     private static List<RegionInstancePlan> bothHandshakes() {

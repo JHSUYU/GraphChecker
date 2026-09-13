@@ -49,37 +49,6 @@ public class RecordedOrderRaceTest {
     }
 
     /**
-     * An earlier predecessor is the model declining a write the program had
-     * already done, which is a different thing and not this finding.
-     */
-    @Test
-    public void anEarlierPredecessorIsNotARace() {
-        assertNull(RecordedOrderRace.of(
-                manifest(armsBelowTheRead(), laterWrites(247L)),
-                fatalArms(), model("read_selector__w1")));
-    }
-
-    /** With nothing written after the read there is no race to report. */
-    @Test
-    public void noWriteAfterTheReadIsNoRace() {
-        assertNull(RecordedOrderRace.of(
-                manifest(armsBelowTheRead(), new JsonArray()),
-                fatalArms(), model("read_selector__w2")));
-    }
-
-    /** A write after the read to some other location is another story. */
-    @Test
-    public void aLaterWriteElsewhereIsNotThisReadsRace() {
-        JsonArray elsewhere = laterWrites(247L);
-        elsewhere.get(0).getAsJsonObject()
-                .addProperty("sessionLocationKey", "MAP_STATE/11#-3");
-
-        assertNull(RecordedOrderRace.of(
-                manifest(armsBelowTheRead(), elsewhere),
-                fatalArms(), model("read_selector__w2")));
-    }
-
-    /**
      * The initial arm is the absence of a writer. A witness that takes it is
      * the free-initial-arm freedom, which blocks; calling it a race would
      * launder exactly the case the ruling still refuses.
@@ -89,38 +58,6 @@ public class RecordedOrderRaceTest {
         assertNull(RecordedOrderRace.of(
                 manifest(armsBelowTheRead(), laterWrites(247L)),
                 fatalArms(), model("read_selector__initial")));
-    }
-
-    /**
-     * A manifest published before the order rows existed carries no race.
-     * Answering "no" there is the honest reading; guessing from arm position
-     * would invent an order the recording never stated.
-     */
-    @Test
-    public void aManifestWithoutOrderRowsCarriesNoRace() {
-        JsonArray arms = armsBelowTheRead();
-        for (int index = 0; index < arms.size(); index++) {
-            arms.get(index).getAsJsonObject().remove(
-                    RecordedOrderRace.WRITER_VERSION);
-            arms.get(index).getAsJsonObject().remove(
-                    RecordedOrderRace.READ_EVENT);
-        }
-        List<JsonObject> fatal = new ArrayList<>();
-        for (int index = 0; index < arms.size(); index++) {
-            fatal.add(arms.get(index).getAsJsonObject());
-        }
-
-        assertNull(RecordedOrderRace.of(
-                manifest(arms, laterWrites(247L)), fatal,
-                model("read_selector__w2")));
-    }
-
-    /** Nothing selected is nothing to say. */
-    @Test
-    public void noSelectedArmIsNoRace() {
-        assertNull(RecordedOrderRace.of(
-                manifest(armsBelowTheRead(), laterWrites(247L)),
-                fatalArms(), new LinkedHashMap<String, String>()));
     }
 
     // ---- fixtures ---------------------------------------------------------

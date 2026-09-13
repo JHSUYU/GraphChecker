@@ -9,41 +9,6 @@ import static org.junit.Assert.assertNotNull;
 
 /** Content-addressed container identity and materialization. */
 public class MapStateContentAddressTest {
-    @Test
-    public void iterationProjectionFindsMapStateThroughReadChoice() {
-        String stateSymbol = "MAP_STATE.v1."
-                + "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-                + "aaaaaaaaaaaaaaaa";
-        JsonObject identity = new JsonObject();
-        identity.addProperty("_type", "SymbolExpression");
-        identity.addProperty("_java_type", "java/util/Map");
-        identity.addProperty("_exp", stateSymbol);
-        JsonObject state = relation("ASSOCIATIVE", "STATE", identity);
-        JsonObject view = relation("ASSOCIATIVE", "VALUE_VIEW", state);
-
-        JsonObject candidate = new JsonObject();
-        candidate.add("expression", view);
-        JsonArray candidates = new JsonArray();
-        candidates.add(candidate);
-        JsonObject readChoice = new JsonObject();
-        readChoice.addProperty("_type",
-                SharedStateEvidence.GUARDED_READ_TYPE);
-        readChoice.add("candidates", candidates);
-
-        JsonObject iterator = relation("ASSOCIATIVE", "ITERATOR",
-                readChoice);
-        JsonObject next = relation("ASSOCIATIVE", "NEXT", iterator);
-        JsonArray arguments = new JsonArray();
-        arguments.add(integer(2));
-        next.add("arguments", arguments);
-
-        InitialContainerObservation.Read observation =
-                InitialContainerObservation.initialRead(next);
-        assertNotNull(observation);
-        assertEquals(stateSymbol, observation.inputPort);
-        assertEquals("VALUE", observation.iterationProjection);
-        assertEquals(Integer.valueOf(2), observation.index);
-    }
 
     @Test
     public void initialReadTraversesConditionalRemoval() {

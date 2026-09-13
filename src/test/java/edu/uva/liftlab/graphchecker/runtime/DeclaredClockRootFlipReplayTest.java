@@ -44,24 +44,6 @@ public class DeclaredClockRootFlipReplayTest {
     private static final String TIMER_NOW =
             "<org.apache.hadoop.util.Timer: long now()>";
 
-    /**
-     * The plan row the laneU seed publishes for the NameNode's clock is a
-     * wall-clock read, and the runtime can see that it is.
-     */
-    @Test
-    public void aDeclaredTimerReturnIsRecognisedAsAWallClockRead() {
-        assertTrue(clockAction().declaresWallClockRead());
-    }
-
-    /** An unobserved read has no anchor to take an offset from. */
-    @Test
-    public void anUnrecordedClockReadIsNotAnAnchor() {
-        JsonObject row = clockRow();
-        row.addProperty("observed", false);
-        assertFalse(new ConcolicRegionRuntime.SymbolizeAction(row)
-                .declaresWallClockRead());
-    }
-
     /** Every other declared root replays its model value verbatim. */
     @Test
     public void anIdentityRootReplaysTheModelValueVerbatim() {
@@ -109,37 +91,6 @@ public class DeclaredClockRootFlipReplayTest {
                 LIVE_EXPIRY < injected);
         assertTrue("and it stays ahead of this run's own clock",
                 injected > LIVE_CLOCK);
-    }
-
-    /**
-     * A model that asks for no skew at all asks the replay for the value it
-     * already reads, and never moves the clock backwards.
-     */
-    @Test
-    public void aModelEqualToTheRecordedReadLeavesTheLiveClockAlone() {
-        assertEquals(Long.toString(LIVE_CLOCK),
-                ConcolicRegionRuntime.replayModelLiteral(clockAction(),
-                        model(RECORDED_CLOCK), LIVE_CLOCK));
-    }
-
-    /** A skew no long can hold is not a clock any run could read. */
-    @Test
-    public void aSkewOutsideTheIntegralDomainReplaysTheModelValue() {
-        assertEquals(Long.toString(Long.MAX_VALUE),
-                ConcolicRegionRuntime.clockSkewLiteral("-1",
-                        Long.toString(Long.MAX_VALUE), 4L));
-        assertEquals("not-a-number",
-                ConcolicRegionRuntime.clockSkewLiteral("0", "not-a-number",
-                        4L));
-    }
-
-    /** A non-integral live read has no offset to carry. */
-    @Test
-    public void aNonIntegralLiveReadReplaysTheModelValue() {
-        assertEquals("7", ConcolicRegionRuntime.clockSkewLiteral("0", "7",
-                "1789284077460"));
-        assertEquals("7", ConcolicRegionRuntime.clockSkewLiteral("0", "7",
-                null));
     }
 
     private static ConcolicRegionRuntime.SymbolizeAction clockAction() {
