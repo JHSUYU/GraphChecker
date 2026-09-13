@@ -170,11 +170,24 @@ final class ConcolicVmBroker {
      * members are the caller's, because the VM never iterates a Java
      * collection itself. Must be called before the container is selected: the
      * INITIAL version records what the state root already said.</p>
+     *
+     * <p>Answers one {@code InitialContainerSnapshot} answer code. A VM built
+     * before that vocabulary existed answers a {@code boolean} instead, and
+     * its {@code true} means only what the old call meant - the offer was
+     * accepted, by any of the three routes - so it is read as the one answer
+     * that claims nothing beyond acceptance.</p>
      */
-    boolean snapshotContainer(Object container, Object[] keys,
-                              Object[] values, int kind) throws Exception {
-        return Boolean.TRUE.equals(snapshotContainer.invoke(
-                null, container, keys, values, kind));
+    int snapshotContainer(Object container, Object[] keys,
+                          Object[] values, int kind) throws Exception {
+        Object answer = snapshotContainer.invoke(
+                null, container, keys, values, kind);
+        if (answer instanceof Boolean) {
+            return ((Boolean) answer)
+                    ? InitialContainerSnapshot.INSTALLED
+                    : InitialContainerSnapshot.NOT_SELECTABLE;
+        }
+        return answer instanceof Number ? ((Number) answer).intValue()
+                : InitialContainerSnapshot.NOT_SELECTABLE;
     }
 
     String expression(Object value) throws Exception {

@@ -205,7 +205,8 @@ JNIEXPORT jboolean JNICALL
 JVM_TrackContainerExpression(JNIEnv *env, jclass ignored, jobject container,
                              jstring prefix);
 
-JNIEXPORT jboolean JNICALL
+/* Answers one ConcolicMngr::InitialSnapshotAnswer. */
+JNIEXPORT jint JNICALL
 JVM_SnapshotContainerExpression(JNIEnv *env, jclass ignored,
                                 jobject container, jobjectArray keys,
                                 jobjectArray values, jint kind);

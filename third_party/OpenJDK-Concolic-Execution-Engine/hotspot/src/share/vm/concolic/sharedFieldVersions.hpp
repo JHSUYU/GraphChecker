@@ -188,6 +188,32 @@ public:
     }
   };
 
+  /**
+   * What one whole-state carrier's INITIAL value says about the content the
+   * container held before the region selected it.
+   *
+   * Three states, not two, and the third is the one that used to be missing.
+   * `stated` means the value stands on a SNAPSHOT_BASE this recorder
+   * installed, so the content is exactly `entries` members and zero is a real
+   * answer - the exact empty collection, which is the most constrained
+   * initial state there is.  `truncated` means the engine knows it did not
+   * state the content: the entry bound refused it, or the container already
+   * carried a recorded mutation history whose base could not be recovered.
+   * Neither means nothing was ever offered, and a reader must then treat the
+   * contents as unknown for want of an offer rather than for want of an
+   * answer.
+   */
+  struct InitialSnapshot {
+    bool stated;
+    bool truncated;
+    // Members the INITIAL value states, or the count that went unstated, or
+    // -1 when even the count is unknown.
+    int entries;
+    InitialSnapshot() : stated(false), truncated(false), entries(0) {}
+    // Whether the version should publish an `initialSnapshot` block at all.
+    bool present() const { return stated || truncated; }
+  };
+
   struct Version {
     // Drawn from the session's single event-id space, so a fieldVersionId and
     // an event id are the same kind of thing and are directly comparable.
@@ -359,22 +385,32 @@ public:
 
   /**
    * As above, recording what the INITIAL value says about the container's
-   * pre-selection contents: `entries` members if `truncated` is false, or
-   * that many members the snapshot bound refused to state if it is true.
+   * pre-selection contents.
    */
   static jlong select_carrier(const Location &location, Expression *initial,
-                              int snapshot_entries,
-                              bool snapshot_truncated);
+                              const InitialSnapshot &snapshot);
 
   /**
-   * Remembers that the initial-snapshot bound refused a container holding
-   * `entries` members, so the selection that follows can say so.  Cleared
-   * with the session.
+   * Remembers what one initial-snapshot offer did to `owner`, so the
+   * selection that follows can say so.  `answer` is a
+   * ConcolicMngr::InitialSnapshotAnswer and `entries` is the member count
+   * that answer is about, or -1 when the answer knows no count.  Cleared with
+   * the session.
+   *
+   * The offer and the selection are two calls, and only the offer knows which
+   * of its several outcomes happened: the state root it leaves behind cannot
+   * tell a container that held nothing from one whose contents the bound
+   * refused, and both of those from one whose recorded history was kept.
    */
-  static void note_refused_initial_snapshot(sym_rid_t owner, int entries);
+  static void note_initial_snapshot(sym_rid_t owner, int answer, int entries);
 
-  /** Members the bound refused for `owner`, or -1 if it refused nothing. */
-  static int refused_initial_snapshot(sym_rid_t owner);
+  /**
+   * What an offer for `owner` answered, or false when none was made.  A
+   * container nobody offered is not the same as one that was offered and
+   * declined, and only the second is a fact about this engine.
+   */
+  static bool initial_snapshot_note(sym_rid_t owner, int *answer,
+                                    int *entries);
   static bool is_carrier(const Location &location);
 
   /**

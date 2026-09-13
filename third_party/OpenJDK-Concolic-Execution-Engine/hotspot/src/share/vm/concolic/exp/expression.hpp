@@ -65,6 +65,12 @@ public:
   // RTTI, so the downcast is declared here instead of guessed at.
   virtual ContainerExpression *as_container_expression() { return NULL; }
 
+  // The exact jint this node denotes, written to `value`, or false when it
+  // denotes anything else.  Undoing a recorded INSERT to recover the content
+  // a container held before it needs the position the insert happened at, and
+  // a position that is itself symbolic is not one this engine can subtract.
+  virtual bool concrete_int_value(jint *value) { return false; }
+
   // Consumer-boundary nodes are semantic identities.  Pointer identity is
   // still authoritative for every ordinary expression, but a field/version
   // check that already accepted `value` must also accept any chain of
@@ -244,6 +250,7 @@ public:
 
 public:
   virtual bool is_boolean_expression();
+  virtual bool concrete_int_value(jint *value);
 
   void serialize_internal(rapidjson::Writer<rapidjson::StringBuffer> &writer);
 };

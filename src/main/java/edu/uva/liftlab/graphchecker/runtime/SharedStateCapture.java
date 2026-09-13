@@ -190,10 +190,16 @@ final class SharedStateCapture {
      * version states its content instead of an opaque root.
      *
      * <p>Declining is a first-class answer: an unrecognized class, a
-     * container past the VM's entry bound, or a walk that raced a writer all
-     * leave the opaque root in place and publish one
-     * {@code INITIAL_SNAPSHOT_SKIPPED} row naming which. A wrong snapshot is
-     * a false premise about the recorded execution, so this never guesses.</p>
+     * container past the VM's entry bound, a walk that raced a writer, or a
+     * recorded mutation history whose base cannot be recovered all leave the
+     * opaque root in place and publish one {@code INITIAL_SNAPSHOT_SKIPPED}
+     * row naming which. A wrong snapshot is a false premise about the
+     * recorded execution, so this never guesses.</p>
+     *
+     * <p>"The VM answered" is not "the content is stated". The offer has
+     * several outcomes and only some of them leave the INITIAL version with a
+     * base; reading them all as one acceptance is what published carriers
+     * with a free initial container as though they were pinned.</p>
      */
     private static void stateInitialContent(ConcolicVmBroker api,
                                             SharedCarrier carrier,
@@ -207,10 +213,10 @@ final class SharedStateCapture {
             outcome = null;
         }
         if (outcome == null) return;
-        if (outcome.installed) {
+        if (outcome.stated) {
             JsonObject stated = InitialContainerSnapshot.statedRow(outcome,
                     carrier.describe());
-            diag(InitialContainerSnapshot.STATED_EVENT, stated.toString());
+            diag(outcome.statedEvent(), stated.toString());
             if (active != null) active.initialSnapshotStates.add(stated);
             return;
         }

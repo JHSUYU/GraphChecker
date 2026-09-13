@@ -15,6 +15,7 @@
 #include "concolic/reference/symbolicSet.hpp"
 #include "concolic/reference/symbolicString.hpp"
 
+#include <algorithm>
 #include <stdio.h>
 
 const char *ContainerSupport::shape(oop value) {
@@ -140,14 +141,91 @@ int ContainerSupport::snapshot_entry_count(Expression *state) {
   Expression *cursor = state;
   while (cursor != NULL) {
     ContainerExpression *relation = cursor->as_container_expression();
-    if (relation == NULL) return 0;
+    if (relation == NULL) return -1;
     const std::string &operation = relation->get_operation();
     if (operation == "SNAPSHOT_BASE") return entries;
-    if (operation != "PUT" && operation != "APPEND") return 0;
+    if (operation != "PUT" && operation != "APPEND") return -1;
     ++entries;
     cursor = relation->get_receiver();
   }
-  return 0;
+  return -1;
+}
+
+// A recorded chain is finite and strictly descends, so this bound only keeps
+// a corrupted state from spinning; hitting it is answered as "not a chain
+// this engine built", which leaves the contents unknown.
+static const int CONTAINER_CHAIN_DEPTH_LIMIT = 1 << 20;
+
+bool ContainerSupport::states_initial_content(Expression *state) {
+  Expression *cursor = state;
+  for (int depth = 0; depth < CONTAINER_CHAIN_DEPTH_LIMIT; ++depth) {
+    if (cursor == NULL) return false;
+    ContainerExpression *relation = cursor->as_container_expression();
+    if (relation == NULL) return false;
+    const std::string &operation = relation->get_operation();
+    if (operation == "SNAPSHOT_BASE") return true;
+    if (operation == "STATE") return false;
+    cursor = relation->get_receiver();
+  }
+  return false;
+}
+
+bool ContainerSupport::recorded_history(
+    Expression *state, Expression **root,
+    std::vector<ContainerExpression *> *history) {
+  if (root == NULL || history == NULL) return false;
+  history->clear();
+  Expression *cursor = state;
+  for (int depth = 0; depth < CONTAINER_CHAIN_DEPTH_LIMIT; ++depth) {
+    if (cursor == NULL) return false;
+    ContainerExpression *relation = cursor->as_container_expression();
+    if (relation == NULL) return false;
+    if (relation->get_operation() == "STATE") {
+      *root = cursor;
+      // Collected newest first; a replay of the history has to walk it in
+      // the order the recorder watched it happen.
+      std::reverse(history->begin(), history->end());
+      return true;
+    }
+    if (relation->get_operation() == "SNAPSHOT_BASE") return false;
+    history->push_back(relation);
+    cursor = relation->get_receiver();
+  }
+  return false;
+}
+
+bool ContainerSupport::undo_indexed_history(
+    const std::vector<ContainerExpression *> &history, int member_count,
+    std::vector<int> *base_members) {
+  if (base_members == NULL || member_count < 0) return false;
+  base_members->clear();
+  base_members->reserve((size_t) member_count);
+  for (int index = 0; index < member_count; ++index) {
+    base_members->push_back(index);
+  }
+  // Undone newest first: each step's working set is exactly the content the
+  // container held immediately after the mutation being undone, which is the
+  // state that mutation's own recorded position addresses.
+  for (size_t step = history.size(); step > 0; --step) {
+    ContainerExpression *relation = history[step - 1];
+    if (relation == NULL || relation->get_shape() != "INDEXED") return false;
+    const std::string &operation = relation->get_operation();
+    if (operation == "APPEND") {
+      if (base_members->empty()) return false;
+      base_members->pop_back();
+      continue;
+    }
+    if (operation != "INSERT") return false;
+    const exp_list_t &arguments = relation->get_arguments();
+    if (arguments.empty() || arguments[0] == NULL) return false;
+    jint position = 0;
+    if (!arguments[0]->concrete_int_value(&position)) return false;
+    if (position < 0 || (size_t) position >= base_members->size()) {
+      return false;
+    }
+    base_members->erase(base_members->begin() + position);
+  }
+  return true;
 }
 
 bool ContainerSupport::whole_state_selectable(oop container) {

@@ -181,6 +181,92 @@ public class InitialContainerSnapshotTest {
         assertTrue(SharedStateEvidence.initialSnapshotTruncated(refused));
     }
 
+    /**
+     * A history rebuilt on a recovered base is a stated content, and the
+     * recorded mutations are still on top of it.
+     *
+     * <p>This is the shape HDFS-17960's carrier now publishes.  The list was
+     * inserted into inside the recording region before the region selected
+     * it, so it carried a mutation history over an opaque root and the
+     * snapshot offer used to be dropped whole.  Undoing the recorded INSERT
+     * at its recorded position recovers what the list held, and the INSERT is
+     * rebuilt on top of that base - so the INITIAL value denotes the same
+     * members it always did, without leaving a free container underneath.</p>
+     */
+    @Test
+    public void aHistoryRebuiltOnARecoveredBaseIsComplete() {
+        JsonObject rebased = new JsonObject();
+        JsonObject snapshot = new JsonObject();
+        // What the INITIAL value denotes is the content at selection: the one
+        // member the list already held, plus the one the region inserted.
+        snapshot.addProperty("entries", 2);
+        snapshot.addProperty("truncated", false);
+        rebased.add(SharedStateEvidence.INITIAL_SNAPSHOT_FIELD, snapshot);
+        rebased.add("expression", insertOverBase());
+
+        assertTrue(SharedStateEvidence.declaresInitialSnapshot(rebased));
+        assertTrue(!SharedStateEvidence.initialSnapshotTruncated(rebased));
+        assertEquals(2L, SharedStateEvidence.initialSnapshotEntries(rebased));
+
+        // And the value itself terminates in the stated base rather than in
+        // the opaque root, which is what makes the INITIAL arm decidable.
+        InitialContainerObservation.Read walked =
+                InitialContainerObservation.initialRead(
+                        read(insertOverBase(), constant(PRESENT_ONE)));
+        assertNotNull(walked);
+        assertEquals(MAP_STATE_SYMBOL, walked.stateSymbol);
+    }
+
+    /**
+     * A recorded history whose base could not be recovered is published as
+     * unknown, with no member count at all.
+     *
+     * <p>REMOVE and CLEAR destroy a member the record does not carry, so no
+     * base can be reconstructed from them.  The honest publication is
+     * truncated with {@code entries} of -1: not zero, which would read as a
+     * container that held nothing, and not the container's current size,
+     * which is not what is unknown.</p>
+     */
+    @Test
+    public void anUnrecoverableHistoryIsPublishedAsUnknown() {
+        JsonObject kept = new JsonObject();
+        JsonObject snapshot = new JsonObject();
+        snapshot.addProperty("entries", -1);
+        snapshot.addProperty("truncated", true);
+        kept.add(SharedStateEvidence.INITIAL_SNAPSHOT_FIELD, snapshot);
+        JsonObject watched = relation("PUT");
+        watched.add("receiver", stateRoot());
+        JsonArray arguments = new JsonArray();
+        arguments.add(constant(PRESENT_ONE));
+        arguments.add(reference(1));
+        watched.add("arguments", arguments);
+        kept.add("expression", watched);
+
+        assertTrue(SharedStateEvidence.initialSnapshotTruncated(kept));
+        assertEquals(-1L, SharedStateEvidence.initialSnapshotEntries(kept));
+    }
+
+    /** PUT over SNAPSHOT_BASE + one member: a history on a recovered base. */
+    private static JsonObject insertOverBase() {
+        JsonObject base = relation("SNAPSHOT_BASE");
+        base.add("receiver", stateRoot());
+        base.add("arguments", new JsonArray());
+        JsonObject held = relation("PUT");
+        held.add("receiver", base);
+        JsonArray heldArguments = new JsonArray();
+        heldArguments.add(constant(PRESENT_ONE));
+        heldArguments.add(reference(1));
+        held.add("arguments", heldArguments);
+        // The mutation the recorder watched, now standing on the stated base.
+        JsonObject watched = relation("PUT");
+        watched.add("receiver", held);
+        JsonArray watchedArguments = new JsonArray();
+        watchedArguments.add(constant(PRESENT_TWO));
+        watchedArguments.add(reference(2));
+        watched.add("arguments", watchedArguments);
+        return watched;
+    }
+
     /** An INDEXED empty base, the shape the HDFS-17960 list carrier has. */
     private static JsonObject indexedBase() {
         JsonObject base = relation("SNAPSHOT_BASE");

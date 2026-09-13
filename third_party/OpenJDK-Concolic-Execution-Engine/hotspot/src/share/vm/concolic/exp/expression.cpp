@@ -6,7 +6,9 @@
 #include "runtime/atomic.inline.hpp"
 #include "webridge/utils/rapidjson/document.h"
 #include "utilities/ostream.hpp"
+#include <cerrno>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <map>
 #include <set>
@@ -748,6 +750,29 @@ ConExpression::ConExpression(jdouble d) {
 
 bool ConExpression::is_boolean_expression() {
   return _type.size() == 1 && _type[0] == type2char(T_BOOLEAN);
+}
+
+// The constant is kept as the text the serializer emits, so reading it back
+// re-parses that text rather than keeping a second copy of the value that
+// could drift from it.  Only T_INT answers: a long, a char or a boolean
+// position is not a position the indexed algebra records.
+bool ConExpression::concrete_int_value(jint *value) {
+  if (value == NULL) return false;
+  if (_type.size() != 1 || _type[0] != type2char(T_INT)) return false;
+  const char *digits = strchr(_str, '_');
+  if (digits == NULL) return false;
+  digits = strchr(digits + 1, '_');
+  if (digits == NULL) return false;
+  ++digits;
+  char *tail = NULL;
+  errno = 0;
+  long parsed = strtol(digits, &tail, 10);
+  if (errno != 0 || tail == digits || tail == NULL || *tail != '\0') {
+    return false;
+  }
+  if (parsed < (long)min_jint || parsed > (long)max_jint) return false;
+  *value = (jint)parsed;
+  return true;
 }
 
 void ConExpression::serialize_internal(rapidjson::Writer<rapidjson::StringBuffer> &writer) {

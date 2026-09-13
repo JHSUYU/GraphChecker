@@ -7,8 +7,18 @@ import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
 
-/** Exact normal-exit snapshots for containers created inside a region. */
+/**
+ * Exact normal-exit snapshots for containers created inside a region.
+ *
+ * <p>{@code snapshotContainerExpression} answers which of its outcomes
+ * happened rather than one bool for all of them, so each offer below pins the
+ * outcome it expects by name.</p>
+ */
 public final class RegionOutputContainerSnapshotApiSmoke {
+    /** ConcolicMngr::InitialSnapshotAnswer. */
+    private static final int INSTALLED = 1;
+    private static final int KEPT_EXISTING_HISTORY = 2;
+
     public static void main(String[] args) {
         long status = System.startConcolicRegion(
                 "REGION.container-output", "TASK.container-output");
@@ -18,7 +28,7 @@ public final class RegionOutputContainerSnapshotApiSmoke {
         map.put(Integer.valueOf(7), Integer.valueOf(11));
         require(System.snapshotContainerExpression(map,
                         new Object[]{Integer.valueOf(7)},
-                        new Object[]{Integer.valueOf(11)}, 1),
+                        new Object[]{Integer.valueOf(11)}, 1) == INSTALLED,
                 "map snapshot rejected");
         map.put(Integer.valueOf(9), Integer.valueOf(13));
 
@@ -29,43 +39,48 @@ public final class RegionOutputContainerSnapshotApiSmoke {
                 "tracked map rejected");
         trackedMap.remove(Integer.valueOf(53));
         trackedMap.put(Integer.valueOf(61), Integer.valueOf(67));
+        // A map the recorder has already watched change keeps that history:
+        // an associative record does not carry the value a PUT displaced, so
+        // the content it started with cannot be recovered from it and saying
+        // it was installed would be a claim this engine cannot make.
         require(System.snapshotContainerExpression(trackedMap,
                         new Object[]{Integer.valueOf(61)},
-                        new Object[]{Integer.valueOf(67)}, 1),
-                "tracked map snapshot rejected");
+                        new Object[]{Integer.valueOf(67)}, 1)
+                        == KEPT_EXISTING_HISTORY,
+                "tracked map snapshot answer");
 
         List<Integer> list = new ArrayList<Integer>();
         list.add(Integer.valueOf(17));
         list.add(Integer.valueOf(19));
         require(System.snapshotContainerExpression(list, null,
-                        list.toArray(), 0),
+                        list.toArray(), 0) == INSTALLED,
                 "list snapshot rejected");
 
         List<Integer> linkedList = new LinkedList<Integer>();
         linkedList.add(Integer.valueOf(37));
         linkedList.add(Integer.valueOf(41));
         require(System.snapshotContainerExpression(linkedList, null,
-                        linkedList.toArray(), 0),
+                        linkedList.toArray(), 0) == INSTALLED,
                 "linked-list snapshot rejected");
 
         Map<Integer, Integer> treeMap = new TreeMap<Integer, Integer>();
         treeMap.put(Integer.valueOf(43), Integer.valueOf(47));
         require(System.snapshotContainerExpression(treeMap,
                         new Object[]{Integer.valueOf(43)},
-                        new Object[]{Integer.valueOf(47)}, 1),
+                        new Object[]{Integer.valueOf(47)}, 1) == INSTALLED,
                 "tree-map snapshot rejected");
 
         Set<Integer> set = new LinkedHashSet<Integer>();
         set.add(Integer.valueOf(23));
         Object[] setElements = set.toArray();
         require(System.snapshotContainerExpression(set, setElements,
-                        new Object[setElements.length], 2),
+                        new Object[setElements.length], 2) == INSTALLED,
                 "set snapshot rejected");
 
         int[] array = new int[]{29, 31};
         require(System.snapshotContainerExpression(array, null,
                         new Object[]{Integer.valueOf(29),
-                                Integer.valueOf(31)}, 3),
+                                Integer.valueOf(31)}, 3) == INSTALLED,
                 "array snapshot rejected");
 
         require(relation(map, "\"operation\":\"PUT\""),

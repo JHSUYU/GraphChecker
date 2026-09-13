@@ -526,12 +526,33 @@ public final class System {
                                                           String prefix);
 
     /**
-     * Attaches an exact snapshot state to a supported container that has no
-     * symbolic state yet.  {@code kind} is 0 for indexed collections, 1 for
-     * maps, 2 for sets, and 3 for Java arrays.  Existing symbolic state is
-     * preserved.
+     * States the exact content of a supported container to the recorder, so
+     * that a whole-state carrier over it has a base rather than an opaque
+     * root.  {@code kind} is 0 for indexed collections, 1 for maps, 2 for
+     * sets, and 3 for Java arrays.  Recorded mutations are preserved: a
+     * container that already carries a mutation history keeps it, and the
+     * base is recovered by undoing that history against the content offered
+     * here when the record carries its own inverse.
+     *
+     * <p>The answer says which of those happened, because a caller that
+     * cannot tell them apart treats a carrier with no stated base as though
+     * it had a complete one:
+     *
+     * <ul>
+     *   <li>0 - not selectable; nothing was stated and nothing is claimed
+     *   <li>1 - installed; the container's state now states its content
+     *   <li>2 - an existing recorded mutation history was kept and its base
+     *       could not be recovered, so the content is unknown
+     *   <li>3 - refused over the entry bound
+     *       ({@code causynth.concolic.initial.snapshot.max}); the opaque root
+     *       is kept
+     *   <li>4 - the recorded history was rebuilt on a recovered stated base
+     *   <li>5 - an earlier offer already stated this container's content
+     * </ul>
+     *
+     * <p>Only 1, 4 and 5 mean the content is stated.</p>
      */
-    public static native boolean snapshotContainerExpression(
+    public static native int snapshotContainerExpression(
             Object container, Object[] keys, Object[] values, int kind);
 
     /**
