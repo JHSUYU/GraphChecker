@@ -79,6 +79,60 @@ public class SharedCarrierReceiverIdentityTest {
                         .plannedReceiverObjectId());
     }
 
+    /**
+     * A carrier with no access anchor and no frozen locator is unnameable.
+     *
+     * <p>This is the row bug3 raised 14 times and bug2 more: a declared
+     * carrier the region selects at entry reaches no field access, so it
+     * records no anchor, and a location the plan never also reads as a
+     * symbolic input has no frozen locator either.  With neither it binds 0,
+     * the read-out refuses it, and the field is dropped while another field
+     * on the same object -- one the plan did freeze a locator for -- is
+     * captured.  The asymmetry is the plan's, not the field's.</p>
+     */
+    @Test
+    public void aCarrierWithNoAnchorAndNoLocatorCannotBeNamed() {
+        SharedCarrier carrier = SharedCarrier.field(new Object(),
+                "a.Key", "unplannedField", "J");
+        carrier.bindPlannedReceiver(task());
+
+        assertEquals(0L, carrier.plannedReceiverObjectId());
+    }
+
+    /** One anchor is enough to name it, whatever the plan froze. */
+    @Test
+    public void anAnchorNamesACarrierThePlanFrozeNoLocatorFor() {
+        SharedCarrier carrier = SharedCarrier.field(new Object(),
+                "a.Key", "unplannedField", "J");
+        carrier.recordConsumerAccess(
+                new ConsumerAccessAnchor("<a.Manager: void sweep()>", 1));
+        carrier.bindPlannedReceiver(task());
+
+        assertTrue("an anchored carrier is nameable",
+                carrier.plannedReceiverObjectId() > 0L);
+    }
+
+    /** Two activations of one region name the carrier differently. */
+    @Test
+    public void theRegionEntryAnchorSeparatesActivations() {
+        SharedCarrier first = SharedCarrier.field(new Object(),
+                "a.Key", "unplannedField", "J");
+        first.recordConsumerAccess(
+                new ConsumerAccessAnchor("<a.Manager: void sweep()>", 1));
+        first.bindPlannedReceiver(task());
+        SharedCarrier second = SharedCarrier.field(new Object(),
+                "a.Key", "unplannedField", "J");
+        second.recordConsumerAccess(
+                new ConsumerAccessAnchor("<a.Manager: void sweep()>", 2));
+        second.bindPlannedReceiver(task());
+
+        assertTrue(first.plannedReceiverObjectId() > 0L);
+        assertTrue(second.plannedReceiverObjectId() > 0L);
+        assertTrue("two activations are two receivers",
+                first.plannedReceiverObjectId()
+                        != second.plannedReceiverObjectId());
+    }
+
     // ---------- plan and carrier harness ----------
 
     private static SharedCarrier carrier(Object owner, String site,

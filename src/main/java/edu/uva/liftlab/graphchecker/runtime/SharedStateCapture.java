@@ -511,13 +511,29 @@ final class SharedStateCapture {
                 return selectCarrierForTask(
                         SharedCarrier.element(owner, index), task);
             }
+            // A carrier the plan declares and the region selects at entry is
+            // reached through no field access, so it records no access
+            // anchor -- and a location the plan never also reads as a
+            // symbolic input has no frozen receiver locator either.  With
+            // neither, bindPlannedReceiver binds 0 and the read-out refuses
+            // the location outright.  That is not a property of the field's
+            // shape or width: it is whether the plan happened to freeze a
+            // locator, so on one object one field is captured and the next
+            // is dropped.  The region entry is itself a replay-stable
+            // anchor -- the root method and this activation's occurrence,
+            // no object id -- so the carrier is named from it.
+            ConsumerAccessAnchor entry = regionEntryAnchor(active);
             if (mapState) {
-                return selectCarrierForTask(SharedCarrier.map(owner,
+                SharedCarrier map = SharedCarrier.map(owner,
                         resolveContentMonitor(active.receiver),
-                        declaringClass, fieldName, descriptor), task);
+                        declaringClass, fieldName, descriptor);
+                map.recordConsumerAccess(entry);
+                return selectCarrierForTask(map, task);
             }
-            return selectCarrierForTask(SharedCarrier.field(owner,
-                    declaringClass, fieldName, descriptor), task);
+            SharedCarrier field = SharedCarrier.field(owner,
+                    declaringClass, fieldName, descriptor);
+            field.recordConsumerAccess(entry);
+            return selectCarrierForTask(field, task);
         }
     }
 
@@ -562,6 +578,24 @@ final class SharedStateCapture {
         }
         return new ConsumerAccessAnchor(SiteId.of(method, unitIndex),
                 occurrence);
+    }
+
+    /**
+     * The region entry, as an access anchor.
+     *
+     * <p>A declared carrier is selected once when the activation starts, at
+     * no bytecode access of its own.  Its entry is still an exact site --
+     * the region's root method, with this activation's ordinal as the
+     * occurrence -- and carries no object id, so it names the receiver as
+     * stably across sessions as a field access does.</p>
+     */
+    private static ConsumerAccessAnchor regionEntryAnchor(
+            ActiveRegion active) {
+        if (active == null || active.activation == null) return null;
+        String root = safe(active.activation.rootMethod);
+        if (root.isEmpty()) return null;
+        int occurrence = Math.max(1, active.activationOrdinal);
+        return new ConsumerAccessAnchor(root, occurrence);
     }
 
     /** Selects a demanded carrier on its exact field-access owner once. */
