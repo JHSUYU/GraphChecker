@@ -75,13 +75,12 @@ final class InitialContainerSnapshot {
     // ConcolicMngr::InitialSnapshotAnswer and cross the JNI boundary as the
     // int the native method answers.
     //
-    // The call used to answer a bool, and three of these answered the same
-    // `true`: INSTALLED, KEPT_EXISTING_HISTORY and REFUSED_OVER_BOUND.  This
-    // side mapped all three to "installed", so a carrier whose INITIAL
-    // version carried no base at all was recorded as carrying a complete one
-    // - and a free INITIAL arm is a whole container the solver has to search
-    // over, which is what turned one Boolean root into twelve 180 s timeouts
-    // on the recorded HDFS-17960 corpus.
+    // They are kept apart because INSTALLED, KEPT_EXISTING_HISTORY and
+    // REFUSED_OVER_BOUND differ in exactly the way that matters: reading the
+    // last two as "installed" records a carrier whose INITIAL version carries
+    // no base at all as carrying a complete one, and a free INITIAL arm is a
+    // whole container the solver has to search over -- twelve 180 s timeouts
+    // on HDFS-17960 for one Boolean root.
 
     /** Nothing was stated and nothing is claimed. */
     static final int NOT_SELECTABLE = 0;

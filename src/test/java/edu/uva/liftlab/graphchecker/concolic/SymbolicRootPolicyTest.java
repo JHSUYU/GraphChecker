@@ -475,28 +475,6 @@ public class SymbolicRootPolicyTest {
                 demand(selected, 3));
     }
 
-    /**
-     * The retired {@code carrier*} keys are refused, not ignored.
-     *
-     * <p>They existed to say "keep this read symbolic but mint nothing",
-     * which is now what every name this file does not mention already gets.
-     * A file still carrying one is stale, and reading it as a root would
-     * invert the instruction, so say so.</p>
-     */
-    @Test
-    public void aRetiredCarrierKeyIsRefused() throws Exception {
-        try {
-            ConcolicScheduler.SymbolicInputSelection.read(
-                    declarations("{\"regionId\":\"" + NN
-                            + "\",\"carrierFieldSignatures\":[\"" + KEY_ID
-                            + "\"]}"), catalog());
-            org.junit.Assert.fail("a retired key must be refused");
-        } catch (IOException refused) {
-            assertTrue(refused.getMessage().contains(
-                    "carrierFieldSignatures was removed"));
-        }
-    }
-
     private static final String ORDERED_FIELD =
             "<org.apache.hadoop.hdfs.server.namenode.snapshot.SnapshotManager:"
                     + " boolean snapshotDeletionOrdered>";

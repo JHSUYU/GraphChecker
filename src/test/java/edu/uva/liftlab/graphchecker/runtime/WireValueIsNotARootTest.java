@@ -44,20 +44,13 @@ public class WireValueIsNotARootTest {
     @Test
     public void aPortStampedByTheFinalizerIsACutPort() {
         assertTrue(ConcolicRegionRuntime.declaredCommunicationCutPort(
-                cutPort(KEY_ID_PORT, "int", true, false)));
-    }
-
-    /** A plan frozen by the build that wrote the verdict into the demand. */
-    @Test
-    public void theWrittenDemandAloneAlsoNamesACutPort() {
-        assertTrue(ConcolicRegionRuntime.declaredCommunicationCutPort(
-                cutPort(EXPIRY_PORT, "long", false, true)));
+                cutPort(KEY_ID_PORT, "int", true)));
     }
 
     @Test
     public void anOrdinaryInputIsNotACutPort() {
         assertFalse(ConcolicRegionRuntime.declaredCommunicationCutPort(
-                cutPort(EXPIRY_PORT, "long", false, false)));
+                cutPort(EXPIRY_PORT, "long", false)));
         assertFalse("null is not a port",
                 ConcolicRegionRuntime.declaredCommunicationCutPort(null));
     }
@@ -75,7 +68,7 @@ public class WireValueIsNotARootTest {
     @Test
     public void aCutPortWithNothingPropagatedStillRefusesToMint() {
         ConcolicRegionRuntime.SymbolizeAction port =
-                cutPort(KEY_ID_PORT, "int", true, true);
+                cutPort(KEY_ID_PORT, "int", true);
 
         assertFalse("nothing has reached the local yet",
                 ConcolicRegionRuntime.carriesInputAuthority(port, null));
@@ -88,15 +81,14 @@ public class WireValueIsNotARootTest {
      *
      * <p>A plan the selection file narrowed already marks a cut port
      * {@code mintEligible: false}, so the carrier rule alone would cover
-     * this case.  A campaign with no {@code symbolic-inputs.jsonl} -- and
-     * every plan frozen before the field existed -- defaults the flag to
-     * {@code true}, which is the state this asserts: the port must still
-     * mint nothing.</p>
+     * this case.  A campaign with no {@code symbolic-inputs.jsonl} defaults
+     * the flag to {@code true}, which is the state this asserts: the port
+     * must still mint nothing.</p>
      */
     @Test
     public void aCutPortInAnUnnarrowedPlanIsStillNotAMintSite() {
         ConcolicRegionRuntime.SymbolizeAction port =
-                cutPort(KEY_ID_PORT, "int", true, false);
+                cutPort(KEY_ID_PORT, "int", true);
 
         assertTrue("no selection file narrowed this plan", port.mintEligible);
         assertTrue("the port's own kind is what decides",
@@ -107,7 +99,7 @@ public class WireValueIsNotARootTest {
     @Test
     public void aCutPortReusesTheProducerExpression() {
         assertTrue(ConcolicRegionRuntime.carriesInputAuthority(
-                cutPort(KEY_ID_PORT, "int", true, true), senderSymbol()));
+                cutPort(KEY_ID_PORT, "int", true), senderSymbol()));
     }
 
     /**
@@ -116,20 +108,18 @@ public class WireValueIsNotARootTest {
      */
     @Test
     public void aCutPortIsNeverAlsoADeclaredRoot() {
-        JsonObject json = portJson(EXPIRY_PORT, "long", true, true);
+        JsonObject json = portJson(EXPIRY_PORT, "long", true);
         assertFalse(json.has(InputActionCatalog.DECLARED_SYMBOLIC_ROOT));
     }
 
     private static ConcolicRegionRuntime.SymbolizeAction cutPort(
-            String portId, String javaType, boolean stampedByFinalizer,
-            boolean demandWritten) {
+            String portId, String javaType, boolean stampedByFinalizer) {
         return new ConcolicRegionRuntime.SymbolizeAction(portJson(
-                portId, javaType, stampedByFinalizer, demandWritten));
+                portId, javaType, stampedByFinalizer));
     }
 
     private static JsonObject portJson(String portId, String javaType,
-                                       boolean stampedByFinalizer,
-                                       boolean demandWritten) {
+                                       boolean stampedByFinalizer) {
         JsonObject json = new JsonObject();
         json.addProperty("symbol", portId);
         json.addProperty("portId", portId);
@@ -138,10 +128,6 @@ public class WireValueIsNotARootTest {
         json.addProperty("method", CONVERT);
         if (stampedByFinalizer) {
             json.addProperty("sourceKind", "COMMUNICATION_SITE_PORT");
-        }
-        if (demandWritten) {
-            json.addProperty("symbolicDemand",
-                    InputActionCatalog.DECLARED_COMMUNICATION_CUT_PORT);
         }
         return json;
     }

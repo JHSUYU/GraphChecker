@@ -13,9 +13,9 @@ package edu.uva.liftlab.graphchecker.contract;
  * match between one of them and a per-activation summary is made on the
  * address, not the activation.</p>
  *
- * <p>A string that carries no activation suffix -- a pre-OCC-1 occurrence,
- * or a planned address that no activation has claimed yet -- is its own
- * planned address and renders back unchanged.  The ordinal is kept as
+ * <p>A string that carries no activation suffix -- a planned address that
+ * no activation has claimed yet -- is its own planned address and renders
+ * back unchanged.  The ordinal is kept as
  * written rather than as a number so that {@link #render()} reproduces the
  * bytes it parsed.</p>
  */

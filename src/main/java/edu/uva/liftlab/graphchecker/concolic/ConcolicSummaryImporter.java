@@ -61,8 +61,9 @@ public final class ConcolicSummaryImporter {
     private static final String AUXILIARY_PATH_CONDITION_KIND =
             "CONCOLIC_AUXILIARY_PATH_CONDITION";
     /** How many conditions the VM actually serialized into the window.
-     *  Equal to the declared count once the serializer emits one truncation
-     *  marker per remaining index; absent on a pre-marker VM. */
+     *  Equal to the declared count: the serializer emits one truncation
+     *  marker per remaining index, so an absent or disagreeing count is a
+     *  malformed envelope. */
     private static final String EMITTED_CONDITION_COUNT =
             "emittedConditionCount";
     private static final String AUXILIARY_PATH_CONDITION_AUTHORITY =

@@ -2542,10 +2542,6 @@ public final class ConcolicScheduler {
         static final String ROOT_DECISION = "SYMBOLIC_ROOT_DECISION";
         /** Verdict and demand of a read no root can reach. */
         static final String NOT_ROOT_DEPENDENT = "NOT_ROOT_DEPENDENT";
-        /** The removed carrier keys, refused by name rather than ignored. */
-        private static final String[] RETIRED_CARRIER_KEYS = {
-                "carrierFieldSignatures", "carrierPortIds", "carrierCells"};
-
         private final boolean configured;
         /** regionId -> the field signatures, port ids and cells it admits. */
         private final Map<String, Set<String>> admitted;
@@ -2605,17 +2601,6 @@ public final class ConcolicScheduler {
                 if (!catalogRegions.contains(regionId)) {
                     throw new IOException("symbolic input selection names "
                             + "an unknown static region: " + regionId);
-                }
-                // A carrier is now what every undeclared input already is,
-                // so a file still asking for one is stale rather than
-                // harmless: say so instead of silently reading it as a root.
-                for (String retired : RETIRED_CARRIER_KEYS) {
-                    if (row.has(retired)) {
-                        throw new IOException("symbolic input selection "
-                                + retired + " was removed: every input this "
-                                + "file does not name is already tracked as "
-                                + "a carrier and mints nothing");
-                    }
                 }
                 Set<String> names = admitted.computeIfAbsent(regionId,
                         ignored -> new LinkedHashSet<>());
