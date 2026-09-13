@@ -107,6 +107,48 @@ public class RootDependentCarrierTest {
     }
 
     /**
+     * A branch the recording never took still carries the root.
+     *
+     * <p>The refined graph is the static candidate graph <em>annotated</em>
+     * with what one execution bound, not filtered by it: a site the run
+     * never reached keeps its edges and is stamped
+     * {@code runtimeObserved: false} ({@code RuntimeRefinedGraphBuilder}).
+     * The closure here reads {@code fromCell} / {@code toCell} and nothing
+     * else, so root dependence is decided by what the <em>program</em> can
+     * do, not by what one recording did -- which is what lets a campaign be
+     * recorded on a healthy configuration and still plan the carriers of the
+     * branch the flipped root will take.  Filtering the walk by
+     * {@code runtimeObserved} would silently make the plan a function of the
+     * recording's luck.</p>
+     *
+     * <p>HDFS-17960 recorded with {@code snapshotDeletionOrdered = true} is
+     * exactly that shape: the decrement and the list removal the fatal count
+     * mismatch needs live on the branch the healthy run skips.</p>
+     */
+    @Test
+    public void anEdgeTheRecordingNeverExecutedStillCarriesTheRoot()
+            throws Exception {
+        // The only path from the root to the counter runs through the arm
+        // this execution did not take.
+        ConcolicScheduler.SymbolicInputSelection selection = seeded(
+                graph(unobserved(edge(ORDERED, GUARD_LOCAL, "HEAP_READ")),
+                        unobserved(edge(GUARD_LOCAL, COUNTER, "GUARD")),
+                        unobserved(edge(COUNTER, COUNTER_READ, "HEAP_READ"))),
+                fieldRead(COUNTER), fieldRead(UNRELATED));
+
+        JsonArray selected = selection.select(NN,
+                actions(fieldRead(COUNTER), fieldRead(UNRELATED)));
+
+        assertEquals("an unexecuted branch is still a branch the root moves",
+                "SYMBOLIC", mode(selected, 0));
+        assertEquals("and nothing else is admitted along with it",
+                "CONCRETE", mode(selected, 1));
+        assertTrue("the location is on the slice for every later stage",
+                selection.carrierSlice().reachesLocation("S#"
+                        + "snapshotsByNames", null));
+    }
+
+    /**
      * A library field read through an accessor is decided by its receiver.
      *
      * <p>{@code AtomicInteger#value} is a source cell of its own and meets
@@ -421,6 +463,13 @@ public class RootDependentCarrierTest {
         row.addProperty("fromCell", from);
         row.addProperty("toCell", to);
         row.addProperty("transferKind", transferKind);
+        return row;
+    }
+
+    /** One edge as the refinement stamps a site the run never reached. */
+    private static JsonObject unobserved(JsonObject row) {
+        row.addProperty("graphKind", "RUNTIME_REFINED_DATAFLOW");
+        row.addProperty("runtimeObserved", false);
         return row;
     }
 
