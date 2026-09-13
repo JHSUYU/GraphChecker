@@ -20,7 +20,9 @@ competing field-read candidate for it is stamped
 minted once, at its hook -- which is why neither field is listed in
 `symbolic-inputs.jsonl`. The third root, the clock
 `<org.apache.hadoop.util.Timer: long now()>.return`, has no hook and is still
-declared there. The key id *on the wire* is not a fourth root: it is a
+declared there -- by the two static sites it is read at,
+`BlockTokenSecretManager.updateKeys()` and `.addKeys(...)`, which PLAN resolves
+to whichever regions cover them. The key id *on the wire* is not a fourth root: it is a
 *propagated* value carrying the NameNode's minted `serialNo`, moved by the
 `block-key-id` and `data-encryption-key-id` flows in
 `communication-mappings.jsonl`, and `allKeys` is shared state reconstructed

@@ -39,7 +39,9 @@ competing field-read candidate for it is stamped
 minted once, at its hook -- which is why neither field is listed in
 `symbolic-inputs.jsonl`. The third root, the clock
 `<org.apache.hadoop.util.Timer: long now()>.return`, has no hook and is still
-declared there for both regions. The key IDs observed on the wire and `allKeys`
+declared there -- by the two static sites it is read at,
+`BlockTokenSecretManager.updateKeys()` and `.addKeys(...)`, which PLAN resolves
+to whichever regions cover them. The key IDs observed on the wire and `allKeys`
 are carriers, not roots of their own: they carry the NameNode's minted
 expressions, and the file narrows which inputs may *mint*, never which are
 symbolized.
