@@ -228,6 +228,32 @@ public final class BooleanReachConditionExtractor {
         for (JsonObject arm : fatalArms) {
             fatalArmSelectors.add(optionalString(arm, "selector"));
         }
+        // Two shapes a witness can rest on that no root move names, both
+        // decided by the model rather than by the formula: a merged wire
+        // boundary none of whose arms the model satisfied, and an
+        // associative read whose key nothing ever put.
+        List<String> witnessFreedomSymbols = new ArrayList<>();
+        Map<String, List<String>> boundaryConsumers =
+                boundaryConsumers(composedSmt, manifest);
+        for (JsonElement element
+                : array(manifest,
+                        ConcolicSmtComposer.BOUNDARY_DISPATCH_TOTALITY)) {
+            if (!element.isJsonObject()) continue;
+            JsonObject dispatch = element.getAsJsonObject();
+            for (JsonElement arm : array(dispatch, "armSelectors")) {
+                if (arm.isJsonPrimitive()) {
+                    witnessFreedomSymbols.add(arm.getAsString());
+                }
+            }
+            List<String> consumers = boundaryConsumers.get(
+                    optionalString(dispatch, "solverTerm"));
+            if (consumers != null) witnessFreedomSymbols.addAll(consumers);
+        }
+        Set<String> fatalAbsentKeyTerms = fatalAbsentKeyTerms(manifest,
+                fatalArms);
+        witnessFreedomSymbols.addAll(fatalAbsentKeyTerms);
+        List<String> modelSymbols = new ArrayList<>(fatalArmSelectors);
+        modelSymbols.addAll(witnessFreedomSymbols);
         report.add(FATAL_STATE_SELECTION, asEvidence(fatalStateSelection(
                 fatalArms, Collections.<String, String>emptyMap()),
                 evidenceOnly));
@@ -242,7 +268,7 @@ public final class BooleanReachConditionExtractor {
             boolean[] values = valuation(ordinal, inputs.size());
             String query = valuationQuery(base, inputs, values,
                     discovery.existentialNonBooleanRootInputs,
-                    fatalArmSelectors);
+                    modelSymbols);
             ConcolicConstraintSolver.SolverOutput result =
                     solver.check(query);
             String status = solver.lastStatus();
@@ -285,6 +311,11 @@ public final class BooleanReachConditionExtractor {
                 }
                 if (mechanisms.size() > 0) {
                     row.add("witnessMechanisms", mechanisms);
+                }
+                JsonArray witnessFreedoms = witnessFreedoms(manifest, model,
+                        boundaryConsumers, fatalAbsentKeyTerms);
+                if (witnessFreedoms.size() > 0) {
+                    row.add(WITNESS_FREEDOMS, witnessFreedoms);
                 }
                 if (witness.size() > 0) {
                     if (!existentialProbeAttempted) {
@@ -1854,6 +1885,213 @@ public final class BooleanReachConditionExtractor {
      * by itself -- "these nodes' clocks disagreed" is the mechanism -- so
      * pinning them one at a time would ask about a skew nobody claimed.</p>
      */
+    /** Where the model-decided freedom of one valuation is published. */
+    public static final String WITNESS_FREEDOMS = "witnessFreedoms";
+
+    /**
+     * What this model was free to choose that no mechanism accounts for.
+     *
+     * <p>Neither shape is visible in the root witness, because neither moves
+     * a root.  A merged consumer boundary whose dispatch no partition makes
+     * total takes its unbound fall-through whenever the model satisfies none
+     * of its arms: the value the wire carried is then whatever the solver
+     * liked.  An associative read whose key matched no {@code PUT} of its
+     * mutation chain, over a state reconstructed from a snapshot, answers
+     * null because the map never held that key -- a statement about the
+     * query, not about the program.</p>
+     */
+    private static JsonArray witnessFreedoms(
+            JsonObject manifest, Map<String, String> model,
+            Map<String, List<String>> boundaryConsumers,
+            Set<String> fatalAbsentKeyTerms) {
+        JsonArray rows = new JsonArray();
+        for (JsonElement element
+                : array(manifest,
+                        ConcolicSmtComposer.BOUNDARY_DISPATCH_TOTALITY)) {
+            if (!element.isJsonObject()) continue;
+            JsonObject dispatch = element.getAsJsonObject();
+            JsonArray arms = array(dispatch, "armSelectors");
+            if (arms.size() == 0) continue;
+            boolean anySatisfied = false;
+            boolean everyArmKnown = true;
+            for (JsonElement arm : arms) {
+                String value = model.get(arm.getAsString());
+                if (value == null) {
+                    everyArmKnown = false;
+                } else if ("true".equals(value)) {
+                    anySatisfied = true;
+                }
+            }
+            if (anySatisfied || !everyArmKnown) continue;
+            // No arm held.  That alone is not freedom: a boundary whose
+            // consumer never ran in this model is not read, and the merge
+            // carries its own definedness -- one arm must hold -- wherever
+            // composition threads it.  The freedom is the fall-through being
+            // read: some consumer of the merged term is active.
+            String merged = optionalString(dispatch, "solverTerm");
+            List<String> consumers = boundaryConsumers.get(merged);
+            String activeConsumer = "";
+            for (String consumer : consumers == null
+                    ? Collections.<String>emptyList() : consumers) {
+                if ("true".equals(model.get(consumer))) {
+                    activeConsumer = consumer;
+                    break;
+                }
+            }
+            if (activeConsumer.isEmpty()) continue;
+            JsonObject row = new JsonObject();
+            row.addProperty("code",
+                    WitnessLegitimacy.UNBOUND_WIRE_VALUE_TAKEN);
+            row.addProperty("subject", firstNonEmptyText(
+                    optionalString(dispatch, "familyKey"), merged));
+            row.addProperty("consumer", activeConsumer);
+            row.addProperty("detail",
+                    "this model satisfies none of the " + arms.size()
+                            + " case arm(s) of a merged consumer boundary"
+                            + " while its consumer " + activeConsumer
+                            + " is active, so " + merged
+                            + " was read as the unbound fall-through "
+                            + optionalString(dispatch, "unboundTerm"));
+            rows.add(row);
+        }
+        for (JsonElement element
+                : array(manifest, ConcolicSmtComposer.ABSENT_KEY_DEFAULTS)) {
+            if (!element.isJsonObject()) continue;
+            JsonObject absent = element.getAsJsonObject();
+            String term = optionalString(absent, "solverTerm");
+            // Only the reads whose value the target predicate tests were
+            // asked for above; anything else has no value in this model.
+            if (!fatalAbsentKeyTerms.contains(term)
+                    || !"true".equals(model.get(term))) {
+                continue;
+            }
+            JsonObject row = new JsonObject();
+            row.addProperty("code", WitnessLegitimacy.ABSENT_KEY_DEFAULT);
+            row.addProperty("subject", term);
+            row.addProperty("detail",
+                    "an associative read the target predicate tests answered"
+                            + " out of the absent-key default: its key "
+                            + optionalString(absent, "keyTerm")
+                            + " matched no PUT of the chain and the"
+                            + " reconstructed initial state does not hold"
+                            + " it, so the null is the empty map's answer"
+                            + " rather than anything the program did");
+            rows.add(row);
+        }
+        return rows;
+    }
+
+    /**
+     * The absent-key terms that belong to the read the target predicate
+     * tests.
+     *
+     * <p>A row is the fatal read's when it names that read's identity, or
+     * when the guard it was lowered under carries one of the fatal read's
+     * arm selectors -- the container chain of a state read is lowered inside
+     * the arm that selects the state, so the arm is what the row records
+     * when the read identity itself was not in scope.</p>
+     */
+    private static Set<String> fatalAbsentKeyTerms(JsonObject manifest,
+                                                   List<JsonObject> fatalArms) {
+        Set<String> identities = new LinkedHashSet<>();
+        Set<String> selectors = new LinkedHashSet<>();
+        for (JsonObject arm : fatalArms) {
+            String identity = optionalString(arm, "readIdentity");
+            if (!identity.isEmpty()) identities.add(identity);
+            String selector = optionalString(arm, "selector");
+            if (!selector.isEmpty()) selectors.add(selector);
+        }
+        Set<String> terms = new LinkedHashSet<>();
+        for (JsonElement element
+                : array(manifest, ConcolicSmtComposer.ABSENT_KEY_DEFAULTS)) {
+            if (!element.isJsonObject()) continue;
+            JsonObject absent = element.getAsJsonObject();
+            String term = optionalString(absent, "solverTerm");
+            if (term.isEmpty()) continue;
+            boolean fatal = identities.contains(optionalString(absent,
+                    "readIdentity"));
+            String guard = optionalString(absent, "guard");
+            for (String selector : selectors) {
+                if (fatal) break;
+                fatal = guard.contains(selector);
+            }
+            if (fatal) terms.add(term);
+        }
+        return terms;
+    }
+
+    /**
+     * Which selectors read each merged consumer boundary.
+     *
+     * <p>Read off the composed text rather than re-derived: a guarded read
+     * arm consumes the boundary under its read selector
+     * ({@code (=> read_selector (and ... (= rf_value merged)))}), and a
+     * merge consumes another merge under the arm's case selector
+     * ({@code (ite selector merged ...)}).  Either selector true in a model
+     * while no arm of the boundary holds is the fall-through being read.</p>
+     */
+    static Map<String, List<String>> boundaryConsumers(
+            String composedSmt, JsonObject manifest) {
+        Map<String, List<String>> result = new LinkedHashMap<>();
+        List<String> merged = new ArrayList<>();
+        for (JsonElement element
+                : array(manifest,
+                        ConcolicSmtComposer.BOUNDARY_DISPATCH_TOTALITY)) {
+            if (!element.isJsonObject()) continue;
+            JsonObject dispatch = element.getAsJsonObject();
+            if (optionalBool(dispatch, "totalDispatch", true)) continue;
+            String term = optionalString(dispatch, "solverTerm");
+            if (!term.isEmpty()) merged.add(term);
+        }
+        if (merged.isEmpty() || composedSmt == null) return result;
+        java.util.regex.Pattern implication = java.util.regex.Pattern
+                .compile("\\(=> ([A-Za-z_][A-Za-z0-9_]*) ");
+        for (String line : composedSmt.split("\\R")) {
+            if (!line.startsWith("(assert")) continue;
+            for (String term : merged) {
+                int at = line.indexOf(term);
+                if (at < 0) continue;
+                // The term's own definition is not a consumer of it.
+                if (line.startsWith("(assert (= " + term + " ")) continue;
+                if (!boundedSymbolAt(line, at, term.length())) continue;
+                List<String> consumers = result.computeIfAbsent(term,
+                        ignored -> new ArrayList<>());
+                java.util.regex.Matcher antecedent = implication.matcher(
+                        line);
+                if (antecedent.find()) {
+                    addUnique(consumers, antecedent.group(1));
+                }
+                int ite = line.lastIndexOf("(ite ", at);
+                if (ite >= 0) {
+                    String[] parts = line.substring(ite + 5, at).trim()
+                            .split("\\s+");
+                    if (parts.length == 1 && !parts[0].isEmpty()
+                            && !parts[0].startsWith("(")) {
+                        addUnique(consumers, parts[0]);
+                    }
+                }
+            }
+        }
+        return result;
+    }
+
+    private static boolean boundedSymbolAt(String line, int at, int length) {
+        int end = at + length;
+        return (at == 0 || !Character.isLetterOrDigit(line.charAt(at - 1))
+                && line.charAt(at - 1) != '_')
+                && (end >= line.length()
+                || !Character.isLetterOrDigit(line.charAt(end))
+                && line.charAt(end) != '_');
+    }
+
+    private static void addUnique(List<String> list, String value) {
+        if (!list.contains(value)) list.add(value);
+    }
+
+    private static String firstNonEmptyText(String value, String fallback) {
+        return value == null || value.trim().isEmpty() ? fallback : value;
+    }
+
     private static JsonObject mechanismNecessity(
             Z3Solver solver, String base, JsonObject manifest,
             List<RootInput> markers, JsonArray valuations)
@@ -1864,9 +2102,6 @@ public final class BooleanReachConditionExtractor {
         result.addProperty("authority", "RECORDED_ROOT_PIN_V1");
         JsonArray rows = new JsonArray();
         result.add("mechanisms", rows);
-        if (markers.isEmpty()) {
-            return result;
-        }
         Map<String, String> recorded = new LinkedHashMap<>();
         Set<String> clocks = new LinkedHashSet<>();
         for (JsonElement element
@@ -1886,6 +2121,28 @@ public final class BooleanReachConditionExtractor {
             }
         }
         if (recorded.isEmpty()) {
+            return result;
+        }
+        // A run with no declared marker still has a mechanism to answer for.
+        // The clock cases plant no Boolean fault: the whole claim is that a
+        // wall clock decided the target, and an empty necessity ledger used
+        // to read as "nothing to ask" rather than as "the clock was never
+        // shown to matter". The satisfying valuations are then probed on
+        // their own, with no marker literal to hold.
+        if (markers.isEmpty()) {
+            for (int ordinal = 0; ordinal < valuations.size(); ordinal++) {
+                JsonObject valuation = valuationRow(valuations,
+                        ordinal);
+                if (valuation == null || !"sat".equals(optionalString(
+                        valuation, "status"))) {
+                    continue;
+                }
+                for (Map.Entry<String, Set<String>> group
+                        : mechanismRoots(valuation, clocks).entrySet()) {
+                    rows.add(necessityRow(solver, base, recorded, "", "",
+                            true, ordinal, group));
+                }
+            }
             return result;
         }
         for (int index = 0; index < markers.size(); index++) {
@@ -1926,6 +2183,43 @@ public final class BooleanReachConditionExtractor {
         return result;
     }
 
+    /**
+     * Asks one mechanism whether the target still reaches with its roots put
+     * back to what they recorded.
+     *
+     * @param markerLiteral the marker assertion to hold, or "" when the run
+     *                      declares no marker at all
+     */
+    private static JsonObject necessityRow(
+            Z3Solver solver, String base, Map<String, String> recorded,
+            String markerTerm, String markerLiteral, boolean polarity,
+            int ordinal, Map.Entry<String, Set<String>> group)
+            throws IOException, InterruptedException {
+        JsonObject row = new JsonObject();
+        row.addProperty("marker", markerTerm);
+        row.addProperty("sourceIdentity", "");
+        row.addProperty("polarity", polarity);
+        row.addProperty("valuationOrdinal", ordinal);
+        row.addProperty("mechanism", group.getKey());
+        row.addProperty("pinnedRoots", group.getValue().size());
+        StringBuilder query = new StringBuilder(base);
+        if (!markerLiteral.isEmpty()) {
+            query.append("(assert ").append(markerLiteral).append(")")
+                    .append(System.lineSeparator());
+        }
+        for (String term : group.getValue()) {
+            query.append("(assert (= ").append(term).append(' ')
+                    .append(smtLiteral(recorded.get(term)))
+                    .append("))").append(System.lineSeparator());
+        }
+        query.append("(check-sat)").append(System.lineSeparator());
+        solver.check(query.toString());
+        String answerStatus = solver.lastStatus();
+        row.addProperty("status", answerStatus);
+        row.addProperty("necessary", "unsat".equals(answerStatus));
+        return row;
+    }
+
     /** The roots each named mechanism of this witness rests on. */
     private static Map<String, Set<String>> mechanismRoots(
             JsonObject valuation, Set<String> clocks) {
@@ -1952,6 +2246,17 @@ public final class BooleanReachConditionExtractor {
                     ? clocks : Collections.singleton(term));
         }
         return groups;
+    }
+
+    /** One valuation row, or null. */
+    private static JsonObject valuationRow(JsonArray valuations,
+                                           int ordinal) {
+        if (valuations == null || ordinal < 0
+                || ordinal >= valuations.size()) {
+            return null;
+        }
+        JsonElement element = valuations.get(ordinal);
+        return element.isJsonObject() ? element.getAsJsonObject() : null;
     }
 
     /** The valuation that gives this Boolean root that polarity. */

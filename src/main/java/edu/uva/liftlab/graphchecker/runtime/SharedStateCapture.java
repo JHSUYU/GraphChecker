@@ -789,7 +789,8 @@ final class SharedStateCapture {
             // while a map's content address stays on the frozen plan
             // locator alone.
             bindPlannedReceiver(planned > 0L || mapState() ? planned
-                    : accessAnchorReceiverObjectId());
+                    : accessAnchorReceiverObjectId(task == null ? ""
+                    : task.occurrenceId));
         }
 
         /**
@@ -802,13 +803,26 @@ final class SharedStateCapture {
 
         /**
          * A replay-stable receiver identity built from this carrier's own
-         * access anchor.
+         * access anchor, inside the activation that selected it.
          *
          * <p>The smallest anchor is used rather than the first observed one
          * so that two sessions which read the same receiver at the same set
          * of sites name it alike whatever order the reads ran in.</p>
+         *
+         * <p>The anchor alone is not an identity.  One static access site
+         * read once per activation names its receiver the same way in every
+         * activation, so six calls of {@code PBHelper.convert(BlockKeyProto)}
+         * -- six freshly allocated {@code BlockKey}s, each read at that one
+         * site as its first occurrence -- collapsed onto a single receiver
+         * id, and with it onto a single versioned location whose versions
+         * came from six different objects.  A read could then take a value
+         * one of the other five objects held.  The planned occurrence that
+         * published this carrier is what separates them: it is the same
+         * name in every replay of that occurrence, and different for each
+         * of the six calls, so the identity stays joinable across sessions
+         * and stops joining distinct allocations.</p>
          */
-        private long accessAnchorReceiverObjectId() {
+        private long accessAnchorReceiverObjectId(String occurrenceId) {
             String canonical = "";
             for (ConsumerAccessAnchor access : consumerAccesses) {
                 if (access == null || access.siteId.isEmpty()
@@ -823,7 +837,8 @@ final class SharedStateCapture {
             if (canonical.isEmpty()) return 0L;
             return ACCESS_ANCHOR_RECEIVER_TAG
                     | (stableHash(declaringClass + "#" + fieldName + ":"
-                    + descriptor + "\n" + canonical)
+                    + descriptor + "\n" + safe(occurrenceId) + "\n"
+                    + canonical)
                     & (ACCESS_ANCHOR_RECEIVER_TAG - 1L));
         }
 

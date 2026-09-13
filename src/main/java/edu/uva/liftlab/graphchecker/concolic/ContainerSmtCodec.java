@@ -4,6 +4,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.IdentityHashMap;
@@ -600,10 +601,12 @@ public final class ContainerSmtCodec {
                     || SCALAR_ASSOC_READ.equals(operation)) {
                 Term key = host.box(positions.get(0));
                 if (key == null) return null;
-                return SCALAR_ASSOC_HAS.equals(operation)
-                        ? associativeHas(state, key, host, memo)
-                        : host.unbox(associativeRead(state, key, host, memo),
-                        javaType);
+                if (SCALAR_ASSOC_HAS.equals(operation)) {
+                    return associativeHas(state, key, host, memo);
+                }
+                Term value = associativeRead(state, key, host, memo);
+                noteAbsentKeyDefault(state, key, host, memo);
+                return host.unbox(value, javaType);
             }
             Term index = host.operand(positions.get(0), Sort.INT);
             if (index == null) return null;
@@ -915,10 +918,10 @@ public final class ContainerSmtCodec {
                             : host.unbox(value, javaType);
                 }
                 Term key = host.box(arguments.get(0));
-                return key == null ? null
-                        : host.unbox(associativeRead(
-                        receiverIr, key, host, memo),
-                        javaType);
+                if (key == null) return null;
+                Term read = associativeRead(receiverIr, key, host, memo);
+                noteAbsentKeyDefault(receiverIr, key, host, memo);
+                return host.unbox(read, javaType);
             }
             if ("IS_EMPTY".equals(operation) && arguments.size() == 0) {
                 Term size = projectedAssociativeObservation(receiverIr, null,
@@ -1261,6 +1264,63 @@ public final class ContainerSmtCodec {
         if (guard == null) return null;
         return "(and " + guard.text + " " + sameKey + ")";
     }
+
+    /**
+     * Tells the host when this read's null can only be the absent-key
+     * default of the map the mutation chain starts from.
+     *
+     * <p>The condition is the negation of "some PUT of the chain used this
+     * key, or the base state holds it".  A conditional remove is not a PUT
+     * and contributes nothing: a key a {@code REMOVE_IF} deleted was put
+     * earlier or came out of the base state, so the disjunction still holds
+     * for it and the read is explained by the removal.</p>
+     */
+    private static void noteAbsentKeyDefault(
+            JsonElement expression, Term key, Host host,
+            ProjectionMemo memo) {
+        List<String> present = new ArrayList<>();
+        JsonElement chain = expression;
+        for (int depth = 0; depth < ABSENT_KEY_CHAIN_LIMIT; depth++) {
+            Mutation mutation = associativeMutation(chain);
+            if (mutation == null) {
+                Term state = host.operand(chain, Sort.ASSOCIATIVE);
+                if (state == null || state.sort != Sort.ASSOCIATIVE) return;
+                present.add("(assoc_has " + shared(state, host).text + " "
+                        + key.text + ")");
+                String absent = present.size() == 1
+                        ? "(not " + present.get(0) + ")"
+                        : "(not (or " + String.join(" ", present) + "))";
+                host.noteAbsentKeyDefault(key.text, absent);
+                return;
+            }
+            if ("CLEAR".equals(mutation.operation)) {
+                // The program emptied the map itself.  A key absent after a
+                // clear is absent because of the clear, which is a statement
+                // about the program and not a default.
+                return;
+            }
+            if (emptiesState(mutation.operation)) {
+                // The reconstructed initial snapshot: the chain starts here
+                // and holds exactly the keys the PUTs above it restored, so
+                // a key none of them names is the untouched map's default.
+                host.noteAbsentKeyDefault(key.text, present.isEmpty()
+                        ? "true"
+                        : present.size() == 1
+                        ? "(not " + present.get(0) + ")"
+                        : "(not (or " + String.join(" ", present) + "))");
+                return;
+            }
+            if ("PUT".equals(mutation.operation)) {
+                Term putKey = memo.box(mutation.arguments.get(0), host);
+                if (putKey == null) return;
+                present.add("(= " + key.text + " " + putKey.text + ")");
+            }
+            chain = mutation.receiver;
+        }
+    }
+
+    /** Depth past which an associative chain is not worth walking twice. */
+    private static final int ABSENT_KEY_CHAIN_LIMIT = 512;
 
     private static Term associativeRead(
             JsonElement expression, Term key, Host host,
@@ -2148,6 +2208,30 @@ public final class ContainerSmtCodec {
                    String javaType);
 
         void unsupported(String reason);
+
+        /**
+         * One associative read whose key matched no {@code PUT} in the
+         * mutation chain and is not a member of the state the chain starts
+         * from, so the read's null came from the map not containing the key
+         * at all rather than from anything the program did to it.
+         *
+         * <p>That distinction is the difference between a finding and a
+         * fabrication.  A key a writer removed is absent <em>because</em> of
+         * the removal, and a witness that shows it is a statement about the
+         * program.  A key nothing ever put is absent in the recording too:
+         * the "null" it produces is the default of an untouched map, and a
+         * witness resting on it has explained nothing -- which is exactly
+         * how an HDFS-17897 candidate came to ask a DataNode for key id
+         * 1556899178, a key id no node ever held.</p>
+         *
+         * @param keyTerm the key the read was made with
+         * @param absentCondition true exactly when that key matched no PUT
+         *                        of the chain and the base state does not
+         *                        hold it
+         */
+        default void noteAbsentKeyDefault(String keyTerm,
+                                          String absentCondition) {
+        }
     }
 
     public enum Sort {

@@ -1307,6 +1307,11 @@ public final class ClaimPolicy {
                         array(initialState, FREE_INITIAL_ARMS),
                         unrealizedFlows);
         List<Marker> markers = declaredMarkers(manifest, reach, flows);
+        // What the necessity probe said about each valuation's clock group.
+        Map<Integer, WitnessLegitimacy.ClockNecessity> clockNecessity =
+                clockNecessityByValuation(reach);
+        boolean anyClockNecessary = clockNecessity.containsValue(
+                WitnessLegitimacy.ClockNecessity.NECESSARY);
         JsonArray findings = new JsonArray();
         Set<String> freedoms = new LinkedHashSet<>();
         Set<String> witnessLocal = new LinkedHashSet<>();
@@ -1325,7 +1330,9 @@ public final class ClaimPolicy {
             JsonObject candidate = row(valuations, index);
             JsonArray assignment = markerAssignment(candidate, markers);
             JsonObject finding = WitnessLegitimacy.classify(candidate, index,
-                    window, composition, assignment);
+                    window, composition, assignment,
+                    clockNecessity.getOrDefault(index,
+                            WitnessLegitimacy.ClockNecessity.UNKNOWN));
             findings.add(finding);
             Set<String> local = new LinkedHashSet<>();
             for (JsonElement element : array(finding, "freedoms")) {
@@ -1371,11 +1378,28 @@ public final class ClaimPolicy {
         result.addProperty("freedomCodes", String.join(",", freedoms));
         result.addProperty("witnessLocalFreedomCodes",
                 String.join(",", witnessLocal));
+        // A clock case declares no marker, so there is no polarity to flip:
+        // its whole hypothesis is that a wall clock decided the target. An
+        // explained witness is then necessary but not sufficient -- the
+        // clock has to have been needed. A satisfying witness that survives
+        // every clock going back to what it recorded is a witness the clock
+        // played no part in, and accepting it publishes a clock finding the
+        // formula does not support.
+        boolean clockOnly = markers.isEmpty()
+                && !clockNecessity.isEmpty();
         result.addProperty("faultPolarityNotWitnessed",
                 markers.isEmpty()
-                        ? (someSatWitnessExplained ? ""
+                        ? (someSatWitnessExplained
+                                && (!clockOnly || anyClockNecessary) ? ""
+                                : clockOnly && !anyClockNecessary
+                                ? "no clock decision on the fatal slice is"
+                                + " necessary: every satisfying witness"
+                                + " survives pinning the clocks to what they"
+                                + " recorded"
                                 : "the enumerated valuations")
                         : (flippedWitnessAccepted ? "" : markerNames(markers)));
+        result.addProperty("clockMechanismNecessary", anyClockNecessary);
+        result.addProperty("clockOnlyExperiment", clockOnly);
         // Which valuation the acceptance rests on, so a probe can assert that
         // marker assignment rather than guess one.
         result.addProperty("acceptedValuationOrdinal", acceptedOrdinal);
@@ -1403,7 +1427,48 @@ public final class ClaimPolicy {
     private static boolean witnessLocal(String code) {
         return WitnessLegitimacy.CLOCK_OUTSIDE_WINDOW.equals(code)
                 || WitnessLegitimacy.ABSURD_CLOCK_VALUE.equals(code)
-                || WitnessLegitimacy.UNEXPLAINED_ROOT_MOVE.equals(code);
+                || WitnessLegitimacy.UNEXPLAINED_ROOT_MOVE.equals(code)
+                || WitnessLegitimacy.CLOCK_NOT_NECESSARY.equals(code)
+                || WitnessLegitimacy.ABSENT_KEY_DEFAULT.equals(code)
+                // The composition-level unbound flow has its own blocker;
+                // this one is a property of the model, which no other
+                // blocker reads, so it belongs to the witness.
+                || WitnessLegitimacy.UNBOUND_WIRE_VALUE_TAKEN.equals(code);
+    }
+
+    /**
+     * What the reach report's necessity probe said about each valuation's
+     * clock group.
+     *
+     * <p>A row per valuation, and only for the clock mechanism: the probe
+     * pins every wall-clock root to its recorded value at once, because
+     * "these clocks disagreed" is one claim and asking it one root at a time
+     * asks about a skew nobody made.</p>
+     */
+    private static Map<Integer, WitnessLegitimacy.ClockNecessity>
+            clockNecessityByValuation(JsonObject reach) {
+        Map<Integer, WitnessLegitimacy.ClockNecessity> result =
+                new LinkedHashMap<>();
+        JsonObject necessity = object(reach, "mechanismNecessity");
+        for (JsonElement element : array(necessity, "mechanisms")) {
+            if (!element.isJsonObject()) continue;
+            JsonObject row = element.getAsJsonObject();
+            if (!WitnessLegitimacy.CLOCK_SKEW.equals(
+                    optionalString(row, "mechanism"))) {
+                continue;
+            }
+            int ordinal = optionalInteger(row, "valuationOrdinal", -1);
+            if (ordinal < 0) continue;
+            WitnessLegitimacy.ClockNecessity verdict =
+                    optionalBool(row, "necessary", false)
+                            ? WitnessLegitimacy.ClockNecessity.NECESSARY
+                            : WitnessLegitimacy.ClockNecessity.NOT_NECESSARY;
+            WitnessLegitimacy.ClockNecessity held = result.get(ordinal);
+            if (held != WitnessLegitimacy.ClockNecessity.NECESSARY) {
+                result.put(ordinal, verdict);
+            }
+        }
+        return result;
     }
 
 
