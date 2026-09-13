@@ -228,6 +228,63 @@ public class PathMergeComposerTest {
                 .get("pathConditionTerms").getAsInt());
     }
 
+    /**
+     * A root no source states a value for is refused, not composed over.
+     *
+     * <p>The recording is what says what the program held there.  Where
+     * neither the replay that minted the root nor the plan's symbolize row
+     * says it, the run has a free variable and no value to call its
+     * recorded one, and every statement about "the marker flipped" would be
+     * measured against nothing.</p>
+     */
+    @Test
+    public void aRootNoSourceStatesAValueForIsRefused() throws Exception {
+        Path directory = Files.createTempDirectory("path-merge-unstated");
+        JsonObject query = query();
+        query.getAsJsonArray("paths").add(path("flip", "GROUP.FLIP",
+                rootIs(false), notEqual(constant(1), constant(0))));
+        PathMergeComposer.Result result = compose(directory, query, null,
+                "GROUP.FLIP");
+
+        JsonObject merge = result.manifest.getAsJsonObject(
+                PathMergeComposer.MANIFEST_FIELD);
+        JsonArray gates = merge.getAsJsonArray("gates");
+        assertEquals(1, gates.size());
+        assertEquals(PathMergeComposer.RECORDED_ROOT_VALUE_UNSTATED,
+                gates.get(0).getAsJsonObject().get("kind").getAsString());
+        assertEquals("", merge.getAsJsonArray("roots").get(0)
+                .getAsJsonObject().get("recordedValue").getAsString());
+    }
+
+    /**
+     * A root exactly one replay stated is stated, and nothing is refused.
+     *
+     * <p>A flip replay is handed a model assignment and states no recorded
+     * value; the seed that minted it does.  One reading is not a conflict,
+     * and the conflict member is a list of the readings that disagreed --
+     * empty here.  Publishing a boolean flag there instead made a run with
+     * no conflict state "false" as a reading of its own.</p>
+     */
+    @Test
+    public void oneReplayStatingTheValueIsEnoughAndIsNotAConflict()
+            throws Exception {
+        Path directory = Files.createTempDirectory("path-merge-stated");
+        JsonObject query = query();
+        query.getAsJsonArray("paths").add(path("seed", "GROUP.SEED",
+                rootIs(true), notEqual(constant(1), constant(1))));
+        query.getAsJsonArray("paths").add(path("flip", "GROUP.FLIP",
+                rootIs(false), notEqual(constant(1), constant(0))));
+        PathMergeComposer.Result result = compose(directory, query);
+
+        JsonObject merge = result.manifest.getAsJsonObject(
+                PathMergeComposer.MANIFEST_FIELD);
+        assertEquals(0, merge.getAsJsonArray("gates").size());
+        JsonObject root = merge.getAsJsonArray("roots").get(0)
+                .getAsJsonObject();
+        assertEquals("true", root.get("recordedValue").getAsString());
+        assertEquals("", root.get("recordedValueConflict").getAsString());
+    }
+
     /** One other activation of a replay, with one decision of its own. */
     private static JsonObject decision(String group, JsonObject condition) {
         JsonObject summary = new JsonObject();
@@ -251,12 +308,20 @@ public class PathMergeComposerTest {
                                                     JsonObject query,
                                                     JsonObject extra)
             throws IOException {
+        return compose(directory, query, extra, "GROUP.SEED", "GROUP.FLIP");
+    }
+
+    private static PathMergeComposer.Result compose(Path directory,
+                                                    JsonObject query,
+                                                    JsonObject extra,
+                                                    String... groups)
+            throws IOException {
         Path queryFile = directory.resolve("reach_query.jsonl");
         write(queryFile, JsonFields.WRITER.toJson(
                 SharedExpressionTable.compact(query)));
         Path summaries = directory.resolve("summaries.jsonl");
         StringBuilder rows = new StringBuilder();
-        for (String group : new String[]{"GROUP.SEED", "GROUP.FLIP"}) {
+        for (String group : groups) {
             rows.append(JsonFields.WRITER.toJson(
                     SharedExpressionTable.compact(summary(group))))
                     .append('\n');
