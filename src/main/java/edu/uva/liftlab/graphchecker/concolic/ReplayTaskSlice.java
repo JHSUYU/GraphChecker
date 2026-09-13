@@ -33,15 +33,24 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
  *
  * <p><b>Bidirectional slice.</b>  A location matters only where the forward
  * closure of the root cells meets the backward closure of the fatal read,
- * taken over the refined dataflow graph and, between occurrences, over the
- * plan's shared-location, protocol and request-control edges.  A writer
- * outside that intersection is a recorded constant for this failure however
- * root-dependent its value is: either no root can move it, or nothing the
- * failing branch reads ever consults it.  Root dependence is therefore
- * seeded at {@link #ROOT_SITE} alone; writing a cared location is a keep
- * <em>reason</em> ({@link #CARRIER_WRITER}) and never a fresh source of
- * root influence, because a write whose value the recording fixed replays
- * that value on every arm.</p>
+ * taken over the refined dataflow graph -- every edge kind, the control
+ * edges included, so a value that decides whether a container is mutated is
+ * on the chain of every read of that container -- and, between occurrences,
+ * over the plan's shared-location, protocol and request-control edges.  A
+ * writer outside that intersection is a recorded constant for this failure
+ * however root-dependent its value is: either no root can move it, or
+ * nothing the failing branch reads ever consults it.</p>
+ *
+ * <p>Root dependence is seeded by two things and no others: a
+ * {@link #ROOT_SITE}, and an occurrence whose own reads the bidirectional
+ * slice carries.  The second is the same evidence as the first, read at
+ * occurrence grain: a cell inside the intersection is a value a root can
+ * move and the failing branch consults, so the occurrence that reads it
+ * carries the root whether or not the plan drew an edge into it.  Writing a
+ * cared location is neither: it is a keep <em>reason</em>
+ * ({@link #CARRIER_WRITER}) and never a fresh source of root influence,
+ * because a write whose value the recording fixed replays that value on
+ * every arm.</p>
  *
  * <p>Repetition alone never narrows anything.  Two occurrences of one
  * region under one source and one request used to be read as a loop
@@ -118,6 +127,10 @@ final class ReplayTaskSlice {
         Map<String, RegionInstancePlan> plans = new LinkedHashMap<>();
         Map<String, Set<String>> reasons = new LinkedHashMap<>();
         Map<String, JsonObject> edges = new LinkedHashMap<>();
+        // Planned occurrence -> the input actions its goals propose, so the
+        // refined graph can be asked what each occurrence carries once the
+        // fatal read has narrowed the slice.
+        Map<String, List<JsonObject>> proposed = new LinkedHashMap<>();
         // The cells the failing branch reads: the operands it decides on,
         // the throw it reaches, and the reads the target goal symbolizes.
         Set<String> fatalCells = new LinkedHashSet<>();
@@ -139,6 +152,8 @@ final class ReplayTaskSlice {
                 for (JsonElement element : goal.symbolize()) {
                     if (!element.isJsonObject()) continue;
                     JsonObject action = element.getAsJsonObject();
+                    proposed.computeIfAbsent(occurrence,
+                            ignored -> new ArrayList<>()).add(action);
                     if (target) {
                         fatalCells.addAll(
                                 ConcolicScheduler.RootDependenceSlice
@@ -201,15 +216,22 @@ final class ReplayTaskSlice {
             forward.computeIfAbsent(from, ignored -> new LinkedHashSet<>())
                     .add(to);
         }
-        // Only a root site seeds root dependence.  A writer of a cared
-        // location earns the CARRIER_WRITER reason once a root reaches it,
-        // and stays a recorded constant until then.
+        // Root dependence is seeded by a root site and by the refined
+        // dataflow graph, and by nothing else.  A writer of a cared location
+        // earns the CARRIER_WRITER reason once a root reaches it, and stays
+        // a recorded constant until then.
         Set<String> rootDependent = new LinkedHashSet<>();
         Deque<String> pending = new ArrayDeque<>();
         for (Map.Entry<String, Set<String>> entry : reasons.entrySet()) {
             if (entry.getValue().contains(ROOT_SITE)) {
                 rootDependent.add(entry.getKey());
                 pending.addLast(entry.getKey());
+            }
+        }
+        for (String occurrence : carryingOccurrences(proposed, slice)) {
+            if (rootDependent.add(occurrence)) {
+                reasons.get(occurrence).add(ROOT_DEPENDENT_FLOW);
+                pending.addLast(occurrence);
             }
         }
         while (!pending.isEmpty()) {
@@ -244,6 +266,46 @@ final class ReplayTaskSlice {
         }
         return new ReplayTaskSlice(true, "ROOT_DEPENDENT_CARRIERS", plans,
                 reasons);
+    }
+
+    /**
+     * Every occurrence whose own reads the slice carries.
+     *
+     * <p>A plan edge is not the only evidence that root influence arrives.
+     * The slice handed here is already bidirectional -- the forward closure
+     * of the roots met with the backward closure of the fatal read, over the
+     * refined dataflow graph including its control edges -- so an occurrence
+     * that <em>reads a cell inside that intersection</em> reads a value a
+     * root can move and the failing branch consults.  Deciding that by the
+     * same graph the location decision uses is what makes the two agree:
+     * without it, an occurrence whose delivery the plan attributed to a
+     * sibling region of the same method is unreachable at occurrence grain
+     * however squarely its reads sit on the slice, and the carriers only it
+     * declares are never offered to {@link SharedCarrierSlice}.  That is how
+     * hdfs-17899 lost {@code BlockKeyProto#expiryDate_}: the loop-body view
+     * of {@code PBHelper.convert(BlockKeyProto)} is the one occurrence that
+     * reads it, and the wire delivery bound the communication-entry view of
+     * the same method instead.</p>
+     *
+     * <p>This is a seed of root dependence, not of the failure: an occurrence
+     * seeded here still has to reach the fatal read over the plan's own
+     * edges, exactly like one seeded at a root site, or the bidirectional
+     * rule below clears it again.</p>
+     */
+    private static Set<String> carryingOccurrences(
+            Map<String, List<JsonObject>> proposed,
+            ConcolicScheduler.RootDependenceSlice slice) {
+        Set<String> carrying = new LinkedHashSet<>();
+        for (Map.Entry<String, List<JsonObject>> entry
+                : proposed.entrySet()) {
+            for (JsonObject action : entry.getValue()) {
+                if (slice.carries(action)) {
+                    carrying.add(entry.getKey());
+                    break;
+                }
+            }
+        }
+        return carrying;
     }
 
     /**
