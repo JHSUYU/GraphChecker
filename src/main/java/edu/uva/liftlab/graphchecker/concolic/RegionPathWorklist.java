@@ -185,7 +185,16 @@ public final class RegionPathWorklist {
                     continue;
                 }
                 planSummary(path);
-                if (campaignTaskCount() >= bounds.maxTasks) break;
+                // The task ceiling stops the walk over observed paths. Every
+                // path after this one is unplanned, so the ceiling is named
+                // here for the same reason planSummary names it: a truncated
+                // walk that published no gap let coverageState read CLOSED
+                // on a campaign that simply ran out of budget.
+                if (campaignTaskCount() >= bounds.maxTasks) {
+                    coverageGap("BOUND_REACHED", "MAX_TASKS", region,
+                            pathKey, "", -1);
+                    break;
+                }
             }
 
             enforcePathBounds();

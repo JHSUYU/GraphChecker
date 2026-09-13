@@ -114,11 +114,26 @@ final class CommunicationCatalogPlanner {
                         loopSiteId, controlSites.toString()));
             }
             int declaredBound = bounds.bound(controlSites);
-            if (!fixedCount && declaredBound == 0) {
+            if (declaredBound == 0) {
                 // The loop still runs under the inherited K_L, and the model
                 // it produces is a prefix nobody stated for this workload.
+                //
+                // FIXED_COUNT_INDEXED used to be exempt here, on the reading
+                // that an array-indexed for is bounded by its array. It is
+                // not: the cardinality that would bound it is a runtime
+                // observation, and when the replay publishes no exact
+                // cardinality vector the loop runs at the same inherited
+                // ceiling every other undeclared loop runs at -- on
+                // hdfs-11741 that was 4 of 7 retained loops, every one of
+                // them at loopBodyBound NONE and none of them named. So the
+                // exemption is gone and the classification is reported
+                // instead, the way guardsClassifyDifferently above already
+                // reports its finding.
                 result.gaps.add(gap("BOUNDED_LOOP_BODY_BOUND_UNDECLARED",
-                        "INHERITED_K_L_"
+                        (fixedCount
+                                ? LoopBoundPolicy.LOOP_FIXED_COUNT_INDEXED
+                                        + "_INHERITED_K_L_"
+                                : "INHERITED_K_L_")
                                 + LoopBoundPolicy.MAX_LOOP_BODY_ITERATIONS,
                         method, loopSiteId, controlSites.toString()));
             }

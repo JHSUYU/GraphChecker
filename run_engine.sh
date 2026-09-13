@@ -3103,7 +3103,7 @@ campaign_decide() {
 campaign_artifact_digests() {
   local name path bytes sha row
   local -a required=(candidate.smt2 candidate_composition_manifest.json
-    z3-result.json path-closures.json gaps.json result.json
+    z3-result.json path-closures.json gaps.json gap_ledger.json result.json
     target_occurrences.json)
   local -a names=()
   local -a rows=()
@@ -3132,26 +3132,72 @@ campaign_artifact_digests() {
 # Aggregate the already-validated owner reports without copying their contents
 # into exec argv.  Real compositions and topology deltas routinely exceed both
 # Linux's per-argument limit and ARG_MAX, so every JSON input is a file.
+#
+# There is one gap ledger and it lives in GapLedger.java.  This function used
+# to be the second one: it hand-picked two sources -- the Composer's
+# finalStatusRefusals and the solver's own gaps -- as blocking and demoted
+# every other gap the pipeline raised into a telemetryGaps array no claim
+# read.  On hdfs-17960 that demoted all 27 rows of a run that then published
+# gapCount 0, including 15 regions whose causal anchor was never observed.
+# Now every source is folded into one list and each row is classed by the
+# ledger, which defaults an unregistered code to BLOCKING in both readers.
+campaign_write_gap_ledger() {
+  local output=$1
+  run_java_main edu.uva.liftlab.graphchecker.contract.GapLedger \
+    --output "${output}"
+  require_nonempty "gap ledger" "${output}"
+  campaign_require_json "gap ledger" "${output}" \
+    || campaign_fail EMIT GapLedger "${output}" \
+      "the published gap ledger is malformed"
+}
+
+# The static catalog's own gaps, as a JSON array.  A campaign that restored
+# its seed from cache still has this artifact, because it is one of the
+# cached ones.
+campaign_static_gaps_json() {
+  local gzipped="${causynth_output_dir}/communication_gaps.jsonl.gz"
+  if [[ ! -s "${gzipped}" ]]; then
+    echo '[]'
+    return 0
+  fi
+  gzip -d -c -- "${gzipped}" | jq -c -s '.' || return 1
+}
+
+# The planning gaps the runtime plan artifact carries in its catalog row.
+campaign_plan_gaps_json() {
+  if [[ ! -s "${runtime_region_plan}" ]]; then
+    echo '[]'
+    return 0
+  fi
+  head -n 1 -- "${runtime_region_plan}" | jq -c '.gaps // []' || return 1
+}
+
 campaign_write_coverage_gaps() {
   local composition=$1 reach=$2 diagnostics=$3 delta=$4
-  local path_closures=$5 output=$6
+  local path_closures=$5 ledger=$6 output=$7
+  local static_gaps plan_gaps
+  static_gaps=$(campaign_static_gaps_json) || return 1
+  plan_gaps=$(campaign_plan_gaps_json) || return 1
   jq -n \
     --slurpfile composedDocuments "${composition}" \
     --slurpfile reachDocuments "${reach}" \
     --slurpfile diagnostics "${diagnostics}" \
     --slurpfile delta "${delta}" \
-    --slurpfile pathClosureDocuments "${path_closures}" '
+    --slurpfile pathClosureDocuments "${path_closures}" \
+    --slurpfile ledgerDocuments "${ledger}" \
+    --argjson staticGaps "${static_gaps}" \
+    --argjson planGaps "${plan_gaps}" '
     $composedDocuments[0] as $composed |
     $reachDocuments[0] as $reach |
     $pathClosureDocuments[0] as $pathClosures |
+    $ledgerDocuments[0] as $ledger |
+    # The ledger names its exceptions; everything else is blocking, which is
+    # the same default GapLedger.classOf applies in Java.
+    ($ledger.diagnostic // []) as $diagnosticCodes |
     ([$composed.finalStatusRefusals[]?
          | {stage: "COMPOSE", source: "COMPOSER",
             code: .code, subject: .subject, detail: .detail}]
-       + [$reach.gaps[]?
-           | {stage: "SOLVE", source: "SOLVER", code: ., subject: "",
-              detail: ""}]
-       | unique_by([.stage, .source, .code, .subject, .detail])) as $gaps |
-    ([$composed.gaps[]?
+       + [$composed.gaps[]?
            | {stage: "COMPOSE", source: "COMPOSER",
               code: (.reason // .kind // ""),
               subject: (.subject // ""), detail: (.detail // "")}]
@@ -3172,6 +3218,9 @@ campaign_write_coverage_gaps() {
            | {stage: "COMPOSE", source: "FAULT_CONTROL",
               code: (.reason // .kind // ""),
               subject: (.subject // ""), detail: (.detail // "")}]
+       + [$reach.gaps[]?
+           | {stage: "SOLVE", source: "SOLVER", code: ., subject: "",
+              detail: ""}]
        + [$pathClosures[]? as $closure
            | $closure.coverageGaps[]?
            | {stage: "EXPLORE", source: "PATH_WORKLIST",
@@ -3188,16 +3237,36 @@ campaign_write_coverage_gaps() {
            | {stage: "CLASSIFY", source: (.source // "IMPORTER"),
               code: (.code // .deltaKind), subject: (.taskId // ""),
               detail: (.reason // .gap // "")}]
+       + [$staticGaps[]?
+           | {stage: "PLAN", source: "STATIC",
+              code: (.gapKind // .kind // ""),
+              subject: ([(.gapReason // ""), (.enclosingMethod // .method
+                          // ""), (.siteId // "")]
+                        | map(select(. != "")) | join("\n")),
+              detail: (.detail // "")}]
+       + [$planGaps[]?
+           | {stage: "PLAN", source: "RUNTIME_PLAN",
+              code: (.code // .kind // ""),
+              subject: (.subject // ""), detail: (.detail // "")}]
+       | map(select(.code != ""))
+       | map(. + {class: (if (.code | IN($diagnosticCodes[]))
+                          then "DIAGNOSTIC" else "BLOCKING" end)})
        | unique_by([.stage, .source, .code, .subject, .detail]))
-       as $telemetry |
-    {schemaVersion: 1,
+       as $rows |
+    {schemaVersion: 2,
      kind: "CAMPAIGN_COVERAGE_GAPS",
-     gaps: $gaps,
-     telemetryGaps: $telemetry}
+     gapLedger: {kind: ($ledger.kind // ""),
+                 schemaVersion: ($ledger.schemaVersion // 0),
+                 defaultClass: ($ledger.defaultClass // "BLOCKING"),
+                 diagnosticCodes: $diagnosticCodes},
+     gaps: [$rows[] | select(.class == "BLOCKING")],
+     telemetryGaps: [$rows[] | select(.class == "DIAGNOSTIC")]}
     | .gapCount = (.gaps | length)
     | .telemetryCount = (.telemetryGaps | length)
     | .byStage = (.gaps | group_by(.stage)
         | map({key: .[0].stage, value: length}) | from_entries)
+    | .byCode = (.gaps | group_by(.code)
+        | map({key: .[0].code, value: length}) | from_entries)
     | .telemetryByStage = (.telemetryGaps | group_by(.stage)
         | map({key: .[0].stage, value: length}) | from_entries)
   ' >"${output}"
@@ -3253,15 +3322,20 @@ campaign_emit() {
       "a path-closure JSON is malformed or could not be enumerated"
   fi
 
-  # Formula/solver gaps block a candidate. Exploration, loop-bound and
-  # propagation-merge coverage stay as telemetry: they are needed to justify
-  # a closed UNSAT result, while one connected SAT witness is already valid.
+  # One ledger classes every gap this campaign raised, wherever it was
+  # raised.  A code the ledger does not register is blocking, so a gap added
+  # to some stage withholds the claim until somebody states why it cannot
+  # break a chain.  The ledger is published beside the gaps it classed, so a
+  # reader of the final directory can check the classification without the
+  # jar.
+  campaign_write_gap_ledger "${campaign_final}/gap_ledger.json"
   campaign_write_coverage_gaps \
     "${composition_manifest}" \
     "${reach_report}" \
     "${iteration_dir}/import_diagnostics.jsonl" \
     "${iteration_dir}/topology_delta.jsonl" \
     "${path_closures_artifact}" \
+    "${campaign_final}/gap_ledger.json" \
     "${campaign_final}/gaps.json"
   require_nonempty "campaign gaps" "${campaign_final}/gaps.json"
   campaign_require_json "campaign gaps" "${campaign_final}/gaps.json" \
@@ -3424,8 +3498,9 @@ campaign_emit() {
       exit 2
       ;;
   esac
-  # Formula and solver gaps remain hard failures. Coverage gaps are telemetry
-  # above and only keep an UNSAT result from becoming UNSAT_CLOSED.
+  # Every blocking gap in the ledger is a hard failure, whichever stage
+  # raised it.  The telemetry array holds only the codes the ledger names as
+  # unable to change a chain, and each of those carries its reason there.
   [[ "${gapCount}" -eq 0 ]] || {
     jq -r '"[campaign] candidate withheld: claim=\(.claim), but the run named "
       + (.gapCount | tostring) + " unresolved gap(s)"' \
@@ -3446,9 +3521,12 @@ campaign_publish_bound_gap() {
       kind: "CAMPAIGN_COVERAGE_GAPS",
       gapCount: 1,
       byStage: {CLASSIFY: 1},
+      byCode: {ITERATION_BOUND_REACHED: 1},
+      telemetryGaps: [],
+      telemetryCount: 0,
       provenance: $provenance,
       gaps: [{stage: "CLASSIFY", source: "CAMPAIGN",
-              code: "ITERATION_BOUND_REACHED",
+              code: "ITERATION_BOUND_REACHED", class: "BLOCKING",
               subject: ("campaign_max_iterations=" + ($iterations | tostring)),
               detail: "the topology still diverged at the declared iteration bound; no candidate was composed"}]}' \
     >"${campaign_final}/gaps.json"

@@ -3711,8 +3711,6 @@ public final class ConcolicSmtComposer {
                         + " not the version the fault retained (marker "
                         + marker + ")";
                 faultControlGap(FAULT_IDLE_INITIAL_HOST_IDLED, read, detail);
-                refuse(FAULT_IDLE_INITIAL_HOST_IDLED + "[" + read + "]",
-                        detail);
             }
         }
 
@@ -3764,6 +3762,17 @@ public final class ConcolicSmtComposer {
             return rows;
         }
 
+        /**
+         * Records one fault-control gap -- and refuses on it.
+         *
+         * <p>Two of the three reasons used to record and return. A read the
+         * marker starves observes nothing, and a fault-controlled selector
+         * the reach driver may pin freezes the marker the claim is about;
+         * both decide the experiment's own hypothesis outside the formula,
+         * which is the same thing {@code FAULT_IDLE_INITIAL_HOST_IDLED}
+         * already refused for. So all three refuse, and the caller that used
+         * to pair this with its own {@code refuse} no longer has to.</p>
+         */
         private void faultControlGap(String reason, String subject,
                                      String detail) {
             if (!faultControlGapKeys.add(reason + "\n" + subject)) return;
@@ -3773,6 +3782,7 @@ public final class ConcolicSmtComposer {
             row.addProperty("subject", subject);
             row.addProperty("detail", detail);
             faultControlTelemetry.add(row);
+            refuse(reason + "[" + subject + "]", detail);
         }
 
         /**

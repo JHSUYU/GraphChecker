@@ -287,6 +287,18 @@ public final class GapLedger {
         blocking(solver, "SOLVER_TIMEOUT",
                 "a flip query the solver never answered leaves the root it"
                         + " was asked about unresolved");
+        // These two are published as CODE:detail, so the row's code carries a
+        // suffix and falls through classOf to the blocking default.  They are
+        // named here so the vocabulary is complete and the default is not the
+        // only thing documenting them.
+        blocking(solver, "ROOT_BOOLEAN_INPUT_LIMIT_EXCEEDED",
+                "the Boolean root space was larger than the enumeration"
+                        + " bound, so the valuations below it are a sample"
+                        + " and not the space");
+        blocking(solver, "BOOLEAN_VALUATION_LIMIT_EXCEEDED",
+                "the enumeration stopped short of the valuations the root"
+                        + " space has, so an unsat answer is about the"
+                        + " sample");
 
         // ------------------------------------------------------------------
         // EXPLORE / PATH_WORKLIST.
@@ -326,6 +338,19 @@ public final class GapLedger {
                 "nothing observed seeds this region's path space");
         blocking(explore, "MULTIPLE_EXPLORATION_SCOPE",
                 "one task spans several exploration scopes");
+        blocking(explore, "PATH_FLIP_SOLVER_TIMEOUT",
+                "the flip query for this path was never answered, so the"
+                        + " path it names is neither walked nor excluded");
+        // Written by run_engine.sh's closure loop onto every pending
+        // worklist, which is why they are classed here rather than in the
+        // shell that raises them.
+        blocking(explore, "REGION_PATH_WAVE_BUDGET_REACHED",
+                "the closure loop stopped at its wave budget with"
+                        + " obligations still pending");
+        blocking(explore, "REGION_PATH_CLOSURE_NO_PROGRESS",
+                "a closure wave repeated its predecessor's signature with"
+                        + " obligations still pending, so the paths they"
+                        + " name were never decided");
 
         // ------------------------------------------------------------------
         // IMPORT / IMPORTER.

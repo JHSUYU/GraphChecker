@@ -61,6 +61,16 @@ public final class StaticProgram {
     final List<Map<String, Object>> retainedLoops = new ArrayList<>();
     final List<Map<String, Object>> communicationGaps = new ArrayList<>();
     /**
+     * Gaps the runtime-selected region finalizer raised while building this
+     * program's ports: a static site whose activation-local accesses were
+     * truncated, or an accessor-return stream that hit the container snapshot
+     * capacity.  Both used to be silent {@code continue}s.  These travel out
+     * of the finalizer on {@code Result.gaps} and into the runtime plan
+     * artifact, because a port built from a truncated access history is a
+     * chain element the later stages never see the whole of.
+     */
+    final List<Map<String, Object>> planGaps = new ArrayList<>();
+    /**
      * Callee signatures that are communication boundaries in the selected
      * slice.
      */

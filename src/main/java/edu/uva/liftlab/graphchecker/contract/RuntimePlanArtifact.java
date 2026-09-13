@@ -11,6 +11,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -36,11 +37,14 @@ public final class RuntimePlanArtifact {
 
     private final List<RegionInstancePlan> plans;
     private final List<JsonObject> regions;
+    private final List<JsonObject> gaps;
 
     private RuntimePlanArtifact(List<RegionInstancePlan> plans,
-                                List<JsonObject> regions) {
+                                List<JsonObject> regions,
+                                List<JsonObject> gaps) {
         this.plans = plans;
         this.regions = regions;
+        this.gaps = gaps;
     }
 
     /** The occurrence plans, decoded once here and never re-parsed. */
@@ -56,15 +60,35 @@ public final class RuntimePlanArtifact {
 
     public List<JsonObject> regions() { return copies(regions); }
 
+    /**
+     * Gaps the planner raised about the ports this plan was built from.
+     *
+     * <p>A truncated access history or a container observation stream that
+     * hit its capacity is invisible in every artifact downstream of this one,
+     * so it is carried here rather than left to the planning JVM's stdout.
+     * Older artifacts carry no such member and answer empty.</p>
+     */
+    public List<JsonObject> gaps() { return copies(gaps); }
+
     /** Encodes compact plans plus one canonical region/edge catalog. */
     public static String encode(Collection<JsonObject> encodedPlans,
                                 Collection<JsonObject> encodedEdges,
                                 Collection<JsonObject> encodedRegions) {
+        return encode(encodedPlans, encodedEdges, encodedRegions,
+                Collections.<JsonObject>emptyList());
+    }
+
+    /** As above, carrying the planning gaps the catalog publishes. */
+    public static String encode(Collection<JsonObject> encodedPlans,
+                                Collection<JsonObject> encodedEdges,
+                                Collection<JsonObject> encodedRegions,
+                                Collection<JsonObject> encodedGaps) {
         List<JsonObject> edges = copies(encodedEdges);
         EdgeBindingCatalog catalog = EdgeBindingCatalog.of(edges);
 
         StringBuilder output = new StringBuilder();
-        output.append(encodeCatalog(edges, copies(encodedRegions)));
+        output.append(encodeCatalog(edges, copies(encodedRegions),
+                copies(encodedGaps)));
         for (JsonObject source : encodedPlans) {
             output.append(CanonicalJson.render(
                     compactBindings(source, catalog))).append('\n');
@@ -73,7 +97,8 @@ public final class RuntimePlanArtifact {
     }
 
     private static String encodeCatalog(List<JsonObject> edges,
-                                        List<JsonObject> encodedRegions) {
+                                        List<JsonObject> encodedRegions,
+                                        List<JsonObject> encodedGaps) {
         JsonObject catalog = new JsonObject();
         catalog.addProperty("schemaVersion", SCHEMA_VERSION);
         catalog.addProperty("kind", CATALOG_KIND);
@@ -85,6 +110,9 @@ public final class RuntimePlanArtifact {
             regionRows.add(region.deepCopy());
         }
         catalog.add("regions", regionRows);
+        JsonArray gapRows = new JsonArray();
+        for (JsonObject gap : encodedGaps) gapRows.add(gap.deepCopy());
+        catalog.add("gaps", gapRows);
         return CanonicalJson.render(catalog) + "\n";
     }
 
@@ -133,7 +161,8 @@ public final class RuntimePlanArtifact {
                         + plan.occurrenceId());
             }
         }
-        return new RuntimePlanArtifact(decoded, regions);
+        return new RuntimePlanArtifact(decoded, regions,
+                objects(array(catalog, "gaps"), "runtime plan gaps", path));
     }
 
     private static List<JsonObject> readRows(Path path) throws IOException {
