@@ -135,6 +135,50 @@ public class PathMergeComposerTest {
                 ComposedManifest.FINAL_STATUS).getAsString());
     }
 
+    /**
+     * The recording minted a root and the merged formula does not mention it.
+     *
+     * <p>Then the solver is answering about constants.  The composition is
+     * refused here rather than letting a SAT over no root travel to SOLVE and
+     * come back as a statement about the finding.</p>
+     */
+    @Test
+    public void aMintedRootOnNoPathRefusesTheComposition() throws Exception {
+        Path directory = Files.createTempDirectory("path-merge-no-root");
+        JsonObject query = query();
+        query.getAsJsonArray("paths").add(path("seed", "GROUP.SEED",
+                notEqual(constant(1), constant(0)),
+                notEqual(constant(1), constant(0))));
+        PathMergeComposer.Result result = compose(directory, query);
+
+        JsonObject merge = result.manifest.getAsJsonObject(
+                PathMergeComposer.MANIFEST_FIELD);
+        JsonArray gates = merge.getAsJsonArray("gates");
+        assertEquals(1, gates.size());
+        assertEquals(PathMergeComposer.ROOT_NOT_ON_ANY_PATH,
+                gates.get(0).getAsJsonObject().get("kind").getAsString());
+        assertTrue(gates.get(0).getAsJsonObject().get("detail").getAsString()
+                .contains(FIELD_SIGNATURE));
+        assertEquals(0, merge.getAsJsonArray("roots").size());
+        assertEquals("FINAL_REFUSED", result.manifest.get(
+                ComposedManifest.FINAL_STATUS).getAsString());
+    }
+
+    /** A root the path condition mentions is on a path, and nothing refuses. */
+    @Test
+    public void aRootOnOnePathConditionIsNotRefused() throws Exception {
+        Path directory = Files.createTempDirectory("path-merge-root-on");
+        JsonObject query = query();
+        query.getAsJsonArray("paths").add(path("seed", "GROUP.SEED",
+                rootIs(true), notEqual(constant(1), constant(0))));
+        PathMergeComposer.Result result = compose(directory, query);
+
+        JsonObject merge = result.manifest.getAsJsonObject(
+                PathMergeComposer.MANIFEST_FIELD);
+        assertEquals(0, merge.getAsJsonArray("gates").size());
+        assertEquals(1, merge.getAsJsonArray("roots").size());
+    }
+
     // ------------------------------------------------------------------
     // Fixtures.
     // ------------------------------------------------------------------

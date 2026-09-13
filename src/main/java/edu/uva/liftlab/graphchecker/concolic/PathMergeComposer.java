@@ -81,6 +81,20 @@ public final class PathMergeComposer {
     /** A root in the formula states no recorded value. */
     public static final String RECORDED_ROOT_VALUE_UNSTATED =
             "RECORDED_ROOT_VALUE_UNSTATED";
+    /**
+     * A root the recording minted that no admitted path's condition or fatal
+     * predicate mentions.
+     *
+     * <p>The formula is then a statement about the program with the program's
+     * own free variable missing from it: whatever the solver answers, it
+     * answers about constants, and the claim cannot rest on a root it never
+     * constrained.  This is the {@code roots: 0} shape, which used to travel
+     * all the way to the {@code FINDING_MECHANISM_UNNAMED} blocker after
+     * SOLVE -- a statement about the finding rather than about the
+     * composition that could not carry one.</p>
+     */
+    public static final String ROOT_NOT_ON_ANY_PATH =
+            "ROOT_NOT_ON_ANY_PATH";
 
     private static final Gson GSON = new GsonBuilder()
             .disableHtmlEscaping().setPrettyPrinting().create();
@@ -275,6 +289,24 @@ public final class PathMergeComposer {
                         "root " + used.getKey()
                                 + " states no recorded value");
             }
+        }
+
+        // Every root the recording minted, against the roots the merge
+        // actually lowered.  A minted root outside every pi_p and phi_p is
+        // not a smaller formula, it is a different question.
+        Set<String> loweredRoots = new LinkedHashSet<>(
+                lowering.rootTerms().values());
+        for (Map.Entry<String, JsonObject> declared
+                : roots.byRawSymbol.entrySet()) {
+            if (loweredRoots.contains(declared.getKey())
+                    || !roots.minted(declared.getKey())) {
+                continue;
+            }
+            gate(gates, ROOT_NOT_ON_ANY_PATH, "root "
+                    + roots.name(declared.getKey())
+                    + " was minted at " + roots.sourceKeyOf(declared.getKey())
+                    + " and is in no path condition and no fatal predicate"
+                    + " of any path admitted at " + site + "#" + occurrence);
         }
 
         BoundedLoopComposition loops = boundedLoops(regionPlans, fatal);
@@ -475,6 +507,26 @@ public final class PathMergeComposer {
                 }
             }
             return inventory;
+        }
+
+        /** Whether the recording states a value this root was minted at. */
+        boolean minted(String rawSymbol) {
+            return !firstNonBlank(recorded.get(rawSymbol)).isEmpty()
+                    || disagreed.contains(rawSymbol);
+        }
+
+        /** The node and epoch whose recording minted this root. */
+        String sourceKeyOf(String rawSymbol) {
+            return firstNonBlank(sourceKeys.get(rawSymbol));
+        }
+
+        /** What a reader calls this root: its port, field, or raw symbol. */
+        String name(String rawSymbol) {
+            JsonObject declared = byRawSymbol.get(rawSymbol);
+            if (declared == null) return rawSymbol;
+            return firstNonBlank(optionalString(declared, "portId"),
+                    firstNonBlank(optionalString(declared, "fieldSignature"),
+                            rawSymbol));
         }
 
         /** One manifest row for one root, as the claim policy reads it. */

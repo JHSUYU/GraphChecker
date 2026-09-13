@@ -197,6 +197,11 @@ public final class GapLedger {
         blocking(composer, "TARGET_REACH_QUERY_ABSENT",
                 "no target reach query means the formula asks no question"
                         + " about the target");
+        blocking(composer, "ROOT_NOT_ON_ANY_PATH",
+                "the recording minted a root and no admitted path's"
+                        + " condition or fatal predicate mentions it, so the"
+                        + " formula asks its question about constants and no"
+                        + " claim can rest on a root it never constrained");
         blocking(composer, "MissingTargetInstanceSymbolicContext",
                 "the target activation carries no symbolic context, so no"
                         + " root reaches it");
