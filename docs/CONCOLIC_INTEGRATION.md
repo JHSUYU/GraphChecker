@@ -355,6 +355,32 @@ per-key `PBHelper.convert` fan-out because each convert writes an `allKeys`
 entry the root's expiry decision controls, and drops only the test-harness
 setters and the converts of keys no rotation ever re-stamped.
 
+**Shared carriers are declared on the same slice.** `RuntimeRegionPlanner`
+publishes on every closure goal every shared field its region reads or writes
+at an exact runtime access, and the replay versions each declared carrier --
+one guarded-read family per read, one arm per writer. `ConcolicScheduler`
+keeps a task's `sharedCarriers` row only when the slice reaches its location
+(`RootDependenceSlice.reachesLocation`): the root's own field, every field on
+the forward closure, and the field of every action the slice carries -- which
+is what keeps a library leaf such as `AtomicInteger#value`, a source cell of
+its own that meets the graph only at its accessor's local. Everything else is
+recorded at its concrete value: no versions, no families. The decisions are
+published beside the replay task slice in `shared_carrier_slice.jsonl` -- a
+`SHARED_CARRIER_SLICE` summary, then one `SHARED_CARRIER_DECISION` row per
+declared carrier with `reason: SHARED_CARRIER_KEPT` or
+`SHARED_CARRIER_NOT_ROOT_DEPENDENT` -- and in the schedule index's
+`sharedCarrierSlice` member; a withheld slice drops nothing. Offline on the
+recorded plans HDFS-17960 goes from 19 declared locations (135 carrier rows
+over 18 tasks) to 4 (49 rows): `snapshotDeletionOrdered`, `snapshotsByNames`,
+`AtomicInteger#value`, `Snapshot#id`; `INodeDirectory#children` (11 families,
+31 arms in the recorded formula), `snapshotCounter`, `snapshotQuota`, the
+edit-log op strings and the fsimage loader's fields go. The composer
+manufactures no family of its own -- every arm is a VM `ReadFromExpression`
+over a carrier the replay selected -- so it is consistent by construction;
+given `--task-plan` it states that in the manifest's `carrierDeclarations`
+ledger, which against a narrower plan names the families that plan would not
+have produced.
+
 ## Trace context and topology
 
 The workload registers a stable node owner with `registerSource`, may bind
