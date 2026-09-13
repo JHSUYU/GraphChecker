@@ -5018,6 +5018,25 @@ public final class ConcolicRegionRuntime {
     }
 
     static final class ActiveRegion {
+        /**
+         * When this activation started, and how long it ran.
+         *
+         * <p>A campaign's only per-unit timings used to be the stage totals
+         * and the final solver's own attempt rows, so a replay that took
+         * three minutes and a replay that took three seconds were
+         * indistinguishable after the fact.  These two are published on the
+         * activation's result row; they are telemetry the importer does not
+         * read, so no summary identity, local case id or replay match
+         * depends on them.</p>
+         */
+        final long startedAtMillis = System.currentTimeMillis();
+        private final long startedAtNanos = System.nanoTime();
+
+        long elapsedMillis() {
+            return Math.max(0L,
+                    (System.nanoTime() - startedAtNanos) / 1_000_000L);
+        }
+
         final long token;
         /** The one task whose region-local path this activation records. */
         final RuntimeTask activation;
@@ -5183,6 +5202,8 @@ public final class ConcolicRegionRuntime {
          * answer, and the row says which containers it is honest about.
          */
         final List<JsonObject> initialSnapshotSkips = new ArrayList<>();
+        /** Whole-state carriers whose initial content this run did state. */
+        final List<JsonObject> initialSnapshotStates = new ArrayList<>();
 
         /** Read-out batch every record of this activation is stamped with. */
         private long evidenceSnapshot;

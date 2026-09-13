@@ -50,9 +50,37 @@ public final class RegionPathWorklist {
                        List<JsonObject> explorationRecords,
                        Bounds bounds,
                        String familySnapshotDigest) {
-        return new Planner(summaries, executionTasks, explorationRecords,
-                bounds, familySnapshotDigest).run();
+        return plan(summaries, executionTasks, explorationRecords, bounds,
+                familySnapshotDigest, SymbolicRootInventory.disabled());
     }
+
+    /**
+     * Plans one member against the wave's declared roots.
+     *
+     * <p>A branch whose condition names no root cannot move: the campaign
+     * varies its roots and nothing else, so every other value in the
+     * condition is the one the recording produced. Such an obligation is
+     * closed here, by the recording, instead of being handed to a solver and
+     * then to a replay. See {@link SymbolicRootInventory} for when that
+     * judgement is withheld.</p>
+     */
+    static Result plan(List<JsonObject> summaries,
+                       List<JsonObject> executionTasks,
+                       List<JsonObject> explorationRecords,
+                       Bounds bounds,
+                       String familySnapshotDigest,
+                       SymbolicRootInventory roots) {
+        return new Planner(summaries, executionTasks, explorationRecords,
+                bounds, familySnapshotDigest, roots).run();
+    }
+
+    /** Telemetry kind for an obligation the recording already decided. */
+    static final String CLOSED_BY_CONSTANT = "OBLIGATION_CLOSED_BY_CONSTANT";
+    /** Telemetry kind for a wave that planned more than its roots justify. */
+    static final String OBLIGATIONS_EXCEED_ROOT_SITES =
+            "EXPLORE_OBLIGATIONS_EXCEED_ROOT_SITES";
+    /** Manifest field carrying this member's root-slice telemetry. */
+    static final String ROOT_SLICE_FIELD = "rootSliceTelemetry";
 
     private static final class Planner {
         private final Bounds bounds;
@@ -73,13 +101,25 @@ public final class RegionPathWorklist {
                 new LinkedHashSet<>();
         private final Map<String, Integer> pathCountByRegion =
                 new LinkedHashMap<>();
+        /** The wave's declared roots; see {@link SymbolicRootInventory}. */
+        private final SymbolicRootInventory roots;
+        /** One row per obligation the recording already decided. */
+        private final List<JsonObject> closedByConstant = new ArrayList<>();
+        private final Set<String> closedByConstantKeys =
+                new LinkedHashSet<>();
+        /** Branch sites whose condition does name a root. */
+        private final Set<String> rootDependentSites = new TreeSet<>();
+
         private Planner(List<JsonObject> summaries,
                         List<JsonObject> executionTasks,
                         List<JsonObject> explorationRecords,
                         Bounds bounds,
-                        String familySnapshotDigest) {
+                        String familySnapshotDigest,
+                        SymbolicRootInventory roots) {
             this.bounds = bounds;
             this.familySnapshotDigest = familySnapshotDigest;
+            this.roots = roots == null
+                    ? SymbolicRootInventory.disabled() : roots;
             for (JsonObject task : executionTasks) {
                 String id = optionalString(task, "taskId");
                 if (!id.isEmpty()) this.taskById.put(id, task);
@@ -248,8 +288,77 @@ public final class RegionPathWorklist {
                         explicitFaultSymbols)) {
                     continue;
                 }
+                if (closedByRecording(path, mapping)) continue;
                 candidates.add(mapping);
             }
+        }
+
+        /**
+         * Whether the recording already decided this branch.
+         *
+         * <p>The judgement is about the campaign's search space, not about
+         * this one query: the campaign may vary its declared roots and
+         * nothing else, so a condition whose expression DAG names no root
+         * evaluates to the value the recording observed under every
+         * admissible replay. Proposing its opposite costs a solver call and,
+         * when the solver finds some arm assignment that satisfies it, a
+         * whole workload replay that cannot be admitted.</p>
+         *
+         * <p>Three things make this safe rather than merely fast:</p>
+         *
+         * <ul>
+         *   <li>{@link BranchPredicateAlgebra#symbolicSupport} walks the
+         *       whole DAG, guarded-read candidate arms included, so a
+         *       condition that reaches a root only through a writer arm is
+         *       still seen as root-dependent.</li>
+         *   <li>A predicate still holding an unexpanded shared-expression
+         *       reference carries leaves this walk cannot see, so it is never
+         *       closed. Dependency information that is not complete is a
+         *       reason to keep solving.</li>
+         *   <li>An inventory that is not {@link
+         *       SymbolicRootInventory#usable()} answers "root-dependent" to
+         *       everything, which disables this entirely.</li>
+         * </ul>
+         */
+        private boolean closedByRecording(PathObservation path,
+                                          SummaryBranchMapping mapping) {
+            if (!roots.usable()) return false;
+            JsonElement predicate =
+                    mapping.witness().sourceSatisfiedPredicateView();
+            if (BranchPredicateAlgebra.hasUnexpandedReference(predicate)) {
+                return false;
+            }
+            if (roots.namesRoot(
+                    BranchPredicateAlgebra.symbolicSupport(predicate))) {
+                rootDependentSites.add(mapping.siteId());
+                return false;
+            }
+            recordClosedByConstant(path, mapping);
+            return true;
+        }
+
+        private void recordClosedByConstant(PathObservation path,
+                                            SummaryBranchMapping mapping) {
+            String key = path.regionId() + "\n" + path.pathKey() + "\n"
+                    + mapping.siteId() + "\n" + mapping.occurrence();
+            if (!closedByConstantKeys.add(key)) return;
+            JsonObject row = new JsonObject();
+            row.addProperty("schemaVersion", 1);
+            row.addProperty("kind", CLOSED_BY_CONSTANT);
+            row.addProperty("authority", "ROOT_FORWARD_SLICE_V1");
+            row.addProperty("regionId", path.regionId());
+            row.addProperty("pathKey", path.pathKey());
+            row.addProperty("siteId", mapping.siteId());
+            row.addProperty("method", mapping.witness().method());
+            row.addProperty("unitIndex", mapping.witness().unitIndex());
+            row.addProperty("occurrence", mapping.occurrence());
+            row.addProperty("summaryPcIndex", mapping.summaryPcIndex());
+            // The constant: the outcome the recording took, which is now the
+            // only outcome this branch has.
+            row.addProperty("recordedOutcome", mapping.sourceTakenOutcome());
+            row.addProperty("symbolicSupportDigest",
+                    mapping.witness().symbolicSupportDigest());
+            closedByConstant.add(row);
         }
 
         /** Selects local predecessor decisions and a non-terminal target
@@ -651,12 +760,53 @@ public final class RegionPathWorklist {
             }
             coverageGaps.addAll(pathCoverageGaps);
             result.add("coverageGaps", GSON.toJsonTree(coverageGaps));
+            result.add(ROOT_SLICE_FIELD, rootSliceTelemetry());
             result.addProperty("coverageState",
                     state == State.CLOSED && coverageGaps.isEmpty()
                             ? "CLOSED" : campaignBoundReached()
                             || hasReplayPath()
                             ? "PARTIAL" : "SEED_ONLY");
             return result;
+        }
+
+        /**
+         * What the root slice decided here, as telemetry and never a gap.
+         *
+         * <p>Deliberately not a coverage gap: an obligation the recording
+         * already decided is closed, not open, and folding it into
+         * {@code coverageGaps} would turn a CLOSED worklist into a PARTIAL
+         * one and keep the campaign iterating over work it has proved is
+         * pointless. What this does have to do is make the decision visible,
+         * so that the next time a wave plans more obligations than its roots
+         * justify, the ratio is in the artifact rather than in a profiler.</p>
+         */
+        private JsonObject rootSliceTelemetry() {
+            JsonObject telemetry = new JsonObject();
+            telemetry.addProperty("schemaVersion", 1);
+            telemetry.addProperty("kind", "REGION_PATH_ROOT_SLICE");
+            telemetry.addProperty("authority", "ROOT_FORWARD_SLICE_V1");
+            telemetry.addProperty("rootSliceApplied", roots.usable());
+            if (!roots.usable()) {
+                telemetry.addProperty("withheldReason",
+                        roots.incompleteReason());
+            }
+            telemetry.addProperty("declaredRootLeaves", roots.leaves().size());
+            telemetry.addProperty("plannedObligations", tasks.size());
+            telemetry.addProperty("closedByConstant", closedByConstant.size());
+            telemetry.add("rootDependentSites",
+                    GSON.toJsonTree(rootDependentSites));
+            telemetry.add("closedByConstantRows",
+                    GSON.toJsonTree(closedByConstant));
+            if (roots.usable()
+                    && tasks.size() > rootDependentSites.size()) {
+                JsonObject excess = new JsonObject();
+                excess.addProperty("kind", OBLIGATIONS_EXCEED_ROOT_SITES);
+                excess.addProperty("plannedObligations", tasks.size());
+                excess.addProperty("rootDependentSites",
+                        rootDependentSites.size());
+                telemetry.add("notice", excess);
+            }
+            return telemetry;
         }
 
         private boolean campaignBoundReached() {

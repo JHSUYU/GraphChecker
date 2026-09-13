@@ -124,6 +124,10 @@ public final class ConcolicPathFlipPlanner {
         private final String familyDigest;
         private final String topologyEpoch;
         private final RegionPathWorklist.Bounds bounds;
+        /** The wave's declared roots, computed once for every member.
+         *  Built from the whole wave: a root minted in one region is still a
+         *  root when another region's branch consumes it. */
+        private final SymbolicRootInventory roots;
         /** One verification of the wave's table, shared by every member. */
         private final SharedExpressionTable.Compactor compactor =
                 new SharedExpressionTable.Compactor();
@@ -135,7 +139,8 @@ public final class ConcolicPathFlipPlanner {
                      Map<String, JsonObject> dependenciesByFamily,
                      String familyDigest,
                      String topologyEpoch,
-                     RegionPathWorklist.Bounds bounds) {
+                     RegionPathWorklist.Bounds bounds,
+                     SymbolicRootInventory roots) {
             this.allExecutionTasks = allExecutionTasks;
             this.allSummaries = allSummaries;
             this.allRecords = allRecords;
@@ -144,6 +149,7 @@ public final class ConcolicPathFlipPlanner {
             this.familyDigest = familyDigest;
             this.topologyEpoch = topologyEpoch;
             this.bounds = bounds;
+            this.roots = roots;
         }
 
         private static Wave load(Map<String, String> options)
@@ -158,6 +164,11 @@ public final class ConcolicPathFlipPlanner {
             JsonArray caseDependencies = propagation.caseDependencies();
             RegionPathWorklist.Bounds defaults =
                     RegionPathWorklist.Bounds.defaults();
+            // The roots are the wave's, not a member's: read them from the
+            // rewritten summaries the members will actually plan against and
+            // from the plan that declares them.
+            SymbolicRootInventory roots = SymbolicRootInventory.of(
+                    propagation.summaries(), allExecutionTasks);
             return new Wave(allExecutionTasks, propagation.summaries(),
                     rows(options, "records"), propagation,
                     dependenciesByFamily(caseDependencies),
@@ -168,7 +179,8 @@ public final class ConcolicPathFlipPlanner {
                                     defaults.maxPathsPerRegion),
                             count(options, "max-flips-per-path",
                                     defaults.maxFlipsPerPath),
-                            count(options, "max-tasks", defaults.maxTasks)));
+                            count(options, "max-tasks", defaults.maxTasks)),
+                    roots);
         }
 
         /** Publishes one member's worklist and manifest; returns the manifest. */
@@ -205,7 +217,7 @@ public final class ConcolicPathFlipPlanner {
             }
             RegionPathWorklist.Result result = RegionPathWorklist.plan(
                     summaries, executionTasks, explorationRecords, bounds,
-                    familyDigest);
+                    familyDigest, roots);
             for (JsonObject task : result.tasks) {
                 task.add(LinkedReplayBundle.CASE_DEPENDENCIES_FIELD,
                         scopedDependencies(task));

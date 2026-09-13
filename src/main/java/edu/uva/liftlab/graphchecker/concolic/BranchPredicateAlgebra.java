@@ -19,6 +19,8 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
 /** The single polarity algebra for binary concolic branch predicates. */
 public final class BranchPredicateAlgebra {
     private static final String SUPPORT_PREFIX = "BRANCH_SUPPORT.v1.";
+    /** Joins a leaf's java type to its VM symbol in a support entry. */
+    static final char SUPPORT_LEAF_SEPARATOR = '\u0000';
     private static final String SUPPORT_DOMAIN =
             "GraphChecker/branch-symbolic-support/v1\n";
     private static final Map<String, String> COMPLEMENTS = complements();
@@ -191,10 +193,7 @@ public final class BranchPredicateAlgebra {
      * retain their exact occurrence address.</p>
      */
     public static String symbolicSupportDigest(JsonElement predicate) {
-        Set<String> support = new TreeSet<>();
-        collectSymbolicSupport(predicate, support,
-                Collections.newSetFromMap(
-                        new IdentityHashMap<JsonElement, Boolean>()));
+        Set<String> support = symbolicSupport(predicate);
         if (support.isEmpty()) return "";
         StringBuilder encoded = new StringBuilder(SUPPORT_DOMAIN);
         for (String leaf : support) {
@@ -220,6 +219,64 @@ public final class BranchPredicateAlgebra {
         return true;
     }
 
+    /**
+     * The symbolic leaves one predicate tests, each the leaf's java type
+     * joined to its VM symbol by {@link #SUPPORT_LEAF_SEPARATOR}.
+     *
+     * <p>Exactly the set {@link #symbolicSupportDigest} hashes, handed back
+     * instead of hashed. A planner that has to decide whether a branch can
+     * still move needs the leaves themselves, not their identity: a digest
+     * answers "is this the same branch" and this answers "what could change
+     * it". Nothing else about the predicate is reported, for the same reason
+     * the digest ignores it - a runtime value may differ between the seed and
+     * a replay while the element being tested does not.</p>
+     *
+     * <p>The walk descends into every field of every node, guarded-read
+     * candidate arms included. That is deliberate: a guarded read's value is
+     * whichever writer arm the query selects, so an arm's expression is part
+     * of what the condition tests even though the arm selector itself is a
+     * solver Boolean rather than a symbol.</p>
+     *
+     * <p>The predicate must already be expanded: a
+     * {@link SharedExpressionTable#REFERENCE_TYPE} node carries no leaves of
+     * its own, so a compact DAG would under-report. Callers inside a closure
+     * wave receive expanded rows from
+     * {@link SymbolicPropagationClosure#rewriteSummaryRows}.</p>
+     */
+    public static Set<String> symbolicSupport(JsonElement predicate) {
+        Set<String> support = new TreeSet<>();
+        collectSymbolicSupport(predicate, support,
+                Collections.newSetFromMap(
+                        new IdentityHashMap<JsonElement, Boolean>()));
+        return support;
+    }
+
+    /** Whether a predicate carries a reference no expansion resolved. */
+    public static boolean hasUnexpandedReference(JsonElement predicate) {
+        return unexpanded(predicate, Collections.newSetFromMap(
+                new IdentityHashMap<JsonElement, Boolean>()));
+    }
+
+    private static boolean unexpanded(JsonElement value,
+                                      Set<JsonElement> seen) {
+        if (value == null || value.isJsonNull() || value.isJsonPrimitive()
+                || !seen.add(value)) {
+            return false;
+        }
+        if (value.isJsonArray()) {
+            for (JsonElement child : value.getAsJsonArray()) {
+                if (unexpanded(child, seen)) return true;
+            }
+            return false;
+        }
+        JsonObject object = value.getAsJsonObject();
+        if (SharedExpressionTable.isReference(object)) return true;
+        for (Map.Entry<String, JsonElement> field : object.entrySet()) {
+            if (unexpanded(field.getValue(), seen)) return true;
+        }
+        return false;
+    }
+
     private static void collectSymbolicSupport(
             JsonElement value, Set<String> support, Set<JsonElement> seen) {
         if (value == null || value.isJsonNull() || value.isJsonPrimitive()
@@ -238,8 +295,8 @@ public final class BranchPredicateAlgebra {
             if (!symbol.isEmpty()
                     && !VmExpressionIr.SYMBOLIC_NULL.equals(symbol)
                     && !"V".equals(symbol)) {
-                support.add(optionalString(object, "_java_type") + '\u0000'
-                        + symbol);
+                support.add(optionalString(object, "_java_type")
+                        + SUPPORT_LEAF_SEPARATOR + symbol);
             }
             return;
         }

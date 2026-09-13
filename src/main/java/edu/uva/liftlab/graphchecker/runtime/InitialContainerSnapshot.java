@@ -36,6 +36,19 @@ final class InitialContainerSnapshot {
     /** Telemetry event naming one container this run declined to state. */
     static final String SKIPPED_EVENT = "INITIAL_SNAPSHOT_SKIPPED";
 
+    /**
+     * Telemetry event naming one container this run did state.
+     *
+     * <p>A declined container has always said so; an accepted one said
+     * nothing, and the two silences are indistinguishable in a corpus. So
+     * "this campaign published no snapshot at all" and "this campaign
+     * snapshotted everything it was offered" read the same, and separating
+     * them meant scanning every result row of every replay for an absent
+     * field. This row is the other half of the vocabulary: what was stated,
+     * for which container, how many members, and under what bound.</p>
+     */
+    static final String STATED_EVENT = "INITIAL_SNAPSHOT_STATED";
+
     /** The VM's own bound, read from the same property the VM parses. */
     static final String BOUND_PROPERTY =
             "causynth.concolic.initial.snapshot.max";
@@ -317,6 +330,31 @@ final class InitialContainerSnapshot {
         row.addProperty("kind", SKIPPED_EVENT);
         row.addProperty("schemaVersion", 1);
         row.addProperty("reason", outcome.reason);
+        row.addProperty("detail", ConcolicRegionRuntime.safe(outcome.detail));
+        row.addProperty("carrier",
+                ConcolicRegionRuntime.safe(locationDescription));
+        row.addProperty("entries", outcome.entries);
+        row.addProperty("maxEntries", maxEntries());
+        return row;
+    }
+
+    /**
+     * The row for a container this run did state.
+     *
+     * <p>{@code entries} is what the walk handed the VM. Note what the row
+     * cannot say: {@code ConcolicMngr::snapshotContainerExpression} answers
+     * the same {@code true} three ways - it installed the chain, it already
+     * held a recorded mutation history for the container and kept that
+     * instead, or it refused the content over its own bound and noted the
+     * refusal in the versions ledger. So this row states that the offer was
+     * accepted, not that the INITIAL version now carries a base. That answer
+     * is the version's own, via
+     * {@code SharedStateEvidence.declaresInitialSnapshot}.</p>
+     */
+    static JsonObject statedRow(Outcome outcome, String locationDescription) {
+        JsonObject row = new JsonObject();
+        row.addProperty("kind", STATED_EVENT);
+        row.addProperty("schemaVersion", 1);
         row.addProperty("detail", ConcolicRegionRuntime.safe(outcome.detail));
         row.addProperty("carrier",
                 ConcolicRegionRuntime.safe(locationDescription));
