@@ -51,6 +51,16 @@ public final class RpcExpressionHandoff {
     public static final String LEAVES_UNATTACHED = "WIRE_LEAVES_UNATTACHED";
     /** A decode asked a message for an element the sender never staged. */
     public static final String LEAF_MISSING = "WIRE_LEAF_MISSING";
+    /**
+     * One capture site, two live occurrences that declare its port.
+     *
+     * <p>The value crossed the wire once, so it is attached once and the
+     * row names one consumer.  Any other activation live at that capture
+     * whose own plan declares the same port gets this instead of silence:
+     * its planned attach did happen, on the occurrence named here.</p>
+     */
+    public static final String LEAF_ATTACHED_ELSEWHERE =
+            "WIRE_LEAF_ATTACHED_ELSEWHERE";
 
     private static final String REASON_PREFIX = "RPC_HANDOFF_";
     /** Reason used for any negative status this build does not declare. */

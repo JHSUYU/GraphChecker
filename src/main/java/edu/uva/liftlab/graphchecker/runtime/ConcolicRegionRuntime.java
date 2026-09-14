@@ -2260,6 +2260,7 @@ public final class ConcolicRegionRuntime {
                                              String producerOccurrenceId) {
         ActiveRegion active = attachConsumerRegion(site);
         if (active == null || site == null) return;
+        noteAttachFiledElsewhere(site, active);
         if (safe(producerTaskId).isEmpty()
                 || safe(producerOccurrenceId).isEmpty()) {
             recordHandoffGap(RpcExpressionHandoff.gap(
@@ -2357,6 +2358,42 @@ public final class ConcolicRegionRuntime {
             }
         }
         return innermost;
+    }
+
+    /**
+     * Tells every other live occurrence that declares this port where its
+     * attach went.
+     *
+     * <p>One capture site can lie inside two selected regions -- on
+     * hdfs-17899 bug2 the per-call {@code convert(BlockKeyProto)} region
+     * and the loop-body region rooted at the enclosing
+     * {@code convert(ExportedBlockKeysProto)} both declare
+     * {@code resp.block-key-id} at unit 2 of the same method.  The value
+     * crosses the wire once, so it is attached once and the row names one
+     * consumer; the other declaring occurrence got nothing at all, and its
+     * planned attach was read at IMPORT as never reproduced.  It did
+     * reproduce -- on the occurrence named here -- and that is what the row
+     * now says.</p>
+     */
+    private static void noteAttachFiledElsewhere(
+            CommunicationHandoffSpec site, ActiveRegion named) {
+        if (site == null || named == null) return;
+        String portId = safe(site.portId());
+        if (portId.isEmpty()) return;
+        for (Long token : CURRENT_TOKENS.get()) {
+            ActiveRegion candidate = ownerRegion(token);
+            if (candidate == null || candidate == named) continue;
+            if (candidate.activation.communicationHandoff(portId, false)
+                    == null) {
+                continue;
+            }
+            candidate.rpcHandoffGaps.add(RpcExpressionHandoff.gap(
+                    RpcExpressionHandoff.LEAF_ATTACHED_ELSEWHERE,
+                    RpcExpressionHandoff.STAGE_ATTACH,
+                    RpcExpressionHandoff.MISSING_METADATA, 0L,
+                    "port declared here was attached on "
+                            + named.occurrenceId() + ": " + portId));
+        }
     }
 
     /**
