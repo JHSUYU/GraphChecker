@@ -323,7 +323,7 @@ public class D3ComposerTest {
         }
 
         void marker(String recorded) {
-            roots.add(RootMintRow.of(id, PRODUCER, MARKER_ROOT, MARKER,
+            roots.add(RootMintRow.of(id, ++seq, PRODUCER, MARKER_ROOT, MARKER,
                     RootKind.MARKER, recorded, null, null, true));
         }
 

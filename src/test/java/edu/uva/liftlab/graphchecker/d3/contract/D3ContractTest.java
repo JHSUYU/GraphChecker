@@ -173,8 +173,9 @@ public class D3ContractTest {
                 Endpoint.of(anchor, Endpoint.stateSite(
                         "BlockTokenSecretManager", "retrieve", 61, false), 1,
                         0), keys, 7L, "state_allKeys_7", BLOCK_KEY, null);
-        RootMintRow minted = RootMintRow.of("s-17897-1", producer, "SERIAL_NO",
-                "root_serial_no", RootKind.INTEGRAL, "3", "3", "6", true);
+        RootMintRow minted = RootMintRow.of("s-17897-1", 2L, producer,
+                "SERIAL_NO", "root_serial_no", RootKind.INTEGRAL, "3", "3", "6",
+                true);
         TargetRow target = TargetRow.of("s-17897-1", 15L, anchor,
                 "BlockTokenSecretManager#retrieve#61", "(= key nil)", true,
                 true);
@@ -201,6 +202,9 @@ public class D3ContractTest {
         assertEquals(gap, RowCodec.readGap(reline(RowCodec.writeGap(gap))));
         // v1.1: the session's event order and the declared sorts survive the
         // line form -- a solver reads the sort, it does not infer one.
+        assertEquals(2L,
+                RowCodec.readRootMint(reline(RowCodec.writeRootMint(minted)))
+                        .seq());
         assertEquals(4L,
                 RowCodec.readExport(reline(RowCodec.writeExport(exported)))
                         .seq());
