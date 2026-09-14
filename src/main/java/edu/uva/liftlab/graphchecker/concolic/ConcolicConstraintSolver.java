@@ -138,12 +138,16 @@ public final class ConcolicConstraintSolver {
         // with.  The model's assignment to a v_H is applied at the attach by
         // the next replay, so a control with nothing constraining it is one
         // the solver may answer with a value the system never produces.
+        JsonArray handoffFamilyRoots = new JsonArray();
         JsonArray handoffFamilies = stateHandoffFamilies(encoder, task,
-                clockSkewMillis);
+                clockSkewMillis, handoffFamilyRoots);
         String smt = encoder.finish();
         JsonObject record = baseRecord(query.queryKey);
         if (handoffFamilies.size() > 0) {
             record.add("handoffFamilies", handoffFamilies);
+        }
+        if (handoffFamilyRoots.size() > 0) {
+            record.add(HandoffFamilyRows.ROOTS, handoffFamilyRoots);
         }
         record.add("unsupported", strings(encoder.unsupported));
         if (!encoder.unsupported.isEmpty()) {
@@ -1435,7 +1439,8 @@ public final class ConcolicConstraintSolver {
      */
     private static JsonArray stateHandoffFamilies(Encoder encoder,
                                                   JsonObject task,
-                                                  long clockSkewMillis) {
+                                                  long clockSkewMillis,
+                                                  JsonArray rootRows) {
         JsonArray published = new JsonArray();
         Map<String, JsonObject> controls = handoffControls(task);
         if (controls.isEmpty()) return published;
@@ -1488,36 +1493,101 @@ public final class ConcolicConstraintSolver {
             }
             published.add(row);
         }
-        // A family arm is only as constraining as the roots inside it: "the
-        // arriving key id is the NameNode's serial number" says nothing at
-        // all while that serial number is free.  A root the case declares a
-        // domain for is free INSIDE it, which is what makes the answer a
-        // rotation the producer could have made; a root the case declares
-        // nothing about keeps the freedom exploration already gave it,
-        // because pinning it here would be this stage refusing to vary what
-        // it exists to vary.
-        if (constrained) {
-            for (JsonElement encoded : array(task,
-                    HandoffFamilyRows.ROOTS)) {
-                if (!encoded.isJsonObject()) continue;
-                JsonObject root = encoded.getAsJsonObject();
-                if (optionalBool(root, HandoffFamilyRows.WALL_CLOCK, false)) {
+        if (constrained) stateFamilyRoots(encoder, task, rootRows);
+        return published;
+    }
+
+    /**
+     * States what each root a family arm names may be.
+     *
+     * <p>A family arm is only as constraining as the roots inside it: "the
+     * arriving key id is the NameNode's serial number" says nothing at all
+     * while that serial number is free.  The domain is the composition's,
+     * because exploration must explore only what composition can accept --
+     * a flip that needs a quantity COMPOSE pins can never compose, however
+     * satisfiable its own query is, and every wave spent on one is a wave
+     * spent on a path that cannot become a finding:</p>
+     *
+     * <ul>
+     *   <li>a root the case declares a domain for is free INSIDE it, which
+     *       is what makes the answer a rotation the producer could have
+     *       made;</li>
+     *   <li>a declared Boolean marker is free over both its values, which
+     *       for a Bool is every value it has, so nothing is asserted;</li>
+     *   <li>a clock read has no domain of its own -- its freedom is the
+     *       case's skew around the reading of whichever execution the arm
+     *       is, which the arm's own valuation carries;</li>
+     *   <li>every other root is pinned to what the recording read.  A value
+     *       the recording states and the case does not declare varyable is
+     *       not something the campaign may vary, and COMPOSE says so with
+     *       the same {@code root_domain__} conjunct.</li>
+     * </ul>
+     *
+     * <p>Only roots a family arm named are stated: this stage did not
+     * introduce the rest, and pinning a root the obligation's own flip
+     * frontier moves would be exploration refusing to vary what it exists
+     * to vary.</p>
+     */
+    private static void stateFamilyRoots(Encoder encoder, JsonObject task,
+                                         JsonArray published) {
+        // Published beside the families, never inside them: a reader of an
+        // UNSAT obligation needs to see which quantity could not move.
+        JsonArray rows = new JsonArray();
+        for (JsonElement encoded : array(task, HandoffFamilyRows.ROOTS)) {
+            if (!encoded.isJsonObject()) continue;
+            JsonObject root = encoded.getAsJsonObject();
+            String symbol = optionalString(root, "rawSymbol");
+            String javaType = optionalString(root, "javaType");
+            JsonObject row = new JsonObject();
+            row.addProperty("rawSymbol", symbol);
+            row.addProperty("sourceId", optionalString(root, "sourceId"));
+            if (optionalBool(root, HandoffFamilyRows.WALL_CLOCK, false)) {
+                row.addProperty("domain", "CLOCK_READ_CARRIED_BY_THE_ARM");
+                rows.add(row);
+                continue;
+            }
+            if ("Z".equals(javaType)) {
+                row.addProperty("domain", "DECLARED_MARKER_FREE_OVER_BOTH");
+                rows.add(row);
+                continue;
+            }
+            String min = optionalString(root,
+                    PathMergeComposer.DECLARED_DOMAIN_MIN);
+            String max = optionalString(root,
+                    PathMergeComposer.DECLARED_DOMAIN_MAX);
+            List<String> terms = new ArrayList<>();
+            if (!min.isEmpty() && !max.isEmpty()) {
+                terms.add(encoder.booleanTerm(comparison(">=", symbol, min,
+                        javaType), "family_root_min:" + symbol));
+                terms.add(encoder.booleanTerm(comparison("<=", symbol, max,
+                        javaType), "family_root_max:" + symbol));
+                row.addProperty("domain", "[" + min + ", " + max + "]");
+            } else {
+                String recorded = optionalString(root, "recordedValue");
+                if (recorded.isEmpty()) {
+                    row.addProperty("domain", "NO_RECORDED_VALUE_TO_PIN");
+                    rows.add(row);
                     continue;
                 }
-                String min = optionalString(root,
-                        PathMergeComposer.DECLARED_DOMAIN_MIN);
-                String max = optionalString(root,
-                        PathMergeComposer.DECLARED_DOMAIN_MAX);
-                if (min.isEmpty() || max.isEmpty()) continue;
-                String symbol = optionalString(root, "rawSymbol");
-                String javaType = optionalString(root, "javaType");
-                encoder.addConstraint(comparison(">=", symbol, min,
-                        javaType), "handoff_family_root_min:" + symbol);
-                encoder.addConstraint(comparison("<=", symbol, max,
-                        javaType), "handoff_family_root_max:" + symbol);
+                terms.add(encoder.booleanTerm(comparison("==", symbol,
+                        recorded, javaType), "family_root_pin:" + symbol));
+                row.addProperty("domain", "= " + recorded);
             }
+            boolean lowered = true;
+            for (String term : terms) {
+                if (term.isEmpty()) lowered = false;
+            }
+            if (!lowered) {
+                // A domain the encoder cannot express is stated, not
+                // silently dropped: the arms that rest on that root are
+                // then less constrained than the composition will be.
+                row.addProperty("domain", "NOT_LOWERED");
+            } else {
+                for (String term : terms) encoder.assertions.add(term);
+            }
+            rows.add(row);
         }
-        return published;
+        for (JsonElement row : rows) published.add(row);
     }
 
     /** One family arm as a single term, or {@code ""} when it does not
