@@ -312,8 +312,19 @@ final class RuntimeTraceContext {
         View view = scoped(state.view(), carriedScope);
         if (view.source == null || view.requestKey.isEmpty()
                 || view.requestApi.isEmpty()) {
+            // Named, because the refusal decides whether the workload's own
+            // fault marker runs: bug2 guards it with causynth.active(), and
+            // an envelope refused here is an empty Outbound, so the marker
+            // behind that guard is never called and mints nothing.  "It
+            // refused" is not a finding a reader can act on; which of the
+            // three was missing is.
+            StringBuilder missing = new StringBuilder();
+            if (view.source == null) missing.append(" source");
+            if (view.requestKey.isEmpty()) missing.append(" requestKey");
+            if (view.requestApi.isEmpty()) missing.append(" requestApi");
             throw new IllegalStateException(
-                    "outbound message requires source and request flow");
+                    "outbound message requires source and request flow;"
+                            + " this thread carries no" + missing);
         }
         return header(view.source, view.requestKey, view.requestApi,
                 view.spanId);

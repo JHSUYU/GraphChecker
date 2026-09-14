@@ -61,6 +61,15 @@ public final class RpcExpressionHandoff {
      */
     public static final String LEAF_ATTACHED_ELSEWHERE =
             "WIRE_LEAF_ATTACHED_ELSEWHERE";
+    /**
+     * A selected occurrence sent a message with no request scope to name.
+     *
+     * <p>The envelope is empty, so nothing of this send carries symbolic
+     * state -- and a workload that guards its own fault marker on the
+     * envelope being active does not run the marker at all.</p>
+     */
+    public static final String OUTBOUND_SCOPE_REFUSED =
+            "WIRE_OUTBOUND_SCOPE_REFUSED";
 
     private static final String REASON_PREFIX = "RPC_HANDOFF_";
     /** Reason used for any negative status this build does not declare. */

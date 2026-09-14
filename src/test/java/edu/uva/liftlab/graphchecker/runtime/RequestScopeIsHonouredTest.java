@@ -181,6 +181,33 @@ public class RequestScopeIsHonouredTest {
                 SPS + "#epoch0 ", filedWithoutScope[0]);
     }
 
+    /**
+     * A refused outbound envelope names what the thread was missing.
+     *
+     * <p>bug2 guards its fault marker with {@code causynth.active()}, so an
+     * envelope refused here means {@code Debug.makeSymbolicBoolean} is
+     * never called and the region publishes
+     * NO_SELECTED_INPUT_MATERIALIZED.  "It refused" is not actionable;
+     * which of source, requestKey and requestApi was absent is.</p>
+     */
+    @Test
+    public void arefusedEnvelopeNamesWhatWasMissing() {
+        RuntimeTraceContext.resetForTests();
+        Object nnc = new Object();
+        RuntimeTraceContext.registerSource(nnc,
+                new SourceRef("EXTERNAL_APP", "SPS", SPS, 0L));
+        try {
+            RuntimeTraceContext.outboundHeader(nnc);
+            org.junit.Assert.fail("no request scope, no envelope");
+        } catch (IllegalStateException refused) {
+            String said = String.valueOf(refused.getMessage());
+            assertTrue(said, said.contains("requestKey"));
+            assertTrue(said, said.contains("requestApi"));
+            // The owner named the source, so that half is not missing.
+            assertTrue(said, !said.contains("no source"));
+        }
+    }
+
     /** A thread that existed before the scope carries nothing. */
     @Test
     public void aThreadOlderThanTheScopeCarriesNothing() throws Exception {
