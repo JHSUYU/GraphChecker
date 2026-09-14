@@ -241,11 +241,23 @@ final class PathMergeLowering extends VmLoweringCore {
         if ("V".equals(raw)) return Term.of("true", Sort.BOOL);
         String javaType = optionalString(expression, "_java_type");
         Sort encoded = JavaSmtSorts.sortOfJava(javaType);
-        Sort sort = expected == Sort.MAP || expected == Sort.ARRAY_VALUE
+        Sort sort;
+        sort = expected == Sort.MAP || expected == Sort.ARRAY_VALUE
                 ? expected
                 : encoded != Sort.VALUE ? encoded
                 : expected == null ? Sort.REF : expected;
         JsonObject root = declaredRoots.get(raw);
+        // One variable has one sort.  The declaration states the Java type
+        // the runtime minted it at; the node it turned up in states only
+        // what that site expected, and on laneVM12 the same handoff
+        // variable appeared once where an int was expected and once where a
+        // reference was, which z3 rejects as two declarations of one name.
+        // The declaration wins, because it is the mint.
+        if (root != null) {
+            Sort declaredSort = JavaSmtSorts.sortOfJava(
+                    optionalString(root, "javaType"));
+            if (declaredSort != Sort.VALUE) sort = declaredSort;
+        }
         if (root == null) {
             // A reference or container identity is not a value propagation
             // owes: it is which object this execution ran on, and nothing

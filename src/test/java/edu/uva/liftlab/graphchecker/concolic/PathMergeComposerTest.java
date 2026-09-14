@@ -485,6 +485,21 @@ public class PathMergeComposerTest {
                     JsonFields.optionalBool(row.getAsJsonObject(),
                             "admitted", false));
         }
+        // The row declares the variable: its Java type says how to lower it
+        // (one variable, one sort) and its recorded value travels with it,
+        // so nothing meets an undeclared free symbol and cuts.
+        JsonArray declared = result.manifest.getAsJsonArray(
+                ComposedManifest.CONFIGURED_SOURCE_MATERIALIZATION_FIELD);
+        boolean found = false;
+        for (com.google.gson.JsonElement row : declared) {
+            if (HANDOFF_SYMBOL.equals(JsonFields.optionalString(
+                    row.getAsJsonObject(), "rawSymbol"))) {
+                found = true;
+                assertEquals("I", JsonFields.optionalString(
+                        row.getAsJsonObject(), "javaType"));
+            }
+        }
+        assertTrue("the handoff variable must be declared", found);
         assertEquals("the family must let the fatal delivery through",
                 "sat", solve(result.smtLib + "(assert (= " + ROOT_TERM
                         + " false))\n(check-sat)\n"));
@@ -512,6 +527,7 @@ public class PathMergeComposerTest {
         event.addProperty(InSessionReadResolver.HANDOFF_SYMBOL,
                 HANDOFF_SYMBOL);
         event.addProperty("javaType", "I");
+        event.addProperty("recordedValue", "9");
         event.add("expression", delivered);
         JsonArray events = new JsonArray();
         events.add(event);
