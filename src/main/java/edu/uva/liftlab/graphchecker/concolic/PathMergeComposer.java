@@ -1084,7 +1084,8 @@ public final class PathMergeComposer {
      * them.</p>
      */
     private static String executionReading(JsonObject row) {
-        String observed = optionalString(row, "observedValue");
+        String observed = optionalString(row,
+                SymbolicSourceEvidence.OBSERVED_VALUE);
         return observed.isEmpty()
                 ? optionalString(row, ComposedManifest.RECORDED_SOURCE_VALUE)
                 : observed;
