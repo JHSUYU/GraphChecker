@@ -519,6 +519,26 @@ jq -e '[.gaps[] | select(.code == "NO_OBSERVED_PATH_SEED")] as $rows
   || fail "the worklist gap did not reach gaps.json as blocking: \
 $(jq -c '.gaps' "${campaign_final}/gaps.json")"
 
+# The iteration loop advances on a topology it has just learned, and stops
+# when a wave exposes none.  A divergent bundle is held out of this epoch, so
+# without this the campaign would compose an epoch whose evidence it refused.
+div_dir="${test_tmp}/divergence"
+mkdir -p "${div_dir}"
+[[ "$(campaign_topology_divergences "${div_dir}")" == "0" ]] \
+  || fail "an iteration with no diagnostics reported a divergence"
+printf '%s\n' \
+  '{"code":"REGION_CAUSAL_ANCHOR_NOT_OBSERVED","taskId":"t","detail":"x"}' \
+  >"${div_dir}/import_diagnostics.jsonl"
+[[ "$(campaign_topology_divergences "${div_dir}")" == "0" ]] \
+  || fail "an unrelated diagnostic was counted as a topology divergence"
+printf '%s\n' \
+  '{"code":"TOPOLOGY_DIVERGENCE","taskId":"t","detail":"UNPLANNED_HANDOFF:H"}' \
+  '{"code":"TOPOLOGY_DIVERGENCE","taskId":"t","detail":"BUNDLE:t line 1"}' \
+  >>"${div_dir}/import_diagnostics.jsonl"
+[[ "$(campaign_topology_divergences "${div_dir}")" == "2" ]] \
+  || fail "the topology divergence rows were not counted: \
+$(campaign_topology_divergences "${div_dir}")"
+
 # CONFIG-1: the one workflow-key table answers all four questions about a key.
 config_table_keys=()
 for config_row in "${workflow_config_keys[@]}"; do

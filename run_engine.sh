@@ -3654,8 +3654,19 @@ campaign_publish_bound_gap() {
   die "the campaign reached campaign_max_iterations=${iterations} with a diverging topology; named gap in ${campaign_final}/gaps.json"
 }
 
+# How many rows this iteration's replays published about a topology their
+# plan had not addressed.  Zero means the topology is closed.
+campaign_topology_divergences() {
+  local iteration_dir=$1
+  local diagnostics="${iteration_dir}/import_diagnostics.jsonl"
+  [[ -s "${diagnostics}" ]] || { printf '0'; return 0; }
+  jq -r -s '[.[] | select(.code == "TOPOLOGY_DIVERGENCE")] | length' \
+    "${diagnostics}" 2>/dev/null || printf '0'
+}
+
 do_campaign() {
   local iteration=0 iteration_id="" parent="" carry="" iteration_dir
+  local divergences=0
   campaign_root="${schedule_output_dir}"
   campaign_final="${campaign_root}/final"
   campaign_stage_metrics="${campaign_root}/stage_metrics.tsv"
@@ -3703,6 +3714,25 @@ do_campaign() {
     campaign_collect_diagnostics "${iteration_dir}"
     campaign_publish_iteration_manifest "${iteration_dir}" "${iteration_id}" \
       "${parent}"
+    # A flip that changed the topology found a new one.  The iteration loop
+    # is how a campaign takes it into account: the replay's exact evidence
+    # stays, and the next epoch is planned with the handoffs and occurrences
+    # it ran -- the unplanned handoff already composes as its own family
+    # with the one pair that replay delivered, and its decisions become that
+    # epoch's obligations.  With nothing new found, the topology is closed
+    # and this iteration is the one the campaign publishes from.
+    divergences=$(campaign_topology_divergences "${iteration_dir}")
+    if [[ "${divergences}" -gt 0 ]] \
+        && [[ $((iteration + 1)) -lt "${campaign_max_iterations}" ]]; then
+      campaign_log "topology divergences: ${divergences}; refining into \
+iteration-$(printf '%04d' $((iteration + 1)))"
+      parent="${iteration_id}"
+      carry="${iteration_dir}"
+      iteration=$((iteration + 1))
+      continue
+    fi
+    [[ "${divergences}" -eq 0 ]] || campaign_log "topology divergences: \
+${divergences} left unrefined at the iteration bound"
     campaign_stage COMPOSE campaign_compose "${iteration_dir}"
     campaign_stage SOLVE campaign_solve
     campaign_stage DECIDE campaign_decide

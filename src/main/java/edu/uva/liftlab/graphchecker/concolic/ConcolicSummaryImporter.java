@@ -5,6 +5,7 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.contract.ConfiguredSourcePhaseContract;
 import edu.uva.liftlab.graphchecker.contract.ExecutionTask;
+import edu.uva.liftlab.graphchecker.contract.CommunicationHandoffSpec;
 import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceId;
@@ -366,6 +367,15 @@ public final class ConcolicSummaryImporter {
             if (!regions.contains(task.regionId())) {
                 diagnostics.add(diagnostic(row,
                         "UNKNOWN_REGION", task.regionId()));
+                continue;
+            }
+            // A topology-divergent bundle is not epoch e's evidence.  Its
+            // paths are exact about a topology this epoch's plan does not
+            // address, and the anchor's own address may shift under that
+            // topology, so "the same anchor" is not guaranteed across the
+            // two.  It is kept whole, named by its own rows, and it
+            // instantiates epoch e+1 instead of extending this one.
+            if (topologyDivergences(row, task, diagnostics)) {
                 continue;
             }
             JsonObject summary = importRow(row, task, hashes,
@@ -2069,6 +2079,77 @@ public final class ConcolicSummaryImporter {
     private static String skippedEventDetail(ResultRow row) {
         return row.skipReason.isEmpty() ? row.event
                 : row.event + ": " + row.skipReason;
+    }
+
+    /** Every gap code this stage publishes for a changed topology. */
+    static final String TOPOLOGY_DIVERGENCE = "TOPOLOGY_DIVERGENCE";
+
+    /**
+     * What this replay ran that its epoch's plan did not name, and back.
+     *
+     * <p>A flip can change the topology -- take a branch that opens a wire
+     * the recording never used, or run a region occurrence the plan never
+     * addressed.  That is a <em>new topology to take into account</em>, not
+     * evidence to drop: the replay is exact about what it did, and refusing
+     * it would throw away every other path it also published.  So each
+     * difference is one diagnostic row stamped with the replay that found
+     * it, and the iteration loop uses them to plan the next epoch -- the
+     * unplanned handoff becomes a family of its own with the one pair this
+     * replay delivered, and the unplanned occurrence becomes a task
+     * addressed by the address it was observed at.</p>
+     */
+    static boolean topologyDivergences(ResultRow row,
+                                               ExecutionTask task,
+                                               List<JsonObject> diagnostics) {
+        boolean divergent = false;
+        Set<String> planned = new LinkedHashSet<>();
+        for (CommunicationHandoffSpec site : task.communicationHandoffs()) {
+            planned.add(site.portId());
+        }
+        Set<String> ran = new LinkedHashSet<>();
+        for (JsonElement encoded : row.vmHandoffs == null
+                ? new JsonArray() : row.vmHandoffs) {
+            if (!encoded.isJsonObject()) continue;
+            JsonObject event = encoded.getAsJsonObject();
+            String phase = optionalString(event,
+                    InSessionReadResolver.HANDOFF_PHASE_ID);
+            String port = optionalString(event, "portId");
+            ran.add(port);
+            if (!phase.isEmpty() && !planned.contains(port)) {
+                diagnostics.add(diagnostic(row, TOPOLOGY_DIVERGENCE,
+                        "UNPLANNED_HANDOFF:" + phase + " at port " + port
+                                + " on " + row.rowOccurrenceId));
+                divergent = true;
+            }
+        }
+        for (String port : planned) {
+            if (!ran.contains(port)) {
+                // Not a new topology: a selected binding this replay did
+                // not reproduce is an admission gap of this epoch, and the
+                // paths it did publish still extend it.
+                diagnostics.add(diagnostic(row,
+                        "PLANNED_HANDOFF_NOT_REPRODUCED", port + " on "
+                                + row.rowOccurrenceId));
+            }
+        }
+        OccurrenceAddress address = OccurrenceAddress.parse(
+                row.rowOccurrenceId);
+        OccurrenceAddress addressed = OccurrenceAddress.parse(
+                task.occurrenceId());
+        if (address.isNamed() && addressed.isNamed()
+                && !address.render().equals(addressed.render())) {
+            diagnostics.add(diagnostic(row, TOPOLOGY_DIVERGENCE,
+                    "UNPLANNED_OCCURRENCE:" + address.render()
+                            + " where the plan addressed "
+                            + addressed.render()));
+            divergent = true;
+        }
+        if (divergent) {
+            diagnostics.add(diagnostic(row, TOPOLOGY_DIVERGENCE,
+                    "BUNDLE:" + row.taskId + " line " + (row.line + 1)
+                            + " is held for the next epoch"));
+        }
+        return divergent;
     }
 
     private static JsonObject diagnostic(

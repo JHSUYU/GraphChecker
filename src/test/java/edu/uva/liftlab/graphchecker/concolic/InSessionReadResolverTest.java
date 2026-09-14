@@ -59,7 +59,7 @@ public class InSessionReadResolverTest {
      * re-enter the node and refuse a determined value.</p>
      */
     @Test
-    public void aWireArrivalResolvesToTheProducerExpression() {
+    public void aWireArrivalResolvesToTheHandoffVariable() {
         // The producer's side of the wire: the NameNode wrote the key id.
         JsonObject producer = row(versions("INSTANCE_FIELD", 24, 32,
                 version(81, "WRITE", symbol(ROOT))));
@@ -74,13 +74,24 @@ public class InSessionReadResolverTest {
                 read("INSTANCE_FIELD", 24, 32, 192,
                         candidate(81, "WRITE", symbol(ROOT)))));
 
-        assertEquals(ROOT, resolved.getAsJsonObject().get("_exp")
+        // The value that arrived is free in this replay's formula.  Which
+        // producer path delivered it, and under what conditions, is joined
+        // to it once at the handoff, by the composer -- not inlined here,
+        // where it would make a consumer flip need a producer replay.
+        assertEquals(HANDOFF, resolved.getAsJsonObject().get("_exp")
                 .getAsString());
         assertFalse("a hop is not a cycle",
                 InSessionReadResolver.unresolved(resolved));
     }
 
-    /** A handoff row that points back at its own boundary is not a cycle. */
+    /**
+     * A handoff row that points back at its own boundary is not a cycle.
+     *
+     * <p>It cannot be one any more: the boundary answers with the variable
+     * its row mints and follows nothing.  The shape is kept because bug3
+     * records it, and a reader that started following the row again would
+     * re-enter this node.</p>
+     */
     @Test
     public void aHandoffPointingAtItsOwnBoundaryIsNotACycle() {
         JsonObject producer = row(versions("INSTANCE_FIELD", 24, 32,
@@ -107,7 +118,7 @@ public class InSessionReadResolverTest {
                 reference("EXPR.attach"));
 
         assertFalse(InSessionReadResolver.unresolved(resolved));
-        assertEquals(ROOT, resolved.getAsJsonObject().get("_exp")
+        assertEquals(HANDOFF, resolved.getAsJsonObject().get("_exp")
                 .getAsString());
     }
 
@@ -513,10 +524,16 @@ public class InSessionReadResolverTest {
         return records;
     }
 
+    private static final String HANDOFF = "M_I_HOFF.key_java/lang/Integer";
+
     private static JsonObject handoff(long attachEvent,
                                       JsonObject expression) {
         JsonObject node = new JsonObject();
         node.addProperty("attachEventId", attachEvent);
+        node.addProperty(InSessionReadResolver.HANDOFF_PHASE_ID,
+                "HANDOFF_PHASE.key");
+        node.addProperty(InSessionReadResolver.HANDOFF_SYMBOL, HANDOFF);
+        node.addProperty("javaType", "I");
         node.add("expression", expression);
         return node;
     }
