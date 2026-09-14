@@ -1168,20 +1168,28 @@ public final class ConcolicSummaryImporter {
         return events;
     }
 
-    /** Admits every mint this replay recorded at a declared hook site.
-     * Every occurrence of a declared site is its own symbol, so nothing
-     * here predicts which of them a given replay executed. */
-    private static JsonArray symbolicSourceEvidence(
+    /**
+     * Admits every mint this replay recorded at a declared hook site.
+     *
+     * <p>A configured source is declared by SITE, so it is one variable per
+     * replay: the catalog carries one phase id for every execution of that
+     * site, and a repeat is the same variable observed again rather than a
+     * malformed catalog.  Indexing it by id and raising on the second row
+     * rejected every region path whose site ran more than once -- lane BH's
+     * 50 REGION_PATH_ADMISSION_REJECTED, all naming one id.</p>
+     *
+     * <p>The first row wins, deterministically: the catalog is in event
+     * order, so that is the execution the recording saw first, and the rows
+     * differ only in the evidence of where each execution happened.</p>
+     */
+    static JsonArray symbolicSourceEvidence(
             ResultRow row,
             List<ConfiguredSourcePhaseContract.Occurrence> catalog,
             List<String> issues) {
         Map<String, ConfiguredSourcePhaseContract.Occurrence> mintSites =
                 new LinkedHashMap<>();
         for (ConfiguredSourcePhaseContract.Occurrence phase : catalog) {
-            if (mintSites.putIfAbsent(phase.phaseId(), phase) != null) {
-                issues.add("SYMBOLIC_SOURCE_PHASE_CATALOG_MALFORMED:"
-                        + phase.phaseId());
-            }
+            mintSites.putIfAbsent(phase.phaseId(), phase);
         }
         JsonArray admitted = new JsonArray();
         Set<String> observed = new LinkedHashSet<>();
@@ -1204,12 +1212,15 @@ public final class ConcolicSummaryImporter {
             if (phase == null
                     || !exactRowOccurrence
                     || !id.equals(phase.sourceId())
-                    || !field.equals(phase.fieldSignature())
-                    || !observed.add(phaseId)) {
+                    || !field.equals(phase.fieldSignature())) {
                 issues.add("SYMBOLIC_SOURCE_EVIDENCE_NOT_DECLARED:"
                         + phaseId + ":" + id);
                 continue;
             }
+            // One site is one variable, so a second execution of it inside
+            // this activation is the same root observed again -- admitted
+            // once, and not a second root nor a malformed one.
+            if (!observed.add(phaseId)) continue;
             admitted.add(event);
         }
         return admitted;
