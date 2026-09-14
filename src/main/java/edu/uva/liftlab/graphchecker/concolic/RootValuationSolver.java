@@ -2741,8 +2741,8 @@ public final class RootValuationSolver {
                     authority)
                     || SymbolicSourceEvidence.MANUAL_AUTHORITY.equals(
                     authority)
-                    || reused && ConcolicSummaryImporter
-                    .MANUAL_INPUT_OBSERVATION_AUTHORITY.equals(authority);
+                    || reused && "MANUAL_INPUT_OBSERVATION_V1".equals(
+                    authority);
         }
     }
 
