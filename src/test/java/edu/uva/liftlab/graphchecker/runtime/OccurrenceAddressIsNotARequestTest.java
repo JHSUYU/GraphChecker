@@ -241,24 +241,34 @@ public class OccurrenceAddressIsNotARequestTest {
                 replayOnce(), replayOnce());
     }
 
-    /** One replay: a cluster start outside the window, then the workload. */
+    /**
+     * One replay: a cluster start outside the window, then the workload.
+     *
+     * <p>The node is registered on the object the activation runs on, which
+     * is how a workload names its sources and how the recording attributed
+     * the activation the plan addresses.  An activation with no stamp at all
+     * is the unregistered source's -- the planner counts it there and so
+     * does the replay -- so it could not answer this address in either run
+     * and would not pin anything about the window.</p>
+     */
     private static Set<String> replayOnce() {
         RuntimeTraceContext.resetForTests();
         ConcolicTaskPlan.RuntimeTask task = task();
         ConcolicTaskPlan plan = plan(task);
+        Object node = new Object();
 
         assertTrue("the cluster start is outside the window",
                 plan.addressLoopRootInvocation(task.rootMethod,
-                        task.rootMethod, null, new Object[0]).isEmpty());
+                        task.rootMethod, node, new Object[0]).isEmpty());
         assertTrue("and it is not a candidate that failed to answer",
                 task.unansweredAddress().startsWith(
                         "0 compatible activation(s)"));
 
-        RuntimeTraceContext.registerSource(new Object(),
-                new SourceRef("CLUSTER_NODE", "NAMENODE", "hdfs/nn0", 0L));
+        RuntimeTraceContext.registerSource(node,
+                new SourceRef("NAMENODE", "nn", "hdfs-17899/nn0", 0L));
 
         Set<String> admitted = plan.addressLoopRootInvocation(
-                task.rootMethod, task.rootMethod, null, new Object[0]);
+                task.rootMethod, task.rootMethod, node, new Object[0]);
         assertEquals("the first activation the recording saw is occurrence 1",
                 Collections.singleton(task.taskId), admitted);
         return admitted;

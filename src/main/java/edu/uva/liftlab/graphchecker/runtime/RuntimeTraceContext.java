@@ -5,6 +5,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Base64;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.Deque;
 import java.util.IdentityHashMap;
@@ -413,11 +414,70 @@ final class RuntimeTraceContext {
      * counted as target-dn's first, was published as source-dn's.</p>
      */
     static SourceRef activationSource(Object receiver) {
+        return activationSource(receiver,
+                Collections.<SourceRef>emptyList());
+    }
+
+    /**
+     * The planner's own attribution rule, evaluated by the replay.
+     *
+     * <p>{@code RuntimeRegionPlanner.activationSource} reads an activation's
+     * own {@code METHOD_ENTER} stamp, and when there is none takes the
+     * <em>unique</em> stamp among the activation's own frames, and when there
+     * is not exactly one of those attributes the activation to the
+     * unregistered source.  This is that function, with the stamp computed
+     * live rather than read out of a trace, so the two ends cannot answer
+     * differently.</p>
+     *
+     * <p>The third arm used to be the replay's own: the PLANNED node.  That
+     * is what let an activation nothing had stamped count in the planned
+     * node's bucket -- on hdfs-17899 bug2 the DataNode heartbeats that run
+     * before the workload registers {@code dn.getDatanodeId()} carry no node
+     * at all, and each one's {@code PBHelper.convert} took a k in
+     * target-dn's count ahead of the heartbeat the plan addresses, which is
+     * "occurrence is activation 2, not 1" on a region whose own activation
+     * was there all along.  The planner never counted them there, because
+     * the planner puts them in the unregistered source's own population.</p>
+     *
+     * @param frameStamps the sources the activation's own frames carry, in
+     *                    recorded order; empty at a root entry, where no
+     *                    frame of the activation has run yet
+     */
+    static SourceRef activationSource(Object receiver,
+                                      Collection<SourceRef> frameStamps) {
         SourceRef registered = sourceFor(receiver);
         Seed seed = peekSeed(Thread.currentThread());
         if (seed == null) seed = peekSeed(receiver);
-        return attributedSource(registered, seed, CURRENT.get().source);
+        SourceRef stamp = attributedSource(registered, seed,
+                CURRENT.get().source);
+        return attributedActivationSource(stamp, frameStamps);
     }
+
+    /**
+     * One activation's source: its own stamp, else the unique stamp among
+     * its frames, else the unregistered source.  Never null.
+     */
+    static SourceRef attributedActivationSource(
+            SourceRef stamp, Collection<SourceRef> frameStamps) {
+        if (stamp != null) return stamp;
+        SourceRef unique = null;
+        if (frameStamps != null) {
+            for (SourceRef frame : frameStamps) {
+                if (frame == null) continue;
+                if (unique == null) {
+                    unique = frame;
+                } else if (!unique.key().equals(frame.key())) {
+                    return UNREGISTERED_SOURCE;
+                }
+            }
+        }
+        return unique == null ? UNREGISTERED_SOURCE : unique;
+    }
+
+    /** The source an activation nothing attributed belongs to: the
+     *  planner's own constant, so the two ends name one population. */
+    static final SourceRef UNREGISTERED_SOURCE =
+            RuntimeRegionPlanner.UNREGISTERED_SOURCE;
 
     private static SourceRef attributedSource(SourceRef registered, Seed seed,
                                               SourceRef ambient) {

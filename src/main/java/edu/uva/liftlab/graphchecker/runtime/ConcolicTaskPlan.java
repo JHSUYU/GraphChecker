@@ -653,7 +653,18 @@ final class ConcolicTaskPlan {
                                    SourceRef activationSource) {
         String planned = safe(task.sourceKey);
         if (!RuntimeTraceContext.declaresEpoch(planned)) return planned;
-        return activationSource == null ? planned : activationSource.key();
+        // Never the planned node.  RuntimeTraceContext.activationSource is
+        // the planner's own rule and its last arm is the unregistered
+        // source, so an activation nothing attributed counts in the
+        // population the planner counted it in.  It used to fall back to the
+        // plan's own key, and that is what let hdfs-17899 bug2's
+        // pre-registration heartbeats -- the DataNode's own loop runs before
+        // the workload registers dn.getDatanodeId(), so those activations
+        // carry no node at all -- take target-dn's k=1 ahead of the
+        // heartbeat the plan addresses.
+        return activationSource == null
+                ? RuntimeTraceContext.UNREGISTERED_SOURCE.key()
+                : activationSource.key();
     }
 
     /**
@@ -670,10 +681,13 @@ final class ConcolicTaskPlan {
      * workload registered it -- and the row could not tell them apart.</p>
      */
     static String attribution(SourceRef activationSource) {
-        return activationSource == null
-                ? " (this run attributed the activation to no node, so it"
-                + " counted in the planned one)"
-                : " (attributed to " + activationSource.key() + ")";
+        if (activationSource == null
+                || RuntimeTraceContext.UNREGISTERED_SOURCE.key()
+                .equals(activationSource.key())) {
+            return " (this run attributed the activation to no node, so it"
+                    + " counts in the unregistered source)";
+        }
+        return " (attributed to " + activationSource.key() + ")";
     }
 
     /** The source keys this run attributed to one live root entry. */

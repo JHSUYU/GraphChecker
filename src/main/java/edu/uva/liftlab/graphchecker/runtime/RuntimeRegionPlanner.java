@@ -2498,10 +2498,19 @@ final class RuntimeRegionPlanner {
 
     /** The source that owns one activation: its root frame's stamp, or the
      * unique stamp its own frames carry when the root has none. */
+    /**
+     * One activation's source, by the rule both ends run.
+     *
+     * <p>{@link RuntimeTraceContext#attributedActivationSource} is that rule:
+     * the activation's own stamp, else the unique stamp among its frames,
+     * else the unregistered source.  The replay evaluates the same function
+     * over the same three inputs, so a population counted here is the
+     * population counted there.</p>
+     */
     private static SourceRef activationSource(MethodEvent root,
                                               List<SourceRef> stamped) {
-        if (root.source != null) return root.source;
-        return stamped.size() == 1 ? stamped.get(0) : UNREGISTERED_SOURCE;
+        return RuntimeTraceContext.attributedActivationSource(
+                root == null ? null : root.source, stamped);
     }
 
     /** Total logical scope of one traced event. A workload that never

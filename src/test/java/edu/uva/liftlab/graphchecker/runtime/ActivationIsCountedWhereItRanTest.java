@@ -161,15 +161,21 @@ public class ActivationIsCountedWhereItRanTest {
         ConcolicTaskPlan plan = new ConcolicTaskPlan(null,
                 Arrays.asList(targetTask));
 
-        // Two activations this run can name no node for: the first answers
-        // the address by the plan's own fallback, the second cannot.
-        assertSame(targetTask, decode(plan, targetTask, null));
+        // Lane B2: two heartbeats run before the workload registers the
+        // DataNode, so this run can name no node for them.  They are the
+        // unregistered source's, not target-dn's, and the refusal says so.
+        assertNull(decode(plan, targetTask, null));
         assertNull(decode(plan, targetTask, null));
 
         String refusal = targetTask.unansweredAddress();
-        assertTrue(refusal, refusal.contains("occurrence is activation 2"));
+        assertTrue(refusal, refusal.contains("occurrence ran on "
+                + RuntimeTraceContext.UNREGISTERED_SOURCE.id()));
         assertTrue(refusal, refusal.contains(
                 "this run attributed the activation to no node"));
+
+        // And the heartbeat that does carry the node is still its first.
+        assertSame("the unstamped ones took no k from target-dn",
+                targetTask, decode(plan, targetTask, targetDn));
     }
 
     /** And names the node when there was one. */
@@ -199,8 +205,9 @@ public class ActivationIsCountedWhereItRanTest {
         assertEquals("the NameNode's activation counts as the NameNode's",
                 NN, ConcolicTaskPlan.countedLifecycle(targetTask,
                         RuntimeTraceContext.sourceFor(nameNode)));
-        assertEquals("an unattributed activation counts where the plan says",
-                TARGET_DN,
+        assertEquals("an activation nothing attributed counts in the "
+                        + "unregistered source, as the planner counts it",
+                RuntimeTraceContext.UNREGISTERED_SOURCE.key(),
                 ConcolicTaskPlan.countedLifecycle(targetTask, null));
         assertNotEquals("and those are two buckets, not one",
                 targetTask.invocationCounterKey(NN),
