@@ -12,6 +12,7 @@ import java.util.Collections;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertTrue;
 
 /**
  * The k in "k-th activation" is counted inside one epoch.
@@ -191,7 +192,88 @@ public class EpochScopedActivationCountTest {
                 RuntimeTraceContext.current()));
     }
 
+    /**
+     * A region that never executes a mint site is admitted by its address.
+     *
+     * <p>Lane BI's shape.  Five loop-body regions declare a causal anchor on
+     * {@code SnapshotManager.isSnapshotDeletionOrdered()#u1}; only
+     * {@code REGION.9492ec77}'s activations execute it, so the five carried
+     * no observation of it and were skipped as
+     * {@code REGION_CAUSAL_ANCHOR_NOT_OBSERVED} -- taking the target region
+     * with them.  "This activation must itself have observed phase P" is a
+     * second admission condition, deciding which activation matters outside
+     * the address, and it is gone: an activation is admitted by (node,
+     * epoch, region, k) and by nothing else.</p>
+     */
+    @Test
+    public void aRegionThatNeverExecutesTheSiteIsAdmittedByItsAddress() {
+        RuntimeTraceContext.resetForTests();
+        Object node = new Object();
+        RuntimeTraceContext.registerSource(node,
+                new SourceRef("CLUSTER_NODE", "NAMENODE", NODE, 1L));
+
+        ConcolicTaskPlan.RuntimeTask task = task(NODE + "#epoch1", 1);
+        ConcolicTaskPlan plan = new ConcolicTaskPlan(null,
+                Collections.singletonList(task));
+
+        // Nothing about a source phase is asked, and nothing was observed.
+        assertNotNull("the address is the whole admission",
+                plan.select(task.rootHookGroupKey(), ROOT, node,
+                        new Object[0]));
+    }
+
+    /** A loop-body task whose occurrence names no k is refused at PLAN. */
+    @Test
+    public void aRootLoopTaskWithoutKIsRefusedAtPlan() {
+        try {
+            loopTask("REGION.r");
+            org.junit.Assert.fail("expected a plan refusal");
+        } catch (IllegalArgumentException refused) {
+            assertTrue(refused.getMessage(),
+                    refused.getMessage().startsWith(
+                            "ROOT_LOOP_OCCURRENCE_UNADDRESSED"));
+        }
+    }
+
+    /** One loop-body task whose planned occurrence carries no k. */
+    private static ConcolicTaskPlan.RuntimeTask loopTask(String regionId) {
+        com.google.gson.JsonObject encoded = new com.google.gson.JsonObject();
+        encoded.addProperty("taskId", "TASK.loop");
+        encoded.addProperty("goalId", "GOAL.1");
+        encoded.addProperty("goalKind", "REGION_PATH_CLOSURE");
+        encoded.addProperty("regionId", regionId);
+        encoded.addProperty("relationKey", "REL.1");
+        encoded.addProperty("sourceKey", NODE + "#epoch1");
+        // No "#k": the occurrence names a region and no activation of it.
+        encoded.addProperty("occurrenceId",
+                NODE + "#epoch1/region/" + regionId);
+        encoded.addProperty("rootMethod", ROOT);
+        encoded.addProperty("instrumentationSelector", "sel");
+        encoded.addProperty("rootAuthority", "LOOP_BODY_ROOT");
+        com.google.gson.JsonObject admission = new com.google.gson.JsonObject();
+        admission.addProperty("state", "EXECUTABLE");
+        encoded.add("admission", admission);
+        com.google.gson.JsonObject selector = new com.google.gson.JsonObject();
+        selector.addProperty("kind", "GLOBAL_INVOCATION");
+        selector.addProperty("invocationOrdinal", 1);
+        selector.addProperty("method", ROOT);
+        com.google.gson.JsonObject anchor = new com.google.gson.JsonObject();
+        anchor.addProperty("sourceKey", NODE + "#epoch1");
+        anchor.addProperty("kind", "REGISTERED_SOURCE");
+        selector.add("causalAnchor", anchor);
+        encoded.add("rootSelector", selector);
+        encoded.add("branches", new com.google.gson.JsonArray());
+        encoded.add("inputActions", new com.google.gson.JsonArray());
+        com.google.gson.JsonObject loopBound = new com.google.gson.JsonObject();
+        loopBound.addProperty("schemaVersion", 1);
+        encoded.add("loopBound", loopBound);
+        return new ConcolicTaskPlan.RuntimeTask(
+                edu.uva.liftlab.graphchecker.contract.ExecutionTask.decode(
+                        encoded));
+    }
+
     private static ConcolicTaskPlan.RuntimeTask task(String sourceKey,
+
 
                                                      int ordinal) {
         JsonObject encoded = new JsonObject();

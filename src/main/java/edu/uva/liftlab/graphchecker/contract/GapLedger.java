@@ -559,12 +559,16 @@ public final class GapLedger {
         // slice then keeps the ones root dependence actually selected.  A
         // planned region that never ran is a broken chain when the slice
         // kept it and an over-approximation of the plan when it did not.
-        onKeptSlice(importer, "REGION_CAUSAL_ANCHOR_NOT_OBSERVED",
-                "a region whose causal anchor was never observed contributes"
-                        + " no case: on the kept slice that is a link the"
-                        + " plan said must run and publish and the model does"
-                        + " not contain, off it the static plan simply named"
-                        + " a region root dependence never selected");
+        blocking(importer, "ROOT_LOOP_OCCURRENCE_UNADDRESSED",
+                "a loop-body task whose planned occurrence names no k: a"
+                        + " bounded loop publishes the activations some task"
+                        + " addresses, so an unaddressed one would have to be"
+                        + " defaulted to the first or to any, and neither is"
+                        + " something the recording said");
+        blocking(importer, "LOOP_OCCURRENCE_BEYOND_BOUND",
+                "a task addresses an activation of a bounded loop past the"
+                        + " instrumentation bound that records it, so the"
+                        + " activation it names is one no replay can reach");
         diagnostic(importer, "REGION_OCCURRENCE_ANCHOR_UNMATCHED",
                 "one run declining an occurrence addressed at another run is"
                         + " a statement about which JVM was asked, not about"
