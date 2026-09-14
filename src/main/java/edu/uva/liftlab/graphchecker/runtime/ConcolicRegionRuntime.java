@@ -3848,7 +3848,7 @@ public final class ConcolicRegionRuntime {
             // apply.  A model this activation DID mint for and did not
             // write is still a refusal, which is the case this gate is for.
             if (assignment.configuredSourceAssignment()
-                    && !active.observedConfiguredSourcePhase(
+                    && !active.owesConfiguredSourceModel(
                     assignment.configuredSourcePhaseId)) {
                 continue;
             }
@@ -6418,21 +6418,30 @@ public final class ConcolicRegionRuntime {
             configuredSourcePhaseObservations.add(observation);
         }
 
-        /** Whether this activation reached one declared mint site. */
-        private synchronized boolean observedConfiguredSourcePhase(
+        /**
+         * Whether a model for this phase is this activation's to apply.
+         *
+         * <p>Only an activation that minted the root FRESH owes it: the
+         * model is written into the value the mint is about to symbolize,
+         * so an activation that found the root already symbolic -- the
+         * second activation of a site the first one minted, which is what
+         * "one variable per phase" means -- has nothing to write it into.
+         * On hdfs-17899 bug3 that is the two companions addressed at
+         * REGION.08ab84c9#2, refused at their terminal for not applying a
+         * model to a root activation #1 had already minted.</p>
+         *
+         * <p>Reaching the site is not enough and never was: a hook that
+         * returns before minting (no declared owner, not an exact
+         * primitive) leaves nothing to write into either, and says so with
+         * its own unresolved note.</p>
+         */
+        private synchronized boolean owesConfiguredSourceModel(
                 String phaseId) {
             String wanted = safe(phaseId);
             if (wanted.isEmpty()) return false;
-            for (JsonObject observation
-                    : configuredSourcePhaseObservations) {
-                if (wanted.equals(optionalString(observation,
-                        "matchedPhaseId"))) {
-                    return true;
-                }
-            }
             for (JsonObject row : symbolizedRows) {
                 if (wanted.equals(optionalString(row, "sourcePhaseId"))) {
-                    return true;
+                    return !optionalBool(row, "reused", false);
                 }
             }
             return false;
@@ -6445,6 +6454,7 @@ public final class ConcolicRegionRuntime {
                 JsonElement expression, boolean reused) {
             JsonObject row = new JsonObject();
             row.addProperty("sourceId", safe(sourceId));
+            row.addProperty("sourcePhaseId", entry.phaseId());
             row.addProperty("occurrenceId", occurrenceId());
             row.addProperty("siteId", entry.siteId);
             row.addProperty("ordinal", entry.ordinal);
