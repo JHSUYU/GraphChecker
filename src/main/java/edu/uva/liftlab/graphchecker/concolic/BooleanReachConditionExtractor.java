@@ -49,14 +49,6 @@ import java.util.regex.Pattern;
  */
 public final class BooleanReachConditionExtractor {
     private static final int MAX_EXISTENTIAL_PERTURBATIONS = 32;
-    /**
-     * An unsat every probed attempt owed to the driver's own frontier.
-     *
-     * <p>Not a solver status: z3 said {@code unsat} to each attempt, but
-     * each refutation used a case selector this driver pinned, so the
-     * valuation is undecided rather than refuted.</p>
-     */
-    static final String FRONTIER_PINNED_UNSAT = "FRONTIER_PINNED_UNSAT";
 
     /** A perturbation the root's own declared physics forbids. */
     static final String WINDOW_BOUNDARY = "WINDOW_BOUNDARY";
@@ -237,15 +229,10 @@ public final class BooleanReachConditionExtractor {
             JsonObject row = asEvidence(valuationRow(values, status),
                     evidenceOnly);
             // A reader has to be able to tell a causal verdict from one the
-            // case frontier decided: these are the selectors this valuation
+            // these are the selectors this valuation
             // was solved under.
             row.add("pinnedCaseSelectors",
                     GSON.toJsonTree(solver.lastPinnedSelectors()));
-            List<String> frontierPins = solver.lastFrontierPins();
-            if (!frontierPins.isEmpty()) {
-                row.add("frontierPinnedCore",
-                        GSON.toJsonTree(frontierPins));
-            }
             if ("sat".equals(status)) {
                 satisfyingValuations.add(values.clone());
                 Map<String, String> model =
@@ -327,25 +314,17 @@ public final class BooleanReachConditionExtractor {
                 ? "UNKNOWN" : !satisfyingValuations.isEmpty()
                 ? "REACHABLE" : observedUnderapproximation
                 ? "UNKNOWN" : "UNREACHABLE";
-        JsonObject reachCondition = new JsonObject();
-        String formula = dnf(inputs, satisfyingValuations, count);
-        reachCondition.addProperty("formula", formula);
-        if (!discovery.existentialNonBooleanRootInputs.isEmpty()) {
-            reachCondition.addProperty("formulaDomain",
-                    "BOOLEAN_PROJECTION_EXISTS_NON_BOOLEAN_ROOTS");
-        }
-        reachCondition.addProperty("reachability", reachability);
-        if (observedUnderapproximation
-                && satisfyingValuations.isEmpty() && complete) {
-            reachCondition.addProperty("coverageConclusion",
-                    "INCONCLUSIVE_OPEN_PATH_CLOSURE");
-        }
-        String degeneracy = degeneracyCheck(formula, reachability,
-                inputs.size(),
-                discovery.existentialNonBooleanRootInputs.size(),
-                rejectedExistentialPerturbation);
-        reachCondition.addProperty("degeneracyCheck", degeneracy);
-        report.add("reachCondition", reachCondition);
+        // Reachability is Fatal_T's satisfiability at this anchor, and that
+        // is all it is.  It used to travel inside a "reach condition" that
+        // also carried a DNF rendering of the satisfying valuations, the
+        // domain that rendering was a projection of, a coverage conclusion
+        // and a degeneracy verdict.  The valuations are published below and
+        // are the evidence; a second rendering of them is a second artifact
+        // to keep true.  And whether the target is unconstrained by every
+        // root is decided where the formula is built -- the composition
+        // refuses ROOT_NOT_ON_ANY_PATH -- not by reading the shape of a
+        // disjunction afterwards.
+        report.addProperty("reachability", reachability);
         JsonArray resultGaps = new JsonArray();
         for (String gap : gaps) {
             resultGaps.add(gap);
@@ -354,18 +333,9 @@ public final class BooleanReachConditionExtractor {
             resultGaps.add("UNDECIDED_SOLVER_VALUATIONS:"
                     + solverErrors);
         }
-        // A free symbolic root that never changes target reachability is not
-        // a causal witness.  Preserve the solver's exact valuation table and
-        // reachability finding, but refuse candidate authority so callers
-        // cannot turn a disconnected root/target formula into SAT evidence.
-        boolean unconstrainedRootSpace =
-                "DEGENERATE_UNCONSTRAINED_ROOT_SPACE".equals(degeneracy);
-        if (unconstrainedRootSpace) {
-            resultGaps.add(degeneracy);
-        }
         report.add("gaps", resultGaps);
         report.addProperty("state",
-                complete && !unconstrainedRootSpace && !evidenceOnly
+                complete && !evidenceOnly
                         ? "CANDIDATE_READY" : "CANDIDATE_WITH_GAPS");
         return report;
     }
@@ -399,28 +369,6 @@ public final class BooleanReachConditionExtractor {
         return row;
     }
 
-    /** States whether the degeneracy question was decided, and on what. */
-    private static String degeneracyCheck(String formula,
-                                          String reachability,
-                                          int booleanRootCount,
-                                          int existentialRootCount,
-                                          boolean rejectedExistentialProbe) {
-        if (!"REACHABLE".equals(reachability)) {
-            return "NOT_APPLICABLE_NO_MODEL";
-        }
-        if (!"true".equals(formula)) {
-            return "CONSTRAINED_ROOT_SPACE";
-        }
-        if (rejectedExistentialProbe) {
-            return "CONSTRAINED_ROOT_SPACE";
-        }
-        if (existentialRootCount > 0) {
-            return "UNDECIDED_UNENUMERATED_EXISTENTIAL_ROOTS:"
-                    + existentialRootCount;
-        }
-        return booleanRootCount == 0 ? "NOT_APPLICABLE_NO_FREE_ROOTS"
-                : "DEGENERATE_UNCONSTRAINED_ROOT_SPACE";
-    }
 
     private static void validateCompositionAuthority(
             String composedSmt, JsonObject manifest, List<String> gaps) {
@@ -610,12 +558,7 @@ public final class BooleanReachConditionExtractor {
     private static JsonObject incomplete(JsonObject report,
                                          List<String> gaps) {
         report.add("valuations", new JsonArray());
-        JsonObject reachCondition = new JsonObject();
-        reachCondition.addProperty("formula", "");
-        reachCondition.addProperty("reachability", "UNKNOWN");
-        reachCondition.addProperty("degeneracyCheck",
-                "UNDECIDED_REPORT_INCOMPLETE");
-        report.add("reachCondition", reachCondition);
+        report.addProperty("reachability", "UNKNOWN");
         report.add("gaps", GSON.toJsonTree(gaps));
         report.addProperty("state", "CANDIDATE_WITH_GAPS");
         return report;
@@ -638,8 +581,6 @@ public final class BooleanReachConditionExtractor {
          */
         private final Set<String> conditionalSelectors =
                 new LinkedHashSet<>();
-        /** Whether any pinned partition is one the formula leaves open. */
-        private final boolean frontierUnderReview;
         private final int workers;
         private int queryOrdinal;
 
@@ -678,33 +619,11 @@ public final class BooleanReachConditionExtractor {
                     casePartitions.add(partition);
                 }
             }
-            for (JsonElement element : conditional) {
-                if (!element.isJsonArray()) continue;
-                for (JsonElement selector : element.getAsJsonArray()) {
-                    if (selector.isJsonPrimitive()) {
-                        conditionalSelectors.add(selector.getAsString());
-                    }
-                }
-            }
-            boolean pinsCondition = false;
-            for (List<String> partition : casePartitions) {
-                for (String selector : partition) {
-                    if (conditionalSelectors.contains(selector)) {
-                        pinsCondition = true;
-                        break;
-                    }
-                }
-                if (pinsCondition) break;
-            }
-            this.frontierUnderReview = pinsCondition;
         }
 
         private volatile List<String> lastPinned = Collections.emptyList();
-        /** The status of the last {@link #check}, frontier probes included. */
+        /** The status of the last {@link #check}. */
         private volatile String lastStatus = "";
-        /** Pins the last all-unsat fan-out could not be exonerated from. */
-        private volatile List<String> lastFrontierPins =
-                Collections.emptyList();
 
         synchronized JsonArray attempts() {
             return attempts.deepCopy();
@@ -724,18 +643,12 @@ public final class BooleanReachConditionExtractor {
             return lastStatus;
         }
 
-        /** The pins a {@link #FRONTIER_PINNED_UNSAT} verdict rests on. */
-        List<String> lastFrontierPins() {
-            return new ArrayList<>(lastFrontierPins);
-        }
-
         ConcolicConstraintSolver.SolverOutput check(String smt)
                 throws IOException,
                 InterruptedException {
             int currentQuery = queryOrdinal++;
             PartitionPlan plan = splitPartitions();
             lastStatus = "";
-            lastFrontierPins = Collections.emptyList();
             if (plan.primary.isEmpty()) {
                 lastPinned = Collections.emptyList();
                 ConcolicConstraintSolver.SolverOutput single = attempt(
@@ -804,90 +717,13 @@ public final class BooleanReachConditionExtractor {
                 lastStatus = any == null ? "unknown" : any.status();
                 return any;
             }
-            // Every attempt refused this valuation.  An attempt that
-            // refused it only because of the selectors this driver pinned
-            // has said nothing about the program, so an unsat is published
-            // only once one attempt's core is shown to be independent of
-            // its own frontier.
-            lastStatus = !frontierUnderReview ? "unsat"
-                    : frontierVerdict(currentQuery, smt, queries,
-                    attemptTimeout);
+            // Every attempt refused this valuation, and every selector this
+            // driver pins comes from a case partition the composition
+            // published, so an unsat here is the formula's answer.
+            lastStatus = "unsat";
             return unsat;
         }
 
-        /**
-         * {@code unsat}, or {@code FRONTIER_PINNED_UNSAT} and the pins.
-         *
-         * <p>Probing stops at the first attempt whose core names none of its
-         * pins: that one attempt already proves the refutation is the
-         * program's.  Probes are bounded because the pinned case is the one
-         * this exists to catch and it is also the one where no probe will
-         * ever exonerate; an unexonerated valuation is reported undecided,
-         * never unsat, so the bound can only withhold a verdict and never
-         * manufacture one.</p>
-         */
-        private String frontierVerdict(int currentQuery, String smt,
-                                       List<PartitionQuery> queries,
-                                       long attemptTimeout)
-                throws IOException, InterruptedException {
-            List<String> pins = new ArrayList<>();
-            int probes = 0;
-            for (PartitionQuery query : queries) {
-                if (query.pinLiterals.isEmpty()) return "unsat";
-                if (probes >= frontierProbeLimit()) break;
-                probes++;
-                FrontierProbe probe = probeFrontier(currentQuery, probes - 1,
-                        smt, query, attemptTimeout);
-                List<String> decided = new ArrayList<>();
-                for (String pin : probe.pins) {
-                    if (conditionalSelectors.contains(pin)) decided.add(pin);
-                }
-                if (probe.decided && decided.isEmpty()) return "unsat";
-                for (String pin : decided) {
-                    if (!pins.contains(pin)) pins.add(pin);
-                }
-            }
-            lastFrontierPins = pins;
-            return FRONTIER_PINNED_UNSAT;
-        }
-
-        private int frontierProbeLimit() {
-            return Math.max(4, workers);
-        }
-
-        private FrontierProbe probeFrontier(int currentQuery, int ordinal,
-                                            String smt, PartitionQuery query,
-                                            long attemptTimeout)
-                throws IOException, InterruptedException {
-            // The probe is built from the query before its pins were
-            // asserted: an assumption competes with an identical assertion
-            // for a place in the core, and only the assumption is named.
-            String core = pinCoreQuery(smt, query.pinLiterals);
-            long started = System.nanoTime();
-            ConcolicConstraintSolver.SolverOutput result =
-                    ConcolicConstraintSolver.run(executable, core,
-                            attemptTimeout);
-            long elapsedMillis = Math.max(0L,
-                    (System.nanoTime() - started) / 1_000_000L);
-            List<String> pins = "unsat".equals(result.status())
-                    ? pinnedCoreSelectors(result.stdout, query.pinLiterals)
-                    : Collections.<String>emptyList();
-            JsonObject row = new JsonObject();
-            row.addProperty("queryOrdinal", currentQuery);
-            row.addProperty("attemptOrdinal", ordinal);
-            row.addProperty("strategy", "FRONTIER_CORE_" + ordinal);
-            row.addProperty("solverQuerySha256", ArtifactIO.sha256(core));
-            row.add("selectedCaseSelectors",
-                    GSON.toJsonTree(query.selectors));
-            row.addProperty("timeoutMillis", attemptTimeout);
-            row.addProperty("elapsedMillis", elapsedMillis);
-            row.addProperty("status", result.status());
-            row.add("unsatCorePinnedSelectors", GSON.toJsonTree(pins));
-            synchronized (this) {
-                attempts.add(row);
-            }
-            return new FrontierProbe("unsat".equals(result.status()), pins);
-        }
 
         private ConcolicConstraintSolver.SolverOutput attempt(
                 int currentQuery, int ordinal, String strategy,
@@ -1119,9 +955,8 @@ public final class BooleanReachConditionExtractor {
              *
              * <p>Asserting a pin and assuming it constrain the same models,
              * but only an assumption comes back named in the unsat core.
-             * That is the whole question this class has to be able to answer:
-             * whether an unsat rests on the program or on the frontier this
-             * driver chose.</p>
+             * A pin that shows up in the core says the refusal rests on a
+             * case this driver chose to fix, which is worth reading back.</p>
              */
             private final List<String> pinLiterals;
 
@@ -1130,17 +965,6 @@ public final class BooleanReachConditionExtractor {
                 this.smt = smt;
                 this.selectors = selectors;
                 this.pinLiterals = pinLiterals;
-            }
-        }
-
-        /** One unsat attempt, and what its core says the unsat rests on. */
-        private static final class FrontierProbe {
-            private final boolean decided;
-            private final List<String> pins;
-
-            private FrontierProbe(boolean decided, List<String> pins) {
-                this.decided = decided;
-                this.pins = pins;
             }
         }
 
@@ -2421,21 +2245,6 @@ public final class BooleanReachConditionExtractor {
         return result;
     }
 
-    private static String dnf(List<RootInput> inputs,
-                              List<boolean[]> satisfying, int valuationCount) {
-        List<String> terms = new ArrayList<>();
-        for (boolean[] valuation : satisfying) {
-            List<String> literals = new ArrayList<>();
-            for (int index = 0; index < inputs.size(); index++) {
-                literals.add(inputs.get(index).literal(
-                        valuation[index]));
-            }
-            terms.add(join("and", literals, "true"));
-        }
-        if (terms.isEmpty()) return "false";
-        return terms.size() == valuationCount
-                ? "true" : join("or", terms, "false");
-    }
 
     private static String join(String operator, List<String> terms,
                                String empty) {

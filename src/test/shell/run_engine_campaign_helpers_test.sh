@@ -89,7 +89,7 @@ emit_fixture() {
   # fixture states the claim exactly as ClaimPolicy states it.
   jq -n '{schemaVersion: 4, kind: "BOOLEAN_REACH_CONDITION_REPORT",
     state: "sat", reachCondition: {reachability: "REACHABLE",
-      degeneracyCheck: "CONSTRAINED_ROOT_SPACE"},
+      },
     unsatClosureComplete: false, gaps: [],
     valuations: [{values: [false], status: "sat"},
                  {values: [true], status: "unsat"}],
@@ -98,7 +98,7 @@ emit_fixture() {
       claimReason: "a valuation satisfies the target predicate inside the recorded model and a symbolic root flips it",
       blockers: [], blockerCount: 0, whyNotAccepted: "",
       rootSpace: {reachability: "REACHABLE",
-                  degeneracyCheck: "DECIDED"}}}' \
+                  faultSensitive: true}}}' \
     >"${reach_report}"
   printf '%s\n' \
     '{"schemaVersion":1,"kind":"REGION_PATH_WORKLIST","coverageGaps":[{"kind":"PATH_FLIP_REPLAY_NOT_ADMITTED","queryKey":"flip","reason":"UNEXPLORED"},{"kind":"PATH_FLIP_SOLVER_TIMEOUT","queryKey":"slow-flip","reason":"SOLVER_TIMEOUT"}]}' \
@@ -135,32 +135,29 @@ emit_fixture() {
 }
 
 # The same fixture as the solver stage published it for hdfs-17899-bug3: a
-# REACHABLE formula whose degeneracy question ClaimPolicy could not decide,
+# REACHABLE formula no root flip moves, so ClaimPolicy withholds it,
 # whose Boolean root never flips satisfiability, and whose experiment declares
 # wire flows the composition never realized.
 emit_fixture_undecided_roots() {
   emit_fixture
   jq -n '{schemaVersion: 4, kind: "BOOLEAN_REACH_CONDITION_REPORT",
     state: "CANDIDATE_READY", reachCondition: {reachability: "REACHABLE",
-      degeneracyCheck: "UNDECIDED_UNENUMERATED_EXISTENTIAL_ROOTS:9"},
+      },
     unsatClosureComplete: false, gaps: [],
     valuations: [{values: [false], status: "sat"},
                  {values: [true], status: "sat"}],
     campaignClaim: {schemaVersion: 1, kind: "CAMPAIGN_CLAIM",
       claim: "INCONCLUSIVE_PARTIAL",
-      claimReason: "3 blocker(s) withhold an accepted claim from a REACHABLE solver result: UNDECIDED_ROOT_SPACE,TARGET_UNCONSTRAINED_BY_ROOTS,FINDING_MECHANISM_UNNAMED",
-      blockerCount: 3,
+      claimReason: "2 blocker(s) withhold an accepted claim from a REACHABLE solver result: TARGET_UNCONSTRAINED_BY_ROOTS,FINDING_MECHANISM_UNNAMED",
+      blockerCount: 2,
       blockers: [
-        {code: "UNDECIDED_ROOT_SPACE",
-         subject: "UNDECIDED_UNENUMERATED_EXISTENTIAL_ROOTS:9",
-         detail: "the degeneracy question was not decided"},
         {code: "TARGET_UNCONSTRAINED_BY_ROOTS", subject: "",
          detail: "no symbolic root flips the target predicate"},
         {code: "FINDING_MECHANISM_UNNAMED", subject: "NO_MECHANISM",
          detail: "no satisfying witness names a mechanism"}],
-      whyNotAccepted: ("claim=INCONCLUSIVE_PARTIAL: 3 blocker(s) withhold acceptance\n  UNDECIDED_ROOT_SPACE [UNDECIDED_UNENUMERATED_EXISTENTIAL_ROOTS:9]: the degeneracy question was not decided\n  TARGET_UNCONSTRAINED_BY_ROOTS: no symbolic root flips the target predicate\n  FINDING_MECHANISM_UNNAMED [NO_MECHANISM]: no satisfying witness names a mechanism"),
+      whyNotAccepted: ("claim=INCONCLUSIVE_PARTIAL: 2 blocker(s) withhold acceptance\n  TARGET_UNCONSTRAINED_BY_ROOTS: no symbolic root flips the target predicate\n  FINDING_MECHANISM_UNNAMED [NO_MECHANISM]: no satisfying witness names a mechanism"),
       rootSpace: {reachability: "REACHABLE",
-                  degeneracyCheck: "DECIDED"}}}' \
+                  faultSensitive: true}}}' \
     >"${reach_report}"
 }
 
@@ -212,7 +209,7 @@ jq -e '[.targetOccurrences[] | .composeWallMillis] == [51234, 48010]
 # CLAIM-1: the whole policy decision, so no consumer has to open the solver
 # report to find the claim this file was written from.
 jq -e '.rootSpace.reachability == "REACHABLE"
-  and (.rootSpace | has("degeneracyCheck"))' \
+  and (.rootSpace | has("faultSensitive"))' \
   "${campaign_final}/result.json" >/dev/null \
   || fail "the result does not carry the claim root space: \
 $(jq -c '.rootSpace' "${campaign_final}/result.json")"
@@ -354,9 +351,9 @@ $(<"${emit_root}/emit.log")"
 [[ $(jq -r '.claim' "${campaign_final}/result.json") \
     == INCONCLUSIVE_PARTIAL ]] \
   || fail "the undecided root space did not publish INCONCLUSIVE_PARTIAL"
-jq -e '[.blockers[].code] == ["UNDECIDED_ROOT_SPACE",
-    "TARGET_UNCONSTRAINED_BY_ROOTS", "FINDING_MECHANISM_UNNAMED"]
-  and .blockerCount == 3' \
+jq -e '[.blockers[].code] == ["TARGET_UNCONSTRAINED_BY_ROOTS",
+    "FINDING_MECHANISM_UNNAMED"]
+  and .blockerCount == 2' \
   "${campaign_final}/result.json" >/dev/null \
   || fail "the result did not publish the named blockers: \
 $(jq -c '.blockers' "${campaign_final}/result.json")"
@@ -367,7 +364,7 @@ jq -e '[.blockers[] | select(.code == "FINDING_MECHANISM_UNNAMED")
   || fail "the mechanism blocker did not name its subject"
 # The one view: a header plus one line per blocker, printed and recorded.
 [[ $(jq -r '.whyNotAccepted' "${campaign_final}/result.json" \
-      | wc -l) -eq 4 ]] \
+      | wc -l) -eq 3 ]] \
   || fail "whyNotAccepted does not name one blocker per line"
 grep -q 'FINDING_MECHANISM_UNNAMED' "${emit_root}/emit.log" \
   || fail "EMIT did not print the blocker summary"

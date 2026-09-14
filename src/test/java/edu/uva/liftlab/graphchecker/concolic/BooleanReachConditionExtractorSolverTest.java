@@ -274,9 +274,6 @@ public class BooleanReachConditionExtractorSolverTest {
         }
         assertTrue("the 1789234993717 neighbour is named and not solved",
                 sawBoundary);
-        assertTrue(report.getAsJsonObject("reachCondition")
-                .get("degeneracyCheck").getAsString()
-                .startsWith("UNDECIDED_UNENUMERATED_EXISTENTIAL_ROOTS"));
     }
 
     private static JsonObject readArm(String valueTerm, String owner,

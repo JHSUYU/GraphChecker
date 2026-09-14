@@ -205,36 +205,6 @@ public final class WitnessLegitimacy {
         }
     }
 
-    /**
-     * The freedom the composition leaves every witness, whatever model it is.
-     *
-     * <p>These are properties of the formula rather than of one model, so a
-     * witness cannot argue its way out of them by naming a mechanism: an
-     * unenumerated root space is freedom under every valuation of it. Each one
-     * already has its own blocker in {@link ClaimPolicy}, which is why they are
-     * reported here rather than blocked again under a second name.</p>
-     *
-     * @param degeneracy the solver stage's degeneracy verdict
-     * @param freeInitialArms fatal-read arms the model selected that are the
-     *                        untouched initial content of a truncated carrier
-     * @param unrealizedFlows declared wire flows whose value bound nothing
-     */
-    public static List<Freedom> compositionFreedoms(String degeneracy) {
-        List<Freedom> freedoms = new ArrayList<>();
-        if (degeneracy != null
-                && degeneracy.startsWith(UNENUMERATED_ROOTS_VERDICT)) {
-            freedoms.add(new Freedom(UNENUMERATED_EXISTENTIAL_ROOT, degeneracy,
-                    "the existential root space was never enumerated, so a"
-                            + " witness over it is free where the recording"
-                            + " says nothing"));
-        }
-        // Two freedoms used to be read here and are gone with what produced
-        // them: a witness reading the fatal value out of a reconstructed
-        // INITIAL arm -- there are no arms, and the value is the write the
-        // replay made -- and a wire whose boundary family nothing lowered,
-        // where a wire value is now the producer's own expression.
-        return freedoms;
-    }
 
     /**
      * Reads one valuation's witness against the legitimate set.
