@@ -283,11 +283,15 @@ bool FieldSymbolizer::do_field_helper(fieldDescriptor *fd, oop obj) {
     Expression *symbol = new FieldSymbolExp(
         sym_inst->get_sym_rid(), symbolic_name, type);
     sym_inst->set_sym_exp(fd->offset(), symbol);
-    _ctx.record_path_condition(new OpSymExpression(
-        new FieldAccessExpression(
-            sym_inst->get_or_create_ref_exp(obj),
-            obj->klass()->name()->as_C_string(), fd->offset(), type),
-        symbol, op_eq, true));
+    // Publish before the equation is built, so the equation can name the
+    // version it defines.  The mint is a write: the version published here
+    // *is* this symbol, and the projection on the left of the equation is a
+    // view of exactly that version.  Ordering is free -- publish reads
+    // path_guard(), the region's branch conjunction, while
+    // record_path_condition appends to the frame's auxiliary conditions, and
+    // neither reads the other.
+    jlong minted_version = 0;
+    std::string minted_version_kind;
     if (exact && SharedFieldVersions::has_carriers()) {
       SharedFieldVersions::Location location(
           sym_inst->get_sym_rid(), fd->offset(),
@@ -296,10 +300,20 @@ bool FieldSymbolizer::do_field_helper(fieldDescriptor *fd, oop obj) {
         // Folded outside every engine lock, as the store's concurrency
         // contract requires; the same guard a putfield would publish.
         Expression *guard = _ctx.path_guard();
-        SharedFieldVersions::publish(location, symbol, guard,
-                                     SharedFieldVersions::VERSION_WRITE);
+        minted_version = SharedFieldVersions::publish(
+            location, symbol, guard, SharedFieldVersions::VERSION_WRITE);
+        if (minted_version > 0) {
+          minted_version_kind = SharedFieldVersions::version_kind_name(
+              SharedFieldVersions::VERSION_WRITE);
+        }
       }
     }
+    _ctx.record_path_condition(new OpSymExpression(
+        new FieldAccessExpression(
+            sym_inst->get_or_create_ref_exp(obj),
+            obj->klass()->name()->as_C_string(), fd->offset(), type,
+            std::string(), NULL, NULL, minted_version, minted_version_kind),
+        symbol, op_eq, true));
     return false;
   }
 }
