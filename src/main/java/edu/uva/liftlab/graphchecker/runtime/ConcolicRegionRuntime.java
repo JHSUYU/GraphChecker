@@ -4609,13 +4609,6 @@ public final class ConcolicRegionRuntime {
                 || value instanceof Float || value instanceof Double;
     }
 
-    /** The value at the end of {@code path}, starting from {@code root}. */
-    static Object resolveFieldPathValue(Object root, List<String> path) {
-        Object owner = resolveFieldPathLeafOwner(root, path);
-        if (owner == null || owner == MissingValue.INSTANCE) return owner;
-        return readPathSegment(owner, safe(path.get(path.size() - 1)).trim());
-    }
-
     static Object resolveFieldPathLeafOwner(Object root, List<String> path) {
         if (root == null || path == null || path.isEmpty()) {
             return MissingValue.INSTANCE;
@@ -5715,23 +5708,16 @@ public final class ConcolicRegionRuntime {
                     + argumentIndex);
         }
 
-        int field(String method, int unitIndex) {
-            return observe("FIELD\u0000"
-                    + SiteId.render(method, unitIndex));
-        }
-
         /**
-         * A store site counts in its own namespace: a read and a write at the
-         * same bytecode index are different accesses, and sharing one counter
-         * would give the second of them an occurrence its site never had.
+         * One read site's occurrences.
          *
          * <p>{@code SiteId.render} and not {@code SiteId.of}: the
          * instrumentation deliberately passes a {@code -1} unit index for an
          * accessor implementation that has no unit of its own, and a strict
          * parse of that sentinel throws inside the workload.</p>
          */
-        int fieldWrite(String method, int unitIndex) {
-            return observe("FIELD_WRITE\u0000"
+        int field(String method, int unitIndex) {
+            return observe("FIELD\u0000"
                     + SiteId.render(method, unitIndex));
         }
 

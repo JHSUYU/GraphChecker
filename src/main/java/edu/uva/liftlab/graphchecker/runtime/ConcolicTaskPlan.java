@@ -6,7 +6,6 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.google.gson.JsonPrimitive;
 import edu.uva.liftlab.graphchecker.concolic.BranchReplayContract;
-import edu.uva.liftlab.graphchecker.concolic.SharedFieldFlow;
 import edu.uva.liftlab.graphchecker.concolic.SharedStateEvidence;
 import edu.uva.liftlab.graphchecker.contract.CommunicationHandoffSpec;
 import edu.uva.liftlab.graphchecker.contract.ConfiguredSourcePhaseContract;
@@ -1573,32 +1572,6 @@ final class ConcolicTaskPlan {
         }
 
         /**
-         * Whether a declared field type is a container whose whole state the
-         * VM versions, rather than a reference slot.
-         */
-        static boolean isWholeStateContainerType(DeclaredField field) {
-            if (field == null) return false;
-            // The map rule is the one this build always had, reflectively
-            // widened past the three names the planner lists.
-            return isMapType(field.type())
-                    || SharedFieldFlow.wholeStateCarrierField(field.owner(),
-                    field.name(), field.type());
-        }
-
-        /** Whether a declared field type is a Map the VM versions whole. */
-        static boolean isMapType(String javaType) {
-            try {
-                return Map.class.isAssignableFrom(Class.forName(
-                        safe(javaType).trim()));
-            } catch (Throwable notLoadable) {
-                // Judge by name when the type is not on this loader: the
-                // declaration is the authority, not the loaded class.
-                String value = safe(javaType);
-                return value.endsWith("Map") || value.contains("Map<");
-            }
-        }
-
-        /**
          * The cells this task's declared SYMBOLIC inputs stand on.
          *
          * <p>For the one row that has to say what did not materialize.</p>
@@ -1902,16 +1875,6 @@ final class ConcolicTaskPlan {
             reserveConfiguredSourcePhaseOrdinals(sourceOrdinals);
         }
 
-
-        /** Exact source phases that may address a semantic loop turn. */
-        Set<String> configuredSourceAnchorPhases() {
-            Set<String> phases = new LinkedHashSet<>();
-            for (ConfiguredSourcePhaseContract.Occurrence phase
-                    : configuredSourcePhases) {
-                phases.add(phase.phaseId());
-            }
-            return phases;
-        }
 
         /**
          * Whether this loop-body region has already published its bounded
