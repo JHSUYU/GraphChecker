@@ -54,6 +54,29 @@ public class ManualMintStatesItsValueTest {
         assertTrue(row.get("minted").getAsBoolean());
     }
 
+    /**
+     * A clock mint states both readings: the recording's and this one's.
+     *
+     * <p>A clock is the one root every execution genuinely reads
+     * differently.  {@code recordedValue} is the seed's reading, because
+     * that is the centre of the window the case's declared skew allows;
+     * {@code observedValue} is this execution's own instant, which the
+     * per-path window is centred on instead.  Publishing only one of them
+     * makes one of those two windows unstatable.</p>
+     */
+    @Test
+    public void aClockMintStatesTheRecordingsReadingAndItsOwn()
+            throws Exception {
+        JsonObject row = manualRow(clockAction(), "1789358344655");
+
+        assertEquals("<org.apache.hadoop.util.Timer: long now()>",
+                row.get("declaredCallee").getAsString());
+        assertEquals("the seed's reading, which the window is centred on",
+                "1789358343989", row.get("recordedValue").getAsString());
+        assertEquals("and this execution's own instant, beside it",
+                "1789358344655", row.get("observedValue").getAsString());
+    }
+
     /** A mint that returned a model value states no recorded value. */
     @Test
     public void aModelledMintStatesNoRecordedValue() throws Exception {
@@ -141,8 +164,12 @@ public class ManualMintStatesItsValueTest {
     /** The published row, as the runtime writes it for one manual mint. */
     private static JsonObject manualRow(String recordedValue)
             throws Exception {
+        return manualRow(symbolizeAction(), recordedValue);
+    }
+
+    private static JsonObject manualRow(Object action, String recordedValue)
+            throws Exception {
         ConcolicRegionRuntime.ActiveRegion active = region();
-        Object action = symbolizeAction();
         JsonObject expression = new JsonObject();
         expression.addProperty("_type", "SymbolExpression");
         expression.addProperty("_java_type", "J");
@@ -169,6 +196,26 @@ public class ManualMintStatesItsValueTest {
         return published.get(0);
     }
 
+    /** The same action, as the plan carries a declared clock read. */
+    private static Object clockAction() throws Exception {
+        JsonObject encoded = new JsonObject();
+        encoded.addProperty("symbol", "REGION.aaa1cfd7.in.f30dbb22");
+        encoded.addProperty("actionDigest", "DIGEST.2");
+        encoded.addProperty("cell", "<org.apache.hadoop.util.Timer: long "
+                + "now()>.return");
+        encoded.addProperty("mode", "SYMBOLIC");
+        encoded.addProperty("javaType", "J");
+        encoded.addProperty("rootKind", "CALL_RETURN");
+        encoded.addProperty("declaredCallee",
+                "<org.apache.hadoop.util.Timer: long now()>");
+        encoded.addProperty("siteId",
+                "<a.B: void updateKeys()>#u12");
+        encoded.addProperty("eventSeq", 4211L);
+        encoded.addProperty("observed", true);
+        encoded.addProperty("primitiveValue", "1789358343989");
+        return action(encoded);
+    }
+
     /** One frozen SYMBOLIC action, as the plan carries it. */
     private static Object symbolizeAction() throws Exception {
         JsonObject encoded = new JsonObject();
@@ -178,6 +225,10 @@ public class ManualMintStatesItsValueTest {
                 + "now()>.return");
         encoded.addProperty("mode", "SYMBOLIC");
         encoded.addProperty("javaType", "J");
+        return action(encoded);
+    }
+
+    private static Object action(JsonObject encoded) throws Exception {
         Class<?> type = Class.forName(
                 "edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime"
                         + "$SymbolizeAction");

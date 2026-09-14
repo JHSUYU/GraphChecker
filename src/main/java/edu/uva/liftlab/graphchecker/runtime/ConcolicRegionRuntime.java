@@ -6578,6 +6578,13 @@ public final class ConcolicRegionRuntime {
             row.addProperty("minted", minted);
             row.addProperty("reused", reused);
             if (recordedValue != null && !recordedValue.isEmpty()) {
+                // What THIS execution read at the mint.  For every root but
+                // a clock it is also what the recording read, and the two
+                // members carry the same value; for a clock they differ by
+                // definition, and a reader that needs this replay's own
+                // instant -- the per-path window is centred on it -- must
+                // not have to take the seed's.
+                row.addProperty("observedValue", recordedValue);
                 row.addProperty("recordedValue", recordedValue);
             }
             // A cell minted through the clock hook is a wall-clock read by

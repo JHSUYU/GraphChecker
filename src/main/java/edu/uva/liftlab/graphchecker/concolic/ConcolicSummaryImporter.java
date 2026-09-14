@@ -72,8 +72,8 @@ public final class ConcolicSummaryImporter {
      */
     private static final Set<String> MANUAL_INPUT_OBSERVATION_OPTIONAL =
             Collections.unmodifiableSet(new LinkedHashSet<>(java.util.Arrays
-                    .asList("recordedValue", "declaredCallee", "siteId",
-                            "eventSeq")));
+                    .asList("recordedValue", "observedValue",
+                            "declaredCallee", "siteId", "eventSeq")));
 
     /** The members one observation carries beyond the required set. */
     private static Set<String> extraMembers(JsonObject observation) {
@@ -1335,7 +1335,8 @@ public final class ConcolicSummaryImporter {
                         optionalString(observation, "declaredCallee"),
                         optionalString(observation, "siteId"),
                         optionalLongInteger(observation, "eventSeq", -1L),
-                        optionalString(observation, "recordedValue")));
+                        optionalString(observation, "recordedValue"),
+                        optionalString(observation, "observedValue")));
             } catch (IllegalArgumentException malformed) {
                 issues.add("MANUAL_SYMBOLIC_ROOT_MALFORMED:" + raw + ":"
                         + firstNonBlank(malformed.getMessage(), "UNKNOWN"));
