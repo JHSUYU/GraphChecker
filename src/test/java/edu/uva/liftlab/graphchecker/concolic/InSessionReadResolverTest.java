@@ -74,10 +74,8 @@ public class InSessionReadResolverTest {
     /**
      * A value that arrived over a wire is answered by its handoff variable.
      *
-     * <p>The boundary answers with the variable its {@code vmHandoffEvents}
-     * row mints and follows nothing: which producer delivered the value is
-     * joined once at the handoff.  A row minting no variable is refused by
-     * name rather than inlined.</p>
+     * <p>It answers with the variable its {@code vmHandoffEvents} row mints
+     * and follows nothing; a row minting none is refused by name.</p>
      */
     @Test
     public void aWireArrivalIsAnsweredByTheHandoffThatMintedIt() {

@@ -66,9 +66,8 @@ public class ManualMintStatesItsValueTest {
      * A mint publishes the value it read -- and only a value it read.
      *
      * <p>A clock is the one root every execution reads differently:
-     * {@code recordedValue} is the seed's reading and {@code observedValue}
-     * is this run's instant, which the per-path window is centred on.  A
-     * replay that wrote a model into the value read the model back, and
+     * {@code recordedValue} is the seed's reading, {@code observedValue}
+     * this run's instant.  A replay that wrote a model read it back, and
      * calling that "recorded" makes a counterfactual the recording.</p>
      */
     @Test
@@ -102,8 +101,7 @@ public class ManualMintStatesItsValueTest {
      *
      * <p>A model is written into the value the mint is about to symbolize,
      * so an activation that never reached the site has nothing to write it
-     * into -- and neither has a reuse of an already symbolic root, which is
-     * what "one variable per phase" means.</p>
+     * into -- and neither has a reuse of an already symbolic root.</p>
      */
     @Test
     public void theModelIsOwedOnlyByTheActivationThatMintedIt()

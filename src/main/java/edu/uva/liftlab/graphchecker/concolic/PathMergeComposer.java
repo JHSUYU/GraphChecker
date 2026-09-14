@@ -955,6 +955,16 @@ public final class PathMergeComposer {
                     terms.add(lowering.condition(decision,
                             "handoff:" + phase + ":pi"));
                 }
+                // The arm is the WIRE delivery: what a producer path
+                // actually made at this handoff, under that replay's
+                // prefix and valuation.  A value an obligation answered is
+                // that path's own control, a conjunct of its condition --
+                // never an arm.  An answer is legitimate only where some
+                // real delivery allows it, and a path whose answer no
+                // producer ever made is unsatisfiable in the composition:
+                // the search hypothesized a value the system does not
+                // produce, which is the truthful result and not a
+                // self-consistency failure.
                 terms.add(lowering.condition(equals(symbol, delivered),
                         "handoff:" + phase + ":bind"));
                 armsBySymbol.computeIfAbsent(symbol,
@@ -973,6 +983,15 @@ public final class PathMergeComposer {
                         "replayGroupId"));
                 arm.addProperty("deliveredValue", optionalString(event,
                         ComposedManifest.RECORDED_SOURCE_VALUE));
+                // What that replay's consumer read, where an obligation
+                // answered the mint: the arm binds the wire, and this says
+                // beside it which paths took a value of their own.
+                String answered = optionalString(event,
+                        VmHandoffEvidence.ANSWERED_VALUE);
+                if (!answered.isEmpty()) {
+                    arm.addProperty(VmHandoffEvidence.ANSWERED_VALUE,
+                            answered);
+                }
                 arm.add("valuation", armValuation(summary,
                         declaredVariables, roots));
                 armRowsBySymbol.computeIfAbsent(symbol,
@@ -1168,11 +1187,16 @@ public final class PathMergeComposer {
     }
 
     /**
-     * What this path's own replay received at every handoff it used.
+     * What this path's own replay READ at every handoff it used.
      *
      * <p>The family says a delivery is one of the values some replay made
      * there; asking whether THIS path is consistent with itself means
-     * asking under the delivery its own replay made.</p>
+     * asking under the value its own replay read.  Where an obligation
+     * answered the mint, that is the answer and not what the wire carried:
+     * the model was written into the leaf at the attach, every decision
+     * after it was taken on the answer, and asserting the wire's value of
+     * that replay contradicts its own decisions -- lane17897g's two paths,
+     * closed by {@code (= v_H 119992)} where their replays read 0.</p>
      */
     private static List<String> replayDeliveries(
             List<JsonObject> replayGroup,
@@ -1186,8 +1210,10 @@ public final class PathMergeComposer {
                 JsonObject event = element.getAsJsonObject();
                 String symbol = optionalString(event,
                         InSessionReadResolver.HANDOFF_SYMBOL);
-                String value = optionalString(event,
-                        ComposedManifest.RECORDED_SOURCE_VALUE);
+                String value = firstNonBlank(optionalString(event,
+                        VmHandoffEvidence.ANSWERED_VALUE),
+                        optionalString(event,
+                                ComposedManifest.RECORDED_SOURCE_VALUE));
                 if (symbol.isEmpty() || value.isEmpty()
                         || !declaredVariables.containsKey(symbol)
                         || smtIntegerLiteral(value).isEmpty()

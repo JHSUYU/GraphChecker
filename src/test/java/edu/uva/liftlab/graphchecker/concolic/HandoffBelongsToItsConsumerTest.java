@@ -24,8 +24,7 @@ import static org.junit.Assert.assertTrue;
  * the attach that minted it.
  *
  * <p>A CALL_RETURN attach runs in the CALLER's frame, so the row rides on
- * a different occurrence than the port is declared on: H names the consumer
- * the plan declares, and reproduction is asked of the corpus.</p>
+ * another occurrence: H names the consumer the plan declares.</p>
  */
 public class HandoffBelongsToItsConsumerTest {
     private static final String PORT = "XCH.1174244c.resp.block-key-id";
@@ -54,8 +53,7 @@ public class HandoffBelongsToItsConsumerTest {
      * the evidence rode.
      *
      * <p>The mint is the consumer's, so it happens whether or not the
-     * message carried the producer's expression, and the row it publishes is
-     * the reproduction.</p>
+     * message carried the producer's expression.</p>
      */
     @Test
     public void aPlannedPortIsReproducedByTheAttachThatMintedIt() {

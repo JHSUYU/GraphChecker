@@ -67,10 +67,9 @@ public class OccurrenceAddressIsNotARequestTest {
     /**
      * An occurrence is its address, and admission asks nothing else.
      *
-     * <p>The message an activation was reached by is provenance, not a second
-     * identity that may veto the first: not an unreproduced IN envelope, not
-     * a unique OUT anchor at an enclosing loop root, not a causal anchor the
-     * activation had to have observed itself.</p>
+     * <p>The message an activation was reached by is provenance, not a
+     * second identity that may veto the first -- not an IN envelope, an OUT
+     * anchor, or a causal anchor.</p>
      */
     @Test
     public void theAddressIsTheOnlyAdmission() throws Exception {

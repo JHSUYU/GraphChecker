@@ -148,9 +148,9 @@ public class HandoffMintTest {
      * An obligation assignment for H answers the mint, through the
      * configured-source mechanism and not a second one.
      *
-     * <p>The model names no publish site of the frozen catalog -- H is not a
-     * configured source site -- so it is admitted on the one thing the task
-     * can check: the phase belongs to a port it receives on.</p>
+     * <p>H is not a configured source site, so the model is admitted on the
+     * one thing the task can check: the phase belongs to a port it
+     * receives on.</p>
      */
     @Test
     public void anAssignmentForTheHandoffAnswersTheMint() throws Exception {

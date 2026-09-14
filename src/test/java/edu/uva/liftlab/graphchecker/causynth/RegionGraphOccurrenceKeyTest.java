@@ -24,10 +24,9 @@ import static org.junit.Assert.fail;
  * The region graph joins on an address, and refuses anything else.
  *
  * <p>String equality on {@code occurrenceId} merges two activations the
- * moment one carries an {@code #a<n>} suffix, and a merge here is
- * invisible, so a graph that cannot be built says so.  The graph only
- * scopes: it never decides what matters, picks an arm, or names a
- * writer.</p>
+ * moment one carries an {@code #a<n>} suffix, and that merge is invisible.
+ * The graph only scopes: it never decides what matters, picks an arm, or
+ * names a writer.</p>
  */
 public class RegionGraphOccurrenceKeyTest {
     private static final String PLANNED =
@@ -72,10 +71,9 @@ public class RegionGraphOccurrenceKeyTest {
     /**
      * What names a recorded exchange edge across two recordings of one workload.
      *
-     * <p>The wire transaction is minted fresh in every run, so it cannot
-     * name the edge; it stays on it as transport evidence.  The name is the
-     * producing and consuming occurrence, the port, the direction and an
-     * ordinal over that tuple.</p>
+     * <p>The wire transaction is minted fresh in every run, so the name is
+     * the producing and consuming occurrence, the port, the direction and
+     * an ordinal over that tuple.</p>
      */
     @Test
     public void aRecordedExchangeEdgeIsNamedFromContentNotTheWire()

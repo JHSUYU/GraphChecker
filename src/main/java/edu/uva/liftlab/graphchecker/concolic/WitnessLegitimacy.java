@@ -383,7 +383,13 @@ public final class WitnessLegitimacy {
         return false;
     }
 
-    /** Whether every marker here was compared against a recorded value. */
+    /**
+     * Whether every marker here was compared against a recorded value.
+     *
+     * <p>A case that declares none states no polarity, so there is none to
+     * be unstated: the answer is vacuously yes, and what the finding rests
+     * on is then the recorded valuation of every root.</p>
+     */
     private static boolean everyRecordedPolarityStated(JsonArray assignment) {
         for (JsonElement element : assignment) {
             if (!element.isJsonObject()
@@ -394,7 +400,7 @@ public final class WitnessLegitimacy {
                 return false;
             }
         }
-        return assignment.size() > 0;
+        return true;
     }
 
     /**

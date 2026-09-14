@@ -22,10 +22,9 @@ import static org.junit.Assert.assertTrue;
  * The campaign claim rests on one occurrence of the annotated target, and it
  * is the best-supported one.
  *
- * <p>A run finishes with one {@link ClaimPolicy} decision per observed
- * occurrence; the election turns that set into one campaign claim from the
- * published claims alone, ranking explained over unexplained over closed
- * over inconclusive over refused.</p>
+ * <p>The election turns one {@link ClaimPolicy} decision per observed
+ * occurrence into one campaign claim, ranking explained over unexplained
+ * over closed over inconclusive over refused.</p>
  */
 public class TargetOccurrenceElectionTest {
 
@@ -38,9 +37,8 @@ public class TargetOccurrenceElectionTest {
             "hdfs-17897/dn0#epoch0/region/REGION.53092d3e#2";
 
     /**
-     * The recording observed the site twice and the closure composed one of
-     * them: the composed occurrence is elected and the other is reported,
-     * keeping its stated reason.
+     * The recording observed the site twice and the closure composed one:
+     * that occurrence is elected and the other reported with its reason.
      */
     @Test
     public void anUnobservedOccurrenceIsReportedAndNeverElected()

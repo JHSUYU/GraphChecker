@@ -88,8 +88,7 @@ public class NoFabricatedChainElementTest {
     /**
      * A throw is not a target reach; the declared occurrence still is.
      *
-     * <p>With no target occurrence declared there is no link to check, and
-     * the exception the workload exited through does not stand in for one.</p>
+     * <p>With no target occurrence declared there is no link to check.</p>
      */
     @Test
     public void anyThrowIsNoLongerATargetReach() throws Exception {

@@ -793,14 +793,14 @@ public final class ClaimPolicy {
      *
      * <p>Every recorded value has to be stated for this to mean anything --
      * "at the value it recorded" is not a sentence about a root nobody
-     * recorded -- and at least one flip has to have been asked, or the
-     * absence of a satisfying flip says nothing.</p>
+     * recorded -- and where the case declares markers, at least one flip
+     * has to have been asked, or the absence of a satisfying flip says
+     * nothing.  A case that declares none asks no flip: its recording
+     * failed with every root where the recording left it, and that is the
+     * whole of what this kind says.</p>
      */
     private static boolean recordedFailureExplained(JsonArray valuations,
                                                     List<Marker> markers) {
-        if (markers.isEmpty()) {
-            return false;
-        }
         for (Marker marker : markers) {
             if (!marker.stated()) {
                 return false;
@@ -824,7 +824,7 @@ public final class ClaimPolicy {
             }
             refutedFlips++;
         }
-        return refutedFlips > 0;
+        return refutedFlips > 0 || markers.isEmpty();
     }
 
     /**
