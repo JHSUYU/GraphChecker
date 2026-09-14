@@ -823,8 +823,35 @@ public final class PathMergeComposer {
                 String raw = optionalString(event,
                         InSessionReadResolver.HANDOFF_SYMBOL);
                 if (raw.isEmpty()) continue;
+                String phase = optionalString(event,
+                        InSessionReadResolver.HANDOFF_PHASE_ID);
+                // A handoff assignment IS a configured-source assignment
+                // whose phase id is the handoff phase id -- one mechanism,
+                // by design -- so the declaration states the same members a
+                // source materialization does.  Leaving them empty made the
+                // SOLVE stage's own admission refuse every one of them
+                // (CONFIGURED_SOURCE_MATERIALIZATION_MALFORMED x26 on
+                // laneVM14) after COMPOSE had accepted them.
                 JsonObject declaration = new JsonObject();
                 declaration.addProperty("rawSymbol", raw);
+                declaration.addProperty("sourcePhaseId", phase);
+                declaration.addProperty("sourceId",
+                        optionalString(event, "portId"));
+                String consumer = firstNonBlank(optionalString(event,
+                        "consumerOccurrenceId"),
+                        optionalString(summary, "occurrenceId"));
+                // The node and epoch this value arrived on.  A summary that
+                // states no sourceKey still names the occurrence, and the
+                // occurrence's own prefix is that node -- so the row states
+                // its source without a second lookup.
+                int region = consumer.indexOf("/region/");
+                declaration.addProperty("sourceKey",
+                        firstNonBlank(optionalString(summary, "sourceKey"),
+                                region > 0 ? consumer.substring(0, region)
+                                        : consumer));
+                declaration.addProperty("sourceOccurrenceId", consumer);
+                declaration.addProperty("fieldSignature",
+                        optionalString(event, "portId"));
                 declaration.addProperty("javaType",
                         optionalString(event, "javaType"));
                 declaration.addProperty(ComposedManifest.RECORDED_SOURCE_VALUE,
@@ -942,6 +969,8 @@ public final class PathMergeComposer {
         private final Map<String, Set<String>> readings =
                 new LinkedHashMap<>();
         private final Set<String> disagreed = new LinkedHashSet<>();
+        /** (raw symbol, summary) -> the value that execution stated. */
+        private final Map<String, String> perSummary = new LinkedHashMap<>();
 
         static RootInventory of(Collection<JsonObject> summaries) {
             RootInventory inventory = new RootInventory();
@@ -958,12 +987,24 @@ public final class PathMergeComposer {
                     if (value.isEmpty()) continue;
                     inventory.readings.computeIfAbsent(raw,
                             ignored -> new LinkedHashSet<>()).add(value);
-                    String held = inventory.recorded.get(raw);
-                    if (held == null) {
-                        inventory.recorded.put(raw, value);
-                    } else if (!held.equals(value)) {
+                    // One variable per site, and each replay mints it once
+                    // and reads its own value there.  Two replays of a key
+                    // rollover read two expiry dates; that is the world
+                    // moving, not the recording contradicting itself, and
+                    // reading it as a conflict left the root with no
+                    // recorded value at all and refused the composition.
+                    // A contradiction is one execution stating two values
+                    // for one variable, so the disagreement is judged
+                    // within a summary and the recorded value is the one
+                    // the minting activation stated.
+                    String within = raw + "\n"
+                            + optionalString(summary, "summaryId");
+                    String priorHere = inventory.perSummary.put(within,
+                            value);
+                    if (priorHere != null && !priorHere.equals(value)) {
                         inventory.disagreed.add(raw);
                     }
+                    inventory.recorded.putIfAbsent(raw, value);
                 }
             }
             return inventory;
@@ -1000,8 +1041,14 @@ public final class PathMergeComposer {
                     .CONFIGURED_SOURCE_MATERIALIZATION_AUTHORITY);
             String raw = declared == null ? ""
                     : optionalString(declared, "rawSymbol");
+            // The inventory knows the node for a root it collected; a
+            // declaration that is not one of those -- a handoff variable --
+            // states its own.
             row.addProperty("sourceKey",
-                    firstNonBlank(sourceKeys.get(raw)));
+                    firstNonBlank(sourceKeys.get(raw),
+                            declared == null ? ""
+                                    : optionalString(declared,
+                                    "sourceKey")));
             for (String member : new String[]{"sourceId", "sourcePhaseId",
                     "sourceOccurrenceId", "fieldSignature", "portId"}) {
                 row.addProperty(member, declared == null ? ""

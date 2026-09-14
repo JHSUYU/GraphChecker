@@ -241,6 +241,20 @@ abstract class VmLoweringCore implements VmTermLowering.Policy {
             left = result("nullRef", Sort.REF);
         }
         if ("--".equals(operator)) {
+            // lcmp compares two longs -- that is the instruction's own
+            // typing -- so an int-sorted operand that carries no width is a
+            // long here and is widened explicitly.  Reading it as ambiguous
+            // refused the comparison instead of lowering it.
+            if (left.sort == Sort.INT
+                    && left.integralWidth == IntegralWidth.NONE) {
+                left = result(left.text, Sort.INT, IntegralWidth.JAVA_LONG,
+                        left);
+            }
+            if (right.sort == Sort.INT
+                    && right.integralWidth == IntegralWidth.NONE) {
+                right = result(right.text, Sort.INT, IntegralWidth.JAVA_LONG,
+                        right);
+            }
             if (left.sort == Sort.INT && right.sort == Sort.INT
                     && left.integralWidth == IntegralWidth.JAVA_LONG
                     && right.integralWidth == IntegralWidth.JAVA_LONG) {

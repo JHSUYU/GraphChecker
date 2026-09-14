@@ -273,10 +273,18 @@ final class PathMergeLowering extends VmLoweringCore {
                             + "this symbol", sort);
         }
         String name = rootTerm(root, raw, sort);
-        assertJavaIntegralDomain(name, sort,
-                firstNonBlank(optionalString(root, "javaType"), javaType),
-                raw);
-        return Term.of(name, sort, IntegralWidth.NONE, "", "", "true");
+        String declaredType = firstNonBlank(
+                optionalString(root, "javaType"), javaType);
+        assertJavaIntegralDomain(name, sort, declaredType, raw);
+        // A declared variable carries the width its Java type gives it.
+        // Leaving every one at NONE made an int-typed handoff value mixed
+        // with a long-typed term read as an ambiguous binary width, and a
+        // long-typed one in an lcmp read as malformed operands: the
+        // lowering had the type and threw it away one line before the
+        // arithmetic that needed it.
+        return Term.of(name, sort,
+                JavaPrimitiveSmtSemantics.widthOfJavaType(declaredType),
+                "", "", "true");
     }
 
     /** One execution-local identity, named once and left free. */

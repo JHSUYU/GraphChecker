@@ -1,6 +1,7 @@
 package edu.uva.liftlab.graphchecker.concolic;
 
 import edu.uva.liftlab.graphchecker.contract.ComposedManifest;
+import edu.uva.liftlab.graphchecker.contract.HandoffPhaseContract;
 import static edu.uva.liftlab.graphchecker.concolic.ArtifactIO.artifact;
 import static edu.uva.liftlab.graphchecker.concolic.ArtifactIO.sibling;
 import static edu.uva.liftlab.graphchecker.concolic.JavaPrimitiveSmtSemantics.javaTypeDescriptor;
@@ -2583,7 +2584,16 @@ public final class RootValuationSolver {
                     optionalString(row, "nullnessSolverTerm"));
             return result.sourceKey.isEmpty() || result.sourceId.isEmpty()
                     || result.sourcePhaseId.isEmpty()
+                    // A handoff assignment is a configured-source
+                    // assignment whose phase id is the handoff phase id --
+                    // one mechanism, answered by the same runtime path -- so
+                    // this stage admits both spellings.  Requiring only the
+                    // source prefix refused all 26 of laneVM14's handoff
+                    // materializations here, after COMPOSE had accepted
+                    // them, and left the formula with no controls at all.
                     || !result.sourcePhaseId.startsWith("SOURCE_PHASE.")
+                    && !result.sourcePhaseId.startsWith(
+                            HandoffPhaseContract.PHASE_PREFIX)
                     || result.sourceOccurrenceId.isEmpty()
                     || result.fieldSignature.isEmpty()
                     || result.descriptor.isEmpty()

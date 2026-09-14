@@ -193,6 +193,19 @@ public final class ConcolicConstraintSolver {
             record.add("unresolvedReplayControlSymbols",
                     strings(projection.unresolved));
         } else {
+            // Which of the flipped predicate's own variables the model left
+            // to the replay.  A variable z3 did not constrain is one any
+            // value satisfies *for the query*, but the replay then reads its
+            // own -- a live clock, say -- and the comparison can come back
+            // at its recorded sign, which is how nine laneVM14 obligations
+            // failed at the flipped occurrence itself.  Published so the
+            // reader sees it; filling it from the recorded value is the
+            // fix, and it needs that value on the flip query.
+            Set<String> unassigned = coversTarget(
+                    targetSupport.writableSymbols, assignments);
+            if (!unassigned.isEmpty()) {
+                record.add("unassignedFlipVariables", strings(unassigned));
+            }
             record.addProperty("status", "SAT_MODEL_READY");
         }
         return new Result(record, smt, assignments, replayContract);
@@ -1247,6 +1260,18 @@ public final class ConcolicConstraintSolver {
      * every path predicate hard.  MaxSMT therefore changes only the smallest
      * number of replay controls needed for the requested flip.
      */
+    /** The flipped predicate's own variables that no assignment carries. */
+    private static Set<String> coversTarget(Set<String> targetSymbols,
+                                            JsonArray assignments) {
+        Set<String> missing = new LinkedHashSet<>(targetSymbols);
+        for (JsonElement element : assignments) {
+            if (!element.isJsonObject()) continue;
+            missing.remove(optionalString(element.getAsJsonObject(),
+                    "inputSymbol"));
+        }
+        return missing;
+    }
+
     private static void preferObservedReplayControls(
             Encoder encoder, Set<String> replayControls,
             List<JsonObject> actions) {
