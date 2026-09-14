@@ -93,27 +93,7 @@ public final class GapLedger {
      */
     public enum Scope {
         /** The class in the entry, wherever the code is raised. */
-        ALWAYS,
-        /**
-         * BLOCKING when the composed formula names a handoff phase of the
-         * row's port that no replay of this campaign attached, and
-         * DIAGNOSTIC when every phase of that port the formula names has an
-         * attach behind it.
-         *
-         * <p>The question the design asks of a gap is whether it undermines
-         * the formula that was composed.  A capture that ran where no
-         * occurrence was selected has not removed anything from that
-         * formula: the delivery the formula uses is the one that attached
-         * inside the occurrence the slice did select, and the row is a
-         * re-execution of the same capture in a session scoped elsewhere.
-         * What would undermine it is a phase the formula names and nothing
-         * delivered -- which is exactly this test.</p>
-         *
-         * <p>Fail-closed like the slice: only the campaign fold can see the
-         * composed manifest and the attaches together, so every reader that
-         * cannot answers with the entry's own BLOCKING class.</p>
-         */
-        COMPOSED_PORT
+        ALWAYS
     }
 
     /** One registered code. */
@@ -176,59 +156,6 @@ public final class GapLedger {
                 reason, ""));
     }
 
-    /**
-     * Amends a registered code: DIAGNOSTIC when the row is a flip-wave row.
-     *
-     * <p>The seed wave and the flip wave ask different questions with the
-     * same words.  A seed task that no run answered says the corpus is
-     * missing a link of the chain -- the region the plan named was not
-     * replayed at all, and nothing downstream can state anything about it.
-     * A flip task addresses an occurrence on a <em>hypothetical</em>
-     * execution: the flip rewrites a decision, and an execution that takes
-     * the other branch legitimately does not activate every occurrence the
-     * recorded one did.  That row says the path contributed no case, which
-     * is a statement about the path set, and the one conclusion an
-     * incomplete path set can falsify -- a closed UNSAT -- is already
-     * withheld by name through UNSAT_CLOSURE_INCOMPLETE.  The witness's own
-     * chain runs through the seed wave and the flip cases that did publish,
-     * and contains no case from a path that produced none.</p>
-     *
-     * <p>Fail-closed in the same sense as the slice: the campaign fold
-     * lowers the class only for a subject it can name as a linked-replay
-     * task of a known path, and answers with the entry's own class for
-     * every subject it cannot.</p>
-     */
-    private static void flipWaveDiagnostic(String code, String reason) {
-        requireReason(code, reason);
-        Entry entry = REGISTRY.get(code);
-        if (entry == null) {
-            throw new IllegalStateException("a flip-wave qualifier names a"
-                    + " code nothing registered: " + code);
-        }
-        REGISTRY.put(code, new Entry(entry.code, entry.source,
-                entry.gapClass, entry.scope, entry.reason, reason));
-    }
-
-    /**
-     * Blocking on the kept replay slice, diagnostic off it.
-     *
-     * <p>The entry's own class is BLOCKING, which is what every reader that
-     * cannot see the slice answers.</p>
-     */
-    /**
-     * Blocking when the composed formula names an unbacked phase of the
-     * row's port, diagnostic when every phase it names attached.
-     *
-     * <p>The entry's own class is BLOCKING, which is what every reader that
-     * cannot see the composed manifest answers.</p>
-     */
-    private static void onComposedPort(String source, String code,
-                                       String reason) {
-        requireReason(code, reason);
-        register(new Entry(code, source, GapClass.BLOCKING,
-                Scope.COMPOSED_PORT, reason, ""));
-    }
-
     private static void requireReason(String code, String reason) {
         if (reason == null || reason.trim().isEmpty()) {
             throw new IllegalStateException(
@@ -263,23 +190,9 @@ public final class GapLedger {
                         + " recording took the healthy arm: a formula that"
                         + " answers yes to the execution that did not fail"
                         + " answers nothing about the one that would");
-        diagnostic(composer, "ROOT_NOT_ON_ANY_PATH",
-                "the recording minted a root and no admitted path's"
-                        + " condition or fatal predicate mentions it.  That"
-                        + " weakens nothing: the formula is the same"
-                        + " disjunction with or without a variable no"
-                        + " disjunct reads, and what the row states is that"
-                        + " the declaration was unused -- the finding, if"
-                        + " there is one, is not about that root.  A claim"
-                        + " that needs the root says so through its own"
-                        + " mechanism, which names the root it moved");
         blocking(composer, "MissingTargetInstanceSymbolicContext",
                 "the target activation carries no symbolic context, so no"
                         + " root reaches it");
-        blocking(composer, "FAULT_IDLE_INITIAL_HOST_UNKNOWN",
-                "an INITIAL arm that names no activation whose entry took"
-                        + " the snapshot leaves the fault claiming something"
-                        + " about a version nobody observed");
         // The acceptance gate spells a refusal CODE[subject] or CODE:subject
         // and publishes it under one COMPOSITION_GAP kind; run_engine.sh
         // decodes that spelling before classing the row, so the ledger sees
@@ -396,11 +309,6 @@ public final class GapLedger {
         // pin, decides the marker outside the formula.
         // ------------------------------------------------------------------
         String fault = "COMPOSE/FAULT_CONTROL";
-        blocking(fault, "FAULT_IDLE_INITIAL_HOST_IDLED",
-                "the marker idles the activation whose entry took the"
-                        + " INITIAL snapshot, so the snapshot holds a JVM"
-                        + " default rather than the version the fault"
-                        + " retained");
 
         // ------------------------------------------------------------------
         // COMPOSE / COVERAGE.
@@ -420,18 +328,6 @@ public final class GapLedger {
         blocking(solver, "SOLVER_TIMEOUT",
                 "a flip query the solver never answered leaves the root it"
                         + " was asked about unresolved");
-        // These two are published as CODE:detail, so the row's code carries a
-        // suffix and falls through classOf to the blocking default.  They are
-        // named here so the vocabulary is complete and the default is not the
-        // only thing documenting them.
-        blocking(solver, "ROOT_BOOLEAN_INPUT_LIMIT_EXCEEDED",
-                "the Boolean root space was larger than the enumeration"
-                        + " bound, so the valuations below it are a sample"
-                        + " and not the space");
-        blocking(solver, "BOOLEAN_VALUATION_LIMIT_EXCEEDED",
-                "the enumeration stopped short of the valuations the root"
-                        + " space has, so an unsat answer is about the"
-                        + " sample");
         for (String code : new String[]{
                 "COMPOSED_SMT_EMPTY",
                 "CONFIGURED_SOURCE_TERM_NOT_DECLARED_OR_SORT_MISMATCH",
@@ -456,54 +352,8 @@ public final class GapLedger {
                 "a shared-state carrier whose map, receiver locator or"
                         + " access anchor is missing is a read with no"
                         + " stated source");
-        blocking(explore, "INVALID_BRANCH_MAPPING_SCHEMA",
-                "a branch mapping the worklist cannot read is a decision it"
-                        + " cannot flip");
-        blocking(explore, "TARGET_PREFIX_TASK_MISSING",
-                "the prefix task that reaches the target is absent");
-        blocking(explore, "TARGET_PREFIX_FATAL_MAPPING_INVALID",
-                "the fatal read's branch mapping is unusable");
-        blocking(explore, "TARGET_PREFIX_FATAL_EVENT_INVALID",
-                "the fatal read's recorded event is unusable");
-        blocking(explore, "HANDOFF_CONTROL_ROW_ABSENT",
-                "an obligation assigns a value that arrived on a wire and no"
-                        + " summary of its own replay states the attach that"
-                        + " minted it, so the flip has nothing to answer");
-        blocking(explore, "TARGET_FATAL_ARM_NOT_CONTROLLED",
-                "the target's fatal arm is the obligation the campaign"
-                        + " exists for, and nothing the campaign varies"
-                        + " reaches it: no decision over a root, no handoff"
-                        + " row at an attach its predicate names");
-        blocking(explore, "MULTIPLE_REGION_SCOPE",
-                "one task spans several regions, so no single region owns"
-                        + " the path");
         blocking(explore, "NO_OBSERVED_PATH_SEED",
                 "nothing observed seeds this region's path space");
-        blocking(explore, "MULTIPLE_EXPLORATION_SCOPE",
-                "one task spans several exploration scopes");
-        // TOPOLOGY_DIVERGENCE was registered here and again under CLASSIFY,
-        // a stage that no longer exists, and nothing raised either one: the
-        // only producer in the tree is the importer's epoch comparison, and
-        // a changed topology is something the campaign learned, not an
-        // alignment gap on a path.  Both registrations are retired; git grep
-        // finds no reader of the code outside this table.
-        blocking(explore, "REPLAY_DIVERGENCE",
-                "an alignment gap on a path the replay actually walked:"
-                        + " the recorded evidence for a step of that"
-                        + " path is missing or disagrees with the model"
-                        + " the plan was built on");
-        // RPC_HANDOFF_GAP was in that pair and did not belong there.  Its
-        // two live reasons -- NO_ACTIVE_REGION and MISSING_METADATA -- are
-        // raised when a declared capture runs in a replay session whose
-        // slice does not select its consumer, which on lane17897h happened
-        // 228 times for ports whose every composed phase had an attach.  A
-        // re-delivery the formula does not read is not a missing step.
-        onComposedPort(explore, "RPC_HANDOFF_GAP",
-                "a capture of this port ran where no selected occurrence"
-                        + " could take it; every handoff phase of the port"
-                        + " the composed formula names was delivered by a"
-                        + " replay that did select its consumer, so the"
-                        + " formula rests on nothing this row withheld");
         // The sibling-path family.  Every one of these says some path other
         // than the one the witness walks was not explored, and every one of
         // them lands in a summary's coverageGaps, which run_engine.sh reads
@@ -550,18 +400,6 @@ public final class GapLedger {
                         + " addresses, so an unaddressed one would have to be"
                         + " defaulted to the first or to any, and neither is"
                         + " something the recording said");
-        blocking(importer, "REGION_LOOP_OCCURRENCE_BEYOND_BOUND",
-                "a task addresses an activation of a bounded loop past the"
-                        + " instrumentation bound that records it, so the"
-                        + " activation it names is one no replay can reach");
-        diagnostic(importer, "REGION_OCCURRENCE_ANCHOR_UNMATCHED",
-                "one run declining an occurrence addressed at another run is"
-                        + " a statement about which JVM was asked, not about"
-                        + " the region: the importer drops the row when any"
-                        + " run of the replay answered the task, and when"
-                        + " none did the publication contract raises"
-                        + " PUBLICATION_TASK_ANSWERED_BY_NO_RUN, which"
-                        + " blocks");
         // Spelled as the importer publishes it.  A region skip reaches the
         // ledger as "REGION_" + the runtime's skipKind
         // (the importer's skip kind), and an entry under the
@@ -578,35 +416,10 @@ public final class GapLedger {
         // the same hole there as an unexecutable worklist.
         // ------------------------------------------------------------------
         String contract = "IMPORT/PUBLICATION_CONTRACT";
-        blocking(contract, "PUBLICATION_TASK_SILENT",
-                "a kept task published neither an activation nor a skip, so"
-                        + " its region states nothing at all");
         blocking(contract, "PUBLICATION_TASK_ANSWERED_BY_NO_RUN",
                 "every run this task was offered to declined it for being"
                         + " addressed elsewhere and none answered it, so its"
                         + " region was not replayed at all");
-        blocking(contract, "PUBLICATION_BRANCH_PREFIX_UNPUBLISHED",
-                "no activation of the task decided a site its goal"
-                        + " addresses, so the path the plan asked for was"
-                        + " never replayed");
-        blocking(contract, "PUBLICATION_TARGET_PREDICATE_UNSTATED",
-                "the target reach event names no site, so the anchor has no"
-                        + " predicate to compose");
-        diagnostic(contract, "ACTIVATION_REQUEST_DIVERGED",
-                "a request ordinal or scope that differs between executions"
-                        + " is evidence of divergence, not a contract"
-                        + " failure: the address is the identity and the"
-                        + " request is a circumstance, and the k-th request"
-                        + " of a periodic api -- a heartbeat, say -- or the"
-                        + " scope a background thread happens to sit under"
-                        + " is a timing fact about the run, not a fact about"
-                        + " the workload.  The row SEEDS EPOCH e+1: its"
-                        + " bundle stays out of this epoch's composition and"
-                        + " the next epoch is planned from that replay's own"
-                        + " trace, which the row names");
-        blocking(contract, "PUBLICATION_WRITE_LOG_INCOMPLETE",
-                "a published write log cannot be read back, so every read of"
-                        + " that location is unresolvable");
         blocking(importer, "REGION_REPLAY_PREFIX_UNMATCHED",
                 "the replay did not follow the prefix the plan addressed");
         diagnostic(importer, "PLANNED_HANDOFF_NOT_REPRODUCED",
@@ -614,11 +427,6 @@ public final class GapLedger {
                         + " reproduce is an admission gap of this epoch, not"
                         + " a new topology: the paths it did publish still"
                         + " extend the epoch");
-        diagnostic(importer, "TOPOLOGY_REFINEMENT_PENDING",
-                "the run composed this epoch and owes the next one: the"
-                        + " divergent bundles are held for an epoch it did"
-                        + " not plan, and saying so is how a reader knows"
-                        + " the verdict covers this epoch only");
         diagnostic(importer, "TOPOLOGY_DIVERGENCE",
                 "a flip that changes the topology found a new one: the"
                         + " handoff or occurrence it ran is exact evidence"
@@ -630,16 +438,6 @@ public final class GapLedger {
                         + " withholding the claim on it would refuse the run"
                         + " for having learned something, and composing it"
                         + " with this epoch would merge two causal graphs");
-        blocking(importer, "REGION_TASK_NO_PUBLISHED_ACTIVATION",
-                "a planned task published neither an activation nor a skip,"
-                        + " so its region contributes no case to a path set"
-                        + " the chain runs through");
-        blocking(importer, "TARGET_REACH_NO_ACTIVATION_REACHED_TARGET",
-                "no activation of this region executed the target site, so"
-                        + " the region states nothing about the target --"
-                        + " an activation that ran the site and decided"
-                        + " against the failure has stated something, and is"
-                        + " not this");
         blocking(importer, "TARGET_REACH_NOT_OBSERVED",
                 "the replay published no observation of the target this"
                         + " task was addressed at");
@@ -683,14 +481,6 @@ public final class GapLedger {
                             + " produced in a shape the importer could not read, contributes no"
                             + " case to the selected path set");
         }
-        diagnostic(importer, "REGION_LOOP_OCCURRENCES_BOUNDED",
-                "the occurrence set of a loop-body region is bounded by the"
-                        + " declared K_L rather than truncated: the"
-                        + " iterations past it are outside the model this"
-                        + " campaign declared, and BoundedLoopComposition"
-                        + " checks every replayed case against that same"
-                        + " declaration, so the marker states the declared"
-                        + " bound and never hides a case inside it");
 
         // ------------------------------------------------------------------
         // CLASSIFY / IMPORTER -- topology deltas.
@@ -702,20 +492,6 @@ public final class GapLedger {
 
         // ------------------------------------------------------------------
         // REPLAY / COMMUNICATION -- the message envelope's own findings.  A
-        // declared port is one pair of bytecode sites, and a protocol sends
-        // many unrelated values through it, so each leaf is addressed by its
-        // element ordinal within its message.  This one says the sender put
-        // a value in a message nothing on the other side looked up.  The
-        // other direction is not a gap: a decode whose message carries no
-        // element still mints the consumer's boundary variable on the value
-        // that arrived, and the handoff row states elementAbsent.
-        // ------------------------------------------------------------------
-        String messages = "REPLAY/COMMUNICATION";
-        blocking(messages, "WIRE_LEAVES_UNATTACHED",
-                "the sender put a value in the message and no decode on the"
-                        + " receiving side looked it up, so whatever that"
-                        + " value feeds is a leaf with no producer and the"
-                        + " chain the message was carrying stops there");
 
         // ------------------------------------------------------------------
         // PLAN / STATIC -- the static catalog and the runtime-selected region
@@ -772,30 +548,6 @@ public final class GapLedger {
         //     the downstream region (BPOfferService.processCommandFromActive
         //     and the addKeys turns behind it) is reached only when the
         //     rotation the flip removed happens;
-        //   * PUBLICATION_TASK_ANSWERED_BY_NO_RUN behind a
-        //     REGION_OCCURRENCE_ANCHOR_UNMATCHED naming the other DataNode
-        //     -- in the flipped execution only one node's addKeys ran, and
-        //     another node's activation is a different occurrence, which
-        //     matching must never accept.
-        //
-        // None of them is an admission defect, and none of them is a link of
-        // the chain a witness walks.  They make the path set unclosed, which
-        // the claim policy already answers by withholding a closed UNSAT.
-        for (String code : new String[]{
-                "REGION_ROOT_NEVER_EXECUTED",
-                "REGION_REPLAY_PREFIX_UNMATCHED",
-                "PUBLICATION_TASK_ANSWERED_BY_NO_RUN"}) {
-            flipWaveDiagnostic(code,
-                    "a flip replay addresses an occurrence of a hypothetical"
-                            + " execution: the flipped decision changes what"
-                            + " runs, so a path that never reached the"
-                            + " occurrence contributed no case rather than"
-                            + " losing one -- which leaves the path set"
-                            + " unclosed, and the one conclusion an unclosed"
-                            + " path set can falsify, a closed UNSAT, is"
-                            + " withheld by name through"
-                            + " UNSAT_CLOSURE_INCOMPLETE");
-        }
 
         // ------------------------------------------------------------------
         // CAMPAIGN.
@@ -816,36 +568,6 @@ public final class GapLedger {
     public static GapClass classOf(String code) {
         Entry entry = code == null ? null : REGISTRY.get(code.trim());
         return entry == null ? GapClass.BLOCKING : entry.gapClass;
-    }
-
-    /**
-     * Whether {@code code} is decided against the composed formula's ports.
-     *
-     * <p>A question only the campaign fold can answer, so
-     * {@link #classOf(String)} and {@link #blocking(String)} stay
-     * fail-closed and never consult it.</p>
-     */
-    public static boolean composedPortConditional(String code) {
-        Entry entry = code == null ? null : REGISTRY.get(code.trim());
-        return entry != null && entry.scope == Scope.COMPOSED_PORT;
-    }
-
-    /**
-     * Whether {@code code} is DIAGNOSTIC when the row is a flip-wave row.
-     *
-     * <p>Like the slice, this is a question only the campaign fold can
-     * answer, so {@link #classOf(String)} and {@link #blocking(String)} stay
-     * fail-closed and never consult it.</p>
-     */
-    public static boolean flipWaveDiagnostic(String code) {
-        Entry entry = code == null ? null : REGISTRY.get(code.trim());
-        return entry != null && !entry.flipWaveReason.isEmpty();
-    }
-
-    /** Why {@code code} is DIAGNOSTIC on a flip-wave row, or {@code ""}. */
-    public static String flipWaveReason(String code) {
-        Entry entry = code == null ? null : REGISTRY.get(code.trim());
-        return entry == null ? "" : entry.flipWaveReason;
     }
 
     /**
@@ -907,25 +629,6 @@ public final class GapLedger {
         JsonArray diagnostic = new JsonArray();
         for (String code : diagnosticCodes()) diagnostic.add(code);
         ledger.add("diagnostic", diagnostic);
-        // Read by run_engine.sh, the reader that can see the composed
-        // manifest and the campaign's attaches at the same time.
-        JsonArray composedPort = new JsonArray();
-        for (Entry entry : REGISTRY.values()) {
-            if (entry.scope != Scope.COMPOSED_PORT) continue;
-            composedPort.add(entry.code);
-        }
-        ledger.add("composedPortConditional", composedPort);
-        // Also read by run_engine.sh, which is the reader that can name a
-        // subject as a linked-replay task of a known path.
-        JsonArray flipWave = new JsonArray();
-        JsonObject flipWaveReasons = new JsonObject();
-        for (Entry entry : REGISTRY.values()) {
-            if (entry.flipWaveReason.isEmpty()) continue;
-            flipWave.add(entry.code);
-            flipWaveReasons.addProperty(entry.code, entry.flipWaveReason);
-        }
-        ledger.add("flipWaveDiagnostic", flipWave);
-        ledger.add("flipWaveReasonByCode", flipWaveReasons);
         JsonObject reasons = new JsonObject();
         for (Entry entry : REGISTRY.values()) {
             reasons.addProperty(entry.code, entry.reason);
