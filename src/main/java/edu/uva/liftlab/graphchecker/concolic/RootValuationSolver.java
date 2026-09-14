@@ -1215,6 +1215,51 @@ public final class RootValuationSolver {
      * sees "RPC fault" or "clock skew of X ms on node Y" rather than a wall
      * of assignments.</p>
      */
+    /**
+     * Whether this root's witnessed value is inside the domain the case
+     * declared for it.  A root with no declared domain has none, so the
+     * answer is no and the move stays an unexplained one.
+     */
+    private static boolean insideDeclaredDomain(JsonObject ledger,
+                                                String witnessed) {
+        String min = optionalString(ledger,
+                PathMergeComposer.DECLARED_DOMAIN_MIN);
+        String max = optionalString(ledger,
+                PathMergeComposer.DECLARED_DOMAIN_MAX);
+        if (min.isEmpty() || max.isEmpty()) return false;
+        try {
+            BigInteger value = new BigInteger(
+                    normalizeIntegral(witnessed).trim());
+            return value.compareTo(new BigInteger(min.trim())) >= 0
+                    && value.compareTo(new BigInteger(max.trim())) <= 0;
+        } catch (NumberFormatException notIntegral) {
+            return false;
+        }
+    }
+
+    /**
+     * How far a witnessed clock is from the nearest instant this root was
+     * actually read at, or from the seed's reading when the composition
+     * published no others.
+     */
+    private static Long nearestSkew(List<Long> readings, String recorded,
+                                    String witnessed) {
+        Long direct = skewMillis(recorded, witnessed);
+        if (readings == null || readings.isEmpty()) return direct;
+        final long value;
+        try {
+            value = Long.parseLong(normalizeIntegral(witnessed).trim());
+        } catch (NumberFormatException notAnInstant) {
+            return direct;
+        }
+        Long nearest = null;
+        for (Long reading : readings) {
+            long distance = Math.abs(value - reading);
+            if (nearest == null || distance < nearest) nearest = distance;
+        }
+        return nearest == null ? direct : nearest;
+    }
+
     private static JsonArray witnessMechanisms(
             JsonObject manifest, List<RootInput> booleanInputs,
             boolean[] booleanValues, JsonArray existentialWitness) {
@@ -1228,6 +1273,29 @@ public final class RootValuationSolver {
             if (!term.isEmpty()) recorded.put(term, ledger);
         }
         if (recorded.isEmpty()) return mechanisms;
+        // Every instant each clock root was read at, as the composition
+        // published them: a witness inside one execution's window is that
+        // execution's clock, and the skew is measured against the reading
+        // it is nearest to rather than against the seed's alone.
+        Map<String, List<Long>> clockReadings = new LinkedHashMap<>();
+        for (JsonElement element : array(object(manifest,
+                ClockRootPhysics.MANIFEST_FIELD), "clockReads")) {
+            if (!element.isJsonObject()) continue;
+            JsonObject read = element.getAsJsonObject();
+            List<Long> readings = new ArrayList<>();
+            for (JsonElement reading : array(read, "readings")) {
+                try {
+                    readings.add(Long.parseLong(
+                            reading.getAsString().trim()));
+                } catch (RuntimeException notAnInstant) {
+                    continue;
+                }
+            }
+            if (!readings.isEmpty()) {
+                clockReadings.put(optionalString(read, "solverTerm"),
+                        readings);
+            }
+        }
         Map<String, String> witnessValues = new LinkedHashMap<>();
         for (int index = 0; index < booleanInputs.size()
                 && index < booleanValues.length; index++) {
@@ -1266,11 +1334,18 @@ public final class RootValuationSolver {
             boolean clock = optionalBool(ledger, "wallClock", false);
             if (clock) {
                 mechanism.addProperty("kind", "CLOCK_SKEW");
-                Long delta = skewMillis(was, now);
+                Long delta = nearestSkew(clockReadings.get(
+                        assigned.getKey()), was, now);
                 if (delta != null) {
                     mechanism.addProperty("skewMillis", delta);
                 }
-            } else if ("true".equals(was) || "false".equals(was)) {
+            } else if ("true".equals(was) || "false".equals(was)
+                    || insideDeclaredDomain(ledger, now)) {
+                // A declared root moved off the value it recorded: a Boolean
+                // to its other polarity, an integral root to another value
+                // of the domain the case declares.  Which of the two it is
+                // says nothing about the mechanism -- the case declared the
+                // root and the witness moved it within what the case allows.
                 mechanism.addProperty("kind", "MARKER_FLIPPED");
             } else {
                 mechanism.addProperty("kind", WitnessLegitimacy.ROOT_MOVED);

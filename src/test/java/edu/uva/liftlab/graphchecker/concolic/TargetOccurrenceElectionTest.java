@@ -22,13 +22,10 @@ import static org.junit.Assert.assertTrue;
  * The campaign claim rests on one occurrence of the annotated target, and it
  * is the best-supported one.
  *
- * <p>A run composes and solves every observed occurrence of the site, so it
- * finishes with one {@link ClaimPolicy} decision per occurrence.  The
- * election is the outer loop that turns that set into one campaign claim.
- * It compares published claims only: a satisfying witness the policy
- * explained beats one it did not, which beats a closed refutation, which
- * beats an inconclusive run, which beats a composition the Composer refused
- * and an occurrence that was never composed at all.</p>
+ * <p>A run finishes with one {@link ClaimPolicy} decision per observed
+ * occurrence; the election turns that set into one campaign claim from the
+ * published claims alone, ranking explained over unexplained over closed
+ * over inconclusive over refused.</p>
  */
 public class TargetOccurrenceElectionTest {
 

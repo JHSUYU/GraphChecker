@@ -6,6 +6,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 
 import edu.uva.liftlab.graphchecker.contract.ComposedManifest;
+import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -270,24 +271,25 @@ public final class TargetOccurrenceElection {
     }
 
     /**
-     * One occurrence's sort key: node, epoch, region, ordinal.
+     * One occurrence's sort key: node and epoch, region, request family,
+     * then k.
      *
-     * <p>An occurrence id reads {@code <workload>/<node>#<epoch>/region/<region>#<k>}.
-     * The ordinal is compared as a number, zero-padded here rather than
-     * parsed, so that #10 follows #9 instead of #1.  An id that does not
-     * parse sorts by itself, which keeps the order total without inventing a
-     * position for it.</p>
+     * <p>Read through {@link OccurrenceAddress} rather than off the id's
+     * text: the family the request grammar added sits between the region and
+     * the ordinal, and an order that parsed around it would sort by the
+     * family's spelling.  The ordinal is zero-padded so #10 follows #9
+     * instead of #1, and an id the address grammar does not name sorts by
+     * itself, which keeps the order total without inventing a position for
+     * it.</p>
      */
     private static String anchorAddress(JsonObject row) {
         String occurrence = optionalString(row, "occurrenceId");
-        int hash = occurrence.lastIndexOf('#');
-        if (hash < 0) return occurrence;
-        String ordinal = occurrence.substring(hash + 1);
-        for (int index = 0; index < ordinal.length(); index++) {
-            if (!Character.isDigit(ordinal.charAt(index))) return occurrence;
-        }
-        StringBuilder padded = new StringBuilder(
-                occurrence.substring(0, hash + 1));
+        OccurrenceAddress address = OccurrenceAddress.parse(occurrence);
+        if (!address.isNamed()) return occurrence;
+        StringBuilder padded = new StringBuilder(address.sourceKey())
+                .append('\n').append(address.regionId())
+                .append('\n').append(address.family()).append('\n');
+        String ordinal = Integer.toString(address.ordinal());
         for (int pad = ordinal.length(); pad < 12; pad++) padded.append('0');
         return padded.append(ordinal).toString();
     }

@@ -39,6 +39,10 @@ import static edu.uva.liftlab.graphchecker.concolic.VmTermLowering.and;
  * those leave to their caller and mints names.</p>
  */
 final class PathMergeLowering extends VmLoweringCore {
+
+    /** Every instant each clock root was read at, by solver term. */
+    private final Map<String, Set<String>> clockReadings =
+            new LinkedHashMap<>();
     /** The one refusal that means "propagation did not carry the value". */
     static final String CUT = "PROPAGATION_CUT";
 
@@ -666,6 +670,61 @@ final class PathMergeLowering extends VmLoweringCore {
             return "true";
         }
         return and(Arrays.asList(term.precondition, term.text));
+    }
+
+    /**
+     * One instant a clock root was read at, by solver term.
+     *
+     * <p>A clock has no single domain -- each execution reads it fresh, and
+     * a path is windowed around its own reading -- but it does have the set
+     * of readings the recording states, and nothing outside their windows is
+     * a clock any run of this case returned.  Collected here so the union
+     * can be asserted once, for every clock root the query declares rather
+     * than only for those an admitted path values.</p>
+     */
+    void observeClockReading(String term, String reading) {
+        if (term == null || term.isEmpty()
+                || reading == null || reading.isEmpty()) {
+            return;
+        }
+        Set<String> readings = clockReadings.get(term);
+        if (readings == null) {
+            readings = new LinkedHashSet<>();
+            clockReadings.put(term, readings);
+        }
+        readings.add(reading.trim());
+    }
+
+    /** Every instant one clock root was read at, in the order seen. */
+    Set<String> clockReadings(String term) {
+        Set<String> readings = clockReadings.get(term);
+        return readings == null ? Collections.<String>emptySet() : readings;
+    }
+
+    /**
+     * The union of the windows around every reading of each clock root: the
+     * domain a clock root has whatever path values it.
+     */
+    List<String> clockDomains(long skewMillis) {
+        List<String> domains = new ArrayList<>();
+        for (Map.Entry<String, Set<String>> entry
+                : clockReadings.entrySet()) {
+            List<String> windows = new ArrayList<>();
+            for (String reading : entry.getValue()) {
+                try {
+                    windows.add(ClockRootPhysics.window(entry.getKey(),
+                            Long.parseLong(reading), skewMillis));
+                } catch (NumberFormatException notAnInstant) {
+                    // A reading that is not an instant states no window;
+                    // the path that read it carries whatever it does.
+                    return Collections.emptyList();
+                }
+            }
+            if (windows.isEmpty()) continue;
+            domains.add(windows.size() == 1 ? windows.get(0)
+                    : "(or " + String.join(" ", windows) + ")");
+        }
+        return domains;
     }
 
     void assertNamed(String name, String formula) {

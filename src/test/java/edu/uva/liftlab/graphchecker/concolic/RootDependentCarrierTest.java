@@ -46,12 +46,10 @@ public class RootDependentCarrierTest {
      * A branch the recording never took still carries the root.
      *
      * <p>The refined graph is the static candidate graph <em>annotated</em>
-     * with what one execution bound, not filtered by it: a site the run never
-     * reached keeps its edges, stamped {@code runtimeObserved: false}, and the
-     * closure reads {@code fromCell} / {@code toCell} and nothing else.  Root
-     * dependence is what the <em>program</em> can do, not what one recording
-     * did -- HDFS-17960's own shape, where the decrement the fatal count
-     * mismatch needs lives on the branch the healthy run skips.</p>
+     * with what one execution bound, not filtered by it: a site the run
+     * never reached keeps its edges, stamped {@code runtimeObserved:
+     * false}.  Root dependence is what the <em>program</em> can do, not
+     * what one recording did.</p>
      */
     @Test
     public void anEdgeTheRecordingNeverExecutedStillCarriesTheRoot()

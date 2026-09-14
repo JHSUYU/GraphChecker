@@ -386,14 +386,6 @@ public final class ClaimPolicy {
 
 
     /**
-     * A node as every identity in the composition spells it:
-     * {@code <instance>/<node>#epoch<n>}, the prefix of an occurrence id and
-     * of a location key alike.
-     */
-    private static final Pattern SOURCE_KEY = Pattern.compile(
-            "[A-Za-z0-9_.+-]+/[A-Za-z0-9_.+-]+#epoch[0-9]+");
-
-    /**
      * Every region identity the composition drew a case, a read or a witness
      * from. Region ids appear inside occurrence ids, case owners and location
      * keys as well as in their own field, so they are read as identities
@@ -1275,8 +1267,15 @@ public final class ClaimPolicy {
         // formula does not support.
         boolean clockOnly = planted.isEmpty()
                 && !clockNecessity.isEmpty();
+        // A recorded-failure run states no hypothesis about a flip: its
+        // finding is that the recording itself reaches the target and every
+        // enumerated flip refutes it.  Asking it for a satisfied flipped
+        // witness, or for a necessary clock, is asking it to be a different
+        // finding -- and both facts are already what RECORDED_FAILURE
+        // _EXPLAINED rests on.
         result.addProperty("faultPolarityNotWitnessed",
-                planted.isEmpty()
+                recordedFailure ? ""
+                : planted.isEmpty()
                         ? (someSatWitnessExplained
                                 && (!clockOnly || anyClockNecessary) ? ""
                                 : clockOnly && !anyClockNecessary
@@ -1403,7 +1402,6 @@ public final class ClaimPolicy {
         return WitnessLegitimacy.CLOCK_OUTSIDE_WINDOW.equals(code)
                 || WitnessLegitimacy.ABSURD_CLOCK_VALUE.equals(code)
                 || WitnessLegitimacy.UNEXPLAINED_ROOT_MOVE.equals(code)
-                || WitnessLegitimacy.CLOCK_NOT_NECESSARY.equals(code)
                 || WitnessLegitimacy.CLOCK_NECESSITY_UNKNOWN.equals(code)
                 // The composition-level unbound flow has its own blocker;
                 // this one is a property of the model, which no other

@@ -7,6 +7,7 @@ import edu.uva.liftlab.graphchecker.contract.TargetAnchorEvidence;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 
 import org.junit.Assume;
 import org.junit.Test;
@@ -28,15 +29,15 @@ import java.util.Map;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 
 /**
  * The merge, on three recordings small enough to read.
  *
- * <p>One root, one anchored target, and paths that differ only in what the
- * root made their fatal predicate: the disjunction must be satisfiable
- * exactly where some path's own condition is, and the gates must refuse
- * rather than guess where a value is missing.</p>
+ * <p>One root, one anchored target, paths differing only in what the root
+ * made their fatal predicate: the disjunction is satisfiable exactly where
+ * some path is, and the gates refuse rather than guess.</p>
  */
 public class PathMergeComposerTest {
     private static final String SITE =
@@ -82,6 +83,14 @@ public class PathMergeComposerTest {
     @Test
     public void theDisjunctionIsSatisfiableExactlyWhereSomePathIs()
             throws Exception {
+        // One notion, one implementation: the composer and the path-flip
+        // solver lower a recorded VM expression through the same core, so
+        // the arms where they once disagreed cannot come back.
+        assertSame(VmLoweringCore.class,
+                PathMergeLowering.class.getSuperclass());
+        assertSame(VmLoweringCore.class, Class.forName(
+                "edu.uva.liftlab.graphchecker.concolic"
+                        + ".ConcolicConstraintSolver$Encoder").getSuperclass());
         Assume.assumeTrue(z3Available());
         JsonObject plain = query();
         plain.getAsJsonArray("paths").add(path("seed", "GROUP.SEED",
@@ -138,13 +147,10 @@ public class PathMergeComposerTest {
      * Where a value is missing the composition names it; where the evidence
      * is there, nothing is refused.
      *
-     * <p>Each row is a gate the merge owes the stages after it: a root no
-     * path condition mentions (the solver would answer about constants), a
-     * root no source states a value for, a predicate that arrived as a
-     * literal where carriers were declared and no root is on the path, a
-     * membership no walked base decides, and a loop traversed with no
-     * declaration in scope.  The clean rows are those shapes with the
-     * evidence present: the missing value refuses, not the fixture.</p>
+     * <p>Each row is a gate the merge owes the stages after it -- a root no
+     * path mentions, a root no source values, a literal predicate, a
+     * membership no walked base decides, an undeclared loop -- each beside
+     * the same shape with the evidence present.</p>
      */
     @Test
     public void aMissingValueIsNamedRatherThanComposedOver() throws Exception {
@@ -322,13 +328,11 @@ public class PathMergeComposerTest {
      * A value that crossed a wire is a free variable joined at the handoff,
      * and a delivery is available only under the valuation that produced it.
      *
-     * <p>The consumer's fatal predicate is over {@code v_H}, not over the
-     * producer's term inlined into it, so a consumer flip needs no producer
-     * replay.  What ties {@code v_H} to the world is the family published at
-     * that one handoff occurrence: the seed delivered 9 at the marker's
-     * recorded polarity, the flip delivered 7 with it moved.  Without the
-     * arm guard the family is a menu and the recorded polarity helps itself
-     * to the flip replay's delivery.</p>
+     * <p>The consumer's fatal predicate is over {@code v_H}, so a consumer
+     * flip needs no producer replay.  What ties {@code v_H} to the world is
+     * the family published at that handoff occurrence, each arm guarded by
+     * the valuation its replay ran under -- without the guard the family is
+     * a menu.</p>
      */
     @Test
     public void aHandoffValueIsJoinedByItsFamilyNotByInlining()
@@ -436,6 +440,33 @@ public class PathMergeComposerTest {
                 "<org.apache.hadoop.hdfs.security.token.block.BlockKey:"
                         + " int getKeyId()>"));
         assertTrue(!ClockRootPhysics.clockCallee(null));
+
+        // A root the case declares a domain for is free inside it: pinning
+        // it to what the recording read answers the case's own question.
+        JsonObject interval = JsonParser.parseString("{'solverTerm':'iv',"
+                + "'recordedValue':'600000','declaredDomainMin':'60000',"
+                + "'declaredDomainMax':'86400000'}").getAsJsonObject();
+        assertEquals("(and (>= iv 60000) (<= iv 86400000))",
+                PathMergeComposer.rootDomain(interval, null));
+        interval.remove(PathMergeComposer.DECLARED_DOMAIN_MIN);
+        assertEquals("a root with no declared domain is the value it read",
+                "(= iv 600000)",
+                PathMergeComposer.rootDomain(interval, null));
+
+        // And such a root is a term arithmetic composes with, so a producer
+        // that adds two of them lowers into the family arm it delivers.
+        Map<String, JsonObject> intervals = new LinkedHashMap<>();
+        intervals.put("M_J_iv", interval);
+        String sum = new PathMergeLowering(intervals).condition(
+                JsonParser.parseString("{'_type':'BinaryExpression','_op':"
+                        + "'>','_left':{'_type':'BinaryExpression','_op':"
+                        + "'+','_java_type':'J','_left':{'_type':"
+                        + "'SymbolExpression','_java_type':'J','_exp':"
+                        + "'M_J_iv'},'_right':{'_type':'ConstExpr',"
+                        + "'_java_type':'J','_exp':'Y_J_5'}},'_right':"
+                        + "{'_type':'ConstExpr','_java_type':'J','_exp':"
+                        + "'Y_J_7'}}"), "interval:arithmetic");
+        assertTrue(sum, sum.contains("+") && sum.contains(">"));
     }
 
     // ------------------------------------------------------------------

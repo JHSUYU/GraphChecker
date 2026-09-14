@@ -80,12 +80,10 @@ public class SymbolicRootPolicyTest {
     /**
      * A manual root is declared by the site it is read at, not by a region hash.
      *
-     * <p>A region id is minted by the planner from what the recording selected,
-     * so it moves whenever the retained selection moves -- and a campaign file
-     * that spells one has to be re-derived by hand every time.  That is what
-     * refused bug3's clock declaration at PLAN.  A static site -- the class and
-     * method the cell is read in -- is what the experiment actually knows, and
-     * the plan is what resolves it to the regions that cover it.  One method
+     * <p>A region id is minted from what the recording selected, so it
+     * moves whenever the retained selection moves.  A static site -- the
+     * class and method the cell is read in -- is what the experiment knows,
+     * and the plan resolves it to the regions that cover it: one method
      * planned twice on one node is two regions, and both mean it.</p>
      */
     @Test

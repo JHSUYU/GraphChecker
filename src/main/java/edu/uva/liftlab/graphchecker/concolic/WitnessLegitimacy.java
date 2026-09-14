@@ -298,6 +298,7 @@ public final class WitnessLegitimacy {
         }
         freedoms.addAll(composition == null
                 ? Collections.<Freedom>emptyList() : composition);
+        List<Freedom> decorations = new ArrayList<>();
         for (JsonElement element : array(valuation, "witnessMechanisms")) {
             if (!element.isJsonObject()) {
                 continue;
@@ -307,6 +308,16 @@ public final class WitnessLegitimacy {
                     clockNecessity);
             if (refusal == null) {
                 legitimate.add(mechanism);
+            } else if (CLOCK_NOT_NECESSARY.equals(refusal.code())) {
+                // Not a mechanism -- it is already out of the list a finding
+                // may name -- and not freedom either: the probe answered,
+                // and what it answered is that the target reaches with every
+                // clock back on record, which is a stronger statement than
+                // this witness makes.  The move is decoration on whatever
+                // else the witness names, and a witness that names nothing
+                // else is withheld by FINDING_MECHANISM_UNNAMED, which says
+                // that in the words of the thing that is missing.
+                decorations.add(refusal);
             } else {
                 freedoms.add(refusal);
             }
@@ -319,6 +330,11 @@ public final class WitnessLegitimacy {
             freedomRows.add(freedom.toJson());
         }
         row.add("freedoms", freedomRows);
+        JsonArray decorationRows = new JsonArray();
+        for (Freedom decoration : decorations) {
+            decorationRows.add(decoration.toJson());
+        }
+        row.add("decorations", decorationRows);
         String kind = findingKind(legitimate, flipped, assignment,
                 recordedFailureExplained);
         row.addProperty(FINDING_KIND, kind);
@@ -340,7 +356,11 @@ public final class WitnessLegitimacy {
     private static String findingKind(JsonArray legitimate, JsonArray flipped,
                                       JsonArray assignment,
                                       boolean recordedFailureExplained) {
-        if (flipped.size() > 0 && namesKind(legitimate, MARKER_FLIPPED)) {
+        // A declared root that moved is the mechanism whether the marker
+        // ledger counted it or not: the ledger's flipped list is the
+        // Boolean markers, and a declared integral root moving inside its
+        // domain is the same statement about the same kind of root.
+        if (namesKind(legitimate, MARKER_FLIPPED)) {
             return MARKER_FLIPPED;
         }
         if (namesKind(legitimate, CLOCK_SKEW)) {

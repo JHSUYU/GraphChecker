@@ -75,12 +75,9 @@ public class InSessionReadResolverTest {
      * A value that arrived over a wire is answered by its handoff variable.
      *
      * <p>The boundary answers with the variable its {@code vmHandoffEvents}
-     * row mints and follows nothing: the value that arrived is free in this
-     * replay's formula, and which producer path delivered it is joined to it
-     * once at the handoff, by the composer.  Reading the inner expression
-     * instead would inline one producer path into the consumer's formula --
-     * what made a consumer flip need a producer replay -- so a row minting
-     * no variable is refused, naming what is missing.</p>
+     * row mints and follows nothing: which producer delivered the value is
+     * joined once at the handoff.  A row minting no variable is refused by
+     * name rather than inlined.</p>
      */
     @Test
     public void aWireArrivalIsAnsweredByTheHandoffThatMintedIt() {

@@ -72,9 +72,9 @@ public class HandoffMintTest {
      * The row states v_H, what it delivered, and its domain; every member is
      * required and none is completed from another.
      *
-     * <p>e_p is a member of H's family, not a condition of H existing, so a
-     * message with no element still mints the consumer's variable on the
-     * value that arrived, and publishes its row.</p>
+     * <p>e_p is a member of H's family, not a condition of H existing: a
+     * message with no element still mints the variable and publishes its
+     * row.</p>
      */
     @Test
     public void theRowStatesTheHandoffVariableAndItsDeliveredValue() {
@@ -257,15 +257,11 @@ public class HandoffMintTest {
     /**
      * A value the wire delivered is a carrier, never a root.
      *
-     * <p>HDFS-17899's {@code WIRE_FLOW} cut ports get their meaning from the
-     * NameNode's expression, installed by {@code attachCommunicationLeaf}
-     * <em>after</em> the materialization hook -- so nothing symbolic has
-     * reached the local when the hook asks, and treating that as "mint one"
-     * gave the formula a free existential per port per consumer: four extra
-     * roots, a reach condition degenerating to {@code true}, both fault
-     * valuations sat.  {@code carriesInputAuthority} still answers false, so
-     * the refusal is the second half of the decision, supplied by
-     * {@code declaredCommunicationCutPort}.</p>
+     * <p>A cut port gets its meaning from the producer's expression, which
+     * the attach installs after the materialization hook asks, so nothing
+     * symbolic has reached the local at that moment.  Minting one there
+     * would give the formula a free existential per port per consumer;
+     * {@code declaredCommunicationCutPort} supplies the refusal.</p>
      */
     @Test
     public void aCutPortWithNothingPropagatedStillRefusesToMint() {
