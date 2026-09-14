@@ -523,6 +523,29 @@ public final class RegionPathWorklist {
             // failure outcome.
             if (required != null
                     && fatal.sourceTakenOutcome() != required) {
+                // The one obligation the campaign exists for: reach the
+                // target with the arm the failure needs.  It is an
+                // obligation like any other, so it owes a control -- a
+                // decision over a root the campaign varies, or a handoff row
+                // at an attach its predicate names (R2).  With neither there
+                // is nothing to assign and nothing to replay, and planning
+                // it anyway hands the solver a flip it cannot materialise
+                // and the campaign a silence.  That is the propagation cut
+                // the design names, so it is named here.
+                JsonElement predicate =
+                        fatal.witness().sourceSatisfiedPredicateView();
+                boolean controlled = roots.usable()
+                        && roots.namesRoot(BranchPredicateAlgebra
+                                .symbolicSupport(predicate))
+                        || !handoffControls(path, predicate).isEmpty();
+                if (!controlled) {
+                    gap("TARGET_FATAL_ARM_NOT_CONTROLLED",
+                            "TARGET_FATAL_ARM_REQUIRES_A_ROOT_OR_HANDOFF"
+                                    + "_CONTROL",
+                            path.regionId(), path.pathKey(), fatal.siteId(),
+                            fatal.occurrence());
+                    return result;
+                }
                 result.add(fatal);
             }
             for (SummaryBranchMapping mapping : path.branchMappings()) {

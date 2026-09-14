@@ -350,6 +350,127 @@ public class RegionPathWorklistTest {
                 .get(InSessionReadResolver.HANDOFF_PHASE_ID).getAsString());
     }
 
+    /**
+     * The target's fatal arm is planned exactly when the seed missed it.
+     *
+     * <p>phi at the anchor is {@code predicate == requiredTakenOutcome}, and
+     * the obligation the campaign exists for is reaching the target with
+     * that arm.  The task states it on the branch row the query builder
+     * already reads, so PLAN and COMPOSE name one fatal arm, and EXPLORE
+     * plans the flip whenever the seed took the other one -- and nothing
+     * when the seed already took it.</p>
+     */
+    @Test
+    public void theTargetsFatalArmIsPlannedWhenTheSeedMissedIt() {
+        JsonObject missed = targetTask(false);
+        RegionPathWorklist.Result planned = RegionPathWorklist.plan(
+                Collections.singletonList(targetSummary(missed, true, true)),
+                Collections.singletonList(missed),
+                Collections.<JsonObject>emptyList(),
+                RegionPathWorklist.Bounds.defaults(),
+                SymbolicRootInventory.of(
+                        Collections.singletonList(
+                                targetSummary(missed, true, true)),
+                        Collections.singletonList(missed)));
+        assertEquals("the seed took the healthy arm, so the fatal arm is the"
+                + " obligation", 1, planned.tasks.size());
+        assertEquals(0, planned.manifest.getAsJsonArray("gaps").size());
+
+        JsonObject taken = targetTask(true);
+        RegionPathWorklist.Result none = RegionPathWorklist.plan(
+                Collections.singletonList(targetSummary(taken, true, true)),
+                Collections.singletonList(taken),
+                Collections.<JsonObject>emptyList(),
+                RegionPathWorklist.Bounds.defaults(),
+                SymbolicRootInventory.of(
+                        Collections.singletonList(
+                                targetSummary(taken, true, true)),
+                        Collections.singletonList(taken)));
+        assertTrue("the seed already took the fatal arm",
+                none.tasks.isEmpty());
+    }
+
+    /**
+     * A fatal arm nothing the campaign varies reaches is named, not silent.
+     *
+     * <p>An obligation owes a control: a decision over a root, or a handoff
+     * row at an attach its predicate names.  With neither there is nothing
+     * to assign and nothing to replay, and planning it anyway hands the
+     * solver a flip it cannot materialise.</p>
+     */
+    @Test
+    public void aFatalArmWithNoControlIsNamed() {
+        JsonObject task = targetTask(false);
+        JsonObject summary = targetSummary(task, true, false);
+        RegionPathWorklist.Result result = RegionPathWorklist.plan(
+                Collections.singletonList(summary),
+                Collections.singletonList(task),
+                Collections.<JsonObject>emptyList(),
+                RegionPathWorklist.Bounds.defaults(),
+                SymbolicRootInventory.of(Collections.singletonList(summary),
+                        Collections.singletonList(task)));
+        assertTrue("nothing is planned", result.tasks.isEmpty());
+        JsonArray gaps = result.manifest.getAsJsonArray("gaps");
+        assertEquals(1, gaps.size());
+        assertEquals("TARGET_FATAL_ARM_NOT_CONTROLLED",
+                gaps.get(0).getAsJsonObject().get("kind").getAsString());
+    }
+
+    /** The seed whose decision is over a root the campaign declares. */
+    private static JsonObject rootedSummary(JsonObject task,
+                                            boolean outcome) {
+        JsonObject summary = summary(task, 1, outcome);
+        String suffix = task.get("taskId").getAsString()
+                .substring("TASK.".length());
+        JsonObject symbol = new JsonObject();
+        symbol.addProperty("_type", "SymbolExpression");
+        symbol.addProperty("_java_type", "I");
+        symbol.addProperty("_exp", "M_I_field_" + suffix + "_in");
+        List<JsonObject> events = new ArrayList<>();
+        // reused: the root was minted elsewhere and only travelled here, so
+        // the row names it without claiming this phase minted it.
+        events.add(SymbolicSourceEvidence.event("SOURCE_PHASE." + suffix,
+                "EXAMPLE." + suffix, "node0/region/REGION." + suffix
+                        + "#1#a1", "<fixture.Linked: int in>", symbol, 1,
+                true, "sym__EXAMPLE_" + suffix + "__1", "3"));
+        SymbolicSourceEvidence.writeTo(summary, events);
+        refreshLocalCaseId(summary);
+        return summary;
+    }
+
+    /** A target task stating the arm its failure needs. */
+    private static JsonObject targetTask(boolean required) {
+        JsonObject task = task("T", "REGION.T", "REGION.T/occurrence-1");
+        ClosureGoalKind.TARGET_REACH_CLOSURE.writeToTask(task);
+        JsonObject branch = task.getAsJsonArray("branches").get(0)
+                .getAsJsonObject();
+        branch.addProperty("requiredOutcome", required);
+        branch.addProperty("failureTarget", true);
+        JsonObject target = new JsonObject();
+        target.addProperty("siteId", "SITE.T");
+        target.addProperty("occurrence", 1);
+        task.add("targetBranch", target);
+        return task;
+    }
+
+    /** The seed that reached the target, with or without a control. */
+    private static JsonObject targetSummary(JsonObject task, boolean outcome,
+                                            boolean controlled) {
+        JsonObject summary = controlled
+                ? rootedSummary(task, outcome)
+                : arrivedValueSummary(task, outcome);
+        ClosureGoalKind.TARGET_REACH_CLOSURE.writeToTask(summary);
+        JsonObject reach = new JsonObject();
+        reach.addProperty("kind", PathObservation.TargetReachEvent.KIND);
+        reach.addProperty("siteId", "SITE.T");
+        reach.addProperty("occurrence", 1);
+        reach.addProperty("outcome", outcome);
+        reach.addProperty("vmEventId", 9L);
+        summary.add(PathObservation.TargetReachEvent.FIELD, reach);
+        refreshLocalCaseId(summary);
+        return summary;
+    }
+
     /** One replay whose only decision is over a value that arrived. */
     private static JsonObject arrivedValueSummary(JsonObject task,
                                                   boolean outcome) {
@@ -380,7 +501,9 @@ public class RegionPathWorklistTest {
         vmEvent.addProperty("eventId", 1L);
         vmEvent.addProperty("contextId", 1L);
         vmEvent.addProperty("predicateNormalization", "IDENTITY");
-        BranchWitness witness = BranchWitness.vmPcImmutable("SITE.W",
+        String site = "SITE." + task.get("taskId").getAsString()
+                .substring("TASK.".length());
+        BranchWitness witness = BranchWitness.vmPcImmutable(site,
                 "<fixture.Wire: void run()>", 0, 1, outcome,
                 condition, 0, vmEvent);
         JsonArray mappings = new JsonArray();
