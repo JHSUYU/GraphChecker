@@ -153,6 +153,23 @@ public final class OccurrenceAddress {
     }
 
     /** Why {@code observed} is not this occurrence, or {@code ""}. */
+    /**
+     * The same difference, never empty.
+     *
+     * <p>A refusal has to name what differed.  {@link #describe} answers
+     * {@code ""} when the address matches, which is the right answer to
+     * "how do these differ" and the wrong thing to put in a refusal: a
+     * candidate refused for something other than its address was reported
+     * as "matching root:  (attributed to X)", a sentence with a hole where
+     * the reason should be.</p>
+     */
+    public String difference(OccurrenceAddress observed) {
+        String stated = describe(observed);
+        return stated.isEmpty()
+                ? "the address matches; it was refused on something else"
+                : stated;
+    }
+
     public String describe(OccurrenceAddress observed) {
         if (matches(observed)) return "";
         if (!isNamed()) return "the planned address names no occurrence";

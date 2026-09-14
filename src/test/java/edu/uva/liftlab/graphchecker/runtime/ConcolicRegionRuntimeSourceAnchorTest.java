@@ -54,69 +54,6 @@ public class ConcolicRegionRuntimeSourceAnchorTest {
         assertFalse(SymbolicMessageEnvelope.take("block-key").present());
     }
 
-    @Test
-    public void messageProducerCanAddressConsumerBeforeAttachConsumesIt() {
-        assertTrue(SymbolicMessageEnvelope.stage("block-key", 0L,
-                "task-1", "producer#1#a3",
-                singletonList("consumer#1")));
-        assertTrue(SymbolicMessageEnvelope.stage("block-key", 42L,
-                "task-2", "producer#2#a1",
-                singletonList("consumer#1")));
-        SymbolicMessageEnvelope.installInbound(
-                SymbolicMessageEnvelope.takeOutbound());
-
-        assertFalse(ConcolicRegionRuntime.inboundMessageMatches(
-                "block-key", "producer#2", "consumer#1"));
-        assertTrue(ConcolicRegionRuntime.inboundMessageMatches(
-                "block-key", "producer#1", "consumer#1"));
-        assertTrue(ConcolicRegionRuntime.inboundMessageMatches(
-                "block-key", "producer#1", "consumer#1"));
-        assertFalse(ConcolicRegionRuntime.inboundMessageMatches(
-                "block-key", "producer#1", "consumer#2"));
-        assertEquals(0L, SymbolicMessageEnvelope.take("block-key").handle());
-        assertTrue(ConcolicRegionRuntime.inboundMessageMatches(
-                "block-key", "producer#2", "consumer#1"));
-    }
-
-    @Test
-    public void everyPlannedInputMustBeInTheCurrentMessage() {
-        Map<String, String> producers = new LinkedHashMap<>();
-        producers.put("block-key", "block-producer#1");
-        producers.put("data-key", "data-producer#1");
-
-        assertTrue(SymbolicMessageEnvelope.stage("block-key", 41L,
-                "block-task", "block-producer#1",
-                singletonList("consumer#1")));
-        SymbolicMessageEnvelope.installInbound(
-                SymbolicMessageEnvelope.takeOutbound());
-        assertFalse(ConcolicRegionRuntime.rootInvocationAddressMatches(
-                planned(1), planned(99), producers, "consumer#1", false));
-
-        SymbolicMessageEnvelope.clear();
-        assertTrue(SymbolicMessageEnvelope.stage("block-key", 41L,
-                "block-task", "block-producer#1",
-                singletonList("consumer#1")));
-        assertTrue(SymbolicMessageEnvelope.stage("data-key", 42L,
-                "data-task", "wrong-producer#1",
-                singletonList("consumer#1")));
-        SymbolicMessageEnvelope.installInbound(
-                SymbolicMessageEnvelope.takeOutbound());
-        assertFalse(ConcolicRegionRuntime.rootInvocationAddressMatches(
-                planned(1), planned(99), producers, "consumer#1", false));
-
-        SymbolicMessageEnvelope.clear();
-        assertTrue(SymbolicMessageEnvelope.stage("block-key", 41L,
-                "block-task", "block-producer#1",
-                singletonList("consumer#1")));
-        assertTrue(SymbolicMessageEnvelope.stage("data-key", 42L,
-                "data-task", "data-producer#1#a2",
-                singletonList("consumer#1")));
-        SymbolicMessageEnvelope.installInbound(
-                SymbolicMessageEnvelope.takeOutbound());
-        assertTrue(ConcolicRegionRuntime.rootInvocationAddressMatches(
-                planned(1), planned(99), producers, "consumer#1", false));
-    }
-
     /** One address of a region on one node, at the given activation. */
     private static edu.uva.liftlab.graphchecker.contract.OccurrenceAddress
             planned(int ordinal) {

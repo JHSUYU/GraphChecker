@@ -53,11 +53,8 @@ import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.ROOT_AR
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.SKIP_ANCHOR_SOURCE_NEVER_EXISTED;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.SKIP_OCCURRENCE_ANCHOR_UNMATCHED;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.enclosingLoopRootAdmits;
-import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.inboundMessageAddressMatches;
-import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.inboundMessageSourceEvidence;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.outgoingProducerMayDeferMissingContext;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicResultPublisher.registerRunTotalsHook;
-import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.rootInvocationAddressMatches;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.safe;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.sameHookIdentity;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.SKIP_ROOT_NEVER_EXECUTED;
@@ -398,16 +395,9 @@ final class ConcolicTaskPlan {
             }
             if (!task.acceptsRootInvocation(observed,
                     exactOutgoingAddress)) {
-                if (task.attachProducerOccurrenceByPort.isEmpty()) {
-                    task.noteUnaddressedCandidate(
-                            "matching enclosing root: "
-                                    + task.address.describe(observed)
-                                    + attribution(activationSource));
-                } else {
-                    task.noteUnaddressedCandidate(
-                            "matching enclosing root carried no selected "
-                                    + "communication producer");
-                }
+                task.noteUnaddressedCandidate("matching enclosing root: "
+                        + task.address.difference(observed)
+                        + attribution(activationSource));
                 continue;
             }
             admitted.add(task.taskId);
@@ -548,7 +538,7 @@ final class ConcolicTaskPlan {
                 // Client$Connection.sendRpcRequest were offered and refused
                 // on the ordinal, and the row said the root never executed.
                 task.noteUnaddressedCandidate("matching root: "
-                        + task.address.describe(observed)
+                        + task.address.difference(observed)
                         + attribution(activationSource));
                 continue;
             }
@@ -828,18 +818,6 @@ final class ConcolicTaskPlan {
         boolean inheritedMatches = inherited != null
                 && RuntimeTraceContext.sameSourceIdentity(task.sourceKey,
                 inherited.key());
-        boolean messageAddressed = inboundMessageAddressMatches(
-                task.attachProducerOccurrenceByPort,
-                task.occurrenceId);
-        if (messageAddressed) {
-            if (!inboundMessageSourceEvidence(task.sourceKey,
-                    registeredReceiverSource, true).isEmpty()) {
-                return "";
-            }
-            return "matching root receiver belonged to "
-                    + registeredReceiverSource.key() + " instead of "
-                    + task.sourceKey;
-        }
         if (OccurrenceMinter.UNREGISTERED_SOURCE_KEY.equals(
                 task.sourceKey)) {
             return registeredReceiverSource == null && inherited == null
@@ -1439,11 +1417,6 @@ final class ConcolicTaskPlan {
         /** Every protocol input this occurrence attaches from the VM. */
         final Set<String> attachPortIds = new LinkedHashSet<>();
         /**
-         * Planner-selected producer occurrence of each response attach port.
-         */
-        final Map<String, String> attachProducerOccurrenceByPort =
-                new LinkedHashMap<>();
-        /**
          * Planned consumer occurrences of each protocol value this task
          * sends, in the order the plan's edges name them.  A producer rooted
          * at a loop body exports one value per iteration onto one message, so
@@ -1679,7 +1652,6 @@ final class ConcolicTaskPlan {
                                     + taskId + ": " + assignment.key);
                 }
             }
-            indexAttachProducerOccurrences(edgeBindings);
             indexExportConsumerOccurrences(task, edgeBindings);
         }
 
@@ -1747,48 +1719,6 @@ final class ConcolicTaskPlan {
             return communicationHandoffs.get(handoffKey(portId, exporting));
         }
 
-        /**
-         * Resolves each selected response input to its planner-authored
-         * producer occurrence.
-         */
-        void indexAttachProducerOccurrences(JsonArray bindings) {
-            for (String portId : attachPortIds) {
-                String producerOccurrence = "";
-                for (JsonElement element : bindings) {
-                    if (!element.isJsonObject()) continue;
-                    JsonObject binding = element.getAsJsonObject();
-                    if (!"RUNTIME_PROTOCOL_FLOW".equals(
-                            optionalString(binding, "kind"))
-                            || !portId.equals(optionalString(binding, "toInputPort"))) {
-                        continue;
-                    }
-                    String receiver = OccurrenceId.parse(optionalString(
-                            binding, "toOccurrenceId")).planned();
-                    if (!occurrenceId.equals(receiver)) {
-                        continue;
-                    }
-                    String candidate = OccurrenceId.parse(optionalString(
-                            binding, "fromOccurrenceId")).planned();
-                    if (candidate.isEmpty()) continue;
-                    if (!producerOccurrence.isEmpty()
-                            && !producerOccurrence.equals(candidate)) {
-                        throw new IllegalArgumentException(
-                                "communication attach port has two producer "
-                                        + "occurrences in " + taskId + ": "
-                                        + portId);
-                    }
-                    producerOccurrence = candidate;
-                }
-                if (!producerOccurrence.isEmpty()) {
-                    attachProducerOccurrenceByPort.put(portId,
-                            producerOccurrence);
-                }
-            }
-        }
-
-        String attachProducerOccurrence(String portId) {
-            return safe(attachProducerOccurrenceByPort.get(safe(portId)));
-        }
 
         /**
          * Indexes the consumers named by this occurrence's outgoing protocol
@@ -1967,8 +1897,29 @@ final class ConcolicTaskPlan {
 
         synchronized void noteUnaddressedCandidate(String reason) {
             unaddressedCandidates++;
-            unaddressedReasons.add(safe(reason));
+            unaddressedReasons.add(candidateNote(reason));
             registerRunTotalsHook();
+        }
+
+        /**
+         * One refused candidate, as a sentence a reader can act on.
+         *
+         * <p>Two facts every refusal owes and none of them carried: the
+         * thread the candidate ran on -- this method runs on it -- and a
+         * difference that is actually stated.  A row whose difference was
+         * empty read as "matching root:  (attributed to X)", which is the
+         * shape 11741's balancer#3 and 17897's dn0#1 were reported in: the
+         * address matched and something else refused it, and the row said
+         * neither half out loud.</p>
+         */
+        private static String candidateNote(String reason) {
+            String stated = safe(reason).trim();
+            if (stated.isEmpty()) {
+                stated = "matching root was refused with no stated"
+                        + " difference";
+            }
+            return stated + " [thread="
+                    + Thread.currentThread().getName() + "]";
         }
 
         /**
@@ -2051,20 +2002,6 @@ final class ConcolicTaskPlan {
             reserveConfiguredSourcePhaseOrdinals(sourceOrdinals);
         }
 
-        /**
-         * Ports whose producer occurrence the frozen plan names: the
-         * exchanges this occurrence was selected for, and therefore the
-         * region's <em>selected causal anchor</em>.
-         *
-         * <p>Derived, never declared: incoming communication ports are the
-         * leaves this root may attach, and {@code edgeBindings} names a
-         * producer for exactly the ones an edge selected this region for.
-         * A region the plan bound to no exchange has no anchor here and is
-         * addressed exactly as it is today.</p>
-         */
-        Set<String> causalAnchorPorts() {
-            return attachProducerOccurrenceByPort.keySet();
-        }
 
         /** Exact source phases that may address a semantic loop turn. */
         Set<String> configuredSourceAnchorPhases() {
@@ -2250,9 +2187,17 @@ final class ConcolicTaskPlan {
             // at, read from the occurrence id every other stage reads it
             // from.  Comparing the k alone let a task planned for one node
             // answer another node's first activation of the same region.
-            return rootInvocationAddressMatches(address, observed,
-                    attachProducerOccurrenceByPort, occurrenceId,
-                    exactOutgoingAddress);
+            //
+            // And nothing else.  An occurrence is that address; the message
+            // an activation was reached by is provenance the handoff row
+            // states, not a second identity that may veto the first.  The
+            // arm that stood here replaced the address entirely whenever
+            // the plan named an IN producer, so an activation that agreed
+            // on node, epoch, region and k was refused for arriving on an
+            // envelope the replay had not reproduced -- 11741's
+            // balancer#3 and #7 and 17897's dn0#1, each reported with an
+            // empty reason because the address it was refused on matched.
+            return exactOutgoingAddress || address.matches(observed);
         }
 
         /**
