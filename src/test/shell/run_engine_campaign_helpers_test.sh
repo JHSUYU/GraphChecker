@@ -46,7 +46,7 @@ emit_fixture() {
 
   mkdir -p "${campaign_final}" "${emit_classes}" \
     "${emit_iteration}/seed-result" \
-    "${emit_iteration}/workers/task-target"
+    "${emit_iteration}/sessions/SESSION.seed"
   printf 'workflow_path_base=project\n' >"${emit_config}"
   printf '# no retained condition loop\n' >"${emit_bounds}"
   printf 'production class bytes\n' >"${emit_classes}/Frozen.class"
@@ -85,6 +85,7 @@ emit_fixture() {
   # exactly as ClaimPolicy states it.
   jq -n '{schemaVersion: 2, kind: "CONCOLIC_COMPOSED_SMT",
     finalStatus: "FINAL_READY", finalStatusRefusals: [],
+    anchor: "REGION.T#1",
     pathSetComplete: false,
     symbolicPropagationComplete: false,
     symbolicPropagation: [{armCount: 2}],
@@ -103,31 +104,28 @@ emit_fixture() {
         rootSpace: {reachability: "REACHABLE",
                     faultSensitive: true}}}}' \
     >"${composition_manifest}"
+  # One replay session, per kind, as the runtime publishes it.  IMPORT
+  # counted these into the census EMIT requires; the fixture states both.
+  for session_kind in activations decisions exports attaches writes reads \
+      roots targets gaps; do
+    : >"${emit_iteration}/sessions/SESSION.seed/${session_kind}.jsonl"
+  done
+  # Two rows the runtime classed DIAGNOSTIC itself: an arm whose producer ran
+  # concretely, and an obligation the solver could not decide in its budget.
+  # Neither can change the chain the claim rests on, and each says so on the
+  # row rather than in a table a later stage consults.
   printf '%s\n' \
-    '{"schemaVersion":1,"kind":"REGION_PATH_WORKLIST","coverageGaps":[{"kind":"PATH_FLIP_REPLAY_NOT_ADMITTED","queryKey":"flip","reason":"UNEXPLORED"},{"kind":"PATH_FLIP_SOLVER_TIMEOUT","queryKey":"slow-flip","reason":"SOLVER_TIMEOUT"}]}' \
-    >"${emit_iteration}/workers/task-target/path_closure.json"
-  # DECIDE publishes this ledger and EMIT copies it into the result, so the
-  # fixture states it exactly as TargetOccurrenceElection states it.
-  campaign_target_ledger="${campaign_final}/target_occurrences.json"
-  jq -n '{schemaVersion: 1, kind: "TARGET_OCCURRENCE_LEDGER",
-    occurrenceCount: 2, composedCount: 2,
-    chosenOccurrenceId: "REGION.T#1", chosenTaskId: "task-target",
-    chosenSupport: "SAT_CANDIDATE_EXPLAINED_WITNESS",
-    electionReason: "the campaign claim rests on REGION.T#1",
-    occurrences: [
-      {occurrenceId: "REGION.T#1", status: "COMPOSED",
-       support: "SAT_CANDIDATE_EXPLAINED_WITNESS", claim: "SAT_CANDIDATE",
-       blockerCount: 0, composeWallMillis: 51234, solveWallMillis: 9001,
-       chosen: true},
-      {occurrenceId: "REGION.T#2", status: "COMPOSED",
-       support: "INCONCLUSIVE", claim: "INCONCLUSIVE_PARTIAL",
-       blockerCount: 2, composeWallMillis: 48010, solveWallMillis: 7700,
-       chosen: false}]}' \
-    >"${campaign_target_ledger}"
+    '{"schemaVersion":1,"kind":"GAP_ROW","sessionId":"SESSION.seed","gapKind":"UNATTESTED_ARM","gapClass":"DIAGNOSTIC","subject":"IXN.7","detail":"the producer ran concretely"}' \
+    '{"schemaVersion":1,"kind":"GAP_ROW","sessionId":"SESSION.seed","gapKind":"UNPRODUCIBLE_ANSWER","gapClass":"DIAGNOSTIC","subject":"OBL.slow","detail":"SOLVER_TIMEOUT"}' \
+    >"${emit_iteration}/sessions/SESSION.seed/gaps.jsonl"
+  printf '{}\n' >"${emit_iteration}/sessions/SESSION.seed/expressions.json"
+  jq -n -c '{schemaVersion: 1, kind: "SESSION_CENSUS",
+    topologyEpoch: "iteration-0000", sessionId: "SESSION.seed",
+    rowKind: "targets", rows: 1}' \
+    >"${emit_iteration}/session_census.jsonl"
   printf '%s\n' \
     '{"taskId":"task-target","published":true}' \
     >"${emit_iteration}/seed-result/concolic_region_results.jsonl"
-  : >"${emit_iteration}/import_diagnostics.jsonl"
   : >"${emit_iteration}/campaign_gaps.jsonl"
   jq -n '{schemaVersion: 1, kind: "CAMPAIGN_ITERATION_MANIFEST",
     iterationId: "iteration-0000", parentIterationId: "",
@@ -198,24 +196,14 @@ jq -e '.evidence.symbolicPropagationComplete == false
 cmp -s "${campaign_final}/result.json" "${campaign_root}/final/result.json" \
   || fail "the published final is not this epoch's final"
 
-# DECIDE-1: a verdict that rests on one of several observed executions of the
-# annotated target says which one, in the result itself, with every other
-# execution's verdict beside it. The harness reads one document.
+# DECIDE-1: a campaign answers about one anchor -- the occurrence its case
+# declares and the composer composed -- and the result names it.  Ranking
+# several observed executions into a verdict is gone with the election.
 jq -e '.targetOccurrence == "REGION.T#1"
-  and (.targetOccurrences | length) == 2
-  and ([.targetOccurrences[] | select(.chosen)] | length) == 1
-  and ([.targetOccurrences[] | select(.chosen) | .support]
-       == ["SAT_CANDIDATE_EXPLAINED_WITNESS"])
-  and (.targetOccurrenceReason | test("REGION.T#1"))' \
+  and (has("targetOccurrences") | not)' \
   "${campaign_final}/result.json" >/dev/null \
-  || fail "the result does not name the elected target occurrence: \
-$(jq -c '.targetOccurrence, .targetOccurrences' \
-    "${campaign_final}/result.json")"
-# Per-occurrence stage times are telemetry a reader needs to size the loop.
-jq -e '[.targetOccurrences[] | .composeWallMillis] == [51234, 48010]
-  and [.targetOccurrences[] | .solveWallMillis] == [9001, 7700]' \
-  "${campaign_final}/result.json" >/dev/null \
-  || fail "the result lost the per-occurrence stage times"
+  || fail "the result does not name the composed anchor: \
+$(jq -c '.targetOccurrence' "${campaign_final}/result.json")"
 # CLAIM-1: the whole policy decision, so no consumer has to open the solver
 # report to find the claim this file was written from.
 jq -e '.rootSpace.reachability == "REACHABLE"
@@ -224,15 +212,16 @@ jq -e '.rootSpace.reachability == "REACHABLE"
   || fail "the result does not carry the claim root space: \
 $(jq -c '.rootSpace' "${campaign_final}/result.json")"
 
-# A flip query the solver could not decide in its budget is an unexplored
-# sibling path.  It is coverage telemetry, so it leaves a SAT candidate
-# accepted; only the closed UNSAT conclusion is withheld by it.
+# An obligation the solver could not decide in its budget is an unexplored
+# sibling path.  The runtime classes it DIAGNOSTIC on the row, so it leaves a
+# SAT candidate accepted; only the closed UNSAT conclusion is withheld by it.
 jq -e '[.telemetryGaps[]
-        | select(.stage == "EXPLORE" and .source == "PATH_WORKLIST"
-            and .code == "PATH_FLIP_SOLVER_TIMEOUT"
-            and .subject == "slow-flip")] | length == 1' \
+        | select(.stage == "REPLAY" and .source == "SESSION.seed"
+            and .code == "UNPRODUCIBLE_ANSWER"
+            and .subject == "OBL.slow")] | length == 1' \
   "${campaign_final}/gaps.json" >/dev/null \
-  || fail "the solver-timeout path gap was not published as telemetry"
+  || fail "the undecided obligation was not published as telemetry: \
+$(jq -c '.telemetryGaps' "${campaign_final}/gaps.json")"
 jq -e '[.gaps[] | select(.code == "PATH_FLIP_SOLVER_TIMEOUT")] | length == 0' \
   "${campaign_final}/gaps.json" >/dev/null \
   || fail "the solver-timeout path gap blocked an accepted SAT candidate"
@@ -281,23 +270,25 @@ jq -e '.accepted == false and .gapCount == 1' \
 
 # EMIT-3: a corpus whose generated indexes exceed one command-line argument.
 # Linux caps a single argument at MAX_ARG_STRLEN -- 32 pages, 128 KiB -- which
-# no ARG_MAX headroom relaxes, and every document campaign_write_coverage_gaps
+# no ARG_MAX headroom relaxes, and every document campaign_write_gaps
 # builds is proportional to the corpus.  lane11741j reached DECIDE with
 # SAT_CANDIDATE and 0 blockers and then died at EMIT with "Argument list too
-# long" on a 134,436-byte generated index, publishing nothing.  The fixture
-# below makes the attached-handoff index alone larger than that.
+# long" on a 134,436-byte generated index, publishing nothing.  The session
+# gap file below is larger than that on its own.
 emit_fixture
-python3 - "${emit_iteration}/seed-result/concolic_region_results.jsonl" <<'OVERSIZED'
+python3 - "${emit_iteration}/sessions/SESSION.seed/gaps.jsonl" <<'OVERSIZED'
 import json, sys
-events = [{"portId": "XCH.%048d.resp.leaf" % n,
-           "handoffPhaseId": "HANDOFF_PHASE.%048d" % n} for n in range(1600)]
 with open(sys.argv[1], "w") as handle:
-    handle.write(json.dumps({"taskId": "task-target", "published": True,
-                             "vmHandoffEvents": events}) + "\n")
+    for n in range(1600):
+        handle.write(json.dumps({
+            "schemaVersion": 1, "kind": "GAP_ROW",
+            "sessionId": "SESSION.seed", "gapKind": "UNATTESTED_ARM",
+            "gapClass": "DIAGNOSTIC", "subject": "IXN.%048d" % n,
+            "detail": "the producer ran concretely at %048d" % n}) + "\n")
 OVERSIZED
-oversized=$(campaign_attached_handoff_phases_json "${emit_iteration}")
-[[ "${#oversized}" -gt 131072 ]] \
-  || fail "the oversized fixture is only ${#oversized} bytes; it must exceed \
+oversized=$(wc -c <"${emit_iteration}/sessions/SESSION.seed/gaps.jsonl")
+[[ "${oversized}" -gt 131072 ]] \
+  || fail "the oversized fixture is only ${oversized} bytes; it must exceed \
 one argument (131072) for this check to mean anything"
 run_emit
 [[ "${emit_status}" -eq 0 ]] \
@@ -313,11 +304,10 @@ $(<"${emit_root}/emit.log")"
 # ledger they withhold the candidate until somebody writes down why they
 # cannot break a chain.
 emit_fixture
-jq '.symbolicPropagationGaps = [{reason: "UNRELATED_FAMILY_OPEN",
-                                 subject: "CBF.fixture", detail: "invented"}]
-    | .boundedLoopComposition.gaps = [{reason: "LOOP_BOUND_OPEN",
-                                       subject: "loop.fixture",
-                                       detail: "invented"}]' \
+jq '.gaps = [{reason: "UNRELATED_FAMILY_OPEN",
+              subject: "CBF.fixture", detail: "invented"},
+             {reason: "LOOP_BOUND_OPEN",
+              subject: "loop.fixture", detail: "invented"}]' \
   "${composition_manifest}" >"${composition_manifest}.tmp"
 mv "${composition_manifest}.tmp" "${composition_manifest}"
 run_emit
@@ -336,26 +326,38 @@ $(jq -c '[.gaps[].code]' "${campaign_final}/gaps.json")"
 # region with no activation is a broken chain wherever it is raised.
 emit_fixture
 printf '%s\n' \
-  '{"code":"REGION_ROOT_NEVER_EXECUTED","taskId":"TASK.REPLAY.kept","detail":"anchor never observed"}' \
-  '{"code":"REGION_ROOT_NEVER_EXECUTED","taskId":"TASK.REPLAY.pruned","detail":"anchor never observed"}' \
-  >"${emit_iteration}/import_diagnostics.jsonl"
-printf '%s\n' \
-  '{"taskId":"TASK.REPLAY.kept","occurrenceId":"OCC.kept"}' \
-  '{"taskId":"TASK.REPLAY.pruned","occurrenceId":"OCC.pruned"}' \
-  >"${emit_iteration}/execution_task_plan.jsonl"
+  '{"schemaVersion":1,"kind":"GAP_ROW","sessionId":"SESSION.seed","gapKind":"ADMISSION_GAP","gapClass":"BLOCKING","subject":"OCC.kept","detail":"anchor never observed"}' \
+  '{"schemaVersion":1,"kind":"GAP_ROW","sessionId":"SESSION.seed","gapKind":"ADMISSION_GAP","gapClass":"BLOCKING","subject":"OCC.pruned","detail":"anchor never observed"}' \
+  >"${emit_iteration}/sessions/SESSION.seed/gaps.jsonl"
 run_emit
 [[ "${emit_status}" -eq 3 ]] \
-  || fail "a region code did not block \
+  || fail "a session gap row did not block \
 (exit ${emit_status}): $(<"${emit_root}/emit.log")"
 jq -e '.gapCount == 2
-  and ([.gaps[].subject] | sort
-       == ["TASK.REPLAY.kept", "TASK.REPLAY.pruned"])
-  and ((.telemetryGaps | map(select(.code == "REGION_ROOT_NEVER_EXECUTED")))
-       | length == 0)' \
+  and ([.gaps[].subject] | sort == ["OCC.kept", "OCC.pruned"])
+  and ([.gaps[].code] | unique == ["ADMISSION_GAP"])
+  and ([.gaps[].source] | unique == ["SESSION.seed"])
+  and (.telemetryCount == 0)' \
   "${campaign_final}/gaps.json" >/dev/null \
-  || fail "a region code was not blocking on every subject: \
+  || fail "a blocking session row was not blocking: \
 $(jq -c '[(.gaps+.telemetryGaps)[]|{code,subject,class}]' \
     "${campaign_final}/gaps.json")"
+# And a row that states DIAGNOSTIC is taken at its word: the runtime knows
+# what it could not do, and no later stage is in a position to overrule it.
+emit_fixture
+printf '%s\n' \
+  '{"schemaVersion":1,"kind":"GAP_ROW","sessionId":"SESSION.seed","gapKind":"UNATTESTED_ARM","gapClass":"DIAGNOSTIC","subject":"IXN.9","detail":"the producer ran concretely"}' \
+  >"${emit_iteration}/sessions/SESSION.seed/gaps.jsonl"
+: >"${emit_iteration}/campaign_gaps.jsonl"
+run_emit
+[[ "${emit_status}" -eq 0 ]] \
+  || fail "a diagnostic session row withheld the candidate \
+(exit ${emit_status}): $(<"${emit_root}/emit.log")"
+jq -e '.gapCount == 0 and .telemetryCount == 1
+  and .telemetryGaps[0].code == "UNATTESTED_ARM"' \
+  "${campaign_final}/gaps.json" >/dev/null \
+  || fail "the diagnostic row was not published as telemetry: \
+$(jq -c '.telemetryGaps' "${campaign_final}/gaps.json")"
 # The rationale travels with the row, so a reader does not have to open the
 # ledger to see why a gap was classed the way it was.
 jq -e '[(.gaps + .telemetryGaps)[] | select((.classReason // "") == "")]
@@ -419,34 +421,32 @@ grep -q 'no ClaimPolicy decision' "${emit_root}/emit.log" \
 [[ ! -e "${campaign_final}/result.json" ]] \
   || fail "a result was published without a claim"
 
-# The elected occurrence has one home too. A run whose DECIDE stage published
-# no ledger is a run EMIT may not publish a result from: the claim would then
-# rest on an occurrence nothing named.
+# The sessions are the evidence, so a run whose IMPORT counted none is a run
+# EMIT may not publish a result from: the claim would rest on nothing read.
 emit_fixture
-rm -f "${campaign_target_ledger}"
+rm -f "${emit_iteration}/session_census.jsonl"
 run_emit
 [[ "${emit_status}" -ne 0 ]] \
-  || fail "a result was published with no target occurrence ledger"
-grep -q 'no target occurrence ledger' "${emit_root}/emit.log" \
-  || fail "the missing ledger was not named: $(<"${emit_root}/emit.log")"
+  || fail "a result was published with no replay session census"
+grep -q 'replay session census' "${emit_root}/emit.log" \
+  || fail "the missing census was not named: $(<"${emit_root}/emit.log")"
 [[ ! -e "${campaign_final}/result.json" ]] \
-  || fail "a result was published without a target occurrence ledger"
+  || fail "a result was published without a replay session census"
 
-# COMPOSE-1: one occurrence, one artifact directory, derived from the
-# occurrence identity alone so the same occurrence always lands in the same
-# place and two occurrences never share one.
-[[ "$(campaign_occurrence_key \
-      'hdfs-17897/dn0#epoch0/region/REGION.53092d3e#1')" \
-    == 'hdfs-17897_dn0_epoch0_region_REGION.53092d3e_1' ]] \
-  || fail "the occurrence key is not a filesystem name: \
-$(campaign_occurrence_key 'hdfs-17897/dn0#epoch0/region/REGION.53092d3e#1')"
-[[ "$(campaign_occurrence_key 'a#1')" \
-    != "$(campaign_occurrence_key 'a#2')" ]] \
-  || fail "two occurrences share one artifact directory"
+# COMPOSE-1: one campaign, one anchor, one artifact directory.  The composer
+# writes candidate.smt2 and its manifest straight into the epoch's final/;
+# there is no per-occurrence fan-out to key, because which execution of the
+# annotated site the campaign answers about is the case's declaration.
+emit_fixture
+[[ "$(jq -r '.anchor' "${composition_manifest}")" == "REGION.T#1" ]] \
+  || fail "the composition does not name its anchor"
+[[ -s "${campaign_final}/candidate.smt2" ]] \
+  || fail "the anchor's formula is not in the epoch's final directory"
+[[ ! -e "${campaign_final}/targets" ]] \
+  || fail "the composition fanned out over occurrences"
 
 # PLAN-1: the schedule index says which members carry a target-reach goal, so
-# EXPLORE and COMPOSE can address every observed occurrence of the annotated
-# site and not only the elected one.
+# the plan can name every observed occurrence of the annotated site.
 index_root="${test_tmp}/schedule-index"
 mkdir -p "${index_root}"
 index_file="${index_root}/runtime_workflow_schedule_index.json"
@@ -482,26 +482,34 @@ jq 'del(.members[].targetReachGoal)' "${index_file}" \
 ( campaign_decode_index_members "${index_file}.old" ) >/dev/null 2>&1 \
   && fail "a schedule index with no target-reach flag was accepted"
 
-# A published obligation wave records a solver timeout instead of failing the
-# campaign, and contributes only its exploration record: no new path case.
+# EXPLORE-2: a wave collects every obligation's verdict once the wave has
+# settled, in a deterministic order, so the next wave sees a complete frontier
+# rather than a partial one.  An obligation the solver could not decide is one
+# of those verdicts, not the wave's death.
 wave_root="${test_tmp}/wave"
-mkdir -p "${wave_root}/planner/slow-flip"
+mkdir -p "${wave_root}/obligations-0000/OBL.slow" \
+  "${wave_root}/obligations-0000/OBL.fast"
 printf '%s\n' \
-  '{"schemaVersion":1,"kind":"PATH_EXPLORATION_RECORD","queryKey":"slow-flip","status":"SOLVER_TIMEOUT","reason":"SOLVER_TIMEOUT"}' \
-  >"${wave_root}/planner/slow-flip/exploration_record.jsonl"
-printf '%s\n' '{"summaryId":"SUMMARY.SEED","taskId":"task-target"}' \
-  >"${wave_root}/summaries.jsonl"
-printf '%s\n' '{"taskId":"task-target"}' >"${wave_root}/tasks.jsonl"
-: >"${wave_root}/records.jsonl"
-campaign_publish_wave "${wave_root}/planner" "${wave_root}/summaries.jsonl" \
-  "${wave_root}/tasks.jsonl" "${wave_root}/records.jsonl" \
-  || fail "a solver-timeout obligation aborted the published wave"
-[[ $(wc -l <"${wave_root}/summaries.jsonl") -eq 1 ]] \
-  || fail "a solver-timeout obligation published a path case"
-jq -e -s '[.[] | select(.queryKey == "slow-flip"
-    and .status == "SOLVER_TIMEOUT")] | length == 1' \
-  "${wave_root}/records.jsonl" >/dev/null \
-  || fail "the solver-timeout exploration record was not published"
+  '{"schemaVersion":1,"kind":"OBLIGATION_RESULT","obligationId":"OBL.slow","verdict":"NOT_ADMITTED","sessionId":"","detail":"SOLVER_TIMEOUT"}' \
+  >"${wave_root}/obligations-0000/OBL.slow/obligation_result.jsonl"
+printf '%s\n' \
+  '{"schemaVersion":1,"kind":"OBLIGATION_RESULT","obligationId":"OBL.fast","verdict":"VALIDATED","sessionId":"SESSION.f","detail":""}' \
+  >"${wave_root}/obligations-0000/OBL.fast/obligation_result.jsonl"
+: >"${wave_root}/obligation_results.jsonl"
+find "${wave_root}/obligations-0000" -mindepth 2 -maxdepth 2 \
+  -name obligation_result.jsonl -print0 | LC_ALL=C sort -z \
+  | xargs -0 -r cat >>"${wave_root}/obligation_results.jsonl"
+[[ $(wc -l <"${wave_root}/obligation_results.jsonl") -eq 2 ]] \
+  || fail "the wave did not collect every obligation verdict"
+[[ "$(jq -r -s '[.[].obligationId] | join(",")' \
+      "${wave_root}/obligation_results.jsonl")" == "OBL.fast,OBL.slow" ]] \
+  || fail "the wave collected its verdicts in completion order: \
+$(jq -r -s '[.[].obligationId] | join(",")' \
+    "${wave_root}/obligation_results.jsonl")"
+jq -e -s '[.[] | select(.obligationId == "OBL.slow"
+    and .verdict == "NOT_ADMITTED")] | length == 1' \
+  "${wave_root}/obligation_results.jsonl" >/dev/null \
+  || fail "the undecided obligation's verdict was not recorded"
 
 # EMIT re-hashes frozen inputs before publishing any result.
 emit_fixture
@@ -514,50 +522,65 @@ run_emit
 grep -q 'changed after it was frozen' "${emit_root}/emit.log" \
   || fail "the drifted frozen input was not named"
 
-# The laneBK shape: a member whose region published no observed path.  The
-# worklist is GAPPED with NO_OBSERVED_PATH_SEED and nothing to explore, and
-# the wave publishes it as that member's closure instead of killing the run.
-# Its own `gaps` array is an EXPLORE gap exactly like its `coverageGaps`, so
-# it has to reach gaps.json and withhold the claim by name.
+# The laneBK shape: the anchor had no path to compose.  The composer states
+# that as its own refusal, and a refusal withholds the claim by name rather
+# than killing the run one stage earlier.
 emit_fixture
-printf '%s\n' \
-  '{"schemaVersion":1,"kind":"REGION_PATH_WORKLIST","state":"GAPPED",
-    "coverageState":"SEED_ONLY","coverageGaps":[],
-    "gaps":[{"kind":"NO_OBSERVED_PATH_SEED",
-             "reason":"REGION_PATH_SEED_REQUIRED",
-             "regionId":"REGION.T","pathKey":"","siteId":"",
-             "occurrence":-1}]}' \
-  >"${emit_iteration}/workers/task-target/path_closure.json"
+jq '.finalStatus = "FINAL_REFUSED"
+    | .finalStatusRefusals = [{kind: "TARGET_NOT_REACHED",
+        subject: "REGION.T#1",
+        detail: "no admitted path reaches the fatal arm"}]' \
+  "${composition_manifest}" >"${composition_manifest}.tmp"
+mv "${composition_manifest}.tmp" "${composition_manifest}"
 run_emit
 [[ "${emit_status}" -eq 3 ]] \
-  || fail "a gapped worklist did not withhold the candidate \
+  || fail "a composition refusal did not withhold the candidate \
 (exit ${emit_status}): $(<"${emit_root}/emit.log")"
-jq -e '[.gaps[] | select(.code == "NO_OBSERVED_PATH_SEED")] as $rows
+jq -e '[.gaps[] | select(.code == "TARGET_NOT_REACHED")] as $rows
   | ($rows | length) == 1
-  and $rows[0].stage == "EXPLORE"
-  and $rows[0].source == "PATH_WORKLIST"
+  and $rows[0].stage == "COMPOSE"
+  and $rows[0].source == "ComposeMain"
   and $rows[0].class == "BLOCKING"
-  and $rows[0].subject == "REGION.T"' \
+  and $rows[0].subject == "REGION.T#1"' \
   "${campaign_final}/gaps.json" >/dev/null \
-  || fail "the worklist gap did not reach gaps.json as blocking: \
+  || fail "the composition refusal did not reach gaps.json as blocking: \
 $(jq -c '.gaps' "${campaign_final}/gaps.json")"
+
+# EXPLORE-1: a forced stop is coverage telemetry, and it is a gap row like
+# any other -- the wave loop writes it onto the campaign's gap file and goes
+# on to publish what it did establish.  An unexplored sibling path blocks a
+# closed UNSAT and says nothing about a SAT candidate.
+emit_fixture
+: >"${emit_iteration}/sessions/SESSION.seed/gaps.jsonl"
+printf '%s\n' \
+  '{"schemaVersion":1,"kind":"GAP_ROW","sessionId":"","gapKind":"ADMISSION_GAP","gapClass":"DIAGNOSTIC","subject":"REGION_PATH_CLOSURE_NO_PROGRESS","detail":"wave 3 proposes the same 2 obligation(s) as the wave before it"}' \
+  >"${emit_iteration}/campaign_gaps.jsonl"
+run_emit
+[[ "${emit_status}" -eq 0 ]] \
+  || fail "a forced exploration stop withheld the candidate \
+(exit ${emit_status}): $(<"${emit_root}/emit.log")"
+jq -e '.gapCount == 0 and .telemetryCount == 1
+  and .telemetryGaps[0].subject == "REGION_PATH_CLOSURE_NO_PROGRESS"' \
+  "${campaign_final}/gaps.json" >/dev/null \
+  || fail "the exploration stop is not telemetry in gaps.json: \
+$(jq -c '.telemetryGaps' "${campaign_final}/gaps.json")"
 
 # The iteration loop advances on a topology it has just learned, and stops
 # when a wave exposes none.  A divergent bundle is held out of this epoch, so
 # without this the campaign would compose an epoch whose evidence it refused.
 div_dir="${test_tmp}/divergence"
-mkdir -p "${div_dir}"
+mkdir -p "${div_dir}/sessions/SESSION.a"
 [[ "$(campaign_topology_divergences "${div_dir}")" == "0" ]] \
-  || fail "an iteration with no diagnostics reported a divergence"
+  || fail "an iteration with no session gaps reported a divergence"
 printf '%s\n' \
-  '{"code":"REGION_CAUSAL_ANCHOR_NOT_OBSERVED","taskId":"t","detail":"x"}' \
-  >"${div_dir}/import_diagnostics.jsonl"
+  '{"kind":"GAP_ROW","gapKind":"ADMISSION_GAP","subject":"t","detail":"x"}' \
+  >"${div_dir}/sessions/SESSION.a/gaps.jsonl"
 [[ "$(campaign_topology_divergences "${div_dir}")" == "0" ]] \
-  || fail "an unrelated diagnostic was counted as a topology divergence"
+  || fail "an unrelated gap row was counted as a topology divergence"
 printf '%s\n' \
-  '{"code":"TOPOLOGY_DIVERGENCE","taskId":"t","detail":"UNPLANNED_HANDOFF:H"}' \
-  '{"code":"TOPOLOGY_DIVERGENCE","taskId":"t","detail":"BUNDLE:t line 1"}' \
-  >>"${div_dir}/import_diagnostics.jsonl"
+  '{"kind":"GAP_ROW","gapKind":"TOPOLOGY_DIVERGENCE","subject":"IXN.1","detail":"unplanned producer"}' \
+  '{"kind":"GAP_ROW","gapKind":"TOPOLOGY_DIVERGENCE","subject":"IXN.2","detail":"unplanned producer"}' \
+  >>"${div_dir}/sessions/SESSION.a/gaps.jsonl"
 [[ "$(campaign_topology_divergences "${div_dir}")" == "2" ]] \
   || fail "the topology divergence rows were not counted: \
 $(campaign_topology_divergences "${div_dir}")"
@@ -600,8 +623,10 @@ done
 # it in 05d413cae -- again without this count being raised, which left the
 # whole helper test red on staging until REPORT-GAPJOIN found it -- and
 # `causynth_root_domains` joined it in a6da088f1, where the case gained a way
-# to say what a declared root may be.
-[[ "$(print_normalized_config | wc -l)" -eq 43 ]] \
+# to say what a declared root may be.  `composer` left it with the Design 3
+# stage reduction: there is one composition of the anchored target's paths,
+# and a key naming which one selected nothing.
+[[ "$(print_normalized_config | wc -l)" -eq 42 ]] \
   || fail "config prints a different number of keys than it used to: \
 $(print_normalized_config | wc -l)"
 
@@ -646,138 +671,24 @@ for positive_key in "" abc 0 -1 "3 4"; do
     && fail "an invalid count was accepted: '${positive_key}'"
 done
 
-# One terminal exploration record, written from the solver's own result.
-record_worker="${test_tmp}/record-worker"
-mkdir -p "${record_worker}"
-printf '%s\n' '{"queryKey":"k","status":"SAT_MODEL_READY","reason":"x"}' \
-  >"${record_worker}/path_flip_solver_result.json"
-campaign_record_exploration "${record_worker}" k "t1,t2" \
-  REPLAY_NOT_ADMITTED "no primary"
-[[ "$(cat "${record_worker}/exploration_record.jsonl")" == \
-    '{"queryKey":"k","status":"REPLAY_NOT_ADMITTED","reason":"no primary","schemaVersion":1,"kind":"PATH_EXPLORATION_RECORD","linkedTaskIds":["t1","t2"]}' ]] \
-  || fail "the exploration record is not the bytes it used to be: \
-$(cat "${record_worker}/exploration_record.jsonl")"
-
-# An empty replay plan publishes no exploration record at all, rather than a
-# record whose every planned field is null.
-primary_root="${test_tmp}/primary-record"
-mkdir -p "${primary_root}"
-primary_plan="${primary_root}/execution_task_plan.jsonl"
-primary_record="${primary_root}/exploration_record.jsonl"
-: >"${primary_plan}"
-( campaign_publish_primary_record "${primary_plan}" k "${primary_record}" ) \
-  && fail "an exploration record was published without a replay task"
-[[ ! -s "${primary_record}" ]] \
-  || fail "an empty replay plan published a record: \
-$(cat "${primary_record}")"
-printf '%s\n' '{"taskId":"t2","regionId":"R",
-  "occurrenceId":"R#a1","goalId":"g",
-  "topologyEpoch":"e"}' >>"${primary_plan}"
-campaign_publish_primary_record "${primary_plan}" k "${primary_record}" \
-  || fail "the focused replay task published no exploration record"
-jq -e '.taskId == "t2" and .queryKey == "k"
-  and .status == "VALIDATED_FRESH_REGION_PATH_FLIP_REPLAY"' \
-  "${primary_record}" >/dev/null \
-  || fail "the exploration record does not name the replay task: \
-$(cat "${primary_record}")"
-
-# EXPLORE-1: a forced closure stop is coverage telemetry on every pending
-# worklist, and it publishes that worklist as the member's closure so the
-# final gap report can read it.
-stop_member="${test_tmp}/stop/workers/task-a"
-stop_wave="${stop_member}/obligations-0003"
-mkdir -p "${stop_wave}"
-printf '%s\n' '{"schemaVersion":1,"kind":"REGION_PATH_WORKLIST",
-  "state":"PENDING","coverageState":"PARTIAL","regionId":"REGION.A",
-  "occurrenceId":"REGION.A#a1","gaps":[],"coverageGaps":[]}' \
-  >"${stop_wave}/region_path_manifest.json"
-campaign_explore_stop REGION_PATH_CLOSURE_NO_PROGRESS "stalled" \
-  "${stop_wave}" >/dev/null \
-  || fail "campaign_explore_stop did not record the closure stop"
-jq -e '.coverageGaps | length == 1
-  and .[0].kind == "REGION_PATH_CLOSURE_NO_PROGRESS"
-  and .[0].reason == "stalled" and .[0].regionId == "REGION.A"' \
-  "${stop_wave}/region_path_manifest.json" >/dev/null \
-  || fail "the closure stop is not a coverage gap on the pending worklist: \
-$(cat "${stop_wave}/region_path_manifest.json")"
-# The member's closure is what campaign_path_closures_json collects, so the
-# stop has to be visible there and has to stay non-CLOSED.
-jq -e '.state == "PENDING" and (.coverageGaps | length) == 1' \
-  "${stop_member}/path_closure.json" >/dev/null \
-  || fail "the forced stop published no pending closure for the member"
-
-# One row per anchored occurrence, and the row quotes the outcome of the
-# composition it names.  A row that said only "the Composer ran" sat beside a
-# result that said REFUSED with nothing to reconcile them, so the row carries
-# the manifest's own final status, the refusals it named, how many of its
-# paths were admitted, and whether this occurrence had an exact reach query
-# to compose from.
-row_dir="${test_tmp}/rows"
-row_target="${row_dir}/targets/occ1"
-iteration_workers="${row_dir}/workers"
-mkdir -p "${row_target}" "${iteration_workers}/task-refused"
-campaign_target_reports="${row_dir}/target_occurrence_reports.jsonl"
-: >"${campaign_target_reports}"
-# The laneBG shape: an anchor with no reach query, refused TARGET_NOT_REACHED.
-jq -n '{schemaVersion: 2, kind: "CONCOLIC_COMPOSED_SMT",
-  state: "CANDIDATE_WITH_GAPS", finalStatus: "FINAL_REFUSED",
-  finalStatusRefusals: [{kind: "TARGET_NOT_REACHED", detail: "no query"}],
-  pathMerge: {paths: [], roots: []}, gaps: []}' \
-  >"${row_target}/candidate_composition_manifest.json"
-campaign_report_target_occurrence "REGION.T#1" "REGION.T" task-refused \
-  "${row_target}" COMPOSED "no exact reach query" 42
-jq -e '.finalStatus == "FINAL_REFUSED"
-  and .refusals == ["TARGET_NOT_REACHED"]
-  and .pathsTotal == 0 and .pathsAdmitted == 0
-  and .reachQuery == false' "${campaign_target_reports}" >/dev/null \
-  || fail "a refused occurrence row does not carry its refusal: \
-$(cat "${campaign_target_reports}")"
-
-# And the other half: a composition that stated a formula, from a member that
-# did publish a reach query, says how many of its paths were admitted.
-row_target2="${row_dir}/targets/occ2"
-mkdir -p "${row_target2}" "${iteration_workers}/task-ready"
-printf '%s\n' '{"kind":"TARGET_REACH_PATH_SET_QUERY"}' \
-  >"${iteration_workers}/task-ready/reach_query.jsonl"
-jq -n '{schemaVersion: 2, kind: "CONCOLIC_COMPOSED_SMT",
-  state: "CANDIDATE_READY", finalStatus: "FINAL_READY",
-  finalStatusRefusals: [],
-  pathMerge: {paths: [{admitted: true}, {admitted: false},
-                      {admitted: true}], roots: []}, gaps: []}' \
-  >"${row_target2}/candidate_composition_manifest.json"
-: >"${campaign_target_reports}"
-campaign_report_target_occurrence "REGION.T#2" "REGION.T" task-ready \
-  "${row_target2}" COMPOSED "" 51
-jq -e '.finalStatus == "FINAL_READY" and .refusals == []
-  and .pathsTotal == 3 and .pathsAdmitted == 2
-  and .reachQuery == true' "${campaign_target_reports}" >/dev/null \
-  || fail "a composed occurrence row does not carry its admitted paths: \
-$(cat "${campaign_target_reports}")"
-
 # A divergent epoch names the replay the next one is seeded from, and the
 # harness reads that name off the row rather than re-deriving which replay
 # diverged.  Both helpers answer empty when the topology closed, which is what
 # makes the loop return instead of planning an epoch from nothing.
 seed_dir="${test_tmp}/seeding/iteration-0000"
-mkdir -p "${seed_dir}"
-seed_results="${test_tmp}/seeding/iteration-0000/workers/task-a/results.jsonl"
-mkdir -p "$(dirname "${seed_results}")"
-printf '{"event":"CONCOLIC_REGION_RESULT"}\n' >"${seed_results}"
-: >"${seed_dir}/import_diagnostics.jsonl"
+mkdir -p "${seed_dir}/sessions/SESSION.diverged"
 [[ -z "$(campaign_seeding_replay "${seed_dir}")" ]] \
   || fail "a closed topology seeds no epoch"
-jq -n --arg results "${seed_results}" '{kind: "CONCOLIC_IMPORT_DIAGNOSTIC",
-  code: "ACTIVATION_REQUEST_DIVERGED", taskId: "TASK.REPLAY.0bba7367",
-  seedsNextEpoch: true, seedReplayGroupId: "REPLAY.GROUP.24f524c7",
-  seedReplayTaskId: "TASK.REPLAY.0bba7367", seedReplayResults: $results}' \
-  -c >"${seed_dir}/import_diagnostics.jsonl"
-printf '%s\n' '{"kind":"CONCOLIC_IMPORT_DIAGNOSTIC","code":"REGION_ROOT_NEVER_EXECUTED"}' \
-  >>"${seed_dir}/import_diagnostics.jsonl"
-[[ "$(campaign_seeding_replay "${seed_dir}")" == "REPLAY.GROUP.24f524c7" ]] \
-  || fail "the seeding replay is not read off the divergent row: \
+printf '%s\n' \
+  '{"kind":"GAP_ROW","sessionId":"SESSION.diverged","gapKind":"TOPOLOGY_DIVERGENCE","gapClass":"DIAGNOSTIC","subject":"IXN.1","detail":"unplanned producer","seedsNextEpoch":true}' \
+  '{"kind":"GAP_ROW","sessionId":"SESSION.diverged","gapKind":"ADMISSION_GAP","gapClass":"BLOCKING","subject":"OCC.x","detail":"never observed"}' \
+  >"${seed_dir}/sessions/SESSION.diverged/gaps.jsonl"
+[[ "$(campaign_seeding_replay "${seed_dir}")" == "SESSION.diverged" ]] \
+  || fail "the seeding session is not read off the divergent row: \
 $(campaign_seeding_replay "${seed_dir}")"
-[[ "$(campaign_seeding_results "${seed_dir}")" == "${seed_results}" ]] \
-  || fail "the next epoch is not planned from that replay's own results: \
+[[ "$(campaign_seeding_results "${seed_dir}")" \
+    == "${seed_dir}/sessions/SESSION.diverged" ]] \
+  || fail "the next epoch is not planned from that session's own rows: \
 $(campaign_seeding_results "${seed_dir}")"
 
 echo "run_engine campaign helper tests passed"
