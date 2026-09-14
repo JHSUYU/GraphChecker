@@ -237,6 +237,11 @@ final class ConcolicResultPublisher {
      */
     static void publishRunTotals() {
         configuration().publishUnansweredAddresses();
+        // What only the end of a replay can state: the verdict of every
+        // obligation it was handed.  Called here because a campaign halts
+        // the JVM as soon as the selected result settles, which runs no
+        // shutdown hook.
+        edu.uva.liftlab.graphchecker.runtime.d3.D3Runtime.closeSession();
     }
 
     /** Transfers one completed native read-out to the bounded daemon pool. */
@@ -315,6 +320,11 @@ final class ConcolicResultPublisher {
                     rawSharedState == null ? evidenceIdentity(active)
                             : rawSharedState.identity);
             mergeEngineSummary(active, result, rawEngineSummary);
+            // The same activation, as the Design 3 per-kind row set.  Here
+            // because this is where the write log has been assembled and
+            // the engine summary merged: every row this activation can
+            // state is complete exactly once, on one thread.
+            D3RowPublication.publish(active);
             JsonObject portableResult = active.expressionStore.compact(result);
             boolean written = appendResult(portableResult);
             boolean goalAnswered = written

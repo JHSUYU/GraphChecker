@@ -35,6 +35,8 @@ import edu.uva.liftlab.graphchecker.contract.JavaPrimitiveBoxing;
 import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.contract.HandoffPhaseContract;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
+import edu.uva.liftlab.graphchecker.runtime.d3.D3Runtime;
+import edu.uva.liftlab.graphchecker.runtime.d3.Interactions;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceId;
 
 import edu.uva.liftlab.graphchecker.contract.SiteId;
@@ -739,6 +741,19 @@ public final class ConcolicRegionRuntime {
                 active.pathRecordingStarted = true;
             }
             active.activationOrdinal = admitted.nextActivationOrdinal();
+            // Identity v2, minted from the lineage this activation entered
+            // under.  The session it publishes into is this replay's own.
+            edu.uva.liftlab.graphchecker.runtime.d3.D3Runtime.configure(
+                    configuration().resultFile);
+            // The node it RAN on, by the planner's own attribution rule --
+            // not the node the plan addressed, which is what an activation
+            // is being checked against.
+            SourceRef ranOn = RuntimeTraceContext.activationSource(receiver);
+            active.d3Address = edu.uva.liftlab.graphchecker.runtime.d3
+                    .D3Runtime.beginActivation(active.token,
+                            ranOn == null ? safe(admitted.sourceKey)
+                                    : ranOn.key(),
+                            admitted.regionId, admitted.taskId);
             LoopRootInvocationContext enclosingInvocation =
                     enclosingLoopRoot(admitted);
             if (enclosingInvocation != null) {
@@ -1692,6 +1707,9 @@ public final class ConcolicRegionRuntime {
                     throw new IllegalStateException(
                             "configured source model could not be written");
                 }
+            } else if (!reused) {
+                applyFocusedRootAssignment(active, safe(sourceId), owner,
+                        safe(fieldSignature), descriptor);
             }
             String symbol = "";
             if (!reused) {
@@ -2157,14 +2175,83 @@ public final class ConcolicRegionRuntime {
                 && result.status != RpcExpressionHandoff.NOT_SYMBOLIC) {
             return;
         }
-        if (!stageMessageExpression(site.portId(),
-                result.ok() ? result.handle() : 0L)) {
+        long handle = result.ok() ? result.handle() : 0L;
+        if (!stageMessageExpression(site.portId(), handle)) {
             recordHandoffGap(RpcExpressionHandoff.portGap(
                     RpcExpressionHandoff.STAGE_EXPORT,
                     RpcExpressionHandoff.MISSING_METADATA,
-                    result.ok() ? result.handle() : 0L, site.portId(),
+                    handle, site.portId(),
                     "communication leaf could not enter the message: "
                             + site.portId()));
+            return;
+        }
+        publishExportRow(site, carrier, field, descriptor, handle);
+    }
+
+    /**
+     * States one export as an endpoint the delivery can be paired to.
+     *
+     * <p>Every export, whether or not a region was live: the producer site
+     * ran and the message carries the value, so the row exists and says
+     * which occurrence produced it -- a degraded one when no live region
+     * did, which is still an endpoint an arm can be keyed by (R-I1) and is
+     * what the OUT side used to spell {@code UNPLANNED}.</p>
+     */
+    private static void publishExportRow(CommunicationHandoffSpec site,
+                                         Object carrier, String field,
+                                         String descriptor, long handle) {
+        beginBookkeeping();
+        try {
+            if (!D3Runtime.open()) return;
+            RuntimeTraceContext.View view = RuntimeTraceContext.current();
+            String nodeKey = view.source == null ? "" : view.source.key();
+            ActiveRegion active = activeRegion();
+            edu.uva.liftlab.graphchecker.d3.contract.OccurrenceAddress
+                    producer = active == null || active.d3Address == null
+                    ? D3Runtime.degraded(nodeKey, site.portId())
+                    : active.d3Address;
+            JsonObject exported = null;
+            String recordedValue = "";
+            try {
+                Field storage = declaredInstanceField(carrier, CARRIER_CLASS,
+                        field, descriptor);
+                if (storage != null) {
+                    Object value = storage.get(carrier);
+                    recordedValue = recordedScalar(value);
+                    JsonElement expression = engineExpression(
+                            engine().fieldExpression(carrier, CARRIER_CLASS,
+                                    field, descriptor, value));
+                    if (expression != null && expression.isJsonObject()) {
+                        exported = expression.getAsJsonObject();
+                    }
+                }
+            } catch (Throwable unreadable) {
+                // The export happened; what it carried could not be read
+                // back here, and the row says the endpoint without it.
+                D3Runtime.gap(
+                        edu.uva.liftlab.graphchecker.d3.contract.GapKind
+                                .UNSTATED_VALUE,
+                        edu.uva.liftlab.graphchecker.d3.contract.GapClass
+                                .DIAGNOSTIC, site.portId(),
+                        "the exported leaf's expression could not be read: "
+                                + rootCause(unreadable));
+            }
+            D3Runtime.exported(producer, site.portId(), handle,
+                    view.exchangeCorrelationId, attemptOf(view), exported,
+                    recordedValue);
+        } catch (Throwable ignored) {
+            // Publishing never ends a workload run.
+        } finally {
+            endBookkeeping();
+        }
+    }
+
+    /** The transport's retry number for this leg, or 0. */
+    private static int attemptOf(RuntimeTraceContext.View view) {
+        try {
+            return Integer.parseInt(safe(view.exchangeAttemptId));
+        } catch (NumberFormatException none) {
+            return 0;
         }
     }
 
@@ -2221,6 +2308,26 @@ public final class ConcolicRegionRuntime {
                             + site.portId()));
             return;
         }
+        Interactions.delivering(handle);
+        try {
+            attachDeliveredLeaf(site, carrier, field, descriptor, carried,
+                    handle, leafCarried);
+        } finally {
+            Interactions.delivered();
+        }
+    }
+
+    /**
+     * Files one delivery on the occurrence it arrived in.
+     *
+     * <p>Split out so the delivery's own pairing evidence -- the VM handle
+     * the producer staged -- is in force for the whole attach, including
+     * the mint, without threading it through four signatures.</p>
+     */
+    private static void attachDeliveredLeaf(
+            CommunicationHandoffSpec site, Object carrier, String field,
+            String descriptor, SymbolicMessageEnvelope.Entry carried,
+            long handle, boolean leafCarried) {
         if (!leafCarried || handle <= 0L) {
             // The delivery carried no producer expression, and the mint
             // happens anyway.  v_H is the consumer's boundary variable,
@@ -2250,6 +2357,45 @@ public final class ConcolicRegionRuntime {
         }
         attachDeclaredCommunicationExpression(carrier, CARRIER_CLASS, field,
                 descriptor, carried, site);
+    }
+
+    /**
+     * Writes the value the wave assigned this root, at its mint.
+     *
+     * <p>Only on the focused occurrence: an obligation's assignment is a
+     * counterfactual about ONE region's roots, and writing it into a region
+     * that merely runs alongside would make the run state something the
+     * obligation never asked.</p>
+     */
+    private static void applyFocusedRootAssignment(
+            ActiveRegion active, String sourceId, Object owner,
+            String fieldSignature, String descriptor) {
+        if (active == null || active.d3Address == null) return;
+        if (!edu.uva.liftlab.graphchecker.runtime.d3.FocusedReplay
+                .focused(active.d3Address)) {
+            return;
+        }
+        String value = edu.uva.liftlab.graphchecker.runtime.d3.FocusedReplay
+                .rootAssignment(sourceId);
+        if (value.isEmpty()) return;
+        if (!writeModeledField(owner, fieldSignature,
+                modelValue(value, descriptor))) {
+            D3Runtime.gap(edu.uva.liftlab.graphchecker.d3.contract.GapKind
+                            .UNPRODUCIBLE_ANSWER,
+                    edu.uva.liftlab.graphchecker.d3.contract.GapClass
+                            .BLOCKING, sourceId,
+                    "the wave's assignment for this root could not be"
+                            + " written into " + fieldSignature);
+        }
+    }
+
+    /** One value the wave stated, as the assignment the writer takes. */
+    private static ModelAssignment modelValue(String value,
+                                              String javaType) {
+        JsonObject stated = new JsonObject();
+        stated.addProperty("value", safe(value));
+        stated.addProperty("valueType", safe(javaType));
+        return new ModelAssignment(stated);
     }
 
     /** The declared site of {@code portId} in this occurrence's plan. */
@@ -2295,8 +2441,19 @@ public final class ConcolicRegionRuntime {
                                              String descriptor,
                                              String producerTaskId,
                                              String producerOccurrenceId) {
+        if (site == null) return;
         ActiveRegion active = attachConsumerRegion(site);
-        if (active == null || site == null) return;
+        if (active == null) {
+            // Same rule on the element-present side: the delivery happened.
+            beginBookkeeping();
+            try {
+                mintAmbientHandoffLeaves(site, owner, declaringClass,
+                        fieldName, descriptor);
+            } finally {
+                endBookkeeping();
+            }
+            return;
+        }
         noteAttachFiledElsewhere(site, active);
         if (safe(producerTaskId).isEmpty()
                 || safe(producerOccurrenceId).isEmpty()) {
@@ -2379,16 +2536,11 @@ public final class ConcolicRegionRuntime {
         try {
             ActiveRegion active = attachConsumerRegion(site);
             if (active == null) {
-                // Nothing is live to carry the mint.  Named, not silent:
-                // "the capture ran outside every selected occurrence" is a
-                // statement about coverage, and it is the only remaining
-                // way this path can publish nothing.
-                recordHandoffGap(RpcExpressionHandoff.portGap(
-                        RpcExpressionHandoff.STAGE_ATTACH,
-                        RpcExpressionHandoff.NO_ACTIVE_REGION, 0L,
-                        site.portId(),
-                        "capture ran outside every selected occurrence: "
-                                + site.portId()));
+                // The entry rule: the port is declared and the value
+                // arrived, so v_H is minted on the ambient activation and
+                // the row states the degraded occurrence it arrived in.
+                mintAmbientHandoffLeaves(site, carrier, CARRIER_CLASS, field,
+                        descriptor);
                 return;
             }
             noteAttachFiledElsewhere(site, active);
@@ -2576,8 +2728,19 @@ public final class ConcolicRegionRuntime {
             // is looked up by it alone.  Naming the port and the element
             // path again beside it was a second spelling of the same fact,
             // and the solver emits the phase.
+            // The endpoint first: an obligation answers an attach BY its
+            // endpoint id (INTERACTION-ID), so the consumer endpoint has to
+            // be named before the answer is written into the leaf.
+            edu.uva.liftlab.graphchecker.d3.contract.Endpoint consumer =
+                    D3Runtime.nextEndpoint(active.d3Address, portId,
+                            attemptOf(RuntimeTraceContext.current()));
             ModelAssignment assignment = active.configuredSourceAssignment(
                     phaseId, phaseId, "", owner);
+            if (assignment == null && consumer != null) {
+                String answer = edu.uva.liftlab.graphchecker.runtime.d3
+                        .FocusedReplay.answer(consumer.id());
+                if (!answer.isEmpty()) assignment = modelValue(answer, descriptor);
+            }
             if (assignment != null
                     && !writeModeledField(owner, signature, assignment)) {
                 throw new IllegalStateException(
@@ -2599,6 +2762,10 @@ public final class ConcolicRegionRuntime {
                 return;
             }
             if (assignment != null) active.recordModelAssignment(assignment);
+            publishAttachRow(consumer, portId,
+                    optionalString(minted, "_exp"), recordedValue,
+                    assignment != null,
+                    assignment == null ? "" : safe(assignment.value));
             active.vmHandoffEvents.add(VmHandoffEvidence.event(portId,
                     exportEvent, attachEvent, producerExpression,
                     producerTaskId, producerOccurrenceId,
@@ -2647,6 +2814,103 @@ public final class ConcolicRegionRuntime {
         // CALL_RETURN attach whose callee has already closed and published
         // lands here, and R5 then reports it against the carrier.
         return carrying.activation.occurrenceId;
+    }
+
+    /**
+     * States one delivered v_H as the consumer endpoint of an interaction.
+     *
+     * <p>The row carries both endpoints: this consumer, and the producer
+     * the run paired it with -- by the VM handle the producer staged, which
+     * is the pairing evidence the run itself recorded.  A delivery nothing
+     * paired says so rather than naming a producer it guessed.</p>
+     */
+    private static void publishAttachRow(
+            edu.uva.liftlab.graphchecker.d3.contract.Endpoint consumer,
+            String portId, String symbol, String arrival, boolean answered,
+            String answeredValue) {
+        if (consumer == null || !D3Runtime.open()) return;
+        try {
+            RuntimeTraceContext.View view = RuntimeTraceContext.current();
+            D3Runtime.attachedAt(consumer, portId,
+                    Interactions.deliveryHandle(),
+                    view.exchangeCorrelationId, symbol, arrival, answered,
+                    answeredValue);
+        } catch (Throwable ignored) {
+            // Publishing never ends a workload run.
+        }
+    }
+
+    /**
+     * Mints v_H at a declared port that arrived outside every selected
+     * occurrence -- the entry rule.
+     *
+     * <p>Every declared port mints on arrival, whatever is selected: the
+     * value crossed the boundary and the consumer's formula needs a free
+     * variable there, and which occurrence it happened in is what the row
+     * says about itself rather than a condition on saying it.  Selection
+     * decides only whose paths are explored (REPORT-ENTRY §2).  Path
+     * recording is deliberately NOT started: an unselected activation
+     * records no path, which is precisely what not selecting it means.</p>
+     */
+    private static void mintAmbientHandoffLeaves(
+            CommunicationHandoffSpec site, Object owner,
+            String declaringClass, String fieldName, String descriptor) {
+        String portId = safe(site.portId());
+        if (!D3Runtime.open()) return;
+        RuntimeTraceContext.View view = RuntimeTraceContext.current();
+        String nodeKey = view.source == null ? "" : view.source.key();
+        edu.uva.liftlab.graphchecker.d3.contract.OccurrenceAddress consumer =
+                D3Runtime.degraded(nodeKey, portId);
+        if (consumer == null) {
+            D3Runtime.gap(edu.uva.liftlab.graphchecker.d3.contract.GapKind
+                            .LINEAGE_LOST,
+                    edu.uva.liftlab.graphchecker.d3.contract.GapClass
+                            .BLOCKING, portId,
+                    "a declared port arrived on a thread naming no node, so"
+                            + " the delivery has no consumer address");
+            return;
+        }
+        Field element = declaredInstanceField(owner, declaringClass,
+                fieldName, descriptor);
+        List<HandoffLeaf> leaves = handoffLeaves(owner, element);
+        if (leaves.isEmpty()) {
+            D3Runtime.gap(edu.uva.liftlab.graphchecker.d3.contract.GapKind
+                            .UNSTATED_VALUE,
+                    edu.uva.liftlab.graphchecker.d3.contract.GapClass
+                            .DIAGNOSTIC, portId,
+                    "the delivered element exposes no primitive leaf to mint"
+                            + " a boundary variable on");
+            return;
+        }
+        for (HandoffLeaf leaf : leaves) {
+            try {
+                ConcolicVmBroker api = engine();
+                Field field = leaf.field;
+                String recordedValue = recordedScalar(field.get(leaf.owner));
+                String phaseId = HandoffPhaseContract.phaseId(portId,
+                        consumer.render(), 1, leaf.path);
+                api.symbolizeExactField(leaf.owner, leaf.signature(),
+                        HandoffPhaseContract.engineLabelForPhase(phaseId,
+                                portId));
+                JsonObject minted = exactSymbolOf(engineExpression(
+                        api.fieldExpression(leaf.owner,
+                                field.getDeclaringClass().getName(),
+                                field.getName(), javaTypeDescriptor(
+                                        field.getType().getTypeName()),
+                                field.get(leaf.owner))));
+                publishAttachRow(D3Runtime.nextEndpoint(consumer, portId,
+                                attemptOf(view)), portId,
+                        minted == null ? "" : optionalString(minted, "_exp"),
+                        recordedValue, false, "");
+            } catch (Throwable failure) {
+                D3Runtime.gap(edu.uva.liftlab.graphchecker.d3.contract.GapKind
+                                .UNSTATED_VALUE,
+                        edu.uva.liftlab.graphchecker.d3.contract.GapClass
+                                .DIAGNOSTIC, portId,
+                        "the entry-rule mint failed at " + portId + ": "
+                                + rootCause(failure));
+            }
+        }
     }
 
     /** One primitive leaf of one attach, and how the row names it. */
@@ -5843,6 +6107,17 @@ public final class ConcolicRegionRuntime {
         final long token;
         /** The one task whose region-local path this activation records. */
         final RuntimeTask activation;
+        /**
+         * This activation's identity v2 address, or null when this run can
+         * name no node to put it on.
+         *
+         * <p>{@code node#epoch / lineage hops / region#k} (IDENTITY-V2): the
+         * address every Design 3 row of this activation is keyed by.  The v1
+         * {@link #occurrenceId()} is unchanged beside it -- the two are
+         * minted from the same activation and nothing reads one for the
+         * other.</p>
+         */
+        edu.uva.liftlab.graphchecker.d3.contract.OccurrenceAddress d3Address;
         /**
          * This activation's ordinal within its address, taken at admission so
          * every symbol, mint row and handoff lineage it publishes can name
