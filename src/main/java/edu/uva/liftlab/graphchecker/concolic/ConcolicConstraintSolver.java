@@ -1274,8 +1274,9 @@ public final class ConcolicConstraintSolver {
             String observed = optionalString(action, "primitiveValue").trim();
             if (observed.isEmpty()) continue;
             try {
-                encoder.assertions.add(ClockRootPhysics.window(names.solver,
-                        Long.parseLong(observed), clockSkewMillis));
+                String window = ClockRootPhysics.window(names.solver,
+                        Long.parseLong(observed), clockSkewMillis);
+                if (!window.isEmpty()) encoder.assertions.add(window);
             } catch (NumberFormatException notAnInstant) {
                 // A clock read the recording states no instant for is not
                 // windowed here; the composer names it.

@@ -2235,6 +2235,17 @@ public final class PathMergeComposer {
             row.addProperty("solverTerm",
                     optionalString(root, "solverTerm"));
             row.addProperty("wallClock", wallClockRead(root));
+            // What the case said this root may be, resolved.  The row a
+            // mechanism is read against has to carry it: a move inside a
+            // declared domain is the rotation the case is about, and one
+            // outside it is a root the formula let loose -- the same two
+            // sentences a clock's window separates, told apart by the same
+            // members.
+            for (String bound : new String[]{DECLARED_DOMAIN_MIN,
+                    DECLARED_DOMAIN_MAX}) {
+                String stated = optionalString(root, bound);
+                if (!stated.isEmpty()) row.addProperty(bound, stated);
+            }
             // Carried so a reader can tell a handoff variable from a root
             // without matching on a symbol's spelling.
             row.addProperty(InSessionReadResolver.HANDOFF_PHASE_ID,
@@ -2364,6 +2375,19 @@ public final class PathMergeComposer {
         Path z3;
         long clockSkewMillis = ClockRootPhysics.DEFAULT_SKEW_MILLIS;
 
+        /**
+         * A stated skew, or the case's claim that a clock has no bound.
+         *
+         * <p>"unbounded" is a statement, not an absent value: the case says
+         * a wall clock carries no physics to appeal to, and the formula then
+         * asserts no window for any cell.</p>
+         */
+        static long skewMillis(String value) {
+            return "unbounded".equals(firstNonBlank(value).trim())
+                    ? ClockRootPhysics.UNBOUNDED_SKEW_MILLIS
+                    : Long.parseLong(value);
+        }
+
         public static Arguments parse(String[] argv) {
             Arguments result = new Arguments();
             for (int index = 0; index < argv.length; index += 2) {
@@ -2396,7 +2420,7 @@ public final class PathMergeComposer {
                     result.z3 = value.trim().isEmpty()
                             ? null : Paths.get(value);
                 } else if ("--clock-skew-ms".equals(key)) {
-                    result.clockSkewMillis = Long.parseLong(value);
+                    result.clockSkewMillis = skewMillis(value);
                 } else if (!"--dead-case-rlimit".equals(key)) {
                     throw new IllegalArgumentException(
                             "unknown option " + key);

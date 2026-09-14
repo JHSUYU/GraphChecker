@@ -335,6 +335,35 @@ public final class WitnessLegitimacy {
             decorationRows.add(decoration.toJson());
         }
         row.add("decorations", decorationRows);
+        // A declared root moved inside its domain is the statement a
+        // flipped marker makes, in the spelling a root with more than two
+        // values needs.  It joins the flipped list, so the sentences that
+        // read that list -- "the witness reproduces the recorded case" and
+        // the narrative's prefix -- say what this witness actually did.
+        for (JsonElement element : legitimate) {
+            if (!element.isJsonObject()) continue;
+            JsonObject mechanism = element.getAsJsonObject();
+            String term = optionalString(mechanism, "solverTerm");
+            if (!MARKER_FLIPPED.equals(optionalString(mechanism, "kind"))
+                    || term.isEmpty() || namesTerm(flipped, term)) {
+                continue;
+            }
+            JsonObject moved = new JsonObject();
+            String where = optionalString(mechanism, "siteId");
+            moved.addProperty("sourceIdentity", where);
+            moved.addProperty("siteId", where);
+            moved.addProperty("solverTerm", term);
+            moved.addProperty("recordedValue",
+                    optionalString(mechanism, "recordedValue"));
+            moved.addProperty("witnessValue",
+                    optionalString(mechanism, "witnessValue"));
+            moved.addProperty("recordedPolarityStated", true);
+            moved.addProperty("flipped", true);
+            flipped.add(moved);
+        }
+        row.addProperty("flippedMarkerCount", flipped.size());
+        row.addProperty("allRecorded",
+                assignment.size() > 0 && flipped.size() == 0);
         String kind = findingKind(legitimate, flipped, assignment,
                 recordedFailureExplained);
         row.addProperty(FINDING_KIND, kind);
@@ -371,6 +400,17 @@ public final class WitnessLegitimacy {
             return RECORDED_FAILURE_EXPLAINED;
         }
         return "";
+    }
+
+    /** Whether one of these rows already speaks for that solver term. */
+    private static boolean namesTerm(JsonArray rows, String term) {
+        for (JsonElement element : rows) {
+            if (element.isJsonObject() && term.equals(optionalString(
+                    element.getAsJsonObject(), "solverTerm"))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static boolean namesKind(JsonArray mechanisms, String kind) {

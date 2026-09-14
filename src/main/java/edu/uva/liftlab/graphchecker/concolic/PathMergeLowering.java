@@ -723,8 +723,9 @@ final class PathMergeLowering extends VmLoweringCore {
             List<String> windows = new ArrayList<>();
             for (String reading : entry.getValue()) {
                 try {
-                    windows.add(ClockRootPhysics.window(entry.getKey(),
-                            Long.parseLong(reading), skewMillis));
+                    String window = ClockRootPhysics.window(entry.getKey(),
+                            Long.parseLong(reading), skewMillis);
+                    if (!window.isEmpty()) windows.add(window);
                 } catch (NumberFormatException notAnInstant) {
                     // A reading that is not an instant states no window;
                     // the path that read it carries whatever it does.

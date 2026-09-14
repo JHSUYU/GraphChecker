@@ -620,13 +620,15 @@ for config_row in "${workflow_config_keys[@]}"; do
       || fail "internal key ${config_key} is loadable from a config file"
   fi
 done
-# 42: `replay_task_budget` joined the table in bef2db898 without this count
+# 43: `replay_task_budget` joined the table in bef2db898 without this count
 # being raised and has since been deleted -- it capped nothing, no experiment
 # set it, and its own test asserted it dropped no task.  `composer` joined it
-# when the composition became selectable, and `declared_target_occurrence`
-# joined it in 05d413cae -- again without this count being raised, which left
-# the whole helper test red on staging until REPORT-GAPJOIN found it.
-[[ "$(print_normalized_config | wc -l)" -eq 42 ]] \
+# when the composition became selectable, `declared_target_occurrence` joined
+# it in 05d413cae -- again without this count being raised, which left the
+# whole helper test red on staging until REPORT-GAPJOIN found it -- and
+# `causynth_root_domains` joined it in a6da088f1, where the case gained a way
+# to say what a declared root may be.
+[[ "$(print_normalized_config | wc -l)" -eq 43 ]] \
   || fail "config prints a different number of keys than it used to: \
 $(print_normalized_config | wc -l)"
 

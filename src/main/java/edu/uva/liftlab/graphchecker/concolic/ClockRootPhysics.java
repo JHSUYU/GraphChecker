@@ -84,8 +84,38 @@ public final class ClockRootPhysics {
         return declaredCallee != null && CLOCK_CALLEES.contains(declaredCallee);
     }
 
-    /** The window one read's value may take, as an SMT constraint. */
+    /**
+     * The skew a case states when it claims no bound on a clock at all.
+     *
+     * <p>A wall clock carries no physics this checker can appeal to: two
+     * nodes' clocks are whatever they are, and a bound on their difference
+     * is a number somebody picked.  A case that says so declares this, and
+     * every cell is then free -- which is the honest formula, not a lax one:
+     * what the execution actually fixes is stated elsewhere, by the order
+     * its own readings came in and by the values each path read.</p>
+     */
+    public static final long UNBOUNDED_SKEW_MILLIS = Long.MAX_VALUE;
+
+    /** Whether the case declared no bound on how far a clock may sit. */
+    public static boolean unbounded(long skewMillis) {
+        return skewMillis >= UNBOUNDED_SKEW_MILLIS;
+    }
+
+    /**
+     * The window one read's value may take, or the bare floor when the case
+     * declares none.
+     *
+     * <p>An unbounded case states no bound relative to the recording: no
+     * distance, no direction, no ordering between nodes.  What stays is the
+     * one thing that makes a value a time at all -- a millisecond count
+     * since the epoch is not negative.  Without it a free cell comes back at
+     * values no clock returns and every witness resting on one is refused as
+     * {@code ABSURD_CLOCK_VALUE}, which answers a question about the solver
+     * rather than about the program.  This is not a window: two cells may
+     * sit any distance apart and in any order.</p>
+     */
     static String window(String term, long recordedValue, long skewMillis) {
+        if (unbounded(skewMillis)) return "(>= " + term + " 0)";
         return "(and (>= " + term + " " + literal(recordedValue - skewMillis)
                 + ") (<= " + term + " "
                 + literal(recordedValue + skewMillis) + "))";

@@ -1286,7 +1286,17 @@ public final class ClaimPolicy {
                 if (explainedOrdinal < 0) {
                     explainedOrdinal = index;
                 }
-                if (!flippedMarkers(candidate, planted).isEmpty()) {
+                // A witness that moved a declared root off what the
+                // recording read is the buggy one, in either spelling: a
+                // planted Boolean marker at its other polarity, or a root
+                // the case gave a domain moved inside it.  The two are one
+                // question asked of one kind of declaration -- the Boolean
+                // is the two-value domain -- so the acceptance that already
+                // preferred the first is the acceptance for both.
+                if (!flippedMarkers(candidate, planted).isEmpty()
+                        || WitnessLegitimacy.MARKER_FLIPPED.equals(
+                        optionalString(finding,
+                                WitnessLegitimacy.FINDING_KIND))) {
                     flippedWitnessAccepted = true;
                     if (acceptedOrdinal < 0) {
                         acceptedOrdinal = index;
@@ -1319,8 +1329,13 @@ public final class ClaimPolicy {
         // every clock going back to what it recorded is a witness the clock
         // played no part in, and accepting it publishes a clock finding the
         // formula does not support.
+        // ...and a run that accepted a witness moving a declared root is not
+        // that case at all: its hypothesis is the root, the finding names
+        // it, and asking the clock to be necessary asks the run to be a
+        // different finding.
         boolean clockOnly = planted.isEmpty()
-                && !clockNecessity.isEmpty();
+                && !clockNecessity.isEmpty()
+                && !flippedWitnessAccepted;
         // A recorded-failure run states no hypothesis about a flip: its
         // finding is that the recording itself reaches the target and every
         // enumerated flip refutes it.  Asking it for a satisfied flipped
@@ -2226,7 +2241,14 @@ public final class ClaimPolicy {
             if (!where.isEmpty()) {
                 text.append(" (").append(where).append(')');
             }
-            text.append(" = ").append(optionalBool(row, "value", false));
+            // A marker has a polarity; a root with a domain has a value it
+            // moved to, and saying "= false" of a serial number is not the
+            // sentence either of them makes.
+            String witnessed = optionalString(row, "witnessValue");
+            text.append(" = ").append(witnessed.isEmpty()
+                    ? String.valueOf(optionalBool(row, "value", false))
+                    : optionalString(row, "recordedValue") + " -> "
+                    + witnessed);
             if (!optionalBool(row, "recordedPolarityStated", false)) {
                 // Said out loud, and not guessed past: nothing observed this
                 // root's recorded value, so there is no polarity to compare

@@ -144,6 +144,48 @@ public class ClaimPolicyTest {
                 .get("acceptedFindingKind").getAsString());
         assertFalse(refused.getAsJsonObject("rootSpace")
                 .get("recordedFailureExplained").getAsBoolean());
+
+        // A declared root is enumerated over its domain exactly as a marker
+        // is over {recorded, flipped}, so the valuation that moved it is the
+        // witness the claim rests on, and the claim names the root and the
+        // distance: bug3's key rotation is one step of a serial number.
+        JsonObject rotated = markerManifest();
+        rotated.add(ComposedManifest.RECORDED_ROOT_VALUES, parseArray(
+                "[{'solverTerm':'sn','sourceId':'HDFS.BLOCK_KEY.SERIAL_NO',"
+                + "'siteId':'<M: int serialNo>','recordedValue':'119982',"
+                + "'declaredDomainMin':'119982','declaredDomainMax':'119985',"
+                + "'wallClock':false}]".replace('\'', '"')));
+        // The composition states the domain on both rows it publishes about
+        // a root: the one a mechanism is read against and the one the
+        // enumeration reads.
+        rotated.add(PathMergeComposer.MANIFEST_FIELD, parse(
+                "{'roots':[{'solverTerm':'sn','declaredDomainMin':'119982',"
+                + "'declaredDomainMax':'119985'}]}".replace('\'', '"')));
+        JsonObject moved = reach();
+        moved.add("roots", parse("{\"existentialInputs\":[{\"sourceId\":"
+                + "\"HDFS.BLOCK_KEY.SERIAL_NO\",\"solverTerm\":\"sn\","
+                + "\"javaTypeDescriptor\":\"I\"}],\"booleanInputs\":[]}"));
+        moved.add("valuations", parseArray(
+                "[{\"values\":[],\"status\":\"sat\"},"
+                + "{\"values\":[],\"status\":\"sat\",\"rootAssignment\":"
+                + "{\"sn\":\"119983\"},\"witnessMechanisms\":[{\"kind\":"
+                + "\"MARKER_FLIPPED\",\"solverTerm\":\"sn\",\"siteId\":"
+                + "\"<M: int serialNo>\",\"recordedValue\":\"119982\","
+                + "\"witnessValue\":\"119983\"}]}]"));
+        JsonObject rotation = accepted(rotated, moved);
+        JsonObject space = rotation.getAsJsonObject("rootSpace");
+        assertEquals(WitnessLegitimacy.MARKER_FLIPPED,
+                space.get("acceptedFindingKind").getAsString());
+        assertEquals(1, space.get("acceptedValuationOrdinal").getAsInt());
+        assertTrue(rotation.get("claimReason").getAsString(),
+                rotation.get("claimReason").getAsString()
+                        .contains("119982 -> 119983"));
+
+        // And a root the case declared no domain for is never a value to
+        // enumerate: the composition pinned it to its recording.
+        assertTrue(RootValuationSolver.declaredDomains(
+                markerManifest()).isEmpty());
+        assertEquals(1, RootValuationSolver.declaredDomains(rotated).size());
     }
 
     private static JsonObject withheld(JsonObject manifest, JsonObject reach) {
