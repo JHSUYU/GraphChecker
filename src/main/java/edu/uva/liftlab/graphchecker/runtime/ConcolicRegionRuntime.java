@@ -5760,6 +5760,17 @@ public final class ConcolicRegionRuntime {
         final long startedAtMillis = System.currentTimeMillis();
         /** The thread this activation ran on, as the recording names it. */
         final String threadName = Thread.currentThread().getName();
+        /**
+         * The request in force when this activation was entered, or "".
+         *
+         * <p>Never an admission condition -- an occurrence is (node, epoch,
+         * region, k) and the request is a circumstance -- but the circumstance
+         * has to be on the row: a task anchored to one request answered by an
+         * activation that ran under none is a divergence IMPORT must name,
+         * and nothing published it.</p>
+         */
+        final String entryRequestKey =
+                RuntimeTraceContext.current().requestKey;
         private final long startedAtNanos = System.nanoTime();
 
         long elapsedMillis() {

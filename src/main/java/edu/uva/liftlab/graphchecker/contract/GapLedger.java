@@ -655,6 +655,14 @@ public final class GapLedger {
         blocking(contract, "PUBLICATION_TARGET_PREDICATE_UNSTATED",
                 "the target reach event names no site, so the anchor has no"
                         + " predicate to compose");
+        blocking(contract, "ACTIVATION_REQUEST_DIVERGED",
+                "the activation that answered the address ran under a"
+                        + " different request than the one the task's causal"
+                        + " anchor names, or under none: the address is the"
+                        + " identity and the request is a circumstance, but a"
+                        + " circumstance the recording had and the replay did"
+                        + " not is a divergence, and a send made under no"
+                        + " request carries no envelope at all");
         blocking(contract, "PUBLICATION_WRITE_LOG_INCOMPLETE",
                 "a published write log cannot be read back, so every read of"
                         + " that location is unresolvable");

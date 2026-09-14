@@ -100,6 +100,80 @@ public class PublicationContractTest {
         assertTrue(table.get(1), table.get(1).contains("TASK.a"));
     }
 
+    /**
+     * An activation that answered the address under another request is named.
+     *
+     * <p>The address is the identity and the request is a circumstance -- so
+     * the activation is admitted -- but a circumstance the recording had and
+     * the replay did not is a divergence, and it was silent.  On hdfs-17899
+     * bug2 the SPS's BlockKeyUpdater daemon answers the {@code addKeys}
+     * occurrence the recording took on {@code main} inside
+     * {@code refresh-block-keys#1} while carrying no request at all, and the
+     * send it then makes has no request to name.</p>
+     */
+    @Test
+    public void anActivationUnderAnotherRequestIsNamed() {
+        JsonObject task = anchored(target("TASK.a"),
+                "wl/nn0#epoch0/request/refresh-block-keys#1");
+        JsonObject ran = summary("TASK.a", SITE, TARGET_SITE);
+        ran.addProperty("requestKey", "");
+        ran.addProperty("threadName", "KeyManager$BlockKeyUpdater@1");
+
+        List<JsonObject> rows = PublicationContract.check(tasks(task),
+                Collections.singletonList(ran),
+                Collections.<JsonObject>emptyList());
+
+        assertEquals(1, rows.size());
+        assertEquals(PublicationContract.ACTIVATION_REQUEST_DIVERGED,
+                rows.get(0).get("code").getAsString());
+        String detail = rows.get(0).get("detail").getAsString();
+        assertTrue(detail, detail.contains("no request"));
+        assertTrue(detail, detail.contains("refresh-block-keys#1"));
+        assertTrue(detail, detail.contains("KeyManager$BlockKeyUpdater@1"));
+    }
+
+    /** Under the request the anchor names, nothing is said. */
+    @Test
+    public void anActivationUnderTheAnchoredRequestIsNotNamed() {
+        String request = "wl/nn0#epoch0/request/refresh-block-keys#1";
+        JsonObject task = anchored(target("TASK.a"), request);
+        JsonObject ran = summary("TASK.a", SITE, TARGET_SITE);
+        ran.addProperty("requestKey", request);
+        ran.addProperty("threadName", "main");
+
+        assertTrue(PublicationContract.check(tasks(task),
+                Collections.singletonList(ran),
+                Collections.<JsonObject>emptyList()).isEmpty());
+    }
+
+    /** A task whose anchor names no request diverges from nothing. */
+    @Test
+    public void aTaskWithNoAnchoredRequestIsNotNamed() {
+        JsonObject ran = summary("TASK.a", SITE, TARGET_SITE);
+        ran.addProperty("requestKey", "");
+        ran.addProperty("threadName", "KeyManager$BlockKeyUpdater@1");
+
+        assertTrue(PublicationContract.check(tasks(target("TASK.a")),
+                Collections.singletonList(ran),
+                Collections.<JsonObject>emptyList()).isEmpty());
+    }
+
+    /** The same task row, with a causal anchor naming one request. */
+    private static JsonObject anchored(JsonObject row, String requestKey) {
+        JsonObject anchor = new JsonObject();
+        anchor.addProperty("kind", "REGISTERED_SOURCE");
+        anchor.addProperty("sourceKey", "wl/nn0#epoch0");
+        anchor.addProperty("requestKey", requestKey);
+        anchor.addProperty("requestApi", "refresh-block-keys");
+        JsonObject selector = new JsonObject();
+        selector.addProperty("kind", "GLOBAL_INVOCATION");
+        selector.addProperty("invocationOrdinal", 1);
+        selector.addProperty("method", "<fixture.Saver: void save(java.io.OutputStream)>");
+        selector.add("causalAnchor", anchor);
+        row.add("rootSelector", selector);
+        return row;
+    }
+
     private static Map<String, ExecutionTask> tasks(JsonObject... rows) {
         Map<String, ExecutionTask> tasks = new LinkedHashMap<>();
         for (JsonObject row : rows) {
