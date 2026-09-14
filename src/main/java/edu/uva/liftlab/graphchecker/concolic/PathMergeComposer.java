@@ -133,6 +133,18 @@ public final class PathMergeComposer {
     public static Result compose(Arguments arguments) throws IOException {
         SharedExpressionTable.Decoder expressions =
                 new SharedExpressionTable.Decoder();
+        // An anchor this run published no exact reach query for is an anchor
+        // no replay reached with a stated path, which is what
+        // TARGET_NOT_REACHED says.  It is a refusal about one occurrence, not
+        // a failure of the run: the other anchored occurrences still compose,
+        // and a campaign that loses its formula because one anchor had no
+        // path states nothing about any of them.
+        if (arguments.fatalQueries == null
+                || !Files.isRegularFile(arguments.fatalQueries)) {
+            return refused(arguments, TARGET_NOT_REACHED,
+                    "this run published no exact reach query for the "
+                            + "selected occurrence: " + arguments.fatalQueries);
+        }
         List<JsonObject> queries = expressions.expandAll(
                 ArtifactIO.readJsonl(arguments.fatalQueries,
                         "Malformed target reach query %1$s:%2$d",

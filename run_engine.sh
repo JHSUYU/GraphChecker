@@ -2308,7 +2308,7 @@ campaign_publish_wave() {
 # The builder requires exactly one solver-ready target seed and publishes the
 # exact observed target paths it can justify.
 campaign_target_reach_query() {
-  local iteration_dir=$1 elected=$2
+  local iteration_dir=$1
   local resolved="${causynth_output_dir}/target_resolved.json"
   local exception="" built=0
   local role campaign_id region occurrence goal task target_reach
@@ -2318,24 +2318,21 @@ campaign_target_reach_query() {
     campaign_fail EXPLORE TargetReachPathQueryBuilder "${resolved}" \
       "no target attestation names the selected exception"
   fi
-  # One reach query per observed occurrence of the annotated target, not one
-  # for the elected member alone.  Each is built from that occurrence's own
-  # closed worklist over the one shared closure the wave loop published, so
-  # the queries differ exactly where the executions differed.  Only the
-  # elected member's query is mandatory: it is the one every later stage is
-  # guaranteed to have.  A sibling occurrence whose worklist never closed has
-  # nothing to state, and saying so is a skip the composition reports rather
-  # than a campaign failure.
+  # One reach query per observed occurrence of the annotated target.  Each is
+  # built from that occurrence's own closed worklist over the one shared
+  # closure the wave loop published, so the queries differ exactly where the
+  # executions differed.  No occurrence is privileged: there is no elected
+  # member here.  An occurrence whose worklist never closed has no path to
+  # state, and that is TARGET_NOT_REACHED for that one anchor -- a refusal
+  # the composition publishes about it, with the reason left beside the
+  # absent query -- not a failure of the run, which still has whatever the
+  # other anchored occurrences reached.
   while IFS=$'\t' read -r role campaign_id region occurrence goal task \
       target_reach; do
     [[ "${target_reach}" == "true" ]] || continue
     if campaign_member_reach_query "${iteration_dir}" "${task}" \
         "${occurrence}"; then
       built=$((built + 1))
-    elif [[ "${task}" == "${elected}" ]]; then
-      campaign_fail EXPLORE TargetReachPathQueryBuilder \
-        "${iteration_dir}/workers/${task}" \
-        "the elected target published no exact reach query"
     fi
   done <<<"${campaign_member_rows}"
   campaign_log "target reach queries: ${built}"
@@ -2409,7 +2406,7 @@ campaign_explore_stop() {
 campaign_explore() {
   local iteration_dir=$1 iteration_id=$2
   local role campaign_id region occurrence goal task member planner_dir
-  local worklist key_rows key worker_dir target_task="" wave_dir roster
+  local worklist key_rows key worker_dir wave_dir roster
   local status=0 wave=0 pending=0 job planner_index
   local wave_signature="" previous_signature="" stop_kind="" stop_reason=""
   local summaries="${iteration_dir}/linked_observed_path_summaries.jsonl"
@@ -2456,9 +2453,6 @@ campaign_explore() {
     while IFS=$'\t' read -r role campaign_id region occurrence goal task \
         target_reach; do
       member="${iteration_dir}/workers/${task}"
-      if [[ "${role}" == "TARGET" ]]; then
-        target_task=${task}
-      fi
       planner_dir=$(printf '%s/obligations-%04d' "${member}" "${wave}")
       [[ ! -e "${planner_dir}" ]] || die \
         "obligation wave directory already exists: ${planner_dir}"
@@ -2632,7 +2626,7 @@ obligation(s) as the wave before it with no new verdict"
     ln -f "${summaries}" "${member}/observed_path_summaries.jsonl"
     ln -f "${tasks}" "${member}/observed_execution_tasks.jsonl"
   done <<<"${campaign_member_rows}"
-  campaign_target_reach_query "${iteration_dir}" "${target_task}"
+  campaign_target_reach_query "${iteration_dir}"
   campaign_log "closure exploration stopped after ${wave} global wave(s)"
 }
 
@@ -2781,8 +2775,6 @@ campaign_compose() {
   [[ ! -e "${campaign_final}" ]] || die \
     "the final directory already exists: ${campaign_final}"
   mkdir -p "${campaign_final}/targets"
-  require_nonempty "target reach query" \
-    "${iteration_dir}/workers/${target_task}/reach_query.jsonl"
   observed="${iteration_dir}/closure_observed_summaries.jsonl"
   campaign_json combine summaryId "${observed}" "${observed_inputs[@]}"
   require_nonempty "closure-wide observed summaries" "${observed}"
@@ -2828,13 +2820,14 @@ campaign_compose_occurrence() {
   target_dir="${campaign_final}/targets/${key}"
   [[ ! -e "${target_dir}" ]] || die \
     "two target occurrences share one artifact directory: ${target_dir}"
+  # An occurrence with no exact reach query still composes.  The Composer
+  # refuses it TARGET_NOT_REACHED and publishes the refusal as this
+  # occurrence's own artifact, which is what "no path at all" means about one
+  # anchor; the reason the query is absent is carried into the row beside it.
   if [[ ! -s "${member}/reach_query.jsonl" ]]; then
     [[ ! -s "${member}/reach_query.skipped" ]] \
       || detail=$(<"${member}/reach_query.skipped")
-    campaign_report_target_occurrence "${occurrence}" "${region}" \
-      "${task}" "" SKIPPED_UNOBSERVED \
-      "${detail:-this occurrence published no exact reach query}" -1
-    return 0
+    detail="${detail:-this occurrence published no exact reach query}"
   fi
   mkdir -p "${target_dir}"
   fatal_queries="${member}/reach_query.jsonl"
@@ -2862,7 +2855,7 @@ campaign_compose_occurrence() {
   require_nonempty "candidate SMT" "${composed_smt}"
   require_nonempty "candidate composition manifest" "${composition_manifest}"
   campaign_report_target_occurrence "${occurrence}" "${region}" "${task}" \
-    "${target_dir}" COMPOSED "" "${millis}"
+    "${target_dir}" COMPOSED "${detail}" "${millis}"
   printf '%s\t%s\n' "COMPOSE[${occurrence}]" "${millis}" \
     >>"${campaign_stage_metrics}"
   campaign_log "composed ${occurrence} in ${millis}ms status=$(jq -r \

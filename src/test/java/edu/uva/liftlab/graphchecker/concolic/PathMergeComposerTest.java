@@ -298,6 +298,48 @@ public class PathMergeComposerTest {
         return summary;
     }
 
+    /**
+     * The laneBF shape: two anchored occurrences of the target, and one of
+     * them whose path worklist never closed, so EXPLORE published no exact
+     * reach query for it at all.  That anchor has no path, which is
+     * TARGET_NOT_REACHED about that occurrence; it is not a reason for the
+     * run to fail, and the sibling occurrence's own composition is
+     * untouched by it.
+     */
+    @Test
+    public void anAnchorWithNoReachQueryIsRefusedNotFailed()
+            throws Exception {
+        Path directory = Files.createTempDirectory("path-merge-no-query");
+        Path summaries = directory.resolve("summaries.jsonl");
+        write(summaries, JsonFields.WRITER.toJson(
+                SharedExpressionTable.compact(summary("GROUP.SEED"))) + "\n");
+        Path absent = directory.resolve("reach_query.jsonl");
+        assertFalse("the fixture must not publish a reach query",
+                Files.exists(absent));
+        PathMergeComposer.Arguments arguments =
+                PathMergeComposer.Arguments.parse(new String[]{
+                        "--fatal-query", absent.toString(),
+                        "--summaries", summaries.toString(),
+                        "--output",
+                        directory.resolve("candidate.smt2").toString(),
+                        "--manifest",
+                        directory.resolve("manifest.json").toString(),
+                        "--occurrence-id",
+                        "node0/region/REGION.example#2"});
+        PathMergeComposer.Result result =
+                PathMergeComposer.compose(arguments);
+        assertEquals("FINAL_REFUSED", JsonFields.optionalString(
+                result.manifest, ComposedManifest.FINAL_STATUS));
+        List<String> refusals = new ArrayList<>();
+        for (com.google.gson.JsonElement row
+                : result.manifest.getAsJsonArray("finalStatusRefusals")) {
+            refusals.add(JsonFields.optionalString(
+                    row.getAsJsonObject(), "kind"));
+        }
+        assertEquals(java.util.Collections.singletonList(
+                PathMergeComposer.TARGET_NOT_REACHED), refusals);
+    }
+
     private static PathMergeComposer.Result compose(Path directory,
                                                     JsonObject query)
             throws IOException {
