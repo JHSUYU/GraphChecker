@@ -96,6 +96,8 @@ public final class InSessionReadResolver {
     private final Map<String, JsonElement> definitions;
     /** Attach event id -> the producer expression that arrived there. */
     private final Map<Long, JsonElement> handoffs;
+    /** The whole handoff row, by attach event: the source of {@code v_H}. */
+    private final Map<Long, JsonObject> handoffRows;
     /** "kind/rid#slot\nversion" -> that write's expression. */
     private final Map<String, JsonElement> writes;
     /** The same key -> whether that version predates tracking. */
@@ -121,11 +123,13 @@ public final class InSessionReadResolver {
     private InSessionReadResolver(
             Map<String, JsonElement> definitions,
             Map<Long, JsonElement> handoffs,
+            Map<Long, JsonObject> handoffRows,
             Map<String, JsonElement> writes,
             Set<String> initialVersions,
             Map<String, TreeMap<Long, String>> locationVersions) {
         this.definitions = definitions;
         this.handoffs = handoffs;
+        this.handoffRows = handoffRows;
         this.writes = writes;
         this.initialVersions = initialVersions;
         this.locationVersions = locationVersions;
@@ -144,11 +148,13 @@ public final class InSessionReadResolver {
             Collection<JsonObject> replayRows) {
         Map<String, JsonElement> definitions = new LinkedHashMap<>();
         Map<Long, JsonElement> handoffs = new LinkedHashMap<>();
+        Map<Long, JsonObject> handoffRows = new LinkedHashMap<>();
         Map<String, JsonElement> writes = new LinkedHashMap<>();
         Set<String> initial = new LinkedHashSet<>();
         Map<String, TreeMap<Long, String>> byLocation = new LinkedHashMap<>();
         if (replayRows == null) {
-            return new InSessionReadResolver(definitions, handoffs, writes,
+            return new InSessionReadResolver(definitions, handoffs,
+                    handoffRows, writes,
                     initial, byLocation);
         }
         for (JsonObject row : replayRows) {
@@ -170,8 +176,11 @@ public final class InSessionReadResolver {
                 if (!encoded.isJsonObject()) continue;
                 JsonObject event = encoded.getAsJsonObject();
                 long attach = optionalLongInteger(event, "attachEventId", -1L);
-                if (attach >= 0L && event.has("expression")) {
-                    handoffs.putIfAbsent(attach, event.get("expression"));
+                if (attach >= 0L) {
+                    handoffRows.putIfAbsent(attach, event);
+                    if (event.has("expression")) {
+                        handoffs.putIfAbsent(attach, event.get("expression"));
+                    }
                 }
             }
             for (JsonElement encoded : array(row, "sharedFieldVersions")) {
@@ -203,7 +212,8 @@ public final class InSessionReadResolver {
                 }
             }
         }
-        return new InSessionReadResolver(definitions, handoffs, writes,
+        return new InSessionReadResolver(definitions, handoffs,
+                handoffRows, writes,
                 initial, byLocation);
     }
 
@@ -304,6 +314,20 @@ public final class InSessionReadResolver {
             // it records that the hop happened and who produced it, not a
             // second expression -- so following it instead re-enters this
             // node and the cycle guard refuses a value that was determined.
+            // The value that crossed the wire is a free variable of this
+            // replay's formula, not the producer's term inlined here.  The
+            // runtime mints one handoff symbol v_H per handoff occurrence
+            // and states it on the row; the producer's own path and the
+            // expression it delivered are joined to v_H once, at compose
+            // time, as the family constraint over that H -- so a producer
+            // flip and a consumer flip are explored independently and meet
+            // only at the recorded handoff.
+            JsonObject row = handoffRows.get(event);
+            JsonElement minted = handoffSymbol(row);
+            if (minted != null) return minted;
+            // A row from before the mint carries no v_H.  Its family has
+            // exactly one pair, so inlining the delivered expression is
+            // that family, and the two readings agree.
             JsonElement source = node.get(VmExpressionIr.EXPRESSION);
             if (source == null) {
                 source = unwrapBoundary(handoffs.get(event), event);
@@ -326,6 +350,27 @@ public final class InSessionReadResolver {
                     rewrite(field.getValue(), visiting, depth + 1));
         }
         return rewritten;
+    }
+
+    /** Member the runtime states one handoff's minted symbol under. */
+    public static final String HANDOFF_SYMBOL = "handoffSymbol";
+    /** Member the runtime states one handoff occurrence's identity under. */
+    public static final String HANDOFF_PHASE_ID = "handoffPhaseId";
+
+    /** The free variable one handoff row mints, or null when it mints none. */
+    static JsonElement handoffSymbol(JsonObject row) {
+        if (row == null) return null;
+        String symbol = optionalString(row, HANDOFF_SYMBOL);
+        if (symbol.isEmpty()
+                || optionalString(row, HANDOFF_PHASE_ID).isEmpty()) {
+            return null;
+        }
+        JsonObject minted = new JsonObject();
+        minted.addProperty("_type", "SymbolExpression");
+        minted.addProperty("_exp", symbol);
+        String javaType = optionalString(row, "javaType");
+        if (!javaType.isEmpty()) minted.addProperty("_java_type", javaType);
+        return minted;
     }
 
     /** The version id a node states it observed, or -1. */

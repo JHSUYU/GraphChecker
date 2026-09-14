@@ -31,6 +31,7 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.firstNonBlank;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalBool;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalInteger;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalLongInteger;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
 import static edu.uva.liftlab.graphchecker.concolic.VmTermLowering.and;
 import static edu.uva.liftlab.graphchecker.concolic.VmTermLowering.or;
@@ -71,6 +72,15 @@ public final class PathMergeComposer {
     public static final String KIND = "CONCOLIC_COMPOSED_SMT";
     public static final String COMPOSER = "PATH_MERGE_V1";
     public static final String MANIFEST_FIELD = "pathMerge";
+
+    /**
+     * How a minted handoff symbol spells itself.
+     *
+     * <p>One variable per handoff occurrence, minted by the runtime with the
+     * handoff phase id as its prefix, exactly as a configured source mints
+     * one per source phase.</p>
+     */
+    static final String HANDOFF_SYMBOL_PREFIX = "M_H_";
 
     /** No replay executed the anchored site. */
     public static final String TARGET_NOT_REACHED = "TARGET_NOT_REACHED";
@@ -178,6 +188,7 @@ public final class PathMergeComposer {
         List<String> selectors = new ArrayList<>();
         List<String> disjuncts = new ArrayList<>();
         JsonArray reachLedger = new JsonArray();
+        Set<String> usedHandoffSymbols = new LinkedHashSet<>();
         int ordinal = 0;
         for (JsonElement element : array(fatal, "paths")) {
             if (!element.isJsonObject()) continue;
@@ -289,6 +300,10 @@ public final class PathMergeComposer {
                     "(=> " + selector + " " + conjunction + ")");
             selectors.add(selector);
             disjuncts.add(conjunction);
+            for (JsonElement term : resolved) {
+                collectHandoffSymbols(term, usedHandoffSymbols);
+            }
+            collectHandoffSymbols(phi, usedHandoffSymbols);
             row.addProperty("admitted", true);
             row.addProperty("selector", selector);
             row.addProperty("fatalPredicateTerm", fatalTerm);
@@ -302,6 +317,8 @@ public final class PathMergeComposer {
             }
         }
 
+        JsonArray families = handoffFamilies(summaries, replays,
+                usedHandoffSymbols, roots, lowering, gates);
         if (selectors.isEmpty()) {
             gate(gates, TARGET_NOT_REACHED,
                     "no replay published a usable anchored row for " + site
@@ -370,6 +387,7 @@ public final class PathMergeComposer {
         BoundedLoopComposition loops = boundedLoops(regionPlans, fatal);
         JsonObject manifest = manifest(arguments, fatal, site, occurrence,
                 required, pathRows, rootRows, reachLedger, gates,
+                families,
                 selectors, lowering, regionPlans, loops);
         return new Result(lowering.render(), manifest);
     }
@@ -633,6 +651,156 @@ public final class PathMergeComposer {
     }
 
     /** Whether an expression names anything propagation carried. */
+    /** Every handoff symbol one resolved expression rests on. */
+    private static void collectHandoffSymbols(JsonElement expression,
+                                              Set<String> into) {
+        if (expression == null || expression.isJsonNull()) return;
+        if (expression.isJsonArray()) {
+            for (JsonElement element : expression.getAsJsonArray()) {
+                collectHandoffSymbols(element, into);
+            }
+            return;
+        }
+        if (!expression.isJsonObject()) return;
+        JsonObject node = expression.getAsJsonObject();
+        if ("SymbolExpression".equals(optionalString(node, "_type"))) {
+            String raw = optionalString(node, "_exp");
+            if (raw.startsWith(HANDOFF_SYMBOL_PREFIX)) into.add(raw);
+        }
+        for (Map.Entry<String, JsonElement> field : node.entrySet()) {
+            collectHandoffSymbols(field.getValue(), into);
+        }
+    }
+
+    /**
+     * The family constraint at each handoff occurrence a path rests on.
+     *
+     * <p>A value that crossed a wire is a free variable {@code v_H} of the
+     * consumer's formula, so a consumer flip is explored without re-running
+     * the producer.  What ties it back to the world is this: across every
+     * replay of the campaign, the rows published at that same handoff
+     * occurrence state the pairs {@code (pi_p, e_p)} -- the producer
+     * replay's root-dependent prefix up to the export, and the expression it
+     * delivered.  Conjoining {@code OR_p (pi_p^{&lt;H} AND v_H = e_p)} says
+     * the received value is one the producer side actually delivers, and
+     * under the conditions that made it deliver that one.</p>
+     *
+     * <p>The join key is the handoff occurrence and nothing else.  A row
+     * without {@code handoffPhaseId} or {@code attachEventId} is refused
+     * rather than matched on a port, an ordinal or a producer-case search:
+     * that was the boundary-family reconstruction this design deleted.</p>
+     */
+    private static JsonArray handoffFamilies(
+            List<JsonObject> summaries,
+            Map<String, List<JsonObject>> replays,
+            Set<String> usedHandoffSymbols, RootInventory roots,
+            PathMergeLowering lowering, JsonArray gates) {
+        JsonArray published = new JsonArray();
+        if (usedHandoffSymbols.isEmpty()) return published;
+        Map<String, List<String>> armsBySymbol = new LinkedHashMap<>();
+        Map<String, String> phaseBySymbol = new LinkedHashMap<>();
+        for (JsonObject summary : summaries) {
+            for (JsonElement encoded : array(summary, "vmHandoffEvents")) {
+                if (!encoded.isJsonObject()) continue;
+                JsonObject event = encoded.getAsJsonObject();
+                String symbol = optionalString(event,
+                        InSessionReadResolver.HANDOFF_SYMBOL);
+                if (!usedHandoffSymbols.contains(symbol)) continue;
+                String phase = optionalString(event,
+                        InSessionReadResolver.HANDOFF_PHASE_ID);
+                long export = optionalLongInteger(event,
+                        "exportEventId", -1L);
+                long attach = optionalLongInteger(event,
+                        "attachEventId", -1L);
+                if (phase.isEmpty() || export <= 0L || attach <= 0L) {
+                    gate(gates, PROPAGATION_CUT, "handoff " + symbol
+                            + " states no exact occurrence to join on");
+                    continue;
+                }
+                phaseBySymbol.put(symbol, phase);
+                List<JsonObject> group = replayRows(replays, summary,
+                        summary);
+                InSessionReadResolver resolver =
+                        InSessionReadResolver.of(group);
+                List<String> reasons = new ArrayList<>();
+                JsonElement delivered = resolve(resolver,
+                        event.get(VmHandoffEvidence.EXPRESSION), reasons);
+                if (!reasons.isEmpty()) {
+                    gate(gates, PROPAGATION_CUT, "handoff " + symbol
+                            + " delivered a value this replay did not "
+                            + "state: " + reasons.get(0));
+                    continue;
+                }
+                List<String> terms = new ArrayList<>();
+                for (JsonElement decision : producerPrefix(group, resolver,
+                        roots.byRawSymbol.keySet(), export)) {
+                    terms.add(lowering.condition(decision,
+                            "handoff:" + phase + ":pi"));
+                }
+                terms.add(lowering.condition(equals(symbol, delivered),
+                        "handoff:" + phase + ":bind"));
+                armsBySymbol.computeIfAbsent(symbol,
+                        ignored -> new ArrayList<String>()).add(and(terms));
+            }
+        }
+        for (String symbol : usedHandoffSymbols) {
+            List<String> arms = armsBySymbol.get(symbol);
+            if (arms == null || arms.isEmpty()) {
+                gate(gates, PROPAGATION_CUT, "handoff " + symbol
+                        + " is in the formula and no replay published what "
+                        + "was delivered at it");
+                continue;
+            }
+            lowering.assertNamed("handoff_family__"
+                    + phaseBySymbol.get(symbol).replaceAll(
+                            "[^A-Za-z0-9_]", "_"), or(arms));
+            JsonObject row = new JsonObject();
+            row.addProperty("handoffSymbol", symbol);
+            row.addProperty(InSessionReadResolver.HANDOFF_PHASE_ID,
+                    phaseBySymbol.get(symbol));
+            row.addProperty("pairs", arms.size());
+            published.add(row);
+        }
+        return published;
+    }
+
+    /** {@code v_H = e_p}, as an expression the lowering already knows. */
+    private static JsonObject equals(String symbol, JsonElement delivered) {
+        JsonObject left = new JsonObject();
+        left.addProperty("_type", "SymbolExpression");
+        left.addProperty("_exp", symbol);
+        JsonObject node = new JsonObject();
+        node.addProperty("_type", "BinaryExpression");
+        node.addProperty("_op", "==");
+        node.add("_left", left);
+        node.add("_right", delivered);
+        return node;
+    }
+
+    /** One replay's root-dependent decisions taken before the export. */
+    private static List<JsonElement> producerPrefix(
+            List<JsonObject> group, InSessionReadResolver resolver,
+            Set<String> rootSymbols, long exportEventId) {
+        List<JsonElement> prefix = new ArrayList<>();
+        if (rootSymbols.isEmpty()) return prefix;
+        for (JsonObject summary : group) {
+            Map<Integer, Long> clocks = decisionClocks(summary);
+            JsonArray conditions = array(summary, "pathCondition");
+            for (int index = 0; index < conditions.size(); index++) {
+                long clock = clocks.getOrDefault(index, 0L);
+                if (clock <= 0L || clock >= exportEventId) continue;
+                List<String> reasons = new ArrayList<>();
+                JsonElement decision = resolve(resolver,
+                        conditions.get(index), clock, reasons);
+                if (reasons.isEmpty()
+                        && mentionsRoot(decision, rootSymbols)) {
+                    prefix.add(decision);
+                }
+            }
+        }
+        return prefix;
+    }
+
     private static boolean propagated(JsonElement expression) {
         if (expression == null || expression.isJsonNull()) return false;
         if (expression.isJsonArray()) {
@@ -837,6 +1005,7 @@ public final class PathMergeComposer {
                                        JsonArray rootRows,
                                        JsonArray reachLedger,
                                        JsonArray gates,
+                                       JsonArray handoffFamilies,
                                        List<String> selectors,
                                        PathMergeLowering lowering,
                                        List<RegionInstancePlan> regionPlans,
@@ -893,6 +1062,7 @@ public final class PathMergeComposer {
         merge.add("paths", pathRows);
         merge.add("roots", rootRows);
         merge.add("gates", gates);
+        merge.add("handoffFamilies", handoffFamilies);
         JsonArray identities = new JsonArray();
         for (Map.Entry<String, String> identity
                 : lowering.opaqueIdentities().entrySet()) {

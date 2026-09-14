@@ -1535,8 +1535,16 @@ public final class ConcolicConstraintSolver {
                     && fixedNonNullReference(symbol, names.sort)) {
                 continue;
             }
+            // A handoff symbol is a replay control like a configured source:
+            // the runtime mints one variable per handoff occurrence and
+            // answers an assignment to it by returning the model value
+            // instead of the value that arrived.  It is identified by its
+            // own prefix and needs no catalog, because the mint that owns
+            // it is the attach the row already names.
             boolean registered = names != null
-                    && (configuredSourceResolution(symbol,
+                    && (symbol.startsWith(
+                            PathMergeComposer.HANDOFF_SYMBOL_PREFIX)
+                    || configuredSourceResolution(symbol,
                     configuredSourcePhaseCatalogs, names.sort) != null
                     || registeredSymbolicAction(symbol, actions, names.sort)
                     != null);

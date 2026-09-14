@@ -47,6 +47,15 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
 public final class SymbolicRootInventory {
     /** The engine label every configured-source leaf carries. */
     private static final String CONFIGURED_SOURCE_MARK = "SRC.";
+    /**
+     * The prefix every handoff variable carries.
+     *
+     * <p>A value that crossed a wire is free in the consumer's formula and
+     * the campaign can vary it -- the runtime answers an assignment to it at
+     * the attach -- so a decision over one is root-dependent and worth
+     * flipping, exactly like a decision over a configured source.</p>
+     */
+    private static final String HANDOFF_MARK = "M_H_";
     private static final SymbolicRootInventory EMPTY =
             new SymbolicRootInventory(Collections.<String>emptySet(),
                     "NO_DECLARED_ROOT");
@@ -172,6 +181,7 @@ public final class SymbolicRootInventory {
             // A configured source mints "SRC.<sha>"-labelled leaves.  One that
             // reached a predicate without its evidence row reaching this wave
             // is still the campaign's root, not a recorded placeholder.
+            if (leaf.startsWith(HANDOFF_MARK)) return true;
             if (leaf.contains(CONFIGURED_SOURCE_MARK)) return true;
         }
         return false;

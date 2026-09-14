@@ -6,6 +6,7 @@ import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.contract.ClosureGoalKind;
 import edu.uva.liftlab.graphchecker.contract.ConfiguredSourcePhaseContract;
 import edu.uva.liftlab.graphchecker.contract.ExecutionTask;
+import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceId;
 
 import java.util.Map;
@@ -89,10 +90,26 @@ final class PathReplayTaskFactory {
                 + CanonicalJson.render(assignments) + "\n"
                 + CanonicalJson.render(guardedReads));
 
+        // A flip over a value that crossed a wire needs no companion on the
+        // other side of it.  The handoff value is a free variable of this
+        // node's formula and the producer's own paths are joined to it
+        // offline, at the recorded handoff, so re-running the producer to
+        // re-derive what it sent is the linked re-evaluation this design
+        // replaces.  Companions on the flipped occurrence's own node stay:
+        // they are its causal prefix, not the other side.  A flip over roots
+        // alone keeps the whole closure, because nothing joins it offline.
+        String primaryNode = crossesAHandoff(query)
+                ? nodeOf(sources, primarySourceTaskId) : "";
         java.util.List<JsonObject> result = new ArrayList<>();
         for (JsonObject source : sources) {
             String sourceId = optionalString(source, "taskId");
             String role = LinkedReplayBundle.memberRole(bundle, sourceId);
+            if (!primaryNode.isEmpty()
+                    && !LinkedReplayBundle.PRIMARY.equals(role)
+                    && !primaryNode.equals(OccurrenceAddress.parse(
+                            optionalString(source, "occurrenceId")).node())) {
+                continue;
+            }
             JsonArray owned = assignmentsByTask.getOrDefault(sourceId,
                     new JsonArray());
             JsonArray ownedReads = readsByTask.getOrDefault(sourceId,
@@ -240,6 +257,24 @@ final class PathReplayTaskFactory {
             result.get(owners.get(0)).add(assignment.deepCopy());
         }
         return result;
+    }
+
+    /** The node one linked member ran on. */
+    private static String nodeOf(java.util.List<JsonObject> sources,
+                                 String taskId) {
+        for (JsonObject source : sources) {
+            if (taskId.equals(optionalString(source, "taskId"))) {
+                return OccurrenceAddress.parse(optionalString(source,
+                        "occurrenceId")).node();
+            }
+        }
+        return "";
+    }
+
+    /** Whether this obligation flips a value that arrived over a wire. */
+    private static boolean crossesAHandoff(JsonObject query) {
+        return CanonicalJson.render(query).contains(
+                PathMergeComposer.HANDOFF_SYMBOL_PREFIX);
     }
 
     private static java.util.List<String> actionOwners(
