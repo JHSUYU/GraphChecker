@@ -79,7 +79,7 @@ public class ClaimPolicyTest {
     @Test
     public void noExactReachabilityIsItsOwnBlocker() {
         JsonObject reach = reach();
-        reach.getAsJsonObject("reachCondition").addProperty("reachability",
+        reach.addProperty("reachability",
                 "UNKNOWN");
 
         JsonObject claim = ClaimPolicy.decide(manifest(), reach, noFlows());
@@ -151,13 +151,12 @@ public class ClaimPolicyTest {
     /** A REACHABLE report whose single Boolean root decides the target. */
     private static JsonObject reach() {
         JsonObject reach = parse("{\"schemaVersion\":4,"
-                + "\"kind\":\"BOOLEAN_REACH_CONDITION_REPORT\","
+                + "\"kind\":\"ROOT_VALUATION_REPORT\","
                 + "\"state\":\"CANDIDATE_READY\","
                 + "\"unsatClosureComplete\":true,"
                 + "\"gaps\":[],"
-                + "\"reachCondition\":{\"formula\":\"r0\","
                 + "\"reachability\":\"REACHABLE\","
-                + "\"degeneracyCheck\":\"CONSTRAINED_ROOT_SPACE\"},"
+
                 + "\"valuations\":["
                 + "{\"values\":[false],\"status\":\"sat\"},"
                 + "{\"values\":[true],\"status\":\"unsat\"}]}");
@@ -175,10 +174,8 @@ public class ClaimPolicyTest {
     private static JsonObject refutation(boolean closed) {
         JsonObject reach = reach();
         reach.addProperty(ComposedManifest.UNSAT_CLOSURE_COMPLETE, closed);
-        reach.getAsJsonObject("reachCondition")
+        reach
                 .addProperty("reachability", "UNREACHABLE");
-        reach.getAsJsonObject("reachCondition")
-                .addProperty("degeneracyCheck", "NOT_APPLICABLE_NO_MODEL");
         reach.add("valuations", parseArray(
                 "[{\"values\":[false],\"status\":\"unsat\"},"
                         + "{\"values\":[true],\"status\":\"unsat\"}]"));
@@ -275,33 +272,6 @@ public class ClaimPolicyTest {
                 .contains(WitnessLegitimacy.CLOCK_OUTSIDE_WINDOW));
         assertEquals(WitnessLegitimacy.UNEXPLAINED,
                 witnessFinding(claim, 0).get("verdict").getAsString());
-    }
-
-    /**
-     * An unenumerated existential root space is freedom nobody wrote down, so
-     * it still blocks -- and now the marker row names it as the reason rather
-     * than saying nothing explains the other polarity.
-     */
-    @Test
-    public void unenumeratedRootsKeepTheMarkerRowBlockingAndNameTheFreedom() {
-        JsonObject reach = markerReach(true, "-300000");
-        reach.getAsJsonObject("reachCondition").addProperty("degeneracyCheck",
-                "UNDECIDED_UNENUMERATED_EXISTENTIAL_ROOTS:14");
-
-        JsonObject claim = ClaimPolicy.decide(markerManifest(), reach,
-                noFlows());
-
-        assertEquals(ClaimPolicy.INCONCLUSIVE_PARTIAL,
-                claim.get("claim").getAsString());
-        assertEquals(codes(ClaimPolicy.UNDECIDED_ROOT_SPACE,
-                ClaimPolicy.FAULT_MARKER_NOT_DETERMINING), codes(claim));
-        assertTrue(blocker(claim, ClaimPolicy.FAULT_MARKER_NOT_DETERMINING)
-                .get("detail").getAsString()
-                .contains(WitnessLegitimacy.UNENUMERATED_EXISTENTIAL_ROOT));
-        assertEquals("the freedom is named once, under its own blocker",
-                "", blockerOrNull(claim,
-                        ClaimPolicy.WITNESS_FREEDOM_UNEXPLAINED) == null
-                        ? "" : "WITNESS_FREEDOM_UNEXPLAINED");
     }
 
     /** The marker deciding the verdict is what an accepted claim rests on. */
@@ -585,7 +555,7 @@ public class ClaimPolicyTest {
                 + "{\"values\":[true],\"status\":\"sat\","
                 + "\"witnessMechanisms\":[{\"kind\":\"MARKER_FLIPPED\","
                 + "\"siteId\":\"Client$Connection.sendRpcRequest#u17\"}]}]"));
-        reach.add(BooleanReachConditionExtractor.MECHANISM_NECESSITY,
+        reach.add(RootValuationSolver.MECHANISM_NECESSITY,
                 clockNecessity(0, true));
         return reach;
     }

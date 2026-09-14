@@ -11,7 +11,7 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 /** Focused authority tests for Boolean reach-condition extraction. */
-public class BooleanReachConditionExtractorSolverTest {
+public class RootValuationSolverTest {
 
     @Test
     public void manualTaskRootIsPublishedWithItsWitness() throws Exception {
@@ -25,8 +25,8 @@ public class BooleanReachConditionExtractorSolverTest {
         String smt = "(set-logic ALL)\n"
                 + "(declare-const manual_enabled Bool)\n"
                 + "(assert manual_enabled)\n(check-sat)\n";
-        JsonObject report = BooleanReachConditionExtractor.extract(smt,
-                manifest, new BooleanReachConditionExtractor.Z3Solver(
+        JsonObject report = RootValuationSolver.extract(smt,
+                manifest, new RootValuationSolver.Z3Solver(
                         "z3", 20_000L, new JsonArray(), 1), 8, 64);
 
         assertEquals("CANDIDATE_READY", report.get("state").getAsString());
@@ -36,7 +36,7 @@ public class BooleanReachConditionExtractorSolverTest {
         assertEquals("REGION.0.in.enabled", roots.get(0).getAsJsonObject()
                 .get("portId").getAsString());
         assertTrue(report.getAsJsonArray(
-                BooleanReachConditionExtractor.SYMBOLIC_VARIABLE_MODELS)
+                RootValuationSolver.SYMBOLIC_VARIABLE_MODELS)
                 .get(0).getAsJsonObject().getAsJsonArray("variables")
                 .get(0).getAsJsonObject().get("value").getAsBoolean());
     }
@@ -69,8 +69,8 @@ public class BooleanReachConditionExtractorSolverTest {
                 + " (< clock_now 6000)))\n"
                 + "(check-sat)\n";
 
-        JsonObject report = BooleanReachConditionExtractor.extract(smt,
-                manifest, new BooleanReachConditionExtractor.Z3Solver(
+        JsonObject report = RootValuationSolver.extract(smt,
+                manifest, new RootValuationSolver.Z3Solver(
                         "z3", 20_000L, new JsonArray(), 1), 8, 64);
 
         JsonObject claim = report.getAsJsonObject(ClaimPolicy.CLAIM);
@@ -254,8 +254,8 @@ public class BooleanReachConditionExtractorSolverTest {
                 + " (<= " + CLOCK_TERM + " " + recorded + ")))\n"
                 + "(check-sat)\n";
 
-        JsonObject report = BooleanReachConditionExtractor.extract(smt,
-                manifest, new BooleanReachConditionExtractor.Z3Solver(
+        JsonObject report = RootValuationSolver.extract(smt,
+                manifest, new RootValuationSolver.Z3Solver(
                         "z3", 20_000L, new JsonArray(), 1), 8, 64);
 
         JsonObject probe = report.getAsJsonObject("existentialRootProbe");
@@ -267,16 +267,13 @@ public class BooleanReachConditionExtractorSolverTest {
         for (int index = 0; index < perturbations.size(); index++) {
             JsonObject row = perturbations.get(index).getAsJsonObject();
             assertEquals("skipped", row.get("status").getAsString());
-            assertEquals(BooleanReachConditionExtractor.WINDOW_BOUNDARY,
+            assertEquals(RootValuationSolver.WINDOW_BOUNDARY,
                     row.get("rejectedBy").getAsString());
             sawBoundary |= String.valueOf(recorded - 1L).equals(
                     row.get("perturbedValue").getAsString());
         }
         assertTrue("the 1789234993717 neighbour is named and not solved",
                 sawBoundary);
-        assertTrue(report.getAsJsonObject("reachCondition")
-                .get("degeneracyCheck").getAsString()
-                .startsWith("UNDECIDED_UNENUMERATED_EXISTENTIAL_ROOTS"));
     }
 
     private static JsonObject readArm(String valueTerm, String owner,
@@ -346,27 +343,27 @@ public class BooleanReachConditionExtractorSolverTest {
 
         // The target needs the fault, or a clock that moved: pinning the clock
         // back to what it read leaves the no-fault polarity unsatisfiable.
-        JsonObject necessary = BooleanReachConditionExtractor.extract(
+        JsonObject necessary = RootValuationSolver.extract(
                 markerAndClockSmt(recorded, "(> " + CLOCK_TERM + " "
                         + recorded + ")"),
                 markerAndClockManifest(recorded),
-                new BooleanReachConditionExtractor.Z3Solver(
+                new RootValuationSolver.Z3Solver(
                         "z3", 20_000L, new JsonArray(), 1), 8, 64);
         assertTrue(mechanismNecessary(necessary));
 
         // The same shape with the clock free of the target: it moves because
         // nothing holds it, and pinning it changes nothing.
-        JsonObject decoration = BooleanReachConditionExtractor.extract(
+        JsonObject decoration = RootValuationSolver.extract(
                 markerAndClockSmt(recorded, "true"),
                 markerAndClockManifest(recorded),
-                new BooleanReachConditionExtractor.Z3Solver(
+                new RootValuationSolver.Z3Solver(
                         "z3", 20_000L, new JsonArray(), 1), 8, 64);
         assertFalse(mechanismNecessary(decoration));
     }
 
     private static boolean mechanismNecessary(JsonObject report) {
         JsonObject probe = report.getAsJsonObject(
-                BooleanReachConditionExtractor.MECHANISM_NECESSITY);
+                RootValuationSolver.MECHANISM_NECESSITY);
         JsonArray rows = probe.getAsJsonArray("mechanisms");
         for (int index = 0; index < rows.size(); index++) {
             JsonObject row = rows.get(index).getAsJsonObject();

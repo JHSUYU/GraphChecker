@@ -618,16 +618,17 @@ do_compose() {
     "${selection[@]}"
 }
 
+# SOLVE writes its valuations, mechanisms and ClaimPolicy decision into the
+# composition manifest it solved, under "solver".  One anchored occurrence,
+# one artifact.
 do_reach() {
   require_file "composed SMT" "${composed_smt}"
   require_file "composition manifest" "${composition_manifest}"
   require_file "runtime region plan" "${runtime_region_plan}"
-  ensure_output_directory "$(dirname "${reach_report}")"
-  run_java_main edu.uva.liftlab.graphchecker.concolic.BooleanReachConditionExtractor \
+  run_java_main edu.uva.liftlab.graphchecker.concolic.RootValuationSolver \
     --smt "${composed_smt}" \
     --manifest "${composition_manifest}" \
     --runtime-plan "${runtime_region_plan}" \
-    --output "${reach_report}" \
     --z3 "${z3_bin}" \
     --timeout-ms "${solver_timeout_ms}" \
     --workers "${concolic_worker_count}" \
@@ -805,21 +806,22 @@ campaign_require_json() {
     "${path}" >/dev/null
 }
 
-# The claim belongs to ClaimPolicy, so a reach report without one is a report
-# this stage may not publish a result from: falling back to a shell verdict
-# here is exactly the second gate this change removed.
+# The claim belongs to ClaimPolicy, so a manifest whose solver block carries
+# none is a manifest this stage may not publish a result from: falling back to
+# a shell verdict here is exactly the second gate this change removed.
 campaign_require_claim() {
   local path=$1
-  jq -e '(.campaignClaim | type) == "object"
-    and ((.campaignClaim.claim // "")
+  jq -e '.solver as $r
+    | ($r.campaignClaim | type) == "object"
+    and (($r.campaignClaim.claim // "")
       | IN("SAT_CANDIDATE", "UNSAT_CLOSED", "INCONCLUSIVE_PARTIAL"))
-    and (.campaignClaim.blockers | type) == "array"
-    and (.campaignClaim.blockerCount | type) == "number"
-    and (.campaignClaim.claimReason | type) == "string"
-    and (.campaignClaim.whyNotAccepted | type) == "string"' \
+    and ($r.campaignClaim.blockers | type) == "array"
+    and ($r.campaignClaim.blockerCount | type) == "number"
+    and ($r.campaignClaim.claimReason | type) == "string"
+    and ($r.campaignClaim.whyNotAccepted | type) == "string"' \
     "${path}" >/dev/null \
     || campaign_fail EMIT ClaimPolicy "${path}" \
-      "the reach report published no ClaimPolicy decision"
+      "the composition manifest published no ClaimPolicy decision"
 }
 
 # Prints every explicit symbolic root without exposing internal SMT terms.
@@ -828,11 +830,11 @@ campaign_require_claim() {
 # another input here.
 campaign_print_symbolic_variable_models() {
   local report=$1 model_count
-  campaign_require_json "Z3 symbolic variable report" "${report}" \
+  campaign_require_json "composition manifest" "${report}" \
     || return 1
-  jq -e '
-    (.symbolicVariableModels | type) == "array"
-    and all(.symbolicVariableModels[];
+  jq -e '.solver as $r
+    | ($r.symbolicVariableModels | type) == "array"
+    and all($r.symbolicVariableModels[];
       .schemaVersion == 1
       and .kind == "SYMBOLIC_VARIABLE_MODEL"
       and (.valuationOrdinal | type) == "number"
@@ -847,7 +849,7 @@ campaign_print_symbolic_variable_models() {
               | all(type == "string" and length > 0)))
         and has("value")))
   ' "${report}" >/dev/null || return 1
-  model_count=$(jq -r '.symbolicVariableModels | length' "${report}")
+  model_count=$(jq -r '.solver.symbolicVariableModels | length' "${report}")
   if [[ "${model_count}" -eq 0 ]]; then
     campaign_log "symbolic variables: no satisfying model"
     return 0
@@ -855,7 +857,7 @@ campaign_print_symbolic_variable_models() {
   while IFS=$'\t' read -r valuation kind source variable phase field value nullness; do
     campaign_log "symbolic valuation=${valuation} kind=${kind} source=${source} variable=${variable} phase=${phase} field=${field} value=${value}${nullness:+ nullness=${nullness}}"
   done < <(jq -r '
-    .symbolicVariableModels[] as $model
+    .solver.symbolicVariableModels[] as $model
     | $model.variables[]
     | [$model.valuationOrdinal, .inputKind,
        (.sourceKey // .occurrenceId), (.sourceId // .portId),
@@ -2309,7 +2311,7 @@ campaign_publish_wave() {
 # The builder requires exactly one solver-ready target seed and publishes the
 # exact observed target paths it can justify.
 campaign_target_reach_query() {
-  local iteration_dir=$1 elected=$2
+  local iteration_dir=$1
   local resolved="${causynth_output_dir}/target_resolved.json"
   local exception="" built=0
   local role campaign_id region occurrence goal task target_reach
@@ -2319,24 +2321,21 @@ campaign_target_reach_query() {
     campaign_fail EXPLORE TargetReachPathQueryBuilder "${resolved}" \
       "no target attestation names the selected exception"
   fi
-  # One reach query per observed occurrence of the annotated target, not one
-  # for the elected member alone.  Each is built from that occurrence's own
-  # closed worklist over the one shared closure the wave loop published, so
-  # the queries differ exactly where the executions differed.  Only the
-  # elected member's query is mandatory: it is the one every later stage is
-  # guaranteed to have.  A sibling occurrence whose worklist never closed has
-  # nothing to state, and saying so is a skip the composition reports rather
-  # than a campaign failure.
+  # One reach query per observed occurrence of the annotated target.  Each is
+  # built from that occurrence's own closed worklist over the one shared
+  # closure the wave loop published, so the queries differ exactly where the
+  # executions differed.  No occurrence is privileged: there is no elected
+  # member here.  An occurrence whose worklist never closed has no path to
+  # state, and that is TARGET_NOT_REACHED for that one anchor -- a refusal
+  # the composition publishes about it, with the reason left beside the
+  # absent query -- not a failure of the run, which still has whatever the
+  # other anchored occurrences reached.
   while IFS=$'\t' read -r role campaign_id region occurrence goal task \
       target_reach; do
     [[ "${target_reach}" == "true" ]] || continue
     if campaign_member_reach_query "${iteration_dir}" "${task}" \
         "${occurrence}"; then
       built=$((built + 1))
-    elif [[ "${task}" == "${elected}" ]]; then
-      campaign_fail EXPLORE TargetReachPathQueryBuilder \
-        "${iteration_dir}/workers/${task}" \
-        "the elected target published no exact reach query"
     fi
   done <<<"${campaign_member_rows}"
   campaign_log "target reach queries: ${built}"
@@ -2410,7 +2409,7 @@ campaign_explore_stop() {
 campaign_explore() {
   local iteration_dir=$1 iteration_id=$2
   local role campaign_id region occurrence goal task member planner_dir
-  local worklist key_rows key worker_dir target_task="" wave_dir roster
+  local worklist key_rows key worker_dir wave_dir roster
   local status=0 wave=0 pending=0 job planner_index
   local wave_signature="" previous_signature="" stop_kind="" stop_reason=""
   local summaries="${iteration_dir}/linked_observed_path_summaries.jsonl"
@@ -2457,9 +2456,6 @@ campaign_explore() {
     while IFS=$'\t' read -r role campaign_id region occurrence goal task \
         target_reach; do
       member="${iteration_dir}/workers/${task}"
-      if [[ "${role}" == "TARGET" ]]; then
-        target_task=${task}
-      fi
       planner_dir=$(printf '%s/obligations-%04d' "${member}" "${wave}")
       [[ ! -e "${planner_dir}" ]] || die \
         "obligation wave directory already exists: ${planner_dir}"
@@ -2633,7 +2629,7 @@ obligation(s) as the wave before it with no new verdict"
     ln -f "${summaries}" "${member}/observed_path_summaries.jsonl"
     ln -f "${tasks}" "${member}/observed_execution_tasks.jsonl"
   done <<<"${campaign_member_rows}"
-  campaign_target_reach_query "${iteration_dir}" "${target_task}"
+  campaign_target_reach_query "${iteration_dir}"
   campaign_log "closure exploration stopped after ${wave} global wave(s)"
 }
 
@@ -2782,8 +2778,6 @@ campaign_compose() {
   [[ ! -e "${campaign_final}" ]] || die \
     "the final directory already exists: ${campaign_final}"
   mkdir -p "${campaign_final}/targets"
-  require_nonempty "target reach query" \
-    "${iteration_dir}/workers/${target_task}/reach_query.jsonl"
   observed="${iteration_dir}/closure_observed_summaries.jsonl"
   campaign_json combine summaryId "${observed}" "${observed_inputs[@]}"
   require_nonempty "closure-wide observed summaries" "${observed}"
@@ -2829,13 +2823,14 @@ campaign_compose_occurrence() {
   target_dir="${campaign_final}/targets/${key}"
   [[ ! -e "${target_dir}" ]] || die \
     "two target occurrences share one artifact directory: ${target_dir}"
+  # An occurrence with no exact reach query still composes.  The Composer
+  # refuses it TARGET_NOT_REACHED and publishes the refusal as this
+  # occurrence's own artifact, which is what "no path at all" means about one
+  # anchor; the reason the query is absent is carried into the row beside it.
   if [[ ! -s "${member}/reach_query.jsonl" ]]; then
     [[ ! -s "${member}/reach_query.skipped" ]] \
       || detail=$(<"${member}/reach_query.skipped")
-    campaign_report_target_occurrence "${occurrence}" "${region}" \
-      "${task}" "" SKIPPED_UNOBSERVED \
-      "${detail:-this occurrence published no exact reach query}" -1
-    return 0
+    detail="${detail:-this occurrence published no exact reach query}"
   fi
   mkdir -p "${target_dir}"
   fatal_queries="${member}/reach_query.jsonl"
@@ -2863,7 +2858,7 @@ campaign_compose_occurrence() {
   require_nonempty "candidate SMT" "${composed_smt}"
   require_nonempty "candidate composition manifest" "${composition_manifest}"
   campaign_report_target_occurrence "${occurrence}" "${region}" "${task}" \
-    "${target_dir}" COMPOSED "" "${millis}"
+    "${target_dir}" COMPOSED "${detail}" "${millis}"
   printf '%s\t%s\n' "COMPOSE[${occurrence}]" "${millis}" \
     >>"${campaign_stage_metrics}"
   campaign_log "composed ${occurrence} in ${millis}ms status=$(jq -r \
@@ -2916,7 +2911,7 @@ campaign_report_target_occurrence() {
     --argjson millis "${millis}" \
     '{occurrenceId: $occurrence, regionId: $region, taskId: $task,
       artifactDir: $dir, status: $status, detail: $detail,
-      manifest: $manifest, smt: $smt, reachReport: "",
+      manifest: $manifest, smt: $smt,
       composeWallMillis: $millis, solveWallMillis: -1}' \
     >>"${campaign_target_reports}" || campaign_fail COMPOSE CAMPAIGN \
     "${campaign_target_reports}" \
@@ -2939,25 +2934,24 @@ campaign_solve() {
   while IFS=$'\t' read -r occurrence dir state; do
     [[ -n "${occurrence}" ]] || continue
     if [[ "${state}" != "COMPOSED" ]]; then
-      campaign_solve_report "${occurrence}" "" -1 >>"${pending}"
+      campaign_solve_report "${occurrence}" -1 >>"${pending}"
       continue
     fi
     composed_smt="${dir}/candidate.smt2"
     composition_manifest="${dir}/candidate_composition_manifest.json"
-    report="${dir}/z3-result.json"
-    reach_report="${report}"
+    report="${composition_manifest}"
     status=0
     started=$(date +%s%N)
     run_capturing_status do_reach >"${dir}/solve.log" 2>&1
     ended=$(date +%s%N)
     millis=$(( (ended - started) / 1000000 ))
-    require_nonempty "Z3 result" "${report}"
+    require_nonempty "solved composition manifest" "${report}"
     [[ "${status}" -eq 0 || "${status}" -eq 2 ]] \
       || die "the solver stage failed with exit ${status}: ${report}"
-    campaign_log "z3 ${occurrence} state=$(jq -r '.state' "${report}") reachability=$(jq -r '.reachCondition.reachability' "${report}") in ${millis}ms"
+    campaign_log "z3 ${occurrence} state=$(jq -r '.solver.state' "${report}") reachability=$(jq -r '.solver.reachability' "${report}") in ${millis}ms"
     printf '%s\t%s\n' "SOLVE[${occurrence}]" "${millis}" \
       >>"${campaign_stage_metrics}"
-    campaign_solve_report "${occurrence}" "${report}" "${millis}" \
+    campaign_solve_report "${occurrence}" "${millis}" \
       >>"${pending}"
   done < <(jq -r -c '[.occurrenceId, .artifactDir, .status] | @tsv' \
     "${campaign_target_reports}")
@@ -2969,11 +2963,11 @@ campaign_solve() {
 # rewritten from the one on disk so nothing this stage knows can replace what
 # COMPOSE reported about the same occurrence.
 campaign_solve_report() {
-  local occurrence=$1 report=$2 millis=$3
-  jq -c --arg occurrence "${occurrence}" --arg report "${report}" \
+  local occurrence=$1 millis=$2
+  jq -c --arg occurrence "${occurrence}" \
     --argjson millis "${millis}" \
     'select(.occurrenceId == $occurrence)
-     | .reachReport = $report | .solveWallMillis = $millis' \
+     | .solveWallMillis = $millis' \
     "${campaign_target_reports}" || campaign_fail SOLVE CAMPAIGN \
     "${campaign_target_reports}" \
     "failed to record the solver result for ${occurrence}"
@@ -3005,16 +2999,13 @@ campaign_decide() {
   dir=${chosen}
   composed_smt="${campaign_final}/candidate.smt2"
   composition_manifest="${campaign_final}/candidate_composition_manifest.json"
-  reach_report="${campaign_final}/z3-result.json"
   cp -f "${dir}/candidate.smt2" "${composed_smt}"
   cp -f "${dir}/candidate_composition_manifest.json" \
     "${composition_manifest}"
-  cp -f "${dir}/z3-result.json" "${reach_report}"
   require_nonempty "candidate SMT" "${composed_smt}"
   require_nonempty "candidate composition manifest" "${composition_manifest}"
-  require_nonempty "Z3 result" "${reach_report}"
-  campaign_print_symbolic_variable_models "${reach_report}" \
-    || die "the solver result has no valid symbolic variable model: ${reach_report}"
+  campaign_print_symbolic_variable_models "${composition_manifest}" \
+    || die "the solver result has no valid symbolic variable model: ${composition_manifest}"
   jq -r '"[campaign] " + .electionReason' "${campaign_target_ledger}"
   jq -r '.occurrences[]
     | "  occurrence=\(.occurrenceId) status=\(.status) support=\(.support)"
@@ -3025,7 +3016,7 @@ campaign_decide() {
 campaign_artifact_digests() {
   local name path bytes sha row
   local -a required=(candidate.smt2 candidate_composition_manifest.json
-    z3-result.json path-closures.json gaps.json gap_ledger.json result.json
+    path-closures.json gaps.json gap_ledger.json result.json
     target_occurrences.json)
   local -a names=()
   local -a rows=()
@@ -3150,15 +3141,14 @@ campaign_kept_slice_json() {
 }
 
 campaign_write_coverage_gaps() {
-  local composition=$1 reach=$2 diagnostics=$3 delta=$4
-  local path_closures=$5 ledger=$6 iteration_dir=$7 output=$8
+  local composition=$1 diagnostics=$2 delta=$3
+  local path_closures=$4 ledger=$5 iteration_dir=$6 output=$7
   local static_gaps plan_gaps kept_slice
   static_gaps=$(campaign_static_gaps_json) || return 1
   plan_gaps=$(campaign_plan_gaps_json) || return 1
   kept_slice=$(campaign_kept_slice_json "${iteration_dir}") || return 1
   jq -n \
     --slurpfile composedDocuments "${composition}" \
-    --slurpfile reachDocuments "${reach}" \
     --slurpfile diagnostics "${diagnostics}" \
     --slurpfile delta "${delta}" \
     --slurpfile pathClosureDocuments "${path_closures}" \
@@ -3167,7 +3157,7 @@ campaign_write_coverage_gaps() {
     --argjson planGaps "${plan_gaps}" \
     --argjson keptSlice "${kept_slice}" '
     $composedDocuments[0] as $composed |
-    $reachDocuments[0] as $reach |
+    ($composed.solver // {}) as $reach |
     $pathClosureDocuments[0] as $pathClosures |
     $ledgerDocuments[0] as $ledger |
     # The ledger names its exceptions; everything else is blocking, which is
@@ -3319,9 +3309,6 @@ campaign_emit() {
   campaign_require_json "candidate composition manifest" \
     "${composition_manifest}" || campaign_fail EMIT ConcolicSmtComposer \
       "${composition_manifest}" "required composition JSON is malformed"
-  campaign_require_json "Z3 reachability result" "${reach_report}" \
-    || campaign_fail EMIT BooleanReachConditionExtractor "${reach_report}" \
-      "required reachability JSON is malformed"
   if ! campaign_jsonl_array "import diagnostics" \
       "${iteration_dir}/import_diagnostics.jsonl" >/dev/null; then
     campaign_fail EMIT ConcolicSummaryImporter \
@@ -3343,7 +3330,6 @@ campaign_emit() {
   campaign_write_gap_ledger "${campaign_final}/gap_ledger.json"
   campaign_write_coverage_gaps \
     "${composition_manifest}" \
-    "${reach_report}" \
     "${iteration_dir}/import_diagnostics.jsonl" \
     "${iteration_dir}/campaign_gaps.jsonl" \
     "${path_closures_artifact}" \
@@ -3359,7 +3345,7 @@ campaign_emit() {
   # own report.  Nothing here recomputes it: this stage copies the claim, its
   # reason, and every named blocker, so one Java policy decides acceptance and
   # the shell only publishes what it decided.
-  campaign_require_claim "${reach_report}"
+  campaign_require_claim "${composition_manifest}"
   campaign_require_json "target occurrence ledger" \
     "${campaign_target_ledger}" || campaign_fail EMIT \
       TargetOccurrenceElection "${campaign_target_ledger}" \
@@ -3367,15 +3353,13 @@ campaign_emit() {
   jq -n \
     --argjson provenance "${campaign_provenance}" \
     --slurpfile composedDocuments "${composition_manifest}" \
-    --slurpfile reachDocuments "${reach_report}" \
     --slurpfile gapDocuments "${campaign_final}/gaps.json" \
     --slurpfile targetDocuments "${campaign_target_ledger}" '
-    $composedDocuments[0] as $c | $reachDocuments[0] as $r |
+    $composedDocuments[0] as $c | ($c.solver // {}) as $r |
     $gapDocuments[0] as $gaps |
     $targetDocuments[0] as $targets |
     ($r.campaignClaim) as $decided |
-    ($r.reachCondition.reachability // "UNKNOWN") as $reachability |
-    ($r.reachCondition.degeneracyCheck // "UNDECIDED") as $degeneracy |
+    ($r.reachability // "UNKNOWN") as $reachability |
     ($r.unsatClosureComplete // false) as $unsatClosureComplete |
     ($gaps.gapCount) as $gapCount |
     ($gaps.telemetryCount) as $telemetryCount |
@@ -3391,7 +3375,6 @@ campaign_emit() {
      blockerCount: $decided.blockerCount,
      whyNotAccepted: $decided.whyNotAccepted,
      reachability: $reachability,
-     degeneracyCheck: $degeneracy,
      solverState: ($r.state // ""),
      finalStatus: ($c.finalStatus // ""),
      finalStatusRefusals: $blockers,
@@ -3420,8 +3403,8 @@ campaign_emit() {
      reportedFindings: ($decided.rootSpace.reportedFindings // []),
      # The whole policy decision, not a selection from it.  A consumer asking
      # which valuation the acceptance rests on, or what shape that witness
-     # has, reads it here rather than opening z3-result.json to find the
-     # claim this file was written from.
+     # has, reads it here rather than opening the composition manifest to
+     # find the claim this file was written from.
      rootSpace: ($decided.rootSpace // {}),
      # Which execution of the annotated target this claim is about, and what
      # every other observed execution of it concluded.  A verdict that rests

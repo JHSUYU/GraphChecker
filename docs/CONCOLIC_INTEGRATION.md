@@ -733,8 +733,9 @@ telemetry.
 
 ## Reading the formula
 
-`BooleanReachConditionExtractor` solves the composed formula and publishes
-`z3-result.json`. It enumerates the Java-boolean roots -- the injected fault
+`RootValuationSolver` solves the composed formula and publishes its valuations
+and mechanisms into the manifest it solved, under `solver`: one anchored
+occurrence, one artifact. It enumerates the Java-boolean roots -- the injected fault
 markers and configured boolean sources -- one valuation per assignment, and
 leaves every other root existential. Each valuation row carries:
 
@@ -778,17 +779,15 @@ and reports how many it lifted in `failClosedMarkersLifted`.
 ## The claim
 
 `ClaimPolicy` decides what a campaign proved, once, and publishes that
-decision inside the reach-condition report as `campaignClaim`. The EMIT stage
+decision inside the solver report as `campaignClaim`. The EMIT stage
 of `run_engine.sh` copies `claim`, `claimReason`, `blockers` and
 `whyNotAccepted` from it into `result.json` and refuses to publish a result
-from a reach report that carries no decision; it derives no verdict of its
-own. `ClaimPolicy` can be replayed on any published pair of artifacts:
+from a manifest that carries no decision; it derives no verdict of its
+own. `ClaimPolicy` can be replayed on any published manifest:
 
 ```bash
 java -cp GraphChecker.jar edu.uva.liftlab.graphchecker.concolic.ClaimPolicy \
-  --manifest schedule/final/candidate_composition_manifest.json \
-  --reach schedule/final/z3-result.json \
-  --mappings experiments/hadoop/<case>/communication-mappings.jsonl
+  --manifest schedule/final/candidate_composition_manifest.json
 ```
 
 A claim is accepted only when no blocker is named. `SAT_CANDIDATE` needs a
@@ -799,12 +798,10 @@ else is `INCONCLUSIVE_PARTIAL` and every reason is one row of `blockers`
 | Blocker | Named when |
 | --- | --- |
 | `COMPOSER_NOT_FINAL_READY` | the manifest's `finalStatus` is not `FINAL_READY` |
-| `COMPOSITION_GAPS_UNRESOLVED` | a blocking gap is open in the composition manifest or the solver report -- Composer refusals, the composition's own gaps, the bounded-loop model's, the propagation closure's, the fault-control closure's, classed by `GapLedger` |
+| `COMPOSITION_GAPS_UNRESOLVED` | a blocking gap is open in the composition manifest or its solver report -- Composer refusals, the composition's own gaps, the bounded-loop model's, the propagation closure's, the fault-control closure's, classed by `GapLedger` |
 | `DECLARED_WIRE_FLOWS_UNREALIZED` | a declared `WIRE_FLOW` reached the formula by neither route; the subject names those flows |
 | `UNDETERMINED_INITIAL_STATE` | the fatal read's own container carries an `INITIAL_CONTAINER_SNAPSHOT_TRUNCATED` gap, so membership over its initial state is a free choice available under every arm |
 | `FAULT_MARKER_NOT_DETERMINING` | the experiment injects a fault marker, both polarities are satisfiable, and no named mechanism the target cannot do without explains the polarity that has no fault |
-| `DEGENERATE_ROOT_SPACE` | `degeneracyCheck` is `DEGENERATE_*`: the target provably ignores every root |
-| `UNDECIDED_ROOT_SPACE` | `degeneracyCheck` is `UNDECIDED_*`: the question was never decided, so it is not answered |
 | `TARGET_UNCONSTRAINED_BY_ROOTS` | a `REACHABLE` result where no single root flip changes satisfiability and no existential perturbation was rejected |
 | `WITNESS_UNINFORMATIVE` | the existential witness is every-zero, or identical under every satisfying valuation, while no perturbation of it was rejected |
 | `SOLVER_UNDECIDED_VALUATIONS` | the solver returned neither sat nor unsat on an enumerated valuation |

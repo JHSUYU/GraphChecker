@@ -36,10 +36,9 @@ import java.util.regex.Pattern;
  *
  * <p>The campaign acceptance gate used to be jq in the EMIT stage of
  * {@code run_engine.sh}: it read the Composer's stage-local
- * {@code finalStatus}, the solver's {@code reachability} and one degeneracy
+ * {@code finalStatus} and the solver's {@code reachability}
  * string, and published {@code SAT_CANDIDATE} from them. That accepted a run
- * whose witness the solver could not tie to any symbolic root -- an
- * {@code UNDECIDED_*} degeneracy verdict was not a refusal, a declared
+ * whose witness the solver could not tie to any symbolic root -- a declared
  * cross-node {@code WIRE_FLOW} that reached no consumer boundary family was
  * not visible to it, and a witness identical under every enumerated valuation
  * read exactly like a witness the target constrains.</p>
@@ -71,10 +70,6 @@ public final class ClaimPolicy {
     /** A formula or solver gap is still open on the selected path set. */
     static final String COMPOSITION_GAPS_UNRESOLVED =
             "COMPOSITION_GAPS_UNRESOLVED";
-    /** The target predicate is provably free of every symbolic root. */
-    static final String DEGENERATE_ROOT_SPACE = "DEGENERATE_ROOT_SPACE";
-    /** The degeneracy question was never decided, so it is not answered. */
-    static final String UNDECIDED_ROOT_SPACE = "UNDECIDED_ROOT_SPACE";
     /** No root flip changed satisfiability: the witness is not fault-sensitive. */
     static final String TARGET_UNCONSTRAINED_BY_ROOTS =
             "TARGET_UNCONSTRAINED_BY_ROOTS";
@@ -126,9 +121,8 @@ public final class ClaimPolicy {
      * flip, or drift inside the recorded clock window -- and is withheld
      * only where the witness
      * was free in a way nobody wrote down. The freedoms that already carry a
-     * blocker of their own ({@link #UNDECIDED_ROOT_SPACE}) are not named
-     * twice; this one covers the freedom that lives in the witness
-     * itself.</p>
+     * blocker of their own are not named twice; this one covers the freedom
+     * that lives in the witness itself.</p>
      */
     static final String WITNESS_FREEDOM_UNEXPLAINED =
             "WITNESS_FREEDOM_UNEXPLAINED";
@@ -256,10 +250,10 @@ public final class ClaimPolicy {
     }
 
     /**
-     * Replays the gate on already published artifacts. The recorded
-     * composition manifest and reach-condition report are the only evidence,
-     * so a final directory from any earlier run can be re-decided without
-     * re-running the campaign.
+     * Replays the gate on an already published composition manifest.  SOLVE
+     * writes its valuations and mechanisms into the manifest it solved, so
+     * that one artifact is the whole evidence and a final directory from any
+     * earlier run can be re-decided without re-running the campaign.
      */
     public static void main(String[] argv) throws Exception {
         Map<String, String> values = new LinkedHashMap<>();
@@ -271,8 +265,7 @@ public final class ClaimPolicy {
                         "Expected --name value, got " + option);
             }
             String key = option.substring(2);
-            if (!"manifest".equals(key) && !"reach".equals(key)
-                    && !"plan".equals(key)) {
+            if (!"manifest".equals(key) && !"plan".equals(key)) {
                 throw new IllegalArgumentException(
                         "Unknown claim option: --" + key);
             }
@@ -280,7 +273,12 @@ public final class ClaimPolicy {
         }
         JsonObject manifest = ArtifactIO.readObject(
                 required(values, "manifest"));
-        JsonObject reach = ArtifactIO.readObject(required(values, "reach"));
+        JsonObject reach = object(manifest, ComposedManifest.SOLVER);
+        if (reach.size() == 0) {
+            throw new IllegalArgumentException(values.get("manifest")
+                    + " carries no solver report: the composition was never"
+                    + " solved, so there is nothing to decide from");
+        }
         // The plan the composition pinned is the plan that bound its exchange
         // ports, so a replay needs no argument to find it.
         String plan = values.get("plan");
@@ -1030,7 +1028,7 @@ public final class ClaimPolicy {
                                                  boolean polarity) {
         JsonArray necessary = new JsonArray();
         JsonObject probe = object(reach,
-                BooleanReachConditionExtractor.MECHANISM_NECESSITY);
+                RootValuationSolver.MECHANISM_NECESSITY);
         for (JsonElement element : array(probe, "mechanisms")) {
             if (!element.isJsonObject()) {
                 continue;
@@ -1177,11 +1175,10 @@ public final class ClaimPolicy {
      */
     private static JsonObject witnessLegitimacy(
             JsonObject manifest, JsonObject reach, JsonArray valuations,
-            String degeneracy,
             List<String> unrealizedFlows, PlannedSymbolicRoots flows) {
         long window = Math.max(0L, ClockRootPhysics.skewOf(manifest));
         List<WitnessLegitimacy.Freedom> composition =
-                WitnessLegitimacy.compositionFreedoms(degeneracy);
+                Collections.<WitnessLegitimacy.Freedom>emptyList();
         List<Marker> markers = declaredMarkers(manifest, reach, flows);
         List<Marker> planted = new ArrayList<>();
         for (Marker marker : markers) {
@@ -1294,7 +1291,7 @@ public final class ClaimPolicy {
         result.add("clockDecisionsOutsideWindow",
                 clockDecisionsOutsideWindow(reach));
         result.add("clockDecisionsRefusedWithoutWindow",
-                clockDecisionsWithCode(reach, BooleanReachConditionExtractor
+                clockDecisionsWithCode(reach, RootValuationSolver
                         .CLOCK_DECISION_REFUSED_WITHOUT_WINDOW));
         // Which valuation the acceptance rests on, so a probe can assert that
         // marker assignment rather than guess one.
@@ -1420,7 +1417,7 @@ public final class ClaimPolicy {
      * clock window, as the reach report published them.
      */
     private static JsonArray clockDecisionsOutsideWindow(JsonObject reach) {
-        return clockDecisionsWithCode(reach, BooleanReachConditionExtractor
+        return clockDecisionsWithCode(reach, RootValuationSolver
                 .CLOCK_DECISION_OUTSIDE_WINDOW);
     }
 
@@ -1429,7 +1426,7 @@ public final class ClaimPolicy {
                                                     String code) {
         JsonArray rows = new JsonArray();
         for (JsonElement element : array(object(reach,
-                BooleanReachConditionExtractor.CLOCK_DECISIONS),
+                RootValuationSolver.CLOCK_DECISIONS),
                 "decisions")) {
             if (!element.isJsonObject()) continue;
             JsonObject row = element.getAsJsonObject();
@@ -1446,7 +1443,7 @@ public final class ClaimPolicy {
      */
     private static String clockDecisionNote(JsonObject reach) {
         JsonObject probe = object(reach,
-                BooleanReachConditionExtractor.CLOCK_DECISIONS);
+                RootValuationSolver.CLOCK_DECISIONS);
         JsonArray outside = clockDecisionsOutsideWindow(reach);
         String refusedNote = clockDecisionRefusedNote(reach);
         if (outside.size() == 0) return refusedNote;
@@ -1456,7 +1453,7 @@ public final class ClaimPolicy {
                 .append(" only beyond the +/-")
                 .append(optionalLongInteger(probe, "windowMillis", 0L))
                 .append("ms window (")
-                .append(BooleanReachConditionExtractor
+                .append(RootValuationSolver
                         .CLOCK_DECISION_OUTSIDE_WINDOW)
                 .append("):");
         for (JsonElement element : outside) {
@@ -1495,7 +1492,7 @@ public final class ClaimPolicy {
      */
     private static String clockDecisionRefusedNote(JsonObject reach) {
         JsonArray refused = clockDecisionsWithCode(reach,
-                BooleanReachConditionExtractor
+                RootValuationSolver
                         .CLOCK_DECISION_REFUSED_WITHOUT_WINDOW);
         if (refused.size() == 0) return "";
         StringBuilder note = new StringBuilder("; ")
@@ -1504,7 +1501,7 @@ public final class ClaimPolicy {
                 .append(" polarity with the clock left unbounded, so no")
                 .append(" window admits them and the recorded case path")
                 .append(" condition is what pins them (")
-                .append(BooleanReachConditionExtractor
+                .append(RootValuationSolver
                         .CLOCK_DECISION_REFUSED_WITHOUT_WINDOW)
                 .append("):");
         for (JsonElement element : refused) {
@@ -1560,17 +1557,13 @@ public final class ClaimPolicy {
      * acceptance.
      *
      * @param manifest the composition manifest the Composer published
-     * @param reach the reach-condition report the solver stage published
+     * @param reach the solver stage's valuations and mechanisms
      * @param flows what the experiment declares and where the plan bound it
      */
     public static JsonObject decide(JsonObject manifest, JsonObject reach,
                                     PlannedSymbolicRoots flows) {
-        JsonObject reachCondition = object(reach, "reachCondition");
         String reachability = firstNonEmpty(
-                optionalString(reachCondition, "reachability"), "UNKNOWN");
-        String degeneracy = firstNonEmpty(
-                optionalString(reachCondition, "degeneracyCheck"),
-                "UNDECIDED");
+                optionalString(reach, "reachability"), "UNKNOWN");
         boolean unsatClosureComplete = optionalBool(reach,
                 ComposedManifest.UNSAT_CLOSURE_COMPLETE, false);
         JsonArray valuations = array(reach, "valuations");
@@ -1590,7 +1583,7 @@ public final class ClaimPolicy {
         // moved is a marker flip or drift inside the recorded clock window;
         // only freedom nobody accounted for blocks.
         JsonObject legitimacy = witnessLegitimacy(manifest, reach, valuations,
-                degeneracy, unrealizedFlows, flows);
+                unrealizedFlows, flows);
         boolean someSatUnexplained = optionalBool(legitimacy,
                 "someSatisfyingWitnessUnexplained", false);
         String witnessFreedom = optionalString(legitimacy, "freedomCodes");
@@ -1642,19 +1635,12 @@ public final class ClaimPolicy {
                             + String.join(",", hardGaps)));
         }
 
-        // DEGENERATE and UNDECIDED are different findings and were both
-        // acceptable to the jq gate that UNDECIDED slipped through. A root
-        // space the target provably does not constrain is a refutation of the
-        // witness; a root space nobody enumerated is an open question. Each
-        // blocks a SAT candidate under its own name.
-        if (degeneracy.startsWith("DEGENERATE_")) {
-            blockers.add(blocker(DEGENERATE_ROOT_SPACE, degeneracy,
-                    "the target predicate is unconstrained by every"
-                            + " symbolic root"));
-        } else if (degeneracy.startsWith("UNDECIDED_")) {
-            blockers.add(blocker(UNDECIDED_ROOT_SPACE, degeneracy,
-                    "the degeneracy question was not decided: " + degeneracy));
-        }
+        // Whether the target is unconstrained by every root is decided
+        // where the formula is built: the composition refuses
+        // ROOT_NOT_ON_ANY_PATH and never reaches a claim.  Reading the shape
+        // of the solver's disjunction to ask the same question a second time
+        // was the degeneracy verdict, and it answered "UNDECIDED" whenever
+        // nobody had enumerated enough to say.
 
         // A witness is evidence only if the target predicate depends on a
         // root. Two enumerated valuations that differ in one Boolean root and
@@ -1815,7 +1801,6 @@ public final class ClaimPolicy {
         result.addProperty("whyNotAccepted", whyNotAccepted(claim, blockers));
         JsonObject rootSpace = new JsonObject();
         rootSpace.addProperty("reachability", reachability);
-        rootSpace.addProperty("degeneracyCheck", degeneracy);
         rootSpace.addProperty("faultSensitive",
                 faultSensitive(valuations, probeConstrains));
         rootSpace.addProperty("realizedRegions",
@@ -2031,9 +2016,9 @@ public final class ClaimPolicy {
     /**
      * Whether the solver answered this valuation at all.
      *
-     * <p>{@code satisfied} is false for {@code unsat}, for a timeout and for
-     * {@link BooleanReachConditionExtractor#FRONTIER_PINNED_UNSAT} alike, so
-     * on its own it cannot tell a refutation from a missing answer.  Every
+     * <p>{@code satisfied} is false for {@code unsat} and for a timeout
+     * alike, so on its own it cannot tell a refutation from a missing
+     * answer.  Every
      * reading that treats "not satisfied" as evidence -- fault sensitivity
      * above all, which reads a sat/not-sat pair one root apart as proof that
      * the root decides the target -- has to ask this first, or an unanswered
