@@ -125,7 +125,7 @@ emit_fixture() {
     '{"taskId":"task-target","published":true}' \
     >"${emit_iteration}/seed-result/concolic_region_results.jsonl"
   : >"${emit_iteration}/import_diagnostics.jsonl"
-  : >"${emit_iteration}/topology_delta.jsonl"
+  : >"${emit_iteration}/campaign_gaps.jsonl"
   jq -n '{schemaVersion: 1, kind: "CAMPAIGN_ITERATION_MANIFEST",
     iterationId: "iteration-0000", parentIterationId: "",
     externalWorkerCount: 1, topologyDelta: {rows: 0, divergences: 0},
