@@ -82,7 +82,8 @@ final class PathReplayTaskFactory {
         }
         Map<String, JsonArray> assignmentsByTask =
                 distributeAssignments(assignments, sources, decodedSources,
-                        primarySourceTaskId);
+                        primarySourceTaskId, JsonFields.array(query,
+                                RegionPathWorklist.HANDOFF_CONTROLS));
         Map<String, JsonArray> readsByTask = distributeGuardedReads(
                 guardedReads, sources);
         String queryKey = optionalString(query, "queryKey");
@@ -222,7 +223,8 @@ final class PathReplayTaskFactory {
     private static Map<String, JsonArray> distributeAssignments(
             JsonArray assignments, java.util.List<JsonObject> sources,
             java.util.List<ExecutionTask> decodedSources,
-            String primarySourceTaskId) {
+            String primarySourceTaskId,
+            JsonArray handoffControls) {
         Map<String, JsonArray> result = new LinkedHashMap<>();
         Map<String, JsonObject> phaseAssignments = new LinkedHashMap<>();
         for (JsonObject source : sources) {
@@ -233,7 +235,14 @@ final class PathReplayTaskFactory {
             String input = optionalString(assignment, "inputSymbol");
             String phase = optionalString(assignment,
                     "configuredSourcePhaseId");
-            java.util.List<String> owners = phase.isEmpty()
+            // A handoff phase is not minted by any member's catalog: it is
+            // the attach where a value arrived, and the member that answers
+            // it is the one whose activation consumed it.  The obligation's
+            // control row says which that is.
+            java.util.List<String> owners = phase.startsWith(
+                    edu.uva.liftlab.graphchecker.contract.HandoffPhaseContract.PHASE_PREFIX)
+                    ? handoffPhaseOwners(phase, handoffControls, sources)
+                    : phase.isEmpty()
                     ? actionOwners(input, decodedSources)
                     : configuredPhaseOwners(phase, decodedSources);
             // A by-site phase id is ONE variable.  It repeats in every
@@ -305,6 +314,41 @@ final class PathReplayTaskFactory {
     private static boolean crossesAHandoff(JsonObject query) {
         return JsonFields.array(query,
                 RegionPathWorklist.HANDOFF_CONTROLS).size() > 0;
+    }
+
+    /**
+     * The member whose activation consumed one handoff, by its control row.
+     *
+     * <p>The row names the consumer occurrence the attach happened in; the
+     * member replaying that occurrence is the one that answers it.  No
+     * catalog mints a handoff phase, so asking the catalogs -- as a
+     * configured source is asked -- found no owner and refused the whole
+     * assignment.</p>
+     */
+    private static java.util.List<String> handoffPhaseOwners(
+            String phase, JsonArray handoffControls,
+            java.util.List<JsonObject> sources) {
+        java.util.List<String> owners = new ArrayList<>();
+        for (JsonElement element : handoffControls) {
+            if (!element.isJsonObject()) continue;
+            JsonObject control = element.getAsJsonObject();
+            if (!phase.equals(optionalString(control,
+                    InSessionReadResolver.HANDOFF_PHASE_ID))) {
+                continue;
+            }
+            String consumer = optionalString(control,
+                    "consumerOccurrenceId");
+            for (JsonObject source : sources) {
+                String taskId = optionalString(source, "taskId");
+                if (taskId.isEmpty() || owners.contains(taskId)) continue;
+                if (OccurrenceAddress.parse(consumer).render().equals(
+                        OccurrenceAddress.parse(optionalString(source,
+                                "occurrenceId")).render())) {
+                    owners.add(taskId);
+                }
+            }
+        }
+        return owners;
     }
 
     private static java.util.List<String> actionOwners(

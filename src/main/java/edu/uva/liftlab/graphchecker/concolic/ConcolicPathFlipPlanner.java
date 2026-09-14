@@ -108,7 +108,7 @@ public final class ConcolicPathFlipPlanner {
      * Everything a wave's members share: the frozen task plan, the propagated
      * summaries and the one family snapshot they are all planned against.
      */
-    private static final class Wave {
+    static final class Wave {
         private final List<JsonObject> allExecutionTasks;
         private final List<JsonObject> allSummaries;
         private final List<JsonObject> allRecords;
@@ -224,6 +224,16 @@ public final class ConcolicPathFlipPlanner {
                 // here, where the replay it was cut from still has its rows.
                 String replay = replayOfSource(task);
                 ResolvedFlipQuery.attach(task, resolvers.get(replay), replay);
+                // The controls this obligation flips through.  A HOFF label
+                // IS the identity of the attach that minted it, and that
+                // attach happened in this same replay run -- in whichever
+                // region activation's summary of this replay group made it.
+                // Looking only at the flipped path's own summary found one
+                // attach where the model assigned five, and every such model
+                // was refused as not materializable.  Symbol to row, across
+                // the group; no boundary, no write log, no inference.
+                controlBySymbol(task, replay, allSummaries,
+                        result.manifest);
                 JsonObject bundle = LinkedReplayBundle.create(
                         optionalString(task, "sourceTaskId"),
                         allExecutionTasks, allSummaries,
@@ -262,6 +272,94 @@ public final class ConcolicPathFlipPlanner {
         }
 
         /** The replay this obligation was cut from. */
+        /**
+         * Answers every handoff variable this obligation mentions.
+         *
+         * <p>One row per {@code HOFF.} label the resolved flip query names,
+         * found by that label among the {@code VM_HANDOFF_EVENT} rows of
+         * every summary of this replay group -- the attach that minted it.
+         * A label no summary of the group minted is named instead, because
+         * an obligation that cannot answer a variable its own flip assigns
+         * is one the replay cannot run.</p>
+         */
+        static void controlBySymbol(JsonObject task, String replay,
+                                    List<JsonObject> allSummaries,
+                                    JsonObject manifest) {
+            Set<String> wanted = new LinkedHashSet<>();
+            handoffLabels(ResolvedFlipQuery.of(task), wanted,
+                    new java.util.IdentityHashMap<JsonElement, Boolean>());
+            if (wanted.isEmpty()) return;
+            Map<String, JsonObject> rows = new LinkedHashMap<>();
+            for (JsonObject summary : allSummaries) {
+                if (!replay.equals(ResolvedFlipQuery.replayKey(summary))) {
+                    continue;
+                }
+                for (JsonElement encoded
+                        : JsonFields.array(summary, VmHandoffEvidence.FIELD)) {
+                    if (!encoded.isJsonObject()) continue;
+                    JsonObject event = encoded.getAsJsonObject();
+                    String symbol = optionalString(event,
+                            InSessionReadResolver.HANDOFF_SYMBOL);
+                    String phase = optionalString(event,
+                            InSessionReadResolver.HANDOFF_PHASE_ID);
+                    if (!wanted.contains(symbol) || phase.isEmpty()) continue;
+                    JsonObject control = new JsonObject();
+                    control.addProperty("rawSymbol", symbol);
+                    control.addProperty(
+                            InSessionReadResolver.HANDOFF_PHASE_ID, phase);
+                    control.addProperty("javaType",
+                            optionalString(event, "javaType"));
+                    control.addProperty("recordedValue",
+                            optionalString(event, "recordedValue"));
+                    control.addProperty("consumerOccurrenceId",
+                            optionalString(summary, "occurrenceId"));
+                    rows.putIfAbsent(symbol, control);
+                }
+            }
+            JsonArray controls = new JsonArray();
+            for (JsonObject row : rows.values()) controls.add(row);
+            if (controls.size() > 0) {
+                task.add(RegionPathWorklist.HANDOFF_CONTROLS, controls);
+            }
+            for (String symbol : wanted) {
+                if (rows.containsKey(symbol)) continue;
+                JsonObject gap = new JsonObject();
+                gap.addProperty("kind", "HANDOFF_CONTROL_ROW_ABSENT");
+                gap.addProperty("reason",
+                        "NO_SUMMARY_OF_THE_REPLAY_MINTED_THIS_HANDOFF");
+                gap.addProperty("subject", symbol);
+                gap.addProperty("queryKey", optionalString(task, "queryKey"));
+                JsonFields.array(manifest, "gaps").add(gap);
+            }
+        }
+
+        /** Every {@code HOFF.} label one resolved query names. */
+        private static void handoffLabels(
+                JsonElement value, Set<String> into,
+                Map<JsonElement, Boolean> visited) {
+            if (value == null || value.isJsonNull()) return;
+            if (value.isJsonPrimitive()) {
+                String text = value.getAsJsonPrimitive().isString()
+                        ? value.getAsString() : "";
+                if (text.startsWith("M_") && text.contains(
+                        edu.uva.liftlab.graphchecker.contract.HandoffPhaseContract.LABEL_PREFIX)) {
+                    into.add(text);
+                }
+                return;
+            }
+            if (visited.put(value, Boolean.TRUE) != null) return;
+            if (value.isJsonArray()) {
+                for (JsonElement child : value.getAsJsonArray()) {
+                    handoffLabels(child, into, visited);
+                }
+                return;
+            }
+            for (Map.Entry<String, JsonElement> field
+                    : value.getAsJsonObject().entrySet()) {
+                handoffLabels(field.getValue(), into, visited);
+            }
+        }
+
         private String replayOfSource(JsonObject task) {
             String summaryId = optionalString(task, "sourceSummaryId");
             String taskId = optionalString(task, "sourceTaskId");
