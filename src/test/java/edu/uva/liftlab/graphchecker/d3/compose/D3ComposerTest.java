@@ -63,6 +63,8 @@ public class D3ComposerTest {
     private static final String ANCHOR_SITE = "BlockManager#get#8:READ";
     private static final String MARKER = "marker_m";
     private static final String MARKER_ROOT = "ROOT.MARKER";
+    private static final String SERIAL = "serial_s";
+    private static final String SERIAL_ROOT = "ROOT.SERIAL";
 
     // ------------------------------------------------------------------
     // 1. Polarity: the recording is refuted, the flip reaches the failure.
@@ -259,6 +261,112 @@ public class D3ComposerTest {
     }
 
     // ------------------------------------------------------------------
+    // 7. A relative domain is relative to the reading it was declared on.
+    // ------------------------------------------------------------------
+
+    @Test
+    public void aDeclaredWindowIsResolvedAgainstEachPathsOwnReading()
+            throws Exception {
+        Path iteration = folder.newFolder("window").toPath();
+        // The NameNode's serial advances between replays, so "up to three
+        // rotations ahead of what this run read" is three different windows.
+        for (String[] each : new String[][]{{"s0", "119994", "false"},
+                {"s1", "119997", "true"}}) {
+            Session session = new Session(iteration, each[0],
+                    "true".equals(each[2]));
+            session.serial(each[1], "+0", "+3");
+            session.target("true", false, true);
+            session.write();
+        }
+
+        Composer.Composition composition = compose(iteration, 8);
+        assertEquals(2, composition.disjuncts().size());
+        assertFalse("a root two sessions read differently gets no "
+                        + "corpus-wide window",
+                composition.body().contains("root_domain__"));
+        assertTrue("the seed's own window is on the seed's path",
+                composition.body().contains("(>= " + SERIAL + " 119994)"));
+        assertTrue("and the later session's own window is on its path",
+                composition.body().contains("(>= " + SERIAL + " 119997)"));
+
+        // The value the old corpus-wide window excluded: legal for the
+        // session that read 119997, and for no other.
+        Solver solver = solver();
+        for (Composer.Disjunct disjunct : composition.disjuncts()) {
+            List<String> pinned = new ArrayList<String>();
+            pinned.add("(assert " + disjunct.selector() + ")");
+            pinned.add("(assert (= " + SERIAL + " 120000))");
+            String status = solver.ask(composition.body(), pinned,
+                    Collections.<String>emptyList(), false).status();
+            assertEquals("three rotations past its own reading, on "
+                            + disjunct.path().sessionId(),
+                    "s1".equals(disjunct.path().sessionId())
+                            ? "sat" : "unsat", status);
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // 8. A mechanism the recording does not decide is not a finding.
+    // ------------------------------------------------------------------
+
+    @Test
+    public void aWitnessWithoutPolarityIsNotAFinding() throws Exception {
+        Path iteration = folder.newFolder("polarity").toPath();
+        Session session = new Session(iteration, "s0", false);
+        session.marker("false");
+        // phi holds whatever the marker is: the run as it happened reaches
+        // the arm too, so moving the marker explains no difference.
+        session.target("(or " + MARKER + " (not " + MARKER + "))", false,
+                true);
+        session.write();
+
+        Composer.Composition composition = compose(iteration, 4);
+        ClaimPolicy.Decision decision = ClaimPolicy.decide(composition,
+                solver());
+        assertEquals("sat", decision.outcomes().get(0).answer().status());
+        assertEquals("sat", decision.outcomes().get(1).answer().status());
+        assertEquals("the flip is satisfiable and explains nothing",
+                ClaimKind.NO_SUPPORTED_WITNESS, decision.claim().kind());
+        assertTrue("and the alarm says why",
+                named(decision.claim().gaps(),
+                        GapKind.FORMULA_SAT_AT_RECORDED_VALUATION));
+    }
+
+    // ------------------------------------------------------------------
+    // 9. What the recording does not state is named, never dropped.
+    // ------------------------------------------------------------------
+
+    @Test
+    public void whatTheRecordingDoesNotStateIsNamed() throws Exception {
+        Path iteration = folder.newFolder("named").toPath();
+        Endpoint consumer = Endpoint.of(ANCHOR, "PORT.key", 1, 0);
+        Endpoint other = Endpoint.of(ANCHOR, "PORT.ref", 1, 0);
+        // Two sessions, neither of which focused anything: two recordings.
+        for (String each : new String[]{"s0", "s1"}) {
+            Session session = new Session(iteration, each, false);
+            session.marker("false");
+            // An attach the wire delivered to and the recording cannot
+            // pair, and one whose Java type names no scalar.
+            session.attach(consumer, "vh", "I", "7", null);
+            session.attach(other, "vh_ref", "Lorg/apache/Foo;", "7", null);
+            session.target("true", false, true);
+            session.write();
+        }
+
+        Composer.Composition composition = compose(iteration, 4);
+        List<GapRow> gaps = composition.gaps();
+        assertTrue("an unpaired attach is a named row",
+                says(gaps, GapKind.UNSTATED_VALUE,
+                        "names no producer endpoint"));
+        assertTrue("a Java type this lowering cannot place is refused",
+                says(gaps, GapKind.UNSTATED_VALUE, "names no scalar"));
+        assertTrue("and two recordings are not one",
+                says(gaps, GapKind.UNSTATED_VALUE, "focused nothing"));
+        assertFalse("the unplaceable symbol is not in the formula",
+                composition.body().contains("vh_ref"));
+    }
+
+    // ------------------------------------------------------------------
     // Fixture.
     // ------------------------------------------------------------------
 
@@ -281,6 +389,17 @@ public class D3ComposerTest {
     private static boolean named(List<GapRow> gaps, GapKind kind) {
         for (GapRow gap : gaps) {
             if (gap.kind() == kind) return true;
+        }
+        return false;
+    }
+
+    /** Whether some gap of this kind says this. */
+    private static boolean says(List<GapRow> gaps, GapKind kind,
+                                String fragment) {
+        for (GapRow gap : gaps) {
+            if (gap.kind() == kind && gap.detail().contains(fragment)) {
+                return true;
+            }
         }
         return false;
     }
@@ -325,6 +444,12 @@ public class D3ComposerTest {
         void marker(String recorded) {
             roots.add(RootMintRow.of(id, ++seq, PRODUCER, MARKER_ROOT, MARKER,
                     RootKind.MARKER, recorded, null, null, true));
+        }
+
+        /** A declared counter, with the window the CASE states around it. */
+        void serial(String recorded, String min, String max) {
+            roots.add(RootMintRow.of(id, PRODUCER, SERIAL_ROOT, SERIAL,
+                    RootKind.INTEGRAL, recorded, min, max, true));
         }
 
         void expression(String ref, JsonObject node) {

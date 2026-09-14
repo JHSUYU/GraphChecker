@@ -149,6 +149,12 @@ public final class ClaimPolicy {
                 && recorded.answer().unsat();
 
         // 1. A declared root moved inside its domain.
+        //
+        // Polarity is a CONDITION on this claim and not a field beside it.
+        // "These controls plus this rotation reach the failure" says nothing
+        // unless the run as it happened does NOT reach it: a formula that is
+        // satisfiable at the recorded valuation was satisfiable all along,
+        // and the rotation explained nothing about the difference.
         for (Outcome outcome : outcomes) {
             if (outcome.valuation().ordinal() == 0) continue;
             if (!outcome.answer().sat() || outcome.selected() == null) {
@@ -164,22 +170,31 @@ public final class ClaimPolicy {
                                 + "so it is not a supported witness"));
                 continue;
             }
+            if (!polarityDecides) {
+                undecidedPolarity(gaps, recorded, ClaimKind.MARKER_FLIPPED);
+                break;
+            }
             return new Decision(Claim.of(ClaimKind.MARKER_FLIPPED,
                     outcome.valuation().ordinal(),
-                    outcome.valuation().moved(), polarityDecides, gaps),
+                    outcome.valuation().moved(), true, gaps),
                     outcomes);
         }
 
-        // 2. No root moves, and the clocks are necessary.
+        // 2. No root moves, and the clocks are necessary -- with the same
+        //    polarity condition, for the same reason.
         for (Outcome outcome : outcomes) {
             if (!outcome.answer().sat() || outcome.selected() == null) {
                 continue;
             }
             if (!outcome.valuation().moved().isEmpty()) continue;
             if (!clockNecessary(composition, solver, outcome)) continue;
+            if (!polarityDecides) {
+                undecidedPolarity(gaps, recorded, ClaimKind.CLOCK_SKEW);
+                break;
+            }
             return new Decision(Claim.of(ClaimKind.CLOCK_SKEW,
                     outcome.valuation().ordinal(),
-                    Collections.<String, String>emptyMap(), polarityDecides,
+                    Collections.<String, String>emptyMap(), true,
                     gaps), outcomes);
         }
 
@@ -209,6 +224,33 @@ public final class ClaimPolicy {
                 recorded == null ? 0 : recorded.valuation().ordinal(),
                 Collections.<String, String>emptyMap(), polarityDecides,
                 gaps), outcomes);
+    }
+
+    /**
+     * A mechanism the formula shows and the recording does not decide.
+     *
+     * <p>Named rather than published as a finding: the run reached the fatal
+     * arm at the recorded valuation too, so what the moved quantity explains
+     * is not the difference between failing and not failing.  The alarm is
+     * the same one a healthy-observed recorded-valuation model raises, and it
+     * is raised here as well for a fatal-observed one, because the question
+     * it asks -- "what does this witness add?" -- is the same.</p>
+     */
+    private static void undecidedPolarity(List<GapRow> gaps,
+                                          Outcome recorded, ClaimKind kind) {
+        for (GapRow gap : gaps) {
+            if (gap.kind() == GapKind.FORMULA_SAT_AT_RECORDED_VALUATION) {
+                return;
+            }
+        }
+        gaps.add(GapRow.of(recorded == null || recorded.selected() == null
+                        ? "composition"
+                        : recorded.selected().path().sessionId(),
+                GapKind.FORMULA_SAT_AT_RECORDED_VALUATION,
+                GapClass.BLOCKING, kind.name(),
+                "the formula shows " + kind + ", and it is satisfiable with "
+                        + "every declared root at its recorded value too, so "
+                        + "the recording does not decide the arm"));
     }
 
     /** Which disjunct a sat model selected, or null when it named none. */
