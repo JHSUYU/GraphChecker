@@ -349,7 +349,8 @@ public final class PathMergeComposer {
         }
 
         JsonArray families = handoffFamilies(summaries, replays,
-                usedHandoffSymbols, roots, lowering, gates);
+                usedHandoffSymbols, roots, declaredVariables, lowering,
+                gates);
         if (selectors.isEmpty()) {
             gate(gates, TARGET_NOT_REACHED,
                     "no replay published a usable anchored row for " + site
@@ -770,6 +771,7 @@ public final class PathMergeComposer {
             List<JsonObject> summaries,
             Map<String, List<JsonObject>> replays,
             Set<String> usedHandoffSymbols, RootInventory roots,
+            Map<String, JsonObject> declaredVariables,
             PathMergeLowering lowering, JsonArray gates) {
         JsonArray published = new JsonArray();
         if (usedHandoffSymbols.isEmpty()) return published;
@@ -808,6 +810,17 @@ public final class PathMergeComposer {
                     continue;
                 }
                 List<String> terms = new ArrayList<>();
+                // The valuation this replay ran under.  A delivery is not
+                // available under every root valuation: the flip replay that
+                // sent one key id ran with the marker at the value its
+                // obligation applied, and each replay's own mint rows state
+                // what each root produced in it -- the seed's marker row
+                // reads false, the flipped replays' read true.  Without this
+                // the family was a menu: the recorded polarity could take a
+                // delivery only a flipped replay ever made, and reach the
+                // failure with no marker moved.
+                terms.addAll(deliveringValuation(summary, declaredVariables,
+                        lowering));
                 for (JsonElement decision : producerPrefix(group, resolver,
                         roots.byRawSymbol.keySet(), export)) {
                     terms.add(lowering.condition(decision,
@@ -852,6 +865,73 @@ public final class PathMergeComposer {
      * all and the SOLVE stage refused it -- twelve rows on laneVM14, every
      * one a manual input.  The mint row is where the identity is.</p>
      */
+    /**
+     * The root valuation one replay ran under, as SMT equalities.
+     *
+     * <p>Each replay's own mint rows state what every root it minted
+     * produced in that execution -- the recorded value for a seed, the
+     * applied model value for a replay whose obligation assigned one.  Only
+     * roots the formula actually lowered are constrained, and only values
+     * that render as a literal.</p>
+     */
+    private static List<String> deliveringValuation(
+            JsonObject summary, Map<String, JsonObject> declaredVariables,
+            PathMergeLowering lowering) {
+        List<String> valuation = new ArrayList<>();
+        Set<String> stated = new LinkedHashSet<>();
+        for (String member : new String[]{"symbolicSourceEvidence",
+                "manualSymbolicInputObservations"}) {
+            for (JsonElement element : array(summary, member)) {
+                if (!element.isJsonObject()) continue;
+                JsonObject row = element.getAsJsonObject();
+                String raw = optionalString(row, "rawSymbol");
+                String value = optionalString(row,
+                        ComposedManifest.RECORDED_SOURCE_VALUE);
+                if (raw.isEmpty() || value.isEmpty()
+                        || !declaredVariables.containsKey(raw)
+                        || !stated.add(raw)) {
+                    continue;
+                }
+                // Only the marker polarity.  A marker is the thing the
+                // case declares varyable, so it is the thing an arm must be
+                // guarded by; every other root is already pinned to its
+                // recorded value by its own domain, and repeating that here
+                // -- once per arm, per replay -- made arms contradict the
+                // path conditions they sit beside rather than select
+                // between them.
+                String javaType = optionalString(
+                        declaredVariables.get(raw), "javaType");
+                if (!"Z".equals(javaType)) continue;
+                JsonObject literal = literalOf(value, javaType);
+                if (literal == null) continue;
+                // Lowered as an expression, not spelled as SMT text: the
+                // root may not appear in any path -- a consumer predicate
+                // over the arrived value alone does not mention the
+                // producer's marker -- and lowering the equality is what
+                // declares its term.
+                valuation.add(lowering.condition(equals(raw, literal),
+                        "handoff:valuation:" + raw));
+            }
+        }
+        return valuation;
+    }
+
+    /** One recorded value as an expression node, or null. */
+    private static JsonObject literalOf(String value, String javaType) {
+        JsonObject node = new JsonObject();
+        node.addProperty("_type", "ConstExpr");
+        if ("true".equals(value) || "false".equals(value)) {
+            node.addProperty("_java_type", "Z");
+            node.addProperty("_exp", "true".equals(value) ? "Y_Z_1" : "Y_Z_0");
+            return node;
+        }
+        if (smtIntegerLiteral(value).isEmpty()) return null;
+        node.addProperty("_java_type",
+                javaType.isEmpty() ? "J" : javaType);
+        node.addProperty("_exp", value);
+        return node;
+    }
+
     /**
      * What one root may be, as the case declares it, or {@code ""} when the
      * case leaves it free.
