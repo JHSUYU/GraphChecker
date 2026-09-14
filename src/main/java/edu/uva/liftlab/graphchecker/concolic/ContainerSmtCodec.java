@@ -1329,10 +1329,16 @@ public final class ContainerSmtCodec {
      * default of the map the mutation chain starts from.
      *
      * <p>The condition is the negation of "some PUT of the chain used this
-     * key, or the base state holds it".  A conditional remove is not a PUT
-     * and contributes nothing: a key a {@code REMOVE_IF} deleted was put
-     * earlier or came out of the base state, so the disjunction still holds
-     * for it and the read is explained by the removal.</p>
+     * key".  The chain is walked to the base the VM reconstructed: an
+     * INITIAL publishes it as {@code SNAPSHOT_BASE} with one PUT per entry
+     * it walked, so the keys the map began with are in the chain like any
+     * other and membership is decided by the recording.  A conditional
+     * remove is not a PUT and contributes nothing: a key a {@code REMOVE_IF}
+     * deleted was put earlier or came out of the base, so the disjunction
+     * still holds for it and the read is explained by the removal.</p>
+     *
+     * <p>A chain that reaches no such base states no membership, and this
+     * refuses rather than leaving the solver to decide it.</p>
      */
     private static void noteAbsentKeyDefault(
             JsonElement expression, Term key, Host host,
@@ -1342,14 +1348,14 @@ public final class ContainerSmtCodec {
         for (int depth = 0; depth < ABSENT_KEY_CHAIN_LIMIT; depth++) {
             Mutation mutation = associativeMutation(chain);
             if (mutation == null) {
-                Term state = host.operand(chain, Sort.ASSOCIATIVE);
-                if (state == null || state.sort != Sort.ASSOCIATIVE) return;
-                present.add("(assoc_has " + shared(state, host).text + " "
-                        + key.text + ")");
-                String absent = present.size() == 1
-                        ? "(not " + present.get(0) + ")"
-                        : "(not (or " + String.join(" ", present) + "))";
-                host.noteAbsentKeyDefault(key.text, absent);
+                // The chain bottoms out on a state nothing reconstructed:
+                // no INITIAL walked this container, so whether it holds the
+                // key is not a recorded fact.  Lowering that as
+                // "(assoc_has <opaque> k)" left membership free -- the
+                // solver decides whether the map held the key -- and a
+                // witness may then be resting on a map the recording never
+                // showed.  Membership is a recorded fact or it is a gate.
+                host.unsupported(CONTAINER_BASE_UNSTATED + ":" + key.text);
                 return;
             }
             if ("CLEAR".equals(mutation.operation)) {
@@ -1380,6 +1386,13 @@ public final class ContainerSmtCodec {
 
     /** Depth past which an associative chain is not worth walking twice. */
     private static final int ABSENT_KEY_CHAIN_LIMIT = 512;
+
+    /**
+     * Refusal subject for a membership no recording decides: the same name
+     * the shared-state evidence gives an INITIAL that states no base.
+     */
+    static final String CONTAINER_BASE_UNSTATED =
+            SharedStateEvidence.CONTAINER_BASE_UNSTATED_FAULT;
 
     private static Term associativeRead(
             JsonElement expression, Term key, Host host,

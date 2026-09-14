@@ -319,7 +319,8 @@ public final class PathMergeComposer {
             // ROOT_NOT_ON_ANY_PATH.
             for (JsonObject member : replayGroup) {
                 for (String conjunct : deliveringValuation(member,
-                        declaredVariables, lowering, roots)) {
+                        declaredVariables, lowering, roots,
+                        arguments.clockSkewMillis)) {
                     if (!terms.contains(conjunct)) terms.add(conjunct);
                 }
             }
@@ -347,9 +348,34 @@ public final class PathMergeComposer {
             String fatalTerm = required == anchor.observedTakenOutcome()
                     ? observedTerm : "(not " + observedTerm + ")";
             terms.add(fatalTerm);
+            // A membership no recording decides is this path's refusal, not
+            // a note on the side.  The read still lowers -- to "does this
+            // opaque state hold the key", which the solver answers however
+            // it likes -- so composing the path anyway would rest the
+            // disjunct on a map the recording never showed.
+            List<String> refusals = new ArrayList<>();
+            for (String subject : lowering.pathRefusals()) {
+                if (subject.startsWith(
+                        ContainerSmtCodec.CONTAINER_BASE_UNSTATED)) {
+                    refusals.add(subject);
+                }
+            }
             // The definedness facts this path's own lowering raised belong
             // to this path: globally they would constrain its alternatives.
             terms.addAll(lowering.endPath());
+            if (!refusals.isEmpty()) {
+                row.addProperty("admitted", false);
+                row.addProperty("reason", PROPAGATION_CUT);
+                JsonArray reasons = new JsonArray();
+                for (String subject : refusals) reasons.add(subject);
+                row.add("propagationCuts", reasons);
+                pathRows.add(row);
+                for (String subject : refusals) {
+                    gate(gates, PROPAGATION_CUT, "path " + pathOrdinal
+                            + ": " + subject);
+                }
+                continue;
+            }
             String conjunction = and(terms);
             lowering.assertNamed("path_fatal__" + pathOrdinal,
                     "(=> " + selector + " " + conjunction + ")");
@@ -373,7 +399,7 @@ public final class PathMergeComposer {
 
         JsonArray families = handoffFamilies(summaries, replays,
                 usedHandoffSymbols, roots, declaredVariables, lowering,
-                gates);
+                gates, arguments.clockSkewMillis);
         if (selectors.isEmpty()) {
             gate(gates, TARGET_NOT_REACHED,
                     "no replay published a usable anchored row for " + site
@@ -436,8 +462,7 @@ public final class PathMergeComposer {
                 }
             }
             rootRows.add(rootRow);
-            String domainTerm = rootDomain(rootRow, declared,
-                    arguments.clockSkewMillis);
+            String domainTerm = rootDomain(rootRow, declared);
             if (!domainTerm.isEmpty()) {
                 lowering.assertNamed("root_domain__" + rootDomains++,
                         domainTerm);
@@ -794,7 +819,8 @@ public final class PathMergeComposer {
             Map<String, List<JsonObject>> replays,
             Set<String> usedHandoffSymbols, RootInventory roots,
             Map<String, JsonObject> declaredVariables,
-            PathMergeLowering lowering, JsonArray gates) {
+            PathMergeLowering lowering, JsonArray gates,
+            long clockSkewMillis) {
         JsonArray published = new JsonArray();
         if (usedHandoffSymbols.isEmpty()) return published;
         Map<String, List<String>> armsBySymbol = new LinkedHashMap<>();
@@ -852,7 +878,7 @@ public final class PathMergeComposer {
                 // is what keeps ROOT_NOT_ON_ANY_PATH honest, exactly as on
                 // a path.
                 terms.addAll(deliveringValuation(summary, declaredVariables,
-                        lowering, roots));
+                        lowering, roots, clockSkewMillis));
                 for (JsonElement decision : producerPrefix(group, resolver,
                         roots.byRawSymbol.keySet(), export)) {
                     terms.add(lowering.condition(decision,
@@ -906,16 +932,10 @@ public final class PathMergeComposer {
      * roots the formula actually lowered are constrained, and only values
      * that render as a literal.</p>
      */
-    private static List<String> deliveringValuation(
+    static List<String> deliveringValuation(
             JsonObject summary, Map<String, JsonObject> declaredVariables,
-            PathMergeLowering lowering) {
-        return deliveringValuation(summary, declaredVariables, lowering,
-                null);
-    }
-
-    private static List<String> deliveringValuation(
-            JsonObject summary, Map<String, JsonObject> declaredVariables,
-            PathMergeLowering lowering, RootInventory varied) {
+            PathMergeLowering lowering, RootInventory varied,
+            long clockSkewMillis) {
         List<String> valuation = new ArrayList<>();
         Set<String> stated = new LinkedHashSet<>();
         for (String member : new String[]{"symbolicSourceEvidence",
@@ -924,14 +944,29 @@ public final class PathMergeComposer {
                 if (!element.isJsonObject()) continue;
                 JsonObject row = element.getAsJsonObject();
                 String raw = optionalString(row, "rawSymbol");
-                String value = optionalString(row,
-                        ComposedManifest.RECORDED_SOURCE_VALUE);
+                String value = executionReading(row);
                 if (raw.isEmpty() || value.isEmpty()
                         || !declaredVariables.containsKey(raw)
-                        || varied != null && !varied.varied(raw)
                         || !stated.add(raw)) {
                     continue;
                 }
+                // A clock is not an assignment a replay ran under: every
+                // execution reads it fresh, and two replays of one read read
+                // two instants.  So it is never an equality and never
+                // filtered by varied() -- it is a window, of the case's
+                // declared skew, around what THIS execution read.  One
+                // window around one global reading is what left every
+                // replay but the one it is centred on unsatisfiable at its
+                // own valuation.
+                if (ClockRootPhysics.clockCallee(optionalString(row,
+                        SymbolicSourceEvidence.DECLARED_CALLEE))) {
+                    String window = clockWindow(rootTermOf(
+                            declaredVariables.get(raw), raw), value,
+                            clockSkewMillis);
+                    if (!window.isEmpty()) valuation.add(window);
+                    continue;
+                }
+                if (varied != null && !varied.varied(raw)) continue;
                 String javaType = optionalString(
                         declaredVariables.get(raw), "javaType");
                 JsonObject literal = literalOf(value, javaType);
@@ -946,6 +981,51 @@ public final class PathMergeComposer {
             }
         }
         return valuation;
+    }
+
+    /**
+     * What THIS execution read at one mint.
+     *
+     * <p>{@code recordedValue} on a clock row is the RECORDING's reading --
+     * the runtime states it there so a reader has the centre of the case's
+     * window.  What this execution read is {@code observedValue} where the
+     * runtime states it; a row that states only the one value is read as
+     * that execution's own, which is what every non-clock mint row states
+     * and what clock rows stated before the recording's reading moved onto
+     * them.</p>
+     */
+    private static String executionReading(JsonObject row) {
+        String observed = optionalString(row, "observedValue");
+        return observed.isEmpty()
+                ? optionalString(row, ComposedManifest.RECORDED_SOURCE_VALUE)
+                : observed;
+    }
+
+    /** One clock cell's freedom around one reading, or "". */
+    private static String clockWindow(String term, String reading,
+                                      long skewMillis) {
+        if (term.isEmpty() || smtIntegerLiteral(reading).isEmpty()
+                || skewMillis <= 0L) {
+            return "";
+        }
+        java.math.BigInteger centre = new java.math.BigInteger(
+                reading.trim());
+        java.math.BigInteger skew = java.math.BigInteger.valueOf(skewMillis);
+        return "(and (>= " + term + " "
+                + smtIntegerLiteral(centre.subtract(skew).toString())
+                + ") (<= " + term + " "
+                + smtIntegerLiteral(centre.add(skew).toString()) + "))";
+    }
+
+    /**
+     * The one solver name a declared root gets, as the lowering mints it.
+     *
+     * <p>Spelled here as well because the valuation is built while the
+     * paths are lowered, before every root has been met.</p>
+     */
+    private static String rootTermOf(JsonObject declared, String raw) {
+        return JavaSmtSorts.smtName(firstNonBlank(
+                optionalString(declared, "symbol"), "sym__" + raw));
     }
 
     /** One recorded value as an expression node, or null. */
@@ -968,8 +1048,8 @@ public final class PathMergeComposer {
      * What one root may be, as the case declares it, or {@code ""} when the
      * case leaves it free.
      */
-    private static String rootDomain(JsonObject rootRow, JsonObject declared,
-                                     long clockSkewMillis) {
+    private static String rootDomain(JsonObject rootRow,
+                                     JsonObject declared) {
         String term = optionalString(rootRow, "solverTerm");
         String recorded = optionalString(rootRow,
                 ComposedManifest.RECORDED_SOURCE_VALUE);
@@ -984,15 +1064,12 @@ public final class PathMergeComposer {
         if ("BOOL".equals(optionalString(rootRow, "sort"))) return "";
         String literal = smtIntegerLiteral(recorded);
         if (literal.isEmpty()) return "";
-        long skew = wallClockRead(rootRow) ? clockSkewMillis : 0L;
-        if (skew <= 0L) return "(= " + term + " " + literal + ")";
-        java.math.BigInteger value = new java.math.BigInteger(
-                recorded.trim());
-        java.math.BigInteger window = java.math.BigInteger.valueOf(skew);
-        return "(and (>= " + term + " "
-                + smtIntegerLiteral(value.subtract(window).toString())
-                + ") (<= " + term + " "
-                + smtIntegerLiteral(value.add(window).toString()) + "))";
+        // A clock read has no global domain: its window is centred on the
+        // reading of whichever execution the path is, and one window around
+        // one reading contradicts every other replay's decisions over it.
+        // The path and the family arm carry it (deliveringValuation).
+        if (wallClockRead(rootRow)) return "";
+        return "(= " + term + " " + literal + ")";
     }
 
     /**
