@@ -2895,7 +2895,7 @@ campaign_compose() {
   # carried their fatal read.  The Composer's own occurrence ledger is the
   # authority on the planned set, so they are read from it rather than
   # re-derived here, and each is published as a skip with its reason.
-  campaign_compose_unscheduled "${elected_manifest}"
+  campaign_compose_unscheduled "${elected_manifest}" "${iteration_dir}"
   require_nonempty "target occurrence reports" "${campaign_target_reports}"
   campaign_log "composed target occurrences: \
 $(jq -r -s '[.[] | select(.status == "COMPOSED")] | length' \
@@ -2961,7 +2961,7 @@ campaign_compose_occurrence() {
 # the elected composition's own occurrence ledger so the planned set and the
 # reported set come from one owner.
 campaign_compose_unscheduled() {
-  local manifest=$1
+  local manifest=$1 iteration_dir=$2
   local reported planned occurrence region goal
   reported=$(jq -r -s '[.[].occurrenceId] | join("\n")' \
     "${campaign_target_reports}") || campaign_fail COMPOSE CAMPAIGN \
@@ -2976,6 +2976,17 @@ campaign_compose_unscheduled() {
   [[ -n "${planned}" ]] || return 0
   while IFS=$'\t' read -r occurrence region goal; do
     [[ -n "${occurrence}" ]] || continue
+    # The declared occurrence is the one the campaign answers about, so it
+    # is composed even when no member carried it: the Composer publishes
+    # TARGET_NOT_REACHED as this occurrence's own artifacts and DECIDE
+    # elects a refusal that states its reason, instead of a row with no
+    # artifacts for any consumer to read.
+    if [[ -n "${declared_target_occurrence}" \
+        && "${occurrence}" == "${declared_target_occurrence}" ]]; then
+      campaign_compose_occurrence "${iteration_dir}" SIBLING "" \
+        "${region}" "${occurrence}"
+      continue
+    fi
     campaign_report_target_occurrence "${occurrence}" "${region}" "" "" \
       SKIPPED_UNOBSERVED "the active observed closure scheduled no replay \
 member for this occurrence: no linked summary carried its fatal read" -1
@@ -3100,11 +3111,21 @@ campaign_solve_report() {
 # verdict stays in the ledger beside them.
 campaign_decide() {
   local chosen dir
+  local -a declaration
+  declaration=()
+  # Which execution of the annotated site the campaign answers about is the
+  # case's to declare, so the election is told the declaration rather than
+  # ranking around it.  Without this a run that composed exactly the
+  # declared occurrence published its claim about whichever unscheduled
+  # occurrence sorted first, and then stopped because that one had no
+  # artifacts (hdfs-17899 bug1, round 1).
+  [[ -z "${declared_target_occurrence}" ]] \
+    || declaration=(--target-occurrence "${declared_target_occurrence}")
   campaign_target_ledger="${campaign_final}/target_occurrences.json"
   run_java_main \
     edu.uva.liftlab.graphchecker.concolic.TargetOccurrenceElection \
     --reports "${campaign_target_reports}" \
-    --output "${campaign_target_ledger}" >/dev/null \
+    --output "${campaign_target_ledger}" "${declaration[@]}" >/dev/null \
     || campaign_fail DECIDE TargetOccurrenceElection \
       "${campaign_target_reports}" \
       "the target occurrence election published no ledger"

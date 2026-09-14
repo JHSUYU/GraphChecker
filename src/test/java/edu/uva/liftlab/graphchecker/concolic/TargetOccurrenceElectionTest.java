@@ -62,6 +62,70 @@ public class TargetOccurrenceElectionTest {
                 row(ledger, 1).get("detail").getAsString());
         assertEquals(TargetOccurrenceElection.NOT_COMPOSED,
                 row(ledger, 1).get("support").getAsString());
+
+        // The same pair with the unscheduled occurrence first in anchor
+        // order: hdfs-17899 bug1 round 1, where the run composed exactly the
+        // occurrence its case declares and then elected an unscheduled one
+        // that sorted ahead of it -- and stopped, because the elected row
+        // had no artifacts at all.  Neither carries an accepted claim, so
+        // the rule that decides is that a composition states something
+        // about its occurrence and no composition states nothing.
+        JsonObject first = new JsonObject();
+        first.addProperty("occurrenceId", CLIENT_HANDSHAKE);
+        first.addProperty("regionId", "REGION.53092d3e");
+        first.addProperty("status",
+                TargetOccurrenceElection.SKIPPED_UNOBSERVED);
+        first.addProperty("detail", "no linked summary carried its read");
+        JsonObject refused = refused(DATANODE_HANDSHAKE);
+        JsonObject bug1 = TargetOccurrenceElection.elect(
+                Arrays.asList(first, refused));
+        assertEquals("a row with no artifacts cannot be elected over one"
+                        + " that has them", DATANODE_HANDSHAKE,
+                bug1.get("chosenOccurrenceId").getAsString());
+
+        // And a declared occurrence is elected whatever its own row says
+        // and whatever the others concluded: the campaign is about that
+        // execution of the site and no other.
+        JsonObject declared = TargetOccurrenceElection.elect(
+                Arrays.asList(composed(CLIENT_HANDSHAKE), refused),
+                DATANODE_HANDSHAKE);
+        assertEquals(DATANODE_HANDSHAKE,
+                declared.get("chosenOccurrenceId").getAsString());
+        assertEquals(DATANODE_HANDSHAKE,
+                declared.get("declaredOccurrenceId").getAsString());
+        assertTrue(declared.get("electionReason").getAsString()
+                .contains("the case declares " + DATANODE_HANDSHAKE));
+        try {
+            TargetOccurrenceElection.elect(
+                    Collections.singletonList(composed(CLIENT_HANDSHAKE)),
+                    DATANODE_HANDSHAKE);
+            throw new AssertionError("a run that never reported the declared"
+                    + " occurrence must not elect another one");
+        } catch (IOException unreported) {
+            assertTrue(unreported.getMessage()
+                    .contains(DATANODE_HANDSHAKE));
+        }
+    }
+
+    /** A composition the Composer refused: artifacts, and a named reason. */
+    private JsonObject refused(String occurrence) {
+        JsonObject report = composed(occurrence);
+        try {
+            Path manifestPath = java.nio.file.Paths.get(
+                    report.get("manifest").getAsString());
+            JsonObject manifest = ArtifactIO.readObject(manifestPath);
+            manifest.addProperty("finalStatus", "FINAL_REFUSED");
+            JsonArray refusals = new JsonArray();
+            JsonObject gate = new JsonObject();
+            gate.addProperty("kind", "TARGET_NOT_REACHED");
+            refusals.add(gate);
+            manifest.add("finalStatusRefusals", refusals);
+            Files.write(manifestPath, JsonFields.WRITER.toJson(manifest)
+                    .getBytes(StandardCharsets.UTF_8));
+        } catch (IOException failure) {
+            throw new IllegalStateException(failure);
+        }
+        return report;
     }
 
     /** One occurrence is the ordinary case and says so without a comparison. */
