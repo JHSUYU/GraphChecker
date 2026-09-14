@@ -2001,12 +2001,14 @@ final class RuntimeRegionPlanner {
     private static void putTraceContext(Map<String, Object> target,
                                         MethodEvent event,
                                         SourceRef resolved) {
-        SourceRef source = sourceOf(resolved);
-        target.put("sourceKey", source.key());
-        target.put("sourceKind", source.kind());
-        target.put("sourceRole", source.role());
-        target.put("sourceId", source.id());
-        target.put("sourceEpoch", source.epoch());
+        // sourceKey, and nothing that re-spells it.  The row carried
+        // sourceKind, sourceRole, sourceId and sourceEpoch beside it: the
+        // node and its epoch are already in sourceKey, which
+        // OccurrenceAddress parses both out of, and no reader of a plan or
+        // activation row ever asked for the other three -- the readers of
+        // those member NAMES are port, edge and mint rows, which are other
+        // shapes entirely.
+        target.put("sourceKey", sourceOf(resolved).key());
         if (!event.requestKey.isEmpty()) {
             target.put("requestKey", event.requestKey);
         }
@@ -2030,14 +2032,12 @@ final class RuntimeRegionPlanner {
      */
     private static void putRecordedTraceIds(Map<String, Object> target,
                                             MethodEvent event) {
+        // The lane, and only the lane.  It is read back off a published row
+        // (the shadowing pass asks which activations share one lane); the
+        // three span ids were published beside it and read by nothing -- the
+        // span correlation they serve happens over the TRACE rows, inside
+        // this planner, before any row is published.
         if (event.laneId > 0L) target.put("laneId", event.laneId);
-        if (event.spanId > 0L) target.put("spanId", event.spanId);
-        if (event.parentSpanId > 0L) {
-            target.put("parentSpanId", event.parentSpanId);
-        }
-        if (event.remoteParentSpanId > 0L) {
-            target.put("remoteParentSpanId", event.remoteParentSpanId);
-        }
     }
 
     /** The symbolic inputs one activation of a region is planned over.
