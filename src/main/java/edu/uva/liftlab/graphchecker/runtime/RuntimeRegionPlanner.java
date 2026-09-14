@@ -18,6 +18,7 @@ import edu.uva.liftlab.graphchecker.concolic.SharedStateEvidence;
 import edu.uva.liftlab.graphchecker.contract.CommunicationCatalogContract;
 import edu.uva.liftlab.graphchecker.contract.CommunicationHandoffSpec;
 import edu.uva.liftlab.graphchecker.contract.ConfiguredSourcePhaseContract;
+import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.ExecutionTask;
 import edu.uva.liftlab.graphchecker.contract.DependencyRole;
 import edu.uva.liftlab.graphchecker.contract.FieldPathSpec;
@@ -2447,15 +2448,17 @@ final class RuntimeRegionPlanner {
         return anchor;
     }
 
-    /** Stable counter scope used to address the same invocation at replay. */
     /**
      * The bucket this region's activations are counted in.
      *
      * <p>An occurrence is the k-th activation of this region on this node
-     * and epoch, over every activation the recording holds.  The replay
-     * counts the same way ({@code ConcolicTaskPlan.invocationCounterKey});
-     * counting and matching have to use one scope or the ordinal means one
-     * thing when it is written and another when it is checked.</p>
+     * and epoch, over every activation the recording holds.  Counting and
+     * matching have to use one scope or the ordinal means one thing when it
+     * is written and another when it is checked, so this is not merely the
+     * same shape as the replay's bucket -- it is literally the same
+     * function, {@link OccurrenceAddress#counterScope}, which {@code
+     * ConcolicTaskPlan.RuntimeTask.invocationCounterKey} also calls.  Two
+     * spellings of one rule is how the ordinal drifted before.</p>
      *
      * <p>The request was in this key and in the replay's.  That was
      * consistent while matching compared it too; once matching stopped, a
@@ -2464,8 +2467,8 @@ final class RuntimeRegionPlanner {
      */
     private static String replayInvocationScope(
             String regionId, MethodEvent root, SourceRef source) {
-        return source.key() + "\u0000" + safe(regionId) + "\u0000"
-                + safe(root == null ? "" : root.method);
+        return OccurrenceAddress.of(source.key(), safe(regionId), 1)
+                .counterScope(safe(root == null ? "" : root.method));
     }
 
 
