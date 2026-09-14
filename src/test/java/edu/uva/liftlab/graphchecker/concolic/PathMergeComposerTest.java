@@ -18,6 +18,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 
 import static org.junit.Assert.assertEquals;
@@ -106,15 +107,24 @@ public class PathMergeComposerTest {
 
     /**
      * A predicate the replay published already concrete, at an activation
-     * whose slice declares carriers: the value was owed as an expression
-     * and arrived as a literal, which is the cut.
+     * whose slice declares carriers and on a path that depends on no root:
+     * the value was owed as an expression and arrived as a literal, which is
+     * the cut.
+     *
+     * <p>The path condition matters.  A concrete phi on a path whose pi
+     * flips a root is the HDFS-17960 shape -- the root reaches the target by
+     * control flow and the pair of paths is the evidence -- and that is
+     * admitted, not cut.  What is left here is a path on which nothing at
+     * all depends on a root and whose predicate over declared carriers is
+     * still a literal: there the propagation did drop a value.</p>
      */
     @Test
     public void literalPredicateOverDeclaredCarriersIsAPropagationCut()
             throws Exception {
         Path directory = Files.createTempDirectory("path-merge-cut");
         JsonObject query = query();
-        JsonObject path = path("seed", "GROUP.SEED", rootIs(true),
+        JsonObject path = path("seed", "GROUP.SEED",
+                notEqual(constant(2), constant(3)),
                 notEqual(constant(1), constant(0)));
         JsonArray carriers = new JsonArray();
         carriers.add("INSTANCE_FIELD/2#24");
@@ -338,6 +348,77 @@ public class PathMergeComposerTest {
         }
         assertEquals(java.util.Collections.singletonList(
                 PathMergeComposer.TARGET_NOT_REACHED), refusals);
+    }
+
+    /**
+     * HDFS-17960's shape: the root reaches the target by control flow only.
+     *
+     * <p>The target branch is {@code i != sm.getNumSnapshots()} -- two
+     * concrete ints, no symbol in it -- and the root reaches it only through
+     * control dependence: on the ordered arm an early return skips the
+     * decrement, so the count differs.  The evidence is therefore the pair of
+     * paths, not a symbolic predicate: the seed holds the root at its
+     * recorded value and its phi is false; the flip negates the root and its
+     * phi is true.  Both phis are constants, and the replay declares tracked
+     * carriers, which is the case a literal-over-carriers cut used to refuse.
+     * A path whose pi depends on a root is admissible whatever its phi is
+     * made of, and the disjunction must be satisfiable exactly where the
+     * root is flipped.</p>
+     */
+    @Test
+    public void aConcreteFatalPredicateOnARootDependentPathIsAdmitted()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+        Path directory = Files.createTempDirectory("path-merge-concrete-phi");
+        JsonObject query = query();
+        query.getAsJsonArray("paths").add(carrierPath("seed", "GROUP.SEED",
+                rootIs(true), notEqual(constant(1), constant(1))));
+        query.getAsJsonArray("paths").add(carrierPath("flip", "GROUP.FLIP",
+                rootIs(false), notEqual(constant(1), constant(2))));
+
+        PathMergeComposer.Result result = compose(directory, query);
+
+        JsonArray paths = result.manifest.getAsJsonObject("pathMerge")
+                .getAsJsonArray("paths");
+        assertEquals(2, paths.size());
+        for (com.google.gson.JsonElement row : paths) {
+            JsonObject path = row.getAsJsonObject();
+            assertTrue("a root-dependent path with a concrete phi was cut: "
+                            + path,
+                    JsonFields.optionalBool(path, "admitted", false));
+        }
+        assertEquals("FINAL_READY", JsonFields.optionalString(
+                result.manifest, ComposedManifest.FINAL_STATUS));
+        assertEquals("the flipped root must satisfy the disjunction",
+                "sat", solve(result.smtLib + "(assert (= " + ROOT_TERM
+                        + " false))\n(check-sat)\n"));
+        assertEquals("the recorded root must not satisfy it",
+                "unsat", solve(result.smtLib + "(assert (= " + ROOT_TERM
+                        + " true))\n(check-sat)\n"));
+    }
+
+    /** A path whose replay declared tracked carriers, as a real one does. */
+    private static JsonObject carrierPath(String caseId, String group,
+                                          JsonObject pathCondition,
+                                          JsonObject fatalPredicate) {
+        JsonObject path = new JsonObject();
+        path.addProperty(LocalCaseIdentity.FIELD, "LOCAL_CASE." + caseId);
+        path.addProperty("replayGroupId", group);
+        path.addProperty("occurrenceId",
+                "node0/region/REGION.example#1#a1");
+        path.addProperty("topologyEpoch", "iteration-0000");
+        path.addProperty("pathSetClosed", true);
+        JsonArray constraints = new JsonArray();
+        constraints.add(pathCondition);
+        constraints.add(fatalPredicate);
+        path.add("constraints", constraints);
+        path.add(TargetAnchorEvidence.FIELD, TargetAnchorEvidence.build(
+                SITE, 1, "node0", "REGION.example",
+                "node0/region/REGION.example#1#a1", "iteration-0000",
+                false, false, constraints, new JsonObject(),
+                new ArrayList<JsonObject>(),
+                Arrays.asList("INSTANCE_FIELD\n9\n56")));
+        return path;
     }
 
     private static PathMergeComposer.Result compose(Path directory,

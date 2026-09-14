@@ -497,9 +497,6 @@ public final class GapLedger {
                 "the fatal read's branch mapping is unusable");
         blocking(explore, "TARGET_PREFIX_FATAL_EVENT_INVALID",
                 "the fatal read's recorded event is unusable");
-        blocking(explore, "TARGET_PREFIX_CONCRETE_OUTCOME_MISMATCH",
-                "the concrete outcome disagrees with the recorded one, so"
-                        + " the prefix is not the execution it claims");
         blocking(explore, "MULTIPLE_REGION_SCOPE",
                 "one task spans several regions, so no single region owns"
                         + " the path");

@@ -217,13 +217,35 @@ public final class PathMergeComposer {
                 resolved.add(resolve(resolver, constraint,
                         unresolvedReasons));
             }
-            resolved.addAll(replayRootDecisions(replayGroup, anchor,
-                    resolver, roots.byRawSymbol.keySet(),
-                    unresolvedReasons));
+            List<JsonElement> rootDecisions = replayRootDecisions(
+                    replayGroup, anchor, resolver,
+                    roots.byRawSymbol.keySet(), unresolvedReasons);
+            resolved.addAll(rootDecisions);
             JsonElement phi = resolve(resolver, anchor.fatalPredicate(),
                     unresolvedReasons);
-            String literalCut = literalOverCarriers(anchor);
-            if (!literalCut.isEmpty()) unresolvedReasons.add(literalCut);
+            // A concrete fatal predicate is not a cut when the path that
+            // reached the site is root-dependent.  HDFS-17960 is exactly
+            // that shape: the target branch compares two concrete ints
+            // (`i != sm.getNumSnapshots()`), and the root reaches it only by
+            // control dependence -- on the ordered arm an early return skips
+            // the decrement.  The evidence is then the pair of paths: one
+            // whose pi holds the root at its recorded value and whose phi is
+            // false, one whose pi flips it and whose phi is true.  Refusing
+            // the second because its phi carries no symbol throws away the
+            // only witness there is.  The cut is real when nothing on this
+            // path depends on a root at all -- then a literal phi over
+            // declared carriers means the propagation dropped a value.
+            boolean rootDependentPath = !rootDecisions.isEmpty();
+            for (JsonElement term : resolved) {
+                if (mentionsRoot(term, roots.byRawSymbol.keySet())) {
+                    rootDependentPath = true;
+                    break;
+                }
+            }
+            if (!rootDependentPath) {
+                String literalCut = literalOverCarriers(anchor);
+                if (!literalCut.isEmpty()) unresolvedReasons.add(literalCut);
+            }
             row.addProperty("pathConditionTerms", resolved.size());
             if (!unresolvedReasons.isEmpty()) {
                 row.addProperty("admitted", false);
