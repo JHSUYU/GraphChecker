@@ -322,10 +322,15 @@ final class ConcolicTaskPlan {
             // would renumber the activations after it.
             String scope = task.invocationCounterKey(countedLifecycle(
                     task, activationSource));
-            if (!actualOrdinalByScope.containsKey(scope)) {
-                int ordinal = invocationOrdinals.getOrDefault(scope, 0) + 1;
-                invocationOrdinals.put(scope, ordinal);
-                actualOrdinalByScope.put(scope, ordinal);
+            countInvocation(scope, actualOrdinalByScope);
+            // An activation this run attributed nowhere is counted in the
+            // unregistered population, where the planner counts it -- and
+            // provisionally in the planned one too, because its own frames
+            // may still name the planned node before it ends.  The provisional
+            // ordinal is given back at close when they do not.
+            if (unattributed(activationSource)) {
+                countInvocation(task.invocationCounterKey(),
+                        actualOrdinalByScope);
             }
             String sourceMismatch = sourceAdmissionMismatch(task,
                     registeredReceiverSource, context);
@@ -379,6 +384,11 @@ final class ConcolicTaskPlan {
             boolean exactOutgoingAddress =
                     mayDeferMissingContextToOutgoingAnchor(task,
                             registeredReceiverSource, context);
+            if (admitsProvisionally(task, activationSource, observed,
+                    exactOutgoingAddress, actualOrdinalByScope)) {
+                admitted.add(task.taskId);
+                continue;
+            }
             if (!task.acceptsRootInvocation(observed,
                     exactOutgoingAddress)) {
                 if (task.attachProducerOccurrenceByPort.isEmpty()) {
@@ -447,10 +457,15 @@ final class ConcolicTaskPlan {
             // would renumber the activations after it.
             String scope = task.invocationCounterKey(countedLifecycle(
                     task, activationSource));
-            if (!actualOrdinalByScope.containsKey(scope)) {
-                int ordinal = invocationOrdinals.getOrDefault(scope, 0) + 1;
-                invocationOrdinals.put(scope, ordinal);
-                actualOrdinalByScope.put(scope, ordinal);
+            countInvocation(scope, actualOrdinalByScope);
+            // An activation this run attributed nowhere is counted in the
+            // unregistered population, where the planner counts it -- and
+            // provisionally in the planned one too, because its own frames
+            // may still name the planned node before it ends.  The provisional
+            // ordinal is given back at close when they do not.
+            if (unattributed(activationSource)) {
+                countInvocation(task.invocationCounterKey(),
+                        actualOrdinalByScope);
             }
             String sourceMismatch = sourceAdmissionMismatch(task,
                     registeredReceiverSource, context);
@@ -505,7 +520,9 @@ final class ConcolicTaskPlan {
             boolean exactOutgoingAddress =
                     mayDeferMissingContextToOutgoingAnchor(task,
                             registeredReceiverSource, context);
-            if (!task.acceptsRootInvocation(observed,
+            boolean provisional = admitsProvisionally(task, activationSource,
+                    observed, exactOutgoingAddress, actualOrdinalByScope);
+            if (!provisional && !task.acceptsRootInvocation(observed,
                     exactOutgoingAddress)) {
                 // Said out loud, as the loop-body path already says it.  A
                 // non-loop root that ran and was refused on its address was
@@ -688,6 +705,75 @@ final class ConcolicTaskPlan {
                     + " counts in the unregistered source)";
         }
         return " (attributed to " + activationSource.key() + ")";
+    }
+
+    /**
+     * Whether an activation this run has attributed nowhere may answer the
+     * planned address for now, to be decided at close.
+     *
+     * <p>The planner attributes an activation by its own stamp, else the
+     * unique stamp among its own FRAMES, else the unregistered source -- and
+     * the frame arm is knowable only once the activation has run its frames.
+     * At a root entry the replay has none of them yet, so an activation
+     * whose frames will name the planned node is indistinguishable from one
+     * that belongs to nobody.  Refusing both at entry withheld the first
+     * kind: on hdfs-17899 bug2 that is twenty-five activations of
+     * REGION.1f6914ec refused with "ran on workload/unregistered, not sps".
+     * So it is admitted against the planned address, provisionally, and
+     * {@code rootContextSelector.unconfirmed} -- which IS the frame arm,
+     * over the frames the activation actually ran -- decides at close.  A
+     * refusal there gives the ordinal back.</p>
+     */
+    private synchronized boolean admitsProvisionally(
+            RuntimeTask task, SourceRef activationSource,
+            OccurrenceAddress observed, boolean exactOutgoingAddress,
+            Map<String, Integer> actualOrdinalByScope) {
+        if (!unattributed(activationSource)
+                || task.acceptsRootInvocation(observed,
+                exactOutgoingAddress)) {
+            return false;
+        }
+        String scope = task.invocationCounterKey();
+        OccurrenceAddress planned = task.observedAddress(task.sourceKey,
+                actualOrdinalByScope);
+        if (!task.acceptsRootInvocation(planned, exactOutgoingAddress)) {
+            return false;
+        }
+        task.markProvisionalOrdinal(scope, planned.ordinal());
+        return true;
+    }
+
+    private synchronized void countInvocation(
+            String scope, Map<String, Integer> actualOrdinalByScope) {
+        if (actualOrdinalByScope.containsKey(scope)) return;
+        int ordinal = invocationOrdinals.getOrDefault(scope, 0) + 1;
+        invocationOrdinals.put(scope, ordinal);
+        actualOrdinalByScope.put(scope, ordinal);
+    }
+
+    /** Whether this run attributed the activation to no node at all. */
+    static boolean unattributed(SourceRef activationSource) {
+        return activationSource == null
+                || RuntimeTraceContext.UNREGISTERED_SOURCE.key()
+                .equals(activationSource.key());
+    }
+
+    /**
+     * Gives back an ordinal a provisional admission took.
+     *
+     * <p>Only when it is still the last one handed out in that bucket: a
+     * later activation that already took the next one has numbered itself
+     * against this one, and renumbering it afterwards would move an address
+     * the run has already answered.</p>
+     */
+    synchronized void releaseProvisionalOrdinal(RuntimeTask task) {
+        if (task == null || task.provisionalOrdinal <= 0) return;
+        Integer held = invocationOrdinals.get(task.provisionalScope);
+        if (held != null && held == task.provisionalOrdinal) {
+            invocationOrdinals.put(task.provisionalScope,
+                    task.provisionalOrdinal - 1);
+        }
+        task.clearProvisionalOrdinal();
     }
 
     /** The source keys this run attributed to one live root entry. */
@@ -1367,6 +1453,19 @@ final class ConcolicTaskPlan {
          */
         int unaddressedCandidates;
         final Set<String> unaddressedReasons = new LinkedHashSet<>();
+        /** The bucket and k a provisional admission took, or "" / 0. */
+        String provisionalScope = "";
+        int provisionalOrdinal;
+
+        synchronized void markProvisionalOrdinal(String scope, int ordinal) {
+            provisionalScope = safe(scope);
+            provisionalOrdinal = ordinal;
+        }
+
+        synchronized void clearProvisionalOrdinal() {
+            provisionalScope = "";
+            provisionalOrdinal = 0;
+        }
 
         RuntimeTask(ExecutionTask task) {
             if (!task.executable()) {

@@ -162,20 +162,23 @@ public class ActivationIsCountedWhereItRanTest {
                 Arrays.asList(targetTask));
 
         // Lane B2: two heartbeats run before the workload registers the
-        // DataNode, so this run can name no node for them.  They are the
-        // unregistered source's, not target-dn's, and the refusal says so.
-        assertNull(decode(plan, targetTask, null));
-        assertNull(decode(plan, targetTask, null));
+        // DataNode, so this run can name no node for them.  At entry that is
+        // indistinguishable from an activation whose own frames will name
+        // the planned node -- the planner's frame arm is knowable only once
+        // the frames have run -- so each is admitted provisionally and the
+        // close decides.
+        assertSame("admitted provisionally, to be decided at close",
+                targetTask, decode(plan, targetTask, null));
 
-        String refusal = targetTask.unansweredAddress();
-        assertTrue(refusal, refusal.contains("occurrence ran on "
-                + RuntimeTraceContext.UNREGISTERED_SOURCE.id()));
-        assertTrue(refusal, refusal.contains(
-                "this run attributed the activation to no node"));
+        // The frame arm did not name target-dn: the k goes back, and the
+        // heartbeat that does carry the node is still target-dn's first.
+        plan.releaseProvisionalOrdinal(targetTask);
+        plan.releaseCandidate(targetTask);
 
-        // And the heartbeat that does carry the node is still its first.
-        assertSame("the unstamped ones took no k from target-dn",
+        assertSame("the unstamped one took no k from target-dn",
                 targetTask, decode(plan, targetTask, targetDn));
+        assertEquals("and that one is the node's own, confirmed",
+                "", targetTask.provisionalScope);
     }
 
     /** And names the node when there was one. */
