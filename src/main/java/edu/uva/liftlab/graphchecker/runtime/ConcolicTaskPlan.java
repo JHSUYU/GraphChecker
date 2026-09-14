@@ -328,7 +328,8 @@ final class ConcolicTaskPlan {
             // candidate the replay declines for another reason still
             // occupies the ordinal the recording gave it.  Filtering first
             // would renumber the activations after it.
-            String scope = task.invocationCounterKey();
+            String scope = task.invocationCounterKey(countedLifecycle(
+                    task, registeredReceiverSource, context));
             if (!actualOrdinalByScope.containsKey(scope)) {
                 int ordinal = invocationOrdinals.getOrDefault(scope, 0) + 1;
                 invocationOrdinals.put(scope, ordinal);
@@ -381,7 +382,8 @@ final class ConcolicTaskPlan {
                 continue;
             }
             Integer ordinal = actualOrdinalByScope.get(
-                    task.invocationCounterKey());
+                    task.invocationCounterKey(countedLifecycle(task,
+                            registeredReceiverSource, context)));
             boolean exactOutgoingAddress =
                     mayDeferMissingContextToOutgoingAnchor(task,
                             registeredReceiverSource, context);
@@ -448,7 +450,8 @@ final class ConcolicTaskPlan {
             // candidate the replay declines for another reason still
             // occupies the ordinal the recording gave it.  Filtering first
             // would renumber the activations after it.
-            String scope = task.invocationCounterKey();
+            String scope = task.invocationCounterKey(countedLifecycle(
+                    task, registeredReceiverSource, context));
             if (!actualOrdinalByScope.containsKey(scope)) {
                 int ordinal = invocationOrdinals.getOrDefault(scope, 0) + 1;
                 invocationOrdinals.put(scope, ordinal);
@@ -502,7 +505,8 @@ final class ConcolicTaskPlan {
             if (!sourceAdmissionMismatch(task, registeredReceiverSource,
                     context).isEmpty()) continue;
             Integer actualOrdinal = actualOrdinalByScope.get(
-                    task.invocationCounterKey());
+                    task.invocationCounterKey(countedLifecycle(task,
+                            registeredReceiverSource, context)));
             boolean exactOutgoingAddress =
                     mayDeferMissingContextToOutgoingAnchor(task,
                             registeredReceiverSource, context);
@@ -609,6 +613,35 @@ final class ConcolicTaskPlan {
             }
         }
         return "";
+    }
+
+    /**
+     * The node and epoch this activation is counted in.
+     *
+     * <p>The epoch the registry places the activation in, when it places it
+     * in one of the planned node's lifecycles at all; otherwise the planned
+     * one.  Falling back to the plan keeps an unattributed activation
+     * counting exactly where it counted before -- absence of evidence moves
+     * nothing -- while an activation the workload did attribute counts in
+     * its own epoch, which is the one the address means.</p>
+     *
+     * <p>Read at the moment the activation starts, from the same registry
+     * {@link #lifecycleMismatch} and the configured-source mint read, so the
+     * three cannot disagree about which lifecycle an activation belongs
+     * to.</p>
+     */
+    static String countedLifecycle(
+            RuntimeTask task, SourceRef registeredReceiverSource,
+            RuntimeTraceContext.View context) {
+        String planned = safe(task.sourceKey);
+        if (!RuntimeTraceContext.declaresEpoch(planned)) return planned;
+        for (String observed : attributedSourceKeys(
+                registeredReceiverSource, context)) {
+            if (RuntimeTraceContext.sameSourceIdentity(planned, observed)) {
+                return observed;
+            }
+        }
+        return planned;
     }
 
     /** The source keys this run attributed to one live root entry. */
@@ -2210,7 +2243,28 @@ final class ConcolicTaskPlan {
          * count.</p>
          */
         String invocationCounterKey() {
-            return address.counterScope(rootMethod);
+            return invocationCounterKey(sourceKey);
+        }
+
+        /**
+         * The bucket an activation attributed to {@code lifecycle} counts in.
+         *
+         * <p>The k in "k-th activation" is counted within one node <em>and
+         * one epoch</em>, because that is what the address says.  Keying the
+         * bucket on the planned epoch made it a per-node counter instead:
+         * one JVM that restarts a node runs both lifecycles, so on
+         * hdfs-17960 the two {@code deleteSnapshot} activations before the
+         * NameNode restart took ordinals 1 and 2 and the two after it --
+         * the ones the plan addresses as epoch 1's first and second -- took
+         * 3 and 4 and matched nothing.  The planner already counts per
+         * observed source ({@code RuntimeRegionPlanner.replayInvocationScope}
+         * is handed each activation's own {@code rootSource}), so this is
+         * the replay counting the population the plan counted.</p>
+         */
+        String invocationCounterKey(String lifecycle) {
+            return OccurrenceAddress.of(safe(lifecycle).isEmpty()
+                    ? sourceKey : lifecycle, regionId, 1)
+                    .counterScope(rootMethod);
         }
 
         /**
