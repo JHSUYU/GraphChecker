@@ -12,12 +12,12 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.firstNonBlank;
  * of {@link VmTermLowering}'s sort set, not of any one composer, so every
  * caller reads it here rather than keeping a copy.</p>
  */
-public final class JavaSmtSorts {
+final class JavaSmtSorts {
     private JavaSmtSorts() {
     }
 
     /** The sort a recorded Java type or descriptor denotes. */
-    public static Sort sortOfJava(String type) {
+    static Sort sortOfJava(String type) {
         if (type == null) return Sort.VALUE;
         String normalized = type.replace('.', '/');
         Sort container = containerSort(normalized);
@@ -50,7 +50,7 @@ public final class JavaSmtSorts {
     }
 
     /** The sort one JVM cast descriptor denotes. */
-    public static Sort castSort(String descriptor) {
+    static Sort castSort(String descriptor) {
         if (descriptor == null) return Sort.VALUE;
         if ("Z".equals(descriptor) || "B".equals(descriptor)
                 || "C".equals(descriptor) || "S".equals(descriptor)
@@ -73,7 +73,7 @@ public final class JavaSmtSorts {
     }
 
     /** The same text, spelled the way an SMT symbol may be spelled. */
-    public static String smtName(String value) {
+    static String smtName(String value) {
         String normalized = firstNonBlank(value, "anonymous")
                 .replaceAll("[^A-Za-z0-9_]", "_");
         if (normalized.isEmpty()) normalized = "anonymous";

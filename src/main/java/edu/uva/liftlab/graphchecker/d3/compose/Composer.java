@@ -3,9 +3,8 @@ package edu.uva.liftlab.graphchecker.d3.compose;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
-import edu.uva.liftlab.graphchecker.concolic.VmTermLowering;
-import edu.uva.liftlab.graphchecker.concolic.VmTermLowering.Sort;
-import edu.uva.liftlab.graphchecker.concolic.VmTermLowering.Term;
+import edu.uva.liftlab.graphchecker.d3.compose.VmTermLowering.Sort;
+import edu.uva.liftlab.graphchecker.d3.compose.VmTermLowering.Term;
 import edu.uva.liftlab.graphchecker.d3.contract.Arm;
 import edu.uva.liftlab.graphchecker.d3.contract.AttachRow;
 import edu.uva.liftlab.graphchecker.d3.contract.DecisionRow;

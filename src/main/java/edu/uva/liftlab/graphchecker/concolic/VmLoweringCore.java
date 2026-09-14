@@ -54,18 +54,18 @@ import static edu.uva.liftlab.graphchecker.concolic.VmTermLowering.numeric;
  * model won and the solver's refusal was deleted; each such case carries
  * the argument for why the model is sound for flipping too.
  */
-public abstract class VmLoweringCore implements VmTermLowering.Policy {
+abstract class VmLoweringCore implements VmTermLowering.Policy {
 
     // ------------------------------------------------------------------
     // What the two callers own.
     // ------------------------------------------------------------------
 
     /** One lowered value with no definedness obligation of its own. */
-    public final Term result(String text, Sort sort, Term... inputs) {
+    final Term result(String text, Sort sort, Term... inputs) {
         return definedResult(text, sort, IntegralWidth.NONE, "true", inputs);
     }
 
-    public final Term result(String text, Sort sort, IntegralWidth width,
+    final Term result(String text, Sort sort, IntegralWidth width,
                       Term... inputs) {
         return definedResult(text, sort, width, "true", inputs);
     }
@@ -74,7 +74,7 @@ public abstract class VmLoweringCore implements VmTermLowering.Policy {
      * One lowered value that Java evaluates only where {@code definedness}
      * holds.  The composer carries it on the term; the solver states it.
      */
-    public abstract Term definedResult(String text, Sort sort, IntegralWidth width,
+    abstract Term definedResult(String text, Sort sort, IntegralWidth width,
                                 String definedness, Term... inputs);
 
     /**
@@ -83,7 +83,7 @@ public abstract class VmLoweringCore implements VmTermLowering.Policy {
      * nothing, so an operand obligation must not escape that guard.  The
      * obligation is therefore the caller's to state or to carry.
      */
-    public abstract Term shortCircuit(String text, Term left, Term right,
+    abstract Term shortCircuit(String text, Term left, Term right,
                                boolean conjunction);
 
     /**
@@ -93,45 +93,45 @@ public abstract class VmLoweringCore implements VmTermLowering.Policy {
      * contributes its own definedness.  Returns {@code null} when the
      * caller refuses instead of stating it.
      */
-    public abstract String stringDefinedness(String origin, String operation,
+    abstract String stringDefinedness(String origin, String operation,
                                       List<Term> dereferenced,
                                       List<Term> evaluated);
 
     /** States the Java domain of one lowered integral value. */
-    public abstract void assertJavaIntegralDomain(String term, Sort sort,
+    abstract void assertJavaIntegralDomain(String term, Sort sort,
                                            String javaType, String identity);
 
     /** The sort this caller gives one recorded Java type. */
-    public abstract Sort sortOfJavaType(String javaType);
+    abstract Sort sortOfJavaType(String javaType);
 
     /** Records that the query uses {@code java_int_to_string}. */
-    public abstract void noteJavaIntToString();
+    abstract void noteJavaIntToString();
 
     /** One recorded symbol. */
-    public abstract Term symbolTerm(JsonObject expression, Sort expected,
+    abstract Term symbolTerm(JsonObject expression, Sort expected,
                              String origin);
 
     /** One recorded environment placeholder. */
-    public abstract Term placeholderTerm(JsonObject expression, String origin);
+    abstract Term placeholderTerm(JsonObject expression, String origin);
 
     /** One recorded guarded read of shared state. */
-    public abstract Term guardedReadTerm(JsonObject expression, Sort expected,
+    abstract Term guardedReadTerm(JsonObject expression, Sort expected,
                                   String origin);
 
     /** One recorded merge of a value over its producer's cases. */
-    public abstract Term caseMergeTerm(JsonObject expression, Sort expected,
+    abstract Term caseMergeTerm(JsonObject expression, Sort expected,
                                 String origin);
 
     /** One recorded container relation, or one field projection of one. */
-    public abstract Term containerTerm(JsonObject expression, boolean field,
+    abstract Term containerTerm(JsonObject expression, boolean field,
                                 String origin);
 
     /** The Java String.split prefix round trip, which the two prove with
      *  different amounts of evidence. */
-    public abstract Term splitElementTerm(JsonObject expression, String origin);
+    abstract Term splitElementTerm(JsonObject expression, String origin);
 
     /** The sort a refused MethodExpression still has to carry. */
-    public abstract Sort methodResultSort(JsonObject expression, String origin);
+    abstract Sort methodResultSort(JsonObject expression, String origin);
 
     // ------------------------------------------------------------------
     // Dispatch.
@@ -146,11 +146,11 @@ public abstract class VmLoweringCore implements VmTermLowering.Policy {
      * one that asks about a single execution already has the execution and
      * ignores it.</p>
      */
-    public void recordedReading(Term value, JsonElement observed, String origin) {
+    void recordedReading(Term value, JsonElement observed, String origin) {
     }
 
     /** Lowers one recorded VM expression of any kind. */
-    public final Term dispatch(JsonElement expression, Sort expected,
+    final Term dispatch(JsonElement expression, Sort expected,
                         String origin) {
         Term value = lowered(expression, expected, origin);
         if (value != null && expression != null
@@ -229,7 +229,7 @@ public abstract class VmLoweringCore implements VmTermLowering.Policy {
      * The two Java library methods whose exact value relation this lowering
      * proves; every other call is a named gap.
      */
-    public final Term methodTerm(JsonObject expression, String origin) {
+    final Term methodTerm(JsonObject expression, String origin) {
         String method = optionalString(expression, "_name");
         if (VmExpressionIr.isJavaParseInt(method)) {
             return VmTermLowering.parseIntTerm(this, expression, origin);
@@ -247,7 +247,7 @@ public abstract class VmLoweringCore implements VmTermLowering.Policy {
     // ------------------------------------------------------------------
 
     /** One recorded {@code BinaryExpression}. */
-    public final Term binary(JsonObject expression, String origin) {
+    final Term binary(JsonObject expression, String origin) {
         String operator = JavaPrimitiveSmtSemantics.canonicalVmOperator(
                 optionalString(expression, "_op"));
         JsonElement leftExpression = expression.get("_left");
@@ -588,7 +588,7 @@ public abstract class VmLoweringCore implements VmTermLowering.Policy {
     // ------------------------------------------------------------------
 
     /** One recorded constant expression. */
-    public final Term constant(JsonObject expression, Sort expected, String origin) {
+    final Term constant(JsonObject expression, Sort expected, String origin) {
         String raw = optionalString(expression, "_exp");
         String javaType = optionalString(expression, "_java_type");
         String value = constantPayload(raw);
@@ -646,7 +646,7 @@ public abstract class VmLoweringCore implements VmTermLowering.Policy {
     // ------------------------------------------------------------------
 
     /** One recorded {@code OpStrExpression}. */
-    public final Term stringOperation(JsonObject expression, String origin) {
+    final Term stringOperation(JsonObject expression, String origin) {
         String operation = optionalString(expression, "_name");
         boolean negated = optionalBool(expression, "_is_not", false);
         JsonArray params = array(expression, "_param_list");
@@ -823,27 +823,27 @@ public abstract class VmLoweringCore implements VmTermLowering.Policy {
         }
     }
 
-    public final Term booleanStringResult(String predicate, boolean negated,
+    final Term booleanStringResult(String predicate, boolean negated,
                                    String definedness) {
         return definedResult(negated ? "(not " + predicate + ")" : predicate,
                 Sort.BOOL, IntegralWidth.NONE, definedness);
     }
 
     /** "true" when this String is known non-null, else the negated Bool. */
-    public static String stringNonNull(Term term) {
+    static String stringNonNull(Term term) {
         if (term.sort != Sort.STRING) return "false";
         return "false".equals(term.stringNullness) ? "true"
                 : "(not " + term.stringNullness + ")";
     }
 
     /** Java's decimal Integer.toString of one lowered integer. */
-    public final Term javaIntString(Term integer) {
+    final Term javaIntString(Term integer) {
         noteJavaIntToString();
         return VmTermLowering.javaIntString(integer);
     }
 
     /** One String or container operation the codec could not close. */
-    public final Term codecGap(String operation, String gap, String origin,
+    final Term codecGap(String operation, String gap, String origin,
                         Sort sort) {
         return VmTermLowering.codecGap(this, "OpStrExpression." + operation,
                 gap, origin, sort);
@@ -859,7 +859,7 @@ public abstract class VmLoweringCore implements VmTermLowering.Policy {
      * text, or the solver's shared alias for it.  A String is never
      * aliased, because the box has to read its nullness companion too.
      */
-    public final Term asValue(Term value, String javaType, String valueText,
+    final Term asValue(Term value, String javaType, String valueText,
                        String origin) {
         if (value == null) return null;
         if (value.sort == Sort.VALUE) return value;
@@ -893,7 +893,7 @@ public abstract class VmLoweringCore implements VmTermLowering.Policy {
 
     /** The lowered sort one container-codec operand is expected at, or
      *  null where the codec states no expectation. */
-    public static Sort nativeSortOf(ContainerSmtCodec.Sort expected) {
+    static Sort nativeSortOf(ContainerSmtCodec.Sort expected) {
         return expected == ContainerSmtCodec.Sort.INT ? Sort.INT
                 : expected == ContainerSmtCodec.Sort.BOOL ? Sort.BOOL
                 : expected == ContainerSmtCodec.Sort.REF ? Sort.REF
@@ -904,7 +904,7 @@ public abstract class VmLoweringCore implements VmTermLowering.Policy {
     }
 
     /** The container state an already-lowered reference denotes. */
-    public static ContainerSmtCodec.Term stateOfReference(String reference,
+    static ContainerSmtCodec.Term stateOfReference(String reference,
                                                    ContainerSmtCodec.Sort
                                                            shape) {
         return new ContainerSmtCodec.Term(
@@ -914,7 +914,7 @@ public abstract class VmLoweringCore implements VmTermLowering.Policy {
     }
 
     /** Unboxes one container cell by the element's declared Java type. */
-    public final Term fromValue(Term value, String javaType, String origin) {
+    final Term fromValue(Term value, String javaType, String origin) {
         if (value == null || value.sort != Sort.VALUE) return value;
         String kind = ContainerSmtCodec.unboxableCellKind(javaType);
         if (kind.isEmpty()) return value;
@@ -953,7 +953,7 @@ public abstract class VmLoweringCore implements VmTermLowering.Policy {
     // ------------------------------------------------------------------
 
     /** Java binary numeric promotion of two integral operands. */
-    public static IntegralWidth promotedIntegralWidth(Term left, Term right) {
+    static IntegralWidth promotedIntegralWidth(Term left, Term right) {
         if (left.sort != Sort.INT || right.sort != Sort.INT) {
             return IntegralWidth.NONE;
         }
@@ -962,7 +962,7 @@ public abstract class VmLoweringCore implements VmTermLowering.Policy {
     }
 
     /** The String this expression is exactly a literal of, or null. */
-    public final String stringLiteral(JsonElement expression) {
+    final String stringLiteral(JsonElement expression) {
         return VmExpressionIr.exactStringLiteral(expression,
                 type -> sortOfJavaType(type) == Sort.STRING);
     }
@@ -973,7 +973,7 @@ public abstract class VmLoweringCore implements VmTermLowering.Policy {
      * that occur inside Java's decimal rendering of an int, which a prefix
      * round trip must not be split on.
      */
-    public static String delimiterGap(String value, boolean decimalText) {
+    static String delimiterGap(String value, boolean decimalText) {
         if (value == null || value.length() != 1) {
             return "REGEX_NOT_SAFE_SINGLE_LITERAL";
         }

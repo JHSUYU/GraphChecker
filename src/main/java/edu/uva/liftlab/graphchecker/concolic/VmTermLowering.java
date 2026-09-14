@@ -27,12 +27,12 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
  * through {@link Term#precondition} while the solver asserts it eagerly;
  * and the solver tags every refusal with an {@code origin} string.
  */
-public final class VmTermLowering {
+final class VmTermLowering {
     private VmTermLowering() {
     }
 
     /** The SMT sort one lowered Java value carries. */
-    public enum Sort {
+    enum Sort {
         BOOL("Bool"), INT("Int"),
         FLOAT32("(_ FloatingPoint 8 24)"),
         FLOAT64("(_ FloatingPoint 11 53)"), STRING("String"),
@@ -41,39 +41,39 @@ public final class VmTermLowering {
         /** The solver's "no Java sort is known" sentinel. */
         UNKNOWN("");
 
-        public final String smt;
+        final String smt;
 
         Sort(String smt) {
             this.smt = smt;
         }
 
-        public boolean containerState() {
+        boolean containerState() {
             return this == ARRAY_VALUE || this == MAP;
         }
 
-        public boolean floating() {
+        boolean floating() {
             return this == FLOAT32 || this == FLOAT64;
         }
 
         /** The solver's frozen spelling, frozen into its symbol names. */
-        public String replayName() {
+        String replayName() {
             return this == MAP ? "ASSOCIATIVE"
                     : this == ARRAY_VALUE ? "INDEXED" : name();
         }
     }
 
-    public static boolean numeric(Sort sort) {
+    static boolean numeric(Sort sort) {
         return sort == Sort.INT || sort.floating();
     }
 
-    public static FloatingKind floatingKind(Sort sort) {
+    static FloatingKind floatingKind(Sort sort) {
         if (sort == Sort.FLOAT32) return FloatingKind.JAVA_FLOAT;
         if (sort == Sort.FLOAT64) return FloatingKind.JAVA_DOUBLE;
         return FloatingKind.NONE;
     }
 
     /** The Java sort one boxed container cell unboxes to. */
-    public static ContainerSmtCodec.Sort unboxedCellSort(Sort sort) {
+    static ContainerSmtCodec.Sort unboxedCellSort(Sort sort) {
         return sort == Sort.BOOL ? ContainerSmtCodec.Sort.BOOL
                 : sort == Sort.REF ? ContainerSmtCodec.Sort.REF
                 : sort == Sort.FLOAT32 ? ContainerSmtCodec.Sort.FLOAT32
@@ -83,7 +83,7 @@ public final class VmTermLowering {
     }
 
     /** The container codec's sort for one lowered value, or null. */
-    public static ContainerSmtCodec.Sort containerSortOf(Sort sort) {
+    static ContainerSmtCodec.Sort containerSortOf(Sort sort) {
         return sort == null || sort == Sort.UNKNOWN ? null
                 : sort == Sort.BOOL ? ContainerSmtCodec.Sort.BOOL
                 : sort == Sort.INT ? ContainerSmtCodec.Sort.INT
@@ -97,7 +97,7 @@ public final class VmTermLowering {
     }
 
     /** The lowered sort one container codec value carries. */
-    public static Sort sortOfContainer(ContainerSmtCodec.Sort sort) {
+    static Sort sortOfContainer(ContainerSmtCodec.Sort sort) {
         return sort == null ? Sort.UNKNOWN
                 : sort == ContainerSmtCodec.Sort.BOOL ? Sort.BOOL
                 : sort == ContainerSmtCodec.Sort.INT ? Sort.INT
@@ -111,7 +111,7 @@ public final class VmTermLowering {
     }
 
     /** What a lowering caller owns; everything else here is shared. */
-    public interface Policy {
+    interface Policy {
         /** Lowers a sub-expression at the named diagnostic position. */
         Term lower(JsonElement expression, Sort expected, String origin);
 
@@ -132,7 +132,7 @@ public final class VmTermLowering {
     }
 
     /** A refusal, in the composer's spelling beside the solver's. */
-    public enum Reason {
+    enum Reason {
         UNSUPPORTED_JAVA_NUMERIC_PROMOTION(
                 "UnsupportedJavaNumericPromotion", true),
         JAVA_CAST_SOURCE_SORT_CONFLICT("JavaCastSourceSortConflict", false),
@@ -188,11 +188,11 @@ public final class VmTermLowering {
         }
 
         /** The composer names the reason first, the solver the position. */
-        public String composedSubject(String origin, String detail) {
+        String composedSubject(String origin, String detail) {
             return join(composed, composedNamesOrigin ? origin : "", detail);
         }
 
-        public String solverSubject(String origin, String detail) {
+        String solverSubject(String origin, String detail) {
             return join(origin, name(), detail);
         }
 
@@ -208,7 +208,7 @@ public final class VmTermLowering {
     }
 
     /** Java binary numeric promotion of one operand to a floating sort. */
-    public static Term floatingPromotion(Policy policy, Term term, Sort target,
+    static Term floatingPromotion(Policy policy, Term term, Sort target,
                                   String origin) {
         FloatingKind targetKind = floatingKind(target);
         if (term.sort == target) return term;
@@ -231,7 +231,7 @@ public final class VmTermLowering {
     }
 
     /** One JVM primitive conversion; every other cast is a named gap. */
-    public static Term typeCast(Policy policy, JsonObject expression,
+    static Term typeCast(Policy policy, JsonObject expression,
                          String origin) {
         JsonElement sourceExpression = expression.get("_exp");
         Term source = policy.lower(sourceExpression, null,
@@ -270,14 +270,14 @@ public final class VmTermLowering {
     }
 
     /** One container or string operation the codec could not close. */
-    public static Term codecGap(Policy policy, String operation, String gap,
+    static Term codecGap(Policy policy, String operation, String gap,
                          String origin, Sort sort) {
         return policy.refuse(Reason.MODEL_SEMANTICS_MISSING, origin,
                 operation + ":" + gap, sort);
     }
 
     /** The Java type one VM expression states it evaluates to. */
-    public static String expressionJavaType(JsonElement expression) {
+    static String expressionJavaType(JsonElement expression) {
         if (expression == null || !expression.isJsonObject()) return "";
         JsonObject object = expression.getAsJsonObject();
         if ("MethodExpression".equals(optionalString(object, "_type"))) {
@@ -289,7 +289,7 @@ public final class VmTermLowering {
 
     /** str.from_int covers only non-negative integers; Java's decimal
      *  Integer.toString needs the leading '-' spelled out. */
-    public static final String JAVA_INT_TO_STRING =
+    static final String JAVA_INT_TO_STRING =
             "(define-fun java_int_to_string ((i Int)) String"
                     + " (ite (< i 0)"
                     + " (str.++ \"-\" (str.from_int (- i)))"
@@ -297,7 +297,7 @@ public final class VmTermLowering {
 
     /** The declarations every lowered query opens with.  The two callers
      *  froze nullRef on either side of the Value datatype; inert to SMT. */
-    public static List<String> preamble(boolean nullRefBeforeValueDatatype) {
+    static List<String> preamble(boolean nullRefBeforeValueDatatype) {
         List<String> lines = new ArrayList<>();
         // Both lowerers spell Java integral arithmetic as two's-complement
         // wrapping, so either query is dense in nested Int
@@ -323,11 +323,11 @@ public final class VmTermLowering {
 
 
     /** The integer an element exactly renders, or the gap that stopped it. */
-    public static final class RenderedInteger {
-        public final Term integer;
-        public final String gap;
+    static final class RenderedInteger {
+        final Term integer;
+        final String gap;
 
-        public RenderedInteger(Term integer, String gap) {
+        RenderedInteger(Term integer, String gap) {
             this.integer = integer;
             this.gap = gap == null ? "" : gap;
         }
@@ -336,7 +336,7 @@ public final class VmTermLowering {
     /** Integer.parseInt inverts Integer.toString only on an element that is
      *  that rendering and nothing else, in decimal, and in Java's int range
      *  - which is then stated as the parse's definedness. */
-    public static Term parseIntTerm(Policy policy, JsonObject expression,
+    static Term parseIntTerm(Policy policy, JsonObject expression,
                              String origin) {
         String name = "java/lang/Integer.parseInt";
         JsonArray params = JsonFields.array(expression, "_param_list");
@@ -366,12 +366,12 @@ public final class VmTermLowering {
 
     /** The conjunction of these predicates, with the trivial ones and the
      *  outer parentheses of a one-element conjunction removed. */
-    public static String and(List<String> terms) {
+    static String and(List<String> terms) {
         return booleanNary(terms, true);
     }
 
     /** The disjunction of these predicates, likewise flattened. */
-    public static String or(List<String> terms) {
+    static String or(List<String> terms) {
         return booleanNary(terms, false);
     }
 
@@ -394,34 +394,34 @@ public final class VmTermLowering {
     }
 
     /** One lowered value's Java integral domain, as an SMT predicate. */
-    public static String integralRange(String lower, String value, String upper) {
+    static String integralRange(String lower, String value, String upper) {
         return "(and (<= " + lower + " " + value + ") (<= " + value + " "
                 + upper + "))";
     }
 
     /** Java's int range, stated over one lowered integer. */
-    public static String javaIntRange(String integer) {
+    static String javaIntRange(String integer) {
         return integralRange("(- 2147483648)", integer, "2147483647");
     }
 
     /** Java's decimal Integer.toString of one lowered integer. */
-    public static Term javaIntString(Term integer) {
+    static Term javaIntString(Term integer) {
         return Term.nonNullString("(java_int_to_string " + integer.text + ")",
                 integer.precondition);
     }
 
     /** One lowered VM expression: its SMT text plus its Java-level facts. */
-    public static final class Term {
-        public final String text;
-        public final Sort sort;
-        public final IntegralWidth integralWidth;
+    static final class Term {
+        final String text;
+        final Sort sort;
+        final IntegralWidth integralWidth;
         /** Empty when unknown, "false" when a known non-null String, else
          *  the nullable reference companion Bool. */
-        public final String stringNullness;
+        final String stringNullness;
         /** Stable provenance used only for Java reference identity. */
-        public final String stringReferenceOrigin;
+        final String stringReferenceOrigin;
         /** Java evaluation definedness (notably String dereference guards). */
-        public final String precondition;
+        final String precondition;
 
         private Term(String text, Sort sort, IntegralWidth integralWidth,
                      String stringNullness, String stringReferenceOrigin,
@@ -439,15 +439,15 @@ public final class VmTermLowering {
 
         /** A term whose String definedness is tracked: an unstated
          *  nullness on a String means "known non-null". */
-        public static Term of(String text, Sort sort) {
+        static Term of(String text, Sort sort) {
             return of(text, sort, IntegralWidth.NONE);
         }
 
-        public static Term of(String text, Sort sort, IntegralWidth integralWidth) {
+        static Term of(String text, Sort sort, IntegralWidth integralWidth) {
             return of(text, sort, integralWidth, "", "", "true");
         }
 
-        public static Term of(String text, Sort sort, IntegralWidth integralWidth,
+        static Term of(String text, Sort sort, IntegralWidth integralWidth,
                        String stringNullness, String stringReferenceOrigin,
                        String precondition) {
             return new Term(text, sort, integralWidth,
@@ -460,57 +460,57 @@ public final class VmTermLowering {
 
         /** A term carrying exactly the facts given: an unstated String
          *  nullness stays unknown, the solver's refusal trigger. */
-        public static Term vm(String text, Sort sort) {
+        static Term vm(String text, Sort sort) {
             return vm(text, sort, IntegralWidth.NONE, "", "");
         }
 
-        public static Term vm(String text, Sort sort, IntegralWidth integralWidth) {
+        static Term vm(String text, Sort sort, IntegralWidth integralWidth) {
             return vm(text, sort, integralWidth, "", "");
         }
 
-        public static Term vm(String text, Sort sort, IntegralWidth integralWidth,
+        static Term vm(String text, Sort sort, IntegralWidth integralWidth,
                        String stringNullness, String stringReferenceOrigin) {
             return new Term(text, sort, integralWidth, stringNullness,
                     stringReferenceOrigin, "true");
         }
 
-        public static Term nullableString(String text, String nullness,
+        static Term nullableString(String text, String nullness,
                                    String referenceOrigin) {
             return of(text, Sort.STRING, IntegralWidth.NONE, nullness,
                     referenceOrigin, "true");
         }
 
-        public static Term nonNullString(String text, String precondition) {
+        static Term nonNullString(String text, String precondition) {
             return of(text, Sort.STRING, IntegralWidth.NONE, "false", "",
                     precondition);
         }
 
-        public Term withPrecondition(String value) {
+        Term withPrecondition(String value) {
             return new Term(text, sort, integralWidth, stringNullness,
                     stringReferenceOrigin, value);
         }
 
-        public boolean isZero() {
+        boolean isZero() {
             return "0".equals(text) || "(- 0)".equals(text);
         }
 
-        public boolean isNullReference() {
+        boolean isNullReference() {
             return sort == Sort.REF && "nullRef".equals(text);
         }
     }
 
     /** One read-time use: its activation and its candidate writers. */
-    public static final class GuardedReadUse {
-        public final String activation;
-        public final List<String> selectors;
+    static final class GuardedReadUse {
+        final String activation;
+        final List<String> selectors;
 
-        public GuardedReadUse(String activation, Collection<String> selectors) {
+        GuardedReadUse(String activation, Collection<String> selectors) {
             this.activation = activation;
             this.selectors = new ArrayList<>(selectors);
             Collections.sort(this.selectors);
         }
 
-        public boolean same(GuardedReadUse other) {
+        boolean same(GuardedReadUse other) {
             return other != null && activation.equals(other.activation)
                     && selectors.equals(other.selectors);
         }

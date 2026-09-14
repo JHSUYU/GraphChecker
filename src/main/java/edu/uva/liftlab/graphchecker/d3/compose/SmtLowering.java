@@ -3,16 +3,9 @@ package edu.uva.liftlab.graphchecker.d3.compose;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
-import edu.uva.liftlab.graphchecker.concolic.ContainerSmtCodec;
-import edu.uva.liftlab.graphchecker.concolic.InSessionReadResolver;
-import edu.uva.liftlab.graphchecker.concolic.JavaPrimitiveSmtSemantics;
-import edu.uva.liftlab.graphchecker.concolic.JavaPrimitiveSmtSemantics.IntegralWidth;
-import edu.uva.liftlab.graphchecker.concolic.JavaSmtSorts;
-import edu.uva.liftlab.graphchecker.concolic.SmtSymbolTable;
-import edu.uva.liftlab.graphchecker.concolic.VmLoweringCore;
-import edu.uva.liftlab.graphchecker.concolic.VmTermLowering;
-import edu.uva.liftlab.graphchecker.concolic.VmTermLowering.Sort;
-import edu.uva.liftlab.graphchecker.concolic.VmTermLowering.Term;
+import edu.uva.liftlab.graphchecker.d3.compose.JavaPrimitiveSmtSemantics.IntegralWidth;
+import edu.uva.liftlab.graphchecker.d3.compose.VmTermLowering.Sort;
+import edu.uva.liftlab.graphchecker.d3.compose.VmTermLowering.Term;
 import edu.uva.liftlab.graphchecker.d3.contract.ExpressionTable;
 import edu.uva.liftlab.graphchecker.d3.contract.LocationId;
 import edu.uva.liftlab.graphchecker.d3.contract.LocationKind;
@@ -540,7 +533,7 @@ public final class SmtLowering extends VmLoweringCore {
             if (pinned != null) return pinned;
         }
         return unstated("Read:" + (key.isEmpty()
-                        ? InSessionReadResolver.sessionLocation(location)
+                        ? VmRows.sessionLocation(location)
                         : key) + "@" + version,
                 "no write of this location at this version in this session, "
                         + "and the recording states no value it returned",
@@ -610,7 +603,7 @@ public final class SmtLowering extends VmLoweringCore {
                 scope + SEPARATOR + sort + SEPARATOR + raw, 10);
         declare(name, sort);
         boolean minted = opaqueIdentities.put(name, raw) == null;
-        long rid = InSessionReadResolver.referencedObjectRid(raw);
+        long rid = VmRows.referencedObjectRid(raw);
         if (minted && sort == Sort.REF && rid > 0L) {
             assertPlain("(not (= " + name + " nullRef))");
             Map<Long, String> held = recordedObjects.get(scope);
@@ -1016,7 +1009,7 @@ public final class SmtLowering extends VmLoweringCore {
 
     private static long observedVersion(JsonObject node) {
         JsonElement observed = node.get(
-                InSessionReadResolver.OBSERVED_VERSION);
+                VmRows.OBSERVED_VERSION);
         if (observed == null || observed.isJsonNull()) return -1L;
         if (observed.isJsonObject()) {
             return JsonText.longInteger(observed.getAsJsonObject(),

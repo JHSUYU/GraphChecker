@@ -88,6 +88,11 @@ final class JsonText {
         return smtInteger(text);
     }
 
+    /** Lowercase hex sha256, untruncated. */
+    static String sha256(String text) {
+        return digest(text, 0);
+    }
+
     /** Lowercase hex sha256, truncated. */
     static String digest(String text, int length) {
         try {

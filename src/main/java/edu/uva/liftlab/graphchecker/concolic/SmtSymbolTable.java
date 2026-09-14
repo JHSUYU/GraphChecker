@@ -18,17 +18,17 @@ import java.util.Map;
  * <p>One table belongs to one emitter, because the names it guards live
  * in one query.</p>
  */
-public final class SmtSymbolTable {
+final class SmtSymbolTable {
     private final Map<String, String> minted = new HashMap<>();
 
     /** {@code prefix} followed by the first {@code length} digest digits. */
-    public String mint(String prefix, String identity, int length) {
+    String mint(String prefix, String identity, int length) {
         return mintFromDigest(prefix, CanonicalJson.sha256(identity),
                 identity, length);
     }
 
     /** The same name, for a caller that already holds the full digest. */
-    public String mintFromDigest(String prefix, String digest, String identity,
+    String mintFromDigest(String prefix, String digest, String identity,
                           int length) {
         String name = prefix + digest.substring(0, length);
         String held = minted.putIfAbsent(name, identity);

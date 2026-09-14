@@ -226,7 +226,7 @@ final class PathMergeLowering extends VmLoweringCore {
      * take other values under other paths' arms.</p>
      */
     @Override
-    public void recordedReading(Term value, JsonElement observed, String origin) {
+    void recordedReading(Term value, JsonElement observed, String origin) {
         if (value == null) return;
         Term recorded = dispatch(observed, value.sort,
                 origin + ":recorded-reading");
@@ -272,7 +272,7 @@ final class PathMergeLowering extends VmLoweringCore {
     }
 
     @Override
-    public Sort sortOfJavaType(String javaType) {
+    Sort sortOfJavaType(String javaType) {
         return JavaSmtSorts.sortOfJava(javaType);
     }
 
@@ -282,14 +282,14 @@ final class PathMergeLowering extends VmLoweringCore {
      * where Java never ran it.
      */
     @Override
-    public Term definedResult(String text, Sort sort, IntegralWidth width,
+    Term definedResult(String text, Sort sort, IntegralWidth width,
                        String definedness, Term... inputs) {
         return dependent(Term.of(text, sort, width, "", "", definedness),
                 inputs);
     }
 
     @Override
-    public Term shortCircuit(String text, Term left, Term right,
+    Term shortCircuit(String text, Term left, Term right,
                       boolean conjunction) {
         String rightEvaluated = conjunction ? left.text
                 : "(not " + left.text + ")";
@@ -300,7 +300,7 @@ final class PathMergeLowering extends VmLoweringCore {
     }
 
     @Override
-    public String stringDefinedness(String origin, String operation,
+    String stringDefinedness(String origin, String operation,
                              List<Term> dereferenced, List<Term> evaluated) {
         List<String> values = new ArrayList<>();
         for (Term value : dereferenced) {
@@ -320,7 +320,7 @@ final class PathMergeLowering extends VmLoweringCore {
     }
 
     @Override
-    public void assertJavaIntegralDomain(String term, Sort sort, String javaType,
+    void assertJavaIntegralDomain(String term, Sort sort, String javaType,
                                   String identity) {
         if (sort != Sort.INT || term == null || term.isEmpty()) return;
         JavaPrimitiveSmtSemantics.IntegralDomain domain =
@@ -331,7 +331,7 @@ final class PathMergeLowering extends VmLoweringCore {
     }
 
     @Override
-    public void noteJavaIntToString() {
+    void noteJavaIntToString() {
         usesJavaIntString = true;
     }
 
@@ -355,7 +355,7 @@ final class PathMergeLowering extends VmLoweringCore {
     // ------------------------------------------------------------------
 
     @Override
-    public Term symbolTerm(JsonObject expression, Sort expected, String origin) {
+    Term symbolTerm(JsonObject expression, Sort expected, String origin) {
         String raw = optionalString(expression, "_exp");
         if (VmExpressionIr.SYMBOLIC_NULL.equals(raw)) {
             return Term.of("nullRef", Sort.REF);
@@ -487,7 +487,7 @@ final class PathMergeLowering extends VmLoweringCore {
     }
 
     @Override
-    public Term placeholderTerm(JsonObject expression, String origin) {
+    Term placeholderTerm(JsonObject expression, String origin) {
         String function = optionalString(expression, "_place_holder_func");
         int count = JsonFields.optionalInteger(expression, "_count", -1);
         if (!"currentTimeMills".equals(function) || count < 1) {
@@ -511,7 +511,7 @@ final class PathMergeLowering extends VmLoweringCore {
      * reconstruction rather than a merge, so here it is refused.</p>
      */
     @Override
-    public Term guardedReadTerm(JsonObject expression, Sort expected,
+    Term guardedReadTerm(JsonObject expression, Sort expected,
                          String origin) {
         return cut("UnresolvedSharedRead:"
                         + InSessionReadResolver.sessionLocation(
@@ -522,7 +522,7 @@ final class PathMergeLowering extends VmLoweringCore {
 
     /** A merge over a producer's cases is a cross-path object; not here. */
     @Override
-    public Term caseMergeTerm(JsonObject expression, Sort expected, String origin) {
+    Term caseMergeTerm(JsonObject expression, Sort expected, String origin) {
         return cut("CaseMergeInPath:"
                         + optionalString(expression, "mergeId"),
                 "a value merged over another region's cases reached one "
@@ -530,7 +530,7 @@ final class PathMergeLowering extends VmLoweringCore {
     }
 
     @Override
-    public Term containerTerm(JsonObject expression, boolean field, String origin) {
+    Term containerTerm(JsonObject expression, boolean field, String origin) {
         ContainerSmtCodec.Term value = field
                 ? ContainerSmtCodec.field(expression, host(origin))
                 : ContainerSmtCodec.term(expression, host(origin));
@@ -555,13 +555,13 @@ final class PathMergeLowering extends VmLoweringCore {
     }
 
     @Override
-    public Term splitElementTerm(JsonObject expression, String origin) {
+    Term splitElementTerm(JsonObject expression, String origin) {
         refuse("MODEL_SEMANTICS_MISSING:java/lang/String.splitElement", "");
         return free(Sort.STRING);
     }
 
     @Override
-    public Sort methodResultSort(JsonObject expression, String origin) {
+    Sort methodResultSort(JsonObject expression, String origin) {
         Term result = dispatch(expression.get("_res_exp"), null, origin);
         return result == null ? Sort.VALUE : result.sort;
     }
