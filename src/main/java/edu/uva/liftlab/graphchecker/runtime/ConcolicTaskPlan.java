@@ -10,6 +10,7 @@ import edu.uva.liftlab.graphchecker.concolic.SharedFieldFlow;
 import edu.uva.liftlab.graphchecker.concolic.SharedStateEvidence;
 import edu.uva.liftlab.graphchecker.contract.CommunicationHandoffSpec;
 import edu.uva.liftlab.graphchecker.contract.ConfiguredSourcePhaseContract;
+import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.ExecutionTask;
 import edu.uva.liftlab.graphchecker.contract.FieldPathSpec;
 import edu.uva.liftlab.graphchecker.contract.FieldPathSpec.DeclaredField;
@@ -24,6 +25,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -565,12 +567,83 @@ final class ConcolicTaskPlan {
                 context.requestKey, context.requestApi);
     }
 
+    /**
+     * Why this run's evidence says the activation is another lifecycle of
+     * the planned node, or {@code ""}.
+     *
+     * <p>An occurrence is (node, epoch, region, k-th activation).  Nothing
+     * compared the <em>epoch</em>: source evidence was matched with {@code
+     * sameSourceIdentity}, which strips {@code #epoch<n>} deliberately, so an
+     * activation of {@code nn0#epoch0} answered an address on
+     * {@code nn0#epoch1}.  On hdfs-17960 the flip replay threw inside the
+     * workload before it restarted the NameNode, so every activation it
+     * offered was epoch 0 -- and the flip's model, {@code root=false}, was
+     * written at the mint the recording made <em>before</em> the restart
+     * instead of at the epoch-1 mint the plan addresses.  The recorded
+     * execution was rewritten at a point the solver said nothing about.</p>
+     *
+     * <p>Two facts refuse, and only these two.  A planned epoch this run
+     * never registered cannot have an activation here at all -- a workload
+     * declares its epochs literally ({@code registerSource(..., 0)} at start,
+     * {@code restartSource(..., 1)} across a restart), so the label means the
+     * same lifecycle in every run of it.  And evidence attributing this
+     * activation to the same node at a <em>different</em> epoch is positive
+     * evidence of the wrong lifecycle.  An activation nothing attributed
+     * anywhere is still the occurrence, as everywhere else: absence of
+     * evidence is not evidence of another epoch.</p>
+     */
+    static String lifecycleMismatch(String plannedSourceKey,
+                                    Collection<String> attributed) {
+        String planned = safe(plannedSourceKey);
+        if (!RuntimeTraceContext.declaresEpoch(planned)) return "";
+        // Only a run that names this node at all can say anything about its
+        // epochs.  A run that registered no source for it may simply not
+        // attribute sources -- the unattributed activation is still the
+        // occurrence -- so the absence of the node is not the absence of the
+        // epoch.
+        if (RuntimeTraceContext.sourceIdentityRegistered(planned)
+                && !RuntimeTraceContext.sourceKeyRegistered(planned)) {
+            return "this run reached " + RuntimeTraceContext
+                    .registeredEpochsOf(planned) + " and never registered "
+                    + planned + ", so no activation in it is that epoch";
+        }
+        if (attributed == null || attributed.contains(planned)) return "";
+        for (String observed : attributed) {
+            if (observed != null && !observed.equals(planned)
+                    && RuntimeTraceContext.sameSourceIdentity(planned,
+                    observed)) {
+                return "matching root ran at " + observed + ", not at "
+                        + planned;
+            }
+        }
+        return "";
+    }
+
+    /** The source keys this run attributed to one live root entry. */
+    static Set<String> attributedSourceKeys(
+            SourceRef registeredReceiverSource,
+            RuntimeTraceContext.View context) {
+        Set<String> keys = new LinkedHashSet<>();
+        if (registeredReceiverSource != null) {
+            keys.add(registeredReceiverSource.key());
+        }
+        if (context != null && context.source != null) {
+            keys.add(context.source.key());
+        }
+        return keys;
+    }
+
     /** Empty only when entry-time runtime evidence names this source. */
     static String sourceMismatch(
             RuntimeTask task, SourceRef registeredReceiverSource,
             RuntimeTraceContext.View context) {
         RootContextSelector selector = task.rootContextSelector;
         SourceRef inherited = context.source;
+        // The epoch is part of the address, so it is compared before any of
+        // the four evidence shapes below, all of which ignore it.
+        String lifecycle = lifecycleMismatch(task.sourceKey,
+                attributedSourceKeys(registeredReceiverSource, context));
+        if (!lifecycle.isEmpty()) return lifecycle;
         boolean receiverMatches = registeredReceiverSource != null
                 && RuntimeTraceContext.sameSourceIdentity(task.sourceKey,
                 registeredReceiverSource.key());
@@ -1038,6 +1111,12 @@ final class ConcolicTaskPlan {
         /** The activation this task is. */
         final String sourceKey;
         final String occurrenceId;
+        /**
+         * The one address this task plans: node, epoch, region, k-th
+         * activation.  Every comparison that decides whether a live
+         * activation is this occurrence goes through it.
+         */
+        final OccurrenceAddress address;
         final String rootMethod;
         final RootContextSelector rootContextSelector;
         /** Argument predicates evaluated at the enclosing method entry. */
@@ -1173,6 +1252,7 @@ final class ConcolicTaskPlan {
             this.regionId = task.regionId();
             this.sourceKey = task.sourceKey();
             this.occurrenceId = task.occurrenceId();
+            this.address = OccurrenceAddress.parse(this.occurrenceId);
             this.rootMethod = task.rootMethod();
             this.rootContextSelector = RootContextSelector.from(rootSelector);
             this.enclosingRootArgumentSelector =
@@ -2091,10 +2171,7 @@ final class ConcolicTaskPlan {
          * count.</p>
          */
         String invocationCounterKey() {
-            return new StringBuilder(sourceKey)
-                    .append('\n').append(regionId)
-                    .append('\n').append(rootMethod)
-                    .toString();
+            return address.counterScope(rootMethod);
         }
 
         /**
@@ -2103,8 +2180,11 @@ final class ConcolicTaskPlan {
          */
         boolean acceptsRootInvocation(Integer actualOrdinal,
                                               boolean exactOutgoingAddress) {
+            // The k the address states, not a second copy of it kept beside
+            // the selector: one number, read from the occurrence id every
+            // other stage reads it from.
             return rootInvocationAddressMatches(actualOrdinal,
-                    rootContextSelector.invocationOrdinal,
+                    address.ordinal(),
                     attachProducerOccurrenceByPort, occurrenceId,
                     exactOutgoingAddress);
         }

@@ -14,7 +14,6 @@ import edu.uva.liftlab.graphchecker.concolic.BranchReplayContract;
 import edu.uva.liftlab.graphchecker.concolic.BranchWitness;
 import edu.uva.liftlab.graphchecker.concolic.CanonicalJson;
 import edu.uva.liftlab.graphchecker.concolic.ClockRootPhysics;
-import edu.uva.liftlab.graphchecker.concolic.CoverageDivergence;
 import edu.uva.liftlab.graphchecker.concolic.ExactConcreteBranchObservation;
 import edu.uva.liftlab.graphchecker.concolic.RecordedEvidenceIdentity;
 import edu.uva.liftlab.graphchecker.concolic.RpcExpressionHandoff;
@@ -3161,16 +3160,6 @@ public final class ConcolicRegionRuntime {
                 active.branchMappings.add(predicate);
             }
         }
-        if (!conditionIndices.isEmpty()
-                && "EXPLORE".equals(active.activation.policy(siteId))) {
-            active.addBranchCoverageGap(CoverageDivergence.of(
-                    CoverageDivergence.Kind.FLOW,
-                    "MULTIWAY_SWITCH_SUCCESSOR_ENUMERATION_UNSUPPORTED",
-                    siteId + '#' + occurrence,
-                    "observed successor "
-                            + expected.observedSuccessorIndex
-                            + " is retained as a path assumption"));
-        }
         active.lastPathConditionSize = Math.max(
                 active.lastPathConditionSize, mappingLimit);
         return attestation.valid;
@@ -5648,9 +5637,6 @@ public final class ConcolicRegionRuntime {
                 new LinkedHashSet<>();
         final Set<String> unresolved = new LinkedHashSet<>();
         final List<JsonObject> branchMappings = new ArrayList<>();
-        final List<JsonObject> branchCoverageGaps = new ArrayList<>();
-        private final Set<String> branchCoverageGapKeys =
-                new LinkedHashSet<>();
         /**
          * Case-local references into the VM's own handoff ledger: the
          * declared port an attach landed on and the export event the
@@ -6124,14 +6110,6 @@ public final class ConcolicRegionRuntime {
             }
         }
 
-        private void addBranchCoverageGap(JsonObject gap) {
-            if (gap == null) return;
-            String key = CanonicalJson.render(gap);
-            if (branchCoverageGapKeys.add(key)) {
-                branchCoverageGaps.add(gap);
-            }
-        }
-
         /**
          * Counts one entry of one declared mint site.
          *
@@ -6379,11 +6357,44 @@ public final class ConcolicRegionRuntime {
         private ModelAssignment configuredSourceAssignment(
                 String sourcePhaseId, String sourceId,
                 String fieldSignature) {
-            return uniqueAssignment(
+            ModelAssignment selected = uniqueAssignment(
                     candidate -> candidate.matchesConfiguredSource(
                             sourcePhaseId, sourceId, fieldSignature),
                     false, sourcePhaseId,
                     ": ambiguous configured source models");
+            if (selected == null) return null;
+            // A configured-source model names one mint SITE, and the site is
+            // reached once per node lifecycle.  The site is not the address:
+            // the address is (node, epoch, region, k-th activation), and the
+            // epoch is the half nothing here was checking.  On hdfs-17960 the
+            // flip replay threw inside the workload before it restarted the
+            // NameNode, so the only activation it offered was epoch 0 -- and
+            // root=false was written there, at the mint the recording made
+            // before the restart, instead of at the epoch-1 mint the plan
+            // addresses.  The recorded execution was rewritten at a point the
+            // solver said nothing about.
+            String wrongEpoch = plannedEpochUnavailable();
+            if (!wrongEpoch.isEmpty()) {
+                addSourcePhaseGap("EPOCH_UNMATCHED", null, wrongEpoch);
+                return null;
+            }
+            return selected;
+        }
+
+        /**
+         * Why this activation is not the planned node-and-epoch, or {@code ""}.
+         *
+         * <p>One rule, shared with root admission: see {@link
+         * ConcolicTaskPlan#lifecycleMismatch}.  Admission refuses such an
+         * activation outright, so in a complete run this is the same answer
+         * arriving a second time; it is asked again here because a model
+         * rewrites the recorded execution, and that must never happen on the
+         * strength of a weaker check than the one that admitted the
+         * activation.</p>
+         */
+        private String plannedEpochUnavailable() {
+            return ConcolicTaskPlan.lifecycleMismatch(activation.sourceKey,
+                    attributedSourceKeys());
         }
 
         private boolean hasAppliedExactNullReferenceAssignment(

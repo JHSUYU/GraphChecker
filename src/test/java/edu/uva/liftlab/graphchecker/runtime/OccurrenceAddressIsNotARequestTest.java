@@ -263,6 +263,60 @@ public class OccurrenceAddressIsNotARequestTest {
                 Collections.singletonList(task));
     }
 
+    /**
+     * A model for the second epoch's mint is not applied at the first's.
+     *
+     * <p>The mint site is reached once per node lifecycle, and the model
+     * names the site.  The site is not the address: the address is (node,
+     * epoch, region, k-th activation).  On hdfs-17960 the flip replay threw
+     * inside the workload before it restarted the NameNode, so the only
+     * activation it offered was epoch 0 -- and {@code root=false} was written
+     * at the mint the recording made before the restart, rewriting the
+     * recorded execution at a point the solver said nothing about.  The first
+     * epoch's mint must keep the value it recorded.</p>
+     */
+    @Test
+    public void aModelForTheSecondEpochIsNotAppliedAtTheFirst() {
+        RuntimeTraceContext.resetForTests();
+        Object first = new Object();
+        RuntimeTraceContext.registerSource(first,
+                new SourceRef("CLUSTER_NODE", "NAMENODE", "hdfs/nn0", 0L));
+
+        assertFalse("epoch 1 has not happened in this run yet",
+                ConcolicTaskPlan.lifecycleMismatch("hdfs/nn0#epoch1",
+                        Collections.<String>emptySet()).isEmpty());
+
+        RuntimeTraceContext.registerSource(new Object(),
+                new SourceRef("CLUSTER_NODE", "NAMENODE", "hdfs/nn0", 1L));
+
+        assertFalse("an epoch-0 activation is not the epoch-1 occurrence",
+                ConcolicTaskPlan.lifecycleMismatch("hdfs/nn0#epoch1",
+                        Collections.singleton("hdfs/nn0#epoch0")).isEmpty());
+        assertEquals("the epoch-1 activation is", "",
+                ConcolicTaskPlan.lifecycleMismatch("hdfs/nn0#epoch1",
+                        Collections.singleton("hdfs/nn0#epoch1")));
+        assertEquals("and an activation nothing attributed still is", "",
+                ConcolicTaskPlan.lifecycleMismatch("hdfs/nn0#epoch1",
+                        Collections.<String>emptySet()));
+        assertEquals("another node's epochs say nothing", "",
+                ConcolicTaskPlan.lifecycleMismatch("hdfs/dn0#epoch1",
+                        Collections.<String>emptySet()));
+    }
+
+    /** The counting bucket is the address's, so two epochs are two buckets. */
+    @Test
+    public void twoEpochsAreTwoCountingBuckets() {
+        ConcolicTaskPlan.RuntimeTask task = task();
+
+        assertEquals(task.address.counterScope(task.rootMethod),
+                task.invocationCounterKey());
+        assertFalse(task.invocationCounterKey().equals(
+                edu.uva.liftlab.graphchecker.contract.OccurrenceAddress.of(
+                        "hdfs-17899/nn0#epoch1", task.regionId, 1)
+                        .counterScope(task.rootMethod)));
+    }
+
+    /** The transcript ends here; the helpers follow. */
     private static ConcolicTaskPlan.RuntimeTask task() {
         return new ConcolicTaskPlan.RuntimeTask(ExecutionTask.decode(
                 row("plans/hdfs-17899-bug3-loop-body-producer.json")));

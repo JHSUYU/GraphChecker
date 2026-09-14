@@ -435,57 +435,48 @@ public class BranchDecisionRecordingTest {
 
 
     /**
-     * Write-log versions carry event ids on the decisions' clock.
+     * The write log keeps the version clock, and nothing beside it.
      *
-     * <p>The reader's rule for a field access that names no version is "the
-     * latest write whose event id precedes the access event".  That needs the
-     * writes and the access expressed on one clock.  {@code
-     * regionEnterEventId} is the VM event at which the region that wrote a
-     * version was entered -- a VM event id, the same clock {@code vmEventId}
-     * comes from -- and it is the only per-version member of the VM envelope
-     * that is on it, so the reduction must keep it.</p>
-     *
-     * <p>It bounds a write rather than timing it: writes made inside one
-     * region activation all carry that activation's entry event, so it
-     * separates writes from different activations and is silent about the
-     * order within one.  That limit is asserted here rather than papered
-     * over.</p>
+     * <p>{@code fieldVersionId} is drawn from the VM's session-global event
+     * counter at the moment of publish, which is the counter the branch
+     * decisions' {@code vmEventId} is on, so "the latest write whose event
+     * precedes this access" is a comparison between the two -- within one
+     * {@code sessionId}, which the envelope states because the counter
+     * restarts at session teardown.  The reduction therefore keeps the
+     * version id, its kind, its expression and the session, and drops every
+     * other per-version member the VM states.</p>
      */
     @Test
-    public void writeLogVersionsCarryTheDecisionClock() throws Exception {
+    public void writeLogVersionsCarryTheVersionClock() throws Exception {
         JsonObject published = SharedStateCapture.reduceWriteLogForTest(
-                writeLog(new long[] {2L, 2L, 60L}, new int[] {39, 41, 102}));
+                writeLog(new int[] {39, 41, 44}));
 
+        assertEquals("the session the clock belongs to is stated", 1,
+                published.getAsJsonObject("envelope")
+                        .get("sessionId").getAsInt());
         JsonArray versions = published.getAsJsonObject("envelope")
                 .getAsJsonArray("versions");
         assertEquals(3, versions.size());
         long previous = -1L;
         for (int index = 0; index < versions.size(); index++) {
             JsonObject version = versions.get(index).getAsJsonObject();
-            assertTrue("every version states the clock",
-                    version.has("regionEnterEventId"));
-            long event = version.get("regionEnterEventId").getAsLong();
-            assertTrue("and it never decreases", event >= previous);
-            previous = event;
+            assertEquals("version id, kind and expression, and no more", 3,
+                    version.size());
+            long clock = version.get("fieldVersionId").getAsLong();
+            assertTrue("the clock increases with the writes",
+                    clock > previous);
+            previous = clock;
         }
-        assertEquals("writes of two activations are separated", 60L,
-                versions.get(2).getAsJsonObject()
-                        .get("regionEnterEventId").getAsLong());
-        assertEquals("two writes of one activation are not", 2L,
-                versions.get(1).getAsJsonObject()
-                        .get("regionEnterEventId").getAsLong());
     }
 
-    private static JsonObject writeLog(long[] regionEnterEventIds,
-                                       int[] fieldVersionIds) {
+    private static JsonObject writeLog(int[] fieldVersionIds) {
         JsonArray versions = new JsonArray();
-        for (int index = 0; index < regionEnterEventIds.length; index++) {
+        for (int index = 0; index < fieldVersionIds.length; index++) {
             JsonObject version = new JsonObject();
             version.addProperty("fieldVersionId", fieldVersionIds[index]);
             version.addProperty("versionKind",
                     index == 0 ? "INITIAL" : "WRITE");
-            version.addProperty("regionEnterEventId",
-                    regionEnterEventIds[index]);
+            version.addProperty("regionEnterEventId", 2);
             version.addProperty("writerSourceKey", "dn0#epoch0");
             JsonObject expression = new JsonObject();
             expression.addProperty("_type", "ConstExpr");
