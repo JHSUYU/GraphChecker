@@ -3,14 +3,9 @@ package edu.uva.liftlab.graphchecker.concolic;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 
-import java.util.ArrayList;
 import java.util.Collection;
-import java.util.Comparator;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
 
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalLongInteger;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
@@ -87,66 +82,6 @@ public final class ClockRootPhysics {
 
     public static boolean clockCallee(String declaredCallee) {
         return declaredCallee != null && CLOCK_CALLEES.contains(declaredCallee);
-    }
-
-    /**
-     * Every wall-clock read the plan symbolizes, grouped by node and ordered
-     * by the recorded event sequence within it.
-     *
-     * <p>The plan states each read once per {@code portId}: the port is what
-     * mints the manual root, so two rows for one port are one symbol and are
-     * reduced to the earliest recorded event.</p>
-     */
-    public static Map<String, List<ClockRead>> readsByNode(
-            Collection<JsonObject> planRows) {
-        Map<String, ClockRead> byPort = new LinkedHashMap<>();
-        for (JsonObject plan : planRows == null
-                ? java.util.Collections.<JsonObject>emptyList() : planRows) {
-            if (plan == null) continue;
-            for (com.google.gson.JsonElement goal
-                    : array(plan, "closureGoals")) {
-                if (!goal.isJsonObject()) continue;
-                for (com.google.gson.JsonElement encoded
-                        : array(goal.getAsJsonObject(), "symbolize")) {
-                    if (!encoded.isJsonObject()) continue;
-                    JsonObject row = encoded.getAsJsonObject();
-                    if (!clockCallee(optionalString(row, "declaredCallee"))) {
-                        continue;
-                    }
-                    String port = optionalString(row, "portId");
-                    String node = optionalString(row, "sourceKey");
-                    long eventSeq = optionalLongInteger(row, "eventSeq", -1L);
-                    String recorded = optionalString(row, "primitiveValue");
-                    if (port.isEmpty() || node.isEmpty() || eventSeq < 0L
-                            || recorded.isEmpty()) {
-                        continue;
-                    }
-                    long value;
-                    try {
-                        value = Long.parseLong(recorded.trim());
-                    } catch (NumberFormatException notIntegral) {
-                        continue;
-                    }
-                    ClockRead read = new ClockRead(node, port,
-                            optionalString(row, "siteId"),
-                            optionalString(row, "occurrenceId"), eventSeq,
-                            value);
-                    ClockRead held = byPort.get(port);
-                    if (held == null || read.eventSeq < held.eventSeq) {
-                        byPort.put(port, read);
-                    }
-                }
-            }
-        }
-        Map<String, List<ClockRead>> byNode = new LinkedHashMap<>();
-        for (ClockRead read : byPort.values()) {
-            byNode.computeIfAbsent(read.sourceKey,
-                    ignored -> new ArrayList<>()).add(read);
-        }
-        for (List<ClockRead> reads : byNode.values()) {
-            reads.sort(Comparator.comparingLong(read -> read.eventSeq));
-        }
-        return byNode;
     }
 
     /** The window one read's value may take, as an SMT constraint. */
