@@ -329,6 +329,21 @@ final class SharedStateCapture {
      * it.  Dropping it cost 18 LOCATION_NOT_NAMED_ACROSS_SESSIONS and 12
      * SHARED_STATE_MAP_STATE_IDENTITY_MISSING.</p>
      *
+     * <p>The version clock is {@code fieldVersionId} itself.  The VM draws
+     * it from the session-global event counter at the moment of publish
+     * ({@code sharedFieldVersions.cpp:158,197} via
+     * {@code GlobalSymbolicSession::next_event_id}), which is the same
+     * counter behind {@code regionEnterEventId}, the read event ids and,
+     * after the current VM change, the branch decisions' own {@code
+     * vmEventId}.  So "the latest write whose event precedes this access" is
+     * a comparison of {@code fieldVersionId} against the access's event id,
+     * within one {@code sessionId} -- the counter restarts at session
+     * teardown, and a corpus that pools several JVMs holds several of them,
+     * which is why the envelope states its session.  Nothing further is
+     * needed per version, and {@code regionEnterEventId} was briefly
+     * published here on the mistaken premise that it was; it only repeated
+     * the enclosing activation's entry id.</p>
+     *
      * <p>An INITIAL version stays, tagged as one: a value the recording did
      * not watch being produced is still the value, and saying which kind it
      * is what keeps "the program computed this" apart from "the recording
@@ -358,17 +373,6 @@ final class SharedStateCapture {
             JsonObject entry = new JsonObject();
             copyIfPresent(version, entry, "fieldVersionId");
             copyIfPresent(version, entry, "versionKind");
-            // The VM event at which the region that wrote this version was
-            // entered: the same clock the decision rows and the target
-            // anchor publish.  A reader resolving "the latest write whose
-            // event precedes this access" needs the writes and the access
-            // expressed on one clock, and this is the only per-version
-            // member of the VM envelope that is on it.  It bounds a write
-            // rather than timing it -- every write made inside one region
-            // activation carries that activation's entry event -- so it
-            // separates writes from different activations and says nothing
-            // about the order of writes within one.  See VM_ASKS.md #1.
-            copyIfPresent(version, entry, "regionEnterEventId");
             copyIfPresent(version, entry, "expression");
             versions.add(entry);
         }
