@@ -111,6 +111,8 @@ public final class ConcolicPathFlipPlanner {
     static final class Wave {
         private final List<JsonObject> allExecutionTasks;
         private final List<JsonObject> allSummaries;
+        /** Every communication port some replay of this wave attached. */
+        private final java.util.Set<String> deliveredHandoffPorts;
         private final List<JsonObject> allRecords;
         /** The wave's receiver-family rows, indexed by their family key.
          *  Expanded, so the transitive family walk below sees every nested
@@ -139,6 +141,8 @@ public final class ConcolicPathFlipPlanner {
                      SymbolicRootInventory roots) {
             this.allExecutionTasks = allExecutionTasks;
             this.allSummaries = allSummaries;
+            this.deliveredHandoffPorts =
+                    RegionPathWorklist.attachedHandoffPorts(allSummaries);
             this.allRecords = allRecords;
             this.topologyEpoch = topologyEpoch;
             this.bounds = bounds;
@@ -215,9 +219,15 @@ public final class ConcolicPathFlipPlanner {
                     explorationRecords.add(record);
                 }
             }
+            // The wave's deliveries, not this member's.  A member's
+            // summaries are its own region's, so a handoff gap it imports
+            // for a port another region consumes could never be shown
+            // delivered from them -- the same "across the group, not this
+            // path's own summary" lesson controlBySymbol below already
+            // carries, for the same rows.
             RegionPathWorklist.Result result = RegionPathWorklist.plan(
                     summaries, executionTasks, explorationRecords, bounds,
-                    roots);
+                    roots, deliveredHandoffPorts);
             for (JsonObject task : result.tasks) {
                 // The obligation asks for a root valuation, so its path
                 // condition has to be an expression over roots.  Resolve it

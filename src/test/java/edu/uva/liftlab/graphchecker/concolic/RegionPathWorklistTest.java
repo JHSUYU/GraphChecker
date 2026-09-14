@@ -270,6 +270,34 @@ public class RegionPathWorklistTest {
         assertTrue(!"CLOSED".equals(
                 withheld.manifest.get("coverageState").getAsString()));
 
+        // The member that CONSUMES a port is not the member that delivers
+        // it: this member's own summaries attach nothing, and the wave's
+        // index is what says the port was delivered.  lane17897j withheld
+        // closure on all ten paths of its anchor for exactly this -- 114
+        // rows for a port whose 47 attaches were on another member.
+        JsonObject elsewhere = summary(plain, 1, true);
+        elsewhere.add("alignmentGaps", handoffGaps("XCH.R.resp.leaf"));
+        RegionPathWorklist.Result waveDelivered = RegionPathWorklist.plan(
+                Collections.singletonList(elsewhere),
+                Collections.singletonList(plain),
+                Collections.<JsonObject>emptyList(),
+                RegionPathWorklist.Bounds.defaults(),
+                SymbolicRootInventory.of(
+                        Arrays.asList(rootedSummary, elsewhere),
+                        Arrays.asList(rooted, plain)),
+                Collections.singleton("XCH.R.resp.leaf"));
+        assertEquals(0,
+                waveDelivered.manifest.getAsJsonArray("coverageGaps").size());
+        assertEquals("CLOSED",
+                waveDelivered.manifest.get("coverageState").getAsString());
+        // And the wave index is read from the same place the campaign fold
+        // reads it, so a summary that attached the port yields it.
+        assertTrue(RegionPathWorklist.attachedHandoffPorts(
+                Collections.singletonList(attached))
+                .contains("XCH.P.resp.leaf"));
+        assertTrue(RegionPathWorklist.attachedHandoffPorts(
+                Collections.singletonList(elsewhere)).isEmpty());
+
         JsonObject anonymous = summary(plain, 1, true);
         JsonArray nameless = handoffGaps("XCH.P.resp.leaf");
         nameless.get(0).getAsJsonObject().remove(
