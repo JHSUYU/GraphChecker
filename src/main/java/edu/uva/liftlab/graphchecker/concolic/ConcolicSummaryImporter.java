@@ -4,7 +4,10 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.contract.ConfiguredSourcePhaseContract;
+import java.util.Collection;
+import com.google.gson.JsonParser;
 import edu.uva.liftlab.graphchecker.contract.ExecutionTask;
+import edu.uva.liftlab.graphchecker.contract.GapLedger;
 import edu.uva.liftlab.graphchecker.contract.CommunicationHandoffSpec;
 import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
@@ -326,6 +329,7 @@ public final class ConcolicSummaryImporter {
         Set<String> regions = regionIds(RuntimePlanArtifact.read(
                 runtimePlan).regions());
         String iterationId = requiredValue(options, "iteration-id");
+        seedingResultsFile = results.toAbsolutePath().toString();
         ImportResult imported = importSummaries(results, tasks, regions,
                 output, diagnostics, iterationId);
         if (imported.diagnosticCount > 0) {
@@ -335,6 +339,19 @@ public final class ConcolicSummaryImporter {
                 while ((line = reader.readLine()) != null) {
                     System.err.println("[concolic-import] " + line);
                 }
+            }
+        }
+        // The topology ruling, stated where the corpus is: a divergent
+        // bundle is not epoch e's evidence and is not a failure -- it is the
+        // recording of epoch e+1, and the wave says which replay it is so
+        // the harness plans the next epoch from that replay's own trace
+        // rather than re-deriving which one diverged.
+        List<String> seeding = readSeedingReplays(diagnostics);
+        if (!seeding.isEmpty()) {
+            for (String replay : seeding) {
+                System.err.println("[concolic-import] topology divergence: "
+                        + "seeds epoch e+1 from replay " + replay
+                        + " (" + seedingResultsFile + ")");
             }
         }
         // One classification path: the ledger says which rows stop a
@@ -2355,6 +2372,26 @@ public final class ConcolicSummaryImporter {
         return divergent;
     }
 
+    /** Row member: this bundle is the recording of the next epoch. */
+    static final String SEEDS_NEXT_EPOCH = "seedsNextEpoch";
+    /** Row member: the linked replay whose trace that recording is. */
+    static final String SEED_REPLAY_GROUP = "seedReplayGroupId";
+    /** Row member: the task whose activation diverged. */
+    static final String SEED_REPLAY_TASK = "seedReplayTaskId";
+    /** Row member: the result file the next epoch is planned from. */
+    static final String SEED_REPLAY_RESULTS = "seedReplayResults";
+
+    /**
+     * The result file this import read, so a divergent row can name it.
+     *
+     * <p>A divergence is only actionable if the row says which replay's own
+     * trace becomes the next epoch's recording.  The importer is the one
+     * stage that holds both the divergent bundle and the path it was read
+     * from, so it states it; the harness reads it back rather than
+     * re-deriving which replay diverged.</p>
+     */
+    private static volatile String seedingResultsFile = "";
+
     private static JsonObject diagnostic(
             ResultRow row, String code, String detail) {
         JsonObject result = new JsonObject();
@@ -2363,7 +2400,66 @@ public final class ConcolicSummaryImporter {
         result.addProperty("detail", firstNonBlank(detail, "UNKNOWN"));
         result.addProperty("taskId", row.taskId);
         result.addProperty("line", row.line + 1);
+        if (GapLedger.classOf(code) == GapLedger.GapClass.DIAGNOSTIC
+                && seedsAnEpoch(code)) {
+            // Held out of epoch e, and it says what becomes of it.
+            result.addProperty(SEEDS_NEXT_EPOCH, true);
+            result.addProperty(SEED_REPLAY_GROUP, row.replayGroupId);
+            result.addProperty(SEED_REPLAY_TASK, row.taskId);
+            result.addProperty(SEED_REPLAY_RESULTS, seedingResultsFile);
+        }
         return result;
+    }
+
+    /**
+     * Whether a divergence under this code seeds the next epoch.
+     *
+     * <p>The owner's topology ruling: a replay whose causal graph diverges
+     * from the epoch's frozen catalog -- an unplanned region occurrence, a
+     * binding no family has, an activation that answered under another
+     * request -- is not epoch e's evidence and is not a failure either.  Its
+     * bundle is kept whole and becomes the recording of epoch e+1.</p>
+     */
+    static boolean seedsAnEpoch(String code) {
+        return TOPOLOGY_DIVERGENCE.equals(code)
+                || PublicationContract.ACTIVATION_REQUEST_DIVERGED
+                .equals(code);
+    }
+
+    /** The seeding replays named by the diagnostics file just written. */
+    private static List<String> readSeedingReplays(Path diagnostics)
+            throws IOException {
+        List<JsonObject> rows = new ArrayList<>();
+        if (Files.isRegularFile(diagnostics)) {
+            try (BufferedReader reader = Files.newBufferedReader(diagnostics,
+                    StandardCharsets.UTF_8)) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    if (line.trim().isEmpty()) continue;
+                    JsonElement parsed = new JsonParser().parse(line);
+                    if (parsed.isJsonObject()) {
+                        rows.add(parsed.getAsJsonObject());
+                    }
+                }
+            }
+        }
+        return seedingReplays(rows);
+    }
+
+    /** Every replay a divergent row names, in the order they were raised. */
+    static List<String> seedingReplays(Collection<JsonObject> diagnostics) {
+        List<String> replays = new ArrayList<>();
+        if (diagnostics == null) return replays;
+        for (JsonObject row : diagnostics) {
+            if (!row.has(SEEDS_NEXT_EPOCH)) continue;
+            String named = firstNonBlank(
+                    optionalString(row, SEED_REPLAY_GROUP),
+                    optionalString(row, SEED_REPLAY_TASK));
+            if (!named.isEmpty() && !replays.contains(named)) {
+                replays.add(named);
+            }
+        }
+        return replays;
     }
 
     /** Whether this is the initial full region-path observation. */
