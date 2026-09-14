@@ -525,35 +525,6 @@ public final class System {
     public static native boolean trackContainerExpression(Object container,
                                                           String prefix);
 
-    /**
-     * States the exact content of a supported container to the recorder, so
-     * that a whole-state carrier over it has a base rather than an opaque
-     * root.  {@code kind} is 0 for indexed collections, 1 for maps, 2 for
-     * sets, and 3 for Java arrays.  Recorded mutations are preserved: a
-     * container that already carries a mutation history keeps it, and the
-     * base is recovered by undoing that history against the content offered
-     * here when the record carries its own inverse.
-     *
-     * <p>The answer says which of those happened, because a caller that
-     * cannot tell them apart treats a carrier with no stated base as though
-     * it had a complete one:
-     *
-     * <ul>
-     *   <li>0 - not selectable; nothing was stated and nothing is claimed
-     *   <li>1 - installed; the container's state now states its content
-     *   <li>2 - an existing recorded mutation history was kept and its base
-     *       could not be recovered, so the content is unknown
-     *   <li>3 - refused over the entry bound
-     *       ({@code causynth.concolic.initial.snapshot.max}); the opaque root
-     *       is kept
-     *   <li>4 - the recorded history was rebuilt on a recovered stated base
-     *   <li>5 - an earlier offer already stated this container's content
-     * </ul>
-     *
-     * <p>Only 1, 4 and 5 mean the content is stated.</p>
-     */
-    public static native int snapshotContainerExpression(
-            Object container, Object[] keys, Object[] values, int kind);
 
     /**
      * Publishes the symbolic expression currently attached to one exact
@@ -649,55 +620,7 @@ public final class System {
     /** Returns positive iff the exact read consumed this receipt. */
     public static native long confirmSharedPrimitiveFieldRead(long token);
 
-    /**
-     * Selects one element of a fixed-shape array as a symbolic carrier.
-     * Element identity is the (array, index) slot, which is stable for the
-     * array's life; a resizable collection has no such slot and is not
-     * selectable here.
-     *
-     * @return a positive INITIAL field-version id, {@code 0} if the element
-     *         was already selected, or a negative refusal code
-     */
-    public static native long selectSharedElementCarrier(
-            Object array, int index);
 
-    /**
-     * Selects one supported container's whole state as a symbolic carrier, so
-     * that every later selected mutation of it publishes an immutable state
-     * version and every later observation of it resolves to a guarded choice
-     * over the retained writer states.
-     *
-     * A resizable collection has no stable per-member slot -- its members move
-     * under insertion and removal -- so {@link #selectSharedElementCarrier}'s
-     * (array, index) addressing does not apply to one. What a container does
-     * have is one immutable state per mutation, and that is what is
-     * versioned: the arm of writer {@code W} is
-     * {@code observe(stateAfter(W), arguments)}, so selecting a writer
-     * changes what the reader observes rather than only which writer is
-     * named. Two writers therefore stay distinct even when the value they
-     * stored is concretely equal.
-     *
-     * Both whole-state shapes are selectable. An associative container
-     * publishes PUT/REMOVE/CLEAR states; an indexed one publishes
-     * APPEND/INSERT/WRITE/REMOVE/CLEAR states, whose size is the closed-form
-     * {@code size +/- 1} of the state they extend. An indexed carrier is what
-     * makes a List field's contents observable at all: versioned as a
-     * reference slot it publishes one write for its construction and nothing
-     * for any later add or remove.
-     *
-     * Selecting also roots the container's symbolic state and records an
-     * INITIAL version holding it, so the state a query observes before any
-     * tracked mutation is an ordinary candidate rather than a hole. The
-     * container and every view of it (a map's {@code keySet},
-     * {@code values}, {@code entrySet}, and any iterator of either shape) are
-     * one location.
-     *
-     * @return a positive INITIAL version id, {@code 0} if the container was
-     *         already selected, or a negative refusal code.  An array, and any
-     *         container class whose mutations no model intercepts, is refused
-     *         rather than selected and then silently never versioned.
-     */
-    public static native long selectSharedMapCarrier(Object map);
 
     /**
      * Every location this session is tracking, as shared-field-version

@@ -242,7 +242,6 @@ public:
       Handle owner, const char *declaring_class, const char *field_name,
       const char *descriptor, jlong value_bits);
   static jlong confirmSharedPrimitiveFieldRead(jlong token);
-  static jlong selectSharedElementCarrier(Handle array, jint index);
   /**
    * Selects one supported associative container's *whole state* as a carrier.
    *
@@ -261,7 +260,6 @@ public:
    * @return a positive INITIAL version id, 0 if already selected, or a
    *         negative SharedFieldVersions::SelectStatus refusal
    */
-  static jlong selectSharedMapCarrier(Handle map);
   static std::string getSharedFieldVersions(
       Handle owner, const char *declaring_class, const char *field_name,
       const char *descriptor);
@@ -314,8 +312,6 @@ public:
     SNAPSHOT_ALREADY_STATED = 5
   };
 
-  static jint snapshotContainerExpression(
-      Handle container, Handle keys, Handle values, jint kind);
   static std::string getRegionSummary();
   static void symbolize(Handle handle, const char* prefix);
   static void symbolizeField(Handle handle, const char* field_name,

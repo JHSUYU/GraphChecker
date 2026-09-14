@@ -136,7 +136,7 @@ public:
    */
   static const int SLOT_WHOLE_STATE = -3;
 
-  /** Negative values are refusals; see select_carrier and the Java API. */
+  /** Negative values are refusals; see the Java API. */
   enum SelectStatus {
     SELECT_ALREADY_SELECTED   = 0,
     SELECT_NO_ACTIVE_CONTEXT  = -1,
@@ -399,14 +399,11 @@ public:
    * INITIAL version id, or 0 if
    * the location was already selected or is not addressable.
    */
-  static jlong select_carrier(const Location &location, Expression *initial);
 
   /**
    * As above, recording what the INITIAL value says about the container's
    * pre-selection contents.
    */
-  static jlong select_carrier(const Location &location, Expression *initial,
-                              const InitialSnapshot &snapshot);
 
   /**
    * Remembers what one initial-snapshot offer did to `owner`, so the
@@ -420,15 +417,12 @@ public:
    * tell a container that held nothing from one whose contents the bound
    * refused, and both of those from one whose recorded history was kept.
    */
-  static void note_initial_snapshot(sym_rid_t owner, int answer, int entries);
 
   /**
    * What an offer for `owner` answered, or false when none was made.  A
    * container nobody offered is not the same as one that was offered and
    * declined, and only the second is a fact about this engine.
    */
-  static bool initial_snapshot_note(sym_rid_t owner, int *answer,
-                                    int *entries);
   /**
    * Whether this location's contents are being kept.
    *
@@ -501,8 +495,6 @@ public:
    * the fact it owns.  Only an INITIAL version can carry it and only once.
    * Returns false when there is nothing to fill in.
    */
-  static bool adopt_initial_snapshot(const Location &location,
-                                     const InitialSnapshot &snapshot);
 
   /**
    * Appends one version for a completed write.  `value` and `path_guard` must

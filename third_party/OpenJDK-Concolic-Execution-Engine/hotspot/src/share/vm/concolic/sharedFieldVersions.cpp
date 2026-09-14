@@ -43,7 +43,6 @@ struct InitialSnapshotNote {
   InitialSnapshotNote(int offer_answer, int member_count)
       : answer(offer_answer), entries(member_count) {}
 };
-static std::map<sym_rid_t, InitialSnapshotNote> _initial_snapshot_notes;
 volatile int SharedFieldVersions::_carrier_count = 0;
 pthread_mutex_t SharedFieldVersions::_mutex = PTHREAD_MUTEX_INITIALIZER;
 
@@ -96,7 +95,6 @@ void SharedFieldVersions::open_session() {
             "replay read receipts outlived the previous session");
   guarantee(_consumed_primitive_reads.empty(),
             "replay read receipts outlived the previous session");
-  _initial_snapshot_notes.clear();
   _carrier_count = 0;
   _open = true;
 }
@@ -109,7 +107,6 @@ void SharedFieldVersions::close_session() {
   _pending_primitive_reads.clear();
   _armed_read_tokens.clear();
   _consumed_primitive_reads.clear();
-  _initial_snapshot_notes.clear();
   _carrier_count = 0;
   _open = false;
 }
@@ -126,69 +123,6 @@ bool SharedFieldVersions::is_tracked(const Location &location) {
   return _open && _slots.find(location) != _slots.end();
 }
 
-jlong SharedFieldVersions::select_carrier(const Location &location,
-                                          Expression *initial) {
-  return select_carrier(location, initial, InitialSnapshot());
-}
-
-void SharedFieldVersions::note_initial_snapshot(sym_rid_t owner, int answer,
-                                                int entries) {
-  if (owner == NULL_SYM_RID) return;
-  VERSION_LOCK;
-  _initial_snapshot_notes[owner] = InitialSnapshotNote(answer, entries);
-}
-
-bool SharedFieldVersions::initial_snapshot_note(sym_rid_t owner, int *answer,
-                                                int *entries) {
-  if (owner == NULL_SYM_RID) return false;
-  VERSION_LOCK;
-  std::map<sym_rid_t, InitialSnapshotNote>::const_iterator found =
-      _initial_snapshot_notes.find(owner);
-  if (found == _initial_snapshot_notes.end()) return false;
-  if (answer != NULL) *answer = found->second.answer;
-  if (entries != NULL) *entries = found->second.entries;
-  return true;
-}
-
-jlong SharedFieldVersions::select_carrier(const Location &location,
-                                          Expression *initial,
-                                          const InitialSnapshot &snapshot) {
-  if (!location.is_valid()) return 0;
-
-  // A version id correlates this expression with a candidate arm.  Its
-  // numeric order is never used to choose what a read observed.
-  jlong version_id = GlobalSymbolicSession::next_event_id();
-  Version version;
-  version.version_id = version_id;
-  version.version_kind = VERSION_INITIAL;
-  version.value = initial;
-  version.path_guard = NULL;
-  // Stated, refused, or never offered -- and a stated *empty* container is
-  // the case a member count alone cannot express.  Deriving this from
-  // `entries > 0` published no snapshot block for the container that held
-  // nothing, so its exact empty base read back as "contents unknown": the
-  // one carrier whose initial state is pinned hardest was the one left free.
-  version.initial_snapshot_present = snapshot.present();
-  version.initial_snapshot_entries = snapshot.entries;
-  version.initial_snapshot_truncated = snapshot.truncated;
-  if (ConcolicMngr::ctx != NULL) {
-    version.writer_context_id = ConcolicMngr::ctx->get_context_id();
-    version.region_id = ConcolicMngr::ctx->get_region_id();
-    version.task_id = ConcolicMngr::ctx->get_task_id();
-    version.region_enter_event_id =
-        ConcolicMngr::ctx->region_enter_event();
-  }
-
-  VERSION_LOCK;
-  if (!_open) return 0;
-  if (_slots.find(location) != _slots.end()) return 0;
-  Slot &slot = _slots[location];
-  slot.writer_set_complete = true;
-  slot.versions.push_back(version);
-  _carrier_count = (int) _slots.size();
-  return version_id;
-}
-
 jlong SharedFieldVersions::publish_initial(const Location &location,
                                            Expression *base,
                                            const InitialSnapshot &snapshot) {
@@ -198,25 +132,6 @@ jlong SharedFieldVersions::publish_initial(const Location &location,
   // log begins where the container did, which is what a relation chain stands
   // on: without it the first PUT has no receiver a reader can resolve.
   return publish(location, base, NULL, VERSION_INITIAL, NULL, true, &snapshot);
-}
-
-bool SharedFieldVersions::adopt_initial_snapshot(
-    const Location &location, const InitialSnapshot &snapshot) {
-  if (!location.is_valid() || !snapshot.present()) return false;
-  VERSION_LOCK;
-  if (!_open) return false;
-  Slot *slot = find_slot_locked(location);
-  if (slot == NULL || slot->versions.empty()) return false;
-  Version &first = slot->versions.front();
-  // Only an INITIAL base can carry a pre-tracking snapshot, and only once:
-  // the offer that arrives first is the authority, exactly as it was when
-  // selection created the version itself.
-  if (first.version_kind != VERSION_INITIAL) return false;
-  if (first.initial_snapshot_present) return false;
-  first.initial_snapshot_present = true;
-  first.initial_snapshot_entries = snapshot.entries;
-  first.initial_snapshot_truncated = snapshot.truncated;
-  return true;
 }
 
 jlong SharedFieldVersions::publish_value(const Location &location,
@@ -966,37 +881,6 @@ bool resolve_field_location(oop owner_oop, const char *declaring_class,
 }
 
 
-/** The value an array element holds right now. */
-bool observe_element(arrayOop array, int index, Expression **value) {
-  if (array == NULL || index < 0 || index >= array->length()) return false;
-  BasicType type = ArrayKlass::cast(array->klass())->element_type();
-  if (type == T_OBJECT || type == T_ARRAY) {
-    oop element = objArrayOop(array)->obj_at(index);
-    *value = SharedFieldVersions::reference_expression(element);
-    if (*value == NULL) *value = SymbolExpression::get(Sym_NULL);
-    return true;
-  }
-
-  jlong bits = 0;
-  switch (type) {
-    case T_BOOLEAN: bits = typeArrayOop(array)->bool_at(index) ? 1 : 0; break;
-    case T_BYTE:    bits = typeArrayOop(array)->byte_at(index); break;
-    case T_CHAR:    bits = typeArrayOop(array)->char_at(index); break;
-    case T_SHORT:   bits = typeArrayOop(array)->short_at(index); break;
-    case T_INT:     bits = typeArrayOop(array)->int_at(index); break;
-    case T_LONG:    bits = typeArrayOop(array)->long_at(index); break;
-    case T_FLOAT:
-      bits = (jlong) jint_cast(typeArrayOop(array)->float_at(index));
-      break;
-    case T_DOUBLE:
-      bits = jlong_cast(typeArrayOop(array)->double_at(index));
-      break;
-    default:
-      return false;
-  }
-  *value = SharedFieldVersions::primitive_expression(type, bits);
-  return *value != NULL;
-}
 
 } // anonymous namespace
 
@@ -1047,127 +931,6 @@ jlong ConcolicMngr::confirmSharedPrimitiveFieldRead(jlong token) {
   if (ctx == NULL) return SharedFieldVersions::REPLAY_READ_NO_CONTEXT;
   return SharedFieldVersions::confirm_primitive_read(
       ctx->get_context_id(), token);
-}
-
-jlong ConcolicMngr::selectSharedElementCarrier(Handle array, jint index) {
-  if (!can_explicitly_symbolize()) {
-    return SharedFieldVersions::SELECT_NO_ACTIVE_CONTEXT;
-  }
-  if (array.is_null() || !array()->is_array() || index < 0) {
-    return SharedFieldVersions::SELECT_MISSING_METADATA;
-  }
-  arrayOop target = arrayOop(array());
-  if (index >= target->length()) {
-    return SharedFieldVersions::SELECT_MISSING_METADATA;
-  }
-
-  SymArr *shadow = ctx->get_or_alloc_sym_array(target);
-  if (shadow == NULL) return SharedFieldVersions::SELECT_UNSUPPORTED_TARGET;
-
-  Expression *initial = NULL;
-  if (!observe_element(target, index, &initial)) {
-    return SharedFieldVersions::SELECT_UNSUPPORTED_TARGET;
-  }
-
-  SharedFieldVersions::Location location(
-      shadow->get_sym_rid(), index, SharedFieldVersions::LOC_ARRAY_ELEMENT);
-  jlong version_id = SharedFieldVersions::select_carrier(location, initial);
-  if (version_id == 0) {
-    if (SharedFieldVersions::is_tracked(location)) {
-      ctx->set_pc_admitted(true);
-    }
-    return SharedFieldVersions::SELECT_ALREADY_SELECTED;
-  }
-  ctx->set_pc_admitted(true);
-  return version_id;
-}
-
-jlong ConcolicMngr::selectSharedMapCarrier(Handle map) {
-  if (!can_explicitly_symbolize()) {
-    return SharedFieldVersions::SELECT_NO_ACTIVE_CONTEXT;
-  }
-  if (map.is_null()) return SharedFieldVersions::SELECT_MISSING_METADATA;
-  oop target = map();
-  // Either whole-state algebra this location kind resolves over will do: an
-  // indexed container's state answers APPEND/INSERT/WRITE/REMOVE/CLEAR
-  // exactly as an associative one answers PUT/REMOVE/CLEAR, and both address
-  // the one SLOT_WHOLE_STATE slot.  What is refused is a container whose
-  // mutations no model intercepts, which would be selected and then silently
-  // never versioned.
-  if (!ContainerSupport::whole_state_selectable(target)) {
-    return SharedFieldVersions::SELECT_UNSUPPORTED_TARGET;
-  }
-
-  // Forcing the state root is what makes the container addressable at all: it
-  // mints the container shadow the location's owner id is taken from, and it
-  // is also the INITIAL version's value, so "the state this container started
-  // in" is an ordinary candidate rather than a hole.  Built here, outside
-  // every version lock, exactly as the scalar path builds its initial
-  // expression.  The shape is the container's own, never a literal: rooting
-  // an indexed container under the associative algebra would give it a state
-  // no later mutation of it can extend.
-  Expression *root = ctx->container_state(
-      target, ContainerSupport::shape(target));
-  if (root == NULL) return SharedFieldVersions::SELECT_UNSUPPORTED_TARGET;
-
-  SharedFieldVersions::Location location =
-      ContainerSupport::state_location(target);
-  if (!location.is_valid()) {
-    return SharedFieldVersions::SELECT_UNSUPPORTED_TARGET;
-  }
-  // What the INITIAL value says about the pre-selection contents.  The offer
-  // that ran just before this selection is the authority: only it can tell a
-  // container that held nothing from one whose content the bound refused, and
-  // both of those from one whose recorded history was kept with no
-  // recoverable base.  The state root left behind cannot tell them apart,
-  // which is why the answer is recorded rather than inferred from it.
-  SharedFieldVersions::InitialSnapshot snapshot;
-  int answer = ConcolicMngr::SNAPSHOT_NOT_SELECTABLE;
-  int noted_entries = -1;
-  if (SharedFieldVersions::initial_snapshot_note(
-          ctx->canonical_container_id(target), &answer, &noted_entries)) {
-    switch (answer) {
-      case ConcolicMngr::SNAPSHOT_INSTALLED:
-      case ConcolicMngr::SNAPSHOT_REBASED_UNDER_HISTORY:
-        snapshot.stated = true;
-        snapshot.entries = noted_entries;
-        break;
-      case ConcolicMngr::SNAPSHOT_REFUSED_OVER_BOUND:
-      case ConcolicMngr::SNAPSHOT_KEPT_EXISTING_HISTORY:
-        snapshot.truncated = true;
-        snapshot.entries = noted_entries;
-        break;
-      default:
-        break;
-    }
-  } else {
-    // No offer was recorded for this container.  The value itself still
-    // answers when it stands on a base this recorder stated, and -1 -- not
-    // zero -- is how it says it does not.
-    int chain = ContainerSupport::snapshot_entry_count(root);
-    if (chain >= 0) {
-      snapshot.stated = true;
-      snapshot.entries = chain;
-    }
-  }
-  jlong version_id = SharedFieldVersions::select_carrier(
-      location, root, snapshot);
-  if (version_id == 0) {
-    if (SharedFieldVersions::is_tracked(location)) {
-      // Retention by value may have started this container's log before the
-      // runtime reached here, in which case publish_state already wrote its
-      // INITIAL base -- but only this offer knows what the container held
-      // *before* tracking, so hand that fact to the version that exists.
-      // Without it the base reads as "contents unknown" and a relation chain
-      // standing on it cannot be closed, which is what happened to bug3's
-      // allKeys base on laneVM4.
-      SharedFieldVersions::adopt_initial_snapshot(location, snapshot);
-      ctx->set_pc_admitted(true);
-    }
-    return SharedFieldVersions::SELECT_ALREADY_SELECTED;
-  }
-  ctx->set_pc_admitted(true);
-  return version_id;
 }
 
 std::string ConcolicMngr::getSharedMapVersions(Handle map) {

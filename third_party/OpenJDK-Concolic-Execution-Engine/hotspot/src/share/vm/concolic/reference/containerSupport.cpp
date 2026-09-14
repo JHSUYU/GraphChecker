@@ -520,6 +520,31 @@ SharedFieldVersions::Location ContainerSupport::state_location(oop container) {
       SharedFieldVersions::LOC_MAP_STATE);
 }
 
+void ContainerSupport::state_base_before_operation(oop container) {
+  if (container == NULL || ConcolicMngr::ctx == NULL) return;
+  if (shape(container) == NULL) return;
+
+  // Called from a model's invoke hook: the arguments are in hand and the
+  // callee body has NOT run, so the receiver still holds exactly the contents
+  // the log must begin from.  This is the only place a write-first container
+  // can be read honestly -- by the time the finish hook publishes the
+  // mutation, the concrete put has already happened and a walk would state a
+  // base that includes the entry being written.
+  SharedFieldVersions::Location existing = state_location(container);
+  if (existing.is_valid() && SharedFieldVersions::is_tracked(existing)) return;
+
+  SharedFieldVersions::InitialSnapshot snapshot;
+  snapshot_for_receiver(container, &snapshot, true);
+
+  // state_location needs the container shadow, which the walk above mints.
+  SharedFieldVersions::Location location = state_location(container);
+  if (!location.is_valid()) return;
+  if (SharedFieldVersions::is_tracked(location)) return;
+  Expression *base = ConcolicMngr::ctx->find_container_state(container);
+  if (base == NULL) return;
+  SharedFieldVersions::publish_initial(location, base, snapshot);
+}
+
 void ContainerSupport::snapshot_for_receiver(
     oop container, SharedFieldVersions::InitialSnapshot *out, bool receiver_is_base) {
   if (out == NULL) return;

@@ -142,6 +142,16 @@ void snapshot_for_receiver(oop container,
                            SharedFieldVersions::InitialSnapshot *out,
                            bool receiver_is_base);
 
+/**
+ * Starts `container`'s log with the contents it holds right now, from a
+ * model's invoke hook.
+ *
+ * The callee body has not run yet, so the receiver is still the base -- which
+ * is what makes a write-first container statable at all.  A no-op once the
+ * container is tracked, and for a container with no modelled shape.
+ */
+void state_base_before_operation(oop container);
+
 // Whether `state` stands on a base this recorder stated, however many
 // recorded mutations sit on top of it.  A chain that bottoms out in the bare
 // STATE root does not, and is the state whose contents are unknown.
