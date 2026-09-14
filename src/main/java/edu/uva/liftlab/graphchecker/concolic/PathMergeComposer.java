@@ -196,6 +196,7 @@ public final class PathMergeComposer {
         Map<String, JsonObject> declaredVariables =
                 new LinkedHashMap<>(roots.byRawSymbol);
         declaredVariables.putAll(handoffDeclarations(summaries));
+        declaredVariables.putAll(manualDeclarations(summaries));
         PathMergeLowering lowering =
                 new PathMergeLowering(declaredVariables);
         JsonArray pathRows = new JsonArray();
@@ -812,6 +813,61 @@ public final class PathMergeComposer {
         return published;
     }
 
+    /**
+     * Every manual symbolic input the replays minted, as declarations.
+     *
+     * <p>A manual input is a root exactly like a configured source, and its
+     * identity is what the runtime publishes on the mint row: the manual
+     * input id {@code REGION.<r>.in.<uuid>}, the occurrence for a cell that
+     * is occurrence-scoped, the Java type and the value it read.  Its
+     * {@code symbolicSourceEvidence} row states only the raw symbol and the
+     * type, so a materialization built from that alone named no identity at
+     * all and the SOLVE stage refused it -- twelve rows on laneVM14, every
+     * one a manual input.  The mint row is where the identity is.</p>
+     */
+    private static Map<String, JsonObject> manualDeclarations(
+            List<JsonObject> summaries) {
+        Map<String, JsonObject> declarations = new LinkedHashMap<>();
+        for (JsonObject summary : summaries) {
+            for (JsonElement encoded
+                    : array(summary, "manualSymbolicInputObservations")) {
+                if (!encoded.isJsonObject()) continue;
+                JsonObject event = encoded.getAsJsonObject();
+                String raw = optionalString(event, "rawSymbol");
+                String identity = optionalString(event, "symbol");
+                if (raw.isEmpty() || identity.isEmpty()) continue;
+                // A reference is not a root.  Which object this execution
+                // ran on is not a value the propagation owes, so it stays
+                // the opaque constant the lowering already makes of it;
+                // declaring it minted a root term with a Ref sort that the
+                // solver's own admission rejects and a recorded value
+                // nothing states.
+                VmTermLowering.Sort sort = JavaSmtSorts.sortOfJava(
+                        optionalString(event, "javaType"));
+                if (sort == VmTermLowering.Sort.REF
+                        || sort.containerState()) {
+                    continue;
+                }
+                String occurrence = optionalString(event, "occurrenceId");
+                int region = occurrence.indexOf("/region/");
+                JsonObject declaration = new JsonObject();
+                declaration.addProperty("rawSymbol", raw);
+                declaration.addProperty("sourcePhaseId", identity);
+                declaration.addProperty("sourceId", identity);
+                declaration.addProperty("fieldSignature", identity);
+                declaration.addProperty("sourceOccurrenceId", occurrence);
+                declaration.addProperty("sourceKey", region > 0
+                        ? occurrence.substring(0, region) : occurrence);
+                declaration.addProperty("javaType",
+                        optionalString(event, "javaType"));
+                declaration.addProperty("recordedValue",
+                        optionalString(event, "recordedValue"));
+                declarations.putIfAbsent(raw, declaration);
+            }
+        }
+        return declarations;
+    }
+
     /** Every handoff variable the replays minted, as declarations. */
     private static Map<String, JsonObject> handoffDeclarations(
             List<JsonObject> summaries) {
@@ -1063,9 +1119,16 @@ public final class PathMergeComposer {
             row.addProperty("sort", sort.name());
             row.addProperty("smtSort", sort.smt);
             row.addProperty("solverTerm", solverTerm);
+            // The inventory states it for a root it collected; a
+            // declaration that is not one of those -- a manual input, a
+            // handoff variable -- states its own, from the mint row.
             row.addProperty(ComposedManifest.RECORDED_SOURCE_VALUE,
                     disagreed.contains(raw) ? ""
-                            : firstNonBlank(recorded.get(raw)));
+                            : firstNonBlank(recorded.get(raw),
+                                    declared == null ? ""
+                                            : optionalString(declared,
+                                            ComposedManifest
+                                                    .RECORDED_SOURCE_VALUE)));
             // The contract here is a LIST, comma separated: the readings two
             // mints of one source disagreed on.  Publishing the boolean flag
             // instead made a run with no conflict at all state the string
