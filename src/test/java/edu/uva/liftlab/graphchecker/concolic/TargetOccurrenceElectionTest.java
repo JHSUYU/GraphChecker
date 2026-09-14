@@ -50,7 +50,12 @@ public class TargetOccurrenceElectionTest {
      * elected and the skip keeps its stated reason.
      */
     @Test
-    public void anUnobservedOccurrenceIsReportedAndNeverElected()
+    public void targetOccurrenceElectionRules() throws Exception {
+        anUnobservedOccurrenceIsReportedAndNeverElected();
+        oneOccurrenceIsItsOwnClaim();
+    }
+
+    private void anUnobservedOccurrenceIsReportedAndNeverElected()
             throws IOException {
         JsonObject skipped = new JsonObject();
         skipped.addProperty("occurrenceId", DATANODE_HANDSHAKE);
@@ -74,8 +79,7 @@ public class TargetOccurrenceElectionTest {
     }
 
     /** One occurrence is the ordinary case and says so without a comparison. */
-    @Test
-    public void oneOccurrenceIsItsOwnClaim() throws IOException {
+    private void oneOccurrenceIsItsOwnClaim() throws IOException {
         JsonObject ledger = TargetOccurrenceElection.elect(
                 Collections.singletonList(composed(CLIENT_HANDSHAKE,
                         "FINAL_READY", 0, ClaimPolicy.SAT_CANDIDATE, 0, 0)));

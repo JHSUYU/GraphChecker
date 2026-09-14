@@ -19,6 +19,7 @@ import java.util.Deque;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
+import edu.uva.liftlab.graphchecker.contract.GapLedger;
 
 /**
  * Characterization of the branch-observation machinery a region runs for one
@@ -246,7 +247,21 @@ public class BranchDecisionRecordingTest {
     // ---------- the two kinds, stage by stage ----------
 
     @Test
-    public void concreteDecisionAtADeclaredSiteRecordsOneRowAndTheReach()
+    public void branchDecisionRecordingRules() throws Exception {
+        concreteDecisionAtADeclaredSiteRecordsOneRowAndTheReach();
+        replayObservationTracesItsOwnDecisionVocabulary();
+        anUndeclaredSiteThatIsNoBoundaryIsTransparent();
+        decisionsOfTwoActivationsOrderByTheVmEventId();
+        theTargetAnchorCarriesTheSameClock();
+        aDecisionWithoutAVmEventStatesNoId();
+        theClockIsPublishedWhateverItsScale();
+        writeLogVersionsCarryTheVersionClock();
+        ConcreteTargetDecisionIsAReachTest t0 =
+                new ConcreteTargetDecisionIsAReachTest();
+        t0.concreteTargetDecisionIsAReachRules();
+    }
+
+    private void concreteDecisionAtADeclaredSiteRecordsOneRowAndTheReach()
             throws Exception {
         ConcolicRegionRuntime.ActiveRegion binary = region(true, false);
         Object observation = call(binary, "recordConcreteDecision",
@@ -292,8 +307,7 @@ public class BranchDecisionRecordingTest {
                 + "#1\n", transcript(multiway, observation));
     }
 
-    @Test
-    public void replayObservationTracesItsOwnDecisionVocabulary()
+    private void replayObservationTracesItsOwnDecisionVocabulary()
             throws Exception {
         ConcolicRegionRuntime.ActiveRegion binary = region(false, false);
         Object matched = call(binary, "observeReplayDecision",
@@ -332,8 +346,7 @@ public class BranchDecisionRecordingTest {
      * and the seed-mismatch excuse the importer read them for was
      * permanently empty.</p>
      */
-    @Test
-    public void anUndeclaredSiteThatIsNoBoundaryIsTransparent()
+    private void anUndeclaredSiteThatIsNoBoundaryIsTransparent()
             throws Exception {
         ConcolicRegionRuntime.ActiveRegion binary = region(true, false);
         boolean outcome = ConcolicRegionRuntime.resolveBranch(0L, 0L, METHOD,
@@ -381,8 +394,7 @@ public class BranchDecisionRecordingTest {
      * The VM's event sequence number is assigned once per event in the
      * process, so it orders them.</p>
      */
-    @Test
-    public void decisionsOfTwoActivationsOrderByTheVmEventId()
+    private void decisionsOfTwoActivationsOrderByTheVmEventId()
             throws Exception {
         ConcolicRegionRuntime.ActiveRegion first = region(true, true);
         ConcolicRegionRuntime.ActiveRegion second = region(true, true);
@@ -407,8 +419,7 @@ public class BranchDecisionRecordingTest {
     }
 
     /** The anchor is read on the same clock, so pi_p can exclude what follows. */
-    @Test
-    public void theTargetAnchorCarriesTheSameClock() throws Exception {
+    private void theTargetAnchorCarriesTheSameClock() throws Exception {
         ConcolicRegionRuntime.ActiveRegion active = region(true, true);
         active.branchMappings.add(row(4, 1, 41L));
         active.branchMappings.add(row(12, 1, 43L));
@@ -428,8 +439,7 @@ public class BranchDecisionRecordingTest {
     }
 
     /** A decision the VM assigned no event states no id rather than zero. */
-    @Test
-    public void aDecisionWithoutAVmEventStatesNoId() throws Exception {
+    private void aDecisionWithoutAVmEventStatesNoId() throws Exception {
         assertFalse(row(4, 1, 0L).has("vmEventId"));
     }
 
@@ -442,8 +452,7 @@ public class BranchDecisionRecordingTest {
      * starting at 1 and start interleaving with the write log's.  A published
      * row states whatever the VM handed over, on either scale.</p>
      */
-    @Test
-    public void theClockIsPublishedWhateverItsScale() throws Exception {
+    private void theClockIsPublishedWhateverItsScale() throws Exception {
         assertEquals(3L, eventId(row(4, 1, 3L)));
         assertEquals(2305843009213693976L,
                 eventId(row(4, 1, 2305843009213693976L)));
@@ -464,8 +473,7 @@ public class BranchDecisionRecordingTest {
      * version id, its kind, its expression and the session, and drops every
      * other per-version member the VM states.</p>
      */
-    @Test
-    public void writeLogVersionsCarryTheVersionClock() throws Exception {
+    private void writeLogVersionsCarryTheVersionClock() throws Exception {
         JsonObject published = SharedStateCapture.reduceWriteLogForTest(
                 writeLog(new int[] {39, 41, 44}));
 
@@ -520,4 +528,129 @@ public class BranchDecisionRecordingTest {
     private static String tail(String transcript) {
         return transcript.substring(transcript.indexOf("returned="));
     }
+
+    /**
+     * An activation that decides the target site has reached the target.
+     *
+     * <p>Whether the predicate there was symbolic is evidence about the anchor,
+     * not a condition on publishing it: the reach carries the expression when
+     * the branch has one and the concrete outcome when it has not, and the
+     * composer reads which of the two it is from the branch row beside it.</p>
+     *
+     * <p>hdfs-17960's target branch is {@code i != sm.getNumSnapshots()} over
+     * two concrete ints; the root reaches it by control dependence, because the
+     * flip skips a decrement. Gated on a solver witness, that activation
+     * recorded the decision AND was named by {@code nameUnreachedTargetBranch}
+     * as never having decided it -- two statements about one activation that
+     * cannot both be true, and the reason MARKER_FLIPPED had no reach to read on
+     * lanes BJ, BK and BL.</p>
+     */
+    static final class ConcreteTargetDecisionIsAReachTest {
+        private static final String TARGET =
+                "<org.apache.hadoop.hdfs.server.namenode.snapshot."
+                        + "SnapshotManager: void deleteSnapshot()>#u61";
+        private static final String ELSEWHERE =
+                "<org.apache.hadoop.hdfs.server.namenode.snapshot."
+                        + "SnapshotManager: void deleteSnapshot()>#u44";
+
+        /** A concrete decision at the addressed occurrence states the reach. */
+        public void concreteTargetDecisionIsAReachRules() throws Exception {
+            aConcreteDecisionAtTheTargetStatesTheReach();
+            aSymbolicDecisionAtTheTargetStatesTheSameReach();
+            anotherOccurrenceOfTheTargetSiteIsNotTheAddressedOne();
+            aPermutedLoopOccurrenceStillStatesTheReach();
+            anotherSiteIsNotTheTarget();
+            aDecisionWithNoRecordedRowStatesNoReach();
+            everySkipKindIsClassedUnderItsPublishedCode();
+            theFlipWaveCodesAreRegisteredAndFailClosed();
+        }
+
+        private void aConcreteDecisionAtTheTargetStatesTheReach() {
+            assertTrue("the site executed and the outcome is this run's own",
+                    ConcolicRegionRuntime.statesTargetReach(true, false,
+                            TARGET, 1, TARGET, 1));
+        }
+
+        /** A symbolic one states it in exactly the same way. */
+        private void aSymbolicDecisionAtTheTargetStatesTheSameReach() {
+            assertTrue(ConcolicRegionRuntime.statesTargetReach(true, false,
+                    TARGET, 1, TARGET, 1));
+        }
+
+        /** Another activation of the site is another occurrence. */
+        private void anotherOccurrenceOfTheTargetSiteIsNotTheAddressedOne() {
+            assertFalse(ConcolicRegionRuntime.statesTargetReach(true, false,
+                    TARGET, 1, TARGET, 2));
+        }
+
+        /** A bounded loop may run the planned occurrence at another k. */
+        private void aPermutedLoopOccurrenceStillStatesTheReach() {
+            assertTrue(ConcolicRegionRuntime.statesTargetReach(true, true,
+                    TARGET, 1, TARGET, 3));
+        }
+
+        /** Another site is not the target, however it decided. */
+        private void anotherSiteIsNotTheTarget() {
+            assertFalse(ConcolicRegionRuntime.statesTargetReach(true, false,
+                    TARGET, 1, ELSEWHERE, 1));
+            assertFalse("and a task naming no target reaches none",
+                    ConcolicRegionRuntime.statesTargetReach(true, false,
+                            "", 1, ELSEWHERE, 1));
+        }
+
+        /**
+         * A decision the VM emitted no event for states nothing.
+         *
+         * <p>There is no branch row beside which the reach could be read, so
+         * this is the one case that is still silent -- and it is the case
+         * {@code TARGET_BRANCH_NOT_REACHED} is for.</p>
+         */
+        private void aDecisionWithNoRecordedRowStatesNoReach() {
+            assertFalse(ConcolicRegionRuntime.statesTargetReach(false, false,
+                    TARGET, 1, TARGET, 1));
+        }
+
+        /**
+         * Every skip kind the runtime publishes is classed under the code the
+         * importer actually spells.
+         *
+         * <p>A region skip reaches the ledger as {@code "REGION_" + skipKind}
+         * ({@code ConcolicSummaryImporter.skippedEventCode}). Two entries were
+         * written under the bare skip kind and matched no row at all, so
+         * {@code REGION_ROOT_NEVER_EXECUTED} took the blocking default on lanes
+         * VM9 and VM10 with the slice-conditional scope written for it deciding
+         * nothing.</p>
+         */
+        private void everySkipKindIsClassedUnderItsPublishedCode()
+                throws Exception {
+            for (java.lang.reflect.Field field
+                    : ConcolicRegionRuntime.class.getDeclaredFields()) {
+                if (!field.getName().startsWith("SKIP_")) continue;
+                field.setAccessible(true);
+                String code = "REGION_" + field.get(null);
+                assertTrue(code + " is not registered in the gap ledger",
+                        GapLedger.blockingCodes().contains(code)
+                                || GapLedger.diagnosticCodes().contains(code));
+            }
+        }
+
+        /**
+         * The flip wave is classed apart, and only where the campaign can name
+         * the row as one.
+         */
+        private void theFlipWaveCodesAreRegisteredAndFailClosed() {
+            for (String code : new String[]{"REGION_ROOT_NEVER_EXECUTED",
+                    "REGION_REPLAY_PREFIX_UNMATCHED",
+                    "PUBLICATION_TASK_ANSWERED_BY_NO_RUN"}) {
+                assertTrue(code, GapLedger.flipWaveDiagnostic(code));
+                assertFalse(code + " states no reason",
+                        GapLedger.flipWaveReason(code).isEmpty());
+                assertTrue(code + " must still block a reader that cannot see"
+                                + " the wave", GapLedger.blocking(code));
+            }
+            assertFalse("a seed-wave code carries no flip-wave qualifier",
+                    GapLedger.flipWaveDiagnostic("PUBLICATION_TASK_SILENT"));
+        }
+    }
+
 }

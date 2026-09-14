@@ -25,7 +25,28 @@ public class InSessionReadResolverTest {
 
     /** A read of a location this session wrote takes that write's value. */
     @Test
-    public void aReadTakesTheWriteThisSessionMade() {
+    public void inSessionReadResolverRules() throws Exception {
+        aReadTakesTheWriteThisSessionMade();
+        aWireArrivalResolvesToTheHandoffVariable();
+        aHandoffPointingAtItsOwnBoundaryIsNotACycle();
+        aValueOlderThanTheRecordingStaysALiteralAndSaysSo();
+        aCycleIsRefusedRatherThanFollowed();
+        aReadWithNoPublishedWriteIsRefused();
+        aReadCarryingOnlyTheOldCandidateArrayIsRefused();
+        aProjectionThroughObjectReferencesReachesTheRoot();
+        aProjectionOfATwiceWrittenFieldIsRefused();
+        aProjectionTakesTheWriteLiveAtItsOwnEvent();
+        aProjectionBeforeEveryWriteReadsTheInitialVersion();
+        aProjectionStatingItsObservedVersionTakesIt();
+        aProjectionWithNoVersionAndNoClockIsRefused();
+        aProjectionOverANonReferenceIsLeftAlone();
+        aFieldReadBoundaryResolvesThroughTheWriteLog();
+        anRpcAttachBoundaryWithoutAMintIsRefusedNotInlined();
+        aReadNamesTheVersionItObservedAndNothingElse();
+        anObservedInitialVersionIsStillMarked();
+    }
+
+    private void aReadTakesTheWriteThisSessionMade() {
         JsonObject row = row(versions("INSTANCE_FIELD", 9, 56,
                 version(39, "INITIAL", constant(119981)),
                 version(44, "WRITE", symbol(ROOT))));
@@ -58,8 +79,7 @@ public class InSessionReadResolverTest {
      * carrying a second expression, which is why following it instead would
      * re-enter the node and refuse a determined value.</p>
      */
-    @Test
-    public void aWireArrivalResolvesToTheHandoffVariable() {
+    private void aWireArrivalResolvesToTheHandoffVariable() {
         // The producer's side of the wire: the NameNode wrote the key id.
         JsonObject producer = row(versions("INSTANCE_FIELD", 24, 32,
                 version(81, "WRITE", symbol(ROOT))));
@@ -92,8 +112,7 @@ public class InSessionReadResolverTest {
      * records it, and a reader that started following the row again would
      * re-enter this node.</p>
      */
-    @Test
-    public void aHandoffPointingAtItsOwnBoundaryIsNotACycle() {
+    private void aHandoffPointingAtItsOwnBoundaryIsNotACycle() {
         JsonObject producer = row(versions("INSTANCE_FIELD", 24, 32,
                 version(81, "WRITE", symbol(ROOT))));
         JsonObject consumer = new JsonObject();
@@ -123,8 +142,7 @@ public class InSessionReadResolverTest {
     }
 
     /** A literal written before tracking stays a literal, and says so. */
-    @Test
-    public void aValueOlderThanTheRecordingStaysALiteralAndSaysSo() {
+    private void aValueOlderThanTheRecordingStaysALiteralAndSaysSo() {
         JsonObject row = row(versions("INSTANCE_FIELD", 4, 32,
                 version(14, "INITIAL", constant(119980))));
         InSessionReadResolver resolver = InSessionReadResolver.of(
@@ -141,8 +159,7 @@ public class InSessionReadResolverTest {
     }
 
     /** A self-referential definition is refused, not followed. */
-    @Test
-    public void aCycleIsRefusedRatherThanFollowed() {
+    private void aCycleIsRefusedRatherThanFollowed() {
         JsonObject definition = new JsonObject();
         definition.addProperty("expressionAnchor", "EXPR.loop");
         definition.add("expression", reference("EXPR.loop"));
@@ -164,8 +181,7 @@ public class InSessionReadResolverTest {
     }
 
     /** A read of a version nothing published is refused, not guessed. */
-    @Test
-    public void aReadWithNoPublishedWriteIsRefused() {
+    private void aReadWithNoPublishedWriteIsRefused() {
         JsonElement resolved = InSessionReadResolver.of(
                 Collections.<JsonObject>emptyList()).resolve(
                 read("INSTANCE_FIELD", 9, 56, 46, bareCandidate(44)));
@@ -183,8 +199,7 @@ public class InSessionReadResolverTest {
      * the array any more, so a node carrying only it states no version and
      * is refused by name.</p>
      */
-    @Test
-    public void aReadCarryingOnlyTheOldCandidateArrayIsRefused() {
+    private void aReadCarryingOnlyTheOldCandidateArrayIsRefused() {
         JsonObject node = new JsonObject();
         node.addProperty("_type", "ReadFromExpression");
         node.addProperty("readEventId", 46);
@@ -217,8 +232,7 @@ public class InSessionReadResolverTest {
      * replay, no arms -- each owner is a symbolic object reference, and each
      * reference plus offset names a location this replay published.</p>
      */
-    @Test
-    public void aProjectionThroughObjectReferencesReachesTheRoot() {
+    private void aProjectionThroughObjectReferencesReachesTheRoot() {
         JsonObject minted = row(versions("INSTANCE_FIELD", 17, 32,
                 version(47, "INITIAL", constant(0)),
                 version(48, "WRITE", symbol(ROOT))));
@@ -241,8 +255,7 @@ public class InSessionReadResolverTest {
     }
 
     /** A field this replay wrote twice does not say which write was seen. */
-    @Test
-    public void aProjectionOfATwiceWrittenFieldIsRefused() {
+    private void aProjectionOfATwiceWrittenFieldIsRefused() {
         JsonObject row = row(versions("INSTANCE_FIELD", 9, 56,
                 version(39, "INITIAL", constant(0)),
                 version(41, "WRITE", constant(119982)),
@@ -267,8 +280,7 @@ public class InSessionReadResolverTest {
      * comparable -- the branch marker's own per-thread sequence is not, and
      * comparing the two would put every decision before every write.</p>
      */
-    @Test
-    public void aProjectionTakesTheWriteLiveAtItsOwnEvent() {
+    private void aProjectionTakesTheWriteLiveAtItsOwnEvent() {
         JsonObject row = row(versions("INSTANCE_FIELD", 9, 56,
                 version(39, "INITIAL", constant(0)),
                 version(41, "WRITE", constant(119981)),
@@ -285,8 +297,7 @@ public class InSessionReadResolverTest {
     }
 
     /** Every write is after the access, so what it read predates tracking. */
-    @Test
-    public void aProjectionBeforeEveryWriteReadsTheInitialVersion() {
+    private void aProjectionBeforeEveryWriteReadsTheInitialVersion() {
         JsonObject row = row(versions("INSTANCE_FIELD", 9, 56,
                 version(39, "INITIAL", constant(119980)),
                 version(41, "WRITE", constant(119981)),
@@ -304,8 +315,7 @@ public class InSessionReadResolverTest {
     }
 
     /** A node that states the version it observed needs no ordering at all. */
-    @Test
-    public void aProjectionStatingItsObservedVersionTakesIt() {
+    private void aProjectionStatingItsObservedVersionTakesIt() {
         JsonObject row = row(versions("INSTANCE_FIELD", 9, 56,
                 version(41, "WRITE", constant(119981)),
                 version(44, "WRITE", constant(119982)),
@@ -322,8 +332,7 @@ public class InSessionReadResolverTest {
     }
 
     /** Neither the node nor the decision says: unstated, never guessed. */
-    @Test
-    public void aProjectionWithNoVersionAndNoClockIsRefused() {
+    private void aProjectionWithNoVersionAndNoClockIsRefused() {
         JsonObject row = row(versions("INSTANCE_FIELD", 9, 56,
                 version(41, "WRITE", constant(119981)),
                 version(44, "WRITE", symbol(ROOT))));
@@ -339,8 +348,7 @@ public class InSessionReadResolverTest {
     }
 
     /** A projection over something that is not an object stays a projection. */
-    @Test
-    public void aProjectionOverANonReferenceIsLeftAlone() {
+    private void aProjectionOverANonReferenceIsLeftAlone() {
         assertEquals(-1L, InSessionReadResolver.referencedObject(
                 symbol("M_I_field_SRC.serialNo")));
         assertEquals(-1L, InSessionReadResolver.referencedObject(
@@ -400,8 +408,7 @@ public class InSessionReadResolverTest {
      * laneBN's every boundary is this kind, and 17960 has no wire at all --
      * so this is the ordinary by-value path, not a degenerate family.</p>
      */
-    @Test
-    public void aFieldReadBoundaryResolvesThroughTheWriteLog() {
+    private void aFieldReadBoundaryResolvesThroughTheWriteLog() {
         JsonObject row = row(versions("INSTANCE_FIELD", 24, 32,
                 version(81, "WRITE", symbol(ROOT))));
 
@@ -424,8 +431,7 @@ public class InSessionReadResolverTest {
      * a consumer flip need a producer replay.  A row that mints no variable
      * is refused, and the refusal names what is missing.</p>
      */
-    @Test
-    public void anRpcAttachBoundaryWithoutAMintIsRefusedNotInlined() {
+    private void anRpcAttachBoundaryWithoutAMintIsRefusedNotInlined() {
         JsonObject producer = row(versions("INSTANCE_FIELD", 24, 32,
                 version(81, "WRITE", symbol(ROOT))));
         JsonObject consumer = row(versions("INSTANCE_FIELD", 91, 32,
@@ -474,8 +480,7 @@ public class InSessionReadResolverTest {
      * <p>The alternatives it did not take are not published any more, and
      * nothing here needs them: the read has a value, not a choice.</p>
      */
-    @Test
-    public void aReadNamesTheVersionItObservedAndNothingElse() {
+    private void aReadNamesTheVersionItObservedAndNothingElse() {
         JsonObject row = row(versions("INSTANCE_FIELD", 9, 56,
                 version(39, "INITIAL", constant(119981)),
                 version(44, "WRITE", symbol(ROOT))));
@@ -492,8 +497,7 @@ public class InSessionReadResolverTest {
     }
 
     /** The observed version still says when nothing watched it produced. */
-    @Test
-    public void anObservedInitialVersionIsStillMarked() {
+    private void anObservedInitialVersionIsStillMarked() {
         JsonObject row = row(versions("INSTANCE_FIELD", 4, 32,
                 version(14, "INITIAL", constant(119980))));
         InSessionReadResolver resolver = InSessionReadResolver.of(

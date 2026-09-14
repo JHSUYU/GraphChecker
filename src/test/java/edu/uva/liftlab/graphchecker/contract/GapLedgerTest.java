@@ -19,7 +19,13 @@ import static org.junit.Assert.assertTrue;
 public class GapLedgerTest {
     /** A code nobody registered withholds the claim. */
     @Test
-    public void anUnregisteredCodeBlocks() {
+    public void gapLedgerRules() throws Exception {
+        anUnregisteredCodeBlocks();
+        everyNonBlockingCodeStatesItsReason();
+        aSliceConditionalCodeIsDecidedAgainstTheKeptSlice();
+    }
+
+    private void anUnregisteredCodeBlocks() {
         assertEquals(GapLedger.GapClass.BLOCKING,
                 GapLedger.classOf("A_CODE_NOBODY_REGISTERED"));
         assertTrue(GapLedger.blocking("A_CODE_NOBODY_REGISTERED"));
@@ -34,8 +40,7 @@ public class GapLedgerTest {
     }
 
     /** Every exception to the default states why it cannot break a chain. */
-    @Test
-    public void everyNonBlockingCodeStatesItsReason() {
+    private void everyNonBlockingCodeStatesItsReason() {
         for (GapLedger.Entry entry : GapLedger.entries()) {
             if (entry.gapClass == GapLedger.GapClass.BLOCKING
                     && entry.scope == GapLedger.Scope.ALWAYS) {
@@ -51,8 +56,7 @@ public class GapLedgerTest {
      * A region code is decided against the replay slice, not by a blanket
      * rule: blocking on a task the slice kept, diagnostic on one it pruned.
      */
-    @Test
-    public void aSliceConditionalCodeIsDecidedAgainstTheKeptSlice() {
+    private void aSliceConditionalCodeIsDecidedAgainstTheKeptSlice() {
         String code = null;
         for (GapLedger.Entry entry : GapLedger.entries()) {
             if (entry.scope == GapLedger.Scope.KEPT_SLICE) {

@@ -27,6 +27,17 @@ import java.util.Map;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
+import com.google.gson.JsonElement;
+import edu.uva.liftlab.graphchecker.contract.JavaContainerTypes;
+import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
+import java.nio.file.Paths;
+import java.util.IdentityHashMap;
+import static edu.uva.liftlab.graphchecker.concolic.JavaPrimitiveSmtSemantics.IntegralWidth;
+import static edu.uva.liftlab.graphchecker.concolic.VmTermLowering.Sort;
+import static edu.uva.liftlab.graphchecker.concolic.VmTermLowering.Term;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertSame;
 
 /**
  * The merge, on three recordings small enough to read.
@@ -77,7 +88,49 @@ public class PathMergeComposerTest {
      * satisfy the disjunction.
      */
     @Test
-    public void disjunctionIsSatisfiableOnlyOnTheFlippedPath()
+    public void pathMergeComposerRules() throws Exception {
+        disjunctionIsSatisfiableOnlyOnTheFlippedPath();
+        healthyPathAloneReachesTheTargetAndIsNotFatal();
+        literalPredicateOverDeclaredCarriersIsAPropagationCut();
+        aMintedRootOnNoPathRefusesTheComposition();
+        aTimerNowMintIsAClockReadWithTheCaseBound();
+        aRootOnOnePathConditionIsNotRefused();
+        aDecisionInAnotherRegionOfTheReplayIsInThisPathCondition();
+        aRootNoSourceStatesAValueForIsRefused();
+        oneReplayStatingTheValueIsEnoughAndIsNotAConflict();
+        anAnchorWithNoReachQueryIsRefusedNotFailed();
+        aConcreteFatalPredicateOnARootDependentPathIsAdmitted();
+        aHandoffValueIsJoinedByItsFamilyNotByInlining();
+        aDeliveryIsAvailableOnlyUnderTheValuationThatProducedIt();
+        aDeliveryUnderAFlippedConfiguredRootIsUnavailable();
+        aReadingPublishedAsAManualObservationStillVaries();
+        aClockReadIsCarriedAsThisExecutionsWindow();
+        aPathThatContradictsItsOwnReplayIsRefusedByName();
+        aHandoffVariableCarriesItsPhaseAndItsArmsTheirReplays();
+        aClockMintRowDeclaresItsRootPortAndCallee();
+        membershipComesFromTheWalkedBaseOrIsRefused();
+        aSymbolicPutKeyMakesTheKeyItEqualsPresent();
+        VmLoweringCoreTest t0 =
+                new VmLoweringCoreTest();
+        t0.vmLoweringCoreRules();
+        BoundedLoopCompositionTest t1 =
+                new BoundedLoopCompositionTest();
+        t1.boundedLoopCompositionRules();
+        MapStateContentAddressTest t2 =
+                new MapStateContentAddressTest();
+        t2.initialReadTraversesConditionalRemoval();
+        UntrackedElementWitnessTest t3 =
+                new UntrackedElementWitnessTest();
+        t3.anInsertedElementReachesTheHostWithItsMutation();
+        ClockRootPhysicsTest t4 =
+                new ClockRootPhysicsTest();
+        t4.clockRootPhysicsRules();
+        IndexedStateCarrierTest t5 =
+                new IndexedStateCarrierTest();
+        t5.indexedStateCarrierRules();
+    }
+
+    private void disjunctionIsSatisfiableOnlyOnTheFlippedPath()
             throws Exception {
         Assume.assumeTrue(z3Available());
         Path directory = Files.createTempDirectory("path-merge-flip");
@@ -111,8 +164,7 @@ public class PathMergeComposerTest {
      * reached and nothing is refused; the failure simply is not reachable
      * from what that one replay showed.
      */
-    @Test
-    public void healthyPathAloneReachesTheTargetAndIsNotFatal()
+    private void healthyPathAloneReachesTheTargetAndIsNotFatal()
             throws Exception {
         Assume.assumeTrue(z3Available());
         Path directory = Files.createTempDirectory("path-merge-healthy");
@@ -144,8 +196,7 @@ public class PathMergeComposerTest {
      * all depends on a root and whose predicate over declared carriers is
      * still a literal: there the propagation did drop a value.</p>
      */
-    @Test
-    public void literalPredicateOverDeclaredCarriersIsAPropagationCut()
+    private void literalPredicateOverDeclaredCarriersIsAPropagationCut()
             throws Exception {
         Path directory = Files.createTempDirectory("path-merge-cut");
         JsonObject query = query();
@@ -178,8 +229,7 @@ public class PathMergeComposerTest {
      * refused here rather than letting a SAT over no root travel to SOLVE and
      * come back as a statement about the finding.</p>
      */
-    @Test
-    public void aMintedRootOnNoPathRefusesTheComposition() throws Exception {
+    private void aMintedRootOnNoPathRefusesTheComposition() throws Exception {
         Path directory = Files.createTempDirectory("path-merge-no-root");
         JsonObject query = query();
         query.getAsJsonArray("paths").add(path("seed", "GROUP.SEED",
@@ -212,8 +262,7 @@ public class PathMergeComposerTest {
      * came back unsatisfiable at every valuation, with the clock probe
      * refusing to look at all ({@code NO_CLOCK_ROOT}).</p>
      */
-    @Test
-    public void aTimerNowMintIsAClockReadWithTheCaseBound() throws Exception {
+    private void aTimerNowMintIsAClockReadWithTheCaseBound() throws Exception {
         Path directory = Files.createTempDirectory("path-merge-clock");
         JsonObject query = query();
         query.getAsJsonArray("paths").add(path("seed", "GROUP.SEED",
@@ -300,8 +349,7 @@ public class PathMergeComposerTest {
     }
 
     /** A root the path condition mentions is on a path, and nothing refuses. */
-    @Test
-    public void aRootOnOnePathConditionIsNotRefused() throws Exception {
+    private void aRootOnOnePathConditionIsNotRefused() throws Exception {
         Path directory = Files.createTempDirectory("path-merge-root-on");
         JsonObject query = query();
         query.getAsJsonArray("paths").add(path("seed", "GROUP.SEED",
@@ -327,8 +375,7 @@ public class PathMergeComposerTest {
      * activations, one replay.  Reading only the anchor region's conditions
      * left the root out of every pi_p and the formula constrained nothing.
      */
-    @Test
-    public void aDecisionInAnotherRegionOfTheReplayIsInThisPathCondition()
+    private void aDecisionInAnotherRegionOfTheReplayIsInThisPathCondition()
             throws Exception {
         Path directory = Files.createTempDirectory("path-merge-cross");
         JsonObject query = query();
@@ -372,8 +419,7 @@ public class PathMergeComposerTest {
      * recorded one, and every statement about "the marker flipped" would be
      * measured against nothing.</p>
      */
-    @Test
-    public void aRootNoSourceStatesAValueForIsRefused() throws Exception {
+    private void aRootNoSourceStatesAValueForIsRefused() throws Exception {
         Path directory = Files.createTempDirectory("path-merge-unstated");
         JsonObject query = query();
         query.getAsJsonArray("paths").add(path("flip", "GROUP.FLIP",
@@ -400,8 +446,7 @@ public class PathMergeComposerTest {
      * empty here.  Publishing a boolean flag there instead made a run with
      * no conflict state "false" as a reading of its own.</p>
      */
-    @Test
-    public void oneReplayStatingTheValueIsEnoughAndIsNotAConflict()
+    private void oneReplayStatingTheValueIsEnoughAndIsNotAConflict()
             throws Exception {
         Path directory = Files.createTempDirectory("path-merge-stated");
         JsonObject query = query();
@@ -441,8 +486,7 @@ public class PathMergeComposerTest {
      * run to fail, and the sibling occurrence's own composition is
      * untouched by it.
      */
-    @Test
-    public void anAnchorWithNoReachQueryIsRefusedNotFailed()
+    private void anAnchorWithNoReachQueryIsRefusedNotFailed()
             throws Exception {
         Path directory = Files.createTempDirectory("path-merge-no-query");
         Path summaries = directory.resolve("summaries.jsonl");
@@ -490,8 +534,7 @@ public class PathMergeComposerTest {
      * made of, and the disjunction must be satisfiable exactly where the
      * root is flipped.</p>
      */
-    @Test
-    public void aConcreteFatalPredicateOnARootDependentPathIsAdmitted()
+    private void aConcreteFatalPredicateOnARootDependentPathIsAdmitted()
             throws Exception {
         Assume.assumeTrue(z3Available());
         Path directory = Files.createTempDirectory("path-merge-concrete-phi");
@@ -562,8 +605,7 @@ public class PathMergeComposerTest {
      * the producer that delivers the fatal value is the one whose prefix
      * needs the flip.</p>
      */
-    @Test
-    public void aHandoffValueIsJoinedByItsFamilyNotByInlining()
+    private void aHandoffValueIsJoinedByItsFamilyNotByInlining()
             throws Exception {
         Assume.assumeTrue(z3Available());
         Path directory = Files.createTempDirectory("path-merge-handoff");
@@ -693,8 +735,7 @@ public class PathMergeComposerTest {
      * delivery.  With each arm carrying the valuation its replay ran under,
      * the recorded polarity has only its own delivery available.</p>
      */
-    @Test
-    public void aDeliveryIsAvailableOnlyUnderTheValuationThatProducedIt()
+    private void aDeliveryIsAvailableOnlyUnderTheValuationThatProducedIt()
             throws Exception {
         Assume.assumeTrue(z3Available());
         Path directory = Files.createTempDirectory("path-merge-guard");
@@ -757,8 +798,7 @@ public class PathMergeComposerTest {
      * that conjunct the fatal delivery is available at the recorded
      * valuation and the composition claims a failure no execution made.</p>
      */
-    @Test
-    public void aDeliveryUnderAFlippedConfiguredRootIsUnavailable()
+    private void aDeliveryUnderAFlippedConfiguredRootIsUnavailable()
             throws Exception {
         Assume.assumeTrue(z3Available());
         Path directory = Files.createTempDirectory("path-merge-serial");
@@ -794,8 +834,7 @@ public class PathMergeComposerTest {
      * guard -- whose whole filter is that judgement -- then constrained
      * nothing.</p>
      */
-    @Test
-    public void aReadingPublishedAsAManualObservationStillVaries()
+    private void aReadingPublishedAsAManualObservationStillVaries()
             throws Exception {
         Assume.assumeTrue(z3Available());
         Path directory = Files.createTempDirectory("path-merge-manual");
@@ -849,8 +888,7 @@ public class PathMergeComposerTest {
      * Keyed on the mint row's own declaration -- the callee the hook named
      * -- and on nothing about the site.</p>
      */
-    @Test
-    public void aClockReadIsCarriedAsThisExecutionsWindow() {
+    private void aClockReadIsCarriedAsThisExecutionsWindow() {
         JsonObject summary = ranWithSerial("GROUP.FLIP", "119981");
         Map<String, JsonObject> declared = new LinkedHashMap<>();
         declared.put(RAW_SERIAL, SymbolicSourceEvidence.eventsOf(summary)
@@ -899,8 +937,7 @@ public class PathMergeComposerTest {
      * contributes is about the mis-statement; it is refused by name with the
      * conjunct that closes it.</p>
      */
-    @Test
-    public void aPathThatContradictsItsOwnReplayIsRefusedByName()
+    private void aPathThatContradictsItsOwnReplayIsRefusedByName()
             throws Exception {
         Assume.assumeTrue(z3Available());
         Path directory = Files.createTempDirectory("path-merge-self");
@@ -948,8 +985,7 @@ public class PathMergeComposerTest {
      * delivered it and the valuation that replay ran under, which is the
      * mechanism behind taking that arm.</p>
      */
-    @Test
-    public void aHandoffVariableCarriesItsPhaseAndItsArmsTheirReplays()
+    private void aHandoffVariableCarriesItsPhaseAndItsArmsTheirReplays()
             throws Exception {
         Path directory = Files.createTempDirectory("path-merge-arms");
         JsonObject query = query();
@@ -1018,8 +1054,7 @@ public class PathMergeComposerTest {
      * clock root came out {@code wallClock false} and no composition listed
      * a clock read at all.</p>
      */
-    @Test
-    public void aClockMintRowDeclaresItsRootPortAndCallee() throws Exception {
+    private void aClockMintRowDeclaresItsRootPortAndCallee() throws Exception {
         Assume.assumeTrue(z3Available());
         Path directory = Files.createTempDirectory("path-merge-decl");
         JsonObject query = query();
@@ -1100,8 +1135,7 @@ public class PathMergeComposerTest {
      * membership: lowering that as a free "does this opaque state hold the
      * key" let a witness decide it, so it is refused instead.</p>
      */
-    @Test
-    public void membershipComesFromTheWalkedBaseOrIsRefused()
+    private void membershipComesFromTheWalkedBaseOrIsRefused()
             throws Exception {
         Path directory = Files.createTempDirectory("path-merge-base");
         JsonObject walked = query();
@@ -1137,8 +1171,7 @@ public class PathMergeComposerTest {
      * is 119982, holds it, and every execution that read it there became
      * unstatable.</p>
      */
-    @Test
-    public void aSymbolicPutKeyMakesTheKeyItEqualsPresent()
+    private void aSymbolicPutKeyMakesTheKeyItEqualsPresent()
             throws Exception {
         Assume.assumeTrue(z3Available());
         Path directory = Files.createTempDirectory("path-merge-symkey");
@@ -1525,4 +1558,846 @@ public class PathMergeComposerTest {
             return false;
         }
     }
+
+    /**
+     * The composer and the path-flip solver lower one recorded VM expression
+     * through one implementation.  These cover the arms where they used to
+     * disagree, stated on the solver because that is the side whose refusals
+     * the unification removed.
+     */
+    static final class VmLoweringCoreTest {
+
+        /** Both lowerings are the shared core, not two copies of it. */
+        public void vmLoweringCoreRules() throws Exception {
+            bothLowerersAreTheSharedCore();
+            flipSolverModelsIntegralDivision();
+            flipSolverStatesTheDivisorIsNonZero();
+            flipSolverDecidesStringIdentityAgainstALiteral();
+        }
+
+        private void bothLowerersAreTheSharedCore() throws Exception {
+            assertSame(VmLoweringCore.class,
+                    PathMergeLowering.class.getSuperclass());
+            assertSame(VmLoweringCore.class, Class.forName(
+                    "edu.uva.liftlab.graphchecker.concolic"
+                            + ".ConcolicConstraintSolver$Encoder")
+                    .getSuperclass());
+        }
+
+        /**
+         * Java integral division is exact in SMT (truncating toward zero, then
+         * wrapped), so the flip solver models it instead of refusing it.
+         */
+        private void flipSolverModelsIntegralDivision() throws Exception {
+            JsonObject quotient = binary(symbol(INPUT, "J"), "/",
+                    constant("J", "2"));
+            ConcolicConstraintSolver.Result result = lower(
+                    binary(quotient, ">", constant("J", "3")));
+
+            assertNoRefusal(result);
+            assertTrue(result.smtLib, result.smtLib.contains("java_idiv_a"));
+        }
+
+        /**
+         * A zero divisor throws rather than producing a value, so the query
+         * states the divisor non-zero instead of leaving it to the solver.
+         */
+        private void flipSolverStatesTheDivisorIsNonZero() throws Exception {
+            JsonObject quotient = binary(constant("J", "3"), "/",
+                    symbol(INPUT, "J"));
+            ConcolicConstraintSolver.Result result = lower(
+                    binary(quotient, ">", constant("J", "0")));
+
+            assertNoRefusal(result);
+            assertTrue(result.smtLib, result.smtLib.contains(
+                    "(assert (not (= " + solverSymbol(result) + " 0)))"));
+        }
+
+        /**
+         * A String literal is interned, so {@code lit == x} holds exactly when
+         * x is that interned object; over a recorded expression that is content
+         * equality.  The flip solver now uses the composer's model of it.
+         */
+        private void flipSolverDecidesStringIdentityAgainstALiteral()
+                throws Exception {
+            ConcolicConstraintSolver.Result result = lower(binary(
+                    symbol(INPUT, "Ljava/lang/String;"), "==",
+                    stringLiteral("supergroup")));
+
+            assertNoRefusal(result);
+            assertTrue(result.smtLib, result.smtLib.contains("\"supergroup\""));
+        }
+
+        // ------------------------------------------------------------------
+
+        private static final String INPUT =
+                "M_J_field_REGION.lowering.in.value.occ.deadbeef_java/lang/Long";
+        private static final String OTHER_INPUT =
+                "M_J_field_REGION.lowering.in.other.occ.deadbeef_java/lang/Long";
+
+        /** Lowers one predicate through the flip solver's encoder. */
+        private static ConcolicConstraintSolver.Result lower(JsonObject predicate)
+                throws Exception {
+            JsonObject event = new JsonObject();
+            event.addProperty("eventId", 1L);
+            event.addProperty("contextId", 1L);
+            BranchWitness source = BranchWitness.vmPcImmutable("TEST#u1",
+                    "<test.Lowering: void run()>", 1, 1, false,
+                    BranchPredicateAlgebra.complement(predicate), 0, event);
+
+            JsonObject query = new JsonObject();
+            query.addProperty("schemaVersion", 3);
+            query.addProperty("kind", "REGION_PATH_FLIP");
+            query.addProperty("queryKey", CanonicalJson.sha256("lowering-query"));
+            query.addProperty("regionId", "REGION.lowering");
+            query.addProperty("sourceActivationOccurrenceId",
+                    "test/node#epoch0/region/REGION.lowering#1#a1");
+            query.add("replayContract",
+                    BranchReplayContract.atSource(source).toJson());
+            JsonObject context = new JsonObject();
+            context.addProperty("schemaVersion", SolverPathContext.SCHEMA_VERSION);
+            context.addProperty("kind", SolverPathContext.KIND);
+            context.addProperty("authority", SolverPathContext.AUTHORITY);
+            context.add("constraints", new JsonArray());
+            query.add("solverPathContext", context);
+            query.add("consumerAnchorCaseDependencies", new JsonArray());
+
+            JsonObject activation = new JsonObject();
+            activation.add("inputActions", new JsonArray());
+            return ConcolicConstraintSolver.solve(query,
+                    Collections.singletonList(activation), activation,
+                    Paths.get("z3"), 10_000L);
+        }
+
+        /** The SMT name the one declared input symbol was given. */
+        private static String solverSymbol(
+                ConcolicConstraintSolver.Result result) {
+            for (String line : result.smtLib.split("\\R")) {
+                if (line.startsWith("(declare-const sym__")) {
+                    return line.substring("(declare-const ".length(),
+                            line.indexOf(' ', "(declare-const ".length()));
+                }
+            }
+            throw new AssertionError("no input symbol declared:\n"
+                    + result.smtLib);
+        }
+
+        private static void assertNoRefusal(
+                ConcolicConstraintSolver.Result result) {
+            assertEquals(result.record.toString(), 0,
+                    result.record.getAsJsonArray("unsupported").size());
+        }
+
+        private static void assertRefused(ConcolicConstraintSolver.Result result,
+                                          String reason) {
+            String recorded = result.record.getAsJsonArray("unsupported")
+                    .toString();
+            assertTrue(recorded, recorded.contains(reason));
+        }
+
+        private static JsonObject symbol(String raw, String javaType) {
+            JsonObject result = new JsonObject();
+            result.addProperty("_type", "SymbolExpression");
+            result.addProperty("_java_type", javaType);
+            result.addProperty("_exp", raw);
+            return result;
+        }
+
+        private static JsonObject constant(String javaType, String value) {
+            JsonObject result = new JsonObject();
+            result.addProperty("_type", "ConstExpr");
+            result.addProperty("_java_type", javaType);
+            result.addProperty("_exp", "Y_" + javaType + "_" + value);
+            return result;
+        }
+
+        private static JsonObject stringLiteral(String value) {
+            JsonObject result = new JsonObject();
+            result.addProperty("_type", "ConStringSymbolExp");
+            result.addProperty("_java_type", "Ljava/lang/String;");
+            result.addProperty("_exp", "Y_S_" + value);
+            return result;
+        }
+
+        private static JsonObject binary(JsonObject left, String operator,
+                                         JsonObject right) {
+            JsonObject result = new JsonObject();
+            result.addProperty("_type", "BinaryExpression");
+            result.add("_left", left);
+            result.addProperty("_op", operator);
+            result.add("_right", right);
+            return result;
+        }
+    }
+
+
+    /** The bounded-loop model's addressing and its fail-closed guard. */
+    static final class BoundedLoopCompositionTest {
+
+        private static final String PLANNED =
+                "app/nn0#epoch0/region/REGION.a#1";
+        private static final String SITE = "<C: void m()>#u7";
+
+        /**
+         * With no declaration in scope the model used to publish an empty
+         * bounded-loop set and no gaps, so a replay that traversed the loop eight
+         * times read exactly like one that never entered it.  It now refuses.
+         */
+        public void boundedLoopCompositionRules() throws Exception {
+            aTraversedLoopWithNoDeclarationIsAGap();
+            anUnenteredLoopIsNotAGap();
+        }
+
+        private void aTraversedLoopWithNoDeclarationIsAGap() {
+            BoundedLoopComposition model = BoundedLoopComposition.ofPlanRows(
+                    Collections.emptyList(), Collections.emptyList());
+            model.observeCase(PLANNED + "#a1", observedCase(5));
+
+            assertEquals(0, model.manifest().getAsJsonArray("boundedLoops")
+                    .size());
+            assertEquals(1, model.compositionGaps().size());
+            JsonObject gap = model.compositionGaps().get(0);
+            // The composition copy is stamped with its own reason as kind,
+            // because the acceptance gate names a refusal by that member and one
+            // shared GAP_KIND made every distinct finding read as one row.
+            assertEquals(BoundedLoopComposition.LOOP_OBSERVED_UNDECLARED,
+                    gap.get("kind").getAsString());
+            assertEquals(BoundedLoopComposition.LOOP_OBSERVED_UNDECLARED,
+                    gap.get("reason").getAsString());
+            assertEquals(BoundedLoopComposition.GAP_KIND,
+                    model.manifest().getAsJsonArray("gaps").get(0)
+                            .getAsJsonObject().get("kind").getAsString());
+            assertTrue(gap.get("subject").getAsString().startsWith(PLANNED));
+        }
+
+        /** A loop the case never entered needs no declaration to be sound. */
+        private void anUnenteredLoopIsNotAGap() {
+            BoundedLoopComposition model = BoundedLoopComposition.ofPlanRows(
+                    Collections.emptyList(), Collections.emptyList());
+            model.observeCase(PLANNED + "#a1", observedCase(0));
+            assertTrue(model.compositionGaps().isEmpty());
+        }
+
+        private static JsonObject planRow() {
+            JsonObject retained = new JsonObject();
+            retained.addProperty(LoopBoundPolicy.LOOP_SITE_ID, SITE);
+            retained.addProperty(LoopBoundPolicy.RUNTIME_LOOP_ID, "RL.1");
+            retained.addProperty(LoopBoundPolicy.LOOP_CLASSIFICATION,
+                    LoopBoundPolicy.LOOP_CONDITION_BOUNDED);
+            retained.addProperty(LoopBoundPolicy.LOOP_CLASSIFICATION_AUTHORITY,
+                    LoopBoundPolicy.LOOP_CLASSIFIED_CONDITION_CONTROLLED);
+            JsonArray retainedLoops = new JsonArray();
+            retainedLoops.add(retained);
+
+            JsonObject plan = new JsonObject();
+            plan.addProperty("occurrenceId", PLANNED);
+            plan.add(BoundedLoopComposition.PLAN_FIELD, retainedLoops);
+            return plan;
+        }
+
+        private static JsonObject boundAuthority(String occurrenceId) {
+            JsonObject authority = new JsonObject();
+            authority.addProperty("occurrenceId", occurrenceId);
+            authority.add(LoopBoundPolicy.FIELD,
+                    LoopBoundPolicy.cfgBackedges(8,
+                            Collections.singletonMap(SITE, 8)).toJson());
+            return authority;
+        }
+
+        private static JsonObject observedCase(int bodyCount) {
+            JsonObject count = new JsonObject();
+            count.addProperty(LoopBoundPolicy.LOOP_SITE_ID, SITE);
+            count.addProperty(LoopBoundPolicy.LOOP_BODY_COUNT, bodyCount);
+            count.addProperty(LoopBoundPolicy.PATH_LOOP_REACHED, bodyCount > 0);
+            count.addProperty(LoopBoundPolicy.LOOP_CLASSIFICATION,
+                    LoopBoundPolicy.LOOP_CONDITION_BOUNDED);
+            count.addProperty(LoopBoundPolicy.LOOP_CLASSIFICATION_AUTHORITY,
+                    LoopBoundPolicy.LOOP_CLASSIFIED_CONDITION_CONTROLLED);
+            JsonArray counts = new JsonArray();
+            counts.add(count);
+
+            JsonObject item = new JsonObject();
+            item.addProperty("caseId", "LOCAL_CASE.test");
+            item.add(LoopBoundPolicy.PATH_LOOP_COUNTS, counts);
+            return item;
+        }
+    }
+
+
+    /** Content-addressed container identity and materialization. */
+    static final class MapStateContentAddressTest {
+
+        public void initialReadTraversesConditionalRemoval() {
+            String stateSymbol = "MAP_STATE.v1."
+                    + "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                    + "bbbbbbbbbbbbbbbb";
+            JsonObject identity = new JsonObject();
+            identity.addProperty("_type", "SymbolExpression");
+            identity.addProperty("_java_type", "java/util/Map");
+            identity.addProperty("_exp", stateSymbol);
+            JsonObject state = relation("ASSOCIATIVE", "STATE", identity);
+            JsonObject removal = relation("ASSOCIATIVE", "REMOVE_IF", state);
+            JsonObject read = relation("ASSOCIATIVE", "READ", removal);
+            JsonArray arguments = new JsonArray();
+            arguments.add(integer(7));
+            read.add("arguments", arguments);
+
+            InitialContainerObservation.Read observation =
+                    InitialContainerObservation.initialRead(read);
+            assertNotNull(observation);
+            assertEquals(stateSymbol, observation.inputPort);
+        }
+
+        private static JsonObject relation(String shape, String operation,
+                                           JsonObject receiver) {
+            JsonObject result = new JsonObject();
+            result.addProperty("_type", "ContainerRelation");
+            result.addProperty("_java_type", "L");
+            result.addProperty("shape", shape);
+            result.addProperty("operation", operation);
+            result.add("receiver", receiver);
+            result.add("arguments", new JsonArray());
+            return result;
+        }
+
+        private static JsonObject integer(int value) {
+            JsonObject result = new JsonObject();
+            result.addProperty("_type", "ConstExpr");
+            result.addProperty("_java_type", "I");
+            result.addProperty("_exp", "Y_I_" + value);
+            return result;
+        }
+    }
+
+
+    /**
+     * A reference the VM stored into a container without naming it.
+     *
+     * <p>{@code P_L'<class>'_} is the placeholder for an operand oop no shadow
+     * names.  It is not a root and it is not one object -- two distinct objects
+     * render the same text -- so the codec hands the element to the host together
+     * with the mutation that stored it, and the host may name it per mutation.</p>
+     */
+    static final class UntrackedElementWitnessTest {
+
+        private static final String SNAPSHOT =
+                "P_L'org/apache/hadoop/hdfs/server/namenode/snapshot/Snapshot'_";
+
+        public void anInsertedElementReachesTheHostWithItsMutation() {
+            JsonObject state = relation("INDEXED", "STATE",
+                    symbol("MAP_STATE.v1." + digest('a')));
+            JsonObject element = symbol(SNAPSHOT);
+            JsonObject inserted = withArguments(
+                    relation("INDEXED", "INSERT", state), integer(0), element);
+
+            ElementHost host = new ElementHost();
+            ContainerSmtCodec.Term term = ContainerSmtCodec.term(inserted, host);
+
+            assertNotNull(String.join(",", host.unsupported), term);
+            assertEquals(1, host.mutations.size());
+            assertSame("the mutation handed over is the INSERT node itself",
+                    inserted, host.mutations.get(0));
+            assertSame(element, host.elements.get(0));
+            assertTrue(term.text, term.text.contains("(indexed_insert "));
+            assertTrue(term.text, term.text.contains("element__0"));
+        }
+
+        // --- fixture -----------------------------------------------------------
+
+        private static String digest(char fill) {
+            StringBuilder text = new StringBuilder();
+            for (int index = 0; index < 64; index++) text.append(fill);
+            return text.toString();
+        }
+
+        private static JsonObject relation(String shape, String operation,
+                                           JsonObject receiver) {
+            JsonObject relation = new JsonObject();
+            relation.addProperty("_type", "ContainerRelation");
+            relation.addProperty("shape", shape);
+            relation.addProperty("operation", operation);
+            relation.addProperty("_java_type", "L");
+            if (receiver != null) relation.add("receiver", receiver);
+            return relation;
+        }
+
+        private static JsonObject withArguments(JsonObject relation,
+                                                JsonObject... arguments) {
+            JsonArray rows = new JsonArray();
+            for (JsonObject argument : arguments) rows.add(argument);
+            relation.add("arguments", rows);
+            return relation;
+        }
+
+        private static JsonObject symbol(String raw) {
+            JsonObject symbol = new JsonObject();
+            symbol.addProperty("_type", "SymbolExpression");
+            symbol.addProperty("_exp", raw);
+            symbol.addProperty("_java_type", raw.startsWith("P_L'")
+                    ? raw.substring(4, raw.indexOf('\'', 4)) : "L");
+            return symbol;
+        }
+
+        private static JsonObject integer(int value) {
+            JsonObject symbol = new JsonObject();
+            symbol.addProperty("_type", "SymbolExpression");
+            symbol.addProperty("_exp", "Y_I_" + value);
+            symbol.addProperty("_java_type", "I");
+            return symbol;
+        }
+
+        /** Names each unnamed element after the mutation that stored it. */
+        private static final class ElementHost implements ContainerSmtCodec.Host {
+            final List<String> unsupported = new ArrayList<>();
+            final List<JsonObject> mutations = new ArrayList<>();
+            final List<JsonElement> elements = new ArrayList<>();
+            final IdentityHashMap<JsonObject, String> names =
+                    new IdentityHashMap<>();
+            boolean nameElements = true;
+
+            @Override
+            public ContainerSmtCodec.Term state(JsonElement identity,
+                                                ContainerSmtCodec.Sort shape) {
+                return new ContainerSmtCodec.Term("container__state", shape);
+            }
+
+            @Override
+            public ContainerSmtCodec.Term operand(
+                    JsonElement expression, ContainerSmtCodec.Sort expected) {
+                if (ContainerSmtCodec.handles(expression)) {
+                    return ContainerSmtCodec.term(
+                            expression.getAsJsonObject(), this);
+                }
+                if (expected == ContainerSmtCodec.Sort.INT) {
+                    String raw = expression.getAsJsonObject().get("_exp")
+                            .getAsString();
+                    return new ContainerSmtCodec.Term(raw.substring(4),
+                            ContainerSmtCodec.Sort.INT);
+                }
+                return new ContainerSmtCodec.Term("container__state", expected);
+            }
+
+            @Override
+            public ContainerSmtCodec.Term box(JsonElement expression) {
+                if (ContainerSmtCodec.handles(expression)) {
+                    ContainerSmtCodec.Term inner = ContainerSmtCodec.term(
+                            expression.getAsJsonObject(), this);
+                    if (inner != null) return inner;
+                }
+                String raw = expression.getAsJsonObject().get("_exp")
+                        .getAsString();
+                return new ContainerSmtCodec.Term("(VRef " + raw + ")",
+                        ContainerSmtCodec.Sort.VALUE);
+            }
+
+            @Override
+            public ContainerSmtCodec.Term element(JsonElement expression,
+                                                  JsonObject mutation) {
+                String raw = expression.getAsJsonObject().get("_exp")
+                        .getAsString();
+                if (!nameElements
+                        || !VmExpressionIr.isUntrackedReferencePlaceholder(raw)) {
+                    return box(expression);
+                }
+                mutations.add(mutation);
+                elements.add(expression);
+                String name = names.get(mutation);
+                if (name == null) {
+                    name = "element__" + names.size();
+                    names.put(mutation, name);
+                }
+                return new ContainerSmtCodec.Term("(VRef " + name + ")",
+                        ContainerSmtCodec.Sort.VALUE);
+            }
+
+            @Override
+            public ContainerSmtCodec.Term unbox(ContainerSmtCodec.Term value,
+                                                String javaType) {
+                return value;
+            }
+
+            @Override
+            public void require(String predicate) {
+            }
+
+            @Override
+            public ContainerSmtCodec.Term field(ContainerSmtCodec.Term owner,
+                                                String ownerClass,
+                                                int fieldOffset,
+                                                String javaType) {
+                unsupported.add("field:" + ownerClass);
+                return null;
+            }
+
+            @Override
+            public void unsupported(String reason) {
+                unsupported.add(reason);
+            }
+        }
+    }
+
+
+    /** What the recording says a wall clock can have returned. */
+    static final class ClockRootPhysicsTest {
+
+        /**
+         * The window brackets the recorded value rather than pinning it, and it
+         * survives a recorded value below the skew without underflowing.
+         */
+        public void clockRootPhysicsRules() throws Exception {
+            windowBracketsTheRecordedValue();
+            onlyDeclaredClockCalleesAreClocks();
+        }
+
+        private void windowBracketsTheRecordedValue() {
+            assertEquals("(and (>= now 1699999700000) (<= now 1700000300000))",
+                    ClockRootPhysics.window("now", 1700000000000L, 300000L));
+            assertEquals("(and (>= now (- 299900)) (<= now 300100))",
+                    ClockRootPhysics.window("now", 100L, 300000L));
+            // A zero skew is a legitimate configuration: pin to the recording.
+            assertEquals("(and (>= now 42) (<= now 42))",
+                    ClockRootPhysics.window("now", 42L, 0L));
+        }
+
+        private void onlyDeclaredClockCalleesAreClocks() {
+            assertTrue(ClockRootPhysics.clockCallee(
+                    "<org.apache.hadoop.util.Timer: long now()>"));
+            assertTrue(ClockRootPhysics.clockCallee(
+                    "<java.lang.System: long currentTimeMillis()>"));
+            assertTrue(!ClockRootPhysics.clockCallee(
+                    "<org.apache.hadoop.hdfs.security.token.block.BlockKey:"
+                            + " int getKeyId()>"));
+            assertTrue(!ClockRootPhysics.clockCallee(null));
+        }
+
+        private static JsonObject planRow(List<JsonObject> symbolize) {
+            JsonArray rows = new JsonArray();
+            for (JsonObject row : symbolize) rows.add(row);
+            JsonObject goal = new JsonObject();
+            goal.add("symbolize", rows);
+            JsonArray goals = new JsonArray();
+            goals.add(goal);
+            JsonObject plan = new JsonObject();
+            plan.add("closureGoals", goals);
+            return plan;
+        }
+
+        private static JsonObject symbolize(String node, String port,
+                                            long eventSeq, String recorded) {
+            JsonObject row = new JsonObject();
+            row.addProperty("declaredCallee",
+                    "<org.apache.hadoop.util.Timer: long now()>");
+            row.addProperty("sourceKey", node);
+            row.addProperty("portId", port);
+            row.addProperty("siteId", "<C: void m()>#u1");
+            row.addProperty("occurrenceId", node + "/region/R#1");
+            row.addProperty("eventSeq", eventSeq);
+            row.addProperty("primitiveValue", recorded);
+            return row;
+        }
+
+        private static JsonObject other(String node, String port, long eventSeq) {
+            JsonObject row = symbolize(node, port, eventSeq, "7");
+            row.addProperty("declaredCallee", "<C: int getKeyId()>");
+            return row;
+        }
+    }
+
+
+    /**
+     * An indexed container carried whole: the classifier that selects it, the
+     * version kinds it publishes, the replay chain that admits its reads, and the
+     * SMT the composer lowers those reads to.
+     */
+    static final class IndexedStateCarrierTest {
+
+        // ------------------------------------------------------- replay admission
+
+        public void indexedStateCarrierRules() throws Exception {
+            anUnmodeledIndexedOperationIsNotAdmitted();
+            anIndexedCarrierChainLowersToClosedFormSize();
+            anIntElementReadLowersToIntegerArithmetic();
+            aThreeElementChainReadsByPositionWithoutItsArrays();
+        }
+
+        private void anUnmodeledIndexedOperationIsNotAdmitted() {
+            String port = "MAP_STATE.v1." + digest('e');
+            JsonObject state = relation("INDEXED", "STATE", symbol(port));
+            JsonObject spliced = relation("INDEXED", "SPLICE", state);
+            JsonObject read = withArguments(
+                    relation("INDEXED", "READ", spliced), integer(0));
+            assertNull(InitialContainerObservation.initialRead(read));
+        }
+
+        // ------------------------------------------------------- composer lowering
+
+        private void anIndexedCarrierChainLowersToClosedFormSize() {
+            // The size of an indexed state is closed-form linear in the chain,
+            // which is what lets an unrolled HAS_NEXT bound pin a traversal count
+            // with no projection walk.
+            JsonObject state = relation("INDEXED", "STATE",
+                    symbol("MAP_STATE.v1." + digest('a')));
+            JsonObject appended = withArguments(
+                    relation("INDEXED", "APPEND", state), symbol("A_L_1"));
+            JsonObject removed = withArguments(
+                    relation("INDEXED", "REMOVE", appended), integer(0));
+            JsonObject hasNext = withArguments(
+                    relation("INDEXED", "HAS_NEXT", removed), integer(1));
+
+            RecordingHost host = new RecordingHost();
+            ContainerSmtCodec.Term term = ContainerSmtCodec.term(hasNext, host);
+            assertNotNull(String.join(",", host.unsupported), term);
+            assertTrue(host.unsupported.isEmpty());
+            assertEquals(ContainerSmtCodec.Sort.BOOL, term.sort);
+            // Size is linear in the chain, so the guard is arithmetic over the
+            // one state at the bottom of it: append adds one, remove takes one
+            // away.  No state in between is built, which is what keeps an
+            // unrolled traversal from carrying a lambda-built element array per
+            // iteration.
+            assertTrue(term.text, term.text.contains(
+                    "(- (+ (indexed_size "));
+            assertFalse("no element array is built for a traversal guard",
+                    term.text.contains("indexed_append")
+                            || term.text.contains("indexed_remove"));
+        }
+
+        // ------------------------------------------------- boxed cell arithmetic
+
+        private void anIntElementReadLowersToIntegerArithmetic() {
+            // The binarySearch midpoint shape: an int-element indexed read whose
+            // value takes part in (low + high) >>> 1.  The read must reach the
+            // formula as an Int, not as a tagged Value.
+            JsonObject state = relation("INDEXED", "STATE",
+                    symbol("MAP_STATE.v1." + digest('f')));
+            JsonObject read = withArguments(
+                    relation("INDEXED", "READ", state), integer(3));
+            read.addProperty("_java_type", "I");
+
+            RecordingHost host = new RecordingHost();
+            ContainerSmtCodec.Term term = ContainerSmtCodec.term(read, host);
+            assertNotNull(String.join(",", host.unsupported), term);
+            assertTrue(host.unsupported.isEmpty());
+            assertEquals(ContainerSmtCodec.Sort.INT, term.sort);
+            assertTrue(term.text, term.text.contains("valueInt"));
+            assertTrue(term.text, term.text.contains("indexed_read"));
+            // The cell's own tag and its position are both required.
+            String required = host.required.toString();
+            assertTrue(required, required.contains("(_ is VInt)"));
+            assertTrue(required, required.contains("indexed_size"));
+        }
+
+        private void aThreeElementChainReadsByPositionWithoutItsArrays() {
+            // append e0,e1,e2 then remove index 0: position 1 answers e2, and no
+            // element array is built to say so.
+            JsonObject chain = relation("INDEXED", "SNAPSHOT_BASE",
+                    relation("INDEXED", "STATE",
+                            symbol("MAP_STATE.v1." + digest('a'))));
+            for (int index = 0; index < 3; index++) {
+                chain = withArguments(relation("INDEXED", "APPEND", chain),
+                        symbol("e" + index));
+            }
+            chain = withArguments(relation("INDEXED", "REMOVE", chain),
+                    integer(0));
+            JsonObject read = withArguments(
+                    relation("INDEXED", "READ", chain), integer(1));
+            read.addProperty("_java_type", "L");
+
+            RecordingHost host = new RecordingHost();
+            ContainerSmtCodec.Term term = ContainerSmtCodec.term(read, host);
+            assertNotNull(String.join(",", host.unsupported), term);
+            assertTrue(host.unsupported.isEmpty());
+            assertTrue(term.text, term.text.contains("(VRef e2)"));
+            assertFalse("no element array is built to read one position",
+                    term.text.contains("indexed_append")
+                            || term.text.contains("indexed_remove")
+                            || term.text.contains("store")
+                            || term.text.contains("lambda")
+                            || term.text.contains("mkIndexedState"));
+            // Membership is stated from the chain's closed-form size.
+            assertTrue(host.required.toString(),
+                    host.required.toString().contains("(- (+ (+ (+ 0 1) 1) 1) 1)"));
+        }
+
+        // --------------------------------------------------------------- helpers
+
+        private static JsonObject guardedRead(String javaType,
+                                              JsonObject... arms) {
+            JsonObject read = new JsonObject();
+            read.addProperty("_type", SharedStateEvidence.GUARDED_READ_TYPE);
+            read.addProperty("_java_type", javaType);
+            JsonArray candidates = new JsonArray();
+            int ordinal = 0;
+            for (JsonObject arm : arms) {
+                JsonObject candidate = new JsonObject();
+                // Real evidence always carries the arm's selector; a projection
+                // refuses an arm without one rather than guess its guard.
+                candidate.addProperty("selector", "arm_" + ordinal++);
+                candidate.add("expression", arm);
+                candidates.add(candidate);
+            }
+            read.add("candidates", candidates);
+            return read;
+        }
+
+        private static String digest(char fill) {
+            StringBuilder text = new StringBuilder();
+            for (int index = 0; index < 64; index++) text.append(fill);
+            return text.toString();
+        }
+
+        private static JsonObject indexedEnvelope(String... versionKinds) {
+            JsonObject location = new JsonObject();
+            location.addProperty("locationKind",
+                    SharedStateEvidence.LOCATION_KIND_MAP_STATE);
+            location.addProperty("ownerSymRid", 41L);
+            location.addProperty("slot", SharedStateEvidence.MAP_STATE_SLOT);
+
+            JsonArray versions = new JsonArray();
+            long id = 0L;
+            for (String versionKind : versionKinds) {
+                JsonObject version = new JsonObject();
+                version.addProperty("fieldVersionId", ++id);
+                version.addProperty("versionKind", versionKind);
+                version.addProperty("regionEnterEventId", 286L);
+                version.addProperty("regionId", "REGION.f0132fca");
+                version.addProperty("taskId", "TASK.SEED.1");
+                version.add("pathGuard", null);
+                version.add("expression", relation("INDEXED", "STATE", null));
+                versions.add(version);
+            }
+
+            JsonObject envelope = new JsonObject();
+            envelope.addProperty("kind",
+                    SharedStateEvidence.VERSIONS_ENVELOPE_KIND);
+            envelope.addProperty("schemaVersion",
+                    SharedStateEvidence.SCHEMA_VERSION);
+            envelope.addProperty("selected", true);
+            envelope.add("location", location);
+            envelope.addProperty("writerSetComplete", true);
+            envelope.addProperty("serializationTruncated", false);
+            envelope.addProperty("readLogTruncated", false);
+            envelope.add("versions", versions);
+            envelope.add("reads", new JsonArray());
+            return envelope;
+        }
+
+        private static JsonObject relation(String shape, String operation,
+                                           JsonObject receiver) {
+            JsonObject result = new JsonObject();
+            result.addProperty("_type", "ContainerRelation");
+            result.addProperty("_java_type", "L");
+            result.addProperty("shape", shape);
+            result.addProperty("operation", operation);
+            if (receiver != null) result.add("receiver", receiver);
+            result.add("arguments", new JsonArray());
+            return result;
+        }
+
+        private static JsonObject withArguments(JsonObject relation,
+                                                JsonObject... arguments) {
+            JsonArray list = new JsonArray();
+            for (JsonObject argument : arguments) list.add(argument);
+            relation.add("arguments", list);
+            return relation;
+        }
+
+        private static JsonObject symbol(String raw) {
+            JsonObject result = new JsonObject();
+            result.addProperty("_type", "SymbolExpression");
+            result.addProperty("_java_type", "Ljava/util/List;");
+            result.addProperty("_exp", raw);
+            return result;
+        }
+
+        private static JsonObject integer(int value) {
+            JsonObject result = new JsonObject();
+            result.addProperty("_type", "ConstExpr");
+            result.addProperty("_java_type", "I");
+            result.addProperty("_exp", "Y_I_" + value);
+            return result;
+        }
+
+        /** A host that names every operand and records what it was asked for. */
+        private static final class RecordingHost
+                implements ContainerSmtCodec.Host {
+            private final List<String> unsupported = new ArrayList<>();
+            private final List<String> required = new ArrayList<>();
+
+            @Override
+            public ContainerSmtCodec.Term state(JsonElement identity,
+                                                ContainerSmtCodec.Sort shape) {
+                return new ContainerSmtCodec.Term("container__state", shape);
+            }
+
+            @Override
+            public ContainerSmtCodec.Term operand(
+                    JsonElement expression, ContainerSmtCodec.Sort expected) {
+                if (ContainerSmtCodec.handles(expression)) {
+                    return ContainerSmtCodec.term(
+                            expression.getAsJsonObject(), this);
+                }
+                if (expected == ContainerSmtCodec.Sort.INT) {
+                    return new ContainerSmtCodec.Term(literal(expression),
+                            ContainerSmtCodec.Sort.INT);
+                }
+                return new ContainerSmtCodec.Term("container__state", expected);
+            }
+
+            @Override
+            public boolean preserveContainerIdentity(
+                    JsonElement expression, ContainerSmtCodec.Sort expected) {
+                return ContainerSmtCodec.evidencedContainerIdentity(expression);
+            }
+
+            @Override
+            public ContainerSmtCodec.Term box(JsonElement expression) {
+                if (ContainerSmtCodec.handles(expression)) {
+                    ContainerSmtCodec.Term inner = ContainerSmtCodec.term(
+                            expression.getAsJsonObject(), this);
+                    if (inner != null) return inner;
+                }
+                String raw = expression != null && expression.isJsonObject()
+                        && expression.getAsJsonObject().has("_exp")
+                        ? expression.getAsJsonObject().get("_exp").getAsString()
+                        : "nullRef";
+                return new ContainerSmtCodec.Term("(VRef " + raw + ")",
+                        ContainerSmtCodec.Sort.VALUE);
+            }
+
+            @Override
+            public ContainerSmtCodec.Term unbox(ContainerSmtCodec.Term value,
+                                                String javaType) {
+                return ContainerSmtCodec.unboxValue(value, javaType,
+                        VmTermLowering.unboxedCellSort(
+                                VmTermLowering.Sort.INT), this);
+            }
+
+            @Override
+            public void require(String predicate) {
+                required.add(predicate);
+            }
+
+            @Override
+            public ContainerSmtCodec.Term field(ContainerSmtCodec.Term owner,
+                                                String ownerClass,
+                                                int fieldOffset,
+                                                String javaType) {
+                unsupported.add("field:" + ownerClass);
+                return null;
+            }
+
+            @Override
+            public void unsupported(String reason) {
+                unsupported.add(reason);
+            }
+
+            private static String literal(JsonElement expression) {
+                String raw = expression != null && expression.isJsonObject()
+                        ? expression.getAsJsonObject().get("_exp").getAsString()
+                        : "0";
+                return raw.startsWith("Y_I_") ? raw.substring(4) : "0";
+            }
+        }
+    }
+
 }

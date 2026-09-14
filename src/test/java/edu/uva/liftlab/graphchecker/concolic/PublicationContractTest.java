@@ -30,7 +30,20 @@ public class PublicationContractTest {
 
     /** A kept task nothing published for is named, not silently dropped. */
     @Test
-    public void aKeptTaskThatPublishedNothingIsNamed() {
+    public void publicationContractRules() throws Exception {
+        aKeptTaskThatPublishedNothingIsNamed();
+        aSkipTheImporterAlreadyNamedIsNotASilentTask();
+        aTargetPrefixSiteNoActivationDecidedIsNamed();
+        aTargetThatDecidedItsWholePrefixIsClean();
+        aRegionPathGoalIsNotHeldToItsWholeBranchList();
+        theTableCountsEachCodeOnceAndNamesItsFirstSubject();
+        anActivationUnderAnotherRequestIsNamed();
+        anActivationUnderTheAnchoredRequestIsNotNamed();
+        aDivergedRequestIsDiagnosticNotBlocking();
+        aTaskWithNoAnchoredRequestIsNotNamed();
+    }
+
+    private void aKeptTaskThatPublishedNothingIsNamed() {
         List<JsonObject> rows = PublicationContract.check(
                 tasks(target("TASK.a")), Collections.<JsonObject>emptyList(),
                 Collections.<JsonObject>emptyList());
@@ -42,8 +55,7 @@ public class PublicationContractTest {
     }
 
     /** A skip is a publication: the importer named it, and it is not this. */
-    @Test
-    public void aSkipTheImporterAlreadyNamedIsNotASilentTask() {
+    private void aSkipTheImporterAlreadyNamedIsNotASilentTask() {
         JsonObject named = new JsonObject();
         named.addProperty("code", "REGION_ROOT_NEVER_EXECUTED");
         named.addProperty("taskId", "TASK.a");
@@ -54,8 +66,7 @@ public class PublicationContractTest {
     }
 
     /** The target goal's prefix is a path the replay was asked to follow. */
-    @Test
-    public void aTargetPrefixSiteNoActivationDecidedIsNamed() {
+    private void aTargetPrefixSiteNoActivationDecidedIsNamed() {
         List<JsonObject> rows = PublicationContract.check(
                 tasks(target("TASK.a")),
                 Collections.singletonList(summary("TASK.a", TARGET_SITE)),
@@ -68,8 +79,7 @@ public class PublicationContractTest {
     }
 
     /** Every prefix site decided is the contract met. */
-    @Test
-    public void aTargetThatDecidedItsWholePrefixIsClean() {
+    private void aTargetThatDecidedItsWholePrefixIsClean() {
         assertTrue(PublicationContract.check(tasks(target("TASK.a")),
                 Collections.singletonList(
                         summary("TASK.a", SITE, TARGET_SITE)),
@@ -77,16 +87,14 @@ public class PublicationContractTest {
     }
 
     /** A region-path goal's branches are sites, not a required prefix. */
-    @Test
-    public void aRegionPathGoalIsNotHeldToItsWholeBranchList() {
+    private void aRegionPathGoalIsNotHeldToItsWholeBranchList() {
         assertTrue(PublicationContract.check(tasks(regionPath("TASK.a")),
                 Collections.singletonList(summary("TASK.a", TARGET_SITE)),
                 Collections.<JsonObject>emptyList()).isEmpty());
     }
 
     /** One table per wave: code, count, first subject. */
-    @Test
-    public void theTableCountsEachCodeOnceAndNamesItsFirstSubject() {
+    private void theTableCountsEachCodeOnceAndNamesItsFirstSubject() {
         List<JsonObject> rows = PublicationContract.check(
                 tasks(target("TASK.a"), target("TASK.b")),
                 Collections.<JsonObject>emptyList(),
@@ -111,8 +119,7 @@ public class PublicationContractTest {
      * {@code refresh-block-keys#1} while carrying no request at all, and the
      * send it then makes has no request to name.</p>
      */
-    @Test
-    public void anActivationUnderAnotherRequestIsNamed() {
+    private void anActivationUnderAnotherRequestIsNamed() {
         JsonObject task = anchored(target("TASK.a"),
                 "wl/nn0#epoch0/request/refresh-block-keys#1");
         JsonObject ran = summary("TASK.a", SITE, TARGET_SITE);
@@ -133,8 +140,7 @@ public class PublicationContractTest {
     }
 
     /** Under the request the anchor names, nothing is said. */
-    @Test
-    public void anActivationUnderTheAnchoredRequestIsNotNamed() {
+    private void anActivationUnderTheAnchoredRequestIsNotNamed() {
         String request = "wl/nn0#epoch0/request/refresh-block-keys#1";
         JsonObject task = anchored(target("TASK.a"), request);
         JsonObject ran = summary("TASK.a", SITE, TARGET_SITE);
@@ -155,8 +161,7 @@ public class PublicationContractTest {
      * workload.  The address is the identity, so the activation is admitted
      * and the row published; epoch re-seeding is what consumes it.</p>
      */
-    @Test
-    public void aDivergedRequestIsDiagnosticNotBlocking() {
+    private void aDivergedRequestIsDiagnosticNotBlocking() {
         assertEquals(edu.uva.liftlab.graphchecker.contract.GapLedger
                         .GapClass.DIAGNOSTIC,
                 edu.uva.liftlab.graphchecker.contract.GapLedger.classOf(
@@ -164,8 +169,7 @@ public class PublicationContractTest {
     }
 
     /** A task whose anchor names no request diverges from nothing. */
-    @Test
-    public void aTaskWithNoAnchoredRequestIsNotNamed() {
+    private void aTaskWithNoAnchoredRequestIsNotNamed() {
         JsonObject ran = summary("TASK.a", SITE, TARGET_SITE);
         ran.addProperty("requestKey", "");
         ran.addProperty("threadName", "KeyManager$BlockKeyUpdater@1");
