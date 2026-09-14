@@ -8,9 +8,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -26,6 +24,12 @@ import static org.junit.Assert.fail;
  * rename or a moved method fails only in a full campaign run. This test
  * reads the catalog out of the pipeline source and resolves every entry
  * reflectively instead.</p>
+ *
+ * <p>The other half of the ABI is not woven at all: the workload checkouts
+ * and Solr call GraphChecker from their own source, compiled against an
+ * older jar, so a {@code git grep} of this repository returns empty for
+ * every one of them and the reference resolves only at campaign SEED.
+ * {@code external-callers.txt} is that list; MECHANISMS §10 is why.</p>
  */
 public class ConcolicHookAbiTest {
     private static final String PIPELINE_SOURCE =
@@ -33,20 +37,10 @@ public class ConcolicHookAbiTest {
                     + "CausynthPipeline.java";
     private static final String RUNTIME_CLASS =
             "edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime";
-    private static final Map<String, Class<?>> SOOT_TYPES = sootTypes();
-
-    private static Map<String, Class<?>> sootTypes() {
-        Map<String, Class<?>> types = new HashMap<>();
-        types.put("VoidType.v()", void.class);
-        types.put("BooleanType.v()", boolean.class);
-        types.put("IntType.v()", int.class);
-        types.put("LongType.v()", long.class);
-        types.put("string", String.class);
-        types.put("object", Object.class);
-        types.put("ArrayType.v(object, 1)", Object[].class);
-        types.put("RefType.v(\"java.lang.Throwable\")", Throwable.class);
-        return types;
-    }
+    private static final String PACKAGE = "edu.uva.liftlab.graphchecker.";
+    /** APIs called from outside this repository; see the class javadoc. */
+    private static final String EXTERNAL_CALLERS =
+            "src/test/resources/external-callers.txt";
 
     @Test
     public void everyWovenConcolicHookResolvesOnTheRuntime() throws Exception {
@@ -54,7 +48,6 @@ public class ConcolicHookAbiTest {
         List<String[]> entries = catalogEntries("concolic");
         assertFalse("no hook entries parsed out of " + PIPELINE_SOURCE,
                 entries.isEmpty());
-        int wovenOnRuntime = 0;
         int wovenOnSystem = 0;
         for (String[] entry : entries) {
             if ("system".equals(entry[0])) {
@@ -62,7 +55,6 @@ public class ConcolicHookAbiTest {
                 continue;
             }
             assertEquals("unexpected hook owner", "runtime", entry[0]);
-            wovenOnRuntime++;
             String name = entry[1];
             Class<?> result = javaType(entry[2]);
             Class<?>[] parameters = new Class<?>[entry.length - 3];
@@ -81,11 +73,30 @@ public class ConcolicHookAbiTest {
                     Modifier.isStatic(hook.getModifiers()));
             assertEquals(name + " return type", result, hook.getReturnType());
         }
-        assertEquals("every concolic hook that is not a java.lang.System "
-                + "entry point is woven against the runtime",
-                entries.size() - wovenOnSystem, wovenOnRuntime);
         assertEquals("the custom VM keeps three java.lang.System hooks",
                 3, wovenOnSystem);
+        for (String row : Files.readAllLines(Paths.get(EXTERNAL_CALLERS),
+                StandardCharsets.UTF_8)) {
+            if (row.isEmpty() || row.startsWith("#")) continue;
+            String[] called = row.split(" ");
+            Class<?>[] parameters = new Class<?>[called.length - 3];
+            for (int i = 0; i < parameters.length; i++) {
+                parameters[i] = javaType(called[i + 3]);
+            }
+            Method api;
+            try {
+                api = Class.forName(PACKAGE + called[0])
+                        .getMethod(called[1], parameters);
+            } catch (ReflectiveOperationException gone) {
+                fail("the workload checkouts call " + row + "; deleting it "
+                        + "kills every campaign at SEED: " + gone);
+                return;
+            }
+            assertTrue(row + " must stay static",
+                    Modifier.isStatic(api.getModifiers()));
+            assertEquals(row + " return type", javaType(called[2]),
+                    api.getReturnType());
+        }
     }
 
     /**
@@ -170,12 +181,18 @@ public class ConcolicHookAbiTest {
         return literal.substring(1, literal.length() - 1);
     }
 
-    private static Class<?> javaType(String sootType) {
-        Class<?> type = SOOT_TYPES.get(sootType);
-        if (type == null) {
-            throw new IllegalStateException(
-                    "unmapped Soot type in the hook catalog: " + sootType);
+    private static Class<?> javaType(String name) {
+        switch (name) {
+            case "VoidType.v()": case "void": return void.class;
+            case "BooleanType.v()": case "boolean": return boolean.class;
+            case "IntType.v()": case "int": return int.class;
+            case "LongType.v()": case "long": return long.class;
+            case "string": return String.class;
+            case "object": return Object.class;
+            case "ArrayType.v(object, 1)": return Object[].class;
+            case "RefType.v(\"java.lang.Throwable\")": return Throwable.class;
+            default: throw new IllegalStateException(
+                    "unmapped type: " + name);
         }
-        return type;
     }
 }
