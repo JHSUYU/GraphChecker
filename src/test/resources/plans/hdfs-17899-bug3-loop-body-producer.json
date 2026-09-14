@@ -513,7 +513,7 @@
  "goalId": "GOAL.REGION_PATH.08f83d3b-8b7f-3853-ab8b-83cf7a83f753",
  "goalKind": "REGION_PATH_CLOSURE",
  "inputActions": [],
- "linkedReplayGroupId": "REPLAY.GROUP.a4ab376602e0070ae93ec94c476512891cfb83a7e80c5ed275ebf76979d0199f",
+ "replayGroupId": "REPLAY.GROUP.a4ab376602e0070ae93ec94c476512891cfb83a7e80c5ed275ebf76979d0199f",
  "loopBound": {
   "loopBodyBounds": {
    "<org.apache.hadoop.hdfs.protocolPB.PBHelper: org.apache.hadoop.hdfs.security.token.block.BlockKey[] convertBlockKeys(java.util.List)>#u6": 8,

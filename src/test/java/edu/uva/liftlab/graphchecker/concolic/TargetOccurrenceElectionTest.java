@@ -39,8 +39,9 @@ public class TargetOccurrenceElectionTest {
             "hdfs-17897/dn0#epoch0/region/REGION.53092d3e#2";
 
     /**
-     * The recording observed the site twice and the closure composed one:
-     * that occurrence is elected and the other reported with its reason.
+     * The recording observed the site twice: the case's declaration decides
+     * which one the campaign is about, and the other is reported with its
+     * reason.  With no declaration there is nothing to decide it.
      */
     @Test
     public void anUnobservedOccurrenceIsReportedAndNeverElected()
@@ -52,7 +53,7 @@ public class TargetOccurrenceElectionTest {
                 TargetOccurrenceElection.SKIPPED_UNOBSERVED);
         skipped.addProperty("detail", "no linked summary carried its read");
         JsonObject ledger = TargetOccurrenceElection.elect(Arrays.asList(
-                composed(CLIENT_HANDSHAKE), skipped));
+                composed(CLIENT_HANDSHAKE), skipped), CLIENT_HANDSHAKE);
         assertEquals(CLIENT_HANDSHAKE,
                 ledger.get("chosenOccurrenceId").getAsString());
         assertEquals(1, ledger.get("composedCount").getAsInt());
@@ -63,13 +64,11 @@ public class TargetOccurrenceElectionTest {
         assertEquals(TargetOccurrenceElection.NOT_COMPOSED,
                 row(ledger, 1).get("support").getAsString());
 
-        // The same pair with the unscheduled occurrence first in anchor
-        // order: hdfs-17899 bug1 round 1, where the run composed exactly the
-        // occurrence its case declares and then elected an unscheduled one
-        // that sorted ahead of it -- and stopped, because the elected row
-        // had no artifacts at all.  Neither carries an accepted claim, so
-        // the rule that decides is that a composition states something
-        // about its occurrence and no composition states nothing.
+        // Two reported occurrences and no declaration is a refusal, not a
+        // ranking.  Ranking them -- accepted over unaccepted, composed over
+        // never-composed -- is how hdfs-17899 bug1 round 1 elected an
+        // unscheduled occurrence that sorted ahead of the one its case
+        // declares, and published that row's verdict as the campaign's.
         JsonObject first = new JsonObject();
         first.addProperty("occurrenceId", CLIENT_HANDSHAKE);
         first.addProperty("regionId", "REGION.53092d3e");
@@ -77,13 +76,16 @@ public class TargetOccurrenceElectionTest {
                 TargetOccurrenceElection.SKIPPED_UNOBSERVED);
         first.addProperty("detail", "no linked summary carried its read");
         JsonObject refused = refused(DATANODE_HANDSHAKE);
-        JsonObject bug1 = TargetOccurrenceElection.elect(
-                Arrays.asList(first, refused));
-        assertEquals("a row with no artifacts cannot be elected over one"
-                        + " that has them", DATANODE_HANDSHAKE,
-                bug1.get("chosenOccurrenceId").getAsString());
+        try {
+            TargetOccurrenceElection.elect(Arrays.asList(first, refused));
+            throw new AssertionError("two occurrences and no declaration"
+                    + " must not be ranked into one claim");
+        } catch (IOException undeclared) {
+            assertTrue(undeclared.getMessage(),
+                    undeclared.getMessage().contains("declares no target"));
+        }
 
-        // And a declared occurrence is elected whatever its own row says
+        // A declared occurrence is elected whatever its own row says
         // and whatever the others concluded: the campaign is about that
         // execution of the site and no other.
         JsonObject declared = TargetOccurrenceElection.elect(
@@ -139,15 +141,20 @@ public class TargetOccurrenceElectionTest {
                 .contains("one occurrence"));
 
         // And which occurrence a campaign is about is the case's to
-        // declare: the whole address, or the request family and k.
+        // declare, as the whole address.  A declaration that named the
+        // request family and k instead is no longer one: the family is not
+        // part of an occurrence's identity, and an id that spells one names
+        // the occurrence it always named with the suffix discarded.
         String at = "hdfs-17897/dn0#epoch0/region/REGION.53092d3e"
                 + "@hdfs-17897/client#epoch0/striped-file-checksum#2";
         assertTrue(RuntimeWorkflowDiscovery.declares(at, at));
-        assertTrue(RuntimeWorkflowDiscovery.declares(
-                "hdfs-17897/client#epoch0/striped-file-checksum#2", at));
-        assertFalse("another k of that family is another occurrence",
+        assertTrue("with or without the retired family suffix",
                 RuntimeWorkflowDiscovery.declares(
-                        "hdfs-17897/client#epoch0/striped-file-checksum#1",
+                        "hdfs-17897/dn0#epoch0/region/REGION.53092d3e#2",
+                        at));
+        assertFalse("a family and k declares no occurrence",
+                RuntimeWorkflowDiscovery.declares(
+                        "hdfs-17897/client#epoch0/striped-file-checksum#2",
                         at));
 
         // And every closure mode has to read it: lane11741i declared dn0

@@ -38,11 +38,9 @@ public final class OccurrenceMinter {
      * {@link #occurrenceId} names - because a narrower scope would restart the
      * count inside one source and mint one identity twice.
      */
-    public int reserveOrdinal(String semanticSourceKey, String regionId,
-                              String requestFamily) {
+    public int reserveOrdinal(String semanticSourceKey, String regionId) {
         return ordinals.merge(MapFields.safe(semanticSourceKey) + "\n"
-                        + MapFields.safe(regionId) + "\n"
-                        + MapFields.safe(requestFamily), 1,
+                        + MapFields.safe(regionId), 1,
                 Integer::sum);
     }
 
@@ -53,10 +51,9 @@ public final class OccurrenceMinter {
      * closed here.
      */
     public String mint(String regionId, long rootCallId,
-                       String semanticSourceKey, String requestFamily,
-                       int ordinal) {
+                       String semanticSourceKey, int ordinal) {
         String occurrenceId = occurrenceId(semanticSourceKey, regionId,
-                requestFamily, ordinal);
+                ordinal);
         if (!mintedActivations.add(MapFields.safe(regionId) + "\n" + rootCallId)
                 || !mintedOccurrences.add(occurrenceId)) {
             throw new IllegalArgumentException("duplicate runtime activation: "
@@ -69,15 +66,13 @@ public final class OccurrenceMinter {
      * The identity string, with no reservation or duplicate bookkeeping.
      *
      * <p>Rendered by {@link OccurrenceAddress} itself rather than
-     * concatenated here, so the one place that knows the grammar -- including
-     * whether a request family is written at all -- is the address.</p>
+     * concatenated here, so the one place that knows the grammar is the
+     * address.</p>
      */
     public static String occurrenceId(String semanticSourceKey,
-                                      String regionId, String requestFamily,
-                                      int ordinal) {
+                                      String regionId, int ordinal) {
         return OccurrenceAddress.of(MapFields.safe(semanticSourceKey),
-                MapFields.safe(regionId), MapFields.safe(requestFamily),
-                ordinal).render();
+                MapFields.safe(regionId), ordinal).render();
     }
 
     /**
