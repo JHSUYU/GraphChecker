@@ -6,6 +6,7 @@ import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.contract.ConfiguredSourcePhaseContract;
 import edu.uva.liftlab.graphchecker.contract.ExecutionTask;
 import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
+import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceId;
 import edu.uva.liftlab.graphchecker.contract.PathObservation;
 import edu.uva.liftlab.graphchecker.contract.RuntimePlanArtifact;
@@ -1402,9 +1403,15 @@ public final class ConcolicSummaryImporter {
             return "unsupported exact-action observation schema";
         }
         if (action == null) return "action is not in the frozen task";
-        if (!task.occurrenceId().equals(row.plannedOccurrenceId)
-                || !row.plannedOccurrenceId.equals(optionalString(observation,
-                "plannedOccurrenceId"))
+        // The join is on the address, not on the bytes that spell it: node,
+        // epoch, region and the k-th activation.  String equality answered
+        // the same way while both sides were minted by one build, which is
+        // exactly the condition under which a fourth spelling of an identity
+        // goes unnoticed until it drifts.  An address neither side can read
+        // refuses, rather than matching another unreadable one.
+        if (!sameOccurrence(task.occurrenceId(), row.plannedOccurrenceId)
+                || !sameOccurrence(row.plannedOccurrenceId,
+                optionalString(observation, "plannedOccurrenceId"))
                 || !row.rowOccurrenceId.equals(optionalString(observation,
                 "occurrenceId"))) {
             return "observation belongs to another occurrence";
@@ -1756,6 +1763,20 @@ public final class ConcolicSummaryImporter {
         return value != null && value.isJsonPrimitive()
                 && value.getAsJsonPrimitive().isBoolean()
                 ? value.getAsBoolean() : null;
+    }
+
+    /**
+     * Whether two ids name one planned occurrence.
+     *
+     * <p>Structural: {@code (node, epoch, region, k-th activation)}, parsed
+     * once on each side.  An id that does not spell an address matches
+     * nothing, including another unreadable one -- a join is a claim that two
+     * rows are the same occurrence, and two strings nobody could read are not
+     * evidence of that.</p>
+     */
+    private static boolean sameOccurrence(String left, String right) {
+        return OccurrenceAddress.parse(left)
+                .matches(OccurrenceAddress.parse(right));
     }
 
     private static String resultShapeRefusal(

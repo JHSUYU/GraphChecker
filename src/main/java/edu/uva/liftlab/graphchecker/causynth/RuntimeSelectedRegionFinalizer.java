@@ -2,6 +2,7 @@ package edu.uva.liftlab.graphchecker.causynth;
 
 import edu.uva.liftlab.graphchecker.concolic.AutomaticRegionEdge;
 import edu.uva.liftlab.graphchecker.concolic.SharedFieldFlow;
+import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.CommunicationCatalogContract;
 import edu.uva.liftlab.graphchecker.contract.DependencyRole;
 import edu.uva.liftlab.graphchecker.contract.FieldPathSpec;
@@ -543,18 +544,20 @@ public final class RuntimeSelectedRegionFinalizer {
                 if (!exactCapture) {
                     continue;
                 }
-                String exchangeSite = text(from.get("occurrenceId")) + "\n"
-                        + text(exactTo.get("occurrenceId")) + "\n" + portId
-                        + "\n" + direction;
+                String exchangeSite = occurrenceKey(
+                        from.get("occurrenceId")) + "\n"
+                        + occurrenceKey(exactTo.get("occurrenceId"))
+                        + "\n" + portId + "\n" + direction;
                 String identity = exchangeSite + "\n"
                         + exchangeOrdinal(exchangeOrdinals, exchangeSite,
                         text(link.get("requestKey")) + "\n" + exchangeLeg);
                 if (!emitted.add(identity)) continue;
                 stampOccurrenceOwnedPort(fromRegion, "outputs", sending,
-                        text(from.get("occurrenceId")),
+                        occurrenceKey(from.get("occurrenceId")),
                         longNumber(link.get("senderEventSeq"), -1L));
                 stampOccurrenceOwnedPort(toRegion, "symbolicInputs",
-                        receiving, text(exactTo.get("occurrenceId")),
+                        receiving, occurrenceKey(
+                                exactTo.get("occurrenceId")),
                         longNumber(link.get("receiverEventSeq"), -1L));
                 flows.add(exchangeProducerEdge(from, exactTo, link,
                         receiving, identity));
@@ -695,6 +698,35 @@ public final class RuntimeSelectedRegionFinalizer {
      * Adds the occurrence-owned instance of one declared cut port, so demand
      * propagation can reach the exact activation that used it.
      */
+    /**
+     * The structural key of one planned occurrence, or {@code ""} for none.
+     *
+     * <p>These joins decide which rows belong to one occurrence, and they did
+     * it by string equality on {@code occurrenceId}.  That is correct exactly
+     * while every id they see is a planned address; it silently merges two
+     * activations the moment one carries an {@code #a<n>} suffix, because the
+     * address deliberately drops the suffix and the string does not.  So the
+     * key is now parsed and re-rendered, and a value that does not spell one
+     * planned address is refused rather than joined on.</p>
+     *
+     * <p>Byte-neutral today: every {@code occurrenceId} the region graph
+     * carries is a planned address (505 of 505 in lane BC's
+     * {@code concolic_region_plan.jsonl}), so the rendered key is the string
+     * it parsed.  The value is that the two can no longer drift apart in
+     * silence.</p>
+     */
+    static String occurrenceKey(Object encoded) {
+        String occurrenceId = text(encoded);
+        if (occurrenceId.isEmpty()) return "";
+        OccurrenceAddress address = OccurrenceAddress.parse(occurrenceId);
+        if (!address.isNamed()
+                || !address.render().equals(occurrenceId)) {
+            throw new IllegalArgumentException("region graph occurrence id "
+                    + "is not one planned address: " + occurrenceId);
+        }
+        return address.render();
+    }
+
     private static void stampOccurrenceOwnedPort(
             Map<String, Object> region, String listName,
             Map<String, Object> port, String occurrenceId, long eventSeq) {
@@ -706,7 +738,7 @@ public final class RuntimeSelectedRegionFinalizer {
         for (Map<String, Object> existing : rows) {
             if (portId.equals(text(existing.get("portId")))
                     && occurrenceId.equals(
-                    text(existing.get("occurrenceId")))) {
+                    occurrenceKey(existing.get("occurrenceId")))) {
                 long previous = longNumber(existing.get("eventSeq"), -1L);
                 if (eventSeq >= 0L && (previous < 0L || eventSeq < previous)) {
                     existing.put("eventSeq", eventSeq);
@@ -1345,7 +1377,8 @@ public final class RuntimeSelectedRegionFinalizer {
                         consumerOccurrence)) {
                     continue;
                 }
-                String faultOccurrence = text(fault.get("occurrenceId"));
+                String faultOccurrence = occurrenceKey(
+                        fault.get("occurrenceId"));
                 Map<String, Object> faultRegion = regions.get(
                         text(fault.get("regionId")));
                 long requestSend = longNumber(
@@ -1361,7 +1394,8 @@ public final class RuntimeSelectedRegionFinalizer {
                 for (Map<String, Object> port : rows(
                         faultRegion.get("symbolicInputs"))) {
                     long faultEvent = longNumber(port.get("eventSeq"), -1L);
-                    String portOccurrence = text(port.get("occurrenceId"));
+                    String portOccurrence = occurrenceKey(
+                            port.get("occurrenceId"));
                     if (!EXPLICIT_SYMBOLIC_FAULT.equals(
                             text(port.get("sourceKind")))
                             || !faultOccurrence.equals(portOccurrence)
@@ -1499,9 +1533,9 @@ public final class RuntimeSelectedRegionFinalizer {
         // its own response edge.  The transaction itself is the workload's
         // per-run IPC id, so it is evidence on the edge and not part of its
         // name.
-        String identity = text(fault.get("occurrenceId")) + "\n"
+        String identity = occurrenceKey(fault.get("occurrenceId")) + "\n"
                 + text(port.get("portId")) + "\n"
-                + text(consumer.get("occurrenceId")) + "\n"
+                + occurrenceKey(consumer.get("occurrenceId")) + "\n"
                 + text(response.get("edgeId"));
         Map<String, Object> edge = new LinkedHashMap<>();
         edge.put("schemaVersion", 3);

@@ -17,7 +17,8 @@ import static org.junit.Assert.assertTrue;
 
 public final class ConcolicSummaryImporterManualInputEvidenceTest {
     private static final String PORT = "REGION.r.in.p";
-    private static final String PLANNED = "source#region#1";
+    private static final String PLANNED =
+            "hdfs-17960/nn0#epoch1/region/REGION.r#1";
     private static final String RAW =
             "M_I_field_REGION.r.in.p_java/lang/Integer";
 
