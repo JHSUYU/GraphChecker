@@ -1435,7 +1435,8 @@ final class RuntimeRegionPlanner {
      * </p>
      *
      * <p>This is a declaration, not a selection: the scheduler's root slice
-     * ({@code SharedCarrierSlice}) drops every location no root reaches, so
+     * (ReplayTaskSlices location decisions) records every location no root
+     * reaches, so
      * a reference declared here and never moved by a root costs nothing
      * beyond one decision row.  An explicitly concrete access is still
      * concrete -- a capture root, a loop control or a path assumption names

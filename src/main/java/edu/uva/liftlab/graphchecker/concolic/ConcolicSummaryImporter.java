@@ -374,33 +374,11 @@ public final class ConcolicSummaryImporter {
             JsonObject summary = importRow(row, task, hashes,
                     diagnostics, topologyEpoch, expressions);
             if (summary != null) {
-                // Content-addressed expressions returned by expandAll() are
-                // interned across result rows. Detach only MAP_STATE receiver
-                // shells before the scope-wide identity pass mutates them;
-                // every other expression node remains shared.
-                summary = detachContainerStateReceivers(summary);
-                for (String location
-                        : SharedStateEvidence.canonicalizeLocations(summary)) {
-                    diagnostics.add(diagnostic(row,
-                            "LOCATION_NOT_NAMED_ACROSS_SESSIONS", location));
-                }
+                // No renaming pass: a location is named by the object the VM
+                // filed it under, and that name is already the one the read
+                // nodes carry.
                 summaries.add(summary);
                 sourceRows.put(summary, row);
-            }
-        }
-        // One propagated DN expression may still refer to the NN map owner.
-        // Only the complete linked-replay/session scope contains the runtime
-        // carrier that names that owner, so MAP_STATE identity is necessarily
-        // an all-summary pass. Graph IN/OUT ports never participate.
-        for (SharedStateEvidence.ContainerStateIssue issue
-                : SharedStateEvidence.canonicalizeContainerStateSymbols(
-                summaries)) {
-            ResultRow source = sourceRows.get(issue.summary);
-            if (source != null) {
-                diagnostics.add(diagnostic(source,
-                        optionalString(issue.gap, "reason"),
-                        optionalString(issue.gap, "locationKey") + ": "
-                                + optionalString(issue.gap, "detail")));
             }
         }
         for (int index = 0; index < summaries.size(); index++) {
@@ -471,81 +449,6 @@ public final class ConcolicSummaryImporter {
                 result.add(field.getKey(), field.getValue());
             }
         }
-        return result;
-    }
-
-    /**
-     * Copy-on-write view for the one expression shell the location
-     * canonicalizer mutates.  Expanded content-addressed nodes are immutable
-     * and may be shared by path conditions, handoffs, source observations and
-     * shared-state versions; copying their complete subtrees would turn that
-     * DAG back into repeated trees.
-     */
-    private static JsonObject detachContainerStateReceivers(
-            JsonObject source) {
-        return detachContainerStateReceivers(source,
-                new IdentityHashMap<JsonElement, JsonElement>())
-                .getAsJsonObject();
-    }
-
-    private static JsonElement detachContainerStateReceivers(
-            JsonElement source,
-            IdentityHashMap<JsonElement, JsonElement> memo) {
-        if (source == null || source.isJsonNull()
-                || source.isJsonPrimitive()) {
-            return source;
-        }
-        JsonElement held = memo.get(source);
-        if (held != null) return held;
-        if (source.isJsonArray()) {
-            JsonArray array = source.getAsJsonArray();
-            JsonArray copy = null;
-            for (int index = 0; index < array.size(); index++) {
-                JsonElement child = array.get(index);
-                JsonElement detached = detachContainerStateReceivers(child,
-                        memo);
-                if (copy == null && detached != child) {
-                    copy = new JsonArray();
-                    for (int prior = 0; prior < index; prior++) {
-                        copy.add(array.get(prior));
-                    }
-                }
-                if (copy != null) copy.add(detached);
-            }
-            JsonElement result = copy == null ? array : copy;
-            memo.put(source, result);
-            return result;
-        }
-
-        JsonObject object = source.getAsJsonObject();
-        boolean mutableStateReceiver =
-                SharedStateEvidence.isWholeStateRoot(object);
-        JsonObject copy = null;
-        int index = 0;
-        for (Map.Entry<String, JsonElement> field : object.entrySet()) {
-            JsonElement child = field.getValue();
-            JsonElement detached = detachContainerStateReceivers(child,
-                    memo);
-            if (mutableStateReceiver && "receiver".equals(field.getKey())
-                    && detached != null && detached.isJsonObject()
-                    && "SymbolExpression".equals(optionalString(
-                    detached.getAsJsonObject(), "_type"))) {
-                detached = shallowCopy(detached.getAsJsonObject());
-            }
-            if (copy == null && detached != child) {
-                copy = new JsonObject();
-                int prior = 0;
-                for (Map.Entry<String, JsonElement> existing
-                        : object.entrySet()) {
-                    if (prior++ == index) break;
-                    copy.add(existing.getKey(), existing.getValue());
-                }
-            }
-            if (copy != null) copy.add(field.getKey(), detached);
-            index++;
-        }
-        JsonElement result = copy == null ? object : copy;
-        memo.put(source, result);
         return result;
     }
 
@@ -1517,8 +1420,6 @@ public final class ConcolicSummaryImporter {
             JsonObject record = element.isJsonObject()
                     ? element.getAsJsonObject() : new JsonObject();
             if (SharedStateEvidence.isVersionsRecord(record)) {
-                // canonicalizeLocations() renames this record shell; its
-                // immutable envelope and expression DAG stay shared.
                 versions.add(shallowCopy(record));
             } else {
                 gaps.add(SharedStateEvidence.gap(

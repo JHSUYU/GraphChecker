@@ -36,9 +36,7 @@ import edu.uva.liftlab.graphchecker.contract.OccurrenceId;
 import edu.uva.liftlab.graphchecker.contract.SiteId;
 import edu.uva.liftlab.graphchecker.runtime.ConcolicTaskPlan.RuntimeTask;
 import edu.uva.liftlab.graphchecker.runtime.SharedStateCapture.RawSharedStateReadOut;
-import edu.uva.liftlab.graphchecker.runtime.SharedStateCapture.SharedCarrier;
 import edu.uva.liftlab.graphchecker.runtime.SharedStateCapture.SharedStateResult;
-import edu.uva.liftlab.graphchecker.runtime.SharedStateCapture.ConsumerAccessAnchor;
 import java.lang.reflect.Array;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
@@ -86,14 +84,8 @@ import static edu.uva.liftlab.graphchecker.runtime.ConcolicResultPublisher.endLi
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicResultPublisher.submitCompletedResultPublication;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicResultPublisher.writeSkipped;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicVmBroker.engine;
-import static edu.uva.liftlab.graphchecker.runtime.SharedStateCapture.READ_OUT_MEMO;
 import static edu.uva.liftlab.graphchecker.runtime.SharedStateCapture.captureRecordedSharedStateRaw;
-import static edu.uva.liftlab.graphchecker.runtime.SharedStateCapture.consumerAccessAnchor;
 import static edu.uva.liftlab.graphchecker.runtime.SharedStateCapture.evidenceIdentity;
-import static edu.uva.liftlab.graphchecker.runtime.SharedStateCapture.selectAccessOwnerSharedCarriers;
-import static edu.uva.liftlab.graphchecker.runtime.SharedStateCapture.selectDeclaredSharedCarriers;
-import static edu.uva.liftlab.graphchecker.runtime.SharedStateCapture.selectSharedFieldCarrier;
-import static edu.uva.liftlab.graphchecker.runtime.SharedStateCapture.selectSharedMapCarrier;
 import static edu.uva.liftlab.graphchecker.runtime.PathConditionWindow.contiguousConditionIndices;
 import static edu.uva.liftlab.graphchecker.runtime.PathConditionWindow.vmEventConditionIndices;
 
@@ -857,7 +849,6 @@ public final class ConcolicRegionRuntime {
         active.prepared = true;
         RuntimeTask task = active.activation;
         symbolizeReceiverFields(active, task, engine());
-        selectDeclaredSharedCarriers(active, task);
     }
     /** Instrumentation-facing root entry. */
     public static long enterRegionFrame(String instrumentationSelector,
@@ -1396,17 +1387,6 @@ public final class ConcolicRegionRuntime {
                 active.activation.guardedReadAssignment(consumer,
                         fieldSignature);
         List<SymbolizeAction> claimed = active.activation.symbolize;
-        boolean writtenInThisRegion = active.writtenFields.contains(
-                owner, fieldSignature);
-        if (writtenInThisRegion) {
-            // The real getfield resolves the VM writer version and carries
-            // its expression forward.  Never replace it with a replay-time
-            // input synthesized from an output port.
-            selectAccessOwnerSharedCarriers(active, owner, fieldSignature,
-                    consumer);
-            armGuardedRead(active, owner, guardedRead);
-            return;
-        }
         for (SymbolizeAction action : claimed) {
             if (!action.matchesField(method, unitIndex, owner, fieldSignature,
                     fieldName, null)
@@ -1420,7 +1400,6 @@ public final class ConcolicRegionRuntime {
                         + action.fieldPath);
                 continue;
             }
-            active.recordFieldAccessOwner(action.symbol, leafOwner);
             if (!active.materialized.add(action.symbol)) continue;
             try {
                 ConcolicVmBroker api = engine();
@@ -1473,29 +1452,6 @@ public final class ConcolicRegionRuntime {
                         leafFieldSignature)) {
                     continue;
                 }
-                // This hook executes before the original getfield. The VM
-                // resolves the actual writer and creates any concurrent-read
-                // boundary at that getfield, so a selected shared read can
-                // only open recording and retain the carrier here.
-                if (active.activation.observesSharedRead(fieldSignature)) {
-                    ensurePathRecordingStarted(active);
-                    if (containerValue(value)) {
-                        active.recordSymbolizedInputPort(action.symbol,
-                                value);
-                    }
-                    continue;
-                }
-                if ("OBSERVED_FIELD_RECEIVER".equals(action.rootKind)
-                        && "BOUNDED_CONTAINER_STATE".equals(
-                        action.symbolicDemand)
-                        && wholeStateContainerValue(value)) {
-                    // The runtime trace selected this exact access site and
-                    // supplied the actual declaring-field receiver.
-                    selectSharedMapCarrier(value, leafOwner,
-                            exactField.getDeclaringClass().getName(),
-                            exactField.getName(), javaTypeDescriptor(
-                            exactField.getType().getTypeName()));
-                }
                 JsonElement expression;
                 if (value != null && value != MissingValue.INSTANCE
                         && containerValue(value)) {
@@ -1518,8 +1474,6 @@ public final class ConcolicRegionRuntime {
                         + rootCause(throwable));
             }
         }
-        selectAccessOwnerSharedCarriers(active, owner, fieldSignature,
-                consumer);
         armGuardedRead(active, owner, guardedRead);
     }
 
@@ -1594,32 +1548,44 @@ public final class ConcolicRegionRuntime {
     }
 
     /**
-     * Selects a declared access-owner carrier on the object a selected field
-     * store is about to write, before the store executes.
+     * The address of one read inside one activation: an exact bytecode site
+     * and the occurrence of it this activation reached.
      *
-     * <p>Selecting here is the same exact-access binding as at a read - the
-     * declaring object is the one this store touches, never a searched-for
-     * same-named receiver - taken one bytecode earlier, so the store's own
-     * {@code putfield} publishes the writer's expression as a {@code WRITE}
-     * version over a pre-write initial.</p>
-     *
-     * <p>The store site is the carrier's anchor.  A carrier selected here has
-     * no read in this activation to take a consumer site from, so without one
-     * it is a location no later session can name, and it fails closed at
-     * read-out instead of publishing its versions.  The store is an exact
-     * bytecode site and its activation-local occurrence is counted the same
-     * way a read's is, so it names the receiver exactly as well.</p>
+     * <p>It named carriers once, and does not any more -- a location is named
+     * by the object the VM filed it under.  What is left is the job it was
+     * always doing underneath: saying <em>which read</em> a guarded-read model
+     * applies to, which is a fact about the access and not about the
+     * location.</p>
      */
-    public static void selectFieldWriteCarrier(String method, int unitIndex,
-                                               Object owner,
-                                               String fieldSignature) {
-        ActiveRegion active = activeRegion();
-        if (active == null || owner == null) return;
-        int occurrence = active.materializationOccurrences.fieldWrite(
-                method, unitIndex);
-        selectAccessOwnerSharedCarriers(active, owner, fieldSignature,
-                consumerAccessAnchor(active, method, unitIndex, occurrence,
-                        owner));
+    static final class ConsumerAccessAnchor {
+        final String siteId;
+        final int occurrence;
+
+        ConsumerAccessAnchor(String siteId, int occurrence) {
+            this.siteId = safe(siteId);
+            this.occurrence = occurrence;
+        }
+    }
+
+    /** The address of the read this hook stands on, or {@code null}. */
+    static ConsumerAccessAnchor consumerAccessAnchor(
+            ActiveRegion active, String method, int unitIndex,
+            int occurrence, Object owner) {
+        AccessorCallContext accessor = CURRENT_ACCESSOR_CALL_CONTEXT.get();
+        if (accessor != null && active != null
+                && accessor.regionToken == active.token
+                && accessor.thread == Thread.currentThread()
+                && accessor.receiver == owner
+                && !accessor.callSiteId.isEmpty()
+                && accessor.occurrence > 0) {
+            return new ConsumerAccessAnchor(accessor.callSiteId,
+                    accessor.occurrence);
+        }
+        if (safe(method).isEmpty() || unitIndex < 0 || occurrence < 1) {
+            return null;
+        }
+        return new ConsumerAccessAnchor(SiteId.of(method, unitIndex),
+                occurrence);
     }
 
     /** Records a stable logical source a live occurrence just entered. */
@@ -1628,14 +1594,6 @@ public final class ConcolicRegionRuntime {
         if (active == null) return;
         if (sourceKey != null && !sourceKey.isEmpty()) {
             active.observedSourceKeys.add(sourceKey);
-        }
-    }
-
-    public static void recordFieldWrite(Object owner,
-                                        String fieldSignature) {
-        ActiveRegion active = activeRegion();
-        if (active != null) {
-            active.writtenFields.add(owner, fieldSignature);
         }
     }
 
@@ -1768,21 +1726,9 @@ public final class ConcolicRegionRuntime {
                         entry.ordinal <= 1 ? label
                                 : label + "__" + entry.ordinal);
             }
-            // A source that survives in a shared object needs a session
-            // version of its exact primitive field.  Selecting after the mint
-            // makes the INITIAL version carry the source expression itself;
-            // a later activation can then re-select the same field and let its
-            // real getfield resolve that retained writer.  This is orthogonal
-            // to Map/reference propagation: the object identity says which
-            // field, while this scalar carrier preserves what the field held.
-            SharedStateResult sourceCarrier = selectSharedFieldCarrier(
-                    owner, declaringClass, field.getName(), descriptor);
-            if (!sourceCarrier.ok()) {
-                active.addUnresolvedOnce(entry.key()
-                        + ": configured source carrier selection failed: "
-                        + sourceCarrier.reason());
-                return false;
-            }
+            // The mint is a symbolic write, so the VM has started this
+            // field's version log by itself; the declaration that used to be
+            // filed here bought nothing that the write did not already do.
             ensurePathRecordingStarted(active);
             Object value = field.get(owner);
             JsonElement expression = engineExpression(api.fieldExpression(
@@ -3677,7 +3623,6 @@ public final class ConcolicRegionRuntime {
             // Everything below is observational bookkeeping.
             api.pausePathCondition();
             pathConditionPaused = true;
-            READ_OUT_MEMO.set(new HashMap<String, String>());
             try {
                 if (!active.abandoned) {
                     result = new JsonObject();
@@ -3703,7 +3648,6 @@ public final class ConcolicRegionRuntime {
                     }
                 }
             } finally {
-                READ_OUT_MEMO.remove();
             }
             String summary = api.finish();
             engineFinished = true;
@@ -5694,12 +5638,7 @@ public final class ConcolicRegionRuntime {
             carried.remove("");
             return carried;
         }
-        /**
-         * Shared locations this activation selected as symbolic carriers, and
-         * the evidence read back from them.
-         */
-        final Map<String, SharedCarrier> sharedCarriers =
-                new LinkedHashMap<>();
+        /** The write log this activation read out, and its gaps. */
         final Map<String, JsonObject> sharedStateRecords =
                 new LinkedHashMap<>();
         final List<JsonObject> sharedStateGaps = new ArrayList<>();
@@ -5735,12 +5674,6 @@ public final class ConcolicRegionRuntime {
                 new LinkedHashMap<>();
         private final IdentityHashMap<Object, String>
                 symbolizedInputPorts = new IdentityHashMap<>();
-        private final ReplayFieldWrites writtenFields =
-                new ReplayFieldWrites();
-        private final Map<String, Object> fieldAccessOwners =
-                new LinkedHashMap<>();
-        private final Set<String> ambiguousFieldAccessOwners =
-                new LinkedHashSet<>();
         private final Map<String, Integer> associativeAccessOccurrences =
                 new LinkedHashMap<>();
         private final BranchReplayContract.ReplayProgress replayProgress;
@@ -6065,18 +5998,6 @@ public final class ConcolicRegionRuntime {
             targetReach = reach;
             diag("TARGET_REACHED", "token=" + token + " site=" + safe(siteId)
                     + "#" + occurrence);
-        }
-
-        private void recordFieldAccessOwner(String symbol, Object owner) {
-            if (safe(symbol).isEmpty() || owner == null) return;
-            if (ambiguousFieldAccessOwners.contains(symbol)) return;
-            Object previous = fieldAccessOwners.putIfAbsent(symbol, owner);
-            if (previous != null && previous != owner) {
-                fieldAccessOwners.remove(symbol);
-                ambiguousFieldAccessOwners.add(symbol);
-                addUnresolvedOnce(symbol
-                        + ": multiple nested field owners observed");
-            }
         }
 
         void addUnresolvedOnce(String detail) {
@@ -6636,27 +6557,6 @@ public final class ConcolicRegionRuntime {
             return encoded;
         }
     }
-
-    static final class ReplayFieldWrites {
-        private final IdentityHashMap<Object, Set<String>> fields =
-                new IdentityHashMap<>();
-
-        void add(Object owner, String fieldSignature) {
-            if (owner == null || FieldPathSpec.declaredField(
-                    safe(fieldSignature)) == null) {
-                return;
-            }
-            fields.computeIfAbsent(owner,
-                    ignored -> new LinkedHashSet<>()).add(fieldSignature);
-        }
-
-        boolean contains(Object owner, String fieldSignature) {
-            Set<String> ownerFields = fields.get(owner);
-            return ownerFields != null
-                    && ownerFields.contains(safe(fieldSignature));
-        }
-    }
-
 
     static final class SymbolizeAction {
         final String symbol;
