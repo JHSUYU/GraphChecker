@@ -80,36 +80,62 @@ public class ManualMintStatesItsValueTest {
         ConcolicRegionRuntime.ActiveRegion active = region();
 
         assertFalse("nothing was minted for this phase here",
-                observedPhase(active, "SOURCE_PHASE.0b2b2a3d"));
+                owesModel(active, "SOURCE_PHASE.0b2b2a3d"));
     }
 
-    /** An activation that did mint it is asked for the model as before. */
+    /** An activation that minted it fresh is asked for the model. */
     @Test
     public void anActivationThatMintedThePhaseStillOwesTheModel()
             throws Exception {
         ConcolicRegionRuntime.ActiveRegion active = region();
+        mintRow(active, "SOURCE_PHASE.0b2b2a3d", false);
 
+        assertTrue("this activation minted it, so the model is its own",
+                owesModel(active, "SOURCE_PHASE.0b2b2a3d"));
+    }
+
+    /**
+     * An activation that found the root already symbolic owes nothing.
+     *
+     * <p>Lane VM14's remaining two: companions addressed at
+     * REGION.08ab84c9#2, the second activation of a site activation #1 had
+     * already minted. A model is written into the value the mint is about
+     * to symbolize; a reuse has nothing to write it into, and "one variable
+     * per phase" is exactly why there is nothing to mint the second
+     * time.</p>
+     */
+    @Test
+    public void anActivationThatReusedTheRootOwesNothing()
+            throws Exception {
+        ConcolicRegionRuntime.ActiveRegion active = region();
+        mintRow(active, "SOURCE_PHASE.0b2b2a3d", true);
+
+        assertFalse("a reuse is not a mint",
+                owesModel(active, "SOURCE_PHASE.0b2b2a3d"));
+    }
+
+    private static void mintRow(ConcolicRegionRuntime.ActiveRegion active,
+                                String phaseId, boolean reused)
+            throws Exception {
         JsonObject mint = new JsonObject();
-        mint.addProperty("sourcePhaseId", "SOURCE_PHASE.0b2b2a3d");
+        mint.addProperty("sourcePhaseId", phaseId);
+        mint.addProperty("reused", reused);
         Field rows = ConcolicRegionRuntime.ActiveRegion.class
                 .getDeclaredField("symbolizedRows");
         rows.setAccessible(true);
         @SuppressWarnings("unchecked")
         List<JsonObject> published = (List<JsonObject>) rows.get(active);
         published.add(mint);
-
-        assertTrue("this activation minted it, so the model is its own",
-                observedPhase(active, "SOURCE_PHASE.0b2b2a3d"));
     }
 
-    private static boolean observedPhase(
+    private static boolean owesModel(
             ConcolicRegionRuntime.ActiveRegion active, String phaseId)
             throws Exception {
-        Method observed = ConcolicRegionRuntime.ActiveRegion.class
-                .getDeclaredMethod("observedConfiguredSourcePhase",
+        Method owes = ConcolicRegionRuntime.ActiveRegion.class
+                .getDeclaredMethod("owesConfiguredSourceModel",
                         String.class);
-        observed.setAccessible(true);
-        return (Boolean) observed.invoke(active, phaseId);
+        owes.setAccessible(true);
+        return (Boolean) owes.invoke(active, phaseId);
     }
 
     /** The published row, as the runtime writes it for one manual mint. */
