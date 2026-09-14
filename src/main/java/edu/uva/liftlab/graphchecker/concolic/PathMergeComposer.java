@@ -842,8 +842,18 @@ public final class PathMergeComposer {
                 // the family was a menu: the recorded polarity could take a
                 // delivery only a flipped replay ever made, and reach the
                 // failure with no marker moved.
+                // Every root this replay ran at a value some other replay
+                // did not -- not only the marker.  A root's domain pins it
+                // to the value the inventory recorded, which is one
+                // replay's; a delivery made by a replay running under a
+                // flipped serial number or a moved clock cell was then
+                // available at the recorded valuation with nothing
+                // contradicting it, because its guard never said which
+                // serial number produced it.  Restricting to varied roots
+                // is what keeps ROOT_NOT_ON_ANY_PATH honest, exactly as on
+                // a path.
                 terms.addAll(deliveringValuation(summary, declaredVariables,
-                        lowering));
+                        lowering, roots));
                 for (JsonElement decision : producerPrefix(group, resolver,
                         roots.byRawSymbol.keySet(), export)) {
                     terms.add(lowering.condition(decision,
@@ -923,16 +933,8 @@ public final class PathMergeComposer {
                         || !stated.add(raw)) {
                     continue;
                 }
-                // Only the marker polarity.  A marker is the thing the
-                // case declares varyable, so it is the thing an arm must be
-                // guarded by; every other root is already pinned to its
-                // recorded value by its own domain, and repeating that here
-                // -- once per arm, per replay -- made arms contradict the
-                // path conditions they sit beside rather than select
-                // between them.
                 String javaType = optionalString(
                         declaredVariables.get(raw), "javaType");
-                if (!"Z".equals(javaType)) continue;
                 JsonObject literal = literalOf(value, javaType);
                 if (literal == null) continue;
                 // Lowered as an expression, not spelled as SMT text: the
@@ -1258,6 +1260,34 @@ public final class PathMergeComposer {
                         inventory.disagreed.add(raw);
                     }
                     inventory.recorded.putIfAbsent(raw, value);
+                }
+                // A manual symbolic input is a root exactly like a
+                // configured source, and it is the member every replay
+                // publishes its own reading on: the mint evidence carries
+                // the seeding activation's reading alone, so judging
+                // variation from it said "one value" about a root nine
+                // replays read nine ways, and the valuation guard --
+                // whose whole filter is varied() -- then constrained
+                // neither marker nor any wall-clock cell.  What this
+                // member does not do is declare a root: the inventory's
+                // materialization and domain still come from the mint.
+                for (JsonElement encoded
+                        : array(summary, "manualSymbolicInputObservations")) {
+                    if (!encoded.isJsonObject()) continue;
+                    JsonObject event = encoded.getAsJsonObject();
+                    String raw = optionalString(event, "rawSymbol");
+                    String value = optionalString(event,
+                            ComposedManifest.RECORDED_SOURCE_VALUE);
+                    if (raw.isEmpty() || value.isEmpty()) continue;
+                    inventory.readings.computeIfAbsent(raw,
+                            ignored -> new LinkedHashSet<>()).add(value);
+                    String within = raw + "\n"
+                            + optionalString(summary, "summaryId");
+                    String priorHere = inventory.perSummary.put(within,
+                            value);
+                    if (priorHere != null && !priorHere.equals(value)) {
+                        inventory.disagreed.add(raw);
+                    }
                 }
             }
             return inventory;

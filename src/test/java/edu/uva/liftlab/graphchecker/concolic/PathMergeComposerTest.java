@@ -44,6 +44,14 @@ public class PathMergeComposerTest {
             + SymbolicSourceEvidence.engineLabelForPhase(PHASE, SOURCE)
             + "_com/example/Service";
     private static final String ROOT_TERM = "sym__EXAMPLE_ROOT__1";
+    private static final String SERIAL_PHASE = "SOURCE_PHASE.serial";
+    private static final String SERIAL_SOURCE = "EXAMPLE.SERIAL";
+    private static final String SERIAL_SIGNATURE =
+            "<com.example.Service: int serial>";
+    private static final String RAW_SERIAL = "M_I_field_"
+            + SymbolicSourceEvidence.engineLabelForPhase(SERIAL_PHASE,
+            SERIAL_SOURCE) + "_com/example/Service";
+    private static final String SERIAL_TERM = "sym__EXAMPLE_SERIAL__1";
 
     /**
      * Two replays of one site: the seed the root kept healthy and the flip
@@ -570,6 +578,142 @@ public class PathMergeComposerTest {
         assertEquals("the flipped polarity reaches it",
                 "sat", solve(result.smtLib + "(assert (= " + ROOT_TERM
                         + " false))\n(check-sat)\n"));
+    }
+
+    /**
+     * A delivery is unavailable at a root the delivering replay moved, even
+     * when that root is not a fault marker.
+     *
+     * <p>The two replays ran at different serial numbers, and only the one
+     * that ran at the flipped serial delivered the value the consumer fails
+     * on.  A domain pins that root to what the recording read, so the arm
+     * guard must carry the delivering replay's own value of it: without
+     * that conjunct the fatal delivery is available at the recorded
+     * valuation and the composition claims a failure no execution made.</p>
+     */
+    @Test
+    public void aDeliveryUnderAFlippedConfiguredRootIsUnavailable()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+        Path directory = Files.createTempDirectory("path-merge-serial");
+        JsonObject query = query();
+        // The consumer fails only on the 7 the flipped replay delivered.
+        query.getAsJsonArray("paths").add(path("only", "GROUP.FLIP",
+                notEqual(handoff(), constant(0)),
+                notEqual(handoff(), constant(9))));
+        Path queryFile = directory.resolve("reach_query.jsonl");
+        write(queryFile, JsonFields.WRITER.toJson(
+                SharedExpressionTable.compact(query)));
+
+        // Recorded first: the inventory's recorded value, and the domain,
+        // are the seed's 119982.
+        assertEquals("the fatal delivery was made at a serial the domain"
+                        + " does not allow", "unsat",
+                solve(serialComposition(directory, queryFile,
+                        "119982", "119981").smtLib));
+        // The same shapes with nothing varied: the delivery is available,
+        // so the guard, not the fixture, is what refused it above.
+        assertEquals("with no varied root the delivery is available", "sat",
+                solve(serialComposition(directory, queryFile,
+                        "119982", "119982").smtLib));
+    }
+
+    /**
+     * A replay's own reading counts wherever the runtime publishes it.
+     *
+     * <p>Mint evidence carries the seeding activation's reading alone: a
+     * replay that only re-read the root publishes it as a manual symbolic
+     * input observation.  Judging variation from the mint member alone said
+     * "one value" about a root two replays read two ways, and the valuation
+     * guard -- whose whole filter is that judgement -- then constrained
+     * nothing.</p>
+     */
+    @Test
+    public void aReadingPublishedAsAManualObservationStillVaries()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+        Path directory = Files.createTempDirectory("path-merge-manual");
+        JsonObject query = query();
+        query.getAsJsonArray("paths").add(path("only", "GROUP.FLIP",
+                notEqual(handoff(), constant(0)),
+                notEqual(handoff(), constant(9))));
+        Path queryFile = directory.resolve("reach_query.jsonl");
+        write(queryFile, JsonFields.WRITER.toJson(
+                SharedExpressionTable.compact(query)));
+
+        JsonObject seed = ranWithSerial("GROUP.SEED", "119982");
+        seed.add("vmHandoffEvents", handoffEvents(constant(9), 11L, 12L));
+        // The flip replay states its serial only on the manual member.
+        JsonObject flip = new JsonObject();
+        flip.addProperty("replayGroupId", "GROUP.FLIP");
+        flip.addProperty("summaryId", "GROUP.FLIP");
+        flip.add("vmHandoffEvents", handoffEvents(constant(7), 21L, 22L));
+        JsonArray observations = new JsonArray();
+        JsonObject observed = SymbolicSourceEvidence.manualEvent(
+                "PORT.serial", "node0/region/REGION.source#1#a1",
+                SERIAL_SIGNATURE, "I", RAW_SERIAL, SERIAL_TERM);
+        observed.addProperty("recordedValue", "119981");
+        observations.add(observed);
+        flip.add("manualSymbolicInputObservations", observations);
+
+        Path summaryFile = directory.resolve("summaries.jsonl");
+        write(summaryFile, JsonFields.WRITER.toJson(
+                SharedExpressionTable.compact(seed)) + "\n"
+                + JsonFields.WRITER.toJson(
+                SharedExpressionTable.compact(flip)) + "\n");
+        PathMergeComposer.Result result = PathMergeComposer.compose(
+                PathMergeComposer.Arguments.parse(new String[]{
+                        "--fatal-query", queryFile.toString(),
+                        "--summaries", summaryFile.toString(),
+                        "--output",
+                        directory.resolve("candidate.smt2").toString(),
+                        "--manifest",
+                        directory.resolve("manifest.json").toString()}));
+        assertEquals("the delivery was made at a serial the domain does not"
+                + " allow", "unsat", solve(result.smtLib));
+    }
+
+    /** Two replays of one handoff, each stating the serial it ran at. */
+    private static PathMergeComposer.Result serialComposition(
+            Path directory, Path queryFile, String seedSerial,
+            String flipSerial) throws IOException {
+        JsonObject seed = ranWithSerial("GROUP.SEED", seedSerial);
+        seed.add("vmHandoffEvents", handoffEvents(constant(9), 11L, 12L));
+        JsonObject flip = ranWithSerial("GROUP.FLIP", flipSerial);
+        flip.add("vmHandoffEvents", handoffEvents(constant(7), 21L, 22L));
+        Path summaryFile = directory.resolve(
+                "summaries-" + seedSerial + "-" + flipSerial + ".jsonl");
+        write(summaryFile, JsonFields.WRITER.toJson(
+                SharedExpressionTable.compact(seed)) + "\n"
+                + JsonFields.WRITER.toJson(
+                SharedExpressionTable.compact(flip)) + "\n");
+        return PathMergeComposer.compose(
+                PathMergeComposer.Arguments.parse(new String[]{
+                        "--fatal-query", queryFile.toString(),
+                        "--summaries", summaryFile.toString(),
+                        "--output", directory.resolve(
+                                "candidate-" + seedSerial + "-" + flipSerial
+                                        + ".smt2").toString(),
+                        "--manifest", directory.resolve(
+                                "manifest-" + seedSerial + "-" + flipSerial
+                                        + ".json").toString()}));
+    }
+
+    /** One replay's summary, stating the serial number it ran under. */
+    private static JsonObject ranWithSerial(String group, String serial) {
+        JsonObject summary = new JsonObject();
+        summary.addProperty("replayGroupId", group);
+        summary.addProperty("summaryId", group);
+        JsonObject symbol = new JsonObject();
+        symbol.addProperty("_type", "SymbolExpression");
+        symbol.addProperty("_java_type", "I");
+        symbol.addProperty("_exp", RAW_SERIAL);
+        List<JsonObject> events = new ArrayList<>();
+        events.add(SymbolicSourceEvidence.event(SERIAL_PHASE, SERIAL_SOURCE,
+                "node0/region/REGION.source#1#a1", SERIAL_SIGNATURE,
+                symbol, 1, false, SERIAL_TERM, serial));
+        SymbolicSourceEvidence.writeTo(summary, events);
+        return summary;
     }
 
     /** One replay's summary, stating the marker polarity it ran under. */
