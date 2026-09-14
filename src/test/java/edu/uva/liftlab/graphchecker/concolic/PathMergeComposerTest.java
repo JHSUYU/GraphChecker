@@ -963,7 +963,8 @@ public class PathMergeComposerTest {
                 "node0/region/REGION.source#1#a1", CLOCK_SIGNATURE, "J",
                 RAW_CLOCK, CLOCK_TERM,
                 "<org.apache.hadoop.util.Timer: long now()>",
-                "<com.example.Service: void serve()>#u3", 11L, reading);
+                "<com.example.Service: void serve()>#u3", 11L, reading,
+                reading);
         return row;
     }
 
