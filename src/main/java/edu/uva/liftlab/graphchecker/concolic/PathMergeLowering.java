@@ -64,6 +64,9 @@ final class PathMergeLowering extends VmLoweringCore {
      * whose lowering raised it.</p>
      */
     private List<String> pathSideConditions;
+    /** Container subterms named once, in the order they were built. */
+    private final Map<String, SharedTerm> sharedTerms =
+            new LinkedHashMap<>();
     private List<String> pathRefusals;
     /**
      * Which replay's values are being lowered.
@@ -115,6 +118,54 @@ final class PathMergeLowering extends VmLoweringCore {
                        String detail, Sort sort) {
         refuse(reason.composedSubject(origin, detail), "");
         return free(sort == null ? Sort.VALUE : sort);
+    }
+
+    /**
+     * One container subterm, lowered once and referenced by name.
+     *
+     * <p>A container version is read by every condition that mentions it,
+     * and its chain is the whole mutation history.  Re-inlining it at each
+     * read grows the formula as the product of the two, which is how one
+     * 17897 target reached OutOfMemoryError inside the unboxing of a chain
+     * element.  Naming it costs one {@code define-fun} and changes nothing
+     * the formula means.</p>
+     */
+    private static final class SharedTerm {
+        private final String name;
+        private final Sort sort;
+        private final String body;
+
+        private SharedTerm(String name, Sort sort, String body) {
+            this.name = name;
+            this.sort = sort;
+            this.body = body;
+        }
+    }
+
+    /**
+     * Names a pure container subterm, or returns it unchanged.
+     *
+     * <p>Interned by digest of sort and text, so one version lowered twice
+     * is one definition.  Insertion order is a topological order because a
+     * term is named only after the terms it is built from.</p>
+     */
+    private ContainerSmtCodec.Term name(ContainerSmtCodec.Term value) {
+        if (value == null || value.text.isEmpty()
+                || value.text.charAt(0) != '(') {
+            return value;
+        }
+        Sort sort = VmTermLowering.sortOfContainer(value.sort);
+        if (sort == Sort.UNKNOWN) return value;
+        String identity = sort.name() + "\u0000" + value.text;
+        String digest = CanonicalJson.sha256(identity);
+        SharedTerm held = sharedTerms.get(digest);
+        if (held == null) {
+            held = new SharedTerm(symbols.mint("container_dag__", identity,
+                    24), sort, value.text);
+            sharedTerms.put(digest, held);
+        }
+        return new ContainerSmtCodec.Term(held.name, value.sort,
+                value.integralWidth);
     }
 
     /** Records one refusal; a cut is the subset the gate reads. */
@@ -428,15 +479,21 @@ final class PathMergeLowering extends VmLoweringCore {
             }
 
             @Override
+            public ContainerSmtCodec.Term share(
+                    ContainerSmtCodec.Term value) {
+                return name(value);
+            }
+
+            @Override
             public ContainerSmtCodec.Term operand(JsonElement expression,
                                                   ContainerSmtCodec.Sort expected) {
                 if (ContainerSmtCodec.handles(expression)) {
-                    return ContainerSmtCodec.term(
-                            expression.getAsJsonObject(), this);
+                    return name(ContainerSmtCodec.term(
+                            expression.getAsJsonObject(), this));
                 }
                 if (ContainerSmtCodec.handlesField(expression)) {
-                    return ContainerSmtCodec.field(
-                            expression.getAsJsonObject(), this);
+                    return name(ContainerSmtCodec.field(
+                            expression.getAsJsonObject(), this));
                 }
                 return box(dispatch(expression,
                         VmTermLowering.sortOfContainer(expected),
@@ -455,8 +512,8 @@ final class PathMergeLowering extends VmLoweringCore {
                     unsupported("CannotBox:" + javaType);
                     return null;
                 }
-                return new ContainerSmtCodec.Term(boxed,
-                        ContainerSmtCodec.Sort.VALUE);
+                return name(new ContainerSmtCodec.Term(boxed,
+                        ContainerSmtCodec.Sort.VALUE));
             }
 
             private ContainerSmtCodec.Term box(Term value) {
@@ -468,9 +525,9 @@ final class PathMergeLowering extends VmLoweringCore {
             @Override
             public ContainerSmtCodec.Term unbox(ContainerSmtCodec.Term value,
                                                 String javaType) {
-                return ContainerSmtCodec.unboxValue(value, javaType,
+                return name(ContainerSmtCodec.unboxValue(value, javaType,
                         VmTermLowering.unboxedCellSort(
-                                JavaSmtSorts.sortOfJava(javaType)), this);
+                                JavaSmtSorts.sortOfJava(javaType)), this));
             }
 
             @Override
@@ -668,6 +725,11 @@ final class PathMergeLowering extends VmLoweringCore {
                     .append(' ').append(declaration.getValue().smt)
                     .append(")").append('\n');
         }
+        for (SharedTerm shared : sharedTerms.values()) {
+            query.append("(define-fun ").append(shared.name)
+                    .append(" () ").append(shared.sort.smt).append(' ')
+                    .append(shared.body).append(")").append('\n');
+        }
     }
 
     /** The whole query: preamble, declarations, assertions, check-sat. */
@@ -683,6 +745,7 @@ final class PathMergeLowering extends VmLoweringCore {
 
     /** Named rows of the rendered query, the formula-size measure. */
     int namedRows() {
-        return declarations.size() + functions.size() + assertions.size();
+        return declarations.size() + functions.size()
+                + sharedTerms.size() + assertions.size();
     }
 }
