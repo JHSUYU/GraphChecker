@@ -3675,9 +3675,25 @@ public final class ConcolicRegionRuntime {
         List<String> unapplied = new ArrayList<>();
         for (ModelAssignment assignment
                 : active.activation.modelAssignments) {
-            if (!active.appliedModelAssignments.contains(assignment.key)) {
-                unapplied.add(assignment.key);
+            if (active.appliedModelAssignments.contains(assignment.key)) {
+                continue;
             }
+            // A model for a configured source names a mint SITE, and the
+            // site is reached by whichever activation runs it.  An
+            // activation that did not reach it minted nothing to write the
+            // model into and owes nothing: on lane VM12 six companions
+            // addressed at REGION.08ab84c9 carried the serialNo model whose
+            // mint site is in updateKeys() -- REGION.aaa1cfd7, another
+            // member of the same linked group -- and were refused at their
+            // terminal for not applying a model that was never theirs to
+            // apply.  A model this activation DID mint for and did not
+            // write is still a refusal, which is the case this gate is for.
+            if (assignment.configuredSourceAssignment()
+                    && !active.observedConfiguredSourcePhase(
+                    assignment.configuredSourcePhaseId)) {
+                continue;
+            }
+            unapplied.add(assignment.key);
         }
         if (!unapplied.isEmpty()) {
             // Every linked member owns its explicit source assignments.  A
@@ -4156,7 +4172,10 @@ public final class ConcolicRegionRuntime {
             ensurePathRecordingStarted(active);
             JsonElement expression = primitiveBoxExpression(api, fresh);
             active.recordManualSymbolization(action, action.symbol,
-                    exactPath, fieldSignature, expression, true, false);
+                    exactPath, fieldSignature, expression, true, false,
+                    // Only an activation that read the value as the program
+                    // left it observed a recorded value.
+                    applied == null ? recordedScalar(concrete) : "");
             if (applied != null) {
                 active.recordModelAssignment(applied);
             }
@@ -6240,6 +6259,26 @@ public final class ConcolicRegionRuntime {
             configuredSourcePhaseObservations.add(observation);
         }
 
+        /** Whether this activation reached one declared mint site. */
+        private synchronized boolean observedConfiguredSourcePhase(
+                String phaseId) {
+            String wanted = safe(phaseId);
+            if (wanted.isEmpty()) return false;
+            for (JsonObject observation
+                    : configuredSourcePhaseObservations) {
+                if (wanted.equals(optionalString(observation,
+                        "matchedPhaseId"))) {
+                    return true;
+                }
+            }
+            for (JsonObject row : symbolizedRows) {
+                if (wanted.equals(optionalString(row, "sourcePhaseId"))) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
         /** Publishes one mint row for one entry of a declared site. */
         private synchronized void recordConfiguredSourceMint(
                 SourceSiteEntry entry, String sourceId,
@@ -6268,6 +6307,30 @@ public final class ConcolicRegionRuntime {
                 SymbolizeAction action, String requestedSymbol,
                 List<String> fieldPath, String fieldSignature,
                 JsonElement expression, boolean minted, boolean reused) {
+            recordManualSymbolization(action, requestedSymbol, fieldPath,
+                    fieldSignature, expression, minted, reused, "");
+        }
+
+        /**
+         * The same row, with the concrete value the mint read.
+         *
+         * <p>One mint publication shape: a configured-source mint states
+         * what the field held ({@code SymbolicSourceEvidence.recordedValue})
+         * and a manual one stated nothing, so a root the composer met
+         * through a manual input had no recorded value to lower -- on lane
+         * VM12 that is DelegationKey.expiryDate, minted as
+         * {@code M_J_field_REGION.aaa1cfd7...}, and
+         * RECORDED_ROOT_VALUE_UNSTATED was the anchor's last refusal.  The
+         * suppression rule is the configured source's too: a replay that
+         * wrote a model into the value read the model back, and publishing
+         * that as "recorded" is how a counterfactual becomes the
+         * recording.</p>
+         */
+        private synchronized void recordManualSymbolization(
+                SymbolizeAction action, String requestedSymbol,
+                List<String> fieldPath, String fieldSignature,
+                JsonElement expression, boolean minted, boolean reused,
+                String recordedValue) {
             if (action == null || minted == reused) {
                 throw new IllegalArgumentException(
                         "manual symbolization must be exactly minted or reused");
@@ -6299,6 +6362,9 @@ public final class ConcolicRegionRuntime {
                     : optionalString(exact, "_java_type"));
             row.addProperty("minted", minted);
             row.addProperty("reused", reused);
+            if (recordedValue != null && !recordedValue.isEmpty()) {
+                row.addProperty("recordedValue", recordedValue);
+            }
             symbolizedRows.add(row);
         }
 
