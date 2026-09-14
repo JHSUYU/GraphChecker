@@ -16,7 +16,7 @@ import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.decodeV
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.diag;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.parseJson;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.rootCause;
-import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.safe;
+import static edu.uva.liftlab.graphchecker.causynth.MapFields.safe;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.workloadSessionId;
 
 /**

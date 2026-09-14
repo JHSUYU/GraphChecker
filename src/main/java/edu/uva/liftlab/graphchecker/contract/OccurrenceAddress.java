@@ -50,7 +50,14 @@ import java.util.Objects;
  * anything, rather than half-matching on the parts it could read.</p>
  */
 public final class OccurrenceAddress {
-    private static final String REGION_MARKER = "/region/";
+    /**
+     * The one spelling of the region separator in an occurrence id.
+     *
+     * <p>{@link OccurrenceId} parses the same grammar from the other end and
+     * held its own copy of this string.  One grammar, one constant: a second
+     * spelling is how two parsers of one identity drift apart.</p>
+     */
+    static final String REGION_MARKER = "/region/";
     private static final String EPOCH_MARKER = "#epoch";
     /** Separates the request family from the region in the rendered form. */
     private static final char FAMILY_MARKER = '@';

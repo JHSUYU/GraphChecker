@@ -17,6 +17,14 @@ import edu.uva.liftlab.graphchecker.concolic.JsonFields;
  */
 public final class SiteId {
     private static final String UNIT_MARKER = "#u";
+    /**
+     * The member every row publishes a site under.
+     *
+     * <p>Defined once, here, with the grammar it spells.  Two contracts held
+     * their own {@code = "siteId"} constant, which is the drift this class
+     * exists to prevent.</p>
+     */
+    public static final String MEMBER = "siteId";
 
     private SiteId() {
     }

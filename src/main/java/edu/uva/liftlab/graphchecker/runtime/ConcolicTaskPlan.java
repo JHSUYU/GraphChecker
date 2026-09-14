@@ -55,7 +55,7 @@ import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.SKIP_OC
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.enclosingLoopRootAdmits;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.outgoingProducerMayDeferMissingContext;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicResultPublisher.registerRunTotalsHook;
-import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.safe;
+import static edu.uva.liftlab.graphchecker.causynth.MapFields.safe;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.sameHookIdentity;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.SKIP_ROOT_NEVER_EXECUTED;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicResultPublisher.writeSkipped;
@@ -291,59 +291,10 @@ final class ConcolicTaskPlan {
         SourceRef activationSource =
                 RuntimeTraceContext.activationSource(receiver);
         RuntimeTraceContext.View context = RuntimeTraceContext.current();
-        Map<String, Integer> actualOrdinalByScope =
-                new LinkedHashMap<>();
-        for (RuntimeTask task : tasks) {
-            if (!task.loopBodyRoot
-                    || !task.loopRootHookGroupKey().equals(
-                    safe(loopRootHookGroupKey))
-                    || !compatibleRoot(task.rootMethod, rootMethod,
-                    task.rootContextSelector,
-                    task.enclosingRootArgumentSelector,
-                    receiver, rootArguments, threadName)) {
-                continue;
-            }
-            // Outside the recording window there is nothing to count.  A
-            // workload starts its cluster, names its sources, then does the
-            // thing being recorded; whatever the process did before the
-            // first registration the recording never saw, so the plan
-            // counted none of it.  Counting it here numbers a different
-            // population than the plan numbered -- on hdfs-17960 the
-            // process's first saveNamespace, 38 seconds before the workload
-            // begins, took ordinal 1 and pushed the checkpoint activation
-            // the plan means to 2.
-            if (!RuntimeTraceContext.recordingWindowOpen()) continue;
-            // Counted before anything else may refuse it: the planner
-            // counted every observed activation of this region, so a
-            // candidate the replay declines for another reason still
-            // occupies the ordinal the recording gave it.  Filtering first
-            // would renumber the activations after it.
-            String scope = task.invocationCounterKey(countedLifecycle(
-                    task, activationSource), countedFamily(context));
-            countInvocation(scope, actualOrdinalByScope);
-            String sourceMismatch = sourceAdmissionMismatch(task,
-                    registeredReceiverSource, context);
-            if (!sourceMismatch.isEmpty()) {
-                task.noteUnaddressedCandidate(sourceMismatch);
-                continue;
-            }
-            // The request a root entered is recorded, never a refusal: an
-            // occurrence is (node, epoch, region, k-th activation), and the
-            // exchange that happened to be open around it is not part of
-            // that identity.  Vetoing on it refused a flip replay whose
-            // activation is the seed's -- same node, same region, same
-            // ordinal -- because the workload reached it under a different
-            // request the second time.
-            String enteredUnder = requestMismatch(task,
-                    registeredReceiverSource, context);
-            if (!enteredUnder.isEmpty()) {
-                task.noteRequestContext(enteredUnder);
-            }
-            if (mayDeferMissingContextToOutgoingAnchor(task,
-                    registeredReceiverSource, context)) {
-                continue;
-            }
-        }
+        Map<String, Integer> actualOrdinalByScope = countEntry(true,
+                loopRootHookGroupKey, rootMethod, receiver, rootArguments,
+                threadName, registeredReceiverSource, activationSource,
+                context);
         Map<String, Integer> admitted = new LinkedHashMap<>();
         // An activation the recording never saw is not a candidate here
         // either.  The counting pass above skipped it, so looking its
@@ -429,63 +380,10 @@ final class ConcolicTaskPlan {
         SourceRef activationSource =
                 RuntimeTraceContext.activationSource(receiver);
         RuntimeTraceContext.View context = RuntimeTraceContext.current();
-        Map<String, Integer> actualOrdinalByScope =
-                new LinkedHashMap<>();
-
-        // Count this physical entry once in every matching stable scope.
-        // This pass deliberately ignores task completion and candidate
-        // ownership: later planned ordinals must still see entries that
-        // an earlier task already consumed.
-        for (RuntimeTask task : tasks) {
-            if (task.loopBodyRoot
-                    || !task.rootHookGroupKey().equals(
-                    safe(rootHookGroupKey))
-                    || !compatibleRoot(task.rootMethod, rootMethod,
-                    task.rootContextSelector, task.rootArgumentSelector,
-                    receiver, rootArguments, threadName)) {
-                continue;
-            }
-            // Outside the recording window there is nothing to count.  A
-            // workload starts its cluster, names its sources, then does the
-            // thing being recorded; whatever the process did before the
-            // first registration the recording never saw, so the plan
-            // counted none of it.  Counting it here numbers a different
-            // population than the plan numbered -- on hdfs-17960 the
-            // process's first saveNamespace, 38 seconds before the workload
-            // begins, took ordinal 1 and pushed the checkpoint activation
-            // the plan means to 2.
-            if (!RuntimeTraceContext.recordingWindowOpen()) continue;
-            // Counted before anything else may refuse it: the planner
-            // counted every observed activation of this region, so a
-            // candidate the replay declines for another reason still
-            // occupies the ordinal the recording gave it.  Filtering first
-            // would renumber the activations after it.
-            String scope = task.invocationCounterKey(countedLifecycle(
-                    task, activationSource), countedFamily(context));
-            countInvocation(scope, actualOrdinalByScope);
-            String sourceMismatch = sourceAdmissionMismatch(task,
-                    registeredReceiverSource, context);
-            if (!sourceMismatch.isEmpty()) {
-                task.noteUnaddressedCandidate(sourceMismatch);
-                continue;
-            }
-            // The request a root entered is recorded, never a refusal: an
-            // occurrence is (node, epoch, region, k-th activation), and the
-            // exchange that happened to be open around it is not part of
-            // that identity.  Vetoing on it refused a flip replay whose
-            // activation is the seed's -- same node, same region, same
-            // ordinal -- because the workload reached it under a different
-            // request the second time.
-            String enteredUnder = requestMismatch(task,
-                    registeredReceiverSource, context);
-            if (!enteredUnder.isEmpty()) {
-                task.noteRequestContext(enteredUnder);
-            }
-            if (mayDeferMissingContextToOutgoingAnchor(task,
-                    registeredReceiverSource, context)) {
-                continue;
-            }
-        }
+        Map<String, Integer> actualOrdinalByScope = countEntry(false,
+                rootHookGroupKey, rootMethod, receiver, rootArguments,
+                threadName, registeredReceiverSource, activationSource,
+                context);
 
         // Same rule as the counting pass: outside the recording window
         // there is no candidate to select.
@@ -731,6 +629,89 @@ final class ConcolicTaskPlan {
      * per-entry map, so two tasks sharing one counter scope do not advance
      * it twice.</p>
      */
+    /**
+     * Whether this task's bucket counts an entry at this hook.
+     *
+     * <p>The one difference between a method root and an enclosing loop
+     * root: which hook group the task belongs to and which argument selector
+     * its plan row carries.  Everything after it is the same question.</p>
+     */
+    private boolean countsEntry(RuntimeTask task, boolean loopRoot,
+                                String hookGroupKey, String rootMethod,
+                                Object receiver, Object[] rootArguments,
+                                String threadName) {
+        if (task.loopBodyRoot != loopRoot) return false;
+        return (loopRoot ? task.loopRootHookGroupKey()
+                : task.rootHookGroupKey()).equals(safe(hookGroupKey))
+                && compatibleRoot(task.rootMethod, rootMethod,
+                task.rootContextSelector,
+                loopRoot ? task.enclosingRootArgumentSelector
+                        : task.rootArgumentSelector,
+                receiver, rootArguments, threadName);
+    }
+
+    /**
+     * Counts this physical entry once in every matching stable scope, and
+     * records what the run can already say about it.
+     *
+     * <p>One pass for both roots.  It was written twice -- once for a method
+     * root and once for an enclosing loop root -- and the two copies
+     * diverged: the loop copy went on comparing {@code
+     * exactOutgoingAddress || address.matches(observed)} after the address
+     * became the whole admission, so any invocation under the planned
+     * request answered any k of that region and one occurrence owned two
+     * enclosing invocations.  Two spellings of one rule is how that
+     * happened, so there is one.</p>
+     *
+     * <p>The pass deliberately ignores task completion and candidate
+     * ownership: later planned ordinals must still see entries an earlier
+     * task already consumed.</p>
+     */
+    private Map<String, Integer> countEntry(
+            boolean loopRoot, String hookGroupKey, String rootMethod,
+            Object receiver, Object[] rootArguments, String threadName,
+            SourceRef registeredReceiverSource, SourceRef activationSource,
+            RuntimeTraceContext.View context) {
+        Map<String, Integer> actualOrdinalByScope = new LinkedHashMap<>();
+        for (RuntimeTask task : tasks) {
+            if (!countsEntry(task, loopRoot, hookGroupKey, rootMethod,
+                    receiver, rootArguments, threadName)) {
+                continue;
+            }
+            // Outside the recording window there is nothing to count.  A
+            // workload starts its cluster, names its sources, then does the
+            // thing being recorded; whatever the process did before the
+            // first registration the recording never saw, so the plan
+            // counted none of it.  Counting it here numbers a different
+            // population than the plan numbered.
+            if (!RuntimeTraceContext.recordingWindowOpen()) continue;
+            // Counted before anything else may refuse it: the planner
+            // counted every observed activation of this region, so a
+            // candidate the replay declines for another reason still
+            // occupies the ordinal the recording gave it.  Filtering first
+            // would renumber the activations after it.
+            countInvocation(task.invocationCounterKey(countedLifecycle(
+                    task, activationSource), countedFamily(context)),
+                    actualOrdinalByScope);
+            String sourceMismatch = sourceAdmissionMismatch(task,
+                    registeredReceiverSource, context);
+            if (!sourceMismatch.isEmpty()) {
+                task.noteUnaddressedCandidate(sourceMismatch);
+                continue;
+            }
+            // The request a root entered is recorded, never a refusal: an
+            // occurrence is (node, epoch, region, family, k), and the
+            // exchange that happened to be open around it is not part of
+            // that identity.
+            String enteredUnder = requestMismatch(task,
+                    registeredReceiverSource, context);
+            if (!enteredUnder.isEmpty()) {
+                task.noteRequestContext(enteredUnder);
+            }
+        }
+        return actualOrdinalByScope;
+    }
+
     private synchronized void countInvocation(
             String scope, Map<String, Integer> actualOrdinalByScope) {
         if (actualOrdinalByScope.containsKey(scope)) return;

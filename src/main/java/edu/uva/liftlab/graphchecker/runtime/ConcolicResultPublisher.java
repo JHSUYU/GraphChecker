@@ -44,7 +44,7 @@ import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.excepti
 import static edu.uva.liftlab.graphchecker.runtime.SharedStateCapture.assembleRecordedSharedState;
 import static edu.uva.liftlab.graphchecker.runtime.SharedStateCapture.evidenceIdentity;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.rootCause;
-import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.safe;
+import static edu.uva.liftlab.graphchecker.causynth.MapFields.safe;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicTaskPlan.configuration;
 
 /**

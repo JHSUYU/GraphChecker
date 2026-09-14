@@ -21,7 +21,6 @@ package edu.uva.liftlab.graphchecker.contract;
  */
 public final class OccurrenceId {
     private static final String ACTIVATION_MARKER = "#a";
-    private static final String REGION_MARKER = "/region/";
 
     private final String planned;
     private final String activation;
@@ -62,7 +61,7 @@ public final class OccurrenceId {
      * two different ones.</p>
      */
     public String sourceKey() {
-        int marker = planned.indexOf(REGION_MARKER);
+        int marker = planned.indexOf(OccurrenceAddress.REGION_MARKER);
         return marker <= 0 ? "" : planned.substring(0, marker);
     }
 

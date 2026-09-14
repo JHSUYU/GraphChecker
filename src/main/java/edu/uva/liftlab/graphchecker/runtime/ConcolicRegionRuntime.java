@@ -1,5 +1,7 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
+import static edu.uva.liftlab.graphchecker.causynth.MapFields.safe;
+
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
@@ -5479,9 +5481,6 @@ public final class ConcolicRegionRuntime {
         return result;
     }
 
-    static String safe(String value) {
-        return value == null ? "" : value;
-    }
 
     /**
      * How a configured source's recorded value is spelled in the ledger.
