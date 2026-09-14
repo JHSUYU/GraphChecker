@@ -337,17 +337,28 @@ public final class ConcolicSummaryImporter {
                 }
             }
         }
+        // One classification path: the ledger says which rows stop a
+        // campaign, and the table prints every row it raised beside that
+        // answer.  The tally used to count every contract row as blocking,
+        // so a code the ledger registers as DIAGNOSTIC with its reason --
+        // ACTIVATION_REQUEST_DIVERGED -- stopped hdfs-17897 at IMPORT under
+        // the words "4 blocking row(s)".  A diagnostic row is printed, kept
+        // in import_diagnostics.jsonl, and does not stop the wave.
         if (!imported.contractViolations.isEmpty()) {
+            List<JsonObject> stopping = PublicationContract.blocking(
+                    imported.contractViolations);
             System.err.println("[concolic-import] publication contract: "
-                    + imported.contractViolations.size()
-                    + " blocking row(s); the corpus does not carry what the"
-                    + " plan asked for, so the campaign stops here rather"
-                    + " than meeting it as an unexecutable worklist");
+                    + imported.contractViolations.size() + " row(s), "
+                    + stopping.size() + " blocking"
+                    + (stopping.isEmpty()
+                    ? "; the wave continues" : "; the corpus does not carry"
+                    + " what the plan asked for, so the campaign stops here"
+                    + " rather than meeting it as an unexecutable worklist"));
             for (String line : PublicationContract.table(
                     imported.contractViolations)) {
                 System.err.println("[concolic-import]   " + line);
             }
-            System.exit(3);
+            if (!stopping.isEmpty()) System.exit(3);
         }
         if (imported.validSummaryCount == 0
                 && imported.rawResultCount > 0) {

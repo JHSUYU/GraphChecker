@@ -923,6 +923,17 @@ public final class GapLedger {
         return entry == null ? "" : entry.flipWaveReason;
     }
 
+    /**
+     * Why the ledger classes {@code code} as it does, or {@code ""}.
+     *
+     * <p>A row that carries its class must carry the reason with it, or the
+     * class is an opinion the reader has to trust.</p>
+     */
+    public static String reasonOf(String code) {
+        Entry entry = code == null ? null : REGISTRY.get(code.trim());
+        return entry == null ? "" : entry.reason;
+    }
+
     /** Whether {@code code} withholds a claim. */
     public static boolean blocking(String code) {
         return classOf(code) == GapClass.BLOCKING;

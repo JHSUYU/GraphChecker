@@ -166,6 +166,37 @@ public class PublicationContractTest {
                         .GapClass.DIAGNOSTIC,
                 edu.uva.liftlab.graphchecker.contract.GapLedger.classOf(
                         PublicationContract.ACTIVATION_REQUEST_DIVERGED));
+
+        // And the row says so, and the campaign reads it from there.  The
+        // ledger's answer was written down and never consulted: contract
+        // rows carried no class and the tally counted every one of them as
+        // blocking, so on hdfs-17897 lane17897f four diagnostic rows stopped
+        // the campaign at IMPORT under the words "4 blocking row(s)".
+        JsonObject task = anchored(target("TASK.a"),
+                "wl/nn0#epoch0/request/refresh-block-keys#1");
+        JsonObject ran = summary("TASK.a", SITE, TARGET_SITE);
+        ran.addProperty("requestKey", "wl/dn1#epoch0/request/heartbeat#3");
+        ran.addProperty("threadName", "IPC Server handler 6");
+        List<JsonObject> rows = PublicationContract.check(tasks(task),
+                Collections.singletonList(ran),
+                Collections.<JsonObject>emptyList());
+
+        assertEquals(1, rows.size());
+        assertEquals("DIAGNOSTIC",
+                rows.get(0).get(PublicationContract.CLASS).getAsString());
+        assertTrue("the row carries the ledger's own reason",
+                rows.get(0).get(PublicationContract.CLASS_REASON)
+                        .getAsString().contains("circumstance"));
+        assertTrue("and the campaign does not stop on it",
+                PublicationContract.blocking(rows).isEmpty());
+
+        // The control: a row the ledger classes BLOCKING still stops it.
+        List<JsonObject> silent = PublicationContract.check(
+                tasks(target("TASK.b")), Collections.<JsonObject>emptyList(),
+                Collections.<JsonObject>emptyList());
+        assertEquals("BLOCKING",
+                silent.get(0).get(PublicationContract.CLASS).getAsString());
+        assertEquals(1, PublicationContract.blocking(silent).size());
     }
 
     /** A task whose anchor names no request diverges from nothing. */
