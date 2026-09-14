@@ -1,0 +1,102 @@
+package edu.uva.liftlab.graphchecker.d3.contract;
+
+import java.util.Map;
+import java.util.Objects;
+
+/**
+ * CONTRACT-SPEC 2: one branch the focused region decided, as it decided it.
+ *
+ * <p>{@code term} is the predicate in SMT-LIB over the symbols this session
+ * declared, {@code outcome} the arm the run took, and {@code clockReadings} the
+ * clock values read while deciding it -- stated inside the path's own
+ * conjunction, never as a global assertion about a per-session fact.</p>
+ */
+public final class DecisionRow {
+    private final String sessionId;
+    private final OccurrenceAddress occurrence;
+    private final String siteId;
+    private final int ordinal;
+    private final boolean outcome;
+    private final String term;
+    private final Map<String, Long> clockReadings;
+
+    private DecisionRow(String sessionId, OccurrenceAddress occurrence,
+                        String siteId, int ordinal, boolean outcome,
+                        String term, Map<String, Long> clockReadings) {
+        this.sessionId = sessionId;
+        this.occurrence = occurrence;
+        this.siteId = siteId;
+        this.ordinal = ordinal;
+        this.outcome = outcome;
+        this.term = term;
+        this.clockReadings = clockReadings;
+    }
+
+    public static DecisionRow of(String sessionId, OccurrenceAddress occurrence,
+                                 String siteId, int ordinal, boolean outcome,
+                                 String term,
+                                 Map<String, Long> clockReadings) {
+        return new DecisionRow(Fields.text(sessionId, "sessionId"),
+                Fields.required(occurrence, "occurrence"),
+                Fields.text(siteId, "siteId"), Fields.ordinal(ordinal, "ordinal"),
+                outcome, Fields.stated(term, "term"),
+                Fields.copy(clockReadings));
+    }
+
+    public String sessionId() {
+        return sessionId;
+    }
+
+    public OccurrenceAddress occurrence() {
+        return occurrence;
+    }
+
+    /** The branch site inside the region. */
+    public String siteId() {
+        return siteId;
+    }
+
+    /** The k-th decision of that site inside this occurrence, 1-based. */
+    public int ordinal() {
+        return ordinal;
+    }
+
+    /** The arm the run took. */
+    public boolean outcome() {
+        return outcome;
+    }
+
+    /** The predicate in SMT-LIB over the declared symbols. */
+    public String term() {
+        return term;
+    }
+
+    /** The clocks read while deciding, by solver symbol. */
+    public Map<String, Long> clockReadings() {
+        return clockReadings;
+    }
+
+    @Override
+    public boolean equals(Object value) {
+        if (this == value) return true;
+        if (!(value instanceof DecisionRow)) return false;
+        DecisionRow other = (DecisionRow) value;
+        return ordinal == other.ordinal && outcome == other.outcome
+                && sessionId.equals(other.sessionId)
+                && occurrence.equals(other.occurrence)
+                && siteId.equals(other.siteId) && term.equals(other.term)
+                && clockReadings.equals(other.clockReadings);
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hash(sessionId, occurrence, siteId, ordinal, outcome,
+                term, clockReadings);
+    }
+
+    @Override
+    public String toString() {
+        return "DecisionRow{" + sessionId + " " + occurrence + " " + siteId
+                + "#" + ordinal + "=" + outcome + "}";
+    }
+}
