@@ -326,6 +326,16 @@ public final class PathMergeComposer {
                         arguments.clockSkewMillis)) {
                     if (!terms.contains(conjunct)) terms.add(conjunct);
                 }
+                // An assignment that answered a handoff mint is this path's
+                // control, exactly as a root assignment is: the replay ran
+                // with v_H at the value the obligation gave it, and a path
+                // that does not say so is a path the composition cannot
+                // state.  The row's recordedValue is what arrived and stays
+                // evidence only.
+                for (String conjunct : answeredHandoffs(member,
+                        declaredVariables, lowering)) {
+                    if (!terms.contains(conjunct)) terms.add(conjunct);
+                }
             }
             for (int index = 0; index < resolved.size(); index++) {
                 terms.add(lowering.condition(resolved.get(index),
@@ -873,12 +883,27 @@ public final class PathMergeComposer {
                         "exportEventId", -1L);
                 long attach = optionalLongInteger(event,
                         "attachEventId", -1L);
-                if (phase.isEmpty() || export <= 0L || attach <= 0L) {
+                // H's identity IS the handoff phase id, by construction:
+                // port, consumer address, attach ordinal, element path.  A
+                // consumer that minted v_H from a value no producer of this
+                // run exported -- a flip replay under one-node linking --
+                // states that phase and no VM edge, because there is no edge
+                // to state.  It joins its family by the phase like every
+                // other row and contributes no arm: it delivered nothing.
+                // What it did is on its own path, as the assignment that
+                // answered it.  A row that is NOT elementAbsent and still
+                // names no attach states no occurrence at all, and stays
+                // refused.
+                boolean elementAbsent = VmHandoffEvidence.isElementAbsent(
+                        event);
+                if (phase.isEmpty()
+                        || !elementAbsent && (export <= 0L || attach <= 0L)) {
                     gate(gates, PROPAGATION_CUT, "handoff " + symbol
                             + " states no exact occurrence to join on");
                     continue;
                 }
                 phaseBySymbol.put(symbol, phase);
+                if (elementAbsent) continue;
                 List<JsonObject> group = replayRows(replays, summary,
                         summary);
                 InSessionReadResolver resolver =
@@ -1225,6 +1250,41 @@ public final class PathMergeComposer {
         } catch (IOException | InterruptedException unavailable) {
             return "";
         }
+    }
+
+    /**
+     * The handoff answers this replay ran under, as SMT equalities.
+     *
+     * <p>A mint an obligation answered returned the model's value, not the
+     * one that arrived; the row states both.  The answer is the assignment
+     * that made this replay the execution it is, so the path carries it the
+     * way it carries a root's value.  A mint nobody answered states no
+     * answer and adds nothing.</p>
+     */
+    private static List<String> answeredHandoffs(
+            JsonObject summary, Map<String, JsonObject> declaredVariables,
+            PathMergeLowering lowering) {
+        List<String> answers = new ArrayList<>();
+        Set<String> stated = new LinkedHashSet<>();
+        for (JsonElement element : array(summary, "vmHandoffEvents")) {
+            if (!element.isJsonObject()) continue;
+            JsonObject event = element.getAsJsonObject();
+            String symbol = optionalString(event,
+                    InSessionReadResolver.HANDOFF_SYMBOL);
+            String value = optionalString(event,
+                    VmHandoffEvidence.ANSWERED_VALUE);
+            if (symbol.isEmpty() || value.isEmpty()
+                    || !declaredVariables.containsKey(symbol)
+                    || !stated.add(symbol)) {
+                continue;
+            }
+            JsonObject literal = literalOf(value, optionalString(
+                    declaredVariables.get(symbol), "javaType"));
+            if (literal == null) continue;
+            answers.add(lowering.condition(equals(symbol, literal),
+                    "handoff:answer:" + symbol));
+        }
+        return answers;
     }
 
     /** One recorded value as an expression node, or null. */
