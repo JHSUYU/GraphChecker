@@ -2387,18 +2387,41 @@ public final class ConcolicRegionRuntime {
         String portId = safe(site.portId());
         Field element = declaredInstanceField(owner, declaringClass,
                 fieldName, descriptor);
-        if (element == null || !element.getType().isPrimitive()) {
-            // A handoff variable is a scalar at one element.  An element the
-            // VM cannot mint on has no v_H, and a row without one names no
-            // occurrence two replays could be joined at, so it is a named
-            // gap rather than a row admission would refuse anyway.
+        List<HandoffLeaf> leaves = handoffLeaves(owner, element);
+        if (leaves.isEmpty()) {
+            // Never silence: a port whose delivered value exposes no
+            // primitive leaf the VM can mint on has no v_H, and a row
+            // without one names no occurrence two replays could be joined
+            // at, so the loss is named.
             recordHandoffGap(RpcExpressionHandoff.gap(
                     RpcExpressionHandoff.STAGE_ATTACH,
                     RpcExpressionHandoff.MISSING_METADATA, 0L,
-                    "handoff element is not an exact primitive: " + portId));
+                    "handoff element exposes no primitive leaf: " + portId));
             return;
         }
-        String elementPath = exactFieldSignature(element);
+        for (HandoffLeaf leaf : leaves) {
+            mintHandoffLeaf(active, portId, exportEvent, attachEvent,
+                    producerExpression, producerTaskId, producerOccurrenceId,
+                    leaf);
+        }
+    }
+
+    /**
+     * Mints v_H at one primitive leaf of one attach.
+     *
+     * <p>A port that crosses on a reference or an array is one attach and
+     * several variables: {@code exportAllKeys} delivers a {@code BlockKey[]}
+     * and what the consumer's formula reads are the leaves --
+     * {@code [i].keyId}, {@code [i].expiryDate}.  One row per leaf, the leaf
+     * in the element path, so each is its own handoff occurrence and R3
+     * joins each to its own family.</p>
+     */
+    private static void mintHandoffLeaf(
+            ActiveRegion active, String portId, long exportEvent,
+            long attachEvent, JsonElement producerExpression,
+            String producerTaskId, String producerOccurrenceId,
+            HandoffLeaf leaf) {
+        String elementPath = leaf.path;
         String phaseId;
         try {
             phaseId = HandoffPhaseContract.phaseId(portId,
@@ -2413,6 +2436,12 @@ public final class ConcolicRegionRuntime {
                             + unaddressed.getMessage()));
             return;
         }
+        Object owner = leaf.owner;
+        Field element = leaf.field;
+        String declaringClass = element.getDeclaringClass().getName();
+        String fieldName = element.getName();
+        String descriptor = javaTypeDescriptor(
+                element.getType().getTypeName());
         try {
             ConcolicVmBroker api = engine();
             String recordedValue = recordedScalar(element.get(owner));
@@ -2420,14 +2449,17 @@ public final class ConcolicRegionRuntime {
             // handoff assignment IS a configured-source assignment whose
             // phase id is this one, so the solver emits one row shape and
             // the runtime runs one mechanism.
+            // The identity is the leaf's indexed path; what the VM
+            // resolves on the owner is the field signature itself.
+            String signature = leaf.signature();
             ModelAssignment assignment = active.configuredSourceAssignment(
                     phaseId, portId, elementPath, owner);
             if (assignment != null
-                    && !writeModeledField(owner, elementPath, assignment)) {
+                    && !writeModeledField(owner, signature, assignment)) {
                 throw new IllegalStateException(
                         "handoff model could not be written");
             }
-            api.symbolizeExactField(owner, elementPath,
+            api.symbolizeExactField(owner, signature,
                     HandoffPhaseContract.engineLabelForPhase(phaseId,
                             portId));
             ensurePathRecordingStarted(active);
@@ -2455,6 +2487,92 @@ public final class ConcolicRegionRuntime {
                     RpcExpressionHandoff.INVOCATION_FAILED, 0L,
                     "handoff mint failed at " + portId + ": "
                             + rootCause(failure)));
+        }
+    }
+
+    /** One primitive leaf of one attach, and how the row names it. */
+    private static final class HandoffLeaf {
+        private final Object owner;
+        private final Field field;
+        /** How the row names this leaf: indexed, so two elements differ. */
+        private final String path;
+
+        private HandoffLeaf(Object owner, Field field, String path) {
+            this.owner = owner;
+            this.field = field;
+            this.path = path;
+        }
+
+        /** What the VM resolves on the owner: the bare field signature. */
+        private String signature() {
+            return exactFieldSignature(field);
+        }
+    }
+
+    /** How many leaves of one attach are minted before the rest is named. */
+    private static final int HANDOFF_LEAF_LIMIT = 64;
+
+    /**
+     * The primitive leaves one attach delivered.
+     *
+     * <p>A primitive destination is one leaf, itself.  A reference or array
+     * destination is the leaves reachable through it that the VM can mint
+     * on: each element's declared primitive instance fields, index-qualified
+     * so two elements are two handoff occurrences.  An array of primitives
+     * has no field to address and yields none, which the caller names rather
+     * than passes over.</p>
+     */
+    private static List<HandoffLeaf> handoffLeaves(Object owner,
+                                                   Field element) {
+        List<HandoffLeaf> leaves = new ArrayList<>();
+        if (element == null) return leaves;
+        if (element.getType().isPrimitive()) {
+            leaves.add(new HandoffLeaf(owner, element,
+                    exactFieldSignature(element)));
+            return leaves;
+        }
+        final Object value;
+        try {
+            value = element.get(owner);
+        } catch (Throwable unreadable) {
+            return leaves;
+        }
+        if (value == null) return leaves;
+        if (value.getClass().isArray()) {
+            int length = java.lang.reflect.Array.getLength(value);
+            for (int index = 0; index < length
+                    && leaves.size() < HANDOFF_LEAF_LIMIT; index++) {
+                Object item = java.lang.reflect.Array.get(value, index);
+                if (item == null) continue;
+                addPrimitiveLeaves(item, "[" + index + "]", leaves);
+            }
+            return leaves;
+        }
+        addPrimitiveLeaves(value, "", leaves);
+        return leaves;
+    }
+
+    private static void addPrimitiveLeaves(Object owner, String prefix,
+                                           List<HandoffLeaf> leaves) {
+        // Only the application's own objects.  An array of primitives boxes
+        // each element on the way out of reflection, and java.lang.Integer's
+        // own private "value" is not a leaf the workload addresses -- it is
+        // the box the array element already is, and minting into it would
+        // publish a handoff at a field no decode ever reads.
+        if (owner.getClass().getName().startsWith("java.")) return;
+        for (Field field : owner.getClass().getDeclaredFields()) {
+            if (leaves.size() >= HANDOFF_LEAF_LIMIT) return;
+            if (java.lang.reflect.Modifier.isStatic(field.getModifiers())
+                    || !field.getType().isPrimitive()) {
+                continue;
+            }
+            try {
+                field.setAccessible(true);
+            } catch (Throwable sealed) {
+                continue;
+            }
+            leaves.add(new HandoffLeaf(owner, field,
+                    prefix + exactFieldSignature(field)));
         }
     }
 
