@@ -23,16 +23,11 @@ import static org.junit.Assert.fail;
 /**
  * The region graph joins on an address, and refuses anything else.
  *
- * <p>These joins decide which rows belong to one occurrence.  They did it by
- * string equality on {@code occurrenceId}, which is correct exactly while
- * every id they see is a planned address, and silently merges two activations
- * the moment one carries an {@code #a<n>} suffix -- the address drops the
- * suffix and the string does not.  Refusing is the point: a merge here is
- * invisible, and a graph that cannot be built says so.</p>
- *
- * <p>The graph only scopes -- which rows belong together, which exchange an
- * edge names, where a region roots, which locations the failure can care
- * about.  It never decides what matters, picks an arm, or names a writer.</p>
+ * <p>String equality on {@code occurrenceId} merges two activations the
+ * moment one carries an {@code #a<n>} suffix, and a merge here is
+ * invisible, so a graph that cannot be built says so.  The graph only
+ * scopes: it never decides what matters, picks an arm, or names a
+ * writer.</p>
  */
 public class RegionGraphOccurrenceKeyTest {
     private static final String PLANNED =
@@ -77,14 +72,10 @@ public class RegionGraphOccurrenceKeyTest {
     /**
      * What names a recorded exchange edge across two recordings of one workload.
      *
-     * <p>The wire transaction the exchange ran on -- an IPC client id and call
-     * number, a SASL uuid -- is minted fresh in every run, so it cannot name
-     * the edge.</p>
-     *
-     * <p>The transaction stays on the edge as recorded transport evidence.  It is
-     * no longer part of the edge's name: the producing and consuming occurrence,
-     * the port, the direction and an ordinal counted over that tuple say which
-     * exchange this is in terms the next recording reproduces.</p>
+     * <p>The wire transaction is minted fresh in every run, so it cannot
+     * name the edge; it stays on it as transport evidence.  The name is the
+     * producing and consuming occurrence, the port, the direction and an
+     * ordinal over that tuple.</p>
      */
     @Test
     public void aRecordedExchangeEdgeIsNamedFromContentNotTheWire()

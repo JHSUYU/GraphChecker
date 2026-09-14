@@ -379,17 +379,11 @@ public class OccurrenceAddressIsNotARequestTest {
     /**
      * A value arriving over the wire does not say where the receiver ran.
      *
-     * <p>Execution context is set by execution-scope events only: a node
-     * registering its instances, or an async seed taken from a registered
-     * source -- never the SENDER's source out of the message header.</p>
-     *
-     * <p>The scope the workload does open -- {@code beginRequest(nnc,
-     * "refresh-block-keys")} in bug2 -- is what the send hangs off: the
-     * outbound envelope is active only when that scope carries a source, a
-     * request key and a request api, and the activation's attribution is that
-     * same source.  bug2 guards its fault marker with {@code
-     * causynth.active()}, so "it refused" is not actionable and which of the
-     * three was absent is.</p>
+     * <p>Execution context is set by execution-scope events only -- a node
+     * registering its instances, an async seed from a registered source --
+     * never the SENDER's source out of the message header; the scope the
+     * workload opens is what the send hangs off, and a refusal names which
+     * of source, request key and request api was absent.</p>
      */
     @Test
     public void executionContextIsNotProvenance() throws Exception {

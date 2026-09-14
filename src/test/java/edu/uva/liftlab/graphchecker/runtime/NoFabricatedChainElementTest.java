@@ -52,12 +52,10 @@ public class NoFabricatedChainElementTest {
     /**
      * A marker is answered from the recording or a model, or is a named gap.
      *
-     * <p>A seed has no model by construction, so reading "no model
-     * assignment" as "unanswered" refused every seed summary touching a
-     * declared marker, and with it the DEPENDENCY worklist
-     * ({@code NO_OBSERVED_PATH_SEED / REGION_PATH_SEED_REQUIRED}).  The
-     * recorded polarity is {@code primitiveValue} gated on {@code observed},
-     * and a flip answers from its model, which outranks it.</p>
+     * <p>A seed has no model by construction, so "no model assignment" is
+     * not "unanswered": the recorded polarity is {@code primitiveValue}
+     * gated on {@code observed}, and a flip answers from its model, which
+     * outranks it.</p>
      */
     @Test
     public void aControlledMarkerIsAnsweredOrNamedUnanswered()

@@ -23,14 +23,9 @@ import static org.junit.Assert.assertTrue;
  * A handoff belongs to the occurrence whose port it is, and is answered by
  * the attach that minted it.
  *
- * <p>Lane B2d's shape: the port is declared IN as a CALL_RETURN on the
- * decode, REGION.16ba41cf, and a CALL_RETURN attach runs in the CALLER's
- * frame, after the callee's activation has closed and published. The row
- * therefore rides on the caller, REGION.b7266d53, and one attach was
- * reported twice: unplanned there, unreproduced here. So H names the
- * consumer the plan declares, the row says which, and the reproduction
- * question is asked of the corpus rather than of the row that happened to
- * carry the evidence.</p>
+ * <p>A CALL_RETURN attach runs in the CALLER's frame, so the row rides on
+ * a different occurrence than the port is declared on: H names the consumer
+ * the plan declares, and reproduction is asked of the corpus.</p>
  */
 public class HandoffBelongsToItsConsumerTest {
     private static final String PORT = "XCH.1174244c.resp.block-key-id";
@@ -92,11 +87,9 @@ public class HandoffBelongsToItsConsumerTest {
      *
      * <p>The label {@code HOFF.<sha>} IS the identity of its attach, and
      * the attach happened in this same replay run, in whichever region
-     * activation's summary made it. Looking only at the flipped path's own
-     * summary found one attach where the model assigned five, and every such
-     * model was refused as not materializable -- so an assignment to a value
-     * that arrived on a wire is a configured-source assignment whose phase
-     * id is the one that obligation's handoff row names.</p>
+     * activation's summary made it: an assignment to a value that arrived
+     * on a wire is a configured-source assignment whose phase id is the one
+     * that obligation's handoff row names.</p>
      */
     @Test
     public void aHandoffVariableIsAnsweredByTheAttachThatMintedIt()

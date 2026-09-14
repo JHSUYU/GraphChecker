@@ -1,6 +1,7 @@
 package edu.uva.liftlab.graphchecker.concolic;
 
 import edu.uva.liftlab.graphchecker.contract.ComposedManifest;
+import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.HandoffPhaseContract;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceId;
 import edu.uva.liftlab.graphchecker.contract.RegionInstancePlan;
@@ -552,6 +553,16 @@ public final class PathMergeComposer {
                     + " of any path admitted at " + site + "#" + occurrence);
         }
 
+        // A clock root no admitted path values is otherwise free: the path
+        // window is the only one asserted, so the solver parks it at the
+        // 64-bit floor and the witness reads back a clock no run returns.
+        // The readings the recording states bound it wherever it appears.
+        int clockDomains = 0;
+        for (String domain : lowering.clockDomains(
+                arguments.clockSkewMillis)) {
+            lowering.assertNamed("clock_domain__" + clockDomains++, domain);
+        }
+
         BoundedLoopComposition loops = boundedLoops(regionPlans, fatal);
         JsonObject manifest = manifest(arguments, fatal, site, occurrence,
                 required, pathRows, rootRows, reachLedger, gates,
@@ -1081,10 +1092,16 @@ public final class PathMergeComposer {
                 // own valuation.
                 if (ClockRootPhysics.clockCallee(optionalString(row,
                         SymbolicSourceEvidence.DECLARED_CALLEE))) {
-                    String window = clockWindow(rootTermOf(
-                            declaredVariables.get(raw), raw), value,
+                    String term = rootTermOf(
+                            declaredVariables.get(raw), raw);
+                    String window = clockWindow(term, value,
                             clockSkewMillis);
                     if (!window.isEmpty()) valuation.add(window);
+                    // The same reading is this root's own evidence: every
+                    // instant any execution read it at bounds it, whether
+                    // or not the path this valuation belongs to is
+                    // admitted.
+                    lowering.observeClockReading(term, value);
                     continue;
                 }
                 if (varied != null && !varied.varied(raw)) continue;
@@ -1307,7 +1324,12 @@ public final class PathMergeComposer {
      * What one root may be, as the case declares it, or {@code ""} when the
      * case leaves it free.
      */
-    private static String rootDomain(JsonObject rootRow,
+    /** Where a case states the lowest value a declared root may take. */
+    static final String DECLARED_DOMAIN_MIN = "declaredDomainMin";
+    /** Where a case states the highest value a declared root may take. */
+    static final String DECLARED_DOMAIN_MAX = "declaredDomainMax";
+
+    static String rootDomain(JsonObject rootRow,
                                      JsonObject declared) {
         String term = optionalString(rootRow, "solverTerm");
         String recorded = optionalString(rootRow,
@@ -1321,6 +1343,19 @@ public final class PathMergeComposer {
         // A declared marker is free in {recorded, flipped}, which for a
         // Boolean is every value it has.
         if ("BOOL".equals(optionalString(rootRow, "sort"))) return "";
+        // A root the case declares a domain for is free inside it: the
+        // domain IS what the case says the root may be, so pinning it to
+        // the recorded value would answer the case's own question before
+        // the solver is asked.  Both bounds or neither -- half a domain
+        // states nothing.
+        String min = declaredBound(rootRow, declared, DECLARED_DOMAIN_MIN);
+        String max = declaredBound(rootRow, declared, DECLARED_DOMAIN_MAX);
+        if (!min.isEmpty() && !max.isEmpty()) {
+            rootRow.addProperty(DECLARED_DOMAIN_MIN, min);
+            rootRow.addProperty(DECLARED_DOMAIN_MAX, max);
+            return "(and (>= " + term + " " + smtIntegerLiteral(min)
+                    + ") (<= " + term + " " + smtIntegerLiteral(max) + "))";
+        }
         String literal = smtIntegerLiteral(recorded);
         if (literal.isEmpty()) return "";
         // A clock read has no global domain: its window is centred on the
@@ -1329,6 +1364,16 @@ public final class PathMergeComposer {
         // The path and the family arm carry it (deliveringValuation).
         if (wallClockRead(rootRow)) return "";
         return "(= " + term + " " + literal + ")";
+    }
+
+    /** One bound of a root's declared domain, as an integer, or "". */
+    private static String declaredBound(JsonObject rootRow,
+                                        JsonObject declared, String member) {
+        String stated = optionalString(rootRow, member);
+        if (stated.isEmpty() && declared != null) {
+            stated = optionalString(declared, member);
+        }
+        return smtIntegerLiteral(stated).isEmpty() ? "" : stated.trim();
     }
 
     /**
@@ -1347,13 +1392,28 @@ public final class PathMergeComposer {
 
     /** Every wall-clock root the merge lowered, as ledger rows. */
     private static List<JsonObject> clockReads(JsonArray rootRows,
-                                               long clockSkewMillis) {
+                                               long clockSkewMillis,
+                                               PathMergeLowering lowering) {
         List<JsonObject> reads = new ArrayList<>();
         for (JsonElement element : rootRows) {
             if (!element.isJsonObject()) continue;
             JsonObject read = clockLedgerRow(element.getAsJsonObject(),
                     clockSkewMillis);
-            if (read != null) reads.add(read);
+            if (read == null) continue;
+            // Every instant this root was read at, not only the seed's: a
+            // witness is a clock some execution of this case returned, and
+            // which execution it is the path says.  A reader that knows
+            // only the seed's reading calls a later replay's own instant a
+            // move of 320 seconds.
+            JsonArray readings = new JsonArray();
+            for (String reading : lowering == null
+                    ? Collections.<String>emptySet()
+                    : lowering.clockReadings(optionalString(read,
+                            "solverTerm"))) {
+                readings.add(reading);
+            }
+            if (readings.size() > 0) read.add("readings", readings);
+            reads.add(read);
         }
         return reads;
     }
@@ -1472,10 +1532,12 @@ public final class PathMergeComposer {
                 // states no sourceKey still names the occurrence, and the
                 // occurrence's own prefix is that node -- so the row states
                 // its source without a second lookup.
-                int region = consumer.indexOf("/region/");
+                OccurrenceAddress consumerAddress =
+                        OccurrenceAddress.parse(consumer);
                 declaration.addProperty("sourceKey",
                         firstNonBlank(optionalString(summary, "sourceKey"),
-                                region > 0 ? consumer.substring(0, region)
+                                consumerAddress.isNamed()
+                                        ? consumerAddress.sourceKey()
                                         : consumer));
                 declaration.addProperty("sourceOccurrenceId", consumer);
                 declaration.addProperty("fieldSignature",
@@ -1869,7 +1931,8 @@ public final class PathMergeComposer {
         // probe at all with NO_CLOCK_ROOT.
         manifest.add(ClockRootPhysics.MANIFEST_FIELD,
                 ClockRootPhysics.manifest(arguments.clockSkewMillis,
-                        clockReads(rootRows, arguments.clockSkewMillis)));
+                        clockReads(rootRows, arguments.clockSkewMillis,
+                                lowering)));
         // Ledgers the read-from reconstruction used to publish.  The merge
         // builds no such model, so each one is empty rather than absent:
         // a reader of this artifact must see "there is none", not "the

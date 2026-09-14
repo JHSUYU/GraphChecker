@@ -3,6 +3,7 @@ package edu.uva.liftlab.graphchecker.concolic;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -230,9 +231,7 @@ public final class SymbolicSourceEvidence {
         // region is the node itself.
         row.addProperty("sourcePhaseId", sourceIdentity.trim());
         row.addProperty("sourceId", sourceIdentity.trim());
-        int region = occurrenceId.indexOf("/region/");
-        row.addProperty("sourceKey", region > 0
-                ? occurrenceId.substring(0, region) : occurrenceId.trim());
+        row.addProperty("sourceKey", nodeOf(occurrenceId));
         if (declaredCallee != null && !declaredCallee.trim().isEmpty()) {
             row.addProperty(DECLARED_CALLEE, declaredCallee.trim());
         }
@@ -282,12 +281,10 @@ public final class SymbolicSourceEvidence {
             occurrence = optionalString(row, "occurrenceId");
             stateIfAbsent(declaration, "sourceOccurrenceId", occurrence);
         }
-        int region = occurrence.indexOf("/region/");
         stateIfAbsent(declaration, "sourcePhaseId", identity);
         stateIfAbsent(declaration, "sourceId", identity);
         stateIfAbsent(declaration, "fieldSignature", identity);
-        stateIfAbsent(declaration, "sourceKey",
-                region > 0 ? occurrence.substring(0, region) : occurrence);
+        stateIfAbsent(declaration, "sourceKey", nodeOf(occurrence));
         return declaration;
     }
 
@@ -534,4 +531,16 @@ public final class SymbolicSourceEvidence {
         }
         return result;
     }
+
+    /**
+     * The node and epoch an occurrence ran on, read through the address
+     * grammar rather than off the id's text; an id that names no address is
+     * the node itself.
+     */
+    private static String nodeOf(String occurrenceId) {
+        String id = occurrenceId == null ? "" : occurrenceId.trim();
+        OccurrenceAddress address = OccurrenceAddress.parse(id);
+        return address.isNamed() ? address.sourceKey() : id;
+    }
+
 }

@@ -65,12 +65,11 @@ public class ManualMintStatesItsValueTest {
     /**
      * A mint publishes the value it read -- and only a value it read.
      *
-     * <p>A clock is the one root every execution genuinely reads differently:
-     * {@code recordedValue} is the seed's reading, which the declared skew
-     * window is centred on, and {@code observedValue} is this run's instant,
-     * which the per-path window is centred on instead.  And a replay that
-     * wrote a model into the value read the model back: calling that
-     * "recorded" is how a counterfactual becomes the recording.</p>
+     * <p>A clock is the one root every execution reads differently:
+     * {@code recordedValue} is the seed's reading and {@code observedValue}
+     * is this run's instant, which the per-path window is centred on.  A
+     * replay that wrote a model into the value read the model back, and
+     * calling that "recorded" makes a counterfactual the recording.</p>
      */
     @Test
     public void aMintStatesTheValueItRead() throws Exception {
@@ -101,12 +100,10 @@ public class ManualMintStatesItsValueTest {
     /**
      * A model for a mint site is owed by the activation that minted it.
      *
-     * <p>Lane VM12: six companions carried the serialNo model whose mint site
-     * is in {@code updateKeys()}, and were refused for not applying a model
-     * never theirs to apply.  A model is written into the value the mint is
-     * about to symbolize, so an activation that never reached the site has
-     * nothing to write it into -- and neither has a reuse of an already
-     * symbolic root, which is what "one variable per phase" means.</p>
+     * <p>A model is written into the value the mint is about to symbolize,
+     * so an activation that never reached the site has nothing to write it
+     * into -- and neither has a reuse of an already symbolic root, which is
+     * what "one variable per phase" means.</p>
      */
     @Test
     public void theModelIsOwedOnlyByTheActivationThatMintedIt()
@@ -122,14 +119,11 @@ public class ManualMintStatesItsValueTest {
     /**
      * A model is applied only at a mint this run can place.
      *
-     * <p>An occurrence is (node, epoch, region, k-th activation), and a
-     * configured source names one mint SITE reached once per node lifecycle,
-     * so the epoch is the whole of what tells two mints of it apart.  A
-     * model at the wrong epoch rewrites a value the solver said nothing
-     * about.  Root admission admits an activation nothing attributed, because
-     * absence of evidence is not evidence of another occurrence; a model is
-     * different in kind and demands positive evidence, so an unattributed
-     * mint keeps the recorded value with a named gap, said out loud.</p>
+     * <p>A configured source names one mint SITE reached once per node
+     * lifecycle, so the epoch tells two mints of it apart and a model at
+     * the wrong epoch rewrites a value the solver said nothing about.  A
+     * model demands positive evidence, so an unattributed mint keeps the
+     * recorded value with a named gap.</p>
      */
     @Test
     public void aModelIsAppliedOnlyAtAMintThisRunCanPlace() throws Exception {
@@ -170,11 +164,9 @@ public class ManualMintStatesItsValueTest {
     /**
      * One site is one variable: every occurrence that reaches it is modelled.
      *
-     * <p>Lane BG's shape.  {@code isSnapshotDeletionOrdered()#u1} is reached
-     * by six regions, twice each; the replay applied the flip at one of the
-     * twelve identities the site had, so every other execution kept the
-     * recorded {@code true} and COMPOSE refused both target occurrences with
-     * TARGET_NOT_REACHED.  A configured source is declared by site, so a flip
+     * <p>A site reached by six regions twice each has twelve identities;
+     * applying a flip at one of them leaves every other execution on the
+     * recorded value.  A configured source is declared by site, so a flip
      * of it is a flip everywhere it is read.</p>
      */
     @Test

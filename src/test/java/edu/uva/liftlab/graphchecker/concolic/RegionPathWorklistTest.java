@@ -55,13 +55,10 @@ public class RegionPathWorklistTest {
      * A decision over a value that arrived on a wire is flippable, and the
      * obligation carries the row that flips it.
      *
-     * <p>Nothing about the arrived value is a root, so the walk that looks
-     * for root support finds none and the decision reads as closed by the
-     * recording.  What makes it varyable is the replay's own handoff row at
-     * that attach: it names the variable the VM minted there, and an
-     * assignment to that variable is the whole replay control -- no root
-     * assignment, no producer replay.  Without it bug3's
-     * {@code allKeys.get(keyId)} produced no obligation at all.</p>
+     * <p>Nothing about the arrived value is a root, so a walk for root
+     * support finds none.  What makes it varyable is the replay's own
+     * handoff row at that attach: an assignment to the variable the VM
+     * minted there is the whole replay control.</p>
      */
     @Test
     public void aDecisionOverAnArrivedValueIsFlippableThroughItsHandoff() {
@@ -244,20 +241,12 @@ public class RegionPathWorklistTest {
     /**
      * The prefix a replay must reproduce is pi: root-dependent decisions only.
      *
-     * <p>Lane B2's shape. {@code REGION.763d087e} is
-     * {@code Client$Connection.sendRpcRequest}, and every decision its seed
-     * activation published is concrete -- ten rows, each a
-     * {@code concreteObservation} with {@code rawPathConditionSize 0}, no
-     * witness and no VM event id. One of them, {@code #u16}, came out
-     * {@code true} where the recording had {@code false}, and the seed wave was
-     * refused with {@code BRANCH_REPLAY_MISMATCH} for it.</p>
-     *
-     * <p>A decision the VM contributed no path condition for has no predicate at
-     * all, so no root occurs in it: it is the IPC client's own state, not a step
-     * of this region's path, and it varies between two runs of one recording
-     * because the connection does. Recording it is right; refusing a replay for
-     * it is not. The plan cannot make this call -- every branch of a region is
-     * planned with policy EXPLORE -- so the observation is asked instead.</p>
+     * <p>A decision the VM contributed no path condition for has no
+     * predicate at all, so no root occurs in it: it is the caller's own
+     * state, not a step of this region's path, and it varies between two
+     * runs of one recording.  Recording it is right; refusing a replay for
+     * it is not, and the plan cannot make that call -- every branch is
+     * planned EXPLORE -- so the observation is asked instead.</p>
      */
     @Test
     public void aConcreteDecisionIsNotPartOfTheReplayPrefix() {
