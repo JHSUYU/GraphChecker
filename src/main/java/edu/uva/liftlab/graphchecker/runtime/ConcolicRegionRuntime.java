@@ -3177,6 +3177,19 @@ public final class ConcolicRegionRuntime {
      * which decisions were taken before an anchor and in what order two
      * activations' decisions interleave.</p>
      *
+     * <p>Nothing here reads the id's scale.  It was a per-ThreadContext
+     * counter -- 1, 2, 3 per thread, restarting for every context -- and the
+     * VM now draws it from the session-global event counter, the same one
+     * behind {@code fieldVersionId}, {@code readEventId} and
+     * {@code regionEnterEventId}.  The values stop being small and dense and
+     * start interleaving with the write log's, which is the point: "the
+     * latest write whose event precedes this decision" becomes a valid
+     * comparison, within one {@code sessionId}.  This publication is
+     * unchanged either way, and the only other runtime use of the id is the
+     * exact-event lookup in {@code PathConditionWindow}, which matches on
+     * equality and requires the id to be unique among the events read -- true
+     * on both scales.</p>
+     *
      * <p>It is published only when the VM assigned one.  A decision recorded
      * with the symbolic gate closed has no VM event, and stating a zero there
      * would order it ahead of everything the VM did record.</p>
@@ -7229,19 +7242,6 @@ public final class ConcolicRegionRuntime {
                     && fieldName.equals(field.name())
                     && descriptor.equals(javaTypeDescriptor(field.type()));
         }
-    }
-
-    /** Registration wins; inheritance fills only an absent replay alias. */
-    static boolean registeredSourceAnchorMatches(
-            String expectedSourceKey, SourceRef registeredReceiverSource,
-            SourceRef inheritedSource) {
-        if (registeredReceiverSource != null) {
-            return RuntimeTraceContext.sameSourceIdentity(
-                    expectedSourceKey, registeredReceiverSource.key());
-        }
-        return inheritedSource != null
-                && RuntimeTraceContext.sameSourceIdentity(
-                expectedSourceKey, inheritedSource.key());
     }
 
     /**
