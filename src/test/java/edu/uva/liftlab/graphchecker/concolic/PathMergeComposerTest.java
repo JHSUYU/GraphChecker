@@ -837,6 +837,125 @@ public class PathMergeComposerTest {
                         && windowed.get(0).startsWith("(and (>= "));
     }
 
+    /**
+     * A path that contradicts its own execution is named, not composed.
+     *
+     * <p>The invariant: a path must be satisfiable as the execution that
+     * made it -- that replay's roots as it read them, its clock cells in its
+     * own window, the deliveries it received.  One that is not says the
+     * composition has mis-stated that execution, so every answer it
+     * contributes is about the mis-statement; it is refused by name with the
+     * conjunct that closes it.</p>
+     */
+    @Test
+    public void aPathThatContradictsItsOwnReplayIsRefusedByName()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+        Path directory = Files.createTempDirectory("path-merge-self");
+        JsonObject query = query();
+        // The replay read the marker false; this path's own condition says
+        // it was true.
+        query.getAsJsonArray("paths").add(path("self", "GROUP.FLIP",
+                rootIs(true), notEqual(constant(1), constant(0))));
+        Path queryFile = directory.resolve("reach_query.jsonl");
+        write(queryFile, JsonFields.WRITER.toJson(
+                SharedExpressionTable.compact(query)));
+        Path summaryFile = directory.resolve("summaries.jsonl");
+        write(summaryFile, JsonFields.WRITER.toJson(
+                SharedExpressionTable.compact(ranAt("GROUP.SEED", "true")))
+                + "\n" + JsonFields.WRITER.toJson(
+                SharedExpressionTable.compact(ranAt("GROUP.FLIP", "false")))
+                + "\n");
+        PathMergeComposer.Result result = PathMergeComposer.compose(
+                PathMergeComposer.Arguments.parse(new String[]{
+                        "--fatal-query", queryFile.toString(),
+                        "--summaries", summaryFile.toString(),
+                        "--z3", "z3",
+                        "--output",
+                        directory.resolve("candidate.smt2").toString(),
+                        "--manifest",
+                        directory.resolve("manifest.json").toString()}));
+
+        JsonObject merge = result.manifest.getAsJsonObject(
+                PathMergeComposer.MANIFEST_FIELD);
+        assertTrue("the refusal names the invariant",
+                merge.getAsJsonArray("gates").toString()
+                        .contains(PathMergeComposer.PATH_NOT_SELF_CONSISTENT));
+        assertFalse("and the path is not composed",
+                merge.getAsJsonArray("paths").get(0).getAsJsonObject()
+                        .get("admitted").getAsBoolean());
+    }
+
+    /**
+     * A handoff variable is not a root, and its family says what it is.
+     *
+     * <p>Two things the artifact must state for a witness to be read
+     * through the family rather than against one replay's delivery: the
+     * variable carries its handoff phase, so no reader mistakes it for a
+     * root with a recorded value; and each arm names the replay that
+     * delivered it and the valuation that replay ran under, which is the
+     * mechanism behind taking that arm.</p>
+     */
+    @Test
+    public void aHandoffVariableCarriesItsPhaseAndItsArmsTheirReplays()
+            throws Exception {
+        Path directory = Files.createTempDirectory("path-merge-arms");
+        JsonObject query = query();
+        query.getAsJsonArray("paths").add(path("only", "GROUP.FLIP",
+                notEqual(handoff(), constant(0)),
+                notEqual(handoff(), constant(9))));
+        JsonObject seed = ranAt("GROUP.SEED", "true");
+        seed.add("vmHandoffEvents", handoffEvents(constant(9), 11L, 12L));
+        JsonObject flip = ranAt("GROUP.FLIP", "false");
+        flip.add("vmHandoffEvents", handoffEvents(constant(7), 21L, 22L));
+        Path queryFile = directory.resolve("reach_query.jsonl");
+        write(queryFile, JsonFields.WRITER.toJson(
+                SharedExpressionTable.compact(query)));
+        Path summaryFile = directory.resolve("summaries.jsonl");
+        write(summaryFile, JsonFields.WRITER.toJson(
+                SharedExpressionTable.compact(seed)) + "\n"
+                + JsonFields.WRITER.toJson(
+                SharedExpressionTable.compact(flip)) + "\n");
+        PathMergeComposer.Result result = PathMergeComposer.compose(
+                PathMergeComposer.Arguments.parse(new String[]{
+                        "--fatal-query", queryFile.toString(),
+                        "--summaries", summaryFile.toString(),
+                        "--output",
+                        directory.resolve("candidate.smt2").toString(),
+                        "--manifest",
+                        directory.resolve("manifest.json").toString()}));
+
+        boolean phased = false;
+        for (com.google.gson.JsonElement row : result.manifest
+                .getAsJsonArray(ComposedManifest
+                        .CONFIGURED_SOURCE_MATERIALIZATION_FIELD)) {
+            if (!HANDOFF_SYMBOL.equals(JsonFields.optionalString(
+                    row.getAsJsonObject(), "rawSymbol"))) {
+                continue;
+            }
+            phased = !JsonFields.optionalString(row.getAsJsonObject(),
+                    InSessionReadResolver.HANDOFF_PHASE_ID).isEmpty();
+        }
+        assertTrue("the handoff variable carries its phase, so no reader"
+                + " measures it against a recorded value", phased);
+        JsonObject family = result.manifest.getAsJsonObject(
+                PathMergeComposer.MANIFEST_FIELD)
+                .getAsJsonArray("handoffFamilies").get(0).getAsJsonObject();
+        assertFalse("the family names the variable it constrains",
+                JsonFields.optionalString(family, "handoffSolverTerm")
+                        .isEmpty());
+        JsonArray arms = family.getAsJsonArray("arms");
+        assertEquals("one arm per delivering replay", 2, arms.size());
+        for (com.google.gson.JsonElement element : arms) {
+            JsonObject arm = element.getAsJsonObject();
+            assertFalse("an arm names its replay",
+                    JsonFields.optionalString(arm, "replayGroupId")
+                            .isEmpty());
+            assertEquals("and the valuation that replay ran under", 1,
+                    arm.getAsJsonArray("valuation").size());
+        }
+    }
+
     /** One replay's reading of a cell the clock hook minted. */
     private static JsonObject clockReading(String reading) {
         JsonObject row = SymbolicSourceEvidence.manualEvent("PORT.now",

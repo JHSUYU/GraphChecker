@@ -664,9 +664,19 @@ final class PathMergeLowering extends VmLoweringCore {
         return absentKeyDefaults.values();
     }
 
-    /** The whole query: preamble, declarations, assertions, check-sat. */
-    String render() {
+    /**
+     * Preamble and declarations, with no assertion and no check.
+     *
+     * <p>What a caller needs to ask a question about one path on its own:
+     * the sorts and the names, without the other paths' conjunctions.</p>
+     */
+    String declarationsOnly() {
         StringBuilder query = new StringBuilder();
+        appendPreamble(query);
+        return query.toString();
+    }
+
+    private void appendPreamble(StringBuilder query) {
         query.append("; GraphChecker path-merge composed query").append('\n');
         query.append("(set-logic ALL)").append('\n');
         query.append("(set-option :produce-models true)").append('\n');
@@ -686,6 +696,12 @@ final class PathMergeLowering extends VmLoweringCore {
                     .append(' ').append(declaration.getValue().smt)
                     .append(")").append('\n');
         }
+    }
+
+    /** The whole query: preamble, declarations, assertions, check-sat. */
+    String render() {
+        StringBuilder query = new StringBuilder();
+        appendPreamble(query);
         for (String assertion : assertions) {
             query.append(assertion).append('\n');
         }

@@ -89,6 +89,9 @@ public final class PathMergeComposer {
     public static final String TARGET_NOT_REACHED = "TARGET_NOT_REACHED";
     /** A value the propagation owed arrived as a literal or a placeholder. */
     public static final String PROPAGATION_CUT = "PROPAGATION_CUT";
+    /** A path the composition cannot state as the execution that made it. */
+    public static final String PATH_NOT_SELF_CONSISTENT =
+            "PATH_NOT_SELF_CONSISTENT";
     /** A root-dependent branch was never flipped. */
     public static final String CLOSURE_INCOMPLETE = "CLOSURE_INCOMPLETE";
     /** A root in the formula states no recorded value. */
@@ -347,6 +350,30 @@ public final class PathMergeComposer {
                     "path" + pathOrdinal + ":phi");
             String fatalTerm = required == anchor.observedTakenOutcome()
                     ? observedTerm : "(not " + observedTerm + ")";
+            // INVARIANT: a path must be satisfiable as the execution that
+            // made it -- its replay's roots as that replay read them, its
+            // clock cells inside its own window, the deliveries it actually
+            // received.  A path that is not says the composition has
+            // mis-stated that execution, and every answer it then
+            // contributes to the disjunction is about the mis-statement.
+            // The fatal arm is deliberately NOT part of the question: a
+            // healthy path did not take it, and that is not an
+            // inconsistency.
+            String failing = selfInconsistentConjunct(arguments.z3, lowering,
+                    terms, replayDeliveries(replayGroup, declaredVariables,
+                            usedHandoffSymbols));
+            if (!failing.isEmpty()) {
+                row.addProperty("admitted", false);
+                row.addProperty("reason", PATH_NOT_SELF_CONSISTENT);
+                row.addProperty("failingConjunct", failing);
+                pathRows.add(row);
+                lowering.endPath();
+                gate(gates, PATH_NOT_SELF_CONSISTENT, "path " + pathOrdinal
+                        + " (" + optionalString(path, "replayGroupId")
+                        + ") is unsatisfiable at its own replay's valuation;"
+                        + " the conjunct that closes it is " + failing);
+                continue;
+            }
             terms.add(fatalTerm);
             // A membership no recording decides is this path's refusal, not
             // a note on the side.  The read still lowers -- to "does this
@@ -824,6 +851,7 @@ public final class PathMergeComposer {
         JsonArray published = new JsonArray();
         if (usedHandoffSymbols.isEmpty()) return published;
         Map<String, List<String>> armsBySymbol = new LinkedHashMap<>();
+        Map<String, JsonArray> armRowsBySymbol = new LinkedHashMap<>();
         Map<String, String> phaseBySymbol = new LinkedHashMap<>();
         for (JsonObject summary : summaries) {
             for (JsonElement encoded : array(summary, "vmHandoffEvents")) {
@@ -888,6 +916,24 @@ public final class PathMergeComposer {
                         "handoff:" + phase + ":bind"));
                 armsBySymbol.computeIfAbsent(symbol,
                         ignored -> new ArrayList<String>()).add(and(terms));
+                // What this arm IS, for a reader of the witness.  A handoff
+                // variable is not a root and has no recorded value of its
+                // own, so "it moved" is not a thing that can be said about
+                // it: the mechanism behind a delivery is the delivering
+                // replay's, and the model picks the arm.  The row says
+                // which replay, what it delivered, and the valuation it ran
+                // under, so the solver reads the mechanism THROUGH the
+                // family instead of measuring v_H against one replay's
+                // delivery and calling the difference an unexplained move.
+                JsonObject arm = new JsonObject();
+                arm.addProperty("replayGroupId", optionalString(summary,
+                        "replayGroupId"));
+                arm.addProperty("deliveredValue", optionalString(event,
+                        ComposedManifest.RECORDED_SOURCE_VALUE));
+                arm.add("valuation", armValuation(summary,
+                        declaredVariables, roots));
+                armRowsBySymbol.computeIfAbsent(symbol,
+                        ignored -> new JsonArray()).add(arm);
             }
         }
         for (String symbol : usedHandoffSymbols) {
@@ -906,6 +952,10 @@ public final class PathMergeComposer {
             row.addProperty(InSessionReadResolver.HANDOFF_PHASE_ID,
                     phaseBySymbol.get(symbol));
             row.addProperty("pairs", arms.size());
+            row.addProperty("handoffSolverTerm", rootTermOf(
+                    declaredVariables.get(symbol), symbol));
+            JsonArray armRows = armRowsBySymbol.get(symbol);
+            row.add("arms", armRows == null ? new JsonArray() : armRows);
             published.add(row);
         }
         return published;
@@ -923,6 +973,45 @@ public final class PathMergeComposer {
      * all and the SOLVE stage refused it -- twelve rows on laneVM14, every
      * one a manual input.  The mint row is where the identity is.</p>
      */
+    /**
+     * The valuation one delivering replay ran under, as rows.
+     *
+     * <p>The same roots {@link #deliveringValuation} constrains, said as
+     * data rather than as SMT: a reader of a witness needs to know which
+     * replay's assignment a delivery came with, and what that assignment
+     * was, to name the mechanism behind it.</p>
+     */
+    private static JsonArray armValuation(
+            JsonObject summary, Map<String, JsonObject> declaredVariables,
+            RootInventory varied) {
+        JsonArray rows = new JsonArray();
+        Set<String> stated = new LinkedHashSet<>();
+        for (String member : new String[]{"symbolicSourceEvidence",
+                "manualSymbolicInputObservations"}) {
+            for (JsonElement element : array(summary, member)) {
+                if (!element.isJsonObject()) continue;
+                JsonObject row = element.getAsJsonObject();
+                String raw = optionalString(row, "rawSymbol");
+                String value = executionReading(row);
+                if (raw.isEmpty() || value.isEmpty()
+                        || !declaredVariables.containsKey(raw)
+                        || !stated.add(raw)) {
+                    continue;
+                }
+                boolean clock = ClockRootPhysics.clockCallee(optionalString(
+                        row, SymbolicSourceEvidence.DECLARED_CALLEE));
+                if (!clock && varied != null && !varied.varied(raw)) continue;
+                JsonObject stated_row = new JsonObject();
+                stated_row.addProperty("solverTerm", rootTermOf(
+                        declaredVariables.get(raw), raw));
+                stated_row.addProperty("value", value);
+                stated_row.addProperty("wallClock", clock);
+                rows.add(stated_row);
+            }
+        }
+        return rows;
+    }
+
     /**
      * The root valuation one replay ran under, as SMT equalities.
      *
@@ -1026,6 +1115,108 @@ public final class PathMergeComposer {
     private static String rootTermOf(JsonObject declared, String raw) {
         return JavaSmtSorts.smtName(firstNonBlank(
                 optionalString(declared, "symbol"), "sym__" + raw));
+    }
+
+    /**
+     * What this path's own replay received at every handoff it used.
+     *
+     * <p>The family says a delivery is one of the values some replay made
+     * there; asking whether THIS path is consistent with itself means
+     * asking under the delivery its own replay made.</p>
+     */
+    private static List<String> replayDeliveries(
+            List<JsonObject> replayGroup,
+            Map<String, JsonObject> declaredVariables,
+            Set<String> usedHandoffSymbols) {
+        List<String> deliveries = new ArrayList<>();
+        Set<String> stated = new LinkedHashSet<>();
+        for (JsonObject summary : replayGroup) {
+            for (JsonElement element : array(summary, "vmHandoffEvents")) {
+                if (!element.isJsonObject()) continue;
+                JsonObject event = element.getAsJsonObject();
+                String symbol = optionalString(event,
+                        InSessionReadResolver.HANDOFF_SYMBOL);
+                String value = optionalString(event,
+                        ComposedManifest.RECORDED_SOURCE_VALUE);
+                if (symbol.isEmpty() || value.isEmpty()
+                        || !declaredVariables.containsKey(symbol)
+                        || smtIntegerLiteral(value).isEmpty()
+                        || !stated.add(symbol)) {
+                    continue;
+                }
+                deliveries.add("(= " + rootTermOf(
+                        declaredVariables.get(symbol), symbol) + " "
+                        + smtIntegerLiteral(value) + ")");
+            }
+        }
+        return deliveries;
+    }
+
+    /**
+     * The first conjunct that makes this path contradict its own execution,
+     * or {@code ""} when it does not.
+     *
+     * <p>Binary search over the prefix: the shortest prefix that is unsat
+     * ends at the conjunct that closed it.</p>
+     */
+    private static String selfInconsistentConjunct(
+            Path z3, PathMergeLowering lowering, List<String> terms,
+            List<String> deliveries) {
+        if (z3 == null) return "";
+        List<String> conjuncts = new ArrayList<>(terms);
+        conjuncts.addAll(deliveries);
+        if (conjuncts.isEmpty()) return "";
+        String preamble = lowering.declarationsOnly();
+        if (!"unsat".equals(ask(z3, preamble, conjuncts,
+                conjuncts.size()))) {
+            return "";
+        }
+        int low = 1;
+        int high = conjuncts.size();
+        while (low < high) {
+            int middle = (low + high) / 2;
+            if ("unsat".equals(ask(z3, preamble, conjuncts, middle))) {
+                high = middle;
+            } else {
+                low = middle + 1;
+            }
+        }
+        String conjunct = conjuncts.get(low - 1);
+        return conjunct.length() > 400
+                ? conjunct.substring(0, 400) + "..." : conjunct;
+    }
+
+    /** One z3 answer over the first {@code count} conjuncts. */
+    private static String ask(Path z3, String preamble,
+                              List<String> conjuncts, int count) {
+        StringBuilder query = new StringBuilder(preamble);
+        for (int index = 0; index < count; index++) {
+            query.append("(assert ").append(conjuncts.get(index))
+                    .append(")\n");
+        }
+        query.append("(check-sat)\n");
+        try {
+            Process process = new ProcessBuilder(z3.toString(), "-in",
+                    "-smt2").redirectErrorStream(true).start();
+            try (java.io.Writer input = new java.io.OutputStreamWriter(
+                    process.getOutputStream(),
+                    java.nio.charset.StandardCharsets.UTF_8)) {
+                input.write(query.toString());
+            }
+            String last = "";
+            try (java.io.BufferedReader output = new java.io.BufferedReader(
+                    new java.io.InputStreamReader(process.getInputStream(),
+                            java.nio.charset.StandardCharsets.UTF_8))) {
+                String line;
+                while ((line = output.readLine()) != null) {
+                    if (!line.trim().isEmpty()) last = line.trim();
+                }
+            }
+            process.waitFor();
+            return last;
+        } catch (IOException | InterruptedException unavailable) {
+            return "";
+        }
     }
 
     /** One recorded value as an expression node, or null. */
@@ -1453,7 +1644,14 @@ public final class PathMergeComposer {
                                     "sourceKey")));
             for (String member : new String[]{"sourceId", "sourcePhaseId",
                     "sourceOccurrenceId", "fieldSignature", "portId",
-                    SymbolicSourceEvidence.DECLARED_CALLEE, "siteId"}) {
+                    SymbolicSourceEvidence.DECLARED_CALLEE, "siteId",
+                    // A handoff variable travels on this row like a root
+                    // because the lowering declares it like one -- but it
+                    // is not one, and a reader that measures its model
+                    // value against "the recorded value" is measuring one
+                    // replay's delivery and calling the difference a move.
+                    // The phase says which it is.
+                    InSessionReadResolver.HANDOFF_PHASE_ID}) {
                 row.addProperty(member, declared == null ? ""
                         : optionalString(declared, member));
             }
@@ -1745,6 +1943,11 @@ public final class PathMergeComposer {
             row.addProperty("solverTerm",
                     optionalString(root, "solverTerm"));
             row.addProperty("wallClock", wallClockRead(root));
+            // Carried so a reader can tell a handoff variable from a root
+            // without matching on a symbol's spelling.
+            row.addProperty(InSessionReadResolver.HANDOFF_PHASE_ID,
+                    optionalString(root,
+                            InSessionReadResolver.HANDOFF_PHASE_ID));
             values.add(row);
         }
         return values;
