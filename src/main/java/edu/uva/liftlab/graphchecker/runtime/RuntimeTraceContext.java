@@ -277,9 +277,25 @@ final class RuntimeTraceContext {
         Frame activeFrame = state.frames.peek();
         long token = nextId();
         state.scopes.push(new ScopeFrame(token, state, activeFrame));
+        // Execution context is set by execution-scope events only: a node's
+        // registration of its instances, or an async seed from a registered
+        // source.  A value arriving over the wire is provenance, and the
+        // propagated expression already carries it.
+        //
+        // The third arm of this used to be the SENDER's source, parsed out of
+        // the message header, and it wrote that node into the RECEIVING
+        // thread's ambient context whenever the local owner was unregistered
+        // and the thread had no source yet.  At record time a DataNode thread
+        // already carries the DN, so the arm never fired; at replay the
+        // thread may be fresh, so it did -- and on hdfs-17899 bug3 that is
+        // "matching root inherited hdfs-17899/nn0#epoch0 instead of
+        // hdfs-17899/target-dn#epoch0", an activation addressed to the node
+        // whose value it received rather than the node it ran on.  Same
+        // function on both sides, over inputs only the replay mutated.
         SourceRef localSource = sourceFor(localOwner);
-        state.source = localSource != null ? localSource
-                : state.source != null ? state.source : remote.source;
+        if (localSource != null) {
+            state.source = localSource;
+        }
         state.requestKey = remote.requestKey;
         state.requestApi = remote.requestApi;
         state.pendingRemoteParentSpanId = remote.parentSpanId;
@@ -736,16 +752,22 @@ final class RuntimeTraceContext {
         }
     }
 
+    /**
+     * What one message states about the exchange it belongs to.
+     *
+     * <p>The header also names the SENDER's source, and it is deliberately
+     * not kept: that is where the value came from, and execution context is
+     * set by execution-scope events only.  It is still parsed, because a
+     * header that cannot state it is malformed.</p>
+     */
     private static final class MessageContext {
         private final long parentSpanId;
-        private final SourceRef source;
         private final String requestKey;
         private final String requestApi;
 
-        private MessageContext(long parentSpanId, SourceRef source,
-                               String requestKey, String requestApi) {
+        private MessageContext(long parentSpanId, String requestKey,
+                               String requestApi) {
             this.parentSpanId = parentSpanId;
-            this.source = source;
             this.requestKey = requestKey;
             this.requestApi = requestApi;
         }
@@ -761,15 +783,16 @@ final class RuntimeTraceContext {
                 if (parentSpan < 0L || epoch < 0L) {
                     throw new IllegalArgumentException();
                 }
-                SourceRef source = new SourceRef(decoded(parts[3]),
-                        decoded(parts[4]), decoded(parts[5]), epoch);
+                // Constructed to validate the header, not retained.
+                new SourceRef(decoded(parts[3]), decoded(parts[4]),
+                        decoded(parts[5]), epoch);
                 String requestKey = decoded(parts[6]);
                 String requestApi = decoded(parts[7]);
                 if (requestKey.isEmpty() || requestApi.isEmpty()) {
                     throw new IllegalArgumentException();
                 }
-                return new MessageContext(parentSpan, source,
-                        requestKey, requestApi);
+                return new MessageContext(parentSpan, requestKey,
+                        requestApi);
             } catch (RuntimeException malformed) {
                 throw new IllegalArgumentException(
                         "malformed trace context header");
