@@ -124,6 +124,46 @@ public class ConfiguredSourceMintEpochTest {
                 assignment(active, new Object()));
     }
 
+
+    /**
+     * One site is one variable: every occurrence that reaches it is modelled.
+     *
+     * <p>Lane BG's shape.  {@code SnapshotManager.isSnapshotDeletionOrdered()
+     * #u1} is reached by six regions, twice each; the solver flipped it to
+     * {@code false} and the replay applied that at exactly one of the twelve
+     * identities the site had -- {@code SOURCE_PHASE.f2395415…}, occurrence
+     * {@code REGION.9492ec77…#1} -- so every other execution kept the
+     * recorded {@code true}, the target region ran under the recorded root
+     * and published {@code targetReach.outcome:false}, and COMPOSE refused
+     * both target occurrences with TARGET_NOT_REACHED.</p>
+     *
+     * <p>A configured source is declared by site, so it is one variable per
+     * replay and a flip of it is a flip everywhere it is read.</p>
+     */
+    @Test
+    public void everyOccurrenceOfOneSiteAnswersOneValuation()
+            throws Exception {
+        RuntimeTraceContext.resetForTests();
+        Object manager = new Object();
+        RuntimeTraceContext.registerSource(manager,
+                new SourceRef("CLUSTER_NODE", "NAMENODE", NODE, 1L));
+
+        String first = NODE + "#epoch1/region/" + REGION + "#1";
+        String second = NODE + "#epoch1/region/" + REGION + "#2";
+        assertEquals("one site, one variable, whatever reached it",
+                phaseId(first), phaseId(second));
+
+        ConcolicRegionRuntime.ActiveRegion one =
+                region(NODE + "#epoch1", first);
+        assertNotNull("the first occurrence is modelled",
+                assignment(one, manager));
+
+        ConcolicRegionRuntime.ActiveRegion two =
+                region(NODE + "#epoch1", second);
+        assertNotNull("and so is the second, on the same valuation",
+                assignment(two, manager));
+    }
+
     // ---------- harness ----------
 
     private ConcolicRegionRuntime.ActiveRegion region() throws Exception {
@@ -188,9 +228,9 @@ public class ConfiguredSourceMintEpochTest {
     }
 
     private static String phaseId(String occurrenceId) {
-        return ConfiguredSourcePhaseContract.phaseId(occurrenceId,
+        return ConfiguredSourcePhaseContract.phaseId(SOURCE_ID,
                 edu.uva.liftlab.graphchecker.contract.SiteId.of(METHOD, UNIT),
-                ConfiguredSourcePhaseContract.Phase.PUBLISH, 1);
+                ConfiguredSourcePhaseContract.Phase.PUBLISH);
     }
 
     private static JsonObject task(String sourceKey, String occurrenceId) {

@@ -140,7 +140,10 @@ public final class ConfiguredSourcePhaseContract {
         Map<String, Integer> previousOrdinals = new LinkedHashMap<>();
         long previousSeq = -1L;
         for (Occurrence phase : phases) {
-            if (!phaseIds.add(phase.phaseId())
+            // The phase id is the variable and repeats across the
+            // executions of its site; what must be unique is the execution.
+            if (!phaseIds.add(phase.phaseId() + "\n"
+                    + phase.baselineOrdinal())
                     || !eventSeqs.add(phase.runtimeEventSeq())
                     || !invocationIds.add(phase.runtimeInvocationId())
                     || phase.runtimeEventSeq() <= previousSeq) {
@@ -181,8 +184,8 @@ public final class ConfiguredSourcePhaseContract {
         row.addProperty("declarationUnitIndex",
                 declaration.declarationUnitIndex());
         row.addProperty("siteId", declaration.siteId());
-        row.addProperty("phaseId", phaseId(occurrence, declaration.siteId(),
-                declaration.phase(), baselineOrdinal));
+        row.addProperty("phaseId", phaseId(declaration.sourceId(),
+                declaration.siteId(), declaration.phase()));
         row.addProperty("phaseKind", declaration.phase().name());
         row.addProperty("sourceOccurrenceId", occurrence);
         row.addProperty("baselineOrdinal", baselineOrdinal);
@@ -202,15 +205,34 @@ public final class ConfiguredSourcePhaseContract {
         return row;
     }
 
-    public static String phaseId(String occurrenceId, String siteId,
-                                 Phase phase, int baselineOrdinal) {
-        if (baselineOrdinal <= 0) {
-            throw new IllegalArgumentException(
-                    "baselineOrdinal must be positive");
-        }
-        String identity = required(occurrenceId, "occurrenceId") + "\n"
+    /**
+     * The identity of one configured source: its site, and nothing else.
+     *
+     * <p>A configured source is declared by SITE, so it is <em>one variable
+     * per replay</em>: every execution of that site answers the same
+     * valuation, and a solver that flips it flips it everywhere.  The
+     * occurrence that happened to reach it first, and which execution of it
+     * that was, are facts about where it was observed, not about which
+     * variable it is; they stay on the row as evidence.</p>
+     *
+     * <p>They used to be in the identity, and it cost hdfs-17960 the bug.
+     * One mint site,
+     * {@code SnapshotManager.isSnapshotDeletionOrdered()#u1}, had twelve
+     * identities in one campaign -- two per region occurrence that reached
+     * it, across six regions.  The flip solved for exactly one of them
+     * ({@code SOURCE_PHASE.f2395415…}, occurrence {@code REGION.9492ec77…#1},
+     * value {@code false}); every other execution of the same site kept the
+     * recorded {@code true}, so the target region ran under the recorded
+     * root again and published {@code targetReach.outcome:false}.  The same
+     * splitting made ten <em>other</em> tasks wait on an anchor identity that
+     * never appeared, which is the fifteen
+     * {@code REGION_CAUSAL_ANCHOR_NOT_OBSERVED} rows.</p>
+     */
+    public static String phaseId(String sourceId, String siteId,
+                                 Phase phase) {
+        String identity = required(sourceId, "sourceId") + "\n"
                 + required(siteId, "siteId") + "\n"
-                + requiredPhase(phase).name() + "\n" + baselineOrdinal;
+                + requiredPhase(phase).name();
         return "SOURCE_PHASE." + UUID.nameUUIDFromBytes(
                 identity.getBytes(StandardCharsets.UTF_8));
     }
@@ -285,8 +307,8 @@ public final class ConfiguredSourcePhaseContract {
                 text(row, "runtimeDeclaredCallee"), "runtimeDeclaredCallee");
         String phaseId = required(text(row, "phaseId"), "phaseId");
         if (baselineOrdinal <= 0 || eventSeq <= 0L || invocationId <= 0L
-                || !phaseId.equals(phaseId(sourceOccurrenceId,
-                declared.siteId(), declared.phase(), baselineOrdinal))) {
+                || !phaseId.equals(phaseId(declared.sourceId(),
+                declared.siteId(), declared.phase()))) {
             throw new IllegalArgumentException(
                     PLAN_FIELD + " has an invalid runtime identity");
         }
