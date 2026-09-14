@@ -193,6 +193,21 @@ public final class ClaimPolicy {
      * instead of publishing a reachable verdict with an empty mechanism
      * list.</p>
      */
+    /**
+     * The composed formula is satisfiable with nothing moved, on a run whose
+     * recording took the healthy arm at the anchor.
+     *
+     * <p>That is not a witness, it is an alarm: the execution the disjunct
+     * describes did not fail, so a formula it satisfies has a freedom the
+     * recording does not -- an identity the model may null, a handoff no
+     * producer binds, a read nothing pins.  The run still enumerates the
+     * moved valuations and still reports the witness it finds, so the
+     * finding is visible beside the alarm; the alarm blocks acceptance,
+     * because a formula that answers yes to the run that did not fail
+     * answers nothing about the run that would.</p>
+     */
+    static final String FORMULA_SAT_AT_RECORDED_VALUATION =
+            "FORMULA_SAT_AT_RECORDED_VALUATION";
     static final String FINDING_MECHANISM_UNNAMED =
             "FINDING_MECHANISM_UNNAMED";
     /**
@@ -781,6 +796,16 @@ public final class ClaimPolicy {
         return flipped;
     }
 
+    /** The case guards one valuation was solved under, as one string. */
+    private static String selectorsOf(JsonObject valuation) {
+        List<String> guards = new ArrayList<>();
+        for (JsonElement element : array(valuation,
+                "pinnedCaseSelectors")) {
+            if (element.isJsonPrimitive()) guards.add(element.getAsString());
+        }
+        return String.join(",", guards);
+    }
+
     /**
      * Whether the witness's own path observed the arm the failure needs.
      *
@@ -1234,6 +1259,11 @@ public final class ClaimPolicy {
         }
         boolean recordedFailure = recordedFailureExplained(valuations,
                 markers, manifest);
+        JsonObject atRecordedValuation = allRecordedValuation(valuations,
+                markers);
+        boolean satAtRecorded = atRecordedValuation != null
+                && satisfied(atRecordedValuation)
+                && !recordingTookTheFatalArm(manifest, atRecordedValuation);
         // What the necessity probe said about each valuation's clock group.
         Map<Integer, WitnessLegitimacy.ClockNecessity> clockNecessity =
                 clockNecessityByValuation(reach);
@@ -1283,7 +1313,12 @@ public final class ClaimPolicy {
             }
             if (local.isEmpty()) {
                 someSatWitnessExplained = true;
-                if (explainedOrdinal < 0) {
+                // The all-recorded valuation on a healthy recording is the
+                // alarm, not the witness, so the search for one continues
+                // past it; without this the run rests on the disjunct that
+                // raised the alarm and reports nothing else.
+                if (explainedOrdinal < 0 && !(satAtRecorded
+                        && candidate == atRecordedValuation)) {
                     explainedOrdinal = index;
                 }
                 // A witness that moved a declared root off what the
@@ -1398,6 +1433,9 @@ public final class ClaimPolicy {
         result.addProperty("declaredMarkers", markers.size());
         result.addProperty("plantedMarkers", planted.size());
         result.addProperty("recordedFailureExplained", recordedFailure);
+        result.addProperty(FORMULA_SAT_AT_RECORDED_VALUATION,
+                !satAtRecorded ? "" : firstNonEmpty(selectorsOf(
+                        atRecordedValuation), "valuation 0"));
         result.addProperty("recordingTookTheFatalArm",
                 recordingTookTheFatalArm(manifest,
                         allRecordedValuation(valuations, markers)));
@@ -1797,6 +1835,20 @@ public final class ClaimPolicy {
                             + " witness this composition explains, over "
                             + optionalInteger(legitimacy, "declaredMarkers", 0)
                             + " declared marker(s): " + unwitnessedFault));
+        }
+
+        String satAtRecorded = optionalString(legitimacy,
+                FORMULA_SAT_AT_RECORDED_VALUATION);
+        if ("REACHABLE".equals(reachability) && !satAtRecorded.isEmpty()) {
+            blockers.add(blocker(FORMULA_SAT_AT_RECORDED_VALUATION,
+                    firstNonEmpty(satAtRecorded, "valuation 0"),
+                    "the composed formula is satisfiable with every declared"
+                            + " root at the value the recording read, on a"
+                            + " run whose recording took the healthy arm at"
+                            + " the anchor: the disjunct " + satAtRecorded
+                            + " describes an execution that did not fail, so"
+                            + " the formula has a freedom that execution did"
+                            + " not have and no witness of it is a finding"));
         }
 
         // A reachable verdict is a finding about the program, and a finding

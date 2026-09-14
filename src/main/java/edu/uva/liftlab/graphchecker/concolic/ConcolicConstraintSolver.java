@@ -1879,11 +1879,21 @@ public final class ConcolicConstraintSolver {
                         + "[A-Za-z0-9-]+.*");
     }
 
-    /** VM placeholders and allocation witnesses already denote concrete oops. */
+    /**
+     * References the recording held, which are objects and not null.
+     *
+     * <p>VM placeholders and allocation witnesses denote concrete oops, and
+     * so does a tracked object reference {@code M_L'some/Class'_<rid>}: the
+     * execution read a field off it, so there was an object there.  Left
+     * free, a model answers a null check by making the reference null, which
+     * is a value no execution produced -- the composed query's own healthy
+     * paths were decided that way until this said so.</p>
+     */
     private static boolean fixedNonNullReference(String raw, Sort sort) {
         return sort == Sort.REF && raw != null
                 && (raw.startsWith("P_L")
-                || VmExpressionIr.isExecutionLocalStructuralWitness(raw));
+                || VmExpressionIr.isExecutionLocalStructuralWitness(raw)
+                || InSessionReadResolver.referencedObjectRid(raw) > 0L);
     }
 
     /** This encoder's own answer to "is this Java type a String?". */

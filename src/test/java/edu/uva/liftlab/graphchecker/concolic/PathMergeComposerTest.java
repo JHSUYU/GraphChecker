@@ -220,6 +220,14 @@ public class PathMergeComposerTest {
         assertEquals(0, gates(valued).size());
         assertFalse("a projection the run valued is no free accessor",
                 valued.smtLib.contains("declare-fun field__"));
+        // The object it read from was an object: the execution took fields
+        // off it, so a witness may not answer a null check by nulling it.
+        assertTrue(valued.smtLib.contains("(not (= identity__"));
+        String identity = valued.smtLib.substring(
+                valued.smtLib.indexOf("(not (= identity__") + 8);
+        identity = identity.substring(0, identity.indexOf(' '));
+        assertEquals("unsat", solve(valued.smtLib + "(assert (= " + identity
+                + " nullRef))\n(check-sat)\n"));
         // And one it states no value for is refused by name, never minted.
         PathMergeComposer.Result invented = composed("path-merge-unvalued",
                 path("seed", "GROUP.SEED",

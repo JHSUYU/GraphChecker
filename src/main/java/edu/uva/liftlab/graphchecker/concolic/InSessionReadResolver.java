@@ -623,7 +623,18 @@ public final class InSessionReadResolver {
         if (!"SymbolExpression".equals(optionalString(node, "_type"))) {
             return -1L;
         }
-        String symbol = optionalString(node, "_exp");
+        return referencedObjectRid(optionalString(node, "_exp"));
+    }
+
+    /**
+     * The rid inside a raw {@code M_L'some/Class'_<rid>} symbol, or -1.
+     *
+     * <p>The one reader of that spelling: a projection's owner is asked for
+     * it here, and so is a lowering deciding whether a symbol denotes an
+     * object this execution held.</p>
+     */
+    public static long referencedObjectRid(String symbol) {
+        if (symbol == null) return -1L;
         int quoted = symbol.lastIndexOf("'_");
         if (!symbol.startsWith("M_L'") || quoted < 0) return -1L;
         String digits = symbol.substring(quoted + 2);
