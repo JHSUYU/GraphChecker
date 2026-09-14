@@ -555,6 +555,21 @@ final class ConcolicResultPublisher {
         result.addProperty("plannedOccurrenceId", task.occurrenceId);
         result.addProperty("occurrenceId", active.occurrenceId());
         result.addProperty("activationOrdinal", active.activationOrdinal);
+        if (task.loopBodyRoot) {
+            // Which enclosing invocation these bodies were charged to.  The
+            // bodies of occurrence k are the bodies of ONE enclosing
+            // activation; without these three members "two invocations, one
+            // occurrence" could only be inferred from thread names, which is
+            // how lane11741f's REGION.2392e4b7...#5 came to hold #a1..#a6
+            // from one handler and #a7,#a8 from another and be read as a
+            // single activation.
+            result.addProperty("enclosingInvocationEvent",
+                    active.enclosingInvocationEvent);
+            result.addProperty("enclosingInvocationThread",
+                    active.enclosingInvocationThread);
+            result.addProperty("enclosingInvocationOrdinal",
+                    active.enclosingInvocationOrdinal);
+        }
         // Telemetry only: which activation cost the wall clock.  The importer
         // builds its summary from a named field list, so nothing downstream
         // hashes these and no replay match can turn on them.

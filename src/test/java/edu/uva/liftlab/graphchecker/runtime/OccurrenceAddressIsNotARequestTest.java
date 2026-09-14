@@ -10,6 +10,7 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.util.Collections;
+import java.util.Map;
 import java.util.Set;
 
 import static org.junit.Assert.assertEquals;
@@ -242,8 +243,9 @@ public class OccurrenceAddressIsNotARequestTest {
         RuntimeTraceContext.resetForTests();
         ConcolicTaskPlan.RuntimeTask task = task();
 
-        Set<String> admitted = plan(task).addressLoopRootInvocation(
-                task.rootMethod, task.rootMethod, null, new Object[0]);
+        Map<String, Integer> admitted = plan(task)
+                .addressLoopRootInvocation(task.rootMethod, task.rootMethod,
+                        null, new Object[0], 1L);
 
         assertTrue("nothing outside the window is admitted",
                 admitted.isEmpty());
@@ -282,7 +284,7 @@ public class OccurrenceAddressIsNotARequestTest {
      * before it named a source: a workload may register long before it
      * records, and hdfs-11741 restarts its cluster in between.</p>
      */
-    private static Set<String> replayOnce() {
+    private static Map<String, Integer> replayOnce() {
         RuntimeTraceContext.resetForTests();
         CausynthTraceRecorder.setRecordingStartedForTests(false);
         ConcolicTaskPlan.RuntimeTask task = task();
@@ -293,17 +295,18 @@ public class OccurrenceAddressIsNotARequestTest {
 
         assertTrue("the cluster start is outside the window",
                 plan.addressLoopRootInvocation(task.rootMethod,
-                        task.rootMethod, node, new Object[0]).isEmpty());
+                        task.rootMethod, node, new Object[0], 11L)
+                        .isEmpty());
         assertTrue("and it is not a candidate that failed to answer",
                 task.unansweredAddress().startsWith(
                         "0 compatible activation(s)"));
 
         CausynthTraceRecorder.setRecordingStartedForTests(true);
 
-        Set<String> admitted = plan.addressLoopRootInvocation(
-                task.rootMethod, task.rootMethod, node, new Object[0]);
+        Map<String, Integer> admitted = plan.addressLoopRootInvocation(
+                task.rootMethod, task.rootMethod, node, new Object[0], 12L);
         assertEquals("the first activation the recording saw is occurrence 1",
-                Collections.singleton(task.taskId), admitted);
+                Collections.singletonMap(task.taskId, 1), admitted);
         return admitted;
     }
 
