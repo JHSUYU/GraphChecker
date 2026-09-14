@@ -265,7 +265,7 @@ jlong ContainerSupport::publish_state(oop container, Expression *new_state,
   // existed.  The receiver of the relation being published *is* that base,
   // and publish_initial is a no-op once the location is tracked.
   if (!SharedFieldVersions::is_tracked(location)) {
-    ContainerExpression *relation = new_state->as_container_relation();
+    ContainerExpression *relation = new_state->as_container_expression();
     Expression *base = relation == NULL ? NULL : relation->get_receiver();
     if (base != NULL) SharedFieldVersions::publish_initial(location, base);
   }

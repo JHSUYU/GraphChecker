@@ -75,14 +75,6 @@ public:
   // without it.
   virtual bool is_guarded_reference_read() { return false; }
 
-  /**
-   * This node as a container relation, or NULL when it is not one.
-   *
-   * Hotspot builds with -fno-rtti, so a dynamic_cast is not available; this
-   * is the same narrow virtual the predicates above use.
-   */
-  virtual ContainerExpression *as_container_relation() { return NULL; }
-
   // The exact jint this node denotes, written to `value`, or false when it
   // denotes anything else.  Undoing a recorded INSERT to recover the content
   // a container held before it needs the position the insert happened at, and
