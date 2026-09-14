@@ -2533,6 +2533,15 @@ campaign_explore() {
     # computes that closure once and writes each member's own manifest and
     # worklist into the member's own directory.
     status=0
+    # The same declaration COMPOSE reads.  An obligation's handoff controls
+    # are constrained by their family from this corpus, and a family arm is
+    # only as constraining as the roots inside it: without the case's
+    # declared domain the arms would pin every answer to what the recording
+    # delivered, and no rotation the case assumes could ever be explored.
+    local -a planner_domains
+    planner_domains=()
+    [[ -z "${causynth_root_domains}" ]] \
+      || planner_domains+=(--root-domains "${causynth_root_domains}")
     run_java_main \
       edu.uva.liftlab.graphchecker.concolic.ConcolicPathFlipPlanner \
       --summaries "${summaries}" \
@@ -2540,6 +2549,7 @@ campaign_explore() {
       --records "${records}" \
       --members "${roster}" \
       --topology-epoch "${iteration_id}" \
+      "${planner_domains[@]}" \
       "${bound_args[@]}" \
       >"${wave_dir}/stdout.log" 2>"${wave_dir}/stderr.log" || status=$?
     # Exit 2 names a member whose worklist is not executable; which member it

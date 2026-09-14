@@ -81,13 +81,23 @@ public class HandoffBelongsToItsConsumerTest {
 
     /**
      * A handoff variable is answered by the attach that minted it, wherever
-     * in this replay that attach happened.
+     * in this replay that attach happened -- and only with a value some
+     * producer of the corpus can deliver.
      *
      * <p>The label {@code HOFF.<sha>} IS the identity of its attach, and
      * the attach happened in this same replay run, in whichever region
      * activation's summary made it: an assignment to a value that arrived
      * on a wire is a configured-source assignment whose phase id is the one
      * that obligation's handoff row names.</p>
+     *
+     * <p>What the model may choose for it is the handoff's family: the
+     * expressions the producer paths of that phase exported. Left free, the
+     * solver answered hdfs-17897's five block-key handoffs {@code 1,1,1,1,0}
+     * beside recordings of 119992..119995; the replay threw and every
+     * composition refused the path, so the search spent its waves on values
+     * the system does not produce. Where the corpus has no arm the control
+     * stays free and the row says {@code unproducible}, which is the
+     * negative control below.</p>
      */
     @Test
     public void aHandoffVariableIsAnsweredByTheAttachThatMintedIt()
@@ -193,6 +203,81 @@ public class HandoffBelongsToItsConsumerTest {
         assertEquals("SAT_MODEL_READY",
                 solve(stated, activation).record.get("status")
                         .getAsString());
+
+        // The rule: the answer is one of the values some producer of this
+        // corpus delivered at that phase.  The flip needs the arrival above
+        // 10; with the family's one arm delivering 9 the query has no model
+        // left, where a free control gave it one.  That closure IS 17897's
+        // 1,1,1,1,0 in miniature -- the obligation is refused here instead
+        // of being explored on a value no producer makes.
+        JsonObject closed = wireQuery();
+        closed.add(RegionPathWorklist.HANDOFF_CONTROLS, controls("9"));
+        JsonObject unproducible = solve(closed, activation).record;
+        assertEquals(unproducible.toString(), "UNSAT",
+                unproducible.get("status").getAsString());
+
+        // An arm the predicate admits is answered with that arm's value,
+        // not with a placeholder that happens to satisfy the predicate.
+        JsonObject producible = wireQuery();
+        producible.add(RegionPathWorklist.HANDOFF_CONTROLS, controls("42"));
+        ConcolicConstraintSolver.Result answered =
+                solve(producible, activation);
+        assertEquals(answered.record.toString(), "SAT_MODEL_READY",
+                answered.record.get("status").getAsString());
+        assertEquals("42", answered.modelAssignments.get(0)
+                .getAsJsonObject().get("value").getAsString());
+        JsonObject family = answered.record
+                .getAsJsonArray("handoffFamilies").get(0).getAsJsonObject();
+        assertEquals(1, family.get("arms").getAsInt());
+        assertFalse("an arm was found, so nothing is unproducible",
+                family.has(HandoffFamilyRows.UNPRODUCIBLE));
+
+        // The negative control: a control the corpus has no producer arm
+        // for stays free -- the query is satisfiable again, and answered
+        // with a value no arm offers -- and the row states it by name, so a
+        // composition later refusing that path is expected rather than a
+        // surprise.
+        JsonObject unbacked = wireQuery();
+        unbacked.add(RegionPathWorklist.HANDOFF_CONTROLS, controls(null));
+        ConcolicConstraintSolver.Result loose = solve(unbacked, activation);
+        assertEquals(loose.record.toString(), "SAT_MODEL_READY",
+                loose.record.get("status").getAsString());
+        JsonObject none = loose.record.getAsJsonArray("handoffFamilies")
+                .get(0).getAsJsonObject();
+        assertEquals(0, none.get("arms").getAsInt());
+        assertTrue("a handoff no producer delivers says so",
+                none.get(HandoffFamilyRows.UNPRODUCIBLE).getAsBoolean());
+    }
+
+    /**
+     * One handoff control of the wire query, with the family the corpus
+     * gave it.
+     *
+     * @param delivered what the one producer arm exported, or null for a
+     *                  phase this corpus has no producer arm at all for
+     */
+    private static JsonArray controls(String delivered) {
+        JsonObject control = parse("{\"rawSymbol\":\"" + WIRE_SYMBOL
+                + "\",\"" + InSessionReadResolver.HANDOFF_PHASE_ID
+                + "\":\"" + WIRE_PHASE + "\",\"javaType\":\"I\","
+                + "\"recordedValue\":\"7\"}");
+        JsonArray arms = new JsonArray();
+        if (delivered == null) {
+            control.addProperty(HandoffFamilyRows.UNPRODUCIBLE, true);
+        } else {
+            arms.add(parse("{\"replayGroupId\":\"" + REPLAY + "\",\""
+                    + InSessionReadResolver.HANDOFF_PHASE_ID + "\":\""
+                    + WIRE_PHASE + "\",\"deliveredValue\":\"" + delivered
+                    + "\",\"" + HandoffFamilyRows.PREFIX + "\":[],\""
+                    + HandoffFamilyRows.VALUATION + "\":[],\""
+                    + HandoffFamilyRows.DELIVERED + "\":{\"_type\":"
+                    + "\"ConstExpr\",\"_java_type\":\"J\",\"_exp\":\""
+                    + delivered + "\"}}"));
+        }
+        control.add(HandoffFamilyRows.ARMS, arms);
+        JsonArray controls = new JsonArray();
+        controls.add(control);
+        return controls;
     }
 
     private static final String KEY_OWNER = "{'_type':'SymbolExpression',"
