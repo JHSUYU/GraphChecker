@@ -56,6 +56,90 @@ public class HandoffBelongsToItsConsumerTest {
                 !VmHandoffEvidence.isEvent(row));
     }
 
+    /**
+     * A delivery that carried no element reproduced its planned port.
+     *
+     * <p>The mint is the consumer's, so it happens whether or not the
+     * message carried the producer's expression, and the row it publishes is
+     * the reproduction.  While the attach refused to mint on a message with
+     * no element, the importer saw no row and said the planned handoff had
+     * not reproduced: on hdfs-17899 bug3's flip replay, eight of them, on
+     * ports the replay did attach.</p>
+     */
+    @Test
+    public void aDeliveryWithNoElementReproducedItsPort() {
+        JsonObject arrived = VmHandoffEvidence.event(PORT, 0L, 0L, null,
+                "", "", CONSUMER,
+                HandoffPhaseContract.phaseId(PORT, CONSUMER, 1,
+                        "<a.BlockKey: int keyId>"),
+                "M_I_field_HOFF.9c1d_a/BlockKey", "119982", "I", "", true);
+        assertTrue(VmHandoffEvidence.eventFault(arrived),
+                VmHandoffEvidence.isEvent(arrived));
+
+        JsonObject raw = new JsonObject();
+        raw.addProperty("event", "CONCOLIC_REGION_RESULT");
+        raw.addProperty("taskId", "task");
+        raw.addProperty("occurrenceId", CARRIER);
+        JsonArray events = new JsonArray();
+        events.add(arrived);
+        raw.add(VmHandoffEvidence.FIELD, events);
+
+        java.util.List<JsonObject> rows = new java.util.ArrayList<>();
+        ConcolicSummaryImporter.topologyDivergences(
+                new ConcolicSummaryImporter.ResultRow(raw, 0),
+                consumerTask(), rows);
+
+        for (JsonObject row : rows) {
+            assertTrue(String.valueOf(row), !"PLANNED_HANDOFF_NOT_REPRODUCED"
+                    .equals(row.get("code").getAsString()));
+        }
+
+        // The control: with no row at all the question is still asked, so
+        // the assertion above is about the mint and not about the fold.
+        raw.add(VmHandoffEvidence.FIELD, new JsonArray());
+        rows.clear();
+        ConcolicSummaryImporter.topologyDivergences(
+                new ConcolicSummaryImporter.ResultRow(raw, 0),
+                consumerTask(), rows);
+        boolean reported = false;
+        for (JsonObject row : rows) {
+            reported |= "PLANNED_HANDOFF_NOT_REPRODUCED".equals(
+                    row.get("code").getAsString());
+        }
+        assertTrue("a port nothing attached is still reported", reported);
+    }
+
+    /** One task that declares {@code PORT} as its own IN site. */
+    private static edu.uva.liftlab.graphchecker.contract.ExecutionTask
+            consumerTask() {
+        JsonObject task = new JsonObject();
+        task.addProperty("sourceKey", "hdfs-17899/sps#epoch0");
+        task.addProperty("occurrenceId", CONSUMER);
+        task.addProperty("relationKey", "relation");
+        task.addProperty("regionId", "REGION.16ba41cf");
+        task.addProperty("taskId", "task");
+        task.addProperty("goalId", "goal");
+        task.add("inputActions", new JsonArray());
+        JsonObject handoff = new JsonObject();
+        handoff.addProperty("portId", PORT);
+        handoff.addProperty("handoffLeafPath", PORT);
+        handoff.addProperty("side", "IN");
+        handoff.addProperty("direction", "RESPONSE");
+        handoff.addProperty("captureKind", "CALL_RETURN");
+        handoff.addProperty("javaType", "int");
+        handoff.addProperty("declaredCallee", "<a.P: int keyId()>");
+        handoff.addProperty("definitionMethod", "<a.PBHelper: a.Key c()>");
+        handoff.addProperty("definitionUnitIndex", 2);
+        JsonArray handoffs = new JsonArray();
+        handoffs.add(handoff);
+        task.add("communicationHandoffs", handoffs);
+        edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy.cfgBackedges(
+                edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy
+                        .MAX_LOOP_BODY_ITERATIONS).writeTo(task);
+        return edu.uva.liftlab.graphchecker.contract.ExecutionTask.decode(
+                task);
+    }
+
     /** Which port the corpus attached, for which consumer occurrence. */
     private static String unplanned(JsonObject row) {
         // The importer's own question, asked the way the fold asks it.
@@ -82,6 +166,7 @@ public class HandoffBelongsToItsConsumerTest {
                 HandoffPhaseContract.phaseId(PORT,
                         "hdfs-17899/sps#epoch0/region/REGION.16ba41cf#1", 1,
                         "<a.BlockKey: int keyId>"),
-                "M_I_field_HOFF.9c1d_a/BlockKey", "119982", "I", "");
+                "M_I_field_HOFF.9c1d_a/BlockKey", "119982", "I", "",
+                false);
     }
 }

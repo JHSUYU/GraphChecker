@@ -49,8 +49,6 @@ public final class RpcExpressionHandoff {
      * producer, so the chain the message was carrying stops there.</p>
      */
     public static final String LEAVES_UNATTACHED = "WIRE_LEAVES_UNATTACHED";
-    /** A decode asked a message for an element the sender never staged. */
-    public static final String LEAF_MISSING = "WIRE_LEAF_MISSING";
     /**
      * One capture site, two live occurrences that declare its port.
      *

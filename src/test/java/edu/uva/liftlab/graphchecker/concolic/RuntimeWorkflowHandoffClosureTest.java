@@ -143,7 +143,7 @@ public class RuntimeWorkflowHandoffClosureTest {
                 consumerOccurrence,
                 edu.uva.liftlab.graphchecker.contract.HandoffPhaseContract
                         .phaseId("port", consumerOccurrence, 1, "<a.B: int v>"),
-                "M_I_field_HOFF.1_a/B", "7", "I", "");
+                "M_I_field_HOFF.1_a/B", "7", "I", "", false);
         event.addProperty("boundarySessionScope", scope);
         event.addProperty("consumerOccurrenceId", consumerOccurrence);
         JsonArray events = new JsonArray();
