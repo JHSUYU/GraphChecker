@@ -3081,10 +3081,30 @@ run:
                     ? SharedFieldVersions::live_version(carrier_location,
                                                         &observed_kind)
                     : 0;
+                // Every projection this read records states what it was a
+                // projection *of*: the object read from and the value its
+                // field held.  Until now only a read through a reference-typed
+                // carrier said so (the stamping below), so a demand-minted
+                // projection of an untracked field -- BlockKey.expiryDate read
+                // through getExpiryDate(), against BlockKey.keyId which is
+                // tracked because a symbolic store published it -- reached the
+                // composer with nothing to pin it to, and the flip solver was
+                // free to mint an accessor and invent the value.  The field is
+                // read from the object, not from the operand stack, because
+                // the concrete load has not been pushed yet here; it is the
+                // same word the load is about to produce.  A reference-typed
+                // field yields NULL and keeps today's pair-less shape, since
+                // there is no primitive value to state.
+                Expression *concrete_owner =
+                    SharedFieldVersions::reference_expression(obj);
+                Expression *concrete_field =
+                    SharedFieldVersions::primitive_field_value(
+                        obj, field_offset, field_type);
                 sym_inst->init_sym_exp(field_offset,
                     new FieldAccessExpression(
                         sym_inst->get_or_create_ref_exp(obj), owner_class,
-                        field_offset, field_type, std::string(), NULL, NULL,
+                        field_offset, field_type, std::string(),
+                        concrete_owner, concrete_field,
                         observed_version, observed_kind));
                 sym_exp = sym_inst->get(field_offset);
               }

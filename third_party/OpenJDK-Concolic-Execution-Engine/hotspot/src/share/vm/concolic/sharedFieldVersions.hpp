@@ -544,6 +544,17 @@ public:
   static Expression *primitive_expression(BasicType type, jlong bits);
   static Expression *reference_expression(oop value);
 
+  /**
+   * What a primitive field holds right now, as a constant expression.
+   *
+   * Read straight from the object rather than from an operand stack, so a
+   * projection can state the value this run observed wherever it is built --
+   * including before the concrete load has been pushed.  NULL for a
+   * reference-typed field, which has no primitive value to state.
+   */
+  static Expression *primitive_field_value(oop owner, int field_offset,
+                                           BasicType type);
+
   static const char *location_kind_name(int kind);
   static const char *version_kind_name(int kind);
   /**

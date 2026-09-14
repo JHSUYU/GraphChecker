@@ -460,6 +460,32 @@ Expression *SharedFieldVersions::primitive_expression(BasicType type,
   }
 }
 
+Expression *SharedFieldVersions::primitive_field_value(oop owner,
+                                                      int field_offset,
+                                                      BasicType type) {
+  if (owner == NULL) return NULL;
+  switch (type) {
+    case T_BOOLEAN:
+      return primitive_expression(type, raw_bits(owner->bool_field(field_offset)));
+    case T_BYTE:
+      return primitive_expression(type, raw_bits(owner->byte_field(field_offset)));
+    case T_CHAR:
+      return primitive_expression(type, raw_bits(owner->char_field(field_offset)));
+    case T_SHORT:
+      return primitive_expression(type, raw_bits(owner->short_field(field_offset)));
+    case T_INT:
+      return primitive_expression(type, raw_bits(owner->int_field(field_offset)));
+    case T_LONG:
+      return primitive_expression(type, raw_bits(owner->long_field(field_offset)));
+    case T_FLOAT:
+      return primitive_expression(type, raw_bits(owner->float_field(field_offset)));
+    case T_DOUBLE:
+      return primitive_expression(type, raw_bits(owner->double_field(field_offset)));
+    default:
+      return NULL;
+  }
+}
+
 Expression *SharedFieldVersions::reference_expression(oop value) {
   if (value == NULL) return SymbolExpression::get(Sym_NULL);
   if (ConcolicMngr::ctx == NULL) return NULL;

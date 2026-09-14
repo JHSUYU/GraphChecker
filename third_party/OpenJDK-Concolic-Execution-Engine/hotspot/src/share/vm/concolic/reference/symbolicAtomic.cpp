@@ -119,8 +119,14 @@ Expression *prepare_current_value(oop receiver, BasicType type,
   if (owner == NULL) return NULL;
 
   ResourceMark rm;
+  // Same evidence every other primitive field read now states: the object this
+  // pre-state was read from and the value it held.  Without it the projection
+  // of an untracked atomic reaches the composer unpinned.
   return new FieldAccessExpression(
-      owner, receiver->klass()->name()->as_C_string(), field->offset(), type);
+      owner, receiver->klass()->name()->as_C_string(), field->offset(), type,
+      std::string(), SharedFieldVersions::reference_expression(receiver),
+      SharedFieldVersions::primitive_field_value(receiver, field->offset(),
+                                                 type));
 }
 
 
