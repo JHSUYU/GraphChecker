@@ -279,6 +279,14 @@ final class SharedStateCapture {
             JsonObject entry = new JsonObject();
             copyIfPresent(version, entry, "fieldVersionId");
             copyIfPresent(version, entry, "versionKind");
+            // A container's INITIAL states the contents tracking began from,
+            // and every relation over that container stands on them.  The
+            // reduction dropped it, so the corpus could not say whether a
+            // base was stated, enumerated or truncated -- and an offline
+            // re-drive of the admission that reads it
+            // (SharedStateEvidence.containerBaseFault) had nothing to read.
+            // It is one small object per container INITIAL.
+            copyIfPresent(version, entry, "initialSnapshot");
             copyIfPresent(version, entry, "expression");
             versions.add(entry);
         }

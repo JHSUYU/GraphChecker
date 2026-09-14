@@ -20,7 +20,12 @@ import static org.junit.Assert.assertTrue;
  */
 public class TrackedLocationWriteLogTest {
 
-    /** The published record is the location, its versions, and no carrier. */
+    /** The published record is the location, its versions, and no carrier.
+     *
+     * <p>The container's INITIAL keeps its {@code initialSnapshot}: it states
+     * the contents tracking began from, every relation over that container
+     * stands on them, and without it the corpus cannot say whether the base
+     * was stated at all.</p> */
     @Test
     public void theRecordIsNamedByTheObjectAndCarriesNoCarrier() {
         JsonObject published = SharedStateCapture.reduceWriteLogForTest(
@@ -41,8 +46,8 @@ public class TrackedLocationWriteLogTest {
         long previous = -1L;
         for (int index = 0; index < versions.size(); index++) {
             JsonObject version = versions.get(index).getAsJsonObject();
-            assertEquals("version id, kind and expression, and no more", 3,
-                    version.size());
+            assertEquals("version id, kind, container base, expression",
+                    index == 0 ? 4 : 3, version.size());
             long clock = version.get("fieldVersionId").getAsLong();
             assertTrue("the clock increases with the writes",
                     clock > previous);
