@@ -54,6 +54,8 @@ final class PathMergeLowering extends VmLoweringCore {
     private final Map<String, JsonObject> declaredRoots;
     /** Solver term -> the raw VM symbol it stands for. */
     private final Map<String, String> rootTerms = new LinkedHashMap<>();
+    /** Raw VM symbol -> the one solver name that root is lowered to. */
+    private final Map<String, String> rootNames = new LinkedHashMap<>();
     /** Solver term -> the execution-local identity it stands for. */
     private final Map<String, String> opaqueIdentities =
             new LinkedHashMap<>();
@@ -108,6 +110,22 @@ final class PathMergeLowering extends VmLoweringCore {
     PathMergeLowering(Map<String, JsonObject> declaredRoots) {
         this.declaredRoots = declaredRoots == null
                 ? Collections.<String, JsonObject>emptyMap() : declaredRoots;
+        Map<String, List<String>> byDeclaredName = new LinkedHashMap<>();
+        for (Map.Entry<String, JsonObject> declared
+                : this.declaredRoots.entrySet()) {
+            byDeclaredName.computeIfAbsent(
+                    declaredRootName(declared.getValue(), declared.getKey()),
+                    ignored -> new ArrayList<String>())
+                    .add(declared.getKey());
+        }
+        for (Map.Entry<String, List<String>> shared
+                : byDeclaredName.entrySet()) {
+            for (String raw : shared.getValue()) {
+                rootNames.put(raw, shared.getValue().size() == 1
+                        ? shared.getKey()
+                        : symbols.mint(shared.getKey() + "__", raw, 10));
+            }
+        }
     }
 
     // ------------------------------------------------------------------
@@ -438,11 +456,34 @@ final class PathMergeLowering extends VmLoweringCore {
 
     /** The one solver name of one declared root. */
     String rootTerm(JsonObject root, String raw, Sort sort) {
-        String name = JavaSmtSorts.smtName(firstNonBlank(
-                optionalString(root, "symbol"), "sym__" + raw));
+        String name = rootName(root, raw);
         declare(name, sort);
         rootTerms.put(name, raw);
         return name;
+    }
+
+    /**
+     * One name per ROOT, never per symbolization action.
+     *
+     * <p>A declared {@code symbol} is the port a planned symbolization
+     * fires at, and one port mints a fresh root at every value it fires
+     * on.  On hdfs-17899 bug1 one heartbeat's port carried three
+     * {@code BlockKey} expiry dates -- RETIRED, CURRENT and the base --
+     * as three raw symbols with three recorded values, so a path that
+     * read them stated three values of one term and was refused
+     * PATH_NOT_SELF_CONSISTENT at its own replay's valuation, naming one
+     * of the three readings as the conjunct that closed it.  Where a
+     * declared symbol names exactly one root it is the name; where it
+     * names several, each root carries its own raw symbol's digest.</p>
+     */
+    String rootName(JsonObject root, String raw) {
+        String name = rootNames.get(raw);
+        return name == null ? declaredRootName(root, raw) : name;
+    }
+
+    private static String declaredRootName(JsonObject root, String raw) {
+        return JavaSmtSorts.smtName(firstNonBlank(
+                optionalString(root, "symbol"), "sym__" + raw));
     }
 
     @Override

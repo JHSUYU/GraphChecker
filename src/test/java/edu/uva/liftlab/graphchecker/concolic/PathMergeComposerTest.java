@@ -69,6 +69,19 @@ public class PathMergeComposerTest {
             PathMergeComposer.HANDOFF_SYMBOL_MARK + "PORT_KEY_1";
     private static final String HANDOFF_TERM =
             JavaSmtSorts.smtName("sym__" + HANDOFF_SYMBOL);
+    /** One declared port, and the two roots one replay minted at it. */
+    private static final String PORT_PHASE = "SOURCE_PHASE.port";
+    private static final String PORT_TERM = "REGION_example_in_port";
+    private static final String PORT_SIGNATURE =
+            "<com.example.Key: long expiryDate>";
+    private static final String PORT_CURRENT = "EXAMPLE.KEY.EXPIRY.CURRENT";
+    private static final String PORT_RETIRED = "EXAMPLE.KEY.EXPIRY.RETIRED";
+    private static final String RAW_CURRENT = "M_J_field_"
+            + SymbolicSourceEvidence.engineLabelForPhase(PORT_PHASE,
+            PORT_CURRENT) + "_com/example/Key";
+    private static final String RAW_RETIRED = "M_J_field_"
+            + SymbolicSourceEvidence.engineLabelForPhase(PORT_PHASE,
+            PORT_RETIRED) + "_com/example/Key";
     private static final String LOOP_OCCURRENCE =
             "app/nn0#epoch0/region/REGION.a#1";
     private static final String LOOP_SITE = "<C: void m()>#u7";
@@ -421,6 +434,35 @@ public class PathMergeComposerTest {
                 PathMergeComposer.PATH_NOT_SELF_CONSISTENT));
         assertTrue("the arrival it read is this path's own control",
                 carried.smtLib.contains("(= " + HANDOFF_TERM + " 9)"));
+
+        // One declared port, several roots.  A planned symbolization fires
+        // at a port and mints a fresh root at every value it fires on:
+        // hdfs-17899 bug1's nn0 heartbeat carried a BlockKey's CURRENT and
+        // RETIRED expiry dates under one port id, and naming both after
+        // the port made the replay that read them state two values of one
+        // term -- so its own path was refused as contradicting itself,
+        // naming one of the two readings as the closing conjunct.  Two
+        // replays reading the port differently is the same fact from the
+        // other side and is not a contradiction either: each path carries
+        // only its own execution's readings.
+        JsonObject ports = query();
+        ports.getAsJsonArray("paths").add(path("port", "GROUP.SEED",
+                rootIs(true), notEqual(constant(1), constant(0))));
+        ports.getAsJsonArray("paths").add(path("port", "GROUP.FLIP",
+                rootIs(false), notEqual(constant(1), constant(0))));
+        PathMergeComposer.Result minted = run(
+                Files.createTempDirectory("path-merge-port"), ports,
+                Arrays.asList(ranAt("GROUP.SEED", "true", "7", "8"),
+                        ranAt("GROUP.FLIP", "false", "17", "18")),
+                "--z3", "z3");
+        assertFalse("two roots of one port are two terms: " + gates(minted),
+                gates(minted).toString().contains(
+                        PathMergeComposer.PATH_NOT_SELF_CONSISTENT));
+        for (JsonElement row : paths(minted)) {
+            assertTrue("a replay that read both stays its own execution: "
+                            + row, JsonFields.optionalBool(
+                            row.getAsJsonObject(), "admitted", false));
+        }
     }
 
     /**
@@ -759,6 +801,31 @@ public class PathMergeComposerTest {
                 rootSymbol(), 1, false, ROOT_TERM, polarity));
         SymbolicSourceEvidence.writeTo(summary, events);
         return summary;
+    }
+
+    /** The same replay, and the two roots one declared port minted in it. */
+    private static JsonObject ranAt(String group, String polarity,
+                                    String current, String retired) {
+        JsonObject summary = ranAt(group, polarity);
+        summary.addProperty("summaryId", group);
+        List<JsonObject> events = new ArrayList<>(
+                SymbolicSourceEvidence.eventsOf(summary));
+        events.add(SymbolicSourceEvidence.event(PORT_PHASE, PORT_CURRENT,
+                "node0/region/REGION.example#1#a1", PORT_SIGNATURE,
+                portSymbol(RAW_CURRENT), 1, false, PORT_TERM, current));
+        events.add(SymbolicSourceEvidence.event(PORT_PHASE, PORT_RETIRED,
+                "node0/region/REGION.example#1#a1", PORT_SIGNATURE,
+                portSymbol(RAW_RETIRED), 2, false, PORT_TERM, retired));
+        SymbolicSourceEvidence.writeTo(summary, events);
+        return summary;
+    }
+
+    private static JsonObject portSymbol(String raw) {
+        JsonObject symbol = new JsonObject();
+        symbol.addProperty("_type", "SymbolExpression");
+        symbol.addProperty("_java_type", "J");
+        symbol.addProperty("_exp", raw);
+        return symbol;
     }
 
     /** One path against the standard pair of replay summaries. */

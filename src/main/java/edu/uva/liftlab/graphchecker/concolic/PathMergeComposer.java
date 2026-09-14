@@ -1005,7 +1005,7 @@ public final class PathMergeComposer {
                     arm.addProperty(VmHandoffEvidence.ANSWERED_VALUE,
                             answered);
                 }
-                arm.add("valuation", armValuation(summary,
+                arm.add("valuation", armValuation(summary, lowering,
                         declaredVariables, roots));
                 armRowsBySymbol.computeIfAbsent(symbol,
                         ignored -> new JsonArray()).add(arm);
@@ -1027,7 +1027,7 @@ public final class PathMergeComposer {
             row.addProperty(InSessionReadResolver.HANDOFF_PHASE_ID,
                     phaseBySymbol.get(symbol));
             row.addProperty("pairs", arms.size());
-            row.addProperty("handoffSolverTerm", rootTermOf(
+            row.addProperty("handoffSolverTerm", rootTermOf(lowering,
                     declaredVariables.get(symbol), symbol));
             JsonArray armRows = armRowsBySymbol.get(symbol);
             row.add("arms", armRows == null ? new JsonArray() : armRows);
@@ -1076,7 +1076,7 @@ public final class PathMergeComposer {
                     roots.recordedOf(symbol));
             String literal = smtIntegerLiteral(arrival);
             if (literal.isEmpty()) continue;
-            String term = rootTermOf(declared.getValue(), symbol);
+            String term = rootTermOf(lowering, declared.getValue(), symbol);
             lowering.assertNamed("handoff_pinned__" + ordinal++,
                     "(= " + term + " " + literal + ")");
             JsonObject row = new JsonObject();
@@ -1113,8 +1113,8 @@ public final class PathMergeComposer {
      * was, to name the mechanism behind it.</p>
      */
     private static JsonArray armValuation(
-            JsonObject summary, Map<String, JsonObject> declaredVariables,
-            RootInventory varied) {
+            JsonObject summary, PathMergeLowering lowering,
+            Map<String, JsonObject> declaredVariables, RootInventory varied) {
         JsonArray rows = new JsonArray();
         Set<String> stated = new LinkedHashSet<>();
         for (String member : new String[]{"symbolicSourceEvidence",
@@ -1133,7 +1133,7 @@ public final class PathMergeComposer {
                         row, SymbolicSourceEvidence.DECLARED_CALLEE));
                 if (!clock && varied != null && !varied.varied(raw)) continue;
                 JsonObject stated_row = new JsonObject();
-                stated_row.addProperty("solverTerm", rootTermOf(
+                stated_row.addProperty("solverTerm", rootTermOf(lowering,
                         declaredVariables.get(raw), raw));
                 stated_row.addProperty("value", value);
                 stated_row.addProperty("wallClock", clock);
@@ -1180,7 +1180,7 @@ public final class PathMergeComposer {
                 // own valuation.
                 if (ClockRootPhysics.clockCallee(optionalString(row,
                         SymbolicSourceEvidence.DECLARED_CALLEE))) {
-                    String term = rootTermOf(
+                    String term = rootTermOf(lowering,
                             declaredVariables.get(raw), raw);
                     String window = clockWindow(term, value,
                             clockSkewMillis);
@@ -1245,14 +1245,18 @@ public final class PathMergeComposer {
     }
 
     /**
-     * The one solver name a declared root gets, as the lowering mints it.
+     * The one solver name a declared root gets.
      *
-     * <p>Spelled here as well because the valuation is built while the
-     * paths are lowered, before every root has been met.</p>
+     * <p>Asked of the lowering rather than spelled again: a declared
+     * {@code symbol} is the port a symbolization fires at and several
+     * roots can share one, so only the lowering -- which holds the whole
+     * declaration set -- knows whether that port is this root's name or
+     * whether this root carries its own digest beside it.  Spelled here a
+     * second time, the two answers disagreed exactly where it mattered.</p>
      */
-    private static String rootTermOf(JsonObject declared, String raw) {
-        return JavaSmtSorts.smtName(firstNonBlank(
-                optionalString(declared, "symbol"), "sym__" + raw));
+    private static String rootTermOf(PathMergeLowering lowering,
+                                     JsonObject declared, String raw) {
+        return lowering.rootName(declared, raw);
     }
 
     /**
