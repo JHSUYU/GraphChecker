@@ -319,7 +319,7 @@ final class ConcolicTaskPlan {
             // occupies the ordinal the recording gave it.  Filtering first
             // would renumber the activations after it.
             String scope = task.invocationCounterKey(countedLifecycle(
-                    task, activationSource));
+                    task, activationSource), countedFamily(context));
             countInvocation(scope, actualOrdinalByScope);
             String sourceMismatch = sourceAdmissionMismatch(task,
                     registeredReceiverSource, context);
@@ -369,7 +369,7 @@ final class ConcolicTaskPlan {
             }
             OccurrenceAddress observed = task.observedAddress(
                     countedLifecycle(task, activationSource),
-                    actualOrdinalByScope);
+                    countedFamily(context), actualOrdinalByScope);
             // The whole address, and nothing standing in for it.  A
             // non-loop root publishes one occurrence and its unique OUT
             // anchor confirms the node before that publication, so entry may
@@ -461,7 +461,7 @@ final class ConcolicTaskPlan {
             // occupies the ordinal the recording gave it.  Filtering first
             // would renumber the activations after it.
             String scope = task.invocationCounterKey(countedLifecycle(
-                    task, activationSource));
+                    task, activationSource), countedFamily(context));
             countInvocation(scope, actualOrdinalByScope);
             String sourceMismatch = sourceAdmissionMismatch(task,
                     registeredReceiverSource, context);
@@ -512,7 +512,7 @@ final class ConcolicTaskPlan {
                     context).isEmpty()) continue;
             OccurrenceAddress observed = task.observedAddress(
                     countedLifecycle(task, activationSource),
-                    actualOrdinalByScope);
+                    countedFamily(context), actualOrdinalByScope);
             boolean exactOutgoingAddress =
                     mayDeferMissingContextToOutgoingAnchor(task,
                             registeredReceiverSource, context);
@@ -660,6 +660,22 @@ final class ConcolicTaskPlan {
      * three cannot disagree about which lifecycle an activation belongs
      * to.</p>
      */
+    /**
+     * The request family this activation ran inside, as the run sees it.
+     *
+     * <p>The innermost request in force on this thread -- which is what the
+     * recording stamped on the activation the planner counted -- and {@code
+     * ""} when there is none, which is a family of its own and not a gap.
+     * Never the PLANNED family: that is a constant per task, so counting by
+     * it would put every candidate in one bucket whatever it actually
+     * entered under, which is the defect the request veto had before it was
+     * removed.</p>
+     */
+    static String countedFamily(RuntimeTraceContext.View context) {
+        return context == null ? ""
+                : OccurrenceAddress.familyOf(context.requestKey);
+    }
+
     static String countedLifecycle(RuntimeTask task,
                                    SourceRef activationSource) {
         String planned = safe(task.sourceKey);
@@ -2102,7 +2118,7 @@ final class ConcolicTaskPlan {
          * count.</p>
          */
         String invocationCounterKey() {
-            return invocationCounterKey(sourceKey);
+            return invocationCounterKey(sourceKey, address.family());
         }
 
         /**
@@ -2120,9 +2136,9 @@ final class ConcolicTaskPlan {
          * is handed each activation's own {@code rootSource}), so this is
          * the replay counting the population the plan counted.</p>
          */
-        String invocationCounterKey(String lifecycle) {
+        String invocationCounterKey(String lifecycle, String family) {
             return OccurrenceAddress.of(safe(lifecycle).isEmpty()
-                    ? sourceKey : lifecycle, regionId, 1)
+                    ? sourceKey : lifecycle, regionId, safe(family), 1)
                     .counterScope(rootMethod);
         }
 
@@ -2135,11 +2151,12 @@ final class ConcolicTaskPlan {
          * matches nothing rather than half-matching on the node.</p>
          */
         OccurrenceAddress observedAddress(
-                String lifecycle, Map<String, Integer> ordinalByScope) {
+                String lifecycle, String family,
+                Map<String, Integer> ordinalByScope) {
             Integer ordinal = ordinalByScope.get(
-                    invocationCounterKey(lifecycle));
+                    invocationCounterKey(lifecycle, family));
             return OccurrenceAddress.of(safe(lifecycle).isEmpty()
-                            ? sourceKey : lifecycle, regionId,
+                            ? sourceKey : lifecycle, regionId, safe(family),
                     ordinal == null ? 0 : ordinal.intValue());
         }
 
