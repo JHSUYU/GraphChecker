@@ -73,6 +73,11 @@ workflow_config_keys=(
   "causynth_communication_mappings CAUSYNTH_COMMUNICATION_MAPPINGS krp -"
   "causynth_loop_bounds CAUSYNTH_LOOP_BOUNDS krp -"
   "causynth_symbolic_inputs CAUSYNTH_SYMBOLIC_INPUTS krp -"
+  # What the case says its declared roots may be, beside what the recording
+  # read: one row per source id, with declaredDomainMin/Max absolute or
+  # written +k / -k from the recorded value.  A root with no row stays pinned
+  # to its recording, which is what a case that claims nothing about it says.
+  "causynth_root_domains CAUSYNTH_ROOT_DOMAINS krp -"
   "custom_jdk_home CAUSYNTH_CUSTOM_JDK_HOME krp -"
   "z3_bin CAUSYNTH_Z3 krp -"
   "workload_work_dir CAUSYNTH_WORKLOAD_WORK_DIR krp -"
@@ -315,6 +320,9 @@ initialize_config() {
   if [[ -n "${causynth_loop_bounds}" ]]; then
     causynth_loop_bounds=$(resolve_path "${causynth_loop_bounds}")
   fi
+  if [[ -n "${causynth_root_domains}" ]]; then
+    causynth_root_domains=$(resolve_path "${causynth_root_domains}")
+  fi
   if [[ -n "${causynth_symbolic_inputs}" ]]; then
     causynth_symbolic_inputs=$(resolve_path "${causynth_symbolic_inputs}")
   fi
@@ -406,6 +414,9 @@ validate_config() {
   fi
   if [[ -n "${causynth_symbolic_inputs}" ]]; then
     require_file "symbolic input selection" "${causynth_symbolic_inputs}"
+  fi
+  if [[ -n "${causynth_root_domains}" ]]; then
+    require_file "declared root domains" "${causynth_root_domains}"
   fi
   # The bounds a campaign may not inherit. Left unstated, each would reach its
   # stage as a bare flag and be read back as some default the artifacts never
@@ -616,6 +627,8 @@ do_compose() {
   declared=$(campaign_declared_target_occurrence)
   [[ -z "${declared}" ]] \
     || selection+=(--target-occurrence "${declared}")
+  [[ -z "${causynth_root_domains}" ]] \
+    || selection+=(--root-domains "${causynth_root_domains}")
   [[ -z "${fatal_region}" ]] || selection+=(--fatal-region "${fatal_region}")
   [[ -z "${fatal_occurrence_id}" ]] \
     || selection+=(--occurrence-id "${fatal_occurrence_id}")
