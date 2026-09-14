@@ -40,6 +40,25 @@ final class PublicationContract {
 
     /** A planned task the run left neither an activation nor a skip for. */
     static final String TASK_SILENT = "PUBLICATION_TASK_SILENT";
+    /**
+     * A kept task every run that was asked declined to answer.
+     *
+     * <p>A skip is a publication, and most skips say something about the
+     * region: its causal anchor never ran before the workload ended, say.
+     * One says something about the <em>run</em> instead -- "this run never
+     * registered the epoch this task is addressed at" -- and when no other
+     * run answered the task either, the region simply was not replayed.  It
+     * looks like a published task and contributes nothing, which is how a
+     * campaign came back FINAL_READY over a formula whose only
+     * root-dependent region never ran.</p>
+     */
+    static final String TASK_ANSWERED_BY_NO_RUN =
+            "PUBLICATION_TASK_ANSWERED_BY_NO_RUN";
+    /** Skips that say which run was asked, not what the region did. */
+    private static final String[] RUN_ADDRESSED_SKIPS = {
+            "REGION_OCCURRENCE_ANCHOR_UNMATCHED",
+            "ROOT_NEVER_EXECUTED",
+    };
     /** A task whose activations never decided a site its goal addresses. */
     static final String BRANCH_PREFIX_UNPUBLISHED =
             "PUBLICATION_BRANCH_PREFIX_UNPUBLISHED";
@@ -96,6 +115,16 @@ final class PublicationContract {
                         + " neither an activation nor a skip, so its region"
                         + " states nothing at all; its anchor names "
                         + task.occurrenceId()));
+                continue;
+            }
+            if ((published == null || published.isEmpty())
+                    && onlyRunAddressedSkips(taskId, diagnostics)) {
+                rows.add(row(TASK_ANSWERED_BY_NO_RUN, taskId,
+                        "every run this task was offered to declined it for"
+                                + " being addressed elsewhere, and none"
+                                + " answered it, so its region was not"
+                                + " replayed; its anchor names "
+                                + task.occurrenceId()));
                 continue;
             }
             // A region the replay skipped published a row and named itself
@@ -201,6 +230,29 @@ final class PublicationContract {
     private static void addSite(Set<String> decided, JsonObject site) {
         String siteId = optionalString(site, "siteId");
         if (!siteId.isEmpty()) decided.add(siteId);
+    }
+
+    /**
+     * Whether every diagnostic naming this task says which run was asked.
+     *
+     * <p>A task with a real skip -- an anchor that never ran, a region the
+     * plan named and the program did not enter -- has been answered.  A task
+     * whose only rows say "not this run" has not.</p>
+     */
+    private static boolean onlyRunAddressedSkips(
+            String taskId, Collection<JsonObject> diagnostics) {
+        boolean any = false;
+        for (JsonObject diagnostic : diagnostics) {
+            if (!taskId.equals(optionalString(diagnostic, "taskId"))) continue;
+            String code = optionalString(diagnostic, "code");
+            boolean addressed = false;
+            for (String skip : RUN_ADDRESSED_SKIPS) {
+                addressed |= skip.equals(code);
+            }
+            if (!addressed) return false;
+            any = true;
+        }
+        return any;
     }
 
     private static Map<String, List<JsonObject>> summariesByTask(

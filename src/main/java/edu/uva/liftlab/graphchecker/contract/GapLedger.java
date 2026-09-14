@@ -571,11 +571,14 @@ public final class GapLedger {
                         + " plan said must run and publish and the model does"
                         + " not contain, off it the static plan simply named"
                         + " a region root dependence never selected");
-        onKeptSlice(importer, "REGION_OCCURRENCE_ANCHOR_UNMATCHED",
-                "compatible activations did not answer the addressed"
-                        + " occurrence: on the kept slice the region the"
-                        + " chain names is not the region that ran, off it no"
-                        + " chain element was addressed there");
+        diagnostic(importer, "REGION_OCCURRENCE_ANCHOR_UNMATCHED",
+                "one run declining an occurrence addressed at another run is"
+                        + " a statement about which JVM was asked, not about"
+                        + " the region: the importer drops the row when any"
+                        + " run of the replay answered the task, and when"
+                        + " none did the publication contract raises"
+                        + " PUBLICATION_TASK_ANSWERED_BY_NO_RUN, which"
+                        + " blocks");
         onKeptSlice(importer, "ROOT_NEVER_EXECUTED",
                 "the planned root did not execute in this replay: no"
                         + " compatible activation was offered at all, which"
@@ -593,6 +596,10 @@ public final class GapLedger {
         blocking(contract, "PUBLICATION_TASK_SILENT",
                 "a kept task published neither an activation nor a skip, so"
                         + " its region states nothing at all");
+        blocking(contract, "PUBLICATION_TASK_ANSWERED_BY_NO_RUN",
+                "every run this task was offered to declined it for being"
+                        + " addressed elsewhere and none answered it, so its"
+                        + " region was not replayed at all");
         blocking(contract, "PUBLICATION_BRANCH_PREFIX_UNPUBLISHED",
                 "no activation of the task decided a site its goal"
                         + " addresses, so the path the plan asked for was"
