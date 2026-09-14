@@ -1744,7 +1744,7 @@ public final class ConcolicRegionRuntime {
             // through this same path, so the model is written first.
             ModelAssignment assignment = reused ? null
                     : active.configuredSourceAssignment(entry.phaseId(),
-                    safe(sourceId), safe(fieldSignature));
+                    safe(sourceId), safe(fieldSignature), owner);
             if (assignment != null) {
                 if (!writeModeledField(owner, safe(fieldSignature),
                         assignment)) {
@@ -6369,7 +6369,7 @@ public final class ConcolicRegionRuntime {
         /** One solver value for one exact configured source hook. */
         private ModelAssignment configuredSourceAssignment(
                 String sourcePhaseId, String sourceId,
-                String fieldSignature) {
+                String fieldSignature, Object mintOwner) {
             ModelAssignment selected = uniqueAssignment(
                     candidate -> candidate.matchesConfiguredSource(
                             sourcePhaseId, sourceId, fieldSignature),
@@ -6386,28 +6386,75 @@ public final class ConcolicRegionRuntime {
             // before the restart, instead of at the epoch-1 mint the plan
             // addresses.  The recorded execution was rewritten at a point the
             // solver said nothing about.
-            String wrongEpoch = plannedEpochUnavailable();
-            if (!wrongEpoch.isEmpty()) {
-                addSourcePhaseGap("EPOCH_UNMATCHED", null, wrongEpoch);
+            String unattributed = mintIsNotThePlannedNode(mintOwner);
+            if (!unattributed.isEmpty()) {
+                addSourcePhaseGap(mintAttribution(mintOwner).isEmpty()
+                        ? "MINT_UNATTRIBUTED" : "EPOCH_UNMATCHED", null,
+                        unattributed);
                 return null;
             }
             return selected;
         }
 
         /**
-         * Why this activation is not the planned node-and-epoch, or {@code ""}.
+         * Every node this run can attribute this mint to, at mint time.
          *
-         * <p>One rule, shared with root admission: see {@link
-         * ConcolicTaskPlan#lifecycleMismatch}.  Admission refuses such an
-         * activation outright, so in a complete run this is the same answer
-         * arriving a second time; it is asked again here because a model
-         * rewrites the recorded execution, and that must never happen on the
-         * strength of a weaker check than the one that admitted the
-         * activation.</p>
+         * <p>Three registrations, all the workload's own: the object whose
+         * field is being minted, the source this occurrence was entered
+         * under, and whatever the thread is carrying now.  The registry is
+         * the same one {@link ConcolicTaskPlan#lifecycleMismatch} reads, so
+         * the epoch here is the epoch admission compared.</p>
          */
-        private String plannedEpochUnavailable() {
-            return ConcolicTaskPlan.lifecycleMismatch(activation.sourceKey,
+        private Set<String> mintAttribution(Object mintOwner) {
+            Set<String> attributed = new LinkedHashSet<>(
                     attributedSourceKeys());
+            SourceRef owner = RuntimeTraceContext.sourceFor(mintOwner);
+            if (owner != null) attributed.add(owner.key());
+            RuntimeTraceContext.View context = RuntimeTraceContext.current();
+            if (context != null && context.source != null) {
+                attributed.add(context.source.key());
+            }
+            return attributed;
+        }
+
+        /**
+         * Why this mint cannot be shown to be the planned node and epoch,
+         * or {@code ""}.
+         *
+         * <p>Deliberately stricter than root admission, and the asymmetry is
+         * the point.  Admission admits an activation nothing attributed --
+         * absence of evidence is not evidence of another occurrence, and a
+         * replay routinely reconstructs a receiver without repeating its
+         * alias registration.  A model is different in kind: it <em>rewrites
+         * the recorded execution</em>, and doing that at a mint the run
+         * cannot place is asserting an occurrence nobody established.  So a
+         * mint must be attributed positively, and an unattributed one
+         * refuses the model and keeps the value the recording made.</p>
+         *
+         * <p>This is the hdfs-17960 flip in its general form.  The address is
+         * (node, epoch, region, k-th activation); the mint site is reached
+         * once per node lifecycle, so the epoch is what tells two mints of
+         * one site apart, and root=false landing on the epoch-0 mint
+         * rewrote a value the solver had said nothing about.  Refusing on a
+         * different epoch closed that where the run attributes the mint;
+         * requiring attribution closes it where the run does not.</p>
+         */
+        private String mintIsNotThePlannedNode(Object mintOwner) {
+            String planned = safe(activation.sourceKey);
+            if (!RuntimeTraceContext.declaresEpoch(planned)) return "";
+            Set<String> attributed = mintAttribution(mintOwner);
+            if (attributed.contains(planned)) return "";
+            if (attributed.isEmpty()) {
+                return "the registry attributes this mint to no node, so it "
+                        + "cannot be shown to be " + planned + "; the "
+                        + "recorded value stands";
+            }
+            String elsewhere = ConcolicTaskPlan.lifecycleMismatch(planned,
+                    attributed);
+            return elsewhere.isEmpty()
+                    ? "the registry attributes this mint to " + attributed
+                    + ", which does not include " + planned
+                    : elsewhere;
         }
 
         private boolean hasAppliedExactNullReferenceAssignment(
