@@ -114,7 +114,85 @@ public class EpochScopedActivationCountTest {
                 task, null, RuntimeTraceContext.current()));
     }
 
+    /**
+     * An activation is addressed by where it RAN, not by where its values
+     * came from.
+     *
+     * <p>Lane VM7's shape: bug3 runs nn0, source-dn and target-dn in one JVM,
+     * and a DataNode region's values derive from the NameNode's mint, so the
+     * thread carries nn0's context while the activation runs on source-dn.
+     * Refusing on that inherited context cost five tasks --
+     * "matching root inherited hdfs-17899/nn0#epoch0 instead of
+     * hdfs-17899/source-dn#epoch0" -- and five
+     * PUBLICATION_TASK_ANSWERED_BY_NO_RUN behind them.</p>
+     */
+    @Test
+    public void aRegisteredReceiverDecidesWhereTheActivationRan() {
+        RuntimeTraceContext.resetForTests();
+        Object sourceDn = new Object();
+        RuntimeTraceContext.registerSource(sourceDn,
+                new SourceRef("DATANODE", "dn", "hdfs-17899/source-dn", 0L));
+        Object nameNode = new Object();
+        RuntimeTraceContext.registerSource(nameNode,
+                new SourceRef("NAMENODE", "nn", "hdfs-17899/nn0", 0L));
+
+        ConcolicTaskPlan.RuntimeTask task =
+                task("hdfs-17899/source-dn#epoch0", 1);
+        ConcolicTaskPlan plan = new ConcolicTaskPlan(null,
+                Collections.singletonList(task));
+
+        // Two activations of the same region on the NameNode run first; they
+        // are another node's and must neither answer nor be counted here.
+        assertNull(plan.select(task.rootHookGroupKey(), ROOT, nameNode,
+                new Object[0]));
+        assertNull(plan.select(task.rootHookGroupKey(), ROOT, nameNode,
+                new Object[0]));
+
+        assertEquals("the bucket is the node that decided",
+                "hdfs-17899/source-dn#epoch0",
+                ConcolicTaskPlan.countedLifecycle(task,
+                        RuntimeTraceContext.sourceFor(sourceDn),
+                        RuntimeTraceContext.current()));
+        assertNotNull("source-dn's first activation is its occurrence 1",
+                plan.select(task.rootHookGroupKey(), ROOT, sourceDn,
+                        new Object[0]));
+    }
+
+    /** With no registration, the thread's context answers -- and only then. */
+    @Test
+    public void anUnregisteredReceiverFallsBackToTheThreadsContext() {
+        RuntimeTraceContext.resetForTests();
+        Object node = new Object();
+        RuntimeTraceContext.registerSource(node,
+                new SourceRef("DATANODE", "dn", "hdfs-17899/source-dn", 0L));
+
+        ConcolicTaskPlan.RuntimeTask task =
+                task("hdfs-17899/source-dn#epoch0", 1);
+
+        assertEquals("nothing registered, nothing observed: the plan's own",
+                "hdfs-17899/source-dn#epoch0",
+                ConcolicTaskPlan.countedLifecycle(task, null,
+                        RuntimeTraceContext.current()));
+        assertEquals("a registration decides over the plan's own",
+                "hdfs-17899/source-dn#epoch0",
+                ConcolicTaskPlan.countedLifecycle(task,
+                        RuntimeTraceContext.sourceFor(node),
+                        RuntimeTraceContext.current()));
+    }
+
+    /** An inherited context that names another node records, never refuses. */
+    @Test
+    public void anInheritedContradictionIsRecordedNotRefused() {
+        RuntimeTraceContext.resetForTests();
+        ConcolicTaskPlan.RuntimeTask task =
+                task("hdfs-17899/source-dn#epoch0", 1);
+
+        assertEquals("", ConcolicTaskPlan.sourceMismatch(task, null,
+                RuntimeTraceContext.current()));
+    }
+
     private static ConcolicTaskPlan.RuntimeTask task(String sourceKey,
+
                                                      int ordinal) {
         JsonObject encoded = new JsonObject();
         encoded.addProperty("taskId", "TASK." + ordinal);
