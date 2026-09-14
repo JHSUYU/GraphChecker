@@ -638,42 +638,15 @@ public final class ConcolicRegionRuntime {
             config.releaseCandidate(admitted);
             return null;
         }
-        boolean messageAddressed = inboundMessageAddressesAdmission(admitted);
         SourceRef registeredReceiverSource =
                 RuntimeTraceContext.sourceFor(receiver);
-        String messageSource = inboundMessageSourceEvidence(
-                admitted.sourceKey, registeredReceiverSource,
-                messageAddressed);
-        if (messageAddressed && messageSource.isEmpty()) {
-            admitted.noteUnaddressedCandidate(
-                    "matching message reached a receiver belonging to "
-                            + registeredReceiverSource.key() + " instead of "
-                            + admitted.sourceKey);
-            config.releaseCandidate(admitted);
-            return null;
-        }
         RuntimeTraceContext.View context = RuntimeTraceContext.current();
         boolean deferredOutgoingSource = !ConcolicTaskPlan.sourceMismatch(
                 admitted, registeredReceiverSource, context).isEmpty()
                 && ConcolicTaskPlan.mayDeferMissingContextToOutgoingAnchor(
                 admitted, registeredReceiverSource, context);
-        return startSymbolicRegion(admitted, receiver, messageSource,
+        return startSymbolicRegion(admitted, receiver,
                 deferredOutgoingSource);
-    }
-
-    /** Exact message evidence survives until a selected region is started. */
-    private static boolean inboundMessageAddressesAdmission(
-            RuntimeTask admitted) {
-        if (admitted.attachProducerOccurrenceByPort.isEmpty()) return false;
-        if (!admitted.loopBodyRoot) {
-            return inboundMessageAddressMatches(
-                    admitted.attachProducerOccurrenceByPort,
-                    admitted.occurrenceId);
-        }
-        // The enclosing hook checked the envelope before an attach inside the
-        // method could consume it. An anchored loop task enters this set only
-        // after every planned port and producer occurrence matched.
-        return enclosingLoopRootAdmits(admitted);
     }
 
     /**
@@ -749,7 +722,6 @@ public final class ConcolicRegionRuntime {
     /** Starts one planned region occurrence. */
     private static ActiveRegion startSymbolicRegion(
             RuntimeTask admitted, Object receiver,
-            String admittedMessageSource,
             boolean deferredOutgoingSource) {
         beginLiveSelectedRegion();
         ConcolicVmBroker api = engine();
@@ -795,13 +767,6 @@ public final class ConcolicRegionRuntime {
             SourceRef receiverSource = RuntimeTraceContext.sourceFor(receiver);
             if (receiverSource != null) {
                 observeCausalSource(receiverSource.key());
-            } else if (!safe(admittedMessageSource).isEmpty()) {
-                // The exact incoming exchange is also the consumer
-                // occurrence's address. Preserve that source on the active
-                // region even when replay reconstructed no receiver alias or
-                // inherited trace context; close-time confirmation then sees
-                // the same evidence that admitted the region.
-                observeCausalSource(admittedMessageSource);
             } else if (context.source != null
                     && RuntimeTraceContext.sameSourceIdentity(
                     admitted.sourceKey, context.source.key())) {
@@ -2666,78 +2631,6 @@ public final class ConcolicRegionRuntime {
         return root;
     }
 
-    private static boolean addressesConsumer(List<String> consumers,
-                                             String occurrenceId) {
-        if (consumers == null || safe(occurrenceId).isEmpty()) return false;
-        for (String consumer : consumers) {
-            if (occurrenceId.equals(
-                    OccurrenceId.parse(consumer).planned())) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    /**
-     * Whether the current concrete message carries this exact planned edge.
-     * The handle and correlation metadata are deliberately irrelevant here:
-     * the envelope's port and producer occurrence are the admission address.
-     */
-    static boolean inboundMessageMatches(String portId,
-                                         String producerOccurrenceId,
-                                         String consumerOccurrenceId) {
-        String expectedProducer = OccurrenceId.parse(
-                producerOccurrenceId).planned();
-        String expectedConsumer = OccurrenceId.parse(
-                consumerOccurrenceId).planned();
-        if (safe(portId).isEmpty() || expectedProducer.isEmpty()
-                || expectedConsumer.isEmpty()) {
-            return false;
-        }
-        SymbolicMessageEnvelope.Entry carried =
-                SymbolicMessageEnvelope.peek(portId);
-        return carried.present() && expectedProducer.equals(
-                OccurrenceId.parse(
-                        carried.producerOccurrenceId()).planned())
-                && addressesConsumer(carried.consumerOccurrenceIds(),
-                expectedConsumer);
-    }
-
-    /** Whether every planner-authored input belongs to this exact message. */
-    static boolean inboundMessageAddressMatches(
-            Map<String, String> inboundProducers,
-            String consumerOccurrenceId) {
-        if (inboundProducers == null || inboundProducers.isEmpty()) {
-            return false;
-        }
-        for (Map.Entry<String, String> anchor
-                : inboundProducers.entrySet()) {
-            if (!inboundMessageMatches(anchor.getKey(), anchor.getValue(),
-                    consumerOccurrenceId)) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    /**
-     * Source attribution carried by an exact incoming message address.
-     * An explicit receiver registration remains authoritative and may veto
-     * the message; an absent receiver alias does not erase message evidence.
-     */
-    static String inboundMessageSourceEvidence(
-            String plannedSourceKey, SourceRef registeredReceiverSource,
-            boolean allPlannerAnchorsMatch) {
-        String planned = safe(plannedSourceKey);
-        if (!allPlannerAnchorsMatch || planned.isEmpty()
-                || registeredReceiverSource != null
-                && !RuntimeTraceContext.sameSourceIdentity(planned,
-                registeredReceiverSource.key())) {
-            return "";
-        }
-        return planned;
-    }
-
     /**
      * Whether this decision is the declared target event of the addressed
      * occurrence.
@@ -2774,23 +2667,6 @@ public final class ConcolicRegionRuntime {
                 && safe(targetBranchSite).equals(safe(branchSite))
                 && (permutedOccurrence
                 || targetBranchOccurrence == occurrence);
-    }
-
-    /** Communication-addressed roots ignore an unrelated local address. */
-    static boolean rootInvocationAddressMatches(
-            OccurrenceAddress planned, OccurrenceAddress observed,
-            Map<String, String> inboundProducers,
-            String consumerOccurrenceId,
-            boolean exactOutgoingAddress) {
-        // An exact request/OUT/consumer tuple is the occurrence address.  A
-        // failed candidate may therefore release the address and let a later
-        // invocation try it; the raw call count must not consume it.
-        if (exactOutgoingAddress) return true;
-        if (inboundProducers == null || inboundProducers.isEmpty()) {
-            return planned.matches(observed);
-        }
-        return inboundMessageAddressMatches(inboundProducers,
-                consumerOccurrenceId);
     }
 
     /**
