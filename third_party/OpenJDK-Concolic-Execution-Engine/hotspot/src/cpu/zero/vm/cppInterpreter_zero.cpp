@@ -619,7 +619,16 @@ int CppInterpreter::accessor_entry(Method* method, intptr_t UNUSED, TRAPS) {
           && SharedFieldVersions::is_tracked(location);
       const bool demand_read = sym_inst->demand_symbolic_fields_enabled()
           && sym_inst->get(field_offset) == NULL;
-      if (versioned_read || demand_read) {
+      // By value: a field that already holds a symbolic expression makes this
+      // a symbolic read, and this entry has no way to hand that expression to
+      // its caller -- it builds no Java frame and writes only the concrete
+      // word.  Without this the shadow is dropped for every accessor-shaped
+      // getter over a field that carries a shadow but no version log of its
+      // own, which is exactly what the GETFIELD demand mint produces: it
+      // installs a FieldAccessExpression and publishes nothing.
+      // java.util.concurrent.atomic.AtomicInteger.get() is that shape.
+      const bool shadow_read = sym_inst->get(field_offset) != NULL;
+      if (versioned_read || demand_read || shadow_read) {
         return normal_entry(method, 0, THREAD);
       }
     }
