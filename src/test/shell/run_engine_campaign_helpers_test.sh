@@ -39,7 +39,6 @@ emit_fixture() {
   campaign_final="${emit_root}/final"
   campaign_stage_metrics="${emit_root}/stage_metrics.tsv"
   composition_manifest="${campaign_final}/candidate_composition_manifest.json"
-  reach_report="${campaign_final}/z3-result.json"
 
   mkdir -p "${campaign_final}" "${emit_classes}" \
     "${emit_iteration}/seed-result" \
@@ -76,30 +75,30 @@ emit_fixture() {
 
   printf 'EMIT\t7\n' >"${campaign_stage_metrics}"
   printf '(assert true)\n' >"${campaign_final}/candidate.smt2"
+  # SOLVE publishes its valuations and the ClaimPolicy decision it made from
+  # them into the manifest it solved, under "solver".  EMIT publishes that
+  # decision; it does not re-derive one, so the fixture states the claim
+  # exactly as ClaimPolicy states it.
   jq -n '{schemaVersion: 2, kind: "CONCOLIC_COMPOSED_SMT",
     finalStatus: "FINAL_READY", finalStatusRefusals: [],
     pathSetComplete: false,
     symbolicPropagationComplete: false,
     symbolicPropagation: [{armCount: 2}],
     symbolicPropagationGaps: [],
-    boundedLoopComposition: {gaps: []}, gaps: []}' \
+    boundedLoopComposition: {gaps: []}, gaps: [],
+    solver: {schemaVersion: 4, kind: "ROOT_VALUATION_REPORT",
+      state: "sat", reachability: "REACHABLE",
+      unsatClosureComplete: false, gaps: [],
+      symbolicVariableModels: [],
+      valuations: [{values: [false], status: "sat"},
+                   {values: [true], status: "unsat"}],
+      campaignClaim: {schemaVersion: 1, kind: "CAMPAIGN_CLAIM",
+        claim: "SAT_CANDIDATE",
+        claimReason: "a valuation satisfies the target predicate inside the recorded model and a symbolic root flips it",
+        blockers: [], blockerCount: 0, whyNotAccepted: "",
+        rootSpace: {reachability: "REACHABLE",
+                    faultSensitive: true}}}}' \
     >"${composition_manifest}"
-  # The reach report carries the ClaimPolicy decision the solver stage made
-  # from it. EMIT publishes that decision; it does not re-derive one, so the
-  # fixture states the claim exactly as ClaimPolicy states it.
-  jq -n '{schemaVersion: 4, kind: "BOOLEAN_REACH_CONDITION_REPORT",
-    state: "sat", reachCondition: {reachability: "REACHABLE",
-      },
-    unsatClosureComplete: false, gaps: [],
-    valuations: [{values: [false], status: "sat"},
-                 {values: [true], status: "unsat"}],
-    campaignClaim: {schemaVersion: 1, kind: "CAMPAIGN_CLAIM",
-      claim: "SAT_CANDIDATE",
-      claimReason: "a valuation satisfies the target predicate inside the recorded model and a symbolic root flips it",
-      blockers: [], blockerCount: 0, whyNotAccepted: "",
-      rootSpace: {reachability: "REACHABLE",
-                  faultSensitive: true}}}' \
-    >"${reach_report}"
   printf '%s\n' \
     '{"schemaVersion":1,"kind":"REGION_PATH_WORKLIST","coverageGaps":[{"kind":"PATH_FLIP_REPLAY_NOT_ADMITTED","queryKey":"flip","reason":"UNEXPLORED"},{"kind":"PATH_FLIP_SOLVER_TIMEOUT","queryKey":"slow-flip","reason":"SOLVER_TIMEOUT"}]}' \
     >"${emit_iteration}/workers/task-target/path_closure.json"
@@ -140,10 +139,10 @@ emit_fixture() {
 # wire flows the composition never realized.
 emit_fixture_undecided_roots() {
   emit_fixture
-  jq -n '{schemaVersion: 4, kind: "BOOLEAN_REACH_CONDITION_REPORT",
-    state: "CANDIDATE_READY", reachCondition: {reachability: "REACHABLE",
-      },
+  jq '.solver = {schemaVersion: 4, kind: "ROOT_VALUATION_REPORT",
+    state: "CANDIDATE_READY", reachability: "REACHABLE",
     unsatClosureComplete: false, gaps: [],
+    symbolicVariableModels: [],
     valuations: [{values: [false], status: "sat"},
                  {values: [true], status: "sat"}],
     campaignClaim: {schemaVersion: 1, kind: "CAMPAIGN_CLAIM",
@@ -158,7 +157,8 @@ emit_fixture_undecided_roots() {
       whyNotAccepted: ("claim=INCONCLUSIVE_PARTIAL: 2 blocker(s) withhold acceptance\n  TARGET_UNCONSTRAINED_BY_ROOTS: no symbolic root flips the target predicate\n  FINDING_MECHANISM_UNNAMED [NO_MECHANISM]: no satisfying witness names a mechanism"),
       rootSpace: {reachability: "REACHABLE",
                   faultSensitive: true}}}' \
-    >"${reach_report}"
+    "${composition_manifest}" >"${composition_manifest}.tmp"
+  mv "${composition_manifest}.tmp" "${composition_manifest}"
 }
 
 run_emit() {
@@ -374,14 +374,15 @@ jq -e '.finalStatus == "FINAL_READY" and .gapCount == 0' \
   "${campaign_final}/result.json" >/dev/null \
   || fail "the withheld fixture no longer reproduces the accepted state"
 
-# The claim has one home. A reach report without the policy's decision is a
-# report EMIT may not publish a result from.
+# The claim has one home. A solved manifest without the policy's decision is
+# a manifest EMIT may not publish a result from.
 emit_fixture
-jq 'del(.campaignClaim)' "${reach_report}" >"${reach_report}.tmp"
-mv "${reach_report}.tmp" "${reach_report}"
+jq 'del(.solver.campaignClaim)' "${composition_manifest}" \
+  >"${composition_manifest}.tmp"
+mv "${composition_manifest}.tmp" "${composition_manifest}"
 run_emit
 [[ "${emit_status}" -ne 0 ]] \
-  || fail "a reach report with no ClaimPolicy decision was published"
+  || fail "a solved manifest with no ClaimPolicy decision was published"
 grep -q 'no ClaimPolicy decision' "${emit_root}/emit.log" \
   || fail "the missing claim was not named: $(<"${emit_root}/emit.log")"
 [[ ! -e "${campaign_final}/result.json" ]] \

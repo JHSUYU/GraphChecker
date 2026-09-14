@@ -2,6 +2,8 @@ package edu.uva.liftlab.graphchecker.concolic;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
+
+import edu.uva.liftlab.graphchecker.contract.ComposedManifest;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
@@ -127,20 +129,19 @@ public class TargetOccurrenceElectionTest {
             campaignClaim.addProperty("blockerCount", blockers);
             campaignClaim.add("blockers", new JsonArray());
             campaignClaim.add("rootSpace", rootSpace);
-            JsonObject reachCondition = new JsonObject();
-            reachCondition.addProperty("reachability",
-                    ClaimPolicy.SAT_CANDIDATE.equals(claim)
-                            ? "REACHABLE" : "UNREACHABLE");
             JsonObject reach = new JsonObject();
             reach.addProperty("state", "sat");
-            reach.add("reachCondition", reachCondition);
+            reach.addProperty("reachability",
+                    ClaimPolicy.SAT_CANDIDATE.equals(claim)
+                            ? "REACHABLE" : "UNREACHABLE");
             reach.add("campaignClaim", campaignClaim);
+            // SOLVE publishes into the manifest it solved: one occurrence,
+            // one artifact.
+            manifest.add(ComposedManifest.SOLVER, reach);
 
             Path manifestPath = dir.resolve(
                     "candidate_composition_manifest.json");
-            Path reachPath = dir.resolve("z3-result.json");
             write(manifestPath, manifest);
-            write(reachPath, reach);
 
             JsonObject report = new JsonObject();
             report.addProperty("occurrenceId", occurrence);
@@ -151,7 +152,6 @@ public class TargetOccurrenceElectionTest {
             report.addProperty("status", TargetOccurrenceElection.COMPOSED);
             report.addProperty("detail", "");
             report.addProperty("manifest", manifestPath.toString());
-            report.addProperty("reachReport", reachPath.toString());
             return report;
         } catch (IOException failure) {
             throw new IllegalStateException(failure);

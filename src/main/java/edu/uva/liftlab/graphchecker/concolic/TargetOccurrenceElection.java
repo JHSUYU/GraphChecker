@@ -5,6 +5,8 @@ import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 
+import edu.uva.liftlab.graphchecker.contract.ComposedManifest;
+
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -191,14 +193,15 @@ public final class TargetOccurrenceElection {
         }
         JsonObject manifest = readRequired(report, "manifest",
                 "composition manifest");
-        JsonObject reach = readRequired(report, "reachReport",
-                "solver reach report");
+        // SOLVE publishes beside the formula it solved, in the same
+        // artifact: one anchored occurrence, one file.
+        JsonObject reach = object(manifest, ComposedManifest.SOLVER);
         JsonObject claim = object(reach, "campaignClaim");
         if (claim.size() == 0) {
-            throw new IOException("the reach report for "
+            throw new IOException("the composition manifest for "
                     + optionalString(report, "occurrenceId")
-                    + " published no ClaimPolicy decision: "
-                    + optionalString(report, "reachReport"));
+                    + " carries no solver decision: "
+                    + optionalString(report, "manifest"));
         }
         JsonObject rootSpace = object(claim, "rootSpace");
         String finalStatus = optionalString(manifest, "finalStatus");
@@ -214,8 +217,8 @@ public final class TargetOccurrenceElection {
                         array(claim, "blockers").size()));
         row.addProperty("finalStatus", finalStatus);
         row.addProperty("finalStatusRefusals", refusals);
-        row.addProperty("reachability", optionalString(
-                object(reach, "reachCondition"), "reachability"));
+        row.addProperty("reachability",
+                optionalString(reach, "reachability"));
         row.addProperty("solverState", optionalString(reach, "state"));
         row.addProperty("acceptedValuationOrdinal", accepted);
         row.addProperty("acceptedWitnessKind",

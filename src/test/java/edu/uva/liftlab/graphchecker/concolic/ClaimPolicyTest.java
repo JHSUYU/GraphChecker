@@ -151,7 +151,7 @@ public class ClaimPolicyTest {
     /** A REACHABLE report whose single Boolean root decides the target. */
     private static JsonObject reach() {
         JsonObject reach = parse("{\"schemaVersion\":4,"
-                + "\"kind\":\"BOOLEAN_REACH_CONDITION_REPORT\","
+                + "\"kind\":\"ROOT_VALUATION_REPORT\","
                 + "\"state\":\"CANDIDATE_READY\","
                 + "\"unsatClosureComplete\":true,"
                 + "\"gaps\":[],"
@@ -555,7 +555,7 @@ public class ClaimPolicyTest {
                 + "{\"values\":[true],\"status\":\"sat\","
                 + "\"witnessMechanisms\":[{\"kind\":\"MARKER_FLIPPED\","
                 + "\"siteId\":\"Client$Connection.sendRpcRequest#u17\"}]}]"));
-        reach.add(BooleanReachConditionExtractor.MECHANISM_NECESSITY,
+        reach.add(RootValuationSolver.MECHANISM_NECESSITY,
                 clockNecessity(0, true));
         return reach;
     }

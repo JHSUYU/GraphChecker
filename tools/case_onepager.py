@@ -71,7 +71,8 @@ def page(case):
     manifest = read_json(os.path.join(
         final, "candidate_composition_manifest.json"), {})
     result = read_json(os.path.join(final, "result.json"), {})
-    reach = read_json(os.path.join(final, "z3-result.json"), {})
+    # SOLVE publishes into the manifest it solved: one occurrence, one file.
+    reach = manifest.get("solver", {})
     gaps = read_json(os.path.join(final, "gaps.json"), [])
     ledger = read_json(os.path.join(final, "target_occurrences.json"), {})
 
@@ -112,8 +113,7 @@ def page(case):
 
     rule("SOLVER")
     print("  state          %s" % reach.get("state", "<none>"))
-    print("  reachability   %s" % reach.get(
-        "reachCondition", {}).get("reachability", "<none>"))
+    print("  reachability   %s" % reach.get("reachability", "<none>"))
     claim = reach.get("campaignClaim", {})
     space = claim.get("rootSpace", {})
     print("  finding kind   %s" % (space.get("acceptedFindingKind")

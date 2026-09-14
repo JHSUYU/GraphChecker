@@ -46,6 +46,13 @@ public final class ComposedManifest {
     public static final String MANUAL_SOURCE_MATERIALIZATION_AUTHORITY =
             "COMPOSER_MANUAL_SYMBOLIC_ROOT_TERM_V1";
     public static final String RECORDED_ROOT_VALUES = "recordedRootValues";
+    /**
+     * Where SOLVE publishes its valuations and mechanisms.
+     *
+     * <p>Beside the formula they are about, rather than in a file of their
+     * own: one anchored occurrence, one artifact.</p>
+     */
+    public static final String SOLVER = "solver";
     public static final String RECORDED_SOURCE_VALUE = "recordedValue";
     public static final String RECORDED_VALUE_CONFLICT =
             "recordedValueConflict";

@@ -171,8 +171,9 @@ case has installed the same Hadoop SNAPSHOT coordinates in Maven's cache.
 
 ## Results
 
-`schedule/final/` contains exactly seven files: `candidate.smt2`,
-`candidate_composition_manifest.json`, `z3-result.json`, `path-closures.json`,
+`schedule/final/` contains exactly six files: `candidate.smt2`,
+`candidate_composition_manifest.json` (which carries the SOLVE stage's
+valuations and claim under `solver`), `path-closures.json`,
 `gaps.json`, `result.json`, and `run-manifest.json`, which records the frozen
 provenance digests, the per-iteration manifests, and the digest of every other
 published artifact. The frozen inputs themselves are not in `final/`: the

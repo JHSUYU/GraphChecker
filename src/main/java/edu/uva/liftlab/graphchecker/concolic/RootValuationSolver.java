@@ -44,10 +44,24 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Projects a structurally complete candidate bug-path SMT formula onto its
- * free Boolean roots, and reports the reach condition as a DNF over them.
+ * SOLVE: z3 over {@code Fatal_T}, and what a satisfying assignment means.
+ *
+ * <p>The composition publishes one formula per anchored occurrence of the
+ * target.  This enumerates that formula's free Boolean roots, solves each
+ * valuation, probes whether the marker and clock roots a satisfying witness
+ * moved were needed for it, and reads every witness against the mechanisms
+ * the recording allows.  What it publishes is the valuations and the
+ * mechanisms; {@link ClaimPolicy} decides from them.</p>
+ *
+ * <p>It used to publish a "reach condition" as well: the satisfying
+ * valuations rendered again as a DNF, the domain that rendering was a
+ * projection of, a coverage conclusion and a degeneracy verdict.
+ * Reachability is Fatal_T's satisfiability and is one field; a second
+ * rendering of the valuations is a second artifact to keep true, and whether
+ * the target is unconstrained by every root is decided where the formula is
+ * built, not by reading the shape of a disjunction afterwards.</p>
  */
-public final class BooleanReachConditionExtractor {
+public final class RootValuationSolver {
     private static final int MAX_EXISTENTIAL_PERTURBATIONS = 32;
 
     /** A perturbation the root's own declared physics forbids. */
@@ -66,7 +80,7 @@ public final class BooleanReachConditionExtractor {
             "SYMBOLIC_VARIABLE_MODEL";
     private static final Gson GSON = new GsonBuilder()
             .disableHtmlEscaping().setPrettyPrinting().create();
-    private BooleanReachConditionExtractor() {
+    private RootValuationSolver() {
     }
 
     public static void main(String[] argv) throws Exception {
@@ -86,7 +100,14 @@ public final class BooleanReachConditionExtractor {
                 ClaimPolicy.PlannedSymbolicRoots.read(
                         arguments.runtimePlan.toString()));
         report.add("solverAttempts", solver.attempts());
-        ArtifactIO.replace(arguments.output, GSON.toJson(report)
+        // One artifact per anchored occurrence.  The valuations and the
+        // mechanisms are about the formula the manifest describes, and a
+        // second file beside it was a second thing to keep in step -- the
+        // campaign copied it, digested it, required it and named it in every
+        // report row.  They are published into the manifest, under the
+        // member the readers ask for.
+        manifest.add(ComposedManifest.SOLVER, report);
+        ArtifactIO.replace(arguments.manifest, GSON.toJson(manifest)
                 + System.lineSeparator());
         System.out.println(GSON.toJson(report));
         if (!"CANDIDATE_READY".equals(optionalString(report, "state"))) {
@@ -104,30 +125,30 @@ public final class BooleanReachConditionExtractor {
 
     /**
      * The report, with the campaign claim decided from it.  Every exit from
-     * {@link #reachReport} publishes a reach condition, so the one gate that
-     * reads one runs here rather than in each caller: the report and the
-     * claim it justifies are published together or not at all.
+     * {@link #solverReport} states a reachability, so the one gate that reads
+     * one runs here rather than in each caller: the report and the claim it
+     * justifies are published together or not at all.
      */
     static JsonObject extract(String composedSmt, JsonObject manifest,
                               Z3Solver solver,
                               int maxInputs, int maxValuations,
                               ClaimPolicy.PlannedSymbolicRoots flows)
             throws IOException, InterruptedException {
-        JsonObject report = reachReport(composedSmt, manifest, solver,
+        JsonObject report = solverReport(composedSmt, manifest, solver,
                 maxInputs, maxValuations);
         report.add(ClaimPolicy.CLAIM,
                 ClaimPolicy.decide(manifest, report, flows));
         return report;
     }
 
-    private static JsonObject reachReport(String composedSmt,
-                                          JsonObject manifest,
-                                          Z3Solver solver,
-                                          int maxInputs, int maxValuations)
+    private static JsonObject solverReport(String composedSmt,
+                                           JsonObject manifest,
+                                           Z3Solver solver,
+                                           int maxInputs, int maxValuations)
             throws IOException, InterruptedException {
         JsonObject report = new JsonObject();
         report.addProperty("schemaVersion", 4);
-        report.addProperty("kind", "BOOLEAN_REACH_CONDITION_REPORT");
+        report.addProperty("kind", "ROOT_VALUATION_REPORT");
         boolean unsatClosureComplete = unsatClosureComplete(manifest);
         report.addProperty(ComposedManifest.UNSAT_CLOSURE_COMPLETE,
                 unsatClosureComplete);
@@ -634,11 +655,7 @@ public final class BooleanReachConditionExtractor {
             return new ArrayList<>(lastPinned);
         }
 
-        /**
-         * The verdict of the last {@link #check}, which is not the raw
-         * solver status: an all-unsat fan-out whose every probed core rests
-         * on this driver's own pins reports {@link #FRONTIER_PINNED_UNSAT}.
-         */
+        /** The solver status of the last {@link #check}. */
         String lastStatus() {
             return lastStatus;
         }
@@ -2590,7 +2607,6 @@ public final class BooleanReachConditionExtractor {
         private Path smt;
         private Path manifest;
         private Path runtimePlan;
-        private Path output;
         private String z3 = "z3";
         private long timeoutMillis = 20_000L;
         private int maxInputs = 12;
@@ -2619,10 +2635,6 @@ public final class BooleanReachConditionExtractor {
             result.smt = required(values, "smt");
             result.manifest = required(values, "manifest");
             result.runtimePlan = required(values, "runtime-plan");
-            result.output = values.containsKey("output")
-                    ? Paths.get(values.get("output"))
-                    : sibling(result.manifest,
-                    "boolean_reach_condition.json");
             result.z3 = firstNonBlank(values.get("z3"), "z3");
             result.timeoutMillis = positiveLong(values.get("timeout-ms"),
                     20_000L);
@@ -2636,7 +2648,7 @@ public final class BooleanReachConditionExtractor {
         private static boolean option(String key) {
             return "smt".equals(key) || "manifest".equals(key)
                     || "runtime-plan".equals(key)
-                    || "output".equals(key) || "z3".equals(key)
+                    || "z3".equals(key)
                     || "timeout-ms".equals(key)
                     || "max-inputs".equals(key)
                     || "max-valuations".equals(key)
