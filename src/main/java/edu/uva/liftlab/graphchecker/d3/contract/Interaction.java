@@ -51,7 +51,7 @@ public final class Interaction {
      * Whether the producer side is a DEGRADED endpoint (INTERACTION-ID R-I1).
      *
      * <p>The interaction still exists and is still keyed by both endpoints; the
-     * flag is what ClaimPolicy consults before letting a witness move a root
+     * flag is what the claim gate consults before letting a witness move a root
      * that only an unnamed producer could have stated.</p>
      */
     public boolean producerDegraded() {

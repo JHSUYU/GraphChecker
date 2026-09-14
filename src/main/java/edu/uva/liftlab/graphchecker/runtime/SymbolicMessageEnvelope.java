@@ -304,15 +304,13 @@ public final class SymbolicMessageEnvelope {
             return left;
         }
 
-        /** Names every element nothing looked up; reports each once. */
+        /** Marks every element nothing looked up; each is seen once. */
         void reportUnattached() {
             for (int index = 0; index < entries.size(); index++) {
                 if (lookedUp[index]) continue;
+                // D2: "a message element nothing decoded" is a GapRow
+                // published by runtime/d3 SessionPublisher (M2).
                 lookedUp[index] = true;
-                Entry entry = entries.get(index);
-                ConcolicRegionRuntime.reportUnattachedMessageLeaf(
-                        entry.portId, entry.ordinal,
-                        entry.producerOccurrenceId);
             }
         }
     }

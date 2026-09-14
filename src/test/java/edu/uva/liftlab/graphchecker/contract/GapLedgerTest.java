@@ -41,25 +41,19 @@ public class GapLedgerTest {
         assertEquals(GapLedger.GapClass.BLOCKING,
                 GapLedger.classOf("COVERAGE_GAP"));
 
-        // The composed-port scope is the one conditional left: the handoff
-        // gap is
-        // decided by joining its port against the composed formula's phases
-        // and the campaign's attaches, a question only the campaign fold can
-        // ask, so every reader here answers BLOCKING and the fold is told
-        // which codes to ask it about.
-        assertTrue(GapLedger.composedPortConditional("RPC_HANDOFF_GAP"));
-        assertEquals(GapLedger.GapClass.BLOCKING,
-                GapLedger.classOf("RPC_HANDOFF_GAP"));
-        assertFalse("a composed-port code is not an unconditional exception",
-                GapLedger.diagnosticCodes().contains("RPC_HANDOFF_GAP"));
-        assertFalse(GapLedger.composedPortConditional(
-                "REGION_ROOT_NEVER_EXECUTED"));
-        assertFalse(GapLedger.composedPortConditional(
-                "A_CODE_NOBODY_REGISTERED"));
-        // And the shell reads the list from the published table.
-        assertTrue("the published ledger must name the composed-port codes",
-                GapLedger.toJson().getAsJsonArray("composedPortConditional")
-                        .toString().contains("RPC_HANDOFF_GAP"));
+        // No scope is conditional any more.  A row's class is the row's --
+        // a GapRow states its own kind and class where the runtime raises
+        // it -- and the campaign fold partitions by that instead of
+        // re-deciding it against a slice, a port or a wave it can see and
+        // the raiser could not.  What is left here is the table that
+        // classes the rows carrying no class of their own.
+        for (GapLedger.Entry entry : GapLedger.entries()) {
+            assertEquals("every registered code answers the same way"
+                            + " wherever it is raised: " + entry.code,
+                    GapLedger.Scope.ALWAYS, entry.scope);
+        }
+        assertEquals("and the published table says so", 1,
+                GapLedger.Scope.values().length);
     }
 
     /** Every exception to the default states why it cannot break a chain. */
