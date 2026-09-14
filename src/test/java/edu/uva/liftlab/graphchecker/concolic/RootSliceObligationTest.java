@@ -94,7 +94,7 @@ public class RootSliceObligationTest {
                 Collections.singletonList(task),
                 Collections.<JsonObject>emptyList(),
                 RegionPathWorklist.Bounds.defaults(),
-                CanonicalJson.sha256("root-slice-family"), roots);
+                roots);
     }
 
     private static JsonObject telemetry(RegionPathWorklist.Result result) {

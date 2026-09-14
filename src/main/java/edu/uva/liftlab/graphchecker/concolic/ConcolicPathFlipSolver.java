@@ -127,8 +127,6 @@ public final class ConcolicPathFlipSolver {
                 optionalString(task, "sourcePathKey"));
         solved.record.addProperty("sourceActivationOccurrenceId",
                 optionalString(task, "sourceActivationOccurrenceId"));
-        solved.record.addProperty(LinkedReplayBundle.FAMILY_DIGEST_FIELD,
-                optionalString(bundle, LinkedReplayBundle.FAMILY_DIGEST_FIELD));
         solved.record.addProperty(LinkedReplayBundle.TOPOLOGY_EPOCH_FIELD,
                 optionalString(bundle, LinkedReplayBundle.TOPOLOGY_EPOCH_FIELD));
         Path directory = requiredPath(options, "output-dir");

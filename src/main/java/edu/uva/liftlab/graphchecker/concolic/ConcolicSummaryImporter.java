@@ -116,7 +116,6 @@ public final class ConcolicSummaryImporter {
         /** Linked replays share this exact VM-allocation scope. */
         final String boundarySessionScope;
         final String replayGroupId;
-        final String familySnapshotDigest;
         final String event;
         final String skipKind;
         final String skipReason;
@@ -167,8 +166,6 @@ public final class ConcolicSummaryImporter {
             this.line = line;
             this.taskId = optionalString(raw, "taskId");
             this.replayGroupId = optionalString(raw, "replayGroupId");
-            this.familySnapshotDigest = optionalString(raw,
-                    "familySnapshotDigest");
             this.event = optionalString(raw, "event");
             this.activationOrdinal = exactInteger(raw,
                     PathObservation.ACTIVATION_ORDINAL, -1);
@@ -720,10 +717,6 @@ public final class ConcolicSummaryImporter {
                 row.boundarySessionScope);
         if (!row.replayGroupId.isEmpty()) {
             summary.addProperty("replayGroupId", row.replayGroupId);
-        }
-        if (!row.familySnapshotDigest.isEmpty()) {
-            summary.addProperty("familySnapshotDigest",
-                    row.familySnapshotDigest);
         }
         summary.addProperty("regionId", task.regionId());
         // Current result rows always carry the exact activation tuple. The

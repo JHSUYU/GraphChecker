@@ -48,10 +48,9 @@ public final class RegionPathWorklist {
     static Result plan(List<JsonObject> summaries,
                        List<JsonObject> executionTasks,
                        List<JsonObject> explorationRecords,
-                       Bounds bounds,
-                       String familySnapshotDigest) {
+                       Bounds bounds) {
         return plan(summaries, executionTasks, explorationRecords, bounds,
-                familySnapshotDigest, SymbolicRootInventory.disabled());
+                SymbolicRootInventory.disabled());
     }
 
     /**
@@ -68,10 +67,9 @@ public final class RegionPathWorklist {
                        List<JsonObject> executionTasks,
                        List<JsonObject> explorationRecords,
                        Bounds bounds,
-                       String familySnapshotDigest,
                        SymbolicRootInventory roots) {
         return new Planner(summaries, executionTasks, explorationRecords,
-                bounds, familySnapshotDigest, roots).run();
+                bounds, roots).run();
     }
 
     /** Telemetry kind for an obligation the recording already decided. */
@@ -84,7 +82,6 @@ public final class RegionPathWorklist {
 
     private static final class Planner {
         private final Bounds bounds;
-        private final String familySnapshotDigest;
         private final Map<String, JsonObject> taskById =
                 new LinkedHashMap<>();
         private final Map<String, JsonObject> records = new LinkedHashMap<>();
@@ -114,10 +111,8 @@ public final class RegionPathWorklist {
                         List<JsonObject> executionTasks,
                         List<JsonObject> explorationRecords,
                         Bounds bounds,
-                        String familySnapshotDigest,
                         SymbolicRootInventory roots) {
             this.bounds = bounds;
-            this.familySnapshotDigest = familySnapshotDigest;
             this.roots = roots == null
                     ? SymbolicRootInventory.disabled() : roots;
             for (JsonObject task : executionTasks) {
@@ -624,8 +619,6 @@ public final class RegionPathWorklist {
             task.addProperty("schemaVersion", 3);
             task.addProperty("kind", "REGION_PATH_FLIP");
             task.addProperty("queryKey", key);
-            task.addProperty(LinkedReplayBundle.FAMILY_DIGEST_FIELD,
-                    familySnapshotDigest);
             task.addProperty("regionId", path.regionId());
             task.addProperty("goalId", path.scope().goalId());
             path.scope().loopBound().writeTo(task);

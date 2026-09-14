@@ -1377,13 +1377,11 @@ public final class ConcolicConstraintSolver {
         private final String queryKey;
         private final BranchReplayContract replayContract;
         private final SolverPathContext pathContext;
-        private final JsonArray consumerAnchorCaseDependencies;
         private final String sourceActivationOccurrenceId;
 
         private PathQuery(String queryKey,
                           BranchReplayContract replayContract,
                           SolverPathContext pathContext,
-                          JsonArray consumerAnchorCaseDependencies,
                           String sourceActivationOccurrenceId) {
             this.queryKey = queryKey;
             this.replayContract = replayContract;
@@ -1392,8 +1390,6 @@ public final class ConcolicConstraintSolver {
             // immutable expression DAG for this worker.  This array is only
             // read during solving; a defensive deep copy would recursively
             // expand the DAG once more before Z3 is even started.
-            this.consumerAnchorCaseDependencies =
-                    consumerAnchorCaseDependencies;
             this.sourceActivationOccurrenceId =
                     sourceActivationOccurrenceId;
         }
@@ -1416,8 +1412,6 @@ public final class ConcolicConstraintSolver {
                         requiredObject(task, "replayContract")),
                         SolverPathContext.fromJson(requiredObject(task,
                                 "solverPathContext")),
-                        array(task,
-                                LinkedReplayBundle.CASE_DEPENDENCIES_FIELD),
                         optionalString(task, "sourceActivationOccurrenceId"));
             } catch (IllegalArgumentException malformed) {
                 throw new IOException("invalid canonical path task: "
@@ -1506,9 +1500,22 @@ public final class ConcolicConstraintSolver {
                                 phase.phaseId(), phase.sourceId()))) {
                     continue;
                 }
-                if (selected != null) return null;
-                selected = new ConfiguredSourceMatch(phase.phaseId(),
-                        phase.sourceId(), field.signature());
+                ConfiguredSourceMatch match = new ConfiguredSourceMatch(
+                        phase.phaseId(), phase.sourceId(), field.signature());
+                // A phase id is the variable, and it repeats: once per
+                // execution of its site, and once in every linked member's
+                // catalog that saw that site
+                // (ConfiguredSourcePhaseContract:143).  Two occurrences of
+                // one variable are that variable, not an ambiguity, and
+                // refusing on the second made a root the replay can set
+                // read as one it cannot.  What is still ambiguous is one
+                // engine symbol matching two different variables, and that
+                // is what this refuses.
+                if (selected != null) {
+                    if (!selected.sameVariable(match)) return null;
+                    continue;
+                }
+                selected = match;
             }
         }
         return selected;
@@ -1603,6 +1610,14 @@ public final class ConcolicConstraintSolver {
             this.sourcePhaseId = sourcePhaseId;
             this.sourceId = sourceId;
             this.fieldSignature = fieldSignature;
+        }
+
+        /** Whether two matches name one replay-controllable variable. */
+        private boolean sameVariable(ConfiguredSourceMatch other) {
+            return other != null
+                    && sourcePhaseId.equals(other.sourcePhaseId)
+                    && sourceId.equals(other.sourceId)
+                    && fieldSignature.equals(other.fieldSignature);
         }
     }
 

@@ -123,8 +123,6 @@ final class PathReplayTaskFactory {
             }
             replay.addProperty(LinkedReplayBundle.GROUP_FIELD, groupId);
             replay.addProperty(LinkedReplayBundle.ROLE_FIELD, role);
-            replay.addProperty(LinkedReplayBundle.FAMILY_DIGEST_FIELD,
-                    optionalString(bundle, LinkedReplayBundle.FAMILY_DIGEST_FIELD));
             replay.addProperty(LinkedReplayBundle.TOPOLOGY_EPOCH_FIELD,
                     optionalString(bundle, LinkedReplayBundle.TOPOLOGY_EPOCH_FIELD));
             result.add(replay);
@@ -196,7 +194,14 @@ final class PathReplayTaskFactory {
         return result;
     }
 
-    /** One materialized input has exactly one task owner in a linked plan. */
+    /**
+     * Which linked task each materialized input is set on.
+     *
+     * <p>One control is set once, by the member whose activation this flip
+     * replays.  Other members that name the same control in their own
+     * catalogs observe the value through the propagation chain rather than
+     * setting it again.</p>
+     */
     private static Map<String, JsonArray> distributeAssignments(
             JsonArray assignments, java.util.List<JsonObject> sources,
             java.util.List<ExecutionTask> decodedSources,
@@ -213,11 +218,16 @@ final class PathReplayTaskFactory {
             java.util.List<String> owners = phase.isEmpty()
                     ? actionOwners(input, decodedSources)
                     : configuredPhaseOwners(phase, decodedSources);
-            // A propagated input action can appear in several occurrences'
-            // frozen catalogs.  The current exact flip owns that control at
-            // its primary activation; companions re-evaluate it through the
-            // live propagation chain.  Keep all other ambiguity fail-closed.
-            if (phase.isEmpty() && owners.size() > 1
+            // A control can appear in several linked members' frozen
+            // catalogs: a propagated input action does, and so does a
+            // configured source phase, whose id is the variable and repeats
+            // in every member whose catalog names that mint site
+            // (ConfiguredSourcePhaseContract:143).  Several owners of one
+            // variable are not several variables.  The current exact flip
+            // owns that control at its primary activation; companions
+            // re-evaluate it through the live propagation chain.  Ambiguity
+            // the primary is not part of stays fail-closed.
+            if (owners.size() > 1
                     && owners.contains(primarySourceTaskId)) {
                 owners = java.util.Collections.singletonList(
                         primarySourceTaskId);
