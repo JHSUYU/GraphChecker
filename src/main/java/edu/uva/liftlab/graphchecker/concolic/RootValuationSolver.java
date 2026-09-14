@@ -179,8 +179,20 @@ public final class RootValuationSolver {
         JsonArray symbolicVariableModels = new JsonArray();
         report.add(SYMBOLIC_VARIABLE_MODELS, symbolicVariableModels);
 
-        long valuationCount = inputs.size() >= 63
+        // One question for every declared root: the Boolean markers over
+        // {recorded, flipped} and the roots the case gave a domain over that
+        // domain, recorded value first.  The two used to be different kinds
+        // of thing -- the markers enumerated, an integral root left
+        // existential with a preference for what it recorded -- so no
+        // valuation ever moved a serial number and no witness could name the
+        // rotation the case is about.
+        List<Map<String, String>> rootAssignments = rootAssignments(manifest,
+                discovery.existentialNonBooleanRootInputs,
+                Math.max(1, maxValuations));
+        long booleanCount = inputs.size() >= 63
                 ? Long.MAX_VALUE : 1L << inputs.size();
+        long valuationCount = booleanCount == Long.MAX_VALUE
+                ? Long.MAX_VALUE : booleanCount * rootAssignments.size();
         if (inputs.size() > Math.max(0, maxInputs)) {
             gaps.add("ROOT_BOOLEAN_INPUT_LIMIT_EXCEEDED:" + inputs.size()
                     + ">" + Math.max(0, maxInputs));
@@ -234,9 +246,15 @@ public final class RootValuationSolver {
         boolean existentialProbeAttempted = false;
         int solverErrors = 0;
         int count = (int) valuationCount;
+        int booleans = (int) booleanCount;
         for (int ordinal = 0; ordinal < count; ordinal++) {
-            boolean[] values = valuation(ordinal, inputs.size());
-            String query = valuationQuery(base, inputs, values,
+            // Assignment-major, so ordinal 0 is the run as it happened and a
+            // composition with no declared domain enumerates exactly what it
+            // enumerated before.
+            Map<String, String> assignment =
+                    rootAssignments.get(ordinal / booleans);
+            boolean[] values = valuation(ordinal % booleans, inputs.size());
+            String query = valuationQuery(base, inputs, values, assignment,
                     discovery.existentialNonBooleanRootInputs,
                     modelSymbols);
             ConcolicConstraintSolver.SolverOutput result =
@@ -244,6 +262,9 @@ public final class RootValuationSolver {
             String status = solver.lastStatus();
             JsonObject row = asEvidence(valuationRow(values, status),
                     evidenceOnly);
+            if (!assignment.isEmpty()) {
+                row.add("rootAssignment", GSON.toJsonTree(assignment));
+            }
             // A reader has to be able to tell a causal verdict from one the
             // these are the selectors this valuation
             // was solved under.
@@ -505,6 +526,7 @@ public final class RootValuationSolver {
     private static String valuationQuery(String base,
                                          List<RootInput> inputs,
                                          boolean[] values,
+                                         Map<String, String> assignment,
                                          List<RootInput> witnessRoots,
                                          List<String> modelSymbols) {
         StringBuilder query = new StringBuilder(base);
@@ -512,6 +534,11 @@ public final class RootValuationSolver {
             query.append("(assert ")
                     .append(inputs.get(index).literal(values[index]))
                     .append(")").append(System.lineSeparator());
+        }
+        for (Map.Entry<String, String> root : assignment.entrySet()) {
+            query.append("(assert (= ").append(root.getKey()).append(' ')
+                    .append(root.getValue()).append("))")
+                    .append(System.lineSeparator());
         }
         query.append("(check-sat)").append(System.lineSeparator());
         List<String> wanted = new ArrayList<>();
@@ -534,6 +561,118 @@ public final class RootValuationSolver {
             query.append("))").append(System.lineSeparator());
         }
         return query.toString();
+    }
+
+    /**
+     * The values each declared root is enumerated over, recorded first.
+     *
+     * <p>A declared root is asked the same question a declared marker is:
+     * what does the target do at each value the case says the root may have
+     * had?  For a Boolean marker that is {recorded, flipped}, which is the
+     * two-value case of this; for the block-key serial it is the recording's
+     * value and the rotations past it.  The recorded value leads, so the
+     * first assignment is the run as it happened, and the rest follow it by
+     * distance -- one rotation before three, so the smallest departure that
+     * reaches the target is the one a reader sees first.</p>
+     */
+    private static List<Map<String, String>> rootAssignments(
+            JsonObject manifest, List<RootInput> roots, int budget) {
+        Map<String, BigInteger[]> domains = declaredDomains(manifest);
+        Map<String, String> recorded = recordedRootValues(manifest);
+        List<String> terms = new ArrayList<>();
+        Map<String, List<BigInteger>> moves = new LinkedHashMap<>();
+        for (RootInput root : roots == null
+                ? Collections.<RootInput>emptyList() : roots) {
+            BigInteger[] domain = domains.get(root.solverTerm);
+            BigInteger at = integral(firstNonBlank(
+                    recorded.get(root.solverTerm)));
+            if (domain == null || at == null) continue;
+            List<BigInteger> alternatives = new ArrayList<>();
+            for (BigInteger value = domain[0];
+                    value.compareTo(domain[1]) <= 0;
+                    value = value.add(BigInteger.ONE)) {
+                if (value.equals(at)) continue;
+                alternatives.add(value);
+                if (alternatives.size() >= Math.max(1, budget)) break;
+            }
+            if (alternatives.isEmpty()) continue;
+            Collections.sort(alternatives, byDistanceFrom(at));
+            terms.add(root.solverTerm);
+            moves.put(root.solverTerm, alternatives);
+        }
+        List<Map<String, String>> assignments = new ArrayList<>();
+        assignments.add(Collections.<String, String>emptyMap());
+        if (terms.isEmpty()) return assignments;
+        // One root moved, then two, then three: a witness that needs fewer
+        // departures from the recording is the smaller claim, so it is asked
+        // for first.  The budget is the caller's valuation cap, which is the
+        // one bound on how much of the product is asked at all.
+        List<Map<String, String>> level = new ArrayList<>(assignments);
+        for (int moved = 1; moved <= terms.size(); moved++) {
+            List<Map<String, String>> next = new ArrayList<>();
+            for (Map<String, String> previous : level) {
+                for (String term : terms) {
+                    if (previous.containsKey(term)) continue;
+                    if (!previous.isEmpty() && terms.indexOf(term)
+                            <= lastIndex(terms, previous)) {
+                        continue;
+                    }
+                    for (BigInteger value : moves.get(term)) {
+                        Map<String, String> assignment =
+                                new LinkedHashMap<>(previous);
+                        assignment.put(term,
+                                ScalarEncoding.formatSmtInteger(value));
+                        next.add(assignment);
+                    }
+                }
+            }
+            if (next.isEmpty()) break;
+            assignments.addAll(next);
+            level = next;
+            if (assignments.size() >= Math.max(1, budget)) break;
+        }
+        return assignments;
+    }
+
+    /** The last term of {@code terms} this assignment already moved. */
+    private static int lastIndex(List<String> terms,
+                                 Map<String, String> assignment) {
+        int last = -1;
+        for (String term : assignment.keySet()) {
+            last = Math.max(last, terms.indexOf(term));
+        }
+        return last;
+    }
+
+    /** Nearest to the recorded value first; ties by value, for stability. */
+    private static Comparator<BigInteger> byDistanceFrom(
+            final BigInteger recorded) {
+        return new Comparator<BigInteger>() {
+            @Override
+            public int compare(BigInteger left, BigInteger right) {
+                int distance = left.subtract(recorded).abs().compareTo(
+                        right.subtract(recorded).abs());
+                return distance != 0 ? distance : left.compareTo(right);
+            }
+        };
+    }
+
+    /** What the recording read for each declared root, by solver term. */
+    private static Map<String, String> recordedRootValues(
+            JsonObject manifest) {
+        Map<String, String> recorded = new LinkedHashMap<>();
+        for (JsonElement element : array(manifest,
+                ComposedManifest.RECORDED_ROOT_VALUES)) {
+            if (!element.isJsonObject()) continue;
+            JsonObject ledger = element.getAsJsonObject();
+            String term = optionalString(ledger, "solverTerm");
+            String value = optionalString(ledger,
+                    ComposedManifest.RECORDED_SOURCE_VALUE);
+            if (!term.isEmpty() && !value.isEmpty()) {
+                recorded.put(term, value);
+            }
+        }
+        return recorded;
     }
 
     private static boolean[] valuation(int ordinal, int width) {
@@ -1775,7 +1914,13 @@ public final class RootValuationSolver {
     /** Pinning assertions named per refused decision; one is usually all. */
     private static final int MAX_PINNING_CASES = 4;
 
-    /** The base text with every clock window assertion removed. */
+    /**
+     * The base text with every clock window assertion removed.
+     *
+     * <p>An unbounded case asserted none, so there is nothing to remove and
+     * the text is already the question this asks: what does the target do
+     * with the clocks free?</p>
+     */
     static String dropClockWindows(String base,
                                    Map<String, JsonObject> clocks,
                                    long skew) {
@@ -1783,9 +1928,10 @@ public final class RootValuationSolver {
         for (Map.Entry<String, JsonObject> clock : clocks.entrySet()) {
             long recorded = optionalLongInteger(clock.getValue(),
                     "recordedValue", 0L);
-            text = text.replace(
-                    ClockRootPhysics.window(clock.getKey(), recorded, skew),
-                    "true");
+            String window = ClockRootPhysics.window(clock.getKey(),
+                    recorded, skew);
+            if (window.isEmpty()) continue;
+            text = text.replace(window, "true");
         }
         return text;
     }
@@ -1798,9 +1944,13 @@ public final class RootValuationSolver {
         for (Map.Entry<String, JsonObject> clock : clocks.entrySet()) {
             long recorded = optionalLongInteger(clock.getValue(),
                     "recordedValue", 0L);
-            text = text.replace(
-                    ClockRootPhysics.window(clock.getKey(), recorded, skew),
-                    ClockRootPhysics.window(clock.getKey(), recorded, wider));
+            String window = ClockRootPhysics.window(clock.getKey(),
+                    recorded, skew);
+            // Nothing to widen where the case asserted no window: the cell
+            // is already free and a wider one would say less than nothing.
+            if (window.isEmpty()) continue;
+            text = text.replace(window, ClockRootPhysics.window(
+                    clock.getKey(), recorded, wider));
         }
         return text;
     }
@@ -2210,8 +2360,16 @@ public final class RootValuationSolver {
      * which the domain refused, and reported the refusal as though the
      * target had decided it.</p>
      */
-    static Map<String, BigInteger[]> declaredWindows(JsonObject manifest) {
-        Map<String, BigInteger[]> windows = new LinkedHashMap<>();
+    /**
+     * The domain the case declared for each root, by solver term.
+     *
+     * <p>Only these roots are enumerated: the domain is what the case says
+     * the root may have been, so the values in it are the ones a witness may
+     * rest on.  A root with no domain is pinned to its recording by the
+     * composition and is not a question this solver asks.</p>
+     */
+    static Map<String, BigInteger[]> declaredDomains(JsonObject manifest) {
+        Map<String, BigInteger[]> domains = new LinkedHashMap<>();
         for (JsonElement element : array(object(manifest,
                 PathMergeComposer.MANIFEST_FIELD), "roots")) {
             if (!element.isJsonObject()) continue;
@@ -2222,9 +2380,15 @@ public final class RootValuationSolver {
             BigInteger high = integral(optionalString(root,
                     PathMergeComposer.DECLARED_DOMAIN_MAX));
             if (!term.isEmpty() && low != null && high != null) {
-                windows.put(term, new BigInteger[] {low, high});
+                domains.put(term, new BigInteger[] {low, high});
             }
         }
+        return domains;
+    }
+
+    static Map<String, BigInteger[]> declaredWindows(JsonObject manifest) {
+        Map<String, BigInteger[]> windows =
+                new LinkedHashMap<>(declaredDomains(manifest));
         JsonObject physics = object(manifest, ClockRootPhysics.MANIFEST_FIELD);
         if (physics.size() == 0) {
             return windows;

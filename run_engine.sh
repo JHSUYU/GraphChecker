@@ -430,8 +430,12 @@ validate_config() {
   done
   # A zero skew is meaningful -- it pins every clock to its recording -- so
   # this one is validated as non-negative rather than positive.
-  [[ "${clock_skew_ms}" =~ ^[0-9]+$ ]] \
-    || die "clock_skew_ms must be a non-negative integer: ${clock_skew_ms}"
+  # "unbounded" is the case's statement that a wall clock has no physics to
+  # appeal to, so the formula asserts no window for any cell; a number is a
+  # window in milliseconds, and zero pins every clock to its recording.
+  [[ "${clock_skew_ms}" =~ ^[0-9]+$ || "${clock_skew_ms}" == unbounded ]] \
+    || die "clock_skew_ms must be a non-negative integer or unbounded: \
+${clock_skew_ms}"
   local bound
   for bound in "${region_path_max_paths_per_region}" \
       "${region_path_max_flips_per_path}" "${region_path_max_tasks}"; do
