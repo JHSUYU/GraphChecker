@@ -275,35 +275,43 @@ public:
    */
   struct ReadPlan {
     jlong read_event_id;
-    // Every retained version in this read-time snapshot.
-    VersionList candidates;
-    // Coverage metadata for the candidates.  False once a writer has been
-    // lost or an untracked one was detected; it blocks closed/final claims but
-    // never adds a synthetic candidate to the value expression.
+    // The version live when the read ran: the newest one retained for the
+    // location.  The run performed one read and the location held one value;
+    // the set of versions it did not hold was never evidence about it.
+    Version observed;
+    // Coverage metadata.  False once a writer has been lost or an untracked
+    // one was detected; it blocks closed/final claims but never changes which
+    // version the read observed.
     bool writer_set_complete;
     ReadPlan() : read_event_id(0), writer_set_complete(true) {}
   };
+
+  /**
+   * The version live at `location` right now, without selecting or recording.
+   *
+   * Returns 0 when the location is not a tracked carrier or holds no version.
+   * `version_kind`, when non-NULL, receives that version's label.
+   */
+  static jlong live_version(const Location &location,
+                            std::string *version_kind);
 
   static bool plan_read(const Location &location, ReadPlan *plan);
 
   /**
    * The read-from node every reader of a selected location publishes.
    *
-   * `arm_values[i]` is what candidate i resolves to for this particular read:
-   * its own value for a scalar location, the query applied to its state for a
-   * container one.  That one substitution is the whole difference between the
-   * scalar reader here and the container reader in containerSupport.cpp --
-   * the selector names, version ids, version labels, writer guards and the
-   * consumer boundary around the selection are identical, and used to be
-   * written out twice.
+   * `observed_value` is what the observed version resolves to for this
+   * particular read: its own value for a scalar location, the query applied to
+   * its state for a container one.  That one substitution is the whole
+   * difference between the scalar reader here and the container reader in
+   * containerSupport.cpp -- the version id, version label and the consumer
+   * boundary around it are identical.
    *
-   * `type_name` is the emitted Java type for both the selection and the
-   * boundary.
+   * `type_name` is the emitted Java type for both the node and the boundary.
    */
   static Expression *build_read_from(
       const ReadPlan &plan, const Location &location,
-      const std::string &type_name,
-      const std::vector<Expression *> &arm_values);
+      const std::string &type_name, Expression *observed_value);
 
   /**
    * Resolves one read of a selected location against its versions.
@@ -491,10 +499,9 @@ private:
     std::string region_id;
     std::string task_id;
     jlong region_enter_event_id;
-    int candidate_count;
     ReadRecord()
-        : read_event_id(0), reader_context_id(0), region_enter_event_id(0),
-          candidate_count(0) {}
+        : read_event_id(0), reader_context_id(0),
+          region_enter_event_id(0) {}
   };
 
   struct Slot {

@@ -265,7 +265,10 @@ bool SharedFieldVersions::plan_read(const Location &location,
   }
 
   plan->read_event_id = GlobalSymbolicSession::next_event_id();
-  plan->candidates = versions;
+  // Versions are appended in publish order and their ids come from the one
+  // session counter, so the last one is the newest and is what the location
+  // held when this read ran.
+  plan->observed = versions.back();
   plan->writer_set_complete = complete;
 
   ReadRecord record;
@@ -274,7 +277,6 @@ bool SharedFieldVersions::plan_read(const Location &location,
   record.region_id = ConcolicMngr::ctx->get_region_id();
   record.task_id = ConcolicMngr::ctx->get_task_id();
   record.region_enter_event_id = ConcolicMngr::ctx->region_enter_event();
-  record.candidate_count = (int) versions.size();
 
   VERSION_LOCK;
   Slot *slot = find_slot_locked(location);
@@ -288,28 +290,27 @@ bool SharedFieldVersions::plan_read(const Location &location,
   return true;
 }
 
+jlong SharedFieldVersions::live_version(const Location &location,
+                                        std::string *version_kind) {
+  if (version_kind != NULL) version_kind->clear();
+  if (!location.is_valid()) return 0;
+  VERSION_LOCK;
+  if (!_open) return 0;
+  Slot *slot = find_slot_locked(location);
+  if (slot == NULL || slot->versions.empty()) return 0;
+  const Version &version = slot->versions.back();
+  if (version_kind != NULL) *version_kind = version_label(version);
+  return version.version_id;
+}
+
 Expression *SharedFieldVersions::build_read_from(
     const ReadPlan &plan, const Location &location,
-    const std::string &type_name,
-    const std::vector<Expression *> &arm_values) {
-  guarantee(arm_values.size() == plan.candidates.size(),
-            "a read-from needs one arm value per retained candidate");
-  std::vector<ReadFromExpression::Candidate> arms;
-  for (size_t index = 0; index < plan.candidates.size(); ++index) {
-    const Version &version = plan.candidates[index];
-    ReadFromExpression::Candidate arm;
-    char selector[32];
-    int length = snprintf(selector, sizeof(selector), "rf%d", (int) index + 1);
-    arm.selector = std::string(selector, length < 0 ? 0 : length);
-    arm.field_version_id = version.version_id;
-    arm.version_kind = version_label(version);
-    arm.value = arm_values[index];
-    arm.path_guard = version.path_guard;
-    arms.push_back(arm);
-  }
-
+    const std::string &type_name, Expression *observed_value) {
+  guarantee(observed_value != NULL,
+            "a read-from needs the value of the version it observed");
   Expression *selection = new ReadFromExpression(
-      arms, type_name, plan.read_event_id, location.owner, location.slot,
+      plan.observed.version_id, version_label(plan.observed), observed_value,
+      type_name, plan.read_event_id, location.owner, location.slot,
       location_kind_name(location.kind), plan.writer_set_complete);
   return new ConsumerBoundaryExpression(
       selection, type_name, ConsumerBoundaryExpression::FIELD_READ,
@@ -323,14 +324,9 @@ bool SharedFieldVersions::resolve_read(const Location &location,
 
   ReadPlan plan;
   if (!plan_read(location, &plan)) return false;
-  // A scalar arm is the candidate's own value.
-  std::vector<Expression *> arm_values;
-  arm_values.reserve(plan.candidates.size());
-  for (size_t index = 0; index < plan.candidates.size(); ++index) {
-    arm_values.push_back(plan.candidates[index].value);
-  }
+  // For a scalar location the observed value is the observed write's own.
   result->expression = build_read_from(
-      plan, location, std::string(1, type2char(type)), arm_values);
+      plan, location, std::string(1, type2char(type)), plan.observed.value);
   return true;
 }
 
@@ -637,8 +633,6 @@ std::string SharedFieldVersions::describe(const Location &location) {
     writer.String(read.task_id.c_str());
     writer.Key("regionEnterEventId");
     writer.Int64(read.region_enter_event_id);
-    writer.Key("candidateCount");
-    writer.Int(read.candidate_count);
     writer.EndObject();
   }
   writer.EndArray();

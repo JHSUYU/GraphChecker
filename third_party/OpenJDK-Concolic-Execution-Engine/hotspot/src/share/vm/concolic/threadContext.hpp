@@ -101,8 +101,12 @@ private:
   jlong _context_id;
   jlong _owner_java_thread_id;
   jlong _owner_os_thread_id;
-  jlong _branch_sequence;
   bool _pending_branch_active;
+  // Drawn from GlobalSymbolicSession::next_event_id(), the one session clock.
+  // A decision is ordered against a shared write by comparing this id with
+  // that write's fieldVersionId, so the two must be minted by one counter; a
+  // per-thread sequence made the comparison meaningless across threads and
+  // silently answered "the oldest write" when it was attempted.
   jlong _pending_branch_event_id;
   const ZeroFrame *_pending_branch_owner_frame;
   std::string _pending_branch_site_id;

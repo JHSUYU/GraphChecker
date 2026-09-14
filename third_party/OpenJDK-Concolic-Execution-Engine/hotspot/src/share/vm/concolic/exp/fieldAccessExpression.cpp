@@ -6,7 +6,8 @@
 FieldAccessExpression::FieldAccessExpression(
     Expression *owner, const char *owner_class, int field_offset,
     BasicType type, const std::string &java_type,
-    Expression *concrete_owner, Expression *concrete_value)
+    Expression *concrete_owner, Expression *concrete_value,
+    jlong observed_version_id, const std::string &observed_version_kind)
     : _owner(owner),
       _owner_class(owner_class == NULL ? "" : owner_class),
       _field_offset(field_offset),
@@ -14,7 +15,9 @@ FieldAccessExpression::FieldAccessExpression(
                      ? std::string(1, type2char(type))
                      : java_type),
       _concrete_owner(concrete_owner),
-      _concrete_value(concrete_value) {
+      _concrete_value(concrete_value),
+      _observed_version_id(observed_version_id),
+      _observed_version_kind(observed_version_kind) {
 }
 
 FieldAccessExpression::~FieldAccessExpression() {}
@@ -43,6 +46,19 @@ void FieldAccessExpression::serialize_internal(
     _concrete_owner->serialize(writer);
     writer.Key("concreteValue");
     _concrete_value->serialize(writer);
+  }
+  // The carrier version this projection is a view of.  Absent -- not zero --
+  // when the field is not tracked: "no version was recorded for this field" is
+  // a different statement from "version 0", and only the first is true here.
+  // No `expression` member: the projection is the value.
+  if (_observed_version_id > 0) {
+    writer.Key("observedVersion");
+    writer.StartObject();
+    writer.Key("fieldVersionId");
+    writer.Int64(_observed_version_id);
+    writer.Key("versionKind");
+    writer.String(_observed_version_kind.c_str());
+    writer.EndObject();
   }
 }
 

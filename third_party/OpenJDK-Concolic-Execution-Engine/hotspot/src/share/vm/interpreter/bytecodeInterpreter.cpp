@@ -3070,10 +3070,19 @@ run:
                 ResourceMark rm;
                 const char *owner_class = obj->klass()->name() == NULL
                     ? "" : obj->klass()->name()->as_C_string();
+                // When this field is a tracked carrier, say which of its
+                // versions the projection is a view of.  Read before the load
+                // is shadowed, so it is the version live at this read.
+                std::string observed_kind;
+                jlong observed_version = carrier_read
+                    ? SharedFieldVersions::live_version(carrier_location,
+                                                        &observed_kind)
+                    : 0;
                 sym_inst->init_sym_exp(field_offset,
                     new FieldAccessExpression(
                         sym_inst->get_or_create_ref_exp(obj), owner_class,
-                        field_offset, field_type));
+                        field_offset, field_type, std::string(), NULL, NULL,
+                        observed_version, observed_kind));
                 sym_exp = sym_inst->get(field_offset);
               }
               // Reference-valued fields are branch inputs too.  Propagating
@@ -3224,12 +3233,19 @@ run:
                 ResourceMark rm;
                 const char *owner_class = obj->klass()->name() == NULL
                     ? "" : obj->klass()->name()->as_C_string();
+                // Same location the carrier check above resolved: this is a
+                // projection of `field_offset` on the very receiver it tested.
+                std::string observed_kind;
+                jlong observed_version = carrier_read
+                    ? SharedFieldVersions::live_version(carrier_location,
+                                                        &observed_kind)
+                    : 0;
                 ConcolicMngr::ctx->set_stack_value(
                     dependent_anchor, dependent_slots,
                     new FieldAccessExpression(
                         reference_owner, owner_class, field_offset,
                         field_type, std::string(), concrete_owner,
-                        observed));
+                        observed, observed_version, observed_kind));
               }
             }
           }

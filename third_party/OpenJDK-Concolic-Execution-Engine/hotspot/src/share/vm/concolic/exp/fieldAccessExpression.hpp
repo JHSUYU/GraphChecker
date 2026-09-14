@@ -18,10 +18,15 @@
  *   - `concrete_owner` is the object this execution actually read from, and
  *   - `concrete_value` is what its field held at that read.
  *
- * The pair binds one arm of the owner's read-from choice to a value the run
- * observed, so the arms the run did not take stay free while the one it did
- * take is pinned to evidence instead of to whatever the solver prefers.
- * Both are optional and NULL when the read had no such owner choice.</p>
+ * The pair binds the projection to a value the run observed, so the read is
+ * pinned to evidence instead of to whatever the solver prefers.  Both are
+ * optional and NULL when the read had no such owner.
+ *
+ * <p>When the field is a tracked shared carrier the node also names the
+ * version of that carrier it is a view of (`observedVersion`), so a reader
+ * that has to say which write a projection saw does not have to infer it from
+ * event ordering.  `observed_version_id` is 0 for a field that is not
+ * tracked.</p>
  */
 class FieldAccessExpression : public Expression {
  private:
@@ -31,13 +36,18 @@ class FieldAccessExpression : public Expression {
   std::string _java_type;
   Expression *_concrete_owner;
   Expression *_concrete_value;
+  jlong _observed_version_id;
+  std::string _observed_version_kind;
 
  public:
   FieldAccessExpression(Expression *owner, const char *owner_class,
                         int field_offset, BasicType type,
                         const std::string &java_type = std::string(),
                         Expression *concrete_owner = NULL,
-                        Expression *concrete_value = NULL);
+                        Expression *concrete_value = NULL,
+                        jlong observed_version_id = 0,
+                        const std::string &observed_version_kind
+                            = std::string());
   virtual ~FieldAccessExpression();
 
   virtual void serialize_internal(

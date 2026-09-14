@@ -7,45 +7,29 @@
 #include "concolic/exp/expression.hpp"
 
 #include <string>
-#include <vector>
 
 /**
- * The value an ordinary concurrent read observed, when the run does not prove
- * which write produced it.
+ * The write an ordinary concurrent read observed.
  *
- * One concrete execution performs one real read, and the engine sees the value
- * it returned.  It does not see which store that value came from, and when
- * several tracked writers stored the same value there is nothing in the
- * observation that separates them.  Choosing one anyway -- by concrete value,
- * by event id, by thread -- would manufacture a read-from edge the run never
- * showed.  This node keeps the recorded candidates as an explicit choice:
+ * One concrete execution performs one real read, and at the instant it ran the
+ * location held exactly one version: the newest one retained for it.  This node
+ * names that version and carries its value.
  *
- *     exactlyOne(rf1, ..., rfk)
- *     value = ite(rf1, E1, ite(rf2, E2, ... Ek))
+ * It used to name every retained version instead, as an `exactlyOne(rf1..rfk)`
+ * choice with a selector, a value and a writer path guard per arm, so that an
+ * offline composer could pick an arm.  That vocabulary is gone: the run already
+ * determined the answer, the arms the run did not take were never evidence, and
+ * publishing them cost one full writer DAG per unobserved version.
  *
- * The choice contains recorded writers only.  Whether that set is complete is
- * separate coverage metadata (`writerSetComplete`).  An incomplete set blocks
- * a closed/final conclusion; it never becomes a fresh value the solver may use.
- * If no recorded candidate remains, no ReadFromExpression is created.
- *
- * Each candidate also carries the writer's local identity and path guard.  The
- * solver couples the arm selector to that writer case and its path condition.
- * Runtime ordering never chooses an arm: every retained bounded writer remains
- * available, including when there is only one.
+ * Whether the recorded writer set was complete is separate coverage metadata
+ * (`writerSetComplete`) and is unchanged: it still blocks a closed/final
+ * conclusion, and it never alters which version this node names.
  */
 class ReadFromExpression : public Expression {
 public:
-  struct Candidate {
-    std::string selector;
-    jlong field_version_id;
-    std::string version_kind;
-    Expression *value;
-    // NULL denotes the empty conjunction, i.e. an unguarded write.
-    Expression *path_guard;
-    Candidate() : field_version_id(0), value(NULL), path_guard(NULL) {}
-  };
-
-  ReadFromExpression(const std::vector<Candidate> &candidates,
+  ReadFromExpression(jlong observed_version_id,
+                     const std::string &observed_version_kind,
+                     Expression *observed_value,
                      const std::string &java_type, jlong read_event_id,
                      sym_rid_t owner, int slot, const char *location_kind,
                      bool writer_set_complete);
@@ -59,17 +43,15 @@ protected:
       rapidjson::Writer<rapidjson::StringBuffer> &writer);
 
 private:
-  std::vector<Candidate> _candidates;
+  jlong _observed_version_id;
+  std::string _observed_version_kind;
+  Expression *_observed_value;
   std::string _java_type;
   std::string _location_kind;
   jlong _read_event_id;
   sym_rid_t _owner;
   int _slot;
   bool _writer_set_complete;
-
-  void serialize_candidate(
-      rapidjson::Writer<rapidjson::StringBuffer> &writer,
-      const Candidate &candidate);
 };
 
 #endif // ENABLE_CONCOLIC

@@ -298,22 +298,16 @@ ContainerSupport::StateQuery ContainerSupport::query_state(
   // An untracked writer produces an open coverage result, not a symbolic map
   // state.  plan_read has already recorded that gap; keep the concrete query
   // path and do not manufacture a state the solver can choose.
-  if (plan.candidates.empty()) return answer;
+  if (plan.observed.value == NULL) return answer;
 
-  // The query applied to that writer's state, not the state.  This is the
-  // whole difference between a scalar arm and a container arm: two writers
-  // that installed different states give two different answers here even when
-  // the member they wrote happens to be equal.  Everything else about the
-  // node is the shared shape SharedFieldVersions::build_read_from writes.
-  std::vector<Expression *> arm_values;
-  arm_values.reserve(plan.candidates.size());
-  for (size_t index = 0; index < plan.candidates.size(); ++index) {
-    arm_values.push_back(new ContainerExpression(
-        shape, operation, plan.candidates[index].value, arguments,
-        result_type, type_name));
-  }
+  // The query applied to the observed writer's state, not the state.  This is
+  // the whole difference between a scalar read and a container one; everything
+  // else about the node is the shared shape
+  // SharedFieldVersions::build_read_from writes.
   answer.expression = SharedFieldVersions::build_read_from(
-      plan, location, type_name, arm_values);
+      plan, location, type_name,
+      new ContainerExpression(shape, operation, plan.observed.value,
+                              arguments, result_type, type_name));
   return answer;
 }
 
