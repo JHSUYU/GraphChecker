@@ -1503,11 +1503,8 @@ final class RuntimeRegionPlanner {
      * run happened to leave in the field, and the writer's object is lost.
      * </p>
      *
-     * <p>This is a declaration, not a selection: the scheduler's root slice
-     * (ReplayTaskSlices location decisions) records every location no root
-     * reaches, so
-     * a reference declared here and never moved by a root costs nothing
-     * beyond one decision row.  An explicitly concrete access is still
+     * <p>This is a declaration, not a selection: a reference declared here
+     * and never moved by a root costs nothing.  An explicitly concrete access is still
      * concrete -- a capture root, a loop control or a path assumption names
      * structure the replay walks and not state a writer competes for.</p>
      */

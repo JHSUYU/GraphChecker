@@ -2173,7 +2173,7 @@ campaign_record_exploration() {
 campaign_publish_primary_record() {
   local task_plan=$1 key=$2 out=$3
   jq -e -c -s --arg key "${key}" '
-    map(select(.linkedReplayRole == "PRIMARY")) | .[0]
+    .[0]
     | select(. != null)
     | {schemaVersion: 1, kind: "PATH_EXPLORATION_RECORD", queryKey: $key,
      regionId, taskId, occurrenceId, goalId,
@@ -2269,13 +2269,11 @@ $(grep -v -E '^[[:space:]]+at ' "${worker}/stderr.log" 2>/dev/null \
     campaign_log "flip ${query_key}: replay admitted no case; recorded REPLAY_NOT_ADMITTED"
     return 0
   fi
-  # LinkedReplayBundle refuses a bundle without exactly one primary, and the
-  # replay plan carries that bundle's roles, so this reads the primary rather
-  # than counting the primaries again.
+  # One obligation, one focused replay task: the plan names it alone.
   primary_replay_task=$(jq -e -r -s '
-    map(select(.linkedReplayRole == "PRIMARY")) | .[0].taskId
+    .[0].taskId
     ' "${worker}/execution_task_plan.jsonl") \
-    || die "the linked replay plan for ${query_key} names no PRIMARY task"
+    || die "the replay plan for ${query_key} names no task"
   if ! jq -e -s --arg task "${primary_replay_task}" \
       'any(.[]; .taskId == $task)' "${imported}" >/dev/null; then
     campaign_record_exploration "${worker}" "${query_key}" \
@@ -3224,68 +3222,13 @@ campaign_plan_gaps_json() {
   head -n 1 -- "${runtime_region_plan}" | jq -c '.gaps // []' || return 1
 }
 
-# The replay slice the campaign actually ran, as one document:
-#
-#   {applied, keptOccurrences: [...], taskOccurrence: {taskId: occurrenceId}}
-#
-# The static plan over-approximates -- it admits every region the backward
-# walk reaches -- and ReplayTaskSlice then keeps the occurrences root
-# dependence selected, for one of TARGET_REACH, ROOT_SITE, CARRIER_WRITER,
-# ROOT_DEPENDENT_FLOW or FATAL_READ_WRITER.  A planned region that never ran
-# means two different things on the two sides of that line, so the ledger's
-# slice-conditional codes are decided against this.
-#
-# Fail-closed: an absent or withheld slice publishes applied=false, and the
-# fold then treats every such row as blocking rather than guessing.
-campaign_kept_slice_json() {
-  local iteration_dir=$1
-  local index="${iteration_dir}/runtime_workflow_schedule_index.json"
-  local slice="${iteration_dir}/replay_task_slice.jsonl"
-  local plans
-  if [[ ! -s "${index}" ]]; then
-    echo '{"applied": false, "keptOccurrences": [], "taskOccurrence": {}}'
-    return 0
-  fi
-  if ! plans=$(find "${iteration_dir}" -type f \
-      -name 'execution_task_plan.jsonl' -print | LC_ALL=C sort); then
-    echo '{"applied": false, "keptOccurrences": [], "taskOccurrence": {}}'
-    return 0
-  fi
-  {
-    cat "${index}"
-    [[ ! -s "${slice}" ]] || cat "${slice}"
-    [[ -z "${plans}" ]] || xargs -r -d '\n' cat <<<"${plans}"
-  } | jq -s '
-    ([.[] | select(.kind == "RUNTIME_REGION_PATH_SCHEDULE_INDEX"
-                   or (.replayTaskSlice? != null))] | first) as $index
-    | ([.[] | select(.kind == "REPLAY_TASK_DECISION")]) as $decisions
-    | ([.[] | select(.taskId? != null and .occurrenceId? != null)]) as $tasks
-    | (($index.replayTaskSlice.replayTaskSliceApplied // false)
-       and (($index.members // []) | length) > 0) as $applied
-    | {applied: $applied,
-       keptOccurrences:
-         ((($index.members // []) | map(.occurrenceId // ""))
-          + ($decisions | map(select(.decision == "KEEP")
-                              | .occurrenceId // ""))
-          | map(select(. != "")) | unique),
-       keptReasons:
-         ($decisions | map(select(.decision == "KEEP")
-            | {key: (.occurrenceId // ""),
-               value: ((.keepReasons // []) | join(","))})
-          | from_entries),
-       taskOccurrence:
-         ($tasks | map({key: .taskId, value: .occurrenceId})
-          | from_entries)}' \
-    || return 1
-}
-
 # The flip wave this iteration ran, as one document:
 #
 #   {applied, pathByTask: {taskId: path}}
 #
-# A linked replay is a hypothetical execution: the primary flips one decision
-# and its companions re-run the regions that path needs.  Every admission row
-# the seed wave raises can arrive again from such a replay, and there it says
+# A flip replay is a hypothetical execution: it flips one decision in the one
+# occurrence it focuses on.  Every admission row the seed wave raises can
+# arrive again from such a replay, and there it says
 # the flipped execution did not have that occurrence -- a statement about the
 # path, not about the corpus.  The ledger names the codes; this names the
 # subjects, and the path each belongs to, so the row can say which one.
@@ -3300,10 +3243,10 @@ campaign_replay_wave_json() {
     return 0
   fi
   jq -s '
-    map(select(.taskId? != null and (.linkedReplayGroupId // "") != ""))
+    map(select(.taskId? != null and (.replayGroupId // "") != ""))
     as $tasks
     | ($tasks | map(select((.pathQueryKey // "") != ""))
-       | map({key: .linkedReplayGroupId, value: .pathQueryKey})
+       | map({key: .replayGroupId, value: .pathQueryKey})
        | from_entries) as $pathByGroup
     | {applied: (($tasks | length) > 0),
        pathByTask:
@@ -3312,8 +3255,8 @@ campaign_replay_wave_json() {
                           value: (if ($task.pathQueryKey // "") != ""
                                   then $task.pathQueryKey
                                   else ($pathByGroup[
-                                          $task.linkedReplayGroupId]
-                                        // $task.linkedReplayGroupId)
+                                          $task.replayGroupId]
+                                        // $task.replayGroupId)
                                   end)})
           | from_entries)}' "${linked}" || return 1
 }
@@ -3352,7 +3295,7 @@ campaign_attached_handoff_phases_json() {
 # A command-line argument is capped at 128 KiB on Linux -- MAX_ARG_STRLEN,
 # 32 pages, a per-argument limit that no ARG_MAX headroom relaxes -- and the
 # documents below are proportional to the corpus.  lane11741j died at EMIT
-# with "Argument list too long" on a keptSlice of 134,436 bytes after
+# with "Argument list too long" on a generated document of 134,436 bytes
 # reaching DECIDE with SAT_CANDIDATE and 0 blockers: a whole campaign's
 # verdict lost to an argv limit.  Every generated document is written to a
 # file and slurped; none is passed with --argjson.
@@ -3372,9 +3315,6 @@ campaign_write_coverage_gaps() {
     "$(campaign_static_gaps_json)" >/dev/null || { rm -rf -- "${scratch}"; return 1; }
   campaign_json_file "${scratch}/plan-gaps.json" \
     "$(campaign_plan_gaps_json)" >/dev/null || { rm -rf -- "${scratch}"; return 1; }
-  campaign_json_file "${scratch}/kept-slice.json" \
-    "$(campaign_kept_slice_json "${iteration_dir}")" >/dev/null \
-    || { rm -rf -- "${scratch}"; return 1; }
   campaign_json_file "${scratch}/replay-wave.json" \
     "$(campaign_replay_wave_json "${iteration_dir}")" >/dev/null \
     || { rm -rf -- "${scratch}"; return 1; }
@@ -3389,13 +3329,11 @@ campaign_write_coverage_gaps() {
     --slurpfile ledgerDocuments "${ledger}" \
     --slurpfile staticGapDocuments "${scratch}/static-gaps.json" \
     --slurpfile planGapDocuments "${scratch}/plan-gaps.json" \
-    --slurpfile keptSliceDocuments "${scratch}/kept-slice.json" \
     --slurpfile replayWaveDocuments "${scratch}/replay-wave.json" \
     --slurpfile attachedHandoffDocuments \
       "${scratch}/attached-handoffs.json" '
     ($staticGapDocuments[0] // []) as $staticGaps |
     ($planGapDocuments[0] // []) as $planGaps |
-    ($keptSliceDocuments[0] // {}) as $keptSlice |
     ($replayWaveDocuments[0] // {}) as $replayWave |
     ($attachedHandoffDocuments[0] // {}) as $attachedHandoffs |
     $composedDocuments[0] as $composed |
@@ -3405,31 +3343,11 @@ campaign_write_coverage_gaps() {
     # The ledger names its exceptions; everything else is blocking, which is
     # the same default GapLedger.classOf applies in Java.
     ($ledger.diagnostic // []) as $diagnosticCodes |
-    ($ledger.sliceConditional // []) as $sliceCodes |
     ($ledger.composedPortConditional // []) as $portCodes |
     ($ledger.flipWaveDiagnostic // []) as $flipWaveCodes |
     ($ledger.flipWaveReasonByCode // {}) as $flipWaveReasonByCode |
     ($replayWave.pathByTask // {}) as $flipPathByTask |
     ($ledger.reasonByCode // {}) as $reasonByCode |
-    ($keptSlice.applied // false) as $sliceApplied |
-    (($keptSlice.keptOccurrences // []) | map({key: ., value: true})
-     | from_entries) as $keptOccurrence |
-    ($keptSlice.taskOccurrence // {}) as $taskOccurrence |
-    # A slice-conditional row is blocking on the kept slice and diagnostic
-    # off it.  Anything this cannot resolve -- no slice, a slice that
-    # narrowed nothing, or a subject naming no planned occurrence -- is
-    # blocking, because not knowing which side a row is on is not a reason
-    # to stop withholding on it.
-    def sliceVerdict($subject):
-      if $sliceApplied | not then {onSlice: true, why: "SLICE_NOT_APPLIED"}
-      else ($taskOccurrence[$subject] // "") as $occurrence
-        | if $occurrence == ""
-            then {onSlice: true, why: "SUBJECT_NAMES_NO_PLANNED_OCCURRENCE"}
-          elif ($keptOccurrence[$occurrence] // false)
-            then {onSlice: true, why: ("ON_KEPT_SLICE:" + $occurrence)}
-          else {onSlice: false, why: ("SLICE_PRUNED:" + $occurrence)}
-          end
-      end;
     ($attachedHandoffs.ports // {}) as $attachedPort |
     ($attachedHandoffs.phases // {}) as $attachedPhase |
     ($composed.configuredSourceMaterializations // []
@@ -3546,11 +3464,6 @@ campaign_write_coverage_gaps() {
                         | {class: (if $v.unbacked
                                    then "BLOCKING" else "DIAGNOSTIC" end),
                            portVerdict: $v.why})
-                  elif (.code | IN($sliceCodes[]))
-                  then (sliceVerdict(.subject) as $v
-                        | {class: (if $v.onSlice
-                                   then "BLOCKING" else "DIAGNOSTIC" end),
-                           sliceVerdict: $v.why})
                   elif (.code | IN($diagnosticCodes[]))
                   then {class: "DIAGNOSTIC"}
                   else {class: "BLOCKING"} end))
@@ -3564,13 +3477,9 @@ campaign_write_coverage_gaps() {
                  schemaVersion: ($ledger.schemaVersion // 0),
                  defaultClass: ($ledger.defaultClass // "BLOCKING"),
                  diagnosticCodes: $diagnosticCodes,
-                 sliceConditionalCodes: $sliceCodes,
                  composedPortConditionalCodes: $portCodes,
                  flipWaveDiagnosticCodes: $flipWaveCodes,
-                 replayTaskSliceApplied: $sliceApplied,
-                 flipWaveTaskCount: ($flipPathByTask | length),
-                 keptOccurrenceCount:
-                   (($keptSlice.keptOccurrences // []) | length)},
+                 flipWaveTaskCount: ($flipPathByTask | length)},
      gaps: [$rows[] | select(.class == "BLOCKING")],
      telemetryGaps: [$rows[] | select(.class == "DIAGNOSTIC")]}
     | .gapCount = (.gaps | length)

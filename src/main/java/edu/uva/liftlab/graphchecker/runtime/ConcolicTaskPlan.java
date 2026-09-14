@@ -1287,7 +1287,6 @@ final class ConcolicTaskPlan {
         /** Turns run and given back for carrying no selected anchor. */
         /** Stable identity shared by every task in one linked replay. */
         final String replayGroupId;
-        final String linkedReplayRole;
         final String topologyEpoch;
         final BranchReplayContract.RuntimeSchedule replayContract;
         /** The declared target branch event of a target-reach task. */
@@ -1403,13 +1402,11 @@ final class ConcolicTaskPlan {
                     task.goalKind().capturesTargetReach();
             // The plan names the propagation ledger every task of this
             // invocation shares: ConcolicScheduler stamps the seed replay,
-            // PathReplayTaskFactory stamps each flip bundle. A row that
+            // PathReplayTaskFactory stamps each flip replay. A row that
             // names none is a plan no scheduler wrote, and the importer
             // refuses its results by name (CONCOLIC_RESULT_REPLAY_GROUP_MISSING).
             this.replayGroupId = optionalString(task.json(),
-                    "linkedReplayGroupId");
-            this.linkedReplayRole = optionalString(task.json(),
-                    "linkedReplayRole");
+                    "replayGroupId");
             this.topologyEpoch = optionalString(task.json(), "topologyEpoch");
             this.edgeBindings = task.edgeBindings();
             indexPlannedReceiverObjectIds(task.inputActions().all());

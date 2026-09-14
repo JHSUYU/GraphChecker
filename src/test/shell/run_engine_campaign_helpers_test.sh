@@ -284,7 +284,7 @@ jq -e '.accepted == false and .gapCount == 1' \
 # no ARG_MAX headroom relaxes, and every document campaign_write_coverage_gaps
 # builds is proportional to the corpus.  lane11741j reached DECIDE with
 # SAT_CANDIDATE and 0 blockers and then died at EMIT with "Argument list too
-# long" on a 134,436-byte kept-slice index, publishing nothing.  The fixture
+# long" on a 134,436-byte generated index, publishing nothing.  The fixture
 # below makes the attached-handoff index alone larger than that.
 emit_fixture
 python3 - "${emit_iteration}/seed-result/concolic_region_results.jsonl" <<'OVERSIZED'
@@ -329,59 +329,32 @@ jq -e '[.gaps[].code] | sort == ["LOOP_BOUND_OPEN", "UNRELATED_FAMILY_OPEN"]' \
   || fail "the unregistered codes were not both blocking: \
 $(jq -c '[.gaps[].code]' "${campaign_final}/gaps.json")"
 
-# GAP-4: a slice-conditional code is decided against the replay slice, not by
-# a blanket rule.  The static plan over-approximates; a region root
-# dependence never selected is not a chain element.  With no schedule index
-# in the fixture the slice is unknown, and an unknown slice blocks.
-#
-# The fixture used to name REGION_ROOT_NEVER_EXECUTED.  That code was
-# retired with its raiser and its ledger entry ("Admit an activation by its
-# address, and nothing else", 0429b03f7) and the fixture was not, so the
-# case had been asserting the slice reading of a code the ledger no longer
-# classes slice-conditionally -- it read as blocking-by-default and the
-# assertion failed on the staging tip.  REGION_ROOT_NEVER_EXECUTED is registered
-# onKeptSlice (GapLedger:620) and states the same thing about a task.
-emit_fixture
-printf '%s\n' '{"code":"REGION_ROOT_NEVER_EXECUTED","taskId":"TASK.REPLAY.kept","detail":"anchor never observed"}' \
-  >"${emit_iteration}/import_diagnostics.jsonl"
-run_emit
-[[ "${emit_status}" -eq 3 ]] \
-  || fail "an unknown replay slice did not block a region code \
-(exit ${emit_status}): $(<"${emit_root}/emit.log")"
-jq -e '[.gaps[] | select(.code == "REGION_ROOT_NEVER_EXECUTED")
-        | .sliceVerdict] == ["SLICE_NOT_APPLIED"]' \
-  "${campaign_final}/gaps.json" >/dev/null \
-  || fail "the unknown slice was not named on the row: \
-$(jq -c '.gaps' "${campaign_final}/gaps.json")"
-
-# With a slice that kept one occurrence and pruned another, the same code
-# blocks on the kept task and is diagnostic on the pruned one.
+# GAP-4: a planned region that never ran blocks, full stop.  It used to be
+# decided against the replay slice -- blocking on a task the slice kept,
+# diagnostic on one it pruned -- and there is no slice any more: a replay
+# focuses one occurrence and everything else runs concretely, so a planned
+# region with no activation is a broken chain wherever it is raised.
 emit_fixture
 printf '%s\n' \
   '{"code":"REGION_ROOT_NEVER_EXECUTED","taskId":"TASK.REPLAY.kept","detail":"anchor never observed"}' \
   '{"code":"REGION_ROOT_NEVER_EXECUTED","taskId":"TASK.REPLAY.pruned","detail":"anchor never observed"}' \
   >"${emit_iteration}/import_diagnostics.jsonl"
-jq -n '{schemaVersion: 1, kind: "RUNTIME_REGION_PATH_SCHEDULE_INDEX",
-  replayTaskSlice: {replayTaskSliceApplied: true, keptOccurrenceCount: 1},
-  members: [{taskId: "TASK.REPLAY.kept", occurrenceId: "OCC.kept",
-             regionId: "REGION.kept", role: "TARGET"}]}' \
-  >"${emit_iteration}/runtime_workflow_schedule_index.json"
 printf '%s\n' \
   '{"taskId":"TASK.REPLAY.kept","occurrenceId":"OCC.kept"}' \
   '{"taskId":"TASK.REPLAY.pruned","occurrenceId":"OCC.pruned"}' \
   >"${emit_iteration}/execution_task_plan.jsonl"
 run_emit
 [[ "${emit_status}" -eq 3 ]] \
-  || fail "a region code on the kept slice did not block \
+  || fail "a region code did not block \
 (exit ${emit_status}): $(<"${emit_root}/emit.log")"
-jq -e '.gapCount == 1
-  and (.gaps[0].subject == "TASK.REPLAY.kept")
-  and (.gaps[0].sliceVerdict == "ON_KEPT_SLICE:OCC.kept")
-  and ([.telemetryGaps[] | select(.subject == "TASK.REPLAY.pruned")
-        | .sliceVerdict] == ["SLICE_PRUNED:OCC.pruned"])' \
+jq -e '.gapCount == 2
+  and ([.gaps[].subject] | sort
+       == ["TASK.REPLAY.kept", "TASK.REPLAY.pruned"])
+  and ((.telemetryGaps | map(select(.code == "REGION_ROOT_NEVER_EXECUTED")))
+       | length == 0)' \
   "${campaign_final}/gaps.json" >/dev/null \
-  || fail "the slice-aware split is wrong: \
-$(jq -c '[(.gaps+.telemetryGaps)[]|{code,subject,class,sliceVerdict}]' \
+  || fail "a region code was not blocking on every subject: \
+$(jq -c '[(.gaps+.telemetryGaps)[]|{code,subject,class}]' \
     "${campaign_final}/gaps.json")"
 # The rationale travels with the row, so a reader does not have to open the
 # ledger to see why a gap was classed the way it was.
@@ -685,28 +658,27 @@ campaign_record_exploration "${record_worker}" k "t1,t2" \
   || fail "the exploration record is not the bytes it used to be: \
 $(cat "${record_worker}/exploration_record.jsonl")"
 
-# A replay plan with no PRIMARY row publishes no exploration record at all,
-# rather than a record whose every planned field is null.
+# An empty replay plan publishes no exploration record at all, rather than a
+# record whose every planned field is null.
 primary_root="${test_tmp}/primary-record"
 mkdir -p "${primary_root}"
 primary_plan="${primary_root}/execution_task_plan.jsonl"
 primary_record="${primary_root}/exploration_record.jsonl"
-printf '%s\n' '{"taskId":"t1","linkedReplayRole":"COMPANION"}' \
-  >"${primary_plan}"
+: >"${primary_plan}"
 ( campaign_publish_primary_record "${primary_plan}" k "${primary_record}" ) \
-  && fail "an exploration record was published without a PRIMARY task"
+  && fail "an exploration record was published without a replay task"
 [[ ! -s "${primary_record}" ]] \
-  || fail "a PRIMARY-less replay plan published a record: \
+  || fail "an empty replay plan published a record: \
 $(cat "${primary_record}")"
-printf '%s\n' '{"taskId":"t2","linkedReplayRole":"PRIMARY","regionId":"R",
+printf '%s\n' '{"taskId":"t2","regionId":"R",
   "occurrenceId":"R#a1","goalId":"g",
   "topologyEpoch":"e"}' >>"${primary_plan}"
 campaign_publish_primary_record "${primary_plan}" k "${primary_record}" \
-  || fail "the PRIMARY replay task published no exploration record"
+  || fail "the focused replay task published no exploration record"
 jq -e '.taskId == "t2" and .queryKey == "k"
   and .status == "VALIDATED_FRESH_REGION_PATH_FLIP_REPLAY"' \
   "${primary_record}" >/dev/null \
-  || fail "the exploration record does not name the PRIMARY task: \
+  || fail "the exploration record does not name the replay task: \
 $(cat "${primary_record}")"
 
 # EXPLORE-1: a forced closure stop is coverage telemetry on every pending
