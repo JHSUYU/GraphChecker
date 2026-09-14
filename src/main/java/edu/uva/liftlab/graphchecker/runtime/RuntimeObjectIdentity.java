@@ -1,5 +1,7 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
+import edu.uva.liftlab.graphchecker.causynth.MapFields;
+
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.Map;
@@ -136,13 +138,10 @@ final class RuntimeObjectIdentity {
     static String address(String sourceKey, String eventKind, String method,
                           String siteId, int argumentIndex, String field,
                           String runtimeType, String slot) {
-        return safe(sourceKey) + "\n" + safe(eventKind) + "\n"
-                + safe(method) + "\n" + safe(siteId) + "\n"
-                + argumentIndex + "\n" + safe(field) + "\n"
-                + safe(runtimeType) + "\n" + safe(slot);
+        return MapFields.safe(sourceKey) + "\n" + MapFields.safe(eventKind) + "\n"
+                + MapFields.safe(method) + "\n" + MapFields.safe(siteId) + "\n"
+                + argumentIndex + "\n" + MapFields.safe(field) + "\n"
+                + MapFields.safe(runtimeType) + "\n" + MapFields.safe(slot);
     }
 
-    private static String safe(String value) {
-        return value == null ? "" : value;
-    }
 }

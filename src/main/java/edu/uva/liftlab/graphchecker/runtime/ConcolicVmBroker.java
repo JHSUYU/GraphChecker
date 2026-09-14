@@ -10,7 +10,7 @@ import java.util.Collections;
 import java.util.List;
 
 import static edu.uva.liftlab.graphchecker.concolic.JavaPrimitiveSmtSemantics.javaTypeDescriptor;
-import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.safe;
+import static edu.uva.liftlab.graphchecker.causynth.MapFields.safe;
 
 /**
  * Reflective view of the concolic VM's static entry points.

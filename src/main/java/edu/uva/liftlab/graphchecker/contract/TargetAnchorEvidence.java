@@ -41,7 +41,7 @@ public final class TargetAnchorEvidence {
     public static final String AUTHORITY = "RUNTIME_PROPAGATED_FATAL_VALUE_V1";
 
     public static final String ANCHOR_KEY = "anchorKey";
-    public static final String SITE_ID = "siteId";
+    public static final String SITE_ID = SiteId.MEMBER;
     public static final String OCCURRENCE = "occurrence";
     public static final String SOURCE_KEY = "sourceKey";
     public static final String REGION_ID = "regionId";

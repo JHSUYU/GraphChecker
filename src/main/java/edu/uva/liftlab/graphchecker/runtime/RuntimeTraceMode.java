@@ -1,5 +1,7 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.firstNonBlank;
+
 import java.util.Locale;
 
 /** Runtime evidence level selected before bytecode instrumentation. */
@@ -23,12 +25,4 @@ public enum RuntimeTraceMode {
                 "Unknown causynth trace mode: " + value);
     }
 
-    private static String firstNonBlank(String... values) {
-        for (String value : values) {
-            if (value != null && !value.trim().isEmpty()) {
-                return value;
-            }
-        }
-        return "";
-    }
 }

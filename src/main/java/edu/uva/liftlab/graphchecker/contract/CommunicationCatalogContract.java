@@ -76,7 +76,7 @@ public final class CommunicationCatalogContract {
 
     public static final String GAP_KIND = "gapKind";
     public static final String GAP_REASON = "reason";
-    public static final String GAP_SITE_ID = "siteId";
+    public static final String GAP_SITE_ID = SiteId.MEMBER;
     public static final String GAP_METHOD = "method";
     public static final String GAP_DETAIL = "detail";
 
