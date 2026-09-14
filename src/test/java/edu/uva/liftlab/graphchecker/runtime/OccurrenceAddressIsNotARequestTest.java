@@ -84,19 +84,40 @@ public class OccurrenceAddressIsNotARequestTest {
     }
 
     /**
-     * An activation nothing attributed to a node is still the occurrence.
+     * An activation nothing attributed to a node is still an occurrence --
+     * of the unregistered source.
      *
-     * <p>The exact row lane AY refused: a seed replay's target activation
-     * with no registered trace source, whose anchor names the node and epoch
-     * it ran on.  Refusing it at close simply moved the refusal that was
-     * removed at entry -- and on 17960 it left the run with no TARGET_REACH
-     * occurrence at all, because every target task was skipped this way.
-     * Evidence that the activation ran somewhere <em>else</em> still
-     * refuses; evidence nobody offered does not.</p>
+     * <p>One attribution function, three arms: the activation's own stamp,
+     * else the unique stamp among its frames, else the unregistered source.
+     * The planner runs it and so addresses such an activation to
+     * {@code workload/unregistered}; the replay runs the same function and
+     * must answer the same, at close as at entry.  So it IS the occurrence
+     * -- the next one of that source -- and it answers a task addressed
+     * there.</p>
+     *
+     * <p>What it is not is the planned node's next k.  Answering "" for
+     * every anchor was the planned-node fallback, removed at entry and
+     * living on here: on lane11741d it let activations on IPC handler
+     * threads, which the recording never attributes to dn0, take dn0's k,
+     * so the five genuine activations on {@code main} were numbered
+     * 1, 3, 5, 7 and the addressed activation 4 was consumed by an
+     * activation that was nobody's.</p>
      */
     @Test
-    public void anUnattributedActivationIsStillTheOccurrence() {
+    public void anUnattributedActivationIsTheUnregisteredSourcesOccurrence() {
         ConcolicTaskPlan.RuntimeTask task = task();
+        String refusal = task.rootContextSelector.unconfirmed(
+                Collections.<String>emptySet());
+
+        assertTrue(refusal, refusal.contains("nothing attributed it to any"
+                + " node"));
+        assertTrue(refusal, refusal.contains(task.sourceKey));
+    }
+
+    /** A task addressed to the unregistered source is answered by one. */
+    @Test
+    public void aTaskAddressedToTheUnregisteredSourceIsAnsweredByOne() {
+        ConcolicTaskPlan.RuntimeTask task = unregisteredTask();
 
         assertEquals("", task.rootContextSelector.unconfirmed(
                 Collections.<String>emptySet()));
@@ -438,6 +459,24 @@ public class OccurrenceAddressIsNotARequestTest {
     private static ConcolicTaskPlan.RuntimeTask task() {
         return new ConcolicTaskPlan.RuntimeTask(ExecutionTask.decode(
                 row("plans/hdfs-17899-bug3-loop-body-producer.json")));
+    }
+
+    /** The same plan row, addressed where an unattributed activation counts. */
+    private static ConcolicTaskPlan.RuntimeTask unregisteredTask() {
+        JsonObject encoded =
+                row("plans/hdfs-17899-bug3-loop-body-producer.json");
+        String unregistered = "workload/unregistered#epoch0";
+        String regionId = encoded.get("regionId").getAsString();
+        encoded.addProperty("sourceKey", unregistered);
+        encoded.addProperty("occurrenceId",
+                unregistered + "/region/" + regionId + "#1");
+        JsonObject selector = encoded.getAsJsonObject("rootSelector");
+        selector.addProperty("invocationOrdinal", 1);
+        JsonObject anchor = selector.getAsJsonObject("causalAnchor");
+        anchor.addProperty("sourceKey", unregistered);
+        anchor.addProperty("kind", "UNREGISTERED_SOURCE");
+        return new ConcolicTaskPlan.RuntimeTask(
+                ExecutionTask.decode(encoded));
     }
 
     private static JsonObject row(String resource) {
