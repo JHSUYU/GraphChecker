@@ -744,6 +744,14 @@ final class ConcolicTaskPlan {
             return false;
         }
         task.markProvisionalOrdinal(scope, planned.ordinal());
+        // Said out loud, because this is the one admission that is not the
+        // address: the run attributed this activation to no node, and it is
+        // being offered the PLANNED node's next k on the plan's word alone.
+        // Whether the close then confirms it decides who owns that k, and
+        // until both halves were on the rows there was no way to see an
+        // unattributed activation taking the k the addressed one needed.
+        task.noteProvisionalAdmission("read " + scope + " as activation "
+                + planned.ordinal());
         return true;
     }
 
@@ -1895,6 +1903,26 @@ final class ConcolicTaskPlan {
          */
         private final Set<String> requestContexts = new LinkedHashSet<>();
 
+        /**
+         * One activation admitted on the plan's word rather than on
+         * evidence, and what the close decided about it.
+         */
+        final Set<String> provisionalAdmissions = new LinkedHashSet<>();
+
+        /** Whether this activation is running on a provisional k. */
+        synchronized boolean holdsProvisionalOrdinal() {
+            return provisionalOrdinal > 0;
+        }
+
+        synchronized void noteProvisionalAdmission(String detail) {
+            provisionalAdmissions.add(candidateNote(detail));
+        }
+
+        synchronized void noteProvisionalOutcome(String detail) {
+            provisionalAdmissions.add(candidateNote(detail));
+            registerRunTotalsHook();
+        }
+
         synchronized void noteUnaddressedCandidate(String reason) {
             unaddressedCandidates++;
             unaddressedReasons.add(candidateNote(reason));
@@ -1937,7 +1965,10 @@ final class ConcolicTaskPlan {
                     .anchorSourceNeverExisted();
             return unaddressedCandidates + " compatible activation(s) did "
                     + "not answer the addressed occurrence; "
-                    + unaddressedReasons + (neverExisted
+                    + unaddressedReasons
+                    + (provisionalAdmissions.isEmpty() ? ""
+                    : "; provisional: " + provisionalAdmissions)
+                    + (neverExisted
                     ? "; " + rootContextSelector.describe()
                     + " was never registered in this run" : "");
         }
