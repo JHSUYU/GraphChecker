@@ -80,11 +80,11 @@ public class OccurrenceAddressIsNotARequestTest {
         assertTrue("the planned occurrence has an IN handoff",
                 task.communicationHandoff(PORT, false) != null);
         assertTrue("its own address answers it",
-                task.acceptsRootInvocation(balancerAddress(3), false));
+                task.acceptsRootInvocation(balancerAddress(3)));
         assertFalse("another activation of it does not",
-                task.acceptsRootInvocation(balancerAddress(2), false));
+                task.acceptsRootInvocation(balancerAddress(2)));
         assertFalse("nor does an unnamed address",
-                task.acceptsRootInvocation(balancerAddress(0), false));
+                task.acceptsRootInvocation(balancerAddress(0)));
 
         // An envelope naming another producer changes nothing either way: it
         // decides which v_H the attach mints, never which activation this is.
@@ -94,9 +94,9 @@ public class OccurrenceAddressIsNotARequestTest {
                 SymbolicMessageEnvelope.takeOutbound());
 
         assertTrue("the address still answers",
-                task.acceptsRootInvocation(balancerAddress(3), false));
+                task.acceptsRootInvocation(balancerAddress(3)));
         assertFalse("and still refuses every other k",
-                task.acceptsRootInvocation(balancerAddress(4), false));
+                task.acceptsRootInvocation(balancerAddress(4)));
 
         // Noting the request an activation entered is not a refusal.
         ConcolicTaskPlan.RuntimeTask producer = task();
@@ -126,9 +126,12 @@ public class OccurrenceAddressIsNotARequestTest {
                     "ROOT_LOOP_OCCURRENCE_UNADDRESSED"));
         }
 
-        // The OUT-anchor deferral covers a receiver unregistered at entry; at
-        // an enclosing loop root it is not the address, and the task keeps the
-        // one invocation it was admitted for and no other.
+        // A receiver this run never registered is an attribution fact, not a
+        // deferred admission: the address decides, the refusal is named, and
+        // the task keeps the one invocation it was admitted for and no other.
+        // A unique planner-authored OUT anchor used to excuse the missing
+        // registration here and be confirmed at close, which let any
+        // invocation under the planned request answer any k of that region.
         ConcolicTaskPlan.RuntimeTask deferred = loopBodyTask(1);
         ConcolicTaskPlan plan = new ConcolicTaskPlan(null,
                 Arrays.asList(deferred, loopBodyTask(2)));
@@ -139,10 +142,6 @@ public class OccurrenceAddressIsNotARequestTest {
                 new SourceRef("DATANODE", "dn", TARGET, 0L));
         long request = RuntimeTraceContext.beginRequest(caller, "heartbeat");
         try {
-            assertTrue("this is the shape the deferral admitted",
-                    ConcolicTaskPlan.mayDeferMissingContextToOutgoingAnchor(
-                            deferred, null, RuntimeTraceContext.current()));
-
             Map<String, Integer> admitted = plan.addressLoopRootInvocation(
                     deferred.rootMethod, deferred.rootMethod, null,
                     new Object[0], 11L);

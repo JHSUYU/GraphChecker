@@ -137,7 +137,7 @@ public class BranchDecisionRecordingTest {
         ConcolicRegionRuntime.ActiveRegion active =
                 new ConcolicRegionRuntime.ActiveRegion(token,
                         new ConcolicTaskPlan.RuntimeTask(task()), null,
-                        Thread.currentThread(), false);
+                        Thread.currentThread());
         ConcolicRegionRuntime.ACTIVE.put(token, active);
         currentTokens().push(token);
         opened.push(token);

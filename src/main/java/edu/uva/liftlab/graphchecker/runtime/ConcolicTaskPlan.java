@@ -53,7 +53,6 @@ import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.ROOT_AR
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.SKIP_ANCHOR_SOURCE_NEVER_EXISTED;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.SKIP_OCCURRENCE_ANCHOR_UNMATCHED;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.enclosingLoopRootAdmits;
-import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.outgoingProducerMayDeferMissingContext;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicResultPublisher.registerRunTotalsHook;
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.safe;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.sameHookIdentity;
@@ -104,51 +103,8 @@ final class ConcolicTaskPlan {
         this.tasks = Collections.unmodifiableList(tasks);
         this.candidateLive = new boolean[tasks.size()];
         this.occurrenceClaimed = new boolean[tasks.size()];
-        indexDeferredOutgoingSourceAnchors(tasks);
     }
 
-    /**
-     * Admits an OUT site as source evidence only when the frozen runtime
-     * edges give that exact root/request/port scope one producer source.
-     */
-    static void indexDeferredOutgoingSourceAnchors(
-            List<RuntimeTask> tasks) {
-        Map<String, Set<String>> sourcesByScope = new LinkedHashMap<>();
-        for (RuntimeTask task : tasks) {
-            // Include even malformed/unbound declarations in the
-            // uniqueness denominator; they must make admission less
-            // permissive, never disappear from the proof.
-            for (String portId : task.declaredOutgoingPorts()) {
-                sourcesByScope.computeIfAbsent(
-                        task.outgoingSourceScope(portId),
-                        ignored -> new LinkedHashSet<>()).add(
-                        task.sourceKey);
-            }
-        }
-        for (RuntimeTask task : tasks) {
-            Set<String> candidates =
-                    task.exactOutgoingSourceCandidatePorts;
-            if (candidates.isEmpty()
-                    || !candidates.equals(task.declaredOutgoingPorts())
-                    || !candidates.equals(
-                    task.exportConsumerOccurrenceByPort.keySet())) {
-                continue;
-            }
-            boolean unique = true;
-            for (String portId : candidates) {
-                Set<String> sources = sourcesByScope.get(
-                        task.outgoingSourceScope(portId));
-                if (sources == null || sources.size() != 1
-                        || !sources.contains(task.sourceKey)) {
-                    unique = false;
-                    break;
-                }
-            }
-            if (unique) {
-                task.deferredOutgoingSourcePorts.addAll(candidates);
-            }
-        }
-    }
 
     /**
      * Releases the address of a candidate that ended without being the
@@ -411,11 +367,7 @@ final class ConcolicTaskPlan {
             OccurrenceAddress observed = task.observedAddress(
                     countedLifecycle(task, activationSource),
                     countedFamily(context), actualOrdinalByScope);
-            boolean exactOutgoingAddress =
-                    mayDeferMissingContextToOutgoingAnchor(task,
-                            registeredReceiverSource, context);
-            if (!task.acceptsRootInvocation(observed,
-                    exactOutgoingAddress)) {
+            if (!task.acceptsRootInvocation(observed)) {
                 // Said out loud, as the loop-body path already says it.  A
                 // non-loop root that ran and was refused on its address was
                 // refused in silence, and the end of the run then reported
@@ -454,27 +406,23 @@ final class ConcolicTaskPlan {
                 .requestDifference(context);
     }
 
-    /** Entry admission may defer only missing producer context to OUT. */
+    /**
+     * Why this activation is not the planned node's, or {@code ""}.
+     *
+     * <p>One answer, with nothing deferred behind it.  A unique
+     * planner-authored OUT port used to excuse a missing registration here
+     * and confirm it at close, which made admission provisional: the
+     * activation was let in on the promise of an anchor it had not reached,
+     * and at a loop root the same deferral stood in for the whole address,
+     * so any invocation under the planned request answered any k of that
+     * region.  Admission is the address.  A producer whose receiver this run
+     * never registered is an attribution fact, and it is surfaced as the
+     * named refusal below rather than waved through.</p>
+     */
     static String sourceAdmissionMismatch(
             RuntimeTask task, SourceRef registeredReceiverSource,
             RuntimeTraceContext.View context) {
-        String mismatch = sourceMismatch(task, registeredReceiverSource,
-                context);
-        return mismatch.isEmpty()
-                || mayDeferMissingContextToOutgoingAnchor(
-                task, registeredReceiverSource, context) ? "" : mismatch;
-    }
-
-    static boolean mayDeferMissingContextToOutgoingAnchor(
-            RuntimeTask task, SourceRef registeredReceiverSource,
-            RuntimeTraceContext.View context) {
-        RootContextSelector selector = task.rootContextSelector;
-        return outgoingProducerMayDeferMissingContext(
-                !task.deferredOutgoingSourcePorts.isEmpty(),
-                registeredReceiverSource, context.source, task.sourceKey,
-                selector.reachedUnder.requestKey,
-                selector.reachedUnder.requestApi,
-                context.requestKey, context.requestApi);
+        return sourceMismatch(task, registeredReceiverSource, context);
     }
 
     /**
@@ -1372,12 +1320,6 @@ final class ConcolicTaskPlan {
          */
         final Map<String, List<String>> exportConsumerOccurrenceByPort =
                 new LinkedHashMap<>();
-        /** OUT ports allowed to establish an otherwise absent producer source. */
-        final Set<String> deferredOutgoingSourcePorts =
-                new LinkedHashSet<>();
-        /** OUT ports backed by one exact traced exchange in this task row. */
-        final Set<String> exactOutgoingSourceCandidatePorts =
-                new LinkedHashSet<>();
         /** Frozen runtime bindings used to resolve exact Map producers. */
         final JsonArray edgeBindings;
         /** Declared field -> unique frozen receiver locator for this task. */
@@ -1684,35 +1626,7 @@ final class ConcolicTaskPlan {
                 List<String> consumers = task.exportConsumerOccurrences(
                         portId);
                 if (consumers.isEmpty()) continue;
-                // The edges are re-walked only to decide exactness: an OUT
-                // site may establish an absent producer source when every
-                // edge that carries it is this root's own traced exchange.
-                boolean exactSourceCandidate = true;
-                for (JsonElement element : bindings) {
-                    if (!element.isJsonObject()) continue;
-                    JsonObject binding = element.getAsJsonObject();
-                    if (!"RUNTIME_PROTOCOL_FLOW".equals(
-                            optionalString(binding, "kind"))
-                            || !portId.equals(
-                            optionalString(binding, "fromOutputPort"))
-                            || !occurrenceId.equals(OccurrenceId.parse(
-                            optionalString(binding, "fromOccurrenceId"))
-                            .planned())) {
-                        continue;
-                    }
-                    if (!"TRACED_RPC_EXCHANGE_CORRELATION_V1".equals(
-                            optionalString(binding, "correlationAuthority"))
-                            || !rootContextSelector.reachedUnder.requestKey.equals(
-                            optionalString(binding, "requestKey"))
-                            || !rootContextSelector.reachedUnder.requestApi.equals(
-                            optionalString(binding, "requestApi"))) {
-                        exactSourceCandidate = false;
-                    }
-                }
                 exportConsumerOccurrenceByPort.put(portId, consumers);
-                if (exactSourceCandidate) {
-                    exactOutgoingSourceCandidatePorts.add(portId);
-                }
             }
         }
 
@@ -1722,11 +1636,6 @@ final class ConcolicTaskPlan {
                     safe(portId));
             return consumers == null ? Collections.<String>emptyList()
                     : consumers;
-        }
-
-        String outgoingSourceScope(String portId) {
-            return rootMethod + '\n' + rootContextSelector.reachedUnder.requestKey + '\n'
-                    + rootContextSelector.reachedUnder.requestApi + '\n' + safe(portId);
         }
 
         Set<String> declaredOutgoingPorts() {
@@ -2142,32 +2051,26 @@ final class ConcolicTaskPlan {
         }
 
         /**
-         * Selects a communication consumer by the message that invoked it.
-         * Tasks with no planner-authored IN edge retain ordinal addressing.
+         * Whether this activation is the addressed occurrence.
+         *
+         * <p>The whole address the occurrence id states -- node, epoch,
+         * region, request family and k -- against the whole address this
+         * activation ran at, read from the occurrence id every other stage
+         * reads it from.  Comparing the k alone let a task planned for one
+         * node answer another node's first activation of the same region.</p>
+         *
+         * <p>And nothing else.  Two arms stood here in turn and both
+         * replaced the address rather than refining it: the message an
+         * activation arrived on, which refused activations that agreed on
+         * every component (11741's balancer#3 and #7, 17897's dn0#1); and a
+         * unique planner-authored OUT anchor, which admitted any invocation
+         * under the planned request to any k of that region.  An occurrence
+         * is its address.</p>
          */
         boolean acceptsRootInvocation(OccurrenceAddress observed) {
             return address.matches(observed);
         }
 
-        boolean acceptsRootInvocation(OccurrenceAddress observed,
-                                              boolean exactOutgoingAddress) {
-            // The whole address the occurrence id states -- node, epoch,
-            // region and k -- against the whole address this activation ran
-            // at, read from the occurrence id every other stage reads it
-            // from.  Comparing the k alone let a task planned for one node
-            // answer another node's first activation of the same region.
-            //
-            // And nothing else.  An occurrence is that address; the message
-            // an activation was reached by is provenance the handoff row
-            // states, not a second identity that may veto the first.  The
-            // arm that stood here replaced the address entirely whenever
-            // the plan named an IN producer, so an activation that agreed
-            // on node, epoch, region and k was refused for arriving on an
-            // envelope the replay had not reproduced -- 11741's
-            // balancer#3 and #7 and 17897's dn0#1, each reported with an
-            // empty reason because the address it was refused on matched.
-            return exactOutgoingAddress || address.matches(observed);
-        }
 
         /**
          * Reserves completed evidence before reopening task admission.
