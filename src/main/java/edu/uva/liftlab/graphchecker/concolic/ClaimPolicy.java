@@ -1405,7 +1405,6 @@ public final class ClaimPolicy {
                 || WitnessLegitimacy.UNEXPLAINED_ROOT_MOVE.equals(code)
                 || WitnessLegitimacy.CLOCK_NOT_NECESSARY.equals(code)
                 || WitnessLegitimacy.CLOCK_NECESSITY_UNKNOWN.equals(code)
-                || WitnessLegitimacy.ABSENT_KEY_DEFAULT.equals(code)
                 // The composition-level unbound flow has its own blocker;
                 // this one is a property of the model, which no other
                 // blocker reads, so it belongs to the witness.

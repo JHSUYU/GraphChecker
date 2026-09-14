@@ -93,8 +93,6 @@ final class PathMergeLowering extends VmLoweringCore {
      * explained nothing.  Each such read is named here with the condition
      * under which it missed, so the claim can tell the two apart.</p>
      */
-    private final Map<String, JsonObject> absentKeyDefaults =
-            new LinkedHashMap<>();
     private final Set<String> integralDomains = new LinkedHashSet<>();
     private boolean usesJavaIntString;
 
@@ -476,28 +474,6 @@ final class PathMergeLowering extends VmLoweringCore {
             }
 
             @Override
-            public void noteAbsentKeyDefault(String keyTerm,
-                                             String absentCondition) {
-                if (keyTerm == null || keyTerm.isEmpty()
-                        || absentCondition == null
-                        || absentCondition.isEmpty()) {
-                    return;
-                }
-                String identity = keyTerm + "\u0000" + absentCondition;
-                if (absentKeyDefaults.containsKey(identity)) return;
-                String name = symbols.mint("absent_key_default__",
-                        identity, 16);
-                declare(name, Sort.BOOL);
-                assertions.add("(assert (= " + name + " "
-                        + absentCondition + "))");
-                JsonObject row = new JsonObject();
-                row.addProperty("solverTerm", name);
-                row.addProperty("keyTerm", keyTerm);
-                row.addProperty("origin", origin);
-                absentKeyDefaults.put(identity, row);
-            }
-
-            @Override
             public void require(String predicate) {
                 if (predicate == null || predicate.isEmpty()
                         || "true".equals(predicate)) {
@@ -659,10 +635,6 @@ final class PathMergeLowering extends VmLoweringCore {
         return rootTerms;
     }
 
-    /** One row per associative read that answered out of the default. */
-    Collection<JsonObject> absentKeyDefaults() {
-        return absentKeyDefaults.values();
-    }
 
     /**
      * Preamble and declarations, with no assertion and no check.

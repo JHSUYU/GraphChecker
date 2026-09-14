@@ -1084,7 +1084,8 @@ public final class PathMergeComposer {
      * them.</p>
      */
     private static String executionReading(JsonObject row) {
-        String observed = optionalString(row, "observedValue");
+        String observed = optionalString(row,
+                SymbolicSourceEvidence.OBSERVED_VALUE);
         return observed.isEmpty()
                 ? optionalString(row, ComposedManifest.RECORDED_SOURCE_VALUE)
                 : observed;
@@ -1780,9 +1781,6 @@ public final class PathMergeComposer {
         // builds no such model, so each one is empty rather than absent:
         // a reader of this artifact must see "there is none", not "the
         // composer forgot to say".
-        JsonArray absentKeys = new JsonArray();
-        for (JsonObject row : lowering.absentKeyDefaults()) absentKeys.add(row);
-        manifest.add(ComposedManifest.ABSENT_KEY_DEFAULTS, absentKeys);
         manifest.add(ComposedManifest.WIRE_FLOW_BINDINGS,
                 new JsonArray());
         manifest.add(ComposedManifest.FAULT_CONTROL_GAPS_FIELD,

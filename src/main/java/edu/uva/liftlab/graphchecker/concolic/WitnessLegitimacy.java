@@ -81,13 +81,6 @@ public final class WitnessLegitimacy {
     public static final String UNEXPLAINED_ROOT_MOVE =
             "UNEXPLAINED_ROOT_MOVE";
     /**
-     * The witness read an associative container's absent-key default: the
-     * key it asked with is in no PUT of the chain and in none of the state
-     * the chain was reconstructed from, so the null it got is the empty
-     * map's answer and names nothing the program did.
-     */
-    public static final String ABSENT_KEY_DEFAULT = "ABSENT_KEY_DEFAULT";
-    /**
      * A wall clock moved, and the target reaches with every clock back on
      * the value it recorded.  The move is then decoration: the witness is
      * satisfied by something else and the clock is along for the ride.
@@ -317,17 +310,6 @@ public final class WitnessLegitimacy {
             } else {
                 freedoms.add(refusal);
             }
-        }
-        // Freedom the solver stage decided from this model rather than from
-        // the formula: a wire boundary no arm of which the model satisfied,
-        // and a read that answered out of an absent-key default.
-        for (JsonElement element : array(valuation,
-                "witnessFreedoms")) {
-            if (!element.isJsonObject()) continue;
-            JsonObject decided = element.getAsJsonObject();
-            freedoms.add(new Freedom(optionalString(decided, "code"),
-                    optionalString(decided, "subject"),
-                    optionalString(decided, "detail")));
         }
         row.addProperty("verdict", freedoms.isEmpty() ? EXPLAINED
                 : UNEXPLAINED);

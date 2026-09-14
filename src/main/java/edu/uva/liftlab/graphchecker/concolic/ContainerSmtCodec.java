@@ -656,7 +656,7 @@ public final class ContainerSmtCodec {
                     return associativeHas(state, key, host, memo);
                 }
                 Term value = associativeRead(state, key, host, memo);
-                noteAbsentKeyDefault(state, key, host, memo);
+                requireStatedContainerBase(state, key, host);
                 return host.unbox(value, javaType);
             }
             Term index = host.operand(positions.get(0), Sort.INT);
@@ -977,7 +977,7 @@ public final class ContainerSmtCodec {
                 Term key = host.box(arguments.get(0));
                 if (key == null) return null;
                 Term read = associativeRead(receiverIr, key, host, memo);
-                noteAbsentKeyDefault(receiverIr, key, host, memo);
+                requireStatedContainerBase(receiverIr, key, host);
                 return host.unbox(read, javaType);
             }
             if ("IS_EMPTY".equals(operation) && arguments.size() == 0) {
@@ -1325,67 +1325,42 @@ public final class ContainerSmtCodec {
     }
 
     /**
-     * Tells the host when this read's null can only be the absent-key
-     * default of the map the mutation chain starts from.
+     * Refuses a read whose container the recording never walked.
      *
-     * <p>The condition is the negation of "some PUT of the chain used this
-     * key".  The chain is walked to the base the VM reconstructed: an
-     * INITIAL publishes it as {@code SNAPSHOT_BASE} with one PUT per entry
-     * it walked, so the keys the map began with are in the chain like any
-     * other and membership is decided by the recording.  A conditional
-     * remove is not a PUT and contributes nothing: a key a {@code REMOVE_IF}
-     * deleted was put earlier or came out of the base, so the disjunction
-     * still holds for it and the read is explained by the removal.</p>
+     * <p>Membership is not decided here.  The assoc model decides it: the
+     * chain lowers to {@code assoc_put}/{@code assoc_remove} over the base,
+     * a key is present exactly when the store says so, and z3 answers that
+     * for a symbolic key as readily as for a constant one.  What this walk
+     * checks is the one thing the model cannot: that the chain ends at a
+     * base the VM actually walked -- an INITIAL's {@code SNAPSHOT_BASE},
+     * which is the exact empty container the PUTs above it refill, or a
+     * {@code CLEAR} the program itself did.  A chain that ends on an opaque
+     * state states no membership at all, and leaving that to the solver is
+     * leaving it to the witness.</p>
      *
-     * <p>A chain that reaches no such base states no membership, and this
-     * refuses rather than leaving the solver to decide it.</p>
+     * <p>This used to publish an "absent-key default" instead: a Boolean
+     * defined by a syntactic list of the chain's CONSTANT PUT keys.  On bug3
+     * the PUT that stores key 119982 has a symbolic key -- the received
+     * BlockKey's id -- so the list said 119982 was absent while the chain,
+     * under the model, holds it, and seven recorded executions became
+     * unstatable.  A default that decides a value the propagation already
+     * states is the thing this design does not do.</p>
      */
-    private static void noteAbsentKeyDefault(
-            JsonElement expression, Term key, Host host,
-            ProjectionMemo memo) {
-        List<String> present = new ArrayList<>();
+    private static void requireStatedContainerBase(
+            JsonElement expression, Term key, Host host) {
         JsonElement chain = expression;
-        for (int depth = 0; depth < ABSENT_KEY_CHAIN_LIMIT; depth++) {
+        for (int depth = 0; depth < CONTAINER_CHAIN_LIMIT; depth++) {
             Mutation mutation = associativeMutation(chain);
             if (mutation == null) {
-                // The chain bottoms out on a state nothing reconstructed:
-                // no INITIAL walked this container, so whether it holds the
-                // key is not a recorded fact.  Lowering that as
-                // "(assoc_has <opaque> k)" left membership free -- the
-                // solver decides whether the map held the key -- and a
-                // witness may then be resting on a map the recording never
-                // showed.  Membership is a recorded fact or it is a gate.
                 host.unsupported(CONTAINER_BASE_UNSTATED + ":" + key.text);
                 return;
             }
-            if ("CLEAR".equals(mutation.operation)) {
-                // The program emptied the map itself.  A key absent after a
-                // clear is absent because of the clear, which is a statement
-                // about the program and not a default.
-                return;
-            }
-            if (emptiesState(mutation.operation)) {
-                // The reconstructed initial snapshot: the chain starts here
-                // and holds exactly the keys the PUTs above it restored, so
-                // a key none of them names is the untouched map's default.
-                host.noteAbsentKeyDefault(key.text, present.isEmpty()
-                        ? "true"
-                        : present.size() == 1
-                        ? "(not " + present.get(0) + ")"
-                        : "(not (or " + String.join(" ", present) + "))");
-                return;
-            }
-            if ("PUT".equals(mutation.operation)) {
-                Term putKey = memo.box(mutation.arguments.get(0), host);
-                if (putKey == null) return;
-                present.add("(= " + key.text + " " + putKey.text + ")");
-            }
+            if (emptiesState(mutation.operation)) return;
             chain = mutation.receiver;
         }
     }
 
-    /** Depth past which an associative chain is not worth walking twice. */
-    private static final int ABSENT_KEY_CHAIN_LIMIT = 512;
+    private static final int CONTAINER_CHAIN_LIMIT = 512;
 
     /**
      * Refusal subject for a membership no recording decides: the same name
@@ -2271,29 +2246,6 @@ public final class ContainerSmtCodec {
 
         void unsupported(String reason);
 
-        /**
-         * One associative read whose key matched no {@code PUT} in the
-         * mutation chain and is not a member of the state the chain starts
-         * from, so the read's null came from the map not containing the key
-         * at all rather than from anything the program did to it.
-         *
-         * <p>That distinction is the difference between a finding and a
-         * fabrication.  A key a writer removed is absent <em>because</em> of
-         * the removal, and a witness that shows it is a statement about the
-         * program.  A key nothing ever put is absent in the recording too:
-         * the "null" it produces is the default of an untouched map, and a
-         * witness resting on it has explained nothing -- which is exactly
-         * how an HDFS-17897 candidate came to ask a DataNode for key id
-         * 1556899178, a key id no node ever held.</p>
-         *
-         * @param keyTerm the key the read was made with
-         * @param absentCondition true exactly when that key matched no PUT
-         *                        of the chain and the base state does not
-         *                        hold it
-         */
-        default void noteAbsentKeyDefault(String keyTerm,
-                                          String absentCondition) {
-        }
     }
 
     public enum Sort {
