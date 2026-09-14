@@ -300,6 +300,29 @@ public final class PathMergeComposer {
             lowering.declare(selector, VmTermLowering.Sort.BOOL);
             lowering.beginPath(optionalString(path, "replayGroupId"));
             List<String> terms = new ArrayList<>();
+            // The valuation this replay ran under is part of pi_p.
+            //
+            // A replay's assignments are not all visible as decisions: a
+            // root can be written and never branched on, and a decision
+            // over it can live in a region the anchor's own path condition
+            // does not reach.  Either way the execution happened under that
+            // value, so the path must say so -- otherwise a path recorded
+            // by a flip replay survives at the recorded valuation, which is
+            // exactly how laneVM14 came back satisfiable with every marker
+            // at the value the healthy run read.
+            // Only where this replay ran a root at a value some other
+            // replay did not: that is an assignment its obligation applied,
+            // and it is what the path has to carry.  A root every replay
+            // read the same way is already pinned by its own domain, and
+            // asserting it again on every path would put a minted root that
+            // nothing branches on "on a path" and silence
+            // ROOT_NOT_ON_ANY_PATH.
+            for (JsonObject member : replayGroup) {
+                for (String conjunct : deliveringValuation(member,
+                        declaredVariables, lowering, roots)) {
+                    if (!terms.contains(conjunct)) terms.add(conjunct);
+                }
+            }
             for (int index = 0; index < resolved.size(); index++) {
                 terms.add(lowering.condition(resolved.get(index),
                         "path" + pathOrdinal + ":pi" + index));
@@ -877,6 +900,13 @@ public final class PathMergeComposer {
     private static List<String> deliveringValuation(
             JsonObject summary, Map<String, JsonObject> declaredVariables,
             PathMergeLowering lowering) {
+        return deliveringValuation(summary, declaredVariables, lowering,
+                null);
+    }
+
+    private static List<String> deliveringValuation(
+            JsonObject summary, Map<String, JsonObject> declaredVariables,
+            PathMergeLowering lowering, RootInventory varied) {
         List<String> valuation = new ArrayList<>();
         Set<String> stated = new LinkedHashSet<>();
         for (String member : new String[]{"symbolicSourceEvidence",
@@ -889,6 +919,7 @@ public final class PathMergeComposer {
                         ComposedManifest.RECORDED_SOURCE_VALUE);
                 if (raw.isEmpty() || value.isEmpty()
                         || !declaredVariables.containsKey(raw)
+                        || varied != null && !varied.varied(raw)
                         || !stated.add(raw)) {
                     continue;
                 }
@@ -1230,6 +1261,12 @@ public final class PathMergeComposer {
                 }
             }
             return inventory;
+        }
+
+        /** Whether replays of this run read this root differently. */
+        boolean varied(String rawSymbol) {
+            Set<String> values = readings.get(rawSymbol);
+            return values != null && values.size() > 1;
         }
 
         /** Whether the recording states a value this root was minted at. */
