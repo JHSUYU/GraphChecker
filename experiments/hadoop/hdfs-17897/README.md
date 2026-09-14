@@ -49,11 +49,12 @@ symbolized.
 ## Target occurrence
 
 `declared_target_occurrence` in `workflow.properties` names the occurrence of
-the annotated site the campaign is about -- an occurrence address, or the
-request family and k. The campaign composes and judges that one and reports
-the others. It is commented out: lane17897g observed two occurrences
-(`striped-file-checksum#1` and `#2`) and its recording took the healthy arm at
-both, so which one can fail is the case's knowledge rather than the corpus's.
+the annotated site the campaign is about, as a full occurrence address. The
+campaign composes and judges that one and reports the others. The owner
+assumes the failing instance is known; a recording is the healthy path by
+nature, so no occurrence is distinguished by the corpus and the case names the
+first observed one (rule: first observed, full address) -- lane17897g observed
+`striped-file-checksum#1` and `#2`.
 
 ## Clock window
 

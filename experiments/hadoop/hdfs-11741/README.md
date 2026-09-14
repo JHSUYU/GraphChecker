@@ -41,12 +41,13 @@ snapshots of their writer expressions. The target is a DataNode lookup that
 cannot find the Balancer's cached key.
 
 `declared_target_occurrence` in `workflow.properties` names which occurrence
-of that lookup the campaign is about -- an occurrence address, or the request
-family and k. The campaign composes and judges that one and reports the
-others; it is commented out because lane11741h observed four
-(`balance-block#1` and `#2`, on dn0 and on dn1) and its recording took the
-healthy arm at every one, so the corpus does not say which can fail. Naming it
-is what turns four compositions into one.
+of that lookup the campaign is about, as a full occurrence address. The owner
+assumes the failing instance is known; a recording is the healthy path by
+nature, so no occurrence is distinguished by the corpus and the case names the
+first observed one (rule: first observed, full address). lane11741h observed
+four -- `balance-block#1` and `#2`, on dn0 and on dn1 -- and composing all
+four cost 76 minutes; naming one turns that into one composition. The family
+and k alone would not do: both DataNodes answer `balance-block#1`.
 
 The causal graph selects this closure and its instrumentation sites. Each
 region contributes its own path condition; the composer recursively merges the
