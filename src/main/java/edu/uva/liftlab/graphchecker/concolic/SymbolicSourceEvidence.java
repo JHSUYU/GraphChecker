@@ -217,6 +217,16 @@ public final class SymbolicSourceEvidence {
         row.add("expression", expression);
         row.addProperty("sourceIdentity", required(sourceIdentity,
                 "sourceIdentity"));
+        // The mint row IS the declaration every reader uses, so it states
+        // the identity under all three names a materialization asks for
+        // rather than letting a second builder invent them from the symbol.
+        // The node is the occurrence's own prefix; an address without a
+        // region is the node itself.
+        row.addProperty("sourcePhaseId", sourceIdentity.trim());
+        row.addProperty("sourceId", sourceIdentity.trim());
+        int region = occurrenceId.indexOf("/region/");
+        row.addProperty("sourceKey", region > 0
+                ? occurrenceId.substring(0, region) : occurrenceId.trim());
         if (declaredCallee != null && !declaredCallee.trim().isEmpty()) {
             row.addProperty(DECLARED_CALLEE, declaredCallee.trim());
         }
@@ -409,7 +419,7 @@ public final class SymbolicSourceEvidence {
     private static final Set<String> OPTIONAL_MEMBERS =
             new LinkedHashSet<>(java.util.Arrays.asList(SYMBOL, "portId",
                     "sourceIdentity", RECORDED_VALUE, OBSERVED_VALUE,
-                    DECLARED_CALLEE, "siteId", "eventSeq"));
+                    DECLARED_CALLEE, "siteId", "eventSeq", "sourceKey"));
     private static final Set<String> MANUAL_REQUIRED_MEMBERS =
             new LinkedHashSet<>(java.util.Arrays.asList("schemaVersion",
                     "kind", "authority", "portId", "sourceOccurrenceId",

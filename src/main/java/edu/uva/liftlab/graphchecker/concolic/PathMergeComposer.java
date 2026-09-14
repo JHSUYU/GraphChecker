@@ -1336,6 +1336,24 @@ public final class PathMergeComposer {
         }
     }
 
+    /**
+     * Every manual symbolic input the replays minted, as declarations.
+     *
+     * <p>The mint row IS the declaration: it states the identity, the Java
+     * type, what the recording read and what this execution read, the port,
+     * and the callee the hook declared.  This used to rebuild a declaration
+     * from a few of those members, and the rebuilt row -- installed over the
+     * evidence row -- lost the port and the callee, so every clock cell in
+     * every case came out {@code wallClock false} and no composition ever
+     * listed a clock read.  Two spellings of one declaration; the row is the
+     * one that exists.</p>
+     *
+     * <p>A reference is not a root.  Which object this execution ran on is
+     * not a value the propagation owes, so it stays the opaque constant the
+     * lowering already makes of it; declaring it minted a root term with a
+     * Ref sort that the solver's own admission rejects and a recorded value
+     * nothing states.</p>
+     */
     private static Map<String, JsonObject> manualDeclarations(
             List<JsonObject> summaries) {
         Map<String, JsonObject> declarations = new LinkedHashMap<>();
@@ -1345,35 +1363,17 @@ public final class PathMergeComposer {
                 if (!encoded.isJsonObject()) continue;
                 JsonObject event = encoded.getAsJsonObject();
                 String raw = optionalString(event, "rawSymbol");
-                String identity = optionalString(event, "symbol");
-                if (raw.isEmpty() || identity.isEmpty()) continue;
-                // A reference is not a root.  Which object this execution
-                // ran on is not a value the propagation owes, so it stays
-                // the opaque constant the lowering already makes of it;
-                // declaring it minted a root term with a Ref sort that the
-                // solver's own admission rejects and a recorded value
-                // nothing states.
+                if (raw.isEmpty()
+                        || optionalString(event, "sourceIdentity").isEmpty()) {
+                    continue;
+                }
                 VmTermLowering.Sort sort = JavaSmtSorts.sortOfJava(
                         optionalString(event, "javaType"));
                 if (sort == VmTermLowering.Sort.REF
                         || sort.containerState()) {
                     continue;
                 }
-                String occurrence = optionalString(event, "occurrenceId");
-                int region = occurrence.indexOf("/region/");
-                JsonObject declaration = new JsonObject();
-                declaration.addProperty("rawSymbol", raw);
-                declaration.addProperty("sourcePhaseId", identity);
-                declaration.addProperty("sourceId", identity);
-                declaration.addProperty("fieldSignature", identity);
-                declaration.addProperty("sourceOccurrenceId", occurrence);
-                declaration.addProperty("sourceKey", region > 0
-                        ? occurrence.substring(0, region) : occurrence);
-                declaration.addProperty("javaType",
-                        optionalString(event, "javaType"));
-                declaration.addProperty("recordedValue",
-                        optionalString(event, "recordedValue"));
-                declarations.putIfAbsent(raw, declaration);
+                declarations.putIfAbsent(raw, event);
             }
         }
         return declarations;
