@@ -534,6 +534,11 @@ public final class GapLedger {
                 "the fatal read's branch mapping is unusable");
         blocking(explore, "TARGET_PREFIX_FATAL_EVENT_INVALID",
                 "the fatal read's recorded event is unusable");
+        blocking(explore, "TARGET_FATAL_ARM_NOT_CONTROLLED",
+                "the target's fatal arm is the obligation the campaign"
+                        + " exists for, and nothing the campaign varies"
+                        + " reaches it: no decision over a root, no handoff"
+                        + " row at an attach its predicate names");
         blocking(explore, "MULTIPLE_REGION_SCOPE",
                 "one task spans several regions, so no single region owns"
                         + " the path");
