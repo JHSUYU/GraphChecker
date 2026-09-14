@@ -47,9 +47,6 @@ public final class SharedStateEvidence {
             "SHARED_FIELD_VERSIONS";
     /** Expression node type of one guarded read-from choice. */
     public static final String GUARDED_READ_TYPE = "ReadFromExpression";
-    /** Authority the VM stamps on a guarded read-from node. */
-    public static final String GUARDED_READ_AUTHORITY =
-            "VM_GUARDED_READ_FROM_V1";
     /**
      * Explicit form of the empty conjunction.
      */
@@ -117,11 +114,6 @@ public final class SharedStateEvidence {
             REASON_PREFIX + "UNDECLARED_STATUS";
 
 
-    /** Stable bytecode site attached to one runtime-owned field read. */
-    public static final String CONSUMER_SITE_ID = "consumerSiteId";
-    /** Activation-local execution number of {@link #CONSUMER_SITE_ID}. */
-    public static final String CONSUMER_SITE_OCCURRENCE =
-            "consumerSiteOccurrence";
     /** Location kind of one selected map's whole immutable state. */
     public static final String LOCATION_KIND_MAP_STATE = "MAP_STATE";
     /**
@@ -156,7 +148,6 @@ public final class SharedStateEvidence {
     private static final String INITIAL_VERSION_KIND = "INITIAL";
     private SharedStateEvidence() {
     }
-
 
 
     public static String reason(int status) {
@@ -829,23 +820,6 @@ public final class SharedStateEvidence {
         row.addProperty("locationKey", canonical);
     }
 
-    /** An INITIAL version's declaration of the content it snapshotted. */
-    public static final String INITIAL_SNAPSHOT_FIELD = "initialSnapshot";
-
-
-
-
-
-    /** The base a stated initial content stands on. */
-    private static final String SNAPSHOT_BASE_OPERATION = "SNAPSHOT_BASE";
-    private static final String CONTAINER_RELATION_TYPE = "ContainerRelation";
-
-    /**
-     * Chain links walked before a malformed artifact is declined.  The VM
-     * refuses to state more than a million members, so a longer chain than
-     * that is not a snapshot this engine produced.
-     */
-    private static final long MAX_SNAPSHOT_CHAIN_DEPTH = 1000001L;
 
     /** Whether {@code versionKind} publishes one immutable whole state. */
     public static boolean stateVersionKind(String versionKind) {
@@ -969,8 +943,6 @@ public final class SharedStateEvidence {
         }
         return "";
     }
-
-
 
 
     /**
@@ -1098,50 +1070,6 @@ public final class SharedStateEvidence {
         return recorded;
     }
 
-    /** Whether {@code node} claims to be a guarded read-from choice. */
-    public static boolean claimsGuardedRead(JsonObject node) {
-        return node != null
-                && GUARDED_READ_TYPE.equals(textString(node, "_type"));
-    }
-
-
-    private static String selectorName(JsonArray selectors, int index) {
-        JsonElement element = selectors.get(index);
-        return element != null && element.isJsonPrimitive()
-                && element.getAsJsonPrimitive().isString()
-                ? element.getAsString() : "";
-    }
-
-    private static String candidateFault(JsonObject candidate,
-                                         boolean mapState) {
-        String selector = optionalString(candidate, "selector");
-        long version = optionalLongInteger(candidate, "fieldVersionId", 0L);
-        if (version <= 0L) {
-            return "candidate " + selector + " names no recorded write";
-        }
-        String versionKind = optionalString(candidate, "versionKind");
-        if (!VERSION_KINDS.contains(versionKind)
-                || !INITIAL_VERSION_KIND.equals(versionKind)
-                && stateVersionKind(versionKind) != mapState) {
-            return "candidate " + selector + " has incompatible version kind";
-        }
-        JsonElement value = candidate.get("expression");
-        if (value == null || value.isJsonNull()) {
-            return "candidate " + selector + " carries no value expression";
-        }
-        if (containsVmSerializationTruncation(value)) {
-            return VM_EXPRESSION_SERIALIZATION_TRUNCATED
-                    + ": candidate " + selector + " value expression";
-        }
-        if (!candidate.has("pathGuard")) {
-            return "candidate " + selector + " omits its writer path guard";
-        }
-        if (containsVmSerializationTruncation(candidate.get("pathGuard"))) {
-            return VM_EXPRESSION_SERIALIZATION_TRUNCATED
-                    + ": candidate " + selector + " path guard";
-        }
-        return "";
-    }
 
     private static boolean booleanMember(JsonObject object, String field) {
         JsonElement value = object == null ? null : object.get(field);
