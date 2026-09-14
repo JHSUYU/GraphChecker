@@ -29,6 +29,7 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalBool;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.firstNonBlank;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalInteger;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
 
 public final class TargetReachPathQueryBuilder {
@@ -127,11 +128,18 @@ public final class TargetReachPathQueryBuilder {
         }
         List<JsonObject> ready = solverReadySeedsForScope(seeds, manifest);
         JsonObject seed = decidingSeed(ready);
-        if (seed == null) {
-            throw new IOException("one solver-ready target seed query in the"
-                    + " exact path scope must decide the target; found "
-                    + ready.size()
-                    + " and none of them waits on all the others");
+        // An anchor is an address, and the evidence for it is every replay
+        // of the campaign that reached it.  A solver-ready seed query is one
+        // way to name the anchor, not a precondition for having one: the
+        // scheduler publishes it only for a decision it could make
+        // solver-ready, and on bug3 it published none at all while nine
+        // replays published targetReach at the anchor.  Refusing there threw
+        // away the whole disjunction because one optional row was missing.
+        // With no seed the address is the worklist's own, which the campaign
+        // planned, and the site is the one every reached replay names.
+        boolean seedless = seed == null;
+        if (seedless) {
+            seed = anchorFromWorklist(manifest);
         }
         String queryKey = optionalString(seed, "queryKey");
         if (queryKey.isEmpty()) {
@@ -146,7 +154,8 @@ public final class TargetReachPathQueryBuilder {
                 || !goalId.equals(optionalString(manifest, "goalId"))
                 || !occurrenceId.equals(optionalString(manifest, "occurrenceId"))
                 || region.isEmpty() || occurrenceId.isEmpty()
-                || goalId.isEmpty() || targetSite.isEmpty()) {
+                || goalId.isEmpty()
+                || !seedless && targetSite.isEmpty()) {
             throw new IOException(
                     "target seed and closed path scope do not match");
         }
@@ -164,9 +173,10 @@ public final class TargetReachPathQueryBuilder {
             throw new IOException("target seed and closed path worklist "
                     + "do not have the same loopBound authority");
         }
-        SelectedOccurrence selected = SelectedOccurrence.decode(
-                object(seed, "selectedTargetOccurrence"), region,
-                occurrenceId, "target seed query");
+        SelectedOccurrence selected = seedless ? null
+                : SelectedOccurrence.decode(
+                        object(seed, "selectedTargetOccurrence"), region,
+                        occurrenceId, "target seed query");
         BranchReplayContract targetReplay = null;
         ExactConcreteBranchObservation targetConcrete = null;
         JsonElement encodedConcrete = seed.get(TARGET_CONCRETE_OBSERVATION);
@@ -174,11 +184,12 @@ public final class TargetReachPathQueryBuilder {
                 && !encodedConcrete.isJsonNull();
         boolean hasReplay = seed.has("replayContract")
                 && !seed.get("replayContract").isJsonNull();
-        if (hasConcrete == hasReplay) {
+        if (!seedless && hasConcrete == hasReplay) {
             throw new IOException("target seed must have exactly one branch "
                     + "authority");
         }
-        int targetOccurrence;
+        int targetOccurrence = optionalInteger(seed,
+                "targetOccurrence", 1);
         if (hasConcrete) {
             if (!encodedConcrete.isJsonObject()) {
                 throw new IOException(
@@ -201,7 +212,7 @@ public final class TargetReachPathQueryBuilder {
                         + "a Boolean outcome");
             }
             targetOccurrence = targetConcrete.occurrence();
-        } else {
+        } else if (!seedless) {
             try {
                 targetReplay = BranchReplayContract.fromJson(
                         object(seed, "replayContract"));
@@ -216,12 +227,19 @@ public final class TargetReachPathQueryBuilder {
             targetOccurrence = targetReplay.source().occurrence();
         }
         JsonElement fatalOutcome = seed.get("fatalRequiredTakenOutcome");
-        if (fatalOutcome == null || !fatalOutcome.isJsonPrimitive()
-                || !fatalOutcome.getAsJsonPrimitive().isBoolean()) {
+        if (!seedless && (fatalOutcome == null
+                || !fatalOutcome.isJsonPrimitive()
+                || !fatalOutcome.getAsJsonPrimitive().isBoolean())) {
             throw new IOException(
                     "target seed query has no fatal branch outcome");
         }
-        boolean fatalRequiredOutcome = fatalOutcome.getAsBoolean();
+        // The composer records this and gates nothing on it: every replay
+        // that reached the anchor contributes its own phi, whichever arm it
+        // decided.
+        boolean fatalRequiredOutcome = fatalOutcome != null
+                && fatalOutcome.isJsonPrimitive()
+                && fatalOutcome.getAsJsonPrimitive().isBoolean()
+                && fatalOutcome.getAsBoolean();
         if (targetConcrete != null) {
             if (fatalRequiredOutcome
                     != targetConcrete.sourceTakenOutcome()) {
@@ -259,6 +277,31 @@ public final class TargetReachPathQueryBuilder {
             }
         }
 
+        if (seedless) {
+            // The site is the one every replay that reached this address
+            // names in its own targetReach event.  Two that disagree state
+            // no anchor, which is a refusal rather than a choice.
+            for (JsonObject summary : summaries) {
+                if (!inScope(summary, region, occurrenceId, goalId)) continue;
+                JsonObject reach = object(summary, "targetReach");
+                String site = optionalString(reach, "siteId");
+                if (site.isEmpty()) continue;
+                if (targetSite.isEmpty()) {
+                    targetSite = site;
+                    targetOccurrence = optionalInteger(reach,
+                            "occurrence", 1);
+                } else if (!targetSite.equals(site)) {
+                    throw new IOException("replays that reached "
+                            + occurrenceId + " name two anchored sites: "
+                            + targetSite + " and " + site);
+                }
+            }
+            if (targetSite.isEmpty()) {
+                throw new IOException("no replay published a target reach "
+                        + "at " + occurrenceId);
+            }
+        }
+
         Map<String, JsonObject> pathsByKey = new LinkedHashMap<>();
         Map<String, JsonObject> symbolicSources = new LinkedHashMap<>();
         // Every activation that executed the anchored site is a disjunct of
@@ -288,21 +331,18 @@ public final class TargetReachPathQueryBuilder {
             if (targetMapping == null) {
                 continue;
             }
-            BranchWitness sourceWitness = targetReplay == null
-                    ? null : targetReplay.source();
-            if (targetConcrete != null) {
-                if (!targetMapping.isConcreteObservation()
-                        || !targetMapping.concreteObservation()
-                        .sameDecision(targetConcrete)) {
-                    continue;
-                }
-            } else {
-                if (!targetMapping.isWitnessed()
-                        || !sourceWitness.decisionIdentity().equals(
-                        targetMapping.witness().decisionIdentity())) {
-                    continue;
-                }
-            }
+            // Which decision this activation made at the anchor is not an
+            // admission test either.  It used to be: a summary was admitted
+            // only if its target decision was the *same decision* as the
+            // elected seed's -- the same concrete observation, or the same
+            // witness identity.  Two replays of one anchor legitimately
+            // decide it differently, and that is the whole evidence: on
+            // laneVM10 the seed decided u8#1 true and the flip replay
+            // TASK.REPLAY.7f26859ea2 decided it false and threw
+            // InvalidEncryptionKeyException.  Requiring sameness dropped the
+            // half that carries the claim.  What is required is that this
+            // activation executed the anchored site and published its
+            // targetReach, which is checked below.
             final PathObservation.TargetReachEvent targetReach;
             try {
                 targetReach = observation.targetReachEvent();
@@ -398,7 +438,12 @@ public final class TargetReachPathQueryBuilder {
                     fatalRequiredOutcome);
             // The attached expression belongs to this exact target replay.
             // Hoisting it to the query root lets another target-prefix case
-            if (!selected.writeConsumerBoundaryEvidence(path, summary,
+            if (selected == null) {
+                // Nothing narrows the handoff rows: the family join keys on
+                // the recorded handoff occurrence, not on a port allowlist.
+                VmHandoffEvidence.writeTo(path,
+                        VmHandoffEvidence.eventsOf(summary));
+            } else if (!selected.writeConsumerBoundaryEvidence(path, summary,
                     coverageGaps)) {
                 continue;
             }
@@ -455,15 +500,19 @@ public final class TargetReachPathQueryBuilder {
         if (targetConcrete != null) {
             result.add(TARGET_CONCRETE_OBSERVATION,
                     targetConcrete.toJson());
-        } else {
+        } else if (targetReplay != null) {
             result.add("seedReplayContract",
                     targetReplay.toImmutableJsonView());
         }
         seedLoopBound.writeTo(result);
-        JsonObject symbolicContext =
-                object(seed, "symbolicContext").deepCopy();
-        selected.requireExactContext(symbolicContext);
-        result.add("symbolicContext", symbolicContext);
+        if (selected != null) {
+            JsonObject symbolicContext =
+                    object(seed, "symbolicContext").deepCopy();
+            selected.requireExactContext(symbolicContext);
+            result.add("symbolicContext", symbolicContext);
+            result.add("selectedTargetOccurrence",
+                    selected.encoded.deepCopy());
+        }
         SymbolicSourceEvidence.writeTo(result,
                 new ArrayList<>(symbolicSources.values()));
         if (!coverageGaps.isEmpty()) {
@@ -471,7 +520,6 @@ public final class TargetReachPathQueryBuilder {
             for (JsonObject row : coverageGaps) gaps.add(row);
             result.add("coverageGaps", gaps);
         }
-        result.add("selectedTargetOccurrence", selected.encoded.deepCopy());
         return expressions.compact(result);
     }
 
@@ -479,6 +527,32 @@ public final class TargetReachPathQueryBuilder {
         return kind.startsWith("PATH_FLIP_")
                 || "UNSUPPORTED_PATH_FLIP".equals(kind)
                 || "BOUND_REACHED".equals(kind);
+    }
+
+    /**
+     * The anchor a closed worklist names, as a seed the rest can read.
+     *
+     * <p>Region, planned occurrence and goal are the address the campaign
+     * planned; the site is the one the summaries that reached it name; the
+     * loop authority is the worklist's own.  Nothing here is inferred from a
+     * graph -- every member is copied from the artifact that owns it.</p>
+     */
+    private static JsonObject anchorFromWorklist(JsonObject manifest) {
+        JsonObject anchor = new JsonObject();
+        String region = optionalString(manifest, "regionId");
+        String occurrence = optionalString(manifest, "occurrenceId");
+        String goal = optionalString(manifest, "goalId");
+        anchor.addProperty("kind", "TARGET_BRANCH_SOLVER_QUERY");
+        anchor.addProperty("queryKey", CanonicalJson.sha256(
+                region + "\n" + occurrence + "\n" + goal));
+        anchor.addProperty("regionId", region);
+        anchor.addProperty("occurrenceId", occurrence);
+        anchor.addProperty("goalId", goal);
+        anchor.addProperty("targetSiteId",
+                optionalString(manifest, "targetSiteId"));
+        JsonElement loopBound = manifest.get(LoopBoundPolicy.FIELD);
+        if (loopBound != null) anchor.add(LoopBoundPolicy.FIELD, loopBound);
+        return anchor;
     }
 
     private static void validatePathManifest(JsonObject manifest)

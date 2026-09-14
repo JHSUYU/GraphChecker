@@ -4,6 +4,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.contract.ClosureGoalKind;
+import edu.uva.liftlab.graphchecker.contract.ConfiguredSourcePhaseContract;
 import edu.uva.liftlab.graphchecker.contract.ExecutionTask;
 import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.contract.PathObservation;
@@ -185,6 +186,91 @@ public class RegionPathWorklistTest {
                 assertEquals(0, decodedTask.guardedReadAssignments().size());
             }
         }
+    }
+
+    /**
+     * laneVM11's shape: the flipped occurrence does not mint the root.
+     *
+     * <p>A by-site phase id is one variable, and it repeats in every
+     * member's catalog that names that mint site.  The model assigns the
+     * variable; every owner that mints it has to return the assigned value,
+     * or the replay reads two values for one variable.  The primary need not
+     * be an owner at all -- bug3's target task depends on the NameNode's
+     * root through the wire, and the NameNode is a companion -- so counting
+     * owners and refusing on more than one read that dependency as an
+     * ambiguity and killed the obligation.</p>
+     */
+    @Test
+    public void aBySitePhaseIsAssignedToEveryOwnerIncludingCompanions() {
+        JsonObject c = task("C", "REGION.C", "REGION.C/occurrence-1");
+        JsonObject b = task("B", "REGION.B", "REGION.B/occurrence-1");
+        JsonObject a = task("A", "REGION.A", "REGION.A/occurrence-1");
+        // Two companions mint the one phase; the primary mints nothing.
+        phaseCatalog(a, "");
+        phaseCatalog(c, "");
+        String sharedPhase = ConfiguredSourcePhaseContract.phaseId(
+                "EXAMPLE.ROOT", "<com.example.S: boolean f()>#u1",
+                ConfiguredSourcePhaseContract.Phase.PUBLISH);
+        List<JsonObject> tasks = Arrays.asList(c, b, a);
+        List<JsonObject> summaries = Arrays.asList(
+                summary(c, 1), summary(b, 1), summary(a, 1));
+        Map<String, JsonObject> taskById = new LinkedHashMap<>();
+        for (JsonObject task : tasks) {
+            taskById.put(task.get("taskId").getAsString(), task);
+        }
+        JsonObject query = linkedQuery(b, tasks, summaries,
+                summaries.get(1));
+        JsonArray assignments = new JsonArray();
+        JsonObject assignment = modelAssignment("M_Z_SHARED", 1);
+        assignment.addProperty("configuredSourcePhaseId", sharedPhase);
+        assignments.add(assignment);
+
+        List<JsonObject> replay = linkedReplay(query, taskById, assignments,
+                new JsonArray(), BranchReplayContract.fromSummary(
+                        summaries.get(1), "SITE.B", 1));
+
+        int assigned = 0;
+        for (JsonObject replayTask : replay) {
+            JsonObject expanded = SharedExpressionTable.expand(replayTask);
+            JsonArray models = expanded.getAsJsonArray("modelAssignments");
+            if (models != null && models.size() > 0) assigned++;
+        }
+        assertEquals("both owners of the one phase must be assigned",
+                2, assigned);
+    }
+
+    /** Gives one task a catalog that mints one configured source phase. */
+    private static void phaseCatalog(JsonObject task, String ignored) {
+        String phaseId = ConfiguredSourcePhaseContract.phaseId(
+                "EXAMPLE.ROOT", "<com.example.S: boolean f()>#u1",
+                ConfiguredSourcePhaseContract.Phase.PUBLISH);
+        JsonObject phase = new JsonObject();
+        phase.addProperty("schemaVersion", 1);
+        phase.addProperty("kind", "CONFIGURED_SOURCE_PHASE");
+        phase.addProperty("authority",
+                "EXACT_RUNTIME_SOURCE_HOOK_EXECUTION_V1");
+        phase.addProperty("phaseId", phaseId);
+        phase.addProperty("phase", "PUBLISH");
+        phase.addProperty("phaseKind", "PUBLISH");
+        phase.addProperty("sourceId", "EXAMPLE.ROOT");
+        phase.addProperty("fieldSignature", "<com.example.S: boolean f>");
+        phase.addProperty("declarationMethod", "<com.example.S: boolean f()>");
+        phase.addProperty("declarationUnitIndex", 1);
+        phase.addProperty("siteId", "<com.example.S: boolean f()>#u1");
+        phase.addProperty("sourceOccurrenceId",
+                task.get("occurrenceId").getAsString());
+        phase.addProperty("baselineOrdinal", 1);
+        phase.addProperty("eventSeq", 10);
+        phase.addProperty("ownerCallId", 9);
+        phase.addProperty("invocationId", 10);
+        phase.addProperty("runtimeDeclaredCallee",
+                "<com.example.Src: boolean symbolize(java.lang.String)>");
+        JsonArray ancestry = new JsonArray();
+        ancestry.add(9);
+        phase.add("enclosingCallIds", ancestry);
+        JsonArray phases = new JsonArray();
+        phases.add(phase);
+        task.add("configuredSourcePhases", phases);
     }
 
     /** The solver decodes the bundle and its closure once and hands both to

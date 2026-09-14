@@ -421,6 +421,103 @@ public class PathMergeComposerTest {
         return path;
     }
 
+    private static final String HANDOFF_SYMBOL =
+            PathMergeComposer.HANDOFF_SYMBOL_MARK + "PORT_KEY_1";
+
+    /**
+     * A value that crossed a wire is a free variable joined at the handoff.
+     *
+     * <p>The consumer's fatal predicate is over {@code v_H}, not over the
+     * producer's term inlined into it, so a consumer flip needed no producer
+     * replay.  What ties {@code v_H} to the world is the family published at
+     * that one handoff occurrence: two producer replays delivered there,
+     * each with its own root-dependent prefix, and the formula says the
+     * received value is one of them under the conditions that produced it.
+     * The whole thing is satisfiable exactly where the root is flipped --
+     * the producer that delivers the fatal value is the one whose prefix
+     * needs the flip.</p>
+     */
+    @Test
+    public void aHandoffValueIsJoinedByItsFamilyNotByInlining()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+        Path directory = Files.createTempDirectory("path-merge-handoff");
+        JsonObject query = query();
+        // The consumer decided the anchor both ways, over v_H alone.
+        query.getAsJsonArray("paths").add(path("seed", "GROUP.SEED",
+                notEqual(handoff(), constant(7)),
+                notEqual(handoff(), constant(9))));
+        query.getAsJsonArray("paths").add(path("flip", "GROUP.FLIP",
+                notEqual(handoff(), constant(7)),
+                notEqual(handoff(), constant(7))));
+
+        JsonObject producerSeed = summary("GROUP.SEED");
+        producerSeed.add("vmHandoffEvents",
+                handoffEvents(constant(9), 11L, 12L));
+        JsonObject producerFlip = summary("GROUP.FLIP");
+        producerFlip.add("vmHandoffEvents",
+                handoffEvents(constant(7), 21L, 22L));
+        Path queryFile = directory.resolve("reach_query.jsonl");
+        write(queryFile, JsonFields.WRITER.toJson(
+                SharedExpressionTable.compact(query)));
+        Path summaryFile = directory.resolve("summaries.jsonl");
+        write(summaryFile, JsonFields.WRITER.toJson(
+                SharedExpressionTable.compact(producerSeed)) + "\n"
+                + JsonFields.WRITER.toJson(
+                SharedExpressionTable.compact(producerFlip)) + "\n");
+        PathMergeComposer.Result result = PathMergeComposer.compose(
+                PathMergeComposer.Arguments.parse(new String[]{
+                        "--fatal-query", queryFile.toString(),
+                        "--summaries", summaryFile.toString(),
+                        "--output",
+                        directory.resolve("candidate.smt2").toString(),
+                        "--manifest",
+                        directory.resolve("manifest.json").toString()}));
+        JsonObject merge = result.manifest.getAsJsonObject(
+                PathMergeComposer.MANIFEST_FIELD);
+
+        JsonArray families = merge.getAsJsonArray("handoffFamilies");
+        assertEquals(1, families.size());
+        assertEquals(HANDOFF_SYMBOL, families.get(0).getAsJsonObject()
+                .get("handoffSymbol").getAsString());
+        for (com.google.gson.JsonElement row : merge.getAsJsonArray("paths")) {
+            assertTrue("a path over a handoff value was cut: " + row,
+                    JsonFields.optionalBool(row.getAsJsonObject(),
+                            "admitted", false));
+        }
+        assertEquals("the family must let the fatal delivery through",
+                "sat", solve(result.smtLib + "(assert (= " + ROOT_TERM
+                        + " false))\n(check-sat)\n"));
+    }
+
+    /** The consumer's view of the value that arrived: one free variable. */
+    private static JsonObject handoff() {
+        JsonObject symbol = new JsonObject();
+        symbol.addProperty("_type", "SymbolExpression");
+        symbol.addProperty("_java_type", "I");
+        symbol.addProperty("_exp", HANDOFF_SYMBOL);
+        return symbol;
+    }
+
+    /** One replay's row at the one handoff occurrence, with what it sent. */
+    private static JsonArray handoffEvents(JsonObject delivered,
+                                           long export, long attach) {
+        JsonObject event = new JsonObject();
+        event.addProperty("kind", "VM_HANDOFF_EVENT");
+        event.addProperty("portId", "PORT.key");
+        event.addProperty("exportEventId", export);
+        event.addProperty("attachEventId", attach);
+        event.addProperty(InSessionReadResolver.HANDOFF_PHASE_ID,
+                "HANDOFF_PHASE.key");
+        event.addProperty(InSessionReadResolver.HANDOFF_SYMBOL,
+                HANDOFF_SYMBOL);
+        event.addProperty("javaType", "I");
+        event.add("expression", delivered);
+        JsonArray events = new JsonArray();
+        events.add(event);
+        return events;
+    }
+
     private static PathMergeComposer.Result compose(Path directory,
                                                     JsonObject query)
             throws IOException {
