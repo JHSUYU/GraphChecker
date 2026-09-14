@@ -3654,6 +3654,21 @@ campaign_publish_bound_gap() {
   die "the campaign reached campaign_max_iterations=${iterations} with a diverging topology; named gap in ${campaign_final}/gaps.json"
 }
 
+# A refinement this run owes and did not take, as a row the gap report
+# classes like any other.  Stating it is the whole point: the divergent
+# bundles are held for an epoch the campaign has not planned, so a reader of
+# this run's verdict has to be able to see that it covers epoch e only.
+campaign_publish_pending_refinement() {
+  local iteration_dir=$1 iteration_id=$2 rows=$3
+  jq -n -c --arg epoch "${iteration_id}" --argjson rows "${rows}" \
+    '{kind: "CONCOLIC_IMPORT_DIAGNOSTIC",
+      code: "TOPOLOGY_REFINEMENT_PENDING", taskId: $epoch,
+      detail: ("\($rows) topology divergence row(s) hold bundles for the "
+               + "epoch after \($epoch), which this run did not plan")}' \
+    >>"${iteration_dir}/import_diagnostics.jsonl" || true
+  campaign_collect_diagnostics "${iteration_dir}"
+}
+
 # How many rows this iteration's replays published about a topology their
 # plan had not addressed.  Zero means the topology is closed.
 campaign_topology_divergences() {
@@ -3721,18 +3736,21 @@ do_campaign() {
     # with the one pair that replay delivered, and its decisions become that
     # epoch's obligations.  With nothing new found, the topology is closed
     # and this iteration is the one the campaign publishes from.
+    # This epoch composes its own compatible paths whatever it learned.
+    # Deferring COMPOSE until the topology closed was wrong twice over: a
+    # campaign that found a divergence published no verdict about the paths
+    # it *could* read, and when the next epoch's PLAN could not run -- it
+    # looks for scheduler summaries under the previous iteration, which the
+    # iteration-0000 layout does not publish -- the whole case exited 1 with
+    # claim=MISSING.  An epoch's evidence is its own; a refinement that is
+    # owed is a row that says so.
     divergences=$(campaign_topology_divergences "${iteration_dir}")
-    if [[ "${divergences}" -gt 0 ]] \
-        && [[ $((iteration + 1)) -lt "${campaign_max_iterations}" ]]; then
-      campaign_log "topology divergences: ${divergences}; refining into \
-iteration-$(printf '%04d' $((iteration + 1)))"
-      parent="${iteration_id}"
-      carry="${iteration_dir}"
-      iteration=$((iteration + 1))
-      continue
+    if [[ "${divergences}" -gt 0 ]]; then
+      campaign_log "topology divergences: ${divergences}; epoch \
+${iteration_id} composes its own paths and the refinement is pending"
+      campaign_publish_pending_refinement "${iteration_dir}" \
+        "${iteration_id}" "${divergences}"
     fi
-    [[ "${divergences}" -eq 0 ]] || campaign_log "topology divergences: \
-${divergences} left unrefined at the iteration bound"
     campaign_stage COMPOSE campaign_compose "${iteration_dir}"
     campaign_stage SOLVE campaign_solve
     campaign_stage DECIDE campaign_decide

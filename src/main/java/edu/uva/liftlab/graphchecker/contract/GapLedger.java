@@ -660,6 +660,11 @@ public final class GapLedger {
                         + " reproduce is an admission gap of this epoch, not"
                         + " a new topology: the paths it did publish still"
                         + " extend the epoch");
+        diagnostic(importer, "TOPOLOGY_REFINEMENT_PENDING",
+                "the run composed this epoch and owes the next one: the"
+                        + " divergent bundles are held for an epoch it did"
+                        + " not plan, and saying so is how a reader knows"
+                        + " the verdict covers this epoch only");
         diagnostic(importer, "TOPOLOGY_DIVERGENCE",
                 "a flip that changes the topology found a new one: the"
                         + " handoff or occurrence it ran is exact evidence"

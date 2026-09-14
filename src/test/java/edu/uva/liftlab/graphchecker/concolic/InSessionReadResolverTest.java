@@ -392,6 +392,64 @@ public class InSessionReadResolverTest {
         return node;
     }
 
+    /**
+     * A FIELD_READ boundary is a read, and resolves through the write log.
+     *
+     * <p>Its producer is already named by the versions of the location it
+     * read, so the boundary is only the shell the VM wrapped the read in.
+     * laneBN's every boundary is this kind, and 17960 has no wire at all --
+     * so this is the ordinary by-value path, not a degenerate family.</p>
+     */
+    @Test
+    public void aFieldReadBoundaryResolvesThroughTheWriteLog() {
+        JsonObject row = row(versions("INSTANCE_FIELD", 24, 32,
+                version(81, "WRITE", symbol(ROOT))));
+
+        JsonElement resolved = InSessionReadResolver.of(
+                Collections.singletonList(row)).resolve(
+                boundary("FIELD_READ", 135,
+                        read("INSTANCE_FIELD", 24, 32, 136,
+                                candidate(81, "WRITE", symbol(ROOT)))));
+
+        assertFalse(InSessionReadResolver.unresolved(resolved));
+        assertEquals(ROOT, resolved.getAsJsonObject().get("_exp")
+                .getAsString());
+    }
+
+    /**
+     * An RPC_ATTACH boundary resolves only through its own handoff variable.
+     *
+     * <p>There is no reading of its inner expression: that would inline one
+     * producer path into the consumer's formula, which is exactly what made
+     * a consumer flip need a producer replay.  A row that mints no variable
+     * is refused, and the refusal names what is missing.</p>
+     */
+    @Test
+    public void anRpcAttachBoundaryWithoutAMintIsRefusedNotInlined() {
+        JsonObject producer = row(versions("INSTANCE_FIELD", 24, 32,
+                version(81, "WRITE", symbol(ROOT))));
+        JsonObject consumer = row(versions("INSTANCE_FIELD", 91, 32,
+                version(195, "INITIAL", constant(0))));
+        JsonObject bare = new JsonObject();
+        bare.addProperty("attachEventId", 193);
+        JsonArray events = new JsonArray();
+        events.add(bare);
+        consumer.add("vmHandoffEvents", events);
+
+        JsonElement resolved = InSessionReadResolver.of(
+                Arrays.asList(producer, consumer)).resolve(
+                boundary("RPC_ATTACH", 193,
+                        read("INSTANCE_FIELD", 24, 32, 192,
+                                candidate(81, "WRITE", symbol(ROOT)))));
+
+        assertTrue("an attach must not inline the producer's term",
+                InSessionReadResolver.unresolved(resolved));
+        String reason = resolved.getAsJsonObject()
+                .get(InSessionReadResolver.UNRESOLVED_REASON).getAsString();
+        assertTrue(reason,
+                reason.contains(InSessionReadResolver.HANDOFF_SYMBOL));
+    }
+
     private static JsonObject boundary(String kind, long event,
                                        JsonObject inner) {
         JsonObject node = new JsonObject();
