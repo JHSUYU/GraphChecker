@@ -31,6 +31,7 @@ import edu.uva.liftlab.graphchecker.contract.FieldPathSpec.DeclaredField;
 import edu.uva.liftlab.graphchecker.contract.InputActionCatalog;
 import edu.uva.liftlab.graphchecker.contract.JavaPrimitiveBoxing;
 import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
+import edu.uva.liftlab.graphchecker.contract.HandoffPhaseContract;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceId;
 
@@ -2354,21 +2355,119 @@ public final class ConcolicRegionRuntime {
                     "custom VM returned no propagated destination expression"));
             return;
         }
-        acceptVmHandoffExpression(active, site, exportEvent, attachEvent,
-                expression, producerTaskId, producerOccurrenceId);
+        mintHandoffVariable(active, site, exportEvent, attachEvent,
+                expression, producerTaskId, producerOccurrenceId, owner,
+                declaringClass, fieldName, descriptor);
     }
 
-    /** Commits one fully validated receiver-side handoff to the active case. */
-    private static void acceptVmHandoffExpression(
+    /**
+     * Mints the handoff variable v_H on the element this attach landed on.
+     *
+     * <p>The producer's expression {@code e_p} has just been attached and is
+     * in {@code expression}; the element's shadow now becomes a fresh
+     * variable instead, so the consumer's formula has a free variable at the
+     * boundary rather than the producer's whole expression inlined into it.
+     * That is what lets the two sides be explored independently and joined
+     * offline at H: {@code e_p} travels on the row as one member of H's
+     * family, never as a substitution.</p>
+     *
+     * <p>One variable per handoff occurrence per replay. A loop attaching the
+     * same element on each turn gets one per turn, because k is part of H.
+     * The mint is the configured-source mint -- same broker call, same model
+     * answering, same "a mint the VM did not accept publishes no row" rule --
+     * under a label that says handoff so nothing downstream mistakes it for a
+     * configured source.</p>
+     */
+    private static void mintHandoffVariable(
             ActiveRegion active, CommunicationHandoffSpec site,
-            long exportEvent, long attachEvent, JsonElement expression,
-            String producerTaskId, String producerOccurrenceId) {
-        active.vmHandoffEvents.add(VmHandoffEvidence.event(site.portId(),
-                exportEvent, attachEvent, expression, producerTaskId,
-                producerOccurrenceId));
-        // A VM-attached expression is an exact selected symbolic input just as
-        // much as one created by a local symbolize hook.
-        ensurePathRecordingStarted(active);
+            long exportEvent, long attachEvent, JsonElement producerExpression,
+            String producerTaskId, String producerOccurrenceId,
+            Object owner, String declaringClass, String fieldName,
+            String descriptor) {
+        String portId = safe(site.portId());
+        Field element = declaredInstanceField(owner, declaringClass,
+                fieldName, descriptor);
+        if (element == null || !element.getType().isPrimitive()) {
+            // A handoff variable is a scalar at one element.  An element the
+            // VM cannot mint on has no v_H, and a row without one names no
+            // occurrence two replays could be joined at, so it is a named
+            // gap rather than a row admission would refuse anyway.
+            recordHandoffGap(RpcExpressionHandoff.gap(
+                    RpcExpressionHandoff.STAGE_ATTACH,
+                    RpcExpressionHandoff.MISSING_METADATA, 0L,
+                    "handoff element is not an exact primitive: " + portId));
+            return;
+        }
+        String elementPath = exactFieldSignature(element);
+        String phaseId;
+        try {
+            phaseId = HandoffPhaseContract.phaseId(portId,
+                    active.activation.address.render(),
+                    active.nextHandoffAttach(portId + "\n" + elementPath),
+                    elementPath);
+        } catch (IllegalArgumentException unaddressed) {
+            recordHandoffGap(RpcExpressionHandoff.gap(
+                    RpcExpressionHandoff.STAGE_ATTACH,
+                    RpcExpressionHandoff.MISSING_METADATA, 0L,
+                    "handoff names no occurrence: "
+                            + unaddressed.getMessage()));
+            return;
+        }
+        try {
+            ConcolicVmBroker api = engine();
+            String recordedValue = recordedScalar(element.get(owner));
+            // Answering is the configured source's, by construction: a
+            // handoff assignment IS a configured-source assignment whose
+            // phase id is this one, so the solver emits one row shape and
+            // the runtime runs one mechanism.
+            ModelAssignment assignment = active.configuredSourceAssignment(
+                    phaseId, portId, elementPath, owner);
+            if (assignment != null
+                    && !writeModeledField(owner, elementPath, assignment)) {
+                throw new IllegalStateException(
+                        "handoff model could not be written");
+            }
+            api.symbolizeExactField(owner, elementPath,
+                    HandoffPhaseContract.engineLabelForPhase(phaseId,
+                            portId));
+            ensurePathRecordingStarted(active);
+            JsonObject minted = exactSymbolOf(engineExpression(
+                    api.fieldExpression(owner, declaringClass, fieldName,
+                            descriptor, element.get(owner))));
+            if (minted == null) {
+                recordHandoffGap(RpcExpressionHandoff.gap(
+                        RpcExpressionHandoff.STAGE_ATTACH,
+                        RpcExpressionHandoff.MALFORMED_RESULT, 0L,
+                        "handoff mint returned no exact variable at "
+                                + portId));
+                return;
+            }
+            if (assignment != null) active.recordModelAssignment(assignment);
+            active.vmHandoffEvents.add(VmHandoffEvidence.event(portId,
+                    exportEvent, attachEvent, producerExpression,
+                    producerTaskId, producerOccurrenceId, phaseId,
+                    optionalString(minted, "_exp"),
+                    recordedValue, optionalString(minted, "_java_type"),
+                    assignment == null ? "" : safe(assignment.value)));
+        } catch (Throwable failure) {
+            recordHandoffGap(RpcExpressionHandoff.gap(
+                    RpcExpressionHandoff.STAGE_ATTACH,
+                    RpcExpressionHandoff.INVOCATION_FAILED, 0L,
+                    "handoff mint failed at " + portId + ": "
+                            + rootCause(failure)));
+        }
+    }
+
+    /** The one exact VM root of a read-back, or null when it is not one. */
+    private static JsonObject exactSymbolOf(JsonElement expression) {
+        if (expression == null || !expression.isJsonObject()) return null;
+        JsonObject root = expression.getAsJsonObject();
+        if (!"SymbolExpression".equals(optionalString(root, "_type"))
+                || optionalString(root, "_exp").isEmpty()
+                || optionalString(root, "_java_type").isEmpty()) {
+            return null;
+        }
+        return root;
     }
 
     private static boolean addressesConsumer(List<String> consumers,
@@ -5567,6 +5666,9 @@ public final class ConcolicRegionRuntime {
          * inside.
          */
         private final Set<String> observedSourceKeys = new LinkedHashSet<>();
+        /** element key -> attaches of it so far in this activation. */
+        private final Map<String, Integer> handoffAttachOrdinals =
+                new LinkedHashMap<>();
         /**
          * Every stable source this occurrence can be attributed to by the
          * application's own registration.
@@ -5826,6 +5928,14 @@ public final class ConcolicRegionRuntime {
                         + cut.backedgeId + ':' + cut.reason);
             }
             return cut;
+        }
+
+        /** k for the next attach of one element in this activation. */
+        private int nextHandoffAttach(String elementKey) {
+            Integer previous = handoffAttachOrdinals.get(elementKey);
+            int ordinal = previous == null ? 1 : previous + 1;
+            handoffAttachOrdinals.put(elementKey, ordinal);
+            return ordinal;
         }
 
         private int nextBranchOccurrence(String siteId) {
