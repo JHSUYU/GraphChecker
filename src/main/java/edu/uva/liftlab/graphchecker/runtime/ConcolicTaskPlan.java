@@ -1259,7 +1259,6 @@ final class ConcolicTaskPlan {
         /** Stable identity shared by every task in one linked replay. */
         final String replayGroupId;
         final String linkedReplayRole;
-        final String familySnapshotDigest;
         final String topologyEpoch;
         final BranchReplayContract.RuntimeSchedule replayContract;
         /** The declared target branch event of a target-reach task. */
@@ -1393,8 +1392,6 @@ final class ConcolicTaskPlan {
                     "linkedReplayGroupId");
             this.linkedReplayRole = optionalString(task.json(),
                     "linkedReplayRole");
-            this.familySnapshotDigest = optionalString(task.json(),
-                    "familySnapshotDigest");
             this.topologyEpoch = optionalString(task.json(), "topologyEpoch");
             this.edgeBindings = task.edgeBindings();
             indexPlannedReceiverObjectIds(task.inputActions().all());

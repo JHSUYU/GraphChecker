@@ -2443,6 +2443,44 @@ public final class ConcolicRegionRuntime {
         return planned;
     }
 
+    /**
+     * Whether this decision is the declared target event of the addressed
+     * occurrence.
+     *
+     * <p>The site the plan named, at the activation of it the plan
+     * addressed, decided.  Nothing else: not whether the predicate there was
+     * symbolic, not whether this activation followed a replay prefix, not
+     * what the outcome was.  An anchor is the fatal predicate when the
+     * branch has one and the concrete outcome when it has not, and which of
+     * the two it is lives in the branch row beside the reach, where the
+     * composer reads it to decide a propagation cut.</p>
+     *
+     * <p>It was gated on a solver witness.  On hdfs-17960 the target branch
+     * compares two concrete ints -- {@code i != sm.getNumSnapshots()},
+     * reached by control dependence because the flip skips a decrement -- so
+     * the same activation recorded the decision and was then named by
+     * {@code nameUnreachedTargetBranch} as never having decided it.  Those
+     * two statements cannot both be true of one activation, and the second
+     * one is the one that was wrong.</p>
+     *
+     * @param decided             whether the decision was recorded at all,
+     *                            which is false only where the VM emitted no
+     *                            branch event and no row exists to state a
+     *                            reach beside
+     * @param permutedOccurrence  whether a bounded loop ran the planned
+     *                            target occurrence at another one, which the
+     *                            replay contract addressed by value
+     */
+    static boolean statesTargetReach(
+            boolean decided, boolean permutedOccurrence,
+            String targetBranchSite, int targetBranchOccurrence,
+            String branchSite, int occurrence) {
+        return decided && !safe(targetBranchSite).isEmpty()
+                && safe(targetBranchSite).equals(safe(branchSite))
+                && (permutedOccurrence
+                || targetBranchOccurrence == occurrence);
+    }
+
     /** Communication-addressed roots ignore an unrelated local address. */
     static boolean rootInvocationAddressMatches(
             OccurrenceAddress planned, OccurrenceAddress observed,
@@ -2888,13 +2926,25 @@ public final class ConcolicRegionRuntime {
             // occurrence and symbolic support which matched that source.
             boolean permuted = decision.addressesPermutedTargetOccurrence()
                     && active.activation.replayContract != null;
-            if (recorded.solverWitness
-                    && !active.activation.targetBranchSite.isEmpty()
-                    && active.activation.targetBranchSite.equals(branchSite)
-                    && (permuted || active.activation.targetBranchOccurrence
-                    == prepared.occurrence)) {
+            if (statesTargetReach(recorded.decided, permuted,
+                    active.activation.targetBranchSite,
+                    active.activation.targetBranchOccurrence,
+                    branchSite, prepared.occurrence)) {
                 // Reaching the target is the site having executed, and
-                // nothing else.  The replay contract decides whether this
+                // nothing else -- including whether the predicate there was
+                // symbolic.  It was gated on a solver witness, so a target
+                // branch that compares two concrete values published no
+                // reach at all: on hdfs-17960 the fatal branch is
+                // "i != sm.getNumSnapshots()" over two concrete ints, which
+                // the root reaches by control dependence (the flip skips a
+                // decrement), and the same activation then recorded the
+                // decision AND was named as never having decided it.  The
+                // anchor evidence is the fatal predicate when there is one
+                // and the concrete outcome when there is not; which of the
+                // two it is belongs in the branch row beside it, where the
+                // composer reads it to decide a propagation cut.
+                //
+                // The replay contract decides whether this
                 // activation followed the prefix it was asked to follow --
                 // a different question, and one whose answer is "no" at the
                 // target on every flip replay whose source branch is
@@ -3013,25 +3063,35 @@ public final class ConcolicRegionRuntime {
         }
         active.lastPathConditionSize = rawPathConditionSize;
         active.branchMappings.add(mapping);
-        return new RecordedBranch(vmAttestation.valid && conditionIndex >= 0,
-                symbolicSupportDigest);
+        // A row was published for this decision: the site executed and the
+        // outcome beside it is this execution's own.  Whether it carried a
+        // path condition is the difference between a symbolic witness and a
+        // concreteObservation in that row, and the composer reads it there.
+        return new RecordedBranch(true, symbolicSupportDigest);
     }
 
     /**
-     * Result of one exact capture, used by replay matching: whether the
-     * decision was attested well enough to address a target reach, and the
-     * symbolic support a binary branch matched its replay prefix on.  A
-     * multiway successor is its own authority and carries no support.
+     * Result of one exact capture: whether this decision was recorded at
+     * all, and the symbolic support a binary branch matched its replay
+     * prefix on.  A multiway successor is its own authority and carries no
+     * support.
+     *
+     * <p>{@code decided} is false only where the VM emitted no branch event
+     * to capture, and there is no row beside which a target reach could be
+     * stated.  It used to mean "attested well enough to address a target
+     * reach", which read the presence of a path condition as permission to
+     * publish the anchor -- so an activation that decided the target site
+     * concretely published a branch row and no reach.</p>
      */
     private static final class RecordedBranch {
         private static final RecordedBranch NONE =
                 new RecordedBranch(false, "");
-        private final boolean solverWitness;
+        private final boolean decided;
         private final String symbolicSupportDigest;
 
-        private RecordedBranch(boolean solverWitness,
+        private RecordedBranch(boolean decided,
                                String symbolicSupportDigest) {
-            this.solverWitness = solverWitness;
+            this.decided = decided;
             this.symbolicSupportDigest = safe(symbolicSupportDigest);
         }
     }

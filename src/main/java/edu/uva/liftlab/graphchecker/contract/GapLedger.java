@@ -118,14 +118,25 @@ public final class GapLedger {
         public final Scope scope;
         /** Why the class is what it is; required for DIAGNOSTIC. */
         public final String reason;
+        /**
+         * Why this code is DIAGNOSTIC on a flip-wave row, or {@code ""}.
+         *
+         * <p>A qualifier, not a scope: it answers a different question from
+         * {@link Scope#KEPT_SLICE} and the two compose.  It applies only to
+         * a row whose subject is a linked-replay task, and only the campaign
+         * fold can see that, so every reader that cannot keeps answering
+         * with {@link #gapClass}.</p>
+         */
+        public final String flipWaveReason;
 
         Entry(String code, String source, GapClass gapClass, Scope scope,
-              String reason) {
+              String reason, String flipWaveReason) {
             this.code = code;
             this.source = source;
             this.gapClass = gapClass;
             this.scope = scope;
             this.reason = reason;
+            this.flipWaveReason = flipWaveReason;
         }
 
         JsonObject toJson() {
@@ -135,6 +146,11 @@ public final class GapLedger {
             row.addProperty("class", gapClass.name());
             row.addProperty("scope", scope.name());
             row.addProperty("reason", reason);
+            if (!flipWaveReason.isEmpty()) {
+                row.addProperty("flipWaveClass",
+                        GapClass.DIAGNOSTIC.name());
+                row.addProperty("flipWaveReason", flipWaveReason);
+            }
             return row;
         }
     }
@@ -143,14 +159,47 @@ public final class GapLedger {
 
     private static void blocking(String source, String code, String reason) {
         register(new Entry(code, source, GapClass.BLOCKING, Scope.ALWAYS,
-                reason));
+                reason, ""));
     }
 
     private static void diagnostic(String source, String code,
                                    String reason) {
         requireReason(code, reason);
         register(new Entry(code, source, GapClass.DIAGNOSTIC, Scope.ALWAYS,
-                reason));
+                reason, ""));
+    }
+
+    /**
+     * Amends a registered code: DIAGNOSTIC when the row is a flip-wave row.
+     *
+     * <p>The seed wave and the flip wave ask different questions with the
+     * same words.  A seed task that no run answered says the corpus is
+     * missing a link of the chain -- the region the plan named was not
+     * replayed at all, and nothing downstream can state anything about it.
+     * A flip task addresses an occurrence on a <em>hypothetical</em>
+     * execution: the flip rewrites a decision, and an execution that takes
+     * the other branch legitimately does not activate every occurrence the
+     * recorded one did.  That row says the path contributed no case, which
+     * is a statement about the path set, and the one conclusion an
+     * incomplete path set can falsify -- a closed UNSAT -- is already
+     * withheld by name through UNSAT_CLOSURE_INCOMPLETE.  The witness's own
+     * chain runs through the seed wave and the flip cases that did publish,
+     * and contains no case from a path that produced none.</p>
+     *
+     * <p>Fail-closed in the same sense as the slice: the campaign fold
+     * lowers the class only for a subject it can name as a linked-replay
+     * task of a known path, and answers with the entry's own class for
+     * every subject it cannot.</p>
+     */
+    private static void flipWaveDiagnostic(String code, String reason) {
+        requireReason(code, reason);
+        Entry entry = REGISTRY.get(code);
+        if (entry == null) {
+            throw new IllegalStateException("a flip-wave qualifier names a"
+                    + " code nothing registered: " + code);
+        }
+        REGISTRY.put(code, new Entry(entry.code, entry.source,
+                entry.gapClass, entry.scope, entry.reason, reason));
     }
 
     /**
@@ -163,7 +212,7 @@ public final class GapLedger {
                                     String reason) {
         requireReason(code, reason);
         register(new Entry(code, source, GapClass.BLOCKING, Scope.KEPT_SLICE,
-                reason));
+                reason, ""));
     }
 
     private static void requireReason(String code, String reason) {
@@ -565,7 +614,7 @@ public final class GapLedger {
                         + " addresses, so an unaddressed one would have to be"
                         + " defaulted to the first or to any, and neither is"
                         + " something the recording said");
-        blocking(importer, "LOOP_OCCURRENCE_BEYOND_BOUND",
+        blocking(importer, "REGION_LOOP_OCCURRENCE_BEYOND_BOUND",
                 "a task addresses an activation of a bounded loop past the"
                         + " instrumentation bound that records it, so the"
                         + " activation it names is one no replay can reach");
@@ -577,7 +626,13 @@ public final class GapLedger {
                         + " none did the publication contract raises"
                         + " PUBLICATION_TASK_ANSWERED_BY_NO_RUN, which"
                         + " blocks");
-        onKeptSlice(importer, "ROOT_NEVER_EXECUTED",
+        // Spelled as the importer publishes it.  A region skip reaches the
+        // ledger as "REGION_" + the runtime's skipKind
+        // (ConcolicSummaryImporter.skippedEventCode), and an entry under the
+        // bare skipKind matches no row at all: it left this code taking the
+        // blocking default on lane VM9 and lane VM10, with the KEPT_SLICE
+        // scope written here deciding nothing.
+        onKeptSlice(importer, "REGION_ROOT_NEVER_EXECUTED",
                 "the planned root did not execute in this replay: no"
                         + " compatible activation was offered at all, which"
                         + " on the kept slice means the region the chain"
@@ -743,6 +798,50 @@ public final class GapLedger {
                         + " never minted as ports");
 
         // ------------------------------------------------------------------
+        // The flip wave.  Three admission codes above are written for the
+        // seed wave, where they mean the corpus is missing a link: the plan
+        // named a region of the recorded execution and the replay of that
+        // execution did not publish it.  The same three arrive again from
+        // the linked replays, and there they are saying something else --
+        // the flipped execution did not have that occurrence.  Lane VM10 is
+        // all three shapes at once, and every one of them is the flip
+        // working:
+        //
+        //   * REGION_REPLAY_PREFIX_UNMATCHED "observed 2 of 3, still
+        //     waiting for BlockTokenSecretManager.removeExpiredKeys()#u15#1
+        //     (the flipped source decision)" -- the flipped decision itself
+        //     never executed, so the path the query asked for was not
+        //     walked;
+        //   * REGION_ROOT_NEVER_EXECUTED on a COMPANION of that group --
+        //     the downstream region (BPOfferService.processCommandFromActive
+        //     and the addKeys turns behind it) is reached only when the
+        //     rotation the flip removed happens;
+        //   * PUBLICATION_TASK_ANSWERED_BY_NO_RUN behind a
+        //     REGION_OCCURRENCE_ANCHOR_UNMATCHED naming the other DataNode
+        //     -- in the flipped execution only one node's addKeys ran, and
+        //     another node's activation is a different occurrence, which
+        //     matching must never accept.
+        //
+        // None of them is an admission defect, and none of them is a link of
+        // the chain a witness walks.  They make the path set unclosed, which
+        // ClaimPolicy already answers by withholding a closed UNSAT.
+        for (String code : new String[]{
+                "REGION_ROOT_NEVER_EXECUTED",
+                "REGION_REPLAY_PREFIX_UNMATCHED",
+                "PUBLICATION_TASK_ANSWERED_BY_NO_RUN"}) {
+            flipWaveDiagnostic(code,
+                    "a flip replay addresses an occurrence of a hypothetical"
+                            + " execution: the flipped decision changes what"
+                            + " runs, so a path that never reached the"
+                            + " occurrence contributed no case rather than"
+                            + " losing one -- which leaves the path set"
+                            + " unclosed, and the one conclusion an unclosed"
+                            + " path set can falsify, a closed UNSAT, is"
+                            + " withheld by name through"
+                            + " UNSAT_CLOSURE_INCOMPLETE");
+        }
+
+        // ------------------------------------------------------------------
         // CAMPAIGN.
         // ------------------------------------------------------------------
         blocking("CLASSIFY/CAMPAIGN", "ITERATION_BOUND_REACHED",
@@ -782,6 +881,24 @@ public final class GapLedger {
     public static boolean sliceConditional(String code) {
         Entry entry = code == null ? null : REGISTRY.get(code.trim());
         return entry != null && entry.scope == Scope.KEPT_SLICE;
+    }
+
+    /**
+     * Whether {@code code} is DIAGNOSTIC when the row is a flip-wave row.
+     *
+     * <p>Like the slice, this is a question only the campaign fold can
+     * answer, so {@link #classOf(String)} and {@link #blocking(String)} stay
+     * fail-closed and never consult it.</p>
+     */
+    public static boolean flipWaveDiagnostic(String code) {
+        Entry entry = code == null ? null : REGISTRY.get(code.trim());
+        return entry != null && !entry.flipWaveReason.isEmpty();
+    }
+
+    /** Why {@code code} is DIAGNOSTIC on a flip-wave row, or {@code ""}. */
+    public static String flipWaveReason(String code) {
+        Entry entry = code == null ? null : REGISTRY.get(code.trim());
+        return entry == null ? "" : entry.flipWaveReason;
     }
 
     /** Whether {@code code} withholds a claim. */
@@ -839,6 +956,17 @@ public final class GapLedger {
             conditional.add(entry.code);
         }
         ledger.add("sliceConditional", conditional);
+        // Also read by run_engine.sh, which is the reader that can name a
+        // subject as a linked-replay task of a known path.
+        JsonArray flipWave = new JsonArray();
+        JsonObject flipWaveReasons = new JsonObject();
+        for (Entry entry : REGISTRY.values()) {
+            if (entry.flipWaveReason.isEmpty()) continue;
+            flipWave.add(entry.code);
+            flipWaveReasons.addProperty(entry.code, entry.flipWaveReason);
+        }
+        ledger.add("flipWaveDiagnostic", flipWave);
+        ledger.add("flipWaveReasonByCode", flipWaveReasons);
         JsonObject reasons = new JsonObject();
         for (Entry entry : REGISTRY.values()) {
             reasons.addProperty(entry.code, entry.reason);
