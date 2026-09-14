@@ -70,6 +70,86 @@ public class ConcolicConstraintSolverMaterializationTest {
                 .get("inputSymbol").getAsString());
     }
 
+    /**
+     * A model that assigns a value which arrived on a wire is materializable.
+     *
+     * <p>Such a value is minted at an attach, not at a configured source and
+     * not at a task input action, so it matched neither resolver and every
+     * model that assigned one was refused as
+     * REPLAY_CONTROL_FRONTIER_MODEL_IS_NOT_MATERIALIZABLE -- which is what
+     * left bug3's one target obligation unflipped. The obligation says which
+     * handoff occurrence answers it, and a handoff assignment is a
+     * configured-source assignment whose phase id is that occurrence's.</p>
+     */
+    @Test
+    public void materializesAnAssignmentToAValueThatArrivedOnAWire()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+
+        String raw = "M_I_field_HOFF.abcdef0123456789"
+                + "_edu/uva/liftlab/graphchecker/runtime/"
+                + "ConcolicRegionRuntime$HandoffLeafCarrier";
+        String phase = "HANDOFF_PHASE.1a2b3c4d-0000-0000-0000-000000000000";
+        JsonObject target = binary(symbol(raw), ">", constant(10));
+        JsonObject event = new JsonObject();
+        event.addProperty("eventId", 1L);
+        event.addProperty("contextId", 1L);
+        BranchWitness source = BranchWitness.vmPcImmutable("TEST#u1",
+                "<test.Wire: void run()>", 1, 1, false,
+                BranchPredicateAlgebra.complement(target), 0, event);
+
+        JsonObject query = new JsonObject();
+        query.addProperty("schemaVersion", 3);
+        query.addProperty("kind", "REGION_PATH_FLIP");
+        query.addProperty("queryKey", CanonicalJson.sha256("wire-query"));
+        query.addProperty("regionId", "REGION.wire");
+        query.addProperty("sourceActivationOccurrenceId",
+                "test/node#epoch0/region/REGION.wire#1#a1");
+        query.add("replayContract",
+                BranchReplayContract.atSource(source).toJson());
+        JsonObject context = new JsonObject();
+        context.addProperty("schemaVersion", SolverPathContext.SCHEMA_VERSION);
+        context.addProperty("kind", SolverPathContext.KIND);
+        context.addProperty("authority", SolverPathContext.AUTHORITY);
+        context.add("constraints", new JsonArray());
+        query.add("solverPathContext", context);
+        query.add("consumerAnchorCaseDependencies", new JsonArray());
+
+        JsonObject activation = new JsonObject();
+        activation.add("inputActions", new JsonArray());
+
+        ConcolicConstraintSolver.Result refused =
+                ConcolicConstraintSolver.solve(query,
+                        Collections.singletonList(activation), activation,
+                        Paths.get("z3"), 10_000L);
+        assertEquals("with no handoff row the model is not materializable",
+                "MATERIALIZATION_GAP",
+                refused.record.get("status").getAsString());
+
+        JsonObject control = new JsonObject();
+        control.addProperty("rawSymbol", raw);
+        control.addProperty("handoffPhaseId", phase);
+        control.addProperty("javaType", "I");
+        control.addProperty("recordedValue", "7");
+        JsonArray controls = new JsonArray();
+        controls.add(control);
+        query.add(RegionPathWorklist.HANDOFF_CONTROLS, controls);
+
+        ConcolicConstraintSolver.Result result =
+                ConcolicConstraintSolver.solve(query,
+                        Collections.singletonList(activation), activation,
+                        Paths.get("z3"), 10_000L);
+        assertEquals(result.record.toString(), "SAT_MODEL_READY",
+                result.record.get("status").getAsString());
+        assertEquals(1, result.modelAssignments.size());
+        JsonObject assignment =
+                result.modelAssignments.get(0).getAsJsonObject();
+        assertEquals("SOURCE_PHASE:" + phase,
+                assignment.get("inputSymbol").getAsString());
+        assertEquals(phase,
+                assignment.get("configuredSourcePhaseId").getAsString());
+    }
+
     private static JsonObject query(BranchWitness source) {
         JsonObject query = new JsonObject();
         query.addProperty("schemaVersion", 3);

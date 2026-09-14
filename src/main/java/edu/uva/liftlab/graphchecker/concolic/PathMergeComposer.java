@@ -419,8 +419,15 @@ public final class PathMergeComposer {
             pathRows.add(row);
             reachLedger.add(reachRow(path, anchor, pathOrdinal, selector));
             if (!optionalBool(path, "pathSetClosed", false)) {
+                // With the cause the query states.  A closure that says
+                // "not closed" and names nothing is the silence this design
+                // forbids: on bug3 the cause was one row away -- the target
+                // member's own obligation, solved and then refused because
+                // its model assigned handoff variables -- and the gate
+                // reported only that something, somewhere, was unflipped.
                 gate(gates, CLOSURE_INCOMPLETE, "path " + pathOrdinal
-                        + " left a root-dependent branch unflipped");
+                        + " left a root-dependent branch unflipped: "
+                        + closureCause(fatal));
             }
         }
 
@@ -1710,6 +1717,31 @@ public final class PathMergeComposer {
         row.addProperty("kind", kind);
         row.addProperty("detail", detail);
         gates.add(row);
+    }
+
+    /**
+     * Why the path set is not closed, as the query states it.
+     *
+     * <p>The coverage gaps the closure published travel on the query; each
+     * one names the obligation it is about and why that obligation did not
+     * close.  A query that states none says so in as many words, which is a
+     * reader's cue that the closure withheld a verdict without a reason.</p>
+     */
+    private static String closureCause(JsonObject fatal) {
+        List<String> causes = new ArrayList<>();
+        for (JsonElement element : array(fatal, "coverageGaps")) {
+            if (!element.isJsonObject()) continue;
+            JsonObject row = element.getAsJsonObject();
+            String cause = firstNonBlank(optionalString(row, "reason"),
+                    optionalString(row, "kind"));
+            String subject = optionalString(row, "subject");
+            String detail = optionalString(row, "detail");
+            causes.add(cause + (subject.isEmpty() ? "" : " on " + subject)
+                    + (detail.isEmpty() ? "" : " (" + detail + ")"));
+        }
+        return causes.isEmpty()
+                ? "the path set states no cause for withholding closure"
+                : String.join("; ", causes);
     }
 
     private static JsonObject reachRow(JsonObject path,
