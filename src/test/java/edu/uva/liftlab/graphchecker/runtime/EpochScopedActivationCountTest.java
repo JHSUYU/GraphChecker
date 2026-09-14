@@ -105,13 +105,22 @@ public class EpochScopedActivationCountTest {
                 task.invocationCounterKey(NODE + "#epoch0"));
     }
 
-    /** An unattributed activation counts exactly where it counted before. */
+    /**
+     * An activation nothing attributed counts in the unregistered source.
+     *
+     * <p>The planner's last arm, which the replay now runs too: an
+     * activation with no stamp of its own and no unique stamp among its
+     * frames belongs to {@code workload/unregistered}, and it is counted in
+     * that population rather than in the planned node's.  The replay used to
+     * count it in the plan's own key, which is how hdfs-17899 bug2's
+     * pre-registration heartbeats took target-dn's k=1.</p>
+     */
     @Test
-    public void anUnattributedActivationCountsWhereThePlanSays() {
+    public void anUnattributedActivationCountsInTheUnregisteredSource() {
         RuntimeTraceContext.resetForTests();
         ConcolicTaskPlan.RuntimeTask task = task(NODE + "#epoch1", 1);
 
-        assertEquals(NODE + "#epoch1",
+        assertEquals(RuntimeTraceContext.UNREGISTERED_SOURCE.key(),
                 ConcolicTaskPlan.countedLifecycle(task, null));
     }
 
@@ -158,7 +167,8 @@ public class EpochScopedActivationCountTest {
                         new Object[0]));
     }
 
-    /** With no registration, the thread's context answers -- and only then. */
+    /** With no registration, the thread's context answers, then the
+     *  unregistered source. */
     @Test
     public void anUnregisteredReceiverFallsBackToTheThreadsContext() {
         RuntimeTraceContext.resetForTests();
@@ -169,8 +179,9 @@ public class EpochScopedActivationCountTest {
         ConcolicTaskPlan.RuntimeTask task =
                 task("hdfs-17899/source-dn#epoch0", 1);
 
-        assertEquals("nothing registered, nothing observed: the plan's own",
-                "hdfs-17899/source-dn#epoch0",
+        assertEquals("nothing registered, nothing observed: the "
+                        + "unregistered source, as the planner counts it",
+                RuntimeTraceContext.UNREGISTERED_SOURCE.key(),
                 ConcolicTaskPlan.countedLifecycle(task, null));
         assertEquals("a registration decides over the plan's own",
                 "hdfs-17899/source-dn#epoch0",
