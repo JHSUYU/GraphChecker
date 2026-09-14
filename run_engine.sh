@@ -97,8 +97,6 @@ workflow_config_keys=(
   # task it kept still runs.  Left unstated, the telemetry reports the
   # count and judges it against no expectation at all.
   "solver_timeout_ms CAUSYNTH_SOLVER_TIMEOUT_MS krp -"
-  "reach_max_inputs CAUSYNTH_REACH_MAX_INPUTS krp -"
-  "reach_max_valuations CAUSYNTH_REACH_MAX_VALUATIONS krp -"
   # How far a witness may move a wall clock from the value that read
   # returned.  Cross-node skew is a failure mechanism the checker explores,
   # so this bounds it rather than pinning a clock to its recording.
@@ -417,8 +415,8 @@ validate_config() {
   # name -- a truncated schedule, an unbounded solve -- so a run without them
   # does not start.
   local key
-  for key in solver_timeout_ms schedule_max_jobs reach_max_inputs \
-      reach_max_valuations concolic_worker_count campaign_max_iterations \
+  for key in solver_timeout_ms schedule_max_jobs \
+      concolic_worker_count campaign_max_iterations \
       region_path_max_waves; do
     require_positive_integer "${key}"
   done
@@ -585,24 +583,6 @@ do_compose() {
     --clock-skew-ms "${clock_skew_ms}" \
     --z3 "${z3_bin}" \
     "${selection[@]}"
-}
-
-# SOLVE writes its valuations, mechanisms and ClaimPolicy decision into the
-# composition manifest it solved, under "solver".  One anchored occurrence,
-# one artifact.
-do_reach() {
-  require_file "composed SMT" "${composed_smt}"
-  require_file "composition manifest" "${composition_manifest}"
-  require_file "runtime region plan" "${runtime_region_plan}"
-  run_java_main edu.uva.liftlab.graphchecker.concolic.RootValuationSolver \
-    --smt "${composed_smt}" \
-    --manifest "${composition_manifest}" \
-    --runtime-plan "${runtime_region_plan}" \
-    --z3 "${z3_bin}" \
-    --timeout-ms "${solver_timeout_ms}" \
-    --workers "${concolic_worker_count}" \
-    --max-inputs "${reach_max_inputs}" \
-    --max-valuations "${reach_max_valuations}"
 }
 
 run_configured_workload() {
@@ -2217,25 +2197,35 @@ in ${millis}ms status=$(jq -r '.finalStatus // ""' "${composition_manifest}")"
 }
 
 
+
+# SOLVE: z3's verdict on the anchor's formula, as the composer recorded it.
+#
+# ComposeMain runs z3 per valuation while it composes -- it has the root
+# domains, the selectors and the formula in hand -- and writes the state,
+# the reachability, the valuations and the claim into the manifest under
+# `solver`.  A second solver process would re-derive what that one already
+# decided from artifacts it wrote, so this stage reads the manifest and
+# checks that the verdict is there.  The stage stays its own stage: it is
+# where a reader looks for the solver's answer, and where its wall time is
+# recorded.
 campaign_solve() {
-  local millis started ended status=0
   local report="${composition_manifest}"
   require_nonempty "candidate SMT" "${composed_smt}"
-  require_nonempty "candidate composition manifest" "${composition_manifest}"
-  started=$(date +%s%N)
-  run_capturing_status do_reach >"${campaign_final}/solve.log" 2>&1
-  ended=$(date +%s%N)
-  millis=$(( (ended - started) / 1000000 ))
-  require_nonempty "solved composition manifest" "${report}"
-  [[ "${status}" -eq 0 || "${status}" -eq 2 ]] \
-    || die "the solver stage failed with exit ${status}: ${report}"
-  printf '%s\t%s\n' "SOLVE[anchor]" "${millis}" >>"${campaign_stage_metrics}"
+  require_nonempty "candidate composition manifest" "${report}"
+  campaign_require_json "candidate composition manifest" "${report}" \
+    || campaign_fail SOLVE ComposeMain "${report}" \
+      "the composition manifest is malformed"
+  jq -e '(.solver | type) == "object" and ((.solver.state // "") != "")' \
+    "${report}" >/dev/null \
+    || campaign_fail SOLVE ComposeMain "${report}" \
+      "the composition published no solver verdict for its anchor"
   campaign_log "z3 state=$(jq -r '.solver.state' "${report}") \
-reachability=$(jq -r '.solver.reachability' "${report}") in ${millis}ms"
+reachability=$(jq -r '.solver.reachability // "UNKNOWN"' "${report}") \
+valuations=$(jq -r '(.solver.valuations // []) | length' "${report}")"
 }
 
 
-# DECIDE: the claim the solver's ClaimPolicy reached, checked and printed.
+# DECIDE: the claim the composition reached, checked and printed.
 #
 # There is one anchor and therefore one claim.  Ranking observed occurrences
 # into a campaign verdict is gone with the election: which execution of the
