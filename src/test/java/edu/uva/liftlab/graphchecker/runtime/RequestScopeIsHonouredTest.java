@@ -208,6 +208,52 @@ public class RequestScopeIsHonouredTest {
         }
     }
 
+    /**
+     * A refusal separates what the call carried from what the thread holds.
+     *
+     * <p>The carried scope IS the scope of the send; the thread's is only
+     * what answers when nothing was carried.  One combined list cannot tell
+     * "the work carried nothing" from "the work carried a node and no
+     * request", and those have different owners -- the first is the carry,
+     * the second is where the work was created.  On laneB2i the row said
+     * only "this thread carries no source requestKey requestApi", which is
+     * true of the thread and says nothing about the call.</p>
+     */
+    @Test
+    public void aRefusalSeparatesTheCallFromTheThread() throws Exception {
+        RuntimeTraceContext.resetForTests();
+        Object nnc = new Object();
+        RuntimeTraceContext.registerSource(nnc,
+                new SourceRef("EXTERNAL_APP", "SPS", SPS, 0L));
+
+        // Nothing carried at all.
+        try {
+            RuntimeTraceContext.outboundHeader(nnc, null);
+            org.junit.Assert.fail("no scope, no envelope");
+        } catch (IllegalStateException refused) {
+            String said = String.valueOf(refused.getMessage());
+            assertTrue(said, said.contains("the call carried no scope at all"));
+            assertTrue(said, said.contains("thread "
+                    + Thread.currentThread().getName()));
+            assertTrue(said, said.contains("requestKey"));
+        }
+
+        // A scope captured where the node was known and no request was open:
+        // it names the node and nothing else, and the send still refuses.
+        Object partial;
+        RuntimeTraceContext.enterRoot(nnc);
+        partial = RuntimeTraceContext.captureScope();
+        try {
+            RuntimeTraceContext.outboundHeader(nnc, partial);
+            org.junit.Assert.fail("a node is not a request");
+        } catch (IllegalStateException refused) {
+            String said = String.valueOf(refused.getMessage());
+            assertTrue(said, said.contains("a partial scope holding only"));
+            assertTrue(said, said.contains("source=" + SPS + "#epoch0"));
+            assertTrue(said, !said.contains("requestKey="));
+        }
+    }
+
     /** A thread that existed before the scope carries nothing. */
     @Test
     public void aThreadOlderThanTheScopeCarriesNothing() throws Exception {

@@ -318,13 +318,19 @@ final class RuntimeTraceContext {
             // behind that guard is never called and mints nothing.  "It
             // refused" is not a finding a reader can act on; which of the
             // three was missing is.
-            StringBuilder missing = new StringBuilder();
-            if (view.source == null) missing.append(" source");
-            if (view.requestKey.isEmpty()) missing.append(" requestKey");
-            if (view.requestApi.isEmpty()) missing.append(" requestApi");
+            //
+            // Both halves, separately: the carried scope is the scope of
+            // the send, and the thread's is only what answers when no scope
+            // was carried.  One combined list could not tell "the work
+            // carried nothing" from "the work carried a node and no
+            // request", and those have different owners -- the first is the
+            // carry, the second is where the work was created.
             throw new IllegalStateException(
                     "outbound message requires source and request flow;"
-                            + " this thread carries no" + missing);
+                            + " the call carried " + describe(carriedScope)
+                            + " and thread "
+                            + Thread.currentThread().getName()
+                            + " carries no" + missing(state.view()));
         }
         return header(view.source, view.requestKey, view.requestApi,
                 view.spanId);
@@ -409,6 +415,37 @@ final class RuntimeTraceContext {
     }
 
     /** The view this work speaks with: its carried scope when it names one. */
+    /** Which of the three a view is missing, as " a b c" or "thing". */
+    private static String missing(View view) {
+        StringBuilder absent = new StringBuilder();
+        if (view.source == null) absent.append(" source");
+        if (view.requestKey.isEmpty()) absent.append(" requestKey");
+        if (view.requestApi.isEmpty()) absent.append(" requestApi");
+        return absent.length() == 0 ? "thing" : absent.toString();
+    }
+
+    /** What a carried scope holds, for a refusal that has to be actionable. */
+    private static String describe(Object carriedScope) {
+        if (carriedScope == null) return "no scope at all";
+        if (!(carriedScope instanceof RequestScope)) {
+            return "a scope this runtime did not mint";
+        }
+        RequestScope scope = (RequestScope) carriedScope;
+        if (scope.names()) return "a complete scope";
+        StringBuilder held = new StringBuilder();
+        if (scope.source != null) {
+            held.append(" source=").append(scope.source.key());
+        }
+        if (!scope.requestKey.isEmpty()) {
+            held.append(" requestKey=").append(scope.requestKey);
+        }
+        if (!scope.requestApi.isEmpty()) {
+            held.append(" requestApi=").append(scope.requestApi);
+        }
+        return held.length() == 0 ? "an empty scope"
+                : "a partial scope holding only" + held;
+    }
+
     private static View scoped(View view, Object carriedScope) {
         RequestScope scope = carriedScope instanceof RequestScope
                 ? (RequestScope) carriedScope : null;
