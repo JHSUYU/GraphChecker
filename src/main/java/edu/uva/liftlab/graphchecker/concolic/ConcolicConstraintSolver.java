@@ -1542,8 +1542,8 @@ public final class ConcolicConstraintSolver {
             // own prefix and needs no catalog, because the mint that owns
             // it is the attach the row already names.
             boolean registered = names != null
-                    && (symbol.startsWith(
-                            PathMergeComposer.HANDOFF_SYMBOL_PREFIX)
+                    && (symbol.contains(
+                            PathMergeComposer.HANDOFF_SYMBOL_MARK)
                     || configuredSourceResolution(symbol,
                     configuredSourcePhaseCatalogs, names.sort) != null
                     || registeredSymbolicAction(symbol, actions, names.sort)

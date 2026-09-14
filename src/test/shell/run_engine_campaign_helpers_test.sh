@@ -284,21 +284,21 @@ $(jq -c '[.gaps[].code]' "${campaign_final}/gaps.json")"
 # dependence never selected is not a chain element.  With no schedule index
 # in the fixture the slice is unknown, and an unknown slice blocks.
 #
-# The fixture used to name ROOT_NEVER_EXECUTED.  That code was
+# The fixture used to name REGION_ROOT_NEVER_EXECUTED.  That code was
 # retired with its raiser and its ledger entry ("Admit an activation by its
 # address, and nothing else", 0429b03f7) and the fixture was not, so the
 # case had been asserting the slice reading of a code the ledger no longer
 # classes slice-conditionally -- it read as blocking-by-default and the
-# assertion failed on the staging tip.  ROOT_NEVER_EXECUTED is registered
-# onKeptSlice (GapLedger:580) and states the same thing about a task.
+# assertion failed on the staging tip.  REGION_ROOT_NEVER_EXECUTED is registered
+# onKeptSlice (GapLedger:620) and states the same thing about a task.
 emit_fixture
-printf '%s\n' '{"code":"ROOT_NEVER_EXECUTED","taskId":"TASK.REPLAY.kept","detail":"anchor never observed"}' \
+printf '%s\n' '{"code":"REGION_ROOT_NEVER_EXECUTED","taskId":"TASK.REPLAY.kept","detail":"anchor never observed"}' \
   >"${emit_iteration}/import_diagnostics.jsonl"
 run_emit
 [[ "${emit_status}" -eq 3 ]] \
   || fail "an unknown replay slice did not block a region code \
 (exit ${emit_status}): $(<"${emit_root}/emit.log")"
-jq -e '[.gaps[] | select(.code == "ROOT_NEVER_EXECUTED")
+jq -e '[.gaps[] | select(.code == "REGION_ROOT_NEVER_EXECUTED")
         | .sliceVerdict] == ["SLICE_NOT_APPLIED"]' \
   "${campaign_final}/gaps.json" >/dev/null \
   || fail "the unknown slice was not named on the row: \
@@ -308,8 +308,8 @@ $(jq -c '.gaps' "${campaign_final}/gaps.json")"
 # blocks on the kept task and is diagnostic on the pruned one.
 emit_fixture
 printf '%s\n' \
-  '{"code":"ROOT_NEVER_EXECUTED","taskId":"TASK.REPLAY.kept","detail":"anchor never observed"}' \
-  '{"code":"ROOT_NEVER_EXECUTED","taskId":"TASK.REPLAY.pruned","detail":"anchor never observed"}' \
+  '{"code":"REGION_ROOT_NEVER_EXECUTED","taskId":"TASK.REPLAY.kept","detail":"anchor never observed"}' \
+  '{"code":"REGION_ROOT_NEVER_EXECUTED","taskId":"TASK.REPLAY.pruned","detail":"anchor never observed"}' \
   >"${emit_iteration}/import_diagnostics.jsonl"
 jq -n '{schemaVersion: 1, kind: "RUNTIME_REGION_PATH_SCHEDULE_INDEX",
   replayTaskSlice: {replayTaskSliceApplied: true, keptOccurrenceCount: 1},

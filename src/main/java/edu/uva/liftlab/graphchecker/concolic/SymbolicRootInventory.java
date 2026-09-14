@@ -3,6 +3,8 @@ package edu.uva.liftlab.graphchecker.concolic;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
+import edu.uva.liftlab.graphchecker.contract.HandoffPhaseContract;
+
 import java.util.Collection;
 import java.util.Collections;
 import java.util.LinkedHashSet;
@@ -55,7 +57,8 @@ public final class SymbolicRootInventory {
      * the attach -- so a decision over one is root-dependent and worth
      * flipping, exactly like a decision over a configured source.</p>
      */
-    private static final String HANDOFF_MARK = "M_H_";
+    private static final String HANDOFF_MARK =
+            HandoffPhaseContract.LABEL_PREFIX;
     private static final SymbolicRootInventory EMPTY =
             new SymbolicRootInventory(Collections.<String>emptySet(),
                     "NO_DECLARED_ROOT");
@@ -181,7 +184,7 @@ public final class SymbolicRootInventory {
             // A configured source mints "SRC.<sha>"-labelled leaves.  One that
             // reached a predicate without its evidence row reaching this wave
             // is still the campaign's root, not a recorded placeholder.
-            if (leaf.startsWith(HANDOFF_MARK)) return true;
+            if (leaf.contains(HANDOFF_MARK)) return true;
             if (leaf.contains(CONFIGURED_SOURCE_MARK)) return true;
         }
         return false;

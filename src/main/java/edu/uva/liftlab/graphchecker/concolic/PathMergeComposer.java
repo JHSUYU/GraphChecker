@@ -1,6 +1,7 @@
 package edu.uva.liftlab.graphchecker.concolic;
 
 import edu.uva.liftlab.graphchecker.contract.ComposedManifest;
+import edu.uva.liftlab.graphchecker.contract.HandoffPhaseContract;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceId;
 import edu.uva.liftlab.graphchecker.contract.RegionInstancePlan;
 import edu.uva.liftlab.graphchecker.contract.RuntimePlanArtifact;
@@ -74,13 +75,15 @@ public final class PathMergeComposer {
     public static final String MANIFEST_FIELD = "pathMerge";
 
     /**
-     * How a minted handoff symbol spells itself.
+     * The engine label every handoff variable carries.
      *
-     * <p>One variable per handoff occurrence, minted by the runtime with the
-     * handoff phase id as its prefix, exactly as a configured source mints
-     * one per source phase.</p>
+     * <p>One variable per handoff occurrence, minted by the runtime the way
+     * a configured source mints one per source phase -- {@code SRC.} there,
+     * {@code HOFF.} here, so the two are told apart by the label and not by
+     * a second table.</p>
      */
-    static final String HANDOFF_SYMBOL_PREFIX = "M_H_";
+    static final String HANDOFF_SYMBOL_MARK =
+            HandoffPhaseContract.LABEL_PREFIX;
 
     /** No replay executed the anchored site. */
     public static final String TARGET_NOT_REACHED = "TARGET_NOT_REACHED";
@@ -665,7 +668,7 @@ public final class PathMergeComposer {
         JsonObject node = expression.getAsJsonObject();
         if ("SymbolExpression".equals(optionalString(node, "_type"))) {
             String raw = optionalString(node, "_exp");
-            if (raw.startsWith(HANDOFF_SYMBOL_PREFIX)) into.add(raw);
+            if (raw.contains(HANDOFF_SYMBOL_MARK)) into.add(raw);
         }
         for (Map.Entry<String, JsonElement> field : node.entrySet()) {
             collectHandoffSymbols(field.getValue(), into);

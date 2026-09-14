@@ -2156,12 +2156,29 @@ campaign_worker_task() {
     --output-dir "${worker}" \
     --z3 "${z3_bin}" \
     --solver-timeout-ms "${solver_timeout_ms}"
+  # One obligation that could not be materialized, solved or planned is
+  # that obligation's gap row, never the wave's death.  It used to kill the
+  # worker, and the wave with it: on laneVM11 one linked-plan exception
+  # discarded ten finished flip replays and every verdict they carried.
+  # The row is what COMPOSE reads, and the other members finish.
+  if [[ "${status}" -ne 0 ]]; then
+    campaign_log "path solver failed on ${query_key} (exit ${status}): \
+$(grep -v -E '^[[:space:]]+at ' "${worker}/stderr.log" 2>/dev/null \
+      | tail -n 1)"
+    jq -n -c --arg key "${query_key}" --arg reason "$(grep -v -E \
+        '^[[:space:]]+at ' "${worker}/stderr.log" 2>/dev/null | tail -n 1)" \
+      '{schemaVersion: 1, kind: "PATH_EXPLORATION_RECORD", queryKey: $key,
+        status: "MATERIALIZATION_GAP",
+        reason: "PATH_FLIP_MATERIALIZATION_GAP",
+        detail: $reason, unsupported: []}' \
+      >"${worker}/exploration_record.jsonl"
+    return 0
+  fi
   require_nonempty "path solver result" \
     "${worker}/path_flip_solver_result.json"
   # The query is the artifact an UNSAT obligation is diagnosed from, so a
   # missing one fails here rather than being noticed a campaign later.
   require_nonempty "path flip query" "${worker}/path_flip_query.smt2"
-  [[ "${status}" -eq 0 ]] || die "the path solver failed with exit ${status}"
   outcome=$(jq -er '.status' "${worker}/path_flip_solver_result.json")
   # The solver owns what a finished flip is. ConcolicPathFlipSolver exits 0
   # for UNSAT, UNSUPPORTED, MATERIALIZATION_GAP and SOLVER_TIMEOUT alike,

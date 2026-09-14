@@ -422,7 +422,7 @@ public class PathMergeComposerTest {
     }
 
     private static final String HANDOFF_SYMBOL =
-            PathMergeComposer.HANDOFF_SYMBOL_PREFIX + "PORT_KEY_1";
+            PathMergeComposer.HANDOFF_SYMBOL_MARK + "PORT_KEY_1";
 
     /**
      * A value that crossed a wire is a free variable joined at the handoff.

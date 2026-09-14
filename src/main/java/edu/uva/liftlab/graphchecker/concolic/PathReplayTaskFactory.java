@@ -224,6 +224,7 @@ final class PathReplayTaskFactory {
             java.util.List<ExecutionTask> decodedSources,
             String primarySourceTaskId) {
         Map<String, JsonArray> result = new LinkedHashMap<>();
+        Map<String, JsonObject> phaseAssignments = new LinkedHashMap<>();
         for (JsonObject source : sources) {
             result.put(optionalString(source, "taskId"), new JsonArray());
         }
@@ -235,15 +236,37 @@ final class PathReplayTaskFactory {
             java.util.List<String> owners = phase.isEmpty()
                     ? actionOwners(input, decodedSources)
                     : configuredPhaseOwners(phase, decodedSources);
-            // A control can appear in several linked members' frozen
-            // catalogs: a propagated input action does, and so does a
-            // configured source phase, whose id is the variable and repeats
-            // in every member whose catalog names that mint site
-            // (ConfiguredSourcePhaseContract:143).  Several owners of one
-            // variable are not several variables.  The current exact flip
-            // owns that control at its primary activation; companions
-            // re-evaluate it through the live propagation chain.  Ambiguity
-            // the primary is not part of stays fail-closed.
+            // A by-site phase id is ONE variable.  It repeats in every
+            // member whose catalog names that mint site
+            // (ConfiguredSourcePhaseContract:143), and the model assigns the
+            // variable, not one member's copy of it: every owner that mints
+            // it must return the assigned value, or the replay would read
+            // two values for one variable.  The primary need not be among
+            // the owners at all -- on bug3 the target task's obligation
+            // depends on the NameNode's root through the wire, and the
+            // NameNode is a companion.  Refusing on a count was that
+            // dependency read as an ambiguity.
+            if (!phase.isEmpty()) {
+                if (owners.isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "linked model assignment names a phase no "
+                                    + "member mints: " + input);
+                }
+                JsonObject held = phaseAssignments.put(phase, assignment);
+                if (held != null && !held.equals(assignment)) {
+                    throw new IllegalArgumentException(
+                            "two model assignments disagree on one phase: "
+                                    + phase);
+                }
+                for (String owner : owners) {
+                    result.get(owner).add(assignment.deepCopy());
+                }
+                continue;
+            }
+            // A propagated input action is still owned by the activation
+            // this flip replays; companions re-evaluate it through the live
+            // propagation chain.  Ambiguity the primary is not part of stays
+            // fail-closed.
             if (owners.size() > 1
                     && owners.contains(primarySourceTaskId)) {
                 owners = java.util.Collections.singletonList(
@@ -274,7 +297,7 @@ final class PathReplayTaskFactory {
     /** Whether this obligation flips a value that arrived over a wire. */
     private static boolean crossesAHandoff(JsonObject query) {
         return CanonicalJson.render(query).contains(
-                PathMergeComposer.HANDOFF_SYMBOL_PREFIX);
+                PathMergeComposer.HANDOFF_SYMBOL_MARK);
     }
 
     private static java.util.List<String> actionOwners(
