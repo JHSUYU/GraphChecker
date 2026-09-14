@@ -631,6 +631,55 @@ public class PathMergeComposerTest {
         assertEquals("the family must let the fatal delivery through",
                 "sat", solve(result.smtLib + "(assert (= " + ROOT_TERM
                         + " false))\n(check-sat)\n"));
+
+        // Same rule, one row shape further: under one-node linking a flip
+        // replay's consumer mints v_H from the value that arrived and there
+        // is no VM edge to state -- no producer expression, export and
+        // attach zero, elementAbsent.  H's identity is its phase, so the row
+        // joins the family there and contributes no arm (it delivered
+        // nothing); the assignment that answered the mint is a conjunct of
+        // its own path, as a root assignment is.
+        Path absentDirectory = Files.createTempDirectory("path-merge-absent");
+        JsonObject absentQuery = query();
+        absentQuery.getAsJsonArray("paths").add(path("answered",
+                "GROUP.FLIP", rootIs(false),
+                notEqual(handoff(), constant(9))));
+        Path absentQueryFile = absentDirectory.resolve("reach_query.jsonl");
+        write(absentQueryFile, JsonFields.WRITER.toJson(
+                SharedExpressionTable.compact(absentQuery)));
+        JsonObject deliveringSeed = summary("GROUP.SEED");
+        deliveringSeed.add("vmHandoffEvents",
+                handoffEvents(constant(9), 11L, 12L));
+        JsonObject answeredFlip = summary("GROUP.FLIP");
+        JsonArray absentRows = new JsonArray();
+        absentRows.add(elementAbsentMint("7"));
+        answeredFlip.add("vmHandoffEvents", absentRows);
+        Path absentSummaries = absentDirectory.resolve("summaries.jsonl");
+        write(absentSummaries, JsonFields.WRITER.toJson(
+                SharedExpressionTable.compact(deliveringSeed)) + "\n"
+                + JsonFields.WRITER.toJson(
+                SharedExpressionTable.compact(answeredFlip)) + "\n");
+        PathMergeComposer.Result absent = PathMergeComposer.compose(
+                PathMergeComposer.Arguments.parse(new String[]{
+                        "--fatal-query", absentQueryFile.toString(),
+                        "--summaries", absentSummaries.toString(),
+                        "--output",
+                        absentDirectory.resolve("candidate.smt2").toString(),
+                        "--manifest",
+                        absentDirectory.resolve("manifest.json").toString()}));
+        JsonObject absentMerge = absent.manifest.getAsJsonObject(
+                PathMergeComposer.MANIFEST_FIELD);
+        assertEquals("a mint with no producer states an occurrence to join",
+                0, absentMerge.getAsJsonArray("gates").size());
+        assertEquals("FINAL_READY", JsonFields.optionalString(
+                absent.manifest, ComposedManifest.FINAL_STATUS));
+        assertEquals("one family, joined by the phase", 1,
+                absentMerge.getAsJsonArray("handoffFamilies").size());
+        assertEquals("and only the seed delivered, so one arm", 1,
+                absentMerge.getAsJsonArray("handoffFamilies").get(0)
+                        .getAsJsonObject().get("pairs").getAsInt());
+        assertTrue("the answered path carries v_H = the answer",
+                absent.smtLib.contains(handoffTerm(absent) + " 7)"));
     }
 
     /**
@@ -1261,6 +1310,25 @@ public class PathMergeComposerTest {
     }
 
     /** One replay's row at the one handoff occurrence, with what it sent. */
+    /** A consumer mint with no producer behind it. */
+    private static JsonObject elementAbsentMint(String answered) {
+        JsonObject event = new JsonObject();
+        event.addProperty("kind", "VM_HANDOFF_EVENT");
+        event.addProperty("portId", "PORT.key");
+        event.addProperty("exportEventId", 0L);
+        event.addProperty("attachEventId", 0L);
+        event.addProperty(InSessionReadResolver.HANDOFF_PHASE_ID,
+                "HANDOFF_PHASE.key");
+        event.addProperty(InSessionReadResolver.HANDOFF_SYMBOL,
+                HANDOFF_SYMBOL);
+        event.addProperty("javaType", "I");
+        event.addProperty("recordedValue", "9");
+        event.addProperty(VmHandoffEvidence.ELEMENT_ABSENT, true);
+        event.addProperty(VmHandoffEvidence.ANSWERED, true);
+        event.addProperty(VmHandoffEvidence.ANSWERED_VALUE, answered);
+        return event;
+    }
+
     private static JsonArray handoffEvents(JsonObject delivered,
                                            long export, long attach) {
         JsonObject event = new JsonObject();
