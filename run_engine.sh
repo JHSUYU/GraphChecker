@@ -581,6 +581,7 @@ do_compose() {
     --output "${composed_smt}" \
     --manifest "${composition_manifest}" \
     --clock-skew-ms "${clock_skew_ms}" \
+    --timeout-ms "${solver_timeout_ms}" \
     --z3 "${z3_bin}" \
     "${selection[@]}"
 }
@@ -1882,6 +1883,11 @@ campaign_import_session() {
 campaign_obligation_worker() {
   local obligation_id=$1 obligations=$2 classes=$3 worker=$4 sessions=$5
   local outcome replay_tasks status=0
+  local -a domain_args=()
+  # The same declaration EXPLORE and COMPOSE read: an answer is only as free
+  # as the root domains behind the arm that produces it.
+  [[ -z "${causynth_root_domains}" ]] \
+    || domain_args+=(--root-domains "${causynth_root_domains}")
   local plan="${worker}/execution_task_plan.jsonl"
   local results="${worker}/concolic_region_results.jsonl"
   local result_row="${worker}/obligation_result.jsonl"
@@ -1893,7 +1899,8 @@ campaign_obligation_worker() {
     --output-dir "${worker}" \
     --z3 "${z3_bin}" \
     --solver-timeout-ms "${solver_timeout_ms}" \
-    --clock-skew-ms "${clock_skew_ms}"
+    --clock-skew-ms "${clock_skew_ms}" \
+    "${domain_args[@]}"
   if [[ "${status}" -ne 0 ]]; then
     campaign_log "obligation solver failed on ${obligation_id} \
 (exit ${status}): $(grep -v -E '^[[:space:]]+at ' "${worker}/stderr.log" \
@@ -1957,7 +1964,10 @@ campaign_explore() {
   local wave=0 pending=0 status=0 obligation_id worker_dir wave_dir job
   local wave_signature="" previous_signature="" stop_kind="" stop_reason=""
   local obligations
-  local -a bound_args=() domain_args=() jobs=() pids=()
+  local -a bound_args=() domain_args=() anchor_args=() jobs=() pids=()
+  local declared
+  declared=$(campaign_declared_target_occurrence)
+  [[ -z "${declared}" ]] || anchor_args+=(--target-occurrence "${declared}")
 
   : >"${results}"
   [[ -z "${region_path_max_paths_per_region}" ]] \
@@ -1988,6 +1998,7 @@ campaign_explore() {
       --topology-epoch "${iteration_id}" \
       --wave "${wave}" \
       --output-dir "${wave_dir}" \
+      "${anchor_args[@]}" \
       "${domain_args[@]}" \
       "${bound_args[@]}" \
       >"${wave_dir}/stdout.log" 2>"${wave_dir}/stderr.log" || status=$?
@@ -1995,7 +2006,11 @@ campaign_explore() {
       campaign_fail EXPLORE ExploreMain "${wave_dir}/stderr.log" \
         "the wave planner failed with exit ${status}"
     fi
-    require_nonempty "wave obligations" "${obligations}"
+    # An empty obligations file is the frontier closing, which is how the
+    # loop is meant to end: the planner has nothing left to ask for.  This
+    # used to be require_nonempty, so the planner had to write a blank-id
+    # marker row to survive its own success.
+    [[ -s "${obligations}" ]] || break
 
     jobs=()
     pending=0
