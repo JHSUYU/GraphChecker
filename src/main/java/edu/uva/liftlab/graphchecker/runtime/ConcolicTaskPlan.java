@@ -59,7 +59,6 @@ import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.inbound
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.inboundMessageSourceEvidence;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.outgoingProducerMayDeferMissingContext;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicResultPublisher.registerRunTotalsHook;
-import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.registeredSourceAnchorMatches;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.rootInvocationAddressMatches;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.safe;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.sameHookIdentity;
@@ -531,18 +530,8 @@ final class ConcolicTaskPlan {
     static String requestMismatch(
             RuntimeTask task, SourceRef registeredReceiverSource,
             RuntimeTraceContext.View context) {
-        RootContextSelector selector = task.rootContextSelector;
-        if (!selector.requestKey.equals(safe(context.requestKey))) {
-            return "matching root entered request "
-                    + safe(context.requestKey) + " instead of "
-                    + selector.requestKey;
-        }
-        if (!selector.requestApi.equals(safe(context.requestApi))) {
-            return "matching root entered request API "
-                    + safe(context.requestApi) + " instead of "
-                    + selector.requestApi;
-        }
-        return "";
+        return task.rootContextSelector.reachedUnder
+                .requestDifference(context);
     }
 
     /** Entry admission may defer only missing producer context to OUT. */
@@ -563,7 +552,8 @@ final class ConcolicTaskPlan {
         return outgoingProducerMayDeferMissingContext(
                 !task.deferredOutgoingSourcePorts.isEmpty(),
                 registeredReceiverSource, context.source, task.sourceKey,
-                selector.requestKey, selector.requestApi,
+                selector.reachedUnder.requestKey,
+                selector.reachedUnder.requestApi,
                 context.requestKey, context.requestApi);
     }
 
@@ -637,7 +627,6 @@ final class ConcolicTaskPlan {
     static String sourceMismatch(
             RuntimeTask task, SourceRef registeredReceiverSource,
             RuntimeTraceContext.View context) {
-        RootContextSelector selector = task.rootContextSelector;
         SourceRef inherited = context.source;
         // The epoch is part of the address, so it is compared before any of
         // the four evidence shapes below, all of which ignore it.
@@ -670,53 +659,35 @@ final class ConcolicTaskPlan {
                     ? inherited.key() : registeredReceiverSource.key())
                     + " instead of the unregistered source";
         }
-        if (selector.inheritedContextAnchor) {
-            if (!inheritedMatches) {
-                // Inheriting a DIFFERENT source is evidence that this is not
-                // the planned occurrence; inheriting NONE is the absence of
-                // evidence, and the two are not the same thing.  A flip
-                // replay reaches the same activation by a path that carries
-                // no inherited context, and refusing it there withheld the
-                // occurrence over a fact nobody established.  Node, epoch,
-                // region and ordinal still have to agree.
-                if (inherited != null) {
-                    return "matching root inherited " + inherited.key()
-                            + " instead of " + task.sourceKey;
-                }
-            }
-            if (registeredReceiverSource != null && !receiverMatches) {
-                return "matching root receiver belonged to "
-                        + registeredReceiverSource.key() + " instead of "
-                        + task.sourceKey;
-            }
-            return "";
-        }
-        if (selector.registeredSourceAnchor) {
-            // A replay can reconstruct the logical receiver without
-            // repeating its identity-map alias registration.  In that
-            // case the exact inherited request context is still positive
-            // source evidence.  Never let it override an explicit,
-            // conflicting receiver registration.
-            if (registeredSourceAnchorMatches(task.sourceKey,
-                    registeredReceiverSource, inherited)) {
-                return "";
-            }
-            if (registeredReceiverSource != null) {
-                return "matching root receiver belonged to "
+        // One rule for every anchor kind.  How the planned source was
+        // established -- registered on the receiver, or inherited from the
+        // thread -- says how the recording found it, not which source it is,
+        // so it decided nothing here and the three arms it selected between
+        // were three spellings of one question: does this run's evidence name
+        // ANOTHER source?
+        //
+        // The receiver's own registration, when there is one, is that
+        // evidence and is authoritative: a root entered on an object the
+        // application registered elsewhere is elsewhere's, whatever the
+        // thread was carrying.  With no registration, an inherited context
+        // that names another source still contradicts.  Nothing attributed at
+        // all does not: a replay reconstructs a receiver without repeating
+        // its alias registration and reaches a region by a path carrying no
+        // inherited context, and refusing it there withheld the occurrence
+        // over a fact nobody established -- on 17960 that was every target
+        // activation of the seed.  Node, epoch, region and ordinal have
+        // already agreed by the time this is asked.
+        if (registeredReceiverSource != null) {
+            return receiverMatches ? ""
+                    : "matching root receiver belonged to "
                     + registeredReceiverSource.key() + " instead of "
                     + task.sourceKey;
-            }
-            return inherited == null
-                    ? "matching root receiver had no registered source "
-                    + "and inherited no source; its anchor names "
-                    + task.sourceKey
-                    : "matching root receiver had no registered source "
-                    + "and inherited " + inherited.key()
+        }
+        if (inherited != null && !inheritedMatches) {
+            return "matching root inherited " + inherited.key()
                     + " instead of " + task.sourceKey;
         }
-        return receiverMatches || inheritedMatches ? ""
-                : "matching root carried no evidence for source "
-                + task.sourceKey;
+        return "";
     }
 
     /**
@@ -838,13 +809,106 @@ final class ConcolicTaskPlan {
      * <p>Two halves, decided at two different moments because that is when
      * each becomes knowable.</p>
      */
-    static final class RootContextSelector {
+    /**
+     * What an activation was reached under -- never what it is.
+     *
+     * <p>The RPC exchange, the request api, the thread it ran on, the
+     * receiver's runtime class, and whether the recording established the
+     * source by the receiver's own registration or by the thread's inherited
+     * context.  None of it is identity: an occurrence is (node, epoch,
+     * region, k-th activation), and these say where it was reached from and
+     * how the recording found it.</p>
+     *
+     * <p>They were identity fields of the selector, and each grew its own
+     * rule for when it might veto.  Two of the expensive 17960 failures were
+     * exactly that: the request veto refused every flip replay whose workload
+     * reached the planned activation by another path, and the
+     * inherited-source anchor made an absence read as a contradiction.  They
+     * are kept here because where an occurrence was reached from is worth
+     * saying -- it is written into the gap when an address goes unanswered --
+     * and matching never consults them.</p>
+     *
+     * <p>The one exception is {@link #candidate}, and it is not a matching
+     * rule: a receiver-scoped root hook stands on an object of a named class,
+     * so this decides which invocations are offered as candidates at all,
+     * the way an instrumentation scope does.  It cannot distinguish two
+     * activations of one address.</p>
+     */
+    static final class ReachedUnder {
         private final boolean receiverScoped;
         private final String receiverRuntimeClass;
         private final String threadName;
-        private final String sourceKey;
         private final String requestKey;
         private final String requestApi;
+        /**
+         * How the recording established the planned source: the receiver's
+         * own registration, or the thread's inherited context.  Recorded
+         * because it says how the occurrence was found; it selected between
+         * three admission arms that asked one question, and the arms are
+         * gone.
+         */
+        private final boolean registeredSourceAnchor;
+        private final boolean inheritedContextAnchor;
+
+        private ReachedUnder(boolean receiverScoped,
+                             String receiverRuntimeClass, String threadName,
+                             String requestKey, String requestApi,
+                             boolean registeredSourceAnchor,
+                             boolean inheritedContextAnchor) {
+            this.receiverScoped = receiverScoped;
+            this.receiverRuntimeClass = safe(receiverRuntimeClass);
+            this.threadName = stableReplayThreadContext(threadName);
+            this.requestKey = safe(requestKey);
+            this.requestApi = safe(requestApi);
+            this.registeredSourceAnchor = registeredSourceAnchor;
+            this.inheritedContextAnchor = inheritedContextAnchor;
+        }
+
+        /** Whether this invocation is offered as a candidate at all. */
+        private boolean candidate(Object receiver, String actualThreadName) {
+            if (!receiverScoped) return true;
+            return receiver != null
+                    && receiverRuntimeClass.equals(
+                    receiver.getClass().getName())
+                    && (threadName.isEmpty()
+                    || threadName.equals(stableReplayThreadContext(
+                    actualThreadName)));
+        }
+
+        /** How the exchange this root entered differs, or {@code ""}. */
+        private String requestDifference(RuntimeTraceContext.View context) {
+            if (!requestKey.equals(safe(context.requestKey))) {
+                return "matching root entered request "
+                        + safe(context.requestKey) + " instead of "
+                        + requestKey;
+            }
+            if (!requestApi.equals(safe(context.requestApi))) {
+                return "matching root entered request API "
+                        + safe(context.requestApi) + " instead of "
+                        + requestApi;
+            }
+            return "";
+        }
+
+        /** The circumstances on one line, for a named gap. */
+        private String describe() {
+            StringBuilder description = new StringBuilder();
+            if (!requestKey.isEmpty()) {
+                description.append("/requestKey=").append(requestKey);
+            }
+            if (!requestApi.isEmpty()) {
+                description.append("/requestApi=").append(requestApi);
+            }
+            return description.toString();
+        }
+
+        private static String stableReplayThreadContext(String value) {
+            return RootContextSelector.stableReplayThreadContext(value);
+        }
+    }
+
+    static final class RootContextSelector {
+        private final String sourceKey;
         /**
          * One-based invocation ordinal in this selector's stable runtime
          * scope.  This is planner evidence and is deliberately independent
@@ -852,19 +916,8 @@ final class ConcolicTaskPlan {
          * replay counter.
          */
         private final int invocationOrdinal;
-        /**
-         * The baseline receiver was registered to the planned source.  A
-         * replay receiver registration, when present, remains authoritative;
-         * an unregistered reconstructed receiver may instead be attributed
-         * by the exact inherited request context.
-         */
-        private final boolean registeredSourceAnchor;
-        /**
-         * The planned source was the thread's inherited context, not the
-         * receiver's own registration, so replay must re-check it the same
-         * way.
-         */
-        private final boolean inheritedContextAnchor;
+        /** Everything this address is not: see {@link ReachedUnder}. */
+        private final ReachedUnder reachedUnder;
 
         private RootContextSelector(boolean receiverScoped,
                                     String receiverRuntimeClass,
@@ -873,15 +926,11 @@ final class ConcolicTaskPlan {
                                     int invocationOrdinal,
                                     boolean registeredSourceAnchor,
                                     boolean inheritedContextAnchor) {
-            this.receiverScoped = receiverScoped;
-            this.receiverRuntimeClass = safe(receiverRuntimeClass);
-            this.threadName = stableReplayThreadContext(threadName);
             this.sourceKey = safe(sourceKey);
-            this.requestKey = safe(requestKey);
-            this.requestApi = safe(requestApi);
             this.invocationOrdinal = invocationOrdinal;
-            this.registeredSourceAnchor = registeredSourceAnchor;
-            this.inheritedContextAnchor = inheritedContextAnchor;
+            this.reachedUnder = new ReachedUnder(receiverScoped,
+                    receiverRuntimeClass, threadName, requestKey, requestApi,
+                    registeredSourceAnchor, inheritedContextAnchor);
         }
 
         private static RootContextSelector from(JsonObject selector) {
@@ -939,12 +988,7 @@ final class ConcolicTaskPlan {
 
         /** Whether this root invocation is a candidate for the occurrence. */
         private boolean matches(Object receiver, String actualThreadName) {
-            if (!receiverScoped) return true;
-            return receiver != null
-                    && receiverRuntimeClass.equals(receiver.getClass().getName())
-                    && (threadName.isEmpty()
-                    || threadName.equals(stableReplayThreadContext(
-                    actualThreadName)));
+            return reachedUnder.candidate(receiver, actualThreadName);
         }
 
         /**
@@ -984,15 +1028,8 @@ final class ConcolicTaskPlan {
 
         /** This address on one line, for a named gap. */
         private String describe() {
-            StringBuilder description = new StringBuilder(sourceKey);
-            if (!requestKey.isEmpty()) {
-                description.append("/requestKey=").append(requestKey);
-            }
-            if (!requestApi.isEmpty()) {
-                description.append("/requestApi=").append(requestApi);
-            }
-            description.append("/invocation=").append(invocationOrdinal);
-            return description.toString();
+            return sourceKey + reachedUnder.describe() + "/invocation="
+                    + invocationOrdinal;
         }
 
         /**
@@ -1004,7 +1041,7 @@ final class ConcolicTaskPlan {
                     && !RuntimeTraceContext.sourceIdentityRegistered(sourceKey);
         }
 
-        private static String stableReplayThreadContext(String value) {
+        static String stableReplayThreadContext(String value) {
             String thread = safe(value);
             Matcher executor = DEFAULT_EXECUTOR_THREAD_NAME.matcher(thread);
             if (executor.matches()) {
@@ -1614,9 +1651,9 @@ final class ConcolicTaskPlan {
                     }
                     if (!"TRACED_RPC_EXCHANGE_CORRELATION_V1".equals(
                             optionalString(binding, "correlationAuthority"))
-                            || !rootContextSelector.requestKey.equals(
+                            || !rootContextSelector.reachedUnder.requestKey.equals(
                             optionalString(binding, "requestKey"))
-                            || !rootContextSelector.requestApi.equals(
+                            || !rootContextSelector.reachedUnder.requestApi.equals(
                             optionalString(binding, "requestApi"))) {
                         exactSourceCandidate = false;
                     }
@@ -1637,8 +1674,8 @@ final class ConcolicTaskPlan {
         }
 
         String outgoingSourceScope(String portId) {
-            return rootMethod + '\n' + rootContextSelector.requestKey + '\n'
-                    + rootContextSelector.requestApi + '\n' + safe(portId);
+            return rootMethod + '\n' + rootContextSelector.reachedUnder.requestKey + '\n'
+                    + rootContextSelector.reachedUnder.requestApi + '\n' + safe(portId);
         }
 
         Set<String> declaredOutgoingPorts() {

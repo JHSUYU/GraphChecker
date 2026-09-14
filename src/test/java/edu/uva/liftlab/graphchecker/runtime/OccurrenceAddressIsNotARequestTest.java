@@ -316,6 +316,70 @@ public class OccurrenceAddressIsNotARequestTest {
                         .counterScope(task.rootMethod)));
     }
 
+    // ---------- the jobs the deleted predicates used to do ----------
+
+    /** A receiver the application registered elsewhere refuses, as before. */
+    @Test
+    public void aReceiverRegisteredToAnotherNodeIsRefused() {
+        ConcolicTaskPlan.RuntimeTask task = task();
+        Object receiver = new Object();
+        RuntimeTraceContext.registerSource(receiver,
+                new SourceRef("DATANODE", "dn", "hdfs-17899/dn9", 0L));
+
+        String refusal = ConcolicTaskPlan.sourceMismatch(task,
+                RuntimeTraceContext.sourceFor(receiver),
+                RuntimeTraceContext.current());
+
+        assertTrue(refusal, refusal.contains("receiver belonged to"));
+        assertTrue(refusal, refusal.contains("hdfs-17899/dn9"));
+    }
+
+    /**
+     * A registration that names the planned source decides, on its own.
+     *
+     * <p>This was the registered-source arm's job: the receiver's own
+     * registration is authoritative and an inherited context that disagrees
+     * does not override it.</p>
+     */
+    @Test
+    public void aRegistrationThatNamesThePlannedSourceDecides() {
+        ConcolicTaskPlan.RuntimeTask task = task();
+        Object receiver = new Object();
+        RuntimeTraceContext.registerSource(receiver,
+                new SourceRef("NAMENODE", "nn", "hdfs-17899/nn0", 0L));
+
+        assertEquals("", ConcolicTaskPlan.sourceMismatch(task,
+                RuntimeTraceContext.sourceFor(receiver),
+                RuntimeTraceContext.current()));
+    }
+
+    /**
+     * No evidence at all is not a refusal, whatever the anchor kind was.
+     *
+     * <p>The registered-source arm refused an activation that carried no
+     * registration and no inherited context, with "its anchor names ...".
+     * That is the absence of evidence, and the inherited arm had already
+     * stopped treating it as a contradiction; the two arms now ask one
+     * question and give one answer.</p>
+     */
+    @Test
+    public void noEvidenceAtAllIsNotARefusal() {
+        assertEquals("", ConcolicTaskPlan.sourceMismatch(task(), null,
+                RuntimeTraceContext.current()));
+    }
+
+    /** The circumstances are described, and describing is not vetoing. */
+    @Test
+    public void theCircumstancesAreRecordedNotConsulted() {
+        ConcolicTaskPlan.RuntimeTask task = task();
+
+        assertEquals("the request is not compared by the address", "",
+                ConcolicTaskPlan.sourceMismatch(task, null,
+                        RuntimeTraceContext.current()));
+        assertFalse("the bucket carries no circumstance",
+                task.invocationCounterKey().contains("request"));
+    }
+
     /** The transcript ends here; the helpers follow. */
     private static ConcolicTaskPlan.RuntimeTask task() {
         return new ConcolicTaskPlan.RuntimeTask(ExecutionTask.decode(

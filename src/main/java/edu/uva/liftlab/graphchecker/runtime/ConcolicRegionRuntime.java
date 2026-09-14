@@ -7231,19 +7231,6 @@ public final class ConcolicRegionRuntime {
         }
     }
 
-    /** Registration wins; inheritance fills only an absent replay alias. */
-    static boolean registeredSourceAnchorMatches(
-            String expectedSourceKey, SourceRef registeredReceiverSource,
-            SourceRef inheritedSource) {
-        if (registeredReceiverSource != null) {
-            return RuntimeTraceContext.sameSourceIdentity(
-                    expectedSourceKey, registeredReceiverSource.key());
-        }
-        return inheritedSource != null
-                && RuntimeTraceContext.sameSourceIdentity(
-                expectedSourceKey, inheritedSource.key());
-    }
-
     /**
      * Whether an exact OUT hook may supply a producer identity lost while the
      * workload reconstructed its receiver.
