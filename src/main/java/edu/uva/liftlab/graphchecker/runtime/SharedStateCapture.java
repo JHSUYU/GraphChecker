@@ -854,21 +854,24 @@ final class SharedStateCapture {
          * names for {@code DirectorySnapshottableFeature#snapshotsByNames}
          * and six MAP_STATE_IDENTITY_AMBIGUOUS rows, which stopped IMPORT.
          *
-         * <p>The plan's own frozen locator still wins when it has one: it is
-         * the recording's name for the object and joins a replay to the
-         * recording, which a replay-side rid cannot.  This answers for the
-         * locations the plan froze no locator for, which is where the
-         * ambiguity was.</p>
+         * <p>It wins over the plan's frozen locator, and it has to.  The
+         * locator was preferred at first, on the ground that it is the
+         * recording's own name for the object: true, but a locator is
+         * resolved through the access anchors an activation happens to hold
+         * ({@code ConcolicTaskPlan.plannedReceiverObjectIdByFieldAccess}), so
+         * some activations of one object have one and others do not -- and a
+         * preference that yields to whichever is present gives one object a
+         * mixture of names.  On laneVM4 that is 12 of 57 locations, one of
+         * them ({@code INSTANCE_FIELD/12#24}) carrying three: two different
+         * plan locators and the rid.  The object's identity is the one
+         * answer that is the same for every row of a location, so it is the
+         * one that decides.  The locator still names a carrier that never
+         * reaches a read-out -- nothing is published for it, so nothing can
+         * disagree -- and the anchor hash remains the last resort for a
+         * carrier with neither.</p>
          */
         void bindVmOwnerIdentity(long vmOwnerRid) {
             if (vmOwnerRid <= 0L || !requiresPlannedReceiver()) return;
-            if (plannedReceiverObjectId > 0L
-                    && (plannedReceiverObjectId
-                    & ACCESS_ANCHOR_RECEIVER_TAG) == 0L) {
-                // A frozen plan locator is already here; it outranks a
-                // replay-side identity because it also names the recording.
-                return;
-            }
             plannedReceiverObjectId = VM_OWNER_RECEIVER_TAG
                     | vmOwnerRid & VM_OWNER_RECEIVER_TAG - 1L;
         }

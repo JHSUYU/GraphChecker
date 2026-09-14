@@ -84,15 +84,56 @@ public class MapCarrierReceiverIdentityTest {
                 first, elsewhere);
     }
 
-    /** A frozen plan locator outranks the replay-side object identity. */
+    /**
+     * The object's identity decides, whatever else the row happens to hold.
+     *
+     * <p>The frozen plan locator was preferred at first, on the ground that
+     * it is the recording's own name for the object.  It is -- but a locator
+     * is resolved through the access anchors an activation happens to hold,
+     * so some activations of one object have one and others do not, and a
+     * preference that yields to whichever is present gives one object a
+     * mixture of names.  This is the mixed shape: one location, three rows,
+     * one with a locator, one with a different locator, one with neither.
+     * On laneVM4 it is 12 of 57 locations, and
+     * {@code INSTANCE_FIELD/12#24} carries exactly these three.</p>
+     */
     @Test
-    public void aFrozenLocatorIsNotOverwritten() throws Exception {
+    public void theObjectIdentityDecidesOverAnyFrozenLocator()
+            throws Exception {
+        SharedStateCapture.SharedCarrier withLocator = mapCarrier();
+        withLocator.recordConsumerAccess(anchor(SITE, 1));
+        withLocator.bindPlannedReceiver(1556925418L);
+        withLocator.bindVmOwnerIdentity(12L);
+
+        SharedStateCapture.SharedCarrier withAnother = mapCarrier();
+        withAnother.recordConsumerAccess(anchor(SITE, 2));
+        withAnother.bindPlannedReceiver(1556927798L);
+        withAnother.bindVmOwnerIdentity(12L);
+
+        SharedStateCapture.SharedCarrier withNeither = mapCarrier();
+        withNeither.recordConsumerAccess(anchor(SITE, 3));
+        withNeither.bindPlannedReceiver(task("occ#1"));
+        withNeither.bindVmOwnerIdentity(12L);
+
+        assertEquals("two locators and none resolve to one name",
+                withLocator.plannedReceiverObjectId(),
+                withAnother.plannedReceiverObjectId());
+        assertEquals(withLocator.plannedReceiverObjectId(),
+                withNeither.plannedReceiverObjectId());
+        assertNotEquals("and it is the object's, not either locator's",
+                1556925418L, withLocator.plannedReceiverObjectId());
+    }
+
+    /** A carrier the VM never names keeps whatever could name it. */
+    @Test
+    public void aCarrierWithNoObjectKeepsItsLocator() throws Exception {
         SharedStateCapture.SharedCarrier carrier = mapCarrier();
         carrier.recordConsumerAccess(anchor(SITE, 1));
         carrier.bindPlannedReceiver(4242L);
-        carrier.bindVmOwnerIdentity(24L);
+        carrier.bindVmOwnerIdentity(0L);
 
-        assertEquals(4242L, carrier.plannedReceiverObjectId());
+        assertEquals("no read-out, no object identity, nothing published",
+                4242L, carrier.plannedReceiverObjectId());
     }
 
     // ---------- harness ----------
