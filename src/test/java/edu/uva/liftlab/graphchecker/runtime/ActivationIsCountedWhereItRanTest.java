@@ -154,7 +154,7 @@ public class ActivationIsCountedWhereItRanTest {
      * with two different owners, and the row could not tell them apart.</p>
      */
     @Test
-    public void anOrdinalRefusalNamesWhatTheRunAttributed() {
+    public void anUnattributedActivationTakesNoKFromThePlannedNode() {
         registerCluster();
         ConcolicTaskPlan.RuntimeTask targetTask =
                 task("TASK.target", TARGET_DN, STATIC_ROOT);
@@ -162,31 +162,18 @@ public class ActivationIsCountedWhereItRanTest {
                 Arrays.asList(targetTask));
 
         // Lane B2: two heartbeats run before the workload registers the
-        // DataNode, so this run can name no node for them.  At entry that is
-        // indistinguishable from an activation whose own frames will name
-        // the planned node -- the planner's frame arm is knowable only once
-        // the frames have run -- so each is admitted provisionally and the
-        // close decides.
-        assertSame("admitted provisionally, to be decided at close",
-                targetTask, decode(plan, targetTask, null));
+        // DataNode, so this run can name no node for them.  They are the
+        // unregistered source's activations -- the third arm of the one
+        // attribution function, which the planner runs too -- so they are
+        // not offered target-dn's address at all.
+        assertNull("an activation nobody attributed is not target-dn's",
+                decode(plan, targetTask, null));
+        assertNull("nor is the next one", decode(plan, targetTask, null));
 
-        // Lane B2c: a provisional admission holds no k while it runs, so a
-        // second unstamped activation reads the same next-confirmed k and
-        // the heartbeat that does carry the node is still target-dn's
-        // FIRST -- it used to come out "activation 2, not 1" because the
-        // release needed its k to still be the last one handed out, and by
-        // then it was not.
-        plan.releaseProvisionalOrdinal(targetTask);
-        plan.releaseCandidate(targetTask);
-        assertSame("a second unnamed activation reads the same k",
-                targetTask, decode(plan, targetTask, null));
-        plan.releaseProvisionalOrdinal(targetTask);
-        plan.releaseCandidate(targetTask);
-
+        // And the heartbeat that does carry the node is still target-dn's
+        // FIRST: nothing before it took a k in that bucket.
         assertSame("the unstamped ones took no k from target-dn",
                 targetTask, decode(plan, targetTask, targetDn));
-        assertEquals("and that one is the node's own, confirmed",
-                "", targetTask.provisionalScope);
     }
 
     /** And names the node when there was one. */

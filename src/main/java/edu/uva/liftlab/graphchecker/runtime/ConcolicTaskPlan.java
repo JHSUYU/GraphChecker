@@ -320,22 +320,6 @@ final class ConcolicTaskPlan {
             String scope = task.invocationCounterKey(countedLifecycle(
                     task, activationSource));
             countInvocation(scope, actualOrdinalByScope);
-            // An activation this run attributed nowhere is counted in the
-            // unregistered population, where the planner counts it.  In the
-            // planned one it takes no k at all until it is confirmed: it
-            // only reads what the next confirmed k would be, and the close
-            // takes it if the frame arm names the planned node.  Taking it
-            // at entry and giving it back needed the k to still be the last
-            // one handed out, and on hdfs-17899 bug2 it was not -- the real
-            // heartbeat convert had already been numbered against it and
-            // came out "activation 2, not 1".
-            if (unattributed(activationSource)) {
-                String planned = task.invocationCounterKey();
-                if (!actualOrdinalByScope.containsKey(planned)) {
-                    actualOrdinalByScope.put(planned,
-                            invocationOrdinals.getOrDefault(planned, 0) + 1);
-                }
-            }
             String sourceMismatch = sourceAdmissionMismatch(task,
                     registeredReceiverSource, context);
             if (!sourceMismatch.isEmpty()) {
@@ -388,11 +372,6 @@ final class ConcolicTaskPlan {
             boolean exactOutgoingAddress =
                     mayDeferMissingContextToOutgoingAnchor(task,
                             registeredReceiverSource, context);
-            if (admitsProvisionally(task, activationSource, observed,
-                    exactOutgoingAddress, actualOrdinalByScope)) {
-                admitted.add(task.taskId);
-                continue;
-            }
             if (!task.acceptsRootInvocation(observed,
                     exactOutgoingAddress)) {
                 task.noteUnaddressedCandidate("matching enclosing root: "
@@ -455,22 +434,6 @@ final class ConcolicTaskPlan {
             String scope = task.invocationCounterKey(countedLifecycle(
                     task, activationSource));
             countInvocation(scope, actualOrdinalByScope);
-            // An activation this run attributed nowhere is counted in the
-            // unregistered population, where the planner counts it.  In the
-            // planned one it takes no k at all until it is confirmed: it
-            // only reads what the next confirmed k would be, and the close
-            // takes it if the frame arm names the planned node.  Taking it
-            // at entry and giving it back needed the k to still be the last
-            // one handed out, and on hdfs-17899 bug2 it was not -- the real
-            // heartbeat convert had already been numbered against it and
-            // came out "activation 2, not 1".
-            if (unattributed(activationSource)) {
-                String planned = task.invocationCounterKey();
-                if (!actualOrdinalByScope.containsKey(planned)) {
-                    actualOrdinalByScope.put(planned,
-                            invocationOrdinals.getOrDefault(planned, 0) + 1);
-                }
-            }
             String sourceMismatch = sourceAdmissionMismatch(task,
                     registeredReceiverSource, context);
             if (!sourceMismatch.isEmpty()) {
@@ -524,9 +487,7 @@ final class ConcolicTaskPlan {
             boolean exactOutgoingAddress =
                     mayDeferMissingContextToOutgoingAnchor(task,
                             registeredReceiverSource, context);
-            boolean provisional = admitsProvisionally(task, activationSource,
-                    observed, exactOutgoingAddress, actualOrdinalByScope);
-            if (!provisional && !task.acceptsRootInvocation(observed,
+            if (!task.acceptsRootInvocation(observed,
                     exactOutgoingAddress)) {
                 // Said out loud, as the loop-body path already says it.  A
                 // non-loop root that ran and was refused on its address was
@@ -711,58 +672,6 @@ final class ConcolicTaskPlan {
         return " (attributed to " + activationSource.key() + ")";
     }
 
-    /**
-     * Whether an activation this run has attributed nowhere may answer the
-     * planned address for now, to be decided at close.
-     *
-     * <p>The planner attributes an activation by its own stamp, else the
-     * unique stamp among its own FRAMES, else the unregistered source -- and
-     * the frame arm is knowable only once the activation has run its frames.
-     * At a root entry the replay has none of them yet, so an activation
-     * whose frames will name the planned node is indistinguishable from one
-     * that belongs to nobody.  Refusing both at entry withheld the first
-     * kind: on hdfs-17899 bug2 that is twenty-five activations of
-     * REGION.1f6914ec refused with "ran on workload/unregistered, not sps".
-     * So it is admitted against the planned address, provisionally, and
-     * {@code rootContextSelector.unconfirmed} -- which IS the frame arm,
-     * over the frames the activation actually ran -- decides at close.  A
-     * refusal there gives the ordinal back.</p>
-     */
-    private synchronized boolean admitsProvisionally(
-            RuntimeTask task, SourceRef activationSource,
-            OccurrenceAddress observed, boolean exactOutgoingAddress,
-            Map<String, Integer> actualOrdinalByScope) {
-        if (!unattributed(activationSource)
-                || task.acceptsRootInvocation(observed,
-                exactOutgoingAddress)) {
-            return false;
-        }
-        String scope = task.invocationCounterKey();
-        OccurrenceAddress planned = task.observedAddress(task.sourceKey,
-                actualOrdinalByScope);
-        if (!task.acceptsRootInvocation(planned, exactOutgoingAddress)) {
-            return false;
-        }
-        task.markProvisionalOrdinal(scope, planned.ordinal());
-        // Said out loud, because this is the one admission that is not the
-        // address: the run attributed this activation to no node, and it is
-        // being offered the PLANNED node's next k on the plan's word alone.
-        // Whether the close then confirms it decides who owns that k, and
-        // until both halves were on the rows there was no way to see an
-        // unattributed activation taking the k the addressed one needed.
-        task.noteProvisionalAdmission("read " + scope + " as activation "
-                + planned.ordinal());
-        return true;
-    }
-
-    private synchronized void countInvocation(
-            String scope, Map<String, Integer> actualOrdinalByScope) {
-        if (actualOrdinalByScope.containsKey(scope)) return;
-        int ordinal = invocationOrdinals.getOrDefault(scope, 0) + 1;
-        invocationOrdinals.put(scope, ordinal);
-        actualOrdinalByScope.put(scope, ordinal);
-    }
-
     /** Whether this run attributed the activation to no node at all. */
     static boolean unattributed(SourceRef activationSource) {
         return activationSource == null
@@ -771,29 +680,18 @@ final class ConcolicTaskPlan {
     }
 
     /**
-     * Gives back an ordinal a provisional admission took.
+     * Counts this physical entry once in the bucket it belongs to.
      *
-     * <p>Nothing to give back: a provisional admission never took the k,
-     * it only read what the next confirmed one would be.</p>
+     * <p>Once per entry however many tasks are offered it: the guard is the
+     * per-entry map, so two tasks sharing one counter scope do not advance
+     * it twice.</p>
      */
-    synchronized void releaseProvisionalOrdinal(RuntimeTask task) {
-        if (task != null) task.clearProvisionalOrdinal();
-    }
-
-    /**
-     * Takes the k a provisional admission was reading, now that the frame
-     * arm has confirmed it.
-     *
-     * <p>Numbering by confirmed order: a provisional activation holds no k
-     * while it runs, so an activation the close refuses never displaces the
-     * one that follows it.  Only here does the bucket advance.</p>
-     */
-    synchronized void confirmProvisionalOrdinal(RuntimeTask task) {
-        if (task == null || task.provisionalOrdinal <= 0) return;
-        invocationOrdinals.put(task.provisionalScope,
-                invocationOrdinals.getOrDefault(task.provisionalScope, 0)
-                        + 1);
-        task.clearProvisionalOrdinal();
+    private synchronized void countInvocation(
+            String scope, Map<String, Integer> actualOrdinalByScope) {
+        if (actualOrdinalByScope.containsKey(scope)) return;
+        int ordinal = invocationOrdinals.getOrDefault(scope, 0) + 1;
+        invocationOrdinals.put(scope, ordinal);
+        actualOrdinalByScope.put(scope, ordinal);
     }
 
     /** The source keys this run attributed to one live root entry. */
@@ -1186,19 +1084,25 @@ final class ConcolicTaskPlan {
          */
         String unconfirmed(Set<String> attributedSourceKeys) {
             if (attributedSourceKeys.isEmpty()) {
-                // Nothing attributed this activation to any node.  That is
-                // the absence of evidence, not evidence of another node --
-                // the same distinction the admission test draws for an
-                // absent inherited source, and it has to be drawn here too
-                // or the refusal simply moves from entry to close.  A replay
-                // reconstructs a receiver without its alias registration and
-                // reaches a region by a path that carries no inherited
-                // context; on 17960 that is every target activation of the
-                // seed, and refusing them left the run with no TARGET_REACH
-                // at all.  Node, epoch, region and ordinal still decided
-                // that this candidate was compatible; what is missing is a
-                // second opinion nobody offered.
-                return "";
+                // Nothing attributed this activation to any node, so it is
+                // the UNREGISTERED source's -- the third arm of the one
+                // attribution function, which the planner runs too.  That
+                // is an occurrence, and it is addressed there; it is never
+                // the planned node's next k.
+                //
+                // Answering "" for every anchor was the planned-node
+                // fallback, deleted at entry and living on here: on
+                // lane11741d it let activations on IPC handler threads --
+                // threads the recording never attributes to dn0 -- take
+                // dn0's k, so the five genuine activations on main were
+                // numbered 1, 3, 5, 7 and the addressed activation 4 was
+                // consumed by an activation that was nobody's.
+                return OccurrenceMinter.UNREGISTERED_SOURCE_KEY.equals(
+                        sourceKey) ? ""
+                        : "occurrence ran on "
+                        + OccurrenceMinter.UNREGISTERED_SOURCE_KEY
+                        + " (nothing attributed it to any node), but its"
+                        + " anchor names " + sourceKey;
             }
             boolean sameSource = false;
             for (String attributed : attributedSourceKeys) {
@@ -1456,19 +1360,6 @@ final class ConcolicTaskPlan {
          */
         int unaddressedCandidates;
         final Set<String> unaddressedReasons = new LinkedHashSet<>();
-        /** The bucket and k a provisional admission took, or "" / 0. */
-        String provisionalScope = "";
-        int provisionalOrdinal;
-
-        synchronized void markProvisionalOrdinal(String scope, int ordinal) {
-            provisionalScope = safe(scope);
-            provisionalOrdinal = ordinal;
-        }
-
-        synchronized void clearProvisionalOrdinal() {
-            provisionalScope = "";
-            provisionalOrdinal = 0;
-        }
 
         RuntimeTask(ExecutionTask task) {
             if (!task.executable()) {
@@ -1903,26 +1794,6 @@ final class ConcolicTaskPlan {
          */
         private final Set<String> requestContexts = new LinkedHashSet<>();
 
-        /**
-         * One activation admitted on the plan's word rather than on
-         * evidence, and what the close decided about it.
-         */
-        final Set<String> provisionalAdmissions = new LinkedHashSet<>();
-
-        /** Whether this activation is running on a provisional k. */
-        synchronized boolean holdsProvisionalOrdinal() {
-            return provisionalOrdinal > 0;
-        }
-
-        synchronized void noteProvisionalAdmission(String detail) {
-            provisionalAdmissions.add(candidateNote(detail));
-        }
-
-        synchronized void noteProvisionalOutcome(String detail) {
-            provisionalAdmissions.add(candidateNote(detail));
-            registerRunTotalsHook();
-        }
-
         synchronized void noteUnaddressedCandidate(String reason) {
             unaddressedCandidates++;
             unaddressedReasons.add(candidateNote(reason));
@@ -1966,8 +1837,6 @@ final class ConcolicTaskPlan {
             return unaddressedCandidates + " compatible activation(s) did "
                     + "not answer the addressed occurrence; "
                     + unaddressedReasons
-                    + (provisionalAdmissions.isEmpty() ? ""
-                    : "; provisional: " + provisionalAdmissions)
                     + (neverExisted
                     ? "; " + rootContextSelector.describe()
                     + " was never registered in this run" : "");

@@ -3708,13 +3708,7 @@ public final class ConcolicRegionRuntime {
             // candidate loop working, not a finding, so it is released without
             // a durable row.
             active.activation.noteUnaddressedCandidate(unaddressed);
-            active.activation.noteProvisionalOutcome(
-                    "close refused it: observed " + active.attributedSourceKeys());
             active.releaseActivationOrdinal();
-            // A provisional admission gives its k back: the frame arm has
-            // now answered, and it did not name the planned node, so this
-            // activation was never that address's k-th.
-            configuration().releaseProvisionalOrdinal(active.activation);
             active.abandoned = true;
             endLiveSelectedRegion();
             return;
@@ -3723,14 +3717,6 @@ public final class ConcolicRegionRuntime {
         // A later prefix or materialization rejection owns the sole durable
         // diagnostic; do not also report the same activation as an unmatched
         // occurrence when the workload terminates.
-        // Confirmed by the frame arm: the provisional k becomes this
-        // occurrence's, and the bucket advances here and nowhere else.
-        if (active.activation.holdsProvisionalOrdinal()) {
-            active.activation.noteProvisionalOutcome(
-                    "close confirmed it and advanced the planned bucket:"
-                            + " observed " + active.attributedSourceKeys());
-        }
-        configuration().confirmProvisionalOrdinal(active.activation);
         configuration().markOccurrenceClaimed(active.activation);
         // A target address that several activations of one region on one
         // source answer is separated by the only thing that distinguishes
