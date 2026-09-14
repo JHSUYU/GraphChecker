@@ -745,6 +745,74 @@ final class RuntimeRegionPlanner {
      * taken from the finalized activation seed; equal static sites in two
      * sequential activations therefore remain independent.
      */
+    /**
+     * Declares each IN capture site on exactly one consumer region.
+     *
+     * <p>A capture site inside a helper lies inside every selected region
+     * whose code reaches it, and each of them declared the port.  The value
+     * crosses the wire once, so the attach can only file it on one of them
+     * -- {@code ConcolicRegionRuntime.attachConsumerRegion} names the
+     * innermost live occurrence that declares it -- and every other
+     * declaring occurrence was then reported at IMPORT as
+     * PLANNED_HANDOFF_NOT_REPRODUCED.  On hdfs-17899 bug2 that is
+     * resp.block-key-id and resp.block-key-expiry-date, declared both by
+     * the per-call region rooted at
+     * {@code PBHelper.convert(BlockKeyProto)} and by the loop-body region
+     * rooted at the enclosing {@code convert(ExportedBlockKeysProto)}: 18
+     * handoff events, all naming the per-call region, and 12
+     * not-reproduced rows, all on the loop-body one.</p>
+     *
+     * <p>The plan now states the same rule the attach applies: the site
+     * belongs to the innermost selected region containing it, which is the
+     * region whose own root method IS the capture's method when one is
+     * selected.  H is (portId, consumer occurrence, k-th attach, element
+     * path), so two consumers for one wire value would be two variables for
+     * one value; this keeps it one.</p>
+     */
+    private static void retainInnermostCommunicationConsumers(
+            List<Map<String, Object>> plans) {
+        Set<String> selectedRoots = new LinkedHashSet<>();
+        for (Map<String, Object> plan : plans) {
+            String root = rootSelectorMethod(plan);
+            if (!root.isEmpty()) selectedRoots.add(root);
+        }
+        for (Map<String, Object> plan : plans) {
+            Object encoded = plan.get(CommunicationHandoffSpec.FIELD);
+            if (!(encoded instanceof List)) continue;
+            String root = rootSelectorMethod(plan);
+            List<?> declared = (List<?>) encoded;
+            List<Object> retained = new ArrayList<>();
+            for (Object element : declared) {
+                if (!(element instanceof Map)) continue;
+                Map<?, ?> site = (Map<?, ?>) element;
+                String method = stringValue(site.get(
+                        CommunicationCatalogContract
+                                .PORT_DEFINITION_METHOD));
+                boolean inbound = CommunicationHandoffSpec.IN.equals(
+                        stringValue(site.get(
+                                CommunicationHandoffSpec.SIDE)));
+                if (inbound && !method.isEmpty() && !method.equals(root)
+                        && selectedRoots.contains(method)) {
+                    continue;
+                }
+                retained.add(element);
+            }
+            if (retained.size() == declared.size()) continue;
+            if (retained.isEmpty()) {
+                plan.remove(CommunicationHandoffSpec.FIELD);
+            } else {
+                plan.put(CommunicationHandoffSpec.FIELD, retained);
+            }
+        }
+    }
+
+    /** The method a region's root selector names, or {@code ""}. */
+    private static String rootSelectorMethod(Map<String, Object> plan) {
+        Object selector = plan.get("rootSelector");
+        return selector instanceof Map
+                ? stringValue(((Map<?, ?>) selector).get("method")) : "";
+    }
+
     private static void retainInnermostExactGoalEventOwners(
             List<Map<String, Object>> plans, TraceIndex trace) {
         retainInnermostExactGoalEventOwners(plans, trace,
@@ -1237,6 +1305,7 @@ final class RuntimeRegionPlanner {
         republishEnclosingActivationIds(result.regionPlans,
                 publishedActivationIds);
         retainInnermostExactGoalEventOwners(result.regionPlans, trace);
+        retainInnermostCommunicationConsumers(result.regionPlans);
         for (Map<String, Object> edge : regionEdges) {
             String edgeKind = stringValue(edge.get("kind"));
             if (!"RUNTIME_FIELD_FLOW".equals(edgeKind)
