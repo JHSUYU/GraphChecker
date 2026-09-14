@@ -40,7 +40,6 @@ import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.HALT_AF
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.SKIP_RESULT_PUBLICATION_FAILED;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.SKIP_TERMINAL_NEVER_REACHED;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.diagAfterVmClose;
-import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.exceptionChain;
 import static edu.uva.liftlab.graphchecker.runtime.SharedStateCapture.assembleRecordedSharedState;
 import static edu.uva.liftlab.graphchecker.runtime.SharedStateCapture.evidenceIdentity;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.rootCause;
@@ -433,9 +432,6 @@ final class ConcolicResultPublisher {
             RecordedEvidenceIdentity identity) {
         active.nameUnreachedTargetBranch();
         addResultIdentity(result, active, exitKind, exceptionType);
-        if (throwable != null && !"CUT".equals(exitKind)) {
-            result.add("exceptionChain", exceptionChain(throwable));
-        }
         if (active.loopBoundCut != null) {
             result.add("pathCut", active.loopBoundCut.deepCopy());
         }

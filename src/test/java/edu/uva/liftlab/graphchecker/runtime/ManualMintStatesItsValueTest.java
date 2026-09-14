@@ -291,7 +291,7 @@ public class ManualMintStatesItsValueTest {
         long token = 970001L + opened.size();
         ConcolicRegionRuntime.ActiveRegion active =
                 new ConcolicRegionRuntime.ActiveRegion(token, runtime, null,
-                        Thread.currentThread(), false);
+                        Thread.currentThread());
         ConcolicRegionRuntime.ACTIVE.put(token, active);
         opened.add(token);
         return active;

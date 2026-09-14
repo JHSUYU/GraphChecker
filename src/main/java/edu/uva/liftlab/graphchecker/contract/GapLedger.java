@@ -243,9 +243,6 @@ public final class GapLedger {
         blocking(composer, "COMPOSITION_GAP",
                 "the emitter refused a term it could not lower, so the"
                         + " formula does not contain the step it refused");
-        blocking(composer, "TARGET_REACH_QUERY_ABSENT",
-                "no target reach query means the formula asks no question"
-                        + " about the target");
         blocking(composer, "ROOT_NOT_ON_ANY_PATH",
                 "the recording minted a root and no admitted path's"
                         + " condition or fatal predicate mentions it, so the"
@@ -254,10 +251,6 @@ public final class GapLedger {
         blocking(composer, "MissingTargetInstanceSymbolicContext",
                 "the target activation carries no symbolic context, so no"
                         + " root reaches it");
-        blocking(composer, "GUARDED_READ_ORDER_UNKNOWN",
-                "a read whose candidate writers admit no single program"
-                        + " order carries no last-writer-wins axiom, so its"
-                        + " arms do not describe a sequence of writes");
         blocking(composer, "FAULT_IDLE_INITIAL_HOST_UNKNOWN",
                 "an INITIAL arm that names no activation whose entry took"
                         + " the snapshot leaves the fault claiming something"
@@ -269,53 +262,10 @@ public final class GapLedger {
         // is what makes them blocking -- they are listed so the vocabulary is
         // written down rather than left to the default.
         for (String code : new String[]{
-                "EXECUTION_DIVERGENCE",
-                "GUARDED_READ_WRITER_CASE_UNLINKED",
                 "WIRE_FLOW_VALUE_UNBOUND",
-                "WIRE_FLOW_CONSUMER_FIELD_UNATTACHED",
-                "StructuralWitnessExecutionScopeMissing",
-                "StructuralWitnessExecutionScopeConflict",
-                "StructuralWitnessIdentityMissing",
-                "StructuralWitnessContainerShapeConflict",
-                "RequestFaultControlAmbiguous",
-                "RequestFaultControlMarkerMissing",
-                "SymbolicSourceAuthorityMissing",
-                "SymbolicSourceEvidenceMalformed",
-                "ConfiguredSourceMaterializationConflict",
-                "ConfiguredSourceMaterializationMissing",
-                "ConfiguredSourceMaterializationSortConflict",
-                "ConfiguredSourceMaterializationSourceKeyMissing",
-                "ConfiguredSourcePhaseEventConflict",
-                "ConfiguredSourceRecordedEventConflict",
-                "ContainerOperandSort",
-                "GuardedMergeArmSortConflict",
-                "GuardedMergeCycle",
-                "GuardedMergeMalformed",
-                "ManualSourceMaterializationConflict",
-                "ManualSourceMaterializationMissing",
-                "ManualSourceMaterializationSortConflict",
                 "MODEL_SEMANTICS_MISSING",
-                "PlaceholderExpression",
-                "SelectedConcreteTargetObservationMalformed",
-                "SelectedConcreteTargetObservationMissing",
-                "SelectedConcreteTargetReachEventMismatch",
-                "SelectedTargetPathWitnessMalformed",
-                "SelectedTargetPathWitnessMismatch",
-                "SelectedTargetPathWitnessMissing",
-                "SelectedTargetPredicateMismatch",
-                "SelectedTargetReachEventMalformed",
-                "SelectedTargetReachEventMismatch",
-                "SelectedTargetReachEventMissing",
-                "SelectedTargetSourceAttestationMalformed",
-                // A value the replay did not determine, and a merge over
-                // another region's cases: both are the propagation cut
-                // arriving at a lowering, refused rather than chosen
-                // between.  The nine refusals that used to name which part
-                // of a read's arm set could not be stated are retired with
-                // the arms.
                 "UNRESOLVED_SHARED_READ",
-                "CASE_MERGE_IN_PATH",
-                "UnconstrainedContainerRead"}) {
+                "CASE_MERGE_IN_PATH"}) {
             blocking(composer, code,
                     "a refusal the composer made: the step it refused is not in"
                             + " the formula the witness satisfies");
@@ -398,28 +348,6 @@ public final class GapLedger {
         // row by VmHandoffEvidence.eventFault.
         String propagation = "COMPOSE/SYMBOLIC_PROPAGATION";
         for (String code : new String[]{
-                "CASE_CLOSURE_IDENTITY_MISSING",
-                "CASE_CLOSURE_IDENTITY_AMBIGUOUS",
-                "INITIAL_SNAPSHOT_HOST_UNKNOWN",
-                "LOCAL_CASE_OBSERVATION_AMBIGUOUS",
-                "LOCAL_CASE_OBSERVATION_MISSING",
-                "LOCAL_CASE_OBSERVATION_PC_MISSING",
-                "LOCAL_CASE_OBSERVATION_SCOPE_MISSING",
-                "READ_CHOICE_IDENTITY_MISSING",
-                "READ_FROM_CANDIDATE_IDENTITY_MISSING",
-                "READ_FROM_CANDIDATE_SNAPSHOT_MISMATCH",
-                "READ_FROM_INITIAL_SOURCE_MISSING",
-                "READ_FROM_SNAPSHOT_INCOMPLETE",
-                "READ_FROM_SNAPSHOT_MISMATCH",
-                "READ_FROM_WRITER_CASE_AMBIGUOUS",
-                "READ_FROM_WRITER_CASE_CLOSURE_EMPTY",
-                "READ_FROM_WRITER_CASE_CLOSURE_MISMATCH",
-                "READ_FROM_WRITER_CASE_CLOSURE_MISSING",
-                "READ_FROM_WRITER_CASE_CLOSURE_OMITS_WRITER",
-                "READ_FROM_WRITER_CASE_MISSING",
-                "READ_FROM_WRITER_CASE_PARTITION_INCOMPLETE",
-                "READ_FROM_WRITER_CASE_PC_MISSING",
-                "READ_FROM_WRITER_VERSION_AMBIGUOUS",
                 "RPC_ATTACH_SENDER_EXPRESSION_MISSING"}) {
             blocking(propagation, code,
                     "a read whose writer, arm, case, version or payload the"
@@ -443,18 +371,11 @@ public final class GapLedger {
         // pin, decides the marker outside the formula.
         // ------------------------------------------------------------------
         String fault = "COMPOSE/FAULT_CONTROL";
-        blocking(fault, "FAULT_IDLE_NO_RETAINED_ARM",
-                "the fault idles every candidate writer of a read and the"
-                        + " location published no retained prior version, so"
-                        + " the reading case observes nothing");
         blocking(fault, "FAULT_IDLE_INITIAL_HOST_IDLED",
                 "the marker idles the activation whose entry took the"
                         + " INITIAL snapshot, so the snapshot holds a JVM"
                         + " default rather than the version the fault"
                         + " retained");
-        blocking(fault, "FAULT_PARTITION_UNSPLIT",
-                "a fault-controlled selector the reach driver may pin would"
-                        + " freeze the marker the claim is about");
 
         // ------------------------------------------------------------------
         // COMPOSE / COVERAGE.
@@ -488,20 +409,6 @@ public final class GapLedger {
                         + " sample");
         for (String code : new String[]{
                 "COMPOSED_SMT_EMPTY",
-                "CASE_PATH_CONDITION_DEPENDENCIES_MISSING",
-                "CASE_SELECTOR_PARTITIONS_MISSING",
-                "CASE_SELECTOR_PARTITION_MALFORMED",
-                "CASE_SELECTOR_PARTITION_DUPLICATE",
-                "CASE_PATH_CONDITION_DEPENDENCY_MALFORMED",
-                "CASE_PATH_CONDITION_ARM_MALFORMED",
-                "INITIAL_SOURCE_DEPENDENCY_MALFORMED",
-                "CASE_DEPENDENCY_TARGET_GUARD_NOT_UNIQUE",
-                "CASE_DEPENDENCY_SELECTOR_PARTITION_NOT_UNIQUE",
-                "CASE_DEPENDENCY_SELECTOR_DECLARATION_MISSING",
-                "CASE_DEPENDENCY_BASE_SELECTOR_DECLARATION_MISSING",
-                "CASE_DEPENDENCY_TARGET_DEFINITION_MISSING",
-                "CASE_DEPENDENCY_PC_DEFINITION_MISSING",
-                "CASE_DEPENDENCY_BASE_DEFINITION_MISSING",
                 "CONFIGURED_SOURCE_TERM_NOT_DECLARED_OR_SORT_MISMATCH",
                 "MANUAL_SYMBOLIC_ROOT_TERM_NOT_DECLARED_OR_SORT_MISMATCH",
                 "SYMBOLIC_ROOT_TERM_AUTHORITY_CONFLICT",
@@ -509,8 +416,7 @@ public final class GapLedger {
                 "MANUAL_SYMBOLIC_ROOT_CONFLICT",
                 "CONFIGURED_SOURCE_MATERIALIZATION_MALFORMED",
                 "CONFIGURED_SOURCE_MATERIALIZATION_CONFLICT",
-                "UNDECIDED_SOLVER_VALUATIONS",
-                "DEGENERATE_UNCONSTRAINED_ROOT_SPACE"}) {
+                "UNDECIDED_SOLVER_VALUATIONS"}) {
             blocking(solver, code,
                     "the reach extractor could not read the model it was handed, so"
                             + " its reachability answer is about the artifact rather than the"
@@ -582,8 +488,6 @@ public final class GapLedger {
                 "UNSUPPORTED_PATH_FLIP",
                 "PATH_FLIP_MATERIALIZATION_GAP",
                 "PATH_FLIP_REPLAY_NOT_ADMITTED",
-                "PATH_FLIP_REPLAY_ENGINE_UNAVAILABLE",
-                "PATH_FLIP_REPLAY_PRODUCED_NO_RESULT",
                 "PATH_FLIP_SOLVER_TIMEOUT",
                 "LINKED_REPLAY_LEFT_TOPOLOGY_EPOCH",
                 "REGION_PATH_WAVE_BUDGET_REACHED",
