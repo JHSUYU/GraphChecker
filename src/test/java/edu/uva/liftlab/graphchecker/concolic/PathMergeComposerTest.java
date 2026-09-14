@@ -27,6 +27,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertSame;
@@ -66,6 +67,8 @@ public class PathMergeComposerTest {
     private static final String CLOCK_TERM = "sym__EXAMPLE_NOW__1";
     private static final String HANDOFF_SYMBOL =
             PathMergeComposer.HANDOFF_SYMBOL_MARK + "PORT_KEY_1";
+    private static final String HANDOFF_TERM =
+            JavaSmtSorts.smtName("sym__" + HANDOFF_SYMBOL);
     private static final String LOOP_OCCURRENCE =
             "app/nn0#epoch0/region/REGION.a#1";
     private static final String LOOP_SITE = "<C: void m()>#u7";
@@ -167,6 +170,10 @@ public class PathMergeComposerTest {
                 refused.get(0).getAsJsonObject().get("kind").getAsString());
         assertTrue(refused.get(0).getAsJsonObject().get("detail")
                 .getAsString().contains(FIELD_SIGNATURE));
+        // Two sources of one field are two roots: rendered by the field
+        // alone, bug3's retired and current expiry roots read as one.
+        assertTrue(refused.get(0).getAsJsonObject().get("detail")
+                .getAsString().contains(SOURCE));
         assertEquals(0, roots(minted).size());
         assertEquals("FINAL_REFUSED", minted.manifest.get(
                 ComposedManifest.FINAL_STATUS).getAsString());
@@ -344,6 +351,24 @@ public class PathMergeComposerTest {
         assertFalse("and the path is not composed",
                 paths(result).get(0).getAsJsonObject()
                         .get("admitted").getAsBoolean());
+
+        // The values it READ at its handoffs, whether or not an obligation
+        // answered one.  Left unconstrained where nobody answered, a healthy
+        // path took any arm of any family and satisfied the fatal arm with
+        // nothing moved -- lane17897h's elected claim.
+        JsonObject read = query();
+        read.getAsJsonArray("paths").add(path("read", "GROUP.SEED",
+                notEqual(handoff(), constant(0)),
+                notEqual(constant(1), constant(0))));
+        JsonObject arrived = ranAt("GROUP.SEED", "true");
+        arrived.add("vmHandoffEvents", handoffEvents(constant(9), 11L, 12L));
+        PathMergeComposer.Result carried = run(
+                Files.createTempDirectory("path-merge-read"), read,
+                Arrays.asList(arrived, ranAt("GROUP.FLIP", "false")));
+        assertFalse(gates(carried).toString().contains(
+                PathMergeComposer.PATH_NOT_SELF_CONSISTENT));
+        assertTrue("the arrival it read is this path's own control",
+                carried.smtLib.contains("(= " + HANDOFF_TERM + " 9)"));
     }
 
     /**
@@ -409,7 +434,8 @@ public class PathMergeComposerTest {
                 .getAsJsonArray("handoffFamilies").get(0).getAsJsonObject()
                 .getAsJsonArray("arms");
         JsonObject arm = arms.get(arms.size() - 1).getAsJsonObject();
-        assertEquals("9", arm.get("deliveredValue").getAsString());
+        assertEquals("the arm is the wire, not the answer",
+                "7", arm.get("deliveredValue").getAsString());
         assertEquals("0", arm.get(VmHandoffEvidence.ANSWERED_VALUE)
                 .getAsString());
     }
@@ -541,7 +567,10 @@ public class PathMergeComposerTest {
         event.addProperty(InSessionReadResolver.HANDOFF_SYMBOL,
                 HANDOFF_SYMBOL);
         event.addProperty("javaType", "I");
-        event.addProperty("recordedValue", "9");
+        // What arrived, which is the delivering expression's own value: the
+        // composition reads it as this replay's own control now.
+        event.addProperty("recordedValue", optionalString(delivered, "_exp")
+                .replace("Y_I_", ""));
         event.add("expression", delivered);
         JsonArray events = new JsonArray();
         events.add(event);

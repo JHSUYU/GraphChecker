@@ -470,10 +470,11 @@ public final class InSessionReadResolver {
                                           int depth) {
         if (!node.has("fieldOffset") || !node.has("owner")) return null;
         JsonElement owner = rewrite(node.get("owner"), visiting, depth + 1);
+        long slot = optionalLongInteger(node, "fieldOffset", 0L);
         long rid = referencedObject(owner);
+        if (rid <= 0L) rid = containerElement(owner, slot);
         if (rid <= 0L) return null;
-        String location = "INSTANCE_FIELD/" + rid + "#"
-                + optionalLongInteger(node, "fieldOffset", 0L);
+        String location = "INSTANCE_FIELD/" + rid + "#" + slot;
         TreeMap<Long, String> versions = locationVersions.get(location);
         if (versions == null || versions.isEmpty()) return null;
         // The node states the version it read, so nothing is inferred from
@@ -558,6 +559,54 @@ public final class InSessionReadResolver {
             resolved.getAsJsonObject().addProperty(INITIAL_TAG, true);
         }
         return resolved;
+    }
+
+    /**
+     * The object an element read out of a container names, or -1.
+     *
+     * <p>A read through an iterator -- {@code for (BlockKey k : map.values())
+     * k.getExpiryDate()} -- has no reference for an owner: the owner is the
+     * relation chain that put the elements there, {@code VALUE(NEXT(ITERATOR(
+     * ENTRY_VIEW(PUT(PUT(SNAPSHOT_BASE(STATE))))))).}  The elements
+     * themselves are recorded in it, as the references the PUTs stored, so
+     * where exactly one of them is an object this replay published the slot
+     * for, that element is the one read and the walk continues into it.
+     * Several are several objects and the relation does not say which was
+     * reached, so nothing is chosen -- the projection stays a projection and
+     * is pinned to the value the recording states for it.</p>
+     */
+    private long containerElement(JsonElement owner, long slot) {
+        Set<Long> named = new LinkedHashSet<>();
+        collectReferences(owner, named, 0);
+        long only = -1L;
+        for (Long candidate : named) {
+            if (!locationVersions.containsKey(
+                    "INSTANCE_FIELD/" + candidate + "#" + slot)) {
+                continue;
+            }
+            if (only > 0L) return -1L;
+            only = candidate;
+        }
+        return only;
+    }
+
+    /** Every object reference inside one already-resolved expression. */
+    private static void collectReferences(JsonElement expression,
+                                          Set<Long> into, int depth) {
+        if (expression == null || depth > MAX_DEPTH) return;
+        if (expression.isJsonArray()) {
+            for (JsonElement element : expression.getAsJsonArray()) {
+                collectReferences(element, into, depth + 1);
+            }
+            return;
+        }
+        if (!expression.isJsonObject()) return;
+        long rid = referencedObject(expression);
+        if (rid > 0L) into.add(rid);
+        for (Map.Entry<String, JsonElement> field
+                : expression.getAsJsonObject().entrySet()) {
+            collectReferences(field.getValue(), into, depth + 1);
+        }
     }
 
     /**
