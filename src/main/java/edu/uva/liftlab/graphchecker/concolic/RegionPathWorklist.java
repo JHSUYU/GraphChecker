@@ -416,15 +416,17 @@ public final class RegionPathWorklist {
             }
             Boolean required = requiredTargetOutcome(task, fatal.siteId());
             if (fatal.isConcreteObservation()) {
-                if (required == null
-                        || fatal.sourceTakenOutcome() != required) {
-                    gap("TARGET_PREFIX_CONCRETE_OUTCOME_MISMATCH",
-                            "TARGET_CONCRETE_DECISION_CANNOT_BE_FLIPPED",
-                            path.regionId(), path.pathKey(), targetSite,
-                            targetOccurrence);
-                }
-                // A matching exact concrete target event is already the
-                // existential reach witness. It has no predicate to flip.
+                // A concrete target decision has no predicate to flip, on
+                // either arm.  It used to be a blocking gap when its outcome
+                // was not the required one, which read an ordinary seed path
+                // as a defect: HDFS-17960's target branch compares two
+                // concrete ints and the root reaches it only by control
+                // dependence upstream, so the seed decides it the healthy
+                // way and the flip that matters belongs to another region's
+                // worklist.  Reaching the site with a published targetReach
+                // is the reach, whatever outcome it took; whether the fatal
+                // arm was ever reached is TARGET_NOT_REACHED, decided once,
+                // by the composition.
                 return result;
             }
             int fatalPc = fatal.summaryPcIndex();
