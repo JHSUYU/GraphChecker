@@ -95,7 +95,6 @@ public final class InSessionReadResolver {
     /** Anchor -> definition, over every row of the replay. */
     private final Map<String, JsonElement> definitions;
     /** Attach event id -> the producer expression that arrived there. */
-    private final Map<Long, JsonElement> handoffs;
     /** The whole handoff row, by attach event: the source of {@code v_H}. */
     private final Map<Long, JsonObject> handoffRows;
     /** "kind/rid#slot\nversion" -> that write's expression. */
@@ -122,13 +121,11 @@ public final class InSessionReadResolver {
 
     private InSessionReadResolver(
             Map<String, JsonElement> definitions,
-            Map<Long, JsonElement> handoffs,
             Map<Long, JsonObject> handoffRows,
             Map<String, JsonElement> writes,
             Set<String> initialVersions,
             Map<String, TreeMap<Long, String>> locationVersions) {
         this.definitions = definitions;
-        this.handoffs = handoffs;
         this.handoffRows = handoffRows;
         this.writes = writes;
         this.initialVersions = initialVersions;
@@ -147,13 +144,12 @@ public final class InSessionReadResolver {
     public static InSessionReadResolver of(
             Collection<JsonObject> replayRows) {
         Map<String, JsonElement> definitions = new LinkedHashMap<>();
-        Map<Long, JsonElement> handoffs = new LinkedHashMap<>();
         Map<Long, JsonObject> handoffRows = new LinkedHashMap<>();
         Map<String, JsonElement> writes = new LinkedHashMap<>();
         Set<String> initial = new LinkedHashSet<>();
         Map<String, TreeMap<Long, String>> byLocation = new LinkedHashMap<>();
         if (replayRows == null) {
-            return new InSessionReadResolver(definitions, handoffs,
+            return new InSessionReadResolver(definitions,
                     handoffRows, writes,
                     initial, byLocation);
         }
@@ -176,12 +172,7 @@ public final class InSessionReadResolver {
                 if (!encoded.isJsonObject()) continue;
                 JsonObject event = encoded.getAsJsonObject();
                 long attach = optionalLongInteger(event, "attachEventId", -1L);
-                if (attach >= 0L) {
-                    handoffRows.putIfAbsent(attach, event);
-                    if (event.has("expression")) {
-                        handoffs.putIfAbsent(attach, event.get("expression"));
-                    }
-                }
+                if (attach >= 0L) handoffRows.putIfAbsent(attach, event);
             }
             for (JsonElement encoded : array(row, "sharedFieldVersions")) {
                 if (!encoded.isJsonObject()) continue;
@@ -212,7 +203,7 @@ public final class InSessionReadResolver {
                 }
             }
         }
-        return new InSessionReadResolver(definitions, handoffs,
+        return new InSessionReadResolver(definitions,
                 handoffRows, writes,
                 initial, byLocation);
     }
@@ -324,18 +315,12 @@ public final class InSessionReadResolver {
             // only at the recorded handoff.
             JsonObject row = handoffRows.get(event);
             JsonElement minted = handoffSymbol(row);
-            if (minted != null) return minted;
-            // A row from before the mint carries no v_H.  Its family has
-            // exactly one pair, so inlining the delivered expression is
-            // that family, and the two readings agree.
-            JsonElement source = node.get(VmExpressionIr.EXPRESSION);
-            if (source == null) {
-                source = unwrapBoundary(handoffs.get(event), event);
+            if (minted == null) {
+                return unresolved("boundary " + event + " mints no "
+                        + HANDOFF_SYMBOL + ": the value that crossed the"
+                        + " wire has no variable to be free in");
             }
-            if (source == null) {
-                return unresolved("boundary " + event + " carries nothing");
-            }
-            return rewrite(source, visiting, depth + 1);
+            return minted;
         }
         if ("ReadFromExpression".equals(type)) {
             return rewriteRead(node, visiting, depth);
@@ -577,20 +562,6 @@ public final class InSessionReadResolver {
      * of some other event inside the carried expression is a real hop and is
      * followed.</p>
      */
-    private static JsonElement unwrapBoundary(JsonElement carried,
-                                              long event) {
-        JsonElement value = carried;
-        while (value != null && value.isJsonObject()) {
-            JsonObject node = value.getAsJsonObject();
-            if (!"ConsumerBoundaryExpression".equals(
-                    optionalString(node, "_type"))
-                    || optionalLongInteger(node, "eventId", -1L) != event) {
-                return value;
-            }
-            value = node.get(VmExpressionIr.EXPRESSION);
-        }
-        return value;
-    }
 
     /** Names the node a refusal is about, without printing the tree. */
     private static String describe(JsonObject node) {

@@ -541,10 +541,15 @@ public final class GapLedger {
                 "nothing observed seeds this region's path space");
         blocking(explore, "MULTIPLE_EXPLORATION_SCOPE",
                 "one task spans several exploration scopes");
+        // TOPOLOGY_DIVERGENCE was registered here and again under CLASSIFY,
+        // a stage that no longer exists, and nothing raised either one: the
+        // only producer in the tree is the importer's epoch comparison, and
+        // a changed topology is something the campaign learned, not an
+        // alignment gap on a path.  Both registrations are retired; git grep
+        // finds no reader of the code outside this table.
         for (String code : new String[]{
                 "RPC_HANDOFF_GAP",
-                "REPLAY_DIVERGENCE",
-                "TOPOLOGY_DIVERGENCE"}) {
+                "REPLAY_DIVERGENCE"}) {
             blocking(explore, code,
                     "an alignment gap on a path the replay actually walked:"
                             + " the recorded evidence for a step of that"
@@ -650,6 +655,18 @@ public final class GapLedger {
                         + " that location is unresolvable");
         blocking(importer, "REGION_REPLAY_PREFIX_UNMATCHED",
                 "the replay did not follow the prefix the plan addressed");
+        diagnostic(importer, "PLANNED_HANDOFF_NOT_REPRODUCED",
+                "a selected communication binding this replay did not"
+                        + " reproduce is an admission gap of this epoch, not"
+                        + " a new topology: the paths it did publish still"
+                        + " extend the epoch");
+        diagnostic(importer, "TOPOLOGY_DIVERGENCE",
+                "a flip that changes the topology found a new one: the"
+                        + " handoff or occurrence it ran is exact evidence"
+                        + " the plan had not addressed, and the next"
+                        + " iteration addresses it -- withholding the claim"
+                        + " on it would refuse the run for having learned"
+                        + " something");
         onKeptSlice(importer, "REGION_TASK_NO_PUBLISHED_ACTIVATION",
                 "a planned task published neither an activation nor a skip:"
                         + " on the kept slice its region contributes no case"
@@ -724,9 +741,6 @@ public final class GapLedger {
                         + " not contain, off it a task root dependence never"
                         + " selected produced nothing, which is what the"
                         + " slice already said about it");
-        blocking(classify, "TOPOLOGY_DIVERGENCE",
-                "the composed iteration's topology still diverges from the"
-                        + " one it was planned against");
 
         // ------------------------------------------------------------------
         // REPLAY / COMMUNICATION -- the message envelope's own findings.  A

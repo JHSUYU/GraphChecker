@@ -135,6 +135,51 @@ public final class ConcolicSummaryImporterManualInputEvidenceTest {
         return action;
     }
 
+    /**
+     * A flip that opened a wire the plan never named is a new topology.
+     *
+     * <p>Its bundle is kept whole and out of this epoch: the paths it
+     * published are exact about a topology this epoch does not address, and
+     * the anchor's own address may shift under it, so they are not this
+     * epoch's evidence.  The rows name the unplanned handoff and where the
+     * bundle is, and the iteration loop plans the next epoch from them --
+     * where that H' is a family of its own with the one pair this bundle
+     * delivered, and its v_H' decisions are obligations.</p>
+     */
+    @Test
+    public void anUnplannedHandoffHoldsItsBundleForTheNextEpoch() {
+        ExecutionTask planned = task(action());
+        JsonObject raw = new JsonObject();
+        raw.addProperty("event", "CONCOLIC_REGION_RESULT");
+        raw.addProperty("taskId", "task");
+        raw.addProperty("occurrenceId", PLANNED + "#a1");
+        JsonObject handoff = new JsonObject();
+        handoff.addProperty("kind", "VM_HANDOFF_EVENT");
+        handoff.addProperty("portId", "REGION.r.out.opened-by-the-flip");
+        handoff.addProperty("handoffPhaseId", "HANDOFF_PHASE.new");
+        handoff.addProperty("exportEventId", 11);
+        handoff.addProperty("attachEventId", 12);
+        JsonArray events = new JsonArray();
+        events.add(handoff);
+        raw.add("vmHandoffEvents", events);
+
+        List<JsonObject> rows = new ArrayList<>();
+        boolean divergent = ConcolicSummaryImporter.topologyDivergences(
+                new ConcolicSummaryImporter.ResultRow(raw, 0), planned, rows);
+
+        assertTrue("the bundle must be held for the next epoch", divergent);
+        List<String> details = new ArrayList<>();
+        for (JsonObject row : rows) {
+            assertEquals("TOPOLOGY_DIVERGENCE",
+                    row.get("code").getAsString());
+            details.add(row.get("detail").getAsString());
+        }
+        assertTrue(details.toString(), details.get(0).startsWith(
+                "UNPLANNED_HANDOFF:HANDOFF_PHASE.new"));
+        assertTrue(details.toString(),
+                details.get(details.size() - 1).startsWith("BUNDLE:task"));
+    }
+
     private static ExecutionTask task(JsonObject action) {
         JsonObject task = new JsonObject();
         task.addProperty("sourceKey", "source");
