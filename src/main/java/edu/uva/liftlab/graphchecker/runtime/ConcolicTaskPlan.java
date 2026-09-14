@@ -384,7 +384,8 @@ final class ConcolicTaskPlan {
                 if (task.attachProducerOccurrenceByPort.isEmpty()) {
                     task.noteUnaddressedCandidate(
                             "matching enclosing root: "
-                                    + task.address.describe(observed));
+                                    + task.address.describe(observed)
+                                    + attribution(activationSource));
                 } else {
                     task.noteUnaddressedCandidate(
                             "matching enclosing root carried no selected "
@@ -506,6 +507,18 @@ final class ConcolicTaskPlan {
                             registeredReceiverSource, context);
             if (!task.acceptsRootInvocation(observed,
                     exactOutgoingAddress)) {
+                // Said out loud, as the loop-body path already says it.  A
+                // non-loop root that ran and was refused on its address was
+                // refused in silence, and the end of the run then reported
+                // the task as ROOT_NEVER_EXECUTED -- "no compatible
+                // activation was offered" -- which is a statement about the
+                // region never running.  On hdfs-17899 bug2 that is
+                // REGION.763d087e on target-dn: activations of
+                // Client$Connection.sendRpcRequest were offered and refused
+                // on the ordinal, and the row said the root never executed.
+                task.noteUnaddressedCandidate("matching root: "
+                        + task.address.describe(observed)
+                        + attribution(activationSource));
                 continue;
             }
             if (candidateLive[index]) continue;
@@ -641,6 +654,26 @@ final class ConcolicTaskPlan {
         String planned = safe(task.sourceKey);
         if (!RuntimeTraceContext.declaresEpoch(planned)) return planned;
         return activationSource == null ? planned : activationSource.key();
+    }
+
+    /**
+     * What this run attributed the refused activation to, for the note.
+     *
+     * <p>An ordinal refusal says "occurrence is activation 2, not 1" and
+     * that reads the same whether the activation ran on the planned node and
+     * was genuinely its second, or ran on no node this run could name and
+     * was counted in the planned bucket by the fallback.  Those are two
+     * different findings with two different owners -- on hdfs-17899 bug2 the
+     * DataNode's heartbeat runs on its own BPServiceActor thread, whose
+     * stamp the workload opens with {@code beginRequestIfRegistered}, so
+     * whether a given heartbeat carries the node at all depends on when the
+     * workload registered it -- and the row could not tell them apart.</p>
+     */
+    static String attribution(SourceRef activationSource) {
+        return activationSource == null
+                ? " (this run attributed the activation to no node, so it"
+                + " counted in the planned one)"
+                : " (attributed to " + activationSource.key() + ")";
     }
 
     /** The source keys this run attributed to one live root entry. */
