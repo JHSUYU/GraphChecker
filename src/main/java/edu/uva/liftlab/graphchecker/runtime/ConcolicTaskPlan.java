@@ -12,6 +12,7 @@ import edu.uva.liftlab.graphchecker.contract.ConfiguredSourcePhaseContract;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.ExecutionTask;
 import edu.uva.liftlab.graphchecker.contract.FieldPathSpec;
+import edu.uva.liftlab.graphchecker.contract.HandoffPhaseContract;
 import edu.uva.liftlab.graphchecker.contract.FieldPathSpec.DeclaredField;
 import edu.uva.liftlab.graphchecker.contract.InputActionCatalog;
 import edu.uva.liftlab.graphchecker.contract.JavaContainerTypes;
@@ -1530,6 +1531,14 @@ final class ConcolicTaskPlan {
             // more: the site is the identity.
             for (ModelAssignment assignment : modelAssignments) {
                 if (!assignment.configuredSourceAssignment()) continue;
+                // Answering a handoff IS a configured-source assignment
+                // whose phase is a HANDOFF_PHASE, so it arrives here.  It
+                // names no publish site of the frozen catalog -- H is
+                // (port, consumer occurrence, k, element path) and the
+                // phase id hashes exactly that -- so it is admitted on the
+                // one thing this task can check at load: that the phase
+                // belongs to a port this task receives on.
+                if (answersHandoffPhase(assignment)) continue;
                 ConfiguredSourcePhaseContract.Occurrence publish =
                         configuredSourcePhasesById.get(
                                 assignment.configuredSourcePhaseId);
@@ -1551,6 +1560,38 @@ final class ConcolicTaskPlan {
                 }
             }
             indexExportConsumerOccurrences(task, edgeBindings);
+        }
+
+        /**
+         * Whether this task can answer the handoff phase this model names.
+         *
+         * <p>The phase id is a hash of H, so it cannot be inverted -- but
+         * the VM label the mint uses is {@code engineLabelForPhase(phase,
+         * port)}, and the assignment carries it in its engine symbol.  So a
+         * phase is this task's exactly when one of the ports it receives on
+         * reproduces that label: the k-th attach and the element path are
+         * inside the hash and need no enumeration.  A phase no declared
+         * port reproduces stays rejected by name, like any other model that
+         * names something this task does not have.</p>
+         */
+        private boolean answersHandoffPhase(ModelAssignment assignment) {
+            String phaseId = assignment.configuredSourcePhaseId;
+            if (!HandoffPhaseContract.isPhaseId(phaseId)
+                    || assignment.hasContainerTarget()
+                    || !assignment.matchesConfiguredSource(phaseId, phaseId,
+                    "")) {
+                return false;
+            }
+            for (CommunicationHandoffSpec site
+                    : communicationHandoffs.values()) {
+                if (site.outgoing()) continue;
+                if (assignment.engineSymbol.contains(
+                        HandoffPhaseContract.engineLabelForPhase(phaseId,
+                                site.portId()))) {
+                    return true;
+                }
+            }
+            return false;
         }
 
         /** Solver value for the one exact getfield this hook precedes. */

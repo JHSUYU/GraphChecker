@@ -2498,8 +2498,13 @@ public final class ConcolicRegionRuntime {
             // The identity is the leaf's indexed path; what the VM
             // resolves on the owner is the field signature itself.
             String signature = leaf.signature();
+            // The phase id IS the identity of H -- it hashes the port, the
+            // consumer occurrence, k and the element path -- so the answer
+            // is looked up by it alone.  Naming the port and the element
+            // path again beside it was a second spelling of the same fact,
+            // and the solver emits the phase.
             ModelAssignment assignment = active.configuredSourceAssignment(
-                    phaseId, portId, elementPath, owner);
+                    phaseId, phaseId, "", owner);
             if (assignment != null
                     && !writeModeledField(owner, signature, assignment)) {
                 throw new IllegalStateException(

@@ -2,6 +2,7 @@ package edu.uva.liftlab.graphchecker.runtime;
 
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.concolic.VmHandoffEvidence;
+import edu.uva.liftlab.graphchecker.contract.ExecutionTask;
 import edu.uva.liftlab.graphchecker.contract.HandoffPhaseContract;
 import org.junit.Test;
 
@@ -116,17 +117,20 @@ public class HandoffMintTest {
         encoded.addProperty("valueType", "INT");
         encoded.addProperty("value", "119981");
         encoded.addProperty("configuredSourcePhaseId", phaseId);
-        encoded.addProperty("configuredSourceId", PORT);
-        encoded.addProperty("configuredSourceFieldSignature", ELEMENT);
+        // The phase id is the whole identity of H, so it is also the source
+        // id, and there is no field signature beside it: the element path is
+        // already inside the hash.  This is the row the solver emits.
+        encoded.addProperty("configuredSourceId", phaseId);
+        encoded.addProperty("configuredSourceFieldSignature", "");
         ConcolicRegionRuntime.ModelAssignment assignment =
                 new ConcolicRegionRuntime.ModelAssignment(encoded);
 
         assertTrue("the configured-source matcher is the one mechanism",
-                assignment.matchesConfiguredSource(phaseId, PORT, ELEMENT));
+                assignment.matchesConfiguredSource(phaseId, phaseId, ""));
         assertFalse("and it is keyed on the handoff occurrence",
                 assignment.matchesConfiguredSource(
                         HandoffPhaseContract.phaseId(PORT, CONSUMER, 2,
-                                ELEMENT), PORT, ELEMENT));
+                                ELEMENT), phaseId, ""));
 
         JsonObject answered = row(assignment.value);
         assertTrue(answered.get(VmHandoffEvidence.ANSWERED).getAsBoolean());
@@ -157,5 +161,109 @@ public class HandoffMintTest {
                 HandoffPhaseContract.phaseId(PORT, CONSUMER, 1, ELEMENT),
                 "M_I_field_HOFF.9c1d_org/apache/hadoop/ipc/Client$Call",
                 "119982", "I", answeredValue);
+    }
+
+    /**
+     * A plan carrying the answer to a handoff this task receives loads.
+     *
+     * <p>The model names no publish site of the frozen catalog -- H is not
+     * a configured source site -- so the load used to refuse the whole
+     * obligation: on laneVM19 every flip replay of bug3's target exited 1
+     * with "model assignment names an undeclared or unsupported configured
+     * source ... M_I_field_HOFF.68d851c9...".  It is admitted on the one
+     * thing the task can check: the phase belongs to a port it receives
+     * on, which the mint's own VM label proves.</p>
+     */
+    @Test
+    public void aPlanAnsweringAHandoffThisTaskReceivesLoads()
+            throws Exception {
+        String phaseId = HandoffPhaseContract.phaseId(PORT, CONSUMER, 1,
+                ELEMENT);
+        ConcolicTaskPlan.RuntimeTask task = new ConcolicTaskPlan.RuntimeTask(
+                ExecutionTask.decode(taskRow(phaseId, PORT)));
+
+        assertEquals(PORT, task.communicationHandoff(PORT, false).portId());
+    }
+
+    /** A phase no port of this task reproduces is refused, by name. */
+    @Test
+    public void aPlanAnsweringAHandoffThisTaskCannotIsRefused() {
+        String otherPort = "XCH.1174244c-3118-3892-a173-6cc5895259bf"
+                + ".resp.block-key-id";
+        String phaseId = HandoffPhaseContract.phaseId(otherPort, CONSUMER, 1,
+                ELEMENT);
+        try {
+            new ConcolicTaskPlan.RuntimeTask(ExecutionTask.decode(
+                    taskRow(phaseId, otherPort)));
+            org.junit.Assert.fail("a handoff of another port is not this"
+                    + " task's to answer");
+        } catch (IllegalArgumentException refused) {
+            String said = String.valueOf(refused.getMessage());
+            assertTrue(said, said.contains("undeclared or unsupported"));
+            assertTrue("the row is named", said.contains("HOFF."));
+        }
+    }
+
+    /**
+     * One task row receiving on {@code PORT}, answering {@code phaseId}
+     * with a model whose engine symbol is the label of {@code labelPort}.
+     */
+    private static JsonObject taskRow(String phaseId, String labelPort) {
+        JsonObject row = new JsonObject();
+        row.addProperty("taskId", "TASK.REPLAY.handoff");
+        row.addProperty("goalId", "GOAL.1");
+        row.addProperty("goalKind", "REGION_PATH_CLOSURE");
+        row.addProperty("regionId", "REGION.53092d3e");
+        row.addProperty("relationKey", "REL.1");
+        row.addProperty("sourceKey", "hdfs-17899/target-dn#epoch0");
+        row.addProperty("occurrenceId", CONSUMER);
+        row.addProperty("rootMethod", "<a.B: void run()>");
+        row.addProperty("instrumentationSelector", "sel");
+        JsonObject admission = new JsonObject();
+        admission.addProperty("state", "EXECUTABLE");
+        row.add("admission", admission);
+        JsonObject selector = new JsonObject();
+        selector.addProperty("kind", "GLOBAL_INVOCATION");
+        selector.addProperty("invocationOrdinal", 1);
+        selector.addProperty("method", "<a.B: void run()>");
+        JsonObject anchor = new JsonObject();
+        anchor.addProperty("kind", "REGISTERED_SOURCE");
+        anchor.addProperty("sourceKey", "hdfs-17899/target-dn#epoch0");
+        selector.add("causalAnchor", anchor);
+        row.add("rootSelector", selector);
+        row.add("branches", new com.google.gson.JsonArray());
+        row.add("inputActions", new com.google.gson.JsonArray());
+        JsonObject loopBound = new JsonObject();
+        loopBound.addProperty("schemaVersion", 1);
+        row.add("loopBound", loopBound);
+
+        JsonObject handoff = new JsonObject();
+        handoff.addProperty("portId", PORT);
+        handoff.addProperty("handoffLeafPath", PORT);
+        handoff.addProperty("side", "IN");
+        handoff.addProperty("direction", "REQUEST");
+        handoff.addProperty("captureKind", "CALL_RETURN");
+        handoff.addProperty("javaType", "int");
+        handoff.addProperty("declaredCallee", "<a.P: int id()>");
+        handoff.addProperty("definitionMethod", "<a.B: void run()>");
+        handoff.addProperty("definitionUnitIndex", 2);
+        com.google.gson.JsonArray handoffs = new com.google.gson.JsonArray();
+        handoffs.add(handoff);
+        row.add("communicationHandoffs", handoffs);
+
+        JsonObject model = new JsonObject();
+        model.addProperty("engineSymbol", "M_I_field_"
+                + HandoffPhaseContract.engineLabelForPhase(phaseId, labelPort)
+                + "_a/B$Carrier");
+        model.addProperty("inputSymbol", "SOURCE_PHASE:" + phaseId);
+        model.addProperty("valueType", "INT");
+        model.addProperty("value", "119980");
+        model.addProperty("configuredSourcePhaseId", phaseId);
+        model.addProperty("configuredSourceId", phaseId);
+        model.addProperty("configuredSourceFieldSignature", "");
+        com.google.gson.JsonArray models = new com.google.gson.JsonArray();
+        models.add(model);
+        row.add("modelAssignments", models);
+        return row;
     }
 }
