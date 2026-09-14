@@ -124,9 +124,8 @@ public class ManualMintStatesItsValueTest {
      *
      * <p>An occurrence is (node, epoch, region, k-th activation), and a
      * configured source names one mint SITE reached once per node lifecycle,
-     * so the epoch is the whole of what tells two mints of it apart.  On
-     * hdfs-17960 {@code root=false} landed on the epoch-0 mint -- made before
-     * the NameNode restart -- and rewrote a value the solver had said nothing
+     * so the epoch is the whole of what tells two mints of it apart.  A
+     * model at the wrong epoch rewrites a value the solver said nothing
      * about.  Root admission admits an activation nothing attributed, because
      * absence of evidence is not evidence of another occurrence; a model is
      * different in kind and demands positive evidence, so an unattributed

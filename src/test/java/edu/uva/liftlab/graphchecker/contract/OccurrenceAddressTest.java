@@ -116,13 +116,9 @@ public class OccurrenceAddressTest {
      * The counting bucket is the address without its ordinal.
      *
      * <p>Including the request family, and excluding that request's own
-     * ordinal.  Two requests running concurrently against one node are two
-     * populations -- numbering them together makes k depend on which
-     * arrived first, which is how hdfs-17899 bug2's two {@code
-     * nn0 REGION.2392e4b7} activations answered each other's addresses --
-     * while two rounds of ONE family are one population, because a replay
-     * whose heartbeat counter ran further than the recording's is still at
-     * the same occurrence.</p>
+     * ordinal: two concurrent requests are two populations, while two
+     * rounds of ONE family are one, because a replay whose counter ran
+     * further than the recording's is still at the same occurrence.</p>
      */
     @Test
     public void theCounterScopeIsTheAddressWithoutItsOrdinal() {

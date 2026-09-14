@@ -19,16 +19,13 @@ import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 /**
- * Three places where the replay used to invent a chain element, and what each
- * of them answers now.
+ * The replay invents no chain element.
  *
- * <p>They share one shape.  A link the recording does not supply is not a
- * licence to supply one: the engine keeps the value it holds and flags the
- * activation, and may never mint a root, pin a polarity, or accept a site as
- * the target because some site was reached.  Each rule pins both halves --
- * the invented answer gone, the honest one a named row in
- * {@code unresolvedInputs}, which blocks the summary as
- * {@code UNRESOLVED_INPUT}.</p>
+ * <p>A link the recording does not supply is not a licence to supply one:
+ * the engine keeps the value it holds and flags the activation, and may
+ * never mint a root, pin a polarity, or accept a site as the target because
+ * some site was reached.  Each rule pins both halves -- the invented answer
+ * gone, the honest one a named row in {@code unresolvedInputs}.</p>
  */
 public class NoFabricatedChainElementTest {
     private static final String METHOD = "<a.B: void run(int)>";

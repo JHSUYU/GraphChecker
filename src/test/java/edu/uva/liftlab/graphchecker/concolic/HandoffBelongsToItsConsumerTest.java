@@ -156,6 +156,35 @@ public class HandoffBelongsToItsConsumerTest {
                 assignment.get("inputSymbol").getAsString());
         assertEquals(WIRE_PHASE,
                 assignment.get("configuredSourcePhaseId").getAsString());
+        assertEquals("the row states the symbol the query declared",
+                WIRE_SYMBOL, assignment.get("engineSymbol").getAsString());
+        assertFalse("so the target is covered, not reported unassigned",
+                result.record.has("unassignedFlipVariables"));
+
+        // And a model may not rest on a field the recording states no
+        // value for: the accessor standing in for BlockKey.expiryDate is
+        // free, so laneVM23's model expired a key the replay then kept.
+        JsonObject free = wireQuery();
+        free.add(RegionPathWorklist.HANDOFF_CONTROLS,
+                query.get(RegionPathWorklist.HANDOFF_CONTROLS));
+        free.add("replayContract", BranchReplayContract.atSource(
+                BranchWitness.vmPcImmutable("TEST#u2",
+                        "<test.Wire: void run()>", 1, 1, false,
+                        BranchPredicateAlgebra.complement(parse(
+                                "{'_type':'BinaryExpression','_op':'>',"
+                                + "'_left':{'_type':'FieldAccessExpression',"
+                                + "'_java_type':'J','ownerClass':'test/Key',"
+                                + "'fieldOffset':8,'owner':{'_type':"
+                                + "'SymbolExpression','_java_type':'test/Key'"
+                                + ",'_exp':\"P_L'test/Key'_\"}},'_right':"
+                                + "{'_type':'SymbolExpression','_java_type':"
+                                + "'J','_exp':'" + WIRE_SYMBOL + "'}}")), 0,
+                        parse("{'eventId':1,'contextId':1}"))).toJson());
+        JsonObject refused = solve(free, activation).record;
+        assertEquals(refused.toString(), "FLIP_MODEL_RESTS_ON_UNSTATED_FIELD",
+                refused.get("reason").getAsString());
+        assertEquals("test/Key@8:J", refused.getAsJsonArray(
+                "unstatedFieldProjections").get(0).getAsString());
     }
 
     private static JsonObject handoff(String consumerOccurrenceId) {
@@ -279,7 +308,8 @@ public class HandoffBelongsToItsConsumerTest {
             throws Exception {
         return ConcolicConstraintSolver.solve(query,
                 Collections.singletonList(activation), activation,
-                Paths.get("z3"), 10_000L);
+                Paths.get("z3"), 10_000L,
+                ClockRootPhysics.DEFAULT_SKEW_MILLIS);
     }
 
     private static boolean z3Available() {

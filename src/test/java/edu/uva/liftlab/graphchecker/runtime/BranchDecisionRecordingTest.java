@@ -106,10 +106,8 @@ public class BranchDecisionRecordingTest {
     /**
      * An activation that decides the addressed target site has reached the
      * target, symbolic predicate or two concrete ints: that is evidence about
-     * the anchor, not a condition on publishing it.  Gated on a solver
-     * witness, hdfs-17960's activation both recorded the decision and was
-     * named as never having decided it, and MARKER_FLIPPED had no reach to
-     * read.  Only a decision the VM emitted no event for is silent.
+     * the anchor, not a condition on publishing it.  Only a decision the VM
+     * emitted no event for is silent.
      */
     @Test
     public void aConcreteDecisionAtTheTargetSiteIsStillAReach() {

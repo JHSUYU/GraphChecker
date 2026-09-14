@@ -21,16 +21,12 @@ import static org.junit.Assert.assertTrue;
 public class RegionPathWorklistTest {
 
     /**
-     * The laneBK shape: the target task published no summary at all.
+     * A target task whose replay published no summary at all.
      *
-     * <p>Its replay ran, but the region's own decisions came back with the
-     * symbolic gate closed and the runtime published no target reach, so the
-     * importer wrote no summary for it and this planner is handed a task
-     * with no observed path.  There is nothing to explore and nothing to
-     * seed from, which is exactly what NO_OBSERVED_PATH_SEED says.  The
-     * worklist states it and is GAPPED; it is not a campaign failure, and
-     * the wave publishes it as that member's closure so the named gap
-     * reaches the gap report and withholds the claim there.</p>
+     * <p>There is nothing to explore and nothing to seed from, which is
+     * what NO_OBSERVED_PATH_SEED says: the worklist states it and is
+     * GAPPED, not failed, and the wave publishes it as that member's
+     * closure so the gap withholds the claim.</p>
      */
     @Test
     public void aTaskWithNoObservedSummaryIsGappedAndNamesTheMissingSeed() {

@@ -94,7 +94,9 @@ public final class ConcolicPathFlipSolver {
         ConcolicConstraintSolver.Result solved =
                 ConcolicConstraintSolver.solve(task, linkedSources, source,
                         Paths.get(firstNonBlank(options.get("z3"), "z3")),
-                        number(options, "solver-timeout-ms", 20_000L));
+                        number(options, "solver-timeout-ms", 20_000L),
+                        number(options, "clock-skew-ms",
+                                ClockRootPhysics.DEFAULT_SKEW_MILLIS));
         long elapsedMillis = Math.max(0L,
                 (System.nanoTime() - startedAtNanos) / 1_000_000L);
         String status = optionalString(solved.record, "status");

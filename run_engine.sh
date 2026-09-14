@@ -2155,7 +2155,8 @@ campaign_worker_task() {
     --query-key "${query_key}" \
     --output-dir "${worker}" \
     --z3 "${z3_bin}" \
-    --solver-timeout-ms "${solver_timeout_ms}"
+    --solver-timeout-ms "${solver_timeout_ms}" \
+    --clock-skew-ms "${clock_skew_ms}"
   # One obligation that could not be materialized, solved or planned is
   # that obligation's gap row, never the wave's death.  It used to kill the
   # worker, and the wave with it: on laneVM11 one linked-plan exception
