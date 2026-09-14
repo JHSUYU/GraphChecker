@@ -31,10 +31,7 @@ final class LinkedReplayBundle {
     static final String FIELD = "linkedReplayBundle";
     static final String GROUP_FIELD = "linkedReplayGroupId";
     static final String ROLE_FIELD = "linkedReplayRole";
-    static final String FAMILY_DIGEST_FIELD = "familySnapshotDigest";
     static final String TOPOLOGY_EPOCH_FIELD = "topologyEpoch";
-    static final String CASE_DEPENDENCIES_FIELD =
-            "consumerAnchorCaseDependencies";
     static final String PRIMARY = "PRIMARY";
     static final String COMPANION = "COMPANION";
 
@@ -44,29 +41,10 @@ final class LinkedReplayBundle {
     private LinkedReplayBundle() {
     }
 
-    static String familySnapshotDigest(JsonArray caseDependencies) {
-        List<JsonObject> ordered = new ArrayList<>();
-        if (caseDependencies != null) {
-            for (JsonElement element : caseDependencies) {
-                if (element != null && element.isJsonObject()) {
-                    ordered.add(element.getAsJsonObject());
-                }
-            }
-        }
-        ordered.sort(Comparator.comparing(row -> optionalString(row,
-                VmExpressionIr.FAMILY_KEY)));
-        JsonArray rows = new JsonArray();
-        for (JsonObject row : ordered) rows.add(row);
-        JsonObject snapshot = new JsonObject();
-        snapshot.add(CASE_DEPENDENCIES_FIELD, rows);
-        return SharedExpressionTable.semanticDigest(snapshot);
-    }
-
     static JsonObject create(String primarySourceTaskId,
                              Collection<JsonObject> executionTasks,
                              Collection<JsonObject> closureSummaries,
                              String primarySummaryId,
-                             String familySnapshotDigest,
                              String topologyEpoch) {
         Map<String, JsonObject> byId = new LinkedHashMap<>();
         for (JsonObject task : executionTasks) {
@@ -158,9 +136,6 @@ final class LinkedReplayBundle {
         result.addProperty("schemaVersion", SCHEMA_VERSION);
         result.addProperty("kind", KIND);
         result.addProperty("primarySourceTaskId", primarySourceTaskId);
-        // Shape-checked once, on the decode side: an encoder that produced
-        // a malformed digest could not be read back at all.
-        result.addProperty(FAMILY_DIGEST_FIELD, familySnapshotDigest);
         result.addProperty(TOPOLOGY_EPOCH_FIELD,
                 epoch);
         result.add("members", encodedMembers);
@@ -179,7 +154,6 @@ final class LinkedReplayBundle {
             throw new IllegalArgumentException(
                     "unsupported linked replay bundle schema");
         }
-        requireDigest(optionalString(bundle, FAMILY_DIGEST_FIELD));
         JsonArray members = array(bundle, "members");
         if (members.size() == 0
                 || optionalString(bundle, TOPOLOGY_EPOCH_FIELD).isEmpty()) {
@@ -252,12 +226,4 @@ final class LinkedReplayBundle {
                 + optionalString(task, "goalId");
     }
 
-    private static String requireDigest(String value) {
-        String digest = value == null ? "" : value.trim();
-        if (!digest.matches("[0-9a-f]{64}")) {
-            throw new IllegalArgumentException(
-                    "family snapshot digest must be lowercase SHA-256");
-        }
-        return digest;
-    }
 }

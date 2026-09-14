@@ -2138,7 +2138,7 @@ campaign_publish_primary_record() {
     | select(. != null)
     | {schemaVersion: 1, kind: "PATH_EXPLORATION_RECORD", queryKey: $key,
      regionId, taskId, occurrenceId, goalId,
-     familySnapshotDigest, topologyEpoch,
+     topologyEpoch,
      status: "VALIDATED_FRESH_REGION_PATH_FLIP_REPLAY"}
     ' "${task_plan}" >"${out}"
 }

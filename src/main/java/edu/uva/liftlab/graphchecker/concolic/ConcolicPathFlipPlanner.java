@@ -119,7 +119,6 @@ public final class ConcolicPathFlipPlanner {
          *  rather than once per flip row that reaches it. */
         private final Map<String, Set<String>> nestedFamilies =
                 new LinkedHashMap<>();
-        private final String familyDigest;
         private final String topologyEpoch;
         private final RegionPathWorklist.Bounds bounds;
         /** The wave's declared roots, computed once for every member.
@@ -135,14 +134,12 @@ public final class ConcolicPathFlipPlanner {
         private Wave(List<JsonObject> allExecutionTasks,
                      List<JsonObject> allSummaries,
                      List<JsonObject> allRecords,
-                     String familyDigest,
                      String topologyEpoch,
                      RegionPathWorklist.Bounds bounds,
                      SymbolicRootInventory roots) {
             this.allExecutionTasks = allExecutionTasks;
             this.allSummaries = allSummaries;
             this.allRecords = allRecords;
-            this.familyDigest = familyDigest;
             this.topologyEpoch = topologyEpoch;
             this.bounds = bounds;
             this.roots = roots;
@@ -167,8 +164,6 @@ public final class ConcolicPathFlipPlanner {
             // writer, which is the opposite of asking it for a root.  Each
             // path condition is resolved inside its own replay instead, by
             // ResolvedFlipQuery, where the value is a fact rather than a
-            // choice.
-            JsonArray caseDependencies = new JsonArray();
             RegionPathWorklist.Bounds defaults =
                     RegionPathWorklist.Bounds.defaults();
             // The roots are the wave's, not a member's: read them from the
@@ -178,7 +173,6 @@ public final class ConcolicPathFlipPlanner {
                     observedSummaries, allExecutionTasks);
             return new Wave(allExecutionTasks, observedSummaries,
                     rows(options, "records"),
-                    LinkedReplayBundle.familySnapshotDigest(caseDependencies),
                     optional(options, "topology-epoch"),
                     new RegionPathWorklist.Bounds(
                             count(options, "max-paths-per-region",
@@ -223,7 +217,7 @@ public final class ConcolicPathFlipPlanner {
             }
             RegionPathWorklist.Result result = RegionPathWorklist.plan(
                     summaries, executionTasks, explorationRecords, bounds,
-                    familyDigest, roots);
+                    roots);
             for (JsonObject task : result.tasks) {
                 // The obligation asks for a root valuation, so its path
                 // condition has to be an expression over roots.  Resolve it
@@ -234,11 +228,9 @@ public final class ConcolicPathFlipPlanner {
                         optionalString(task, "sourceTaskId"),
                         allExecutionTasks, allSummaries,
                         optionalString(task, "sourceSummaryId"),
-                        familyDigest, topologyEpoch);
+                        topologyEpoch);
                 task.add(LinkedReplayBundle.FIELD, bundle);
             }
-            result.manifest.addProperty(
-                    LinkedReplayBundle.FAMILY_DIGEST_FIELD, familyDigest);
             if (!topologyEpoch.isEmpty()) {
                 result.manifest.addProperty(
                         LinkedReplayBundle.TOPOLOGY_EPOCH_FIELD,

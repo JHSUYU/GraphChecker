@@ -42,8 +42,7 @@ public class RegionPathWorklistTest {
                 Collections.<JsonObject>emptyList(),
                 Collections.singletonList(task),
                 Collections.<JsonObject>emptyList(),
-                RegionPathWorklist.Bounds.defaults(),
-                CanonicalJson.sha256("laneBK-family-snapshot"));
+                RegionPathWorklist.Bounds.defaults());
 
         assertTrue(result.tasks.isEmpty());
         assertEquals(RegionPathWorklist.State.GAPPED.name(),
@@ -77,8 +76,7 @@ public class RegionPathWorklistTest {
                 Arrays.asList(taken, notTaken),
                 Collections.singletonList(task),
                 Collections.<JsonObject>emptyList(),
-                RegionPathWorklist.Bounds.defaults(),
-                CanonicalJson.sha256("same-family-snapshot"));
+                RegionPathWorklist.Bounds.defaults());
 
         assertTrue(result.tasks.isEmpty());
         assertEquals(RegionPathWorklist.State.CLOSED.name(),
@@ -92,10 +90,9 @@ public class RegionPathWorklistTest {
         JsonObject a = task("A", "REGION.A", "REGION.A/occurrence-1");
         List<JsonObject> summaries = Arrays.asList(
                 summary(c, 1), summary(b, 1), summary(b, 2), summary(a, 1));
-        String familyDigest = CanonicalJson.sha256("family-snapshot");
         JsonObject bundle = LinkedReplayBundle.create(
                 "TASK.B", Arrays.asList(c, b, a), summaries,
-                "SUMMARY.B.2", familyDigest, "ITERATION.7");
+                "SUMMARY.B.2", "ITERATION.7");
         JsonObject carrier = new JsonObject();
         carrier.add(LinkedReplayBundle.FIELD, bundle);
         JsonObject decoded = LinkedReplayBundle.decode(carrier);
@@ -248,7 +245,6 @@ public class RegionPathWorklistTest {
         query.add(LinkedReplayBundle.FIELD, LinkedReplayBundle.create(
                 optionalString(primary, "taskId"), tasks, summaries,
                 optionalString(primarySummary, "summaryId"),
-                CanonicalJson.sha256("shared-owner-family"),
                 "ITERATION.7"));
         return query;
     }

@@ -20,7 +20,6 @@ public class LocalCaseIdentityTest {
         second.addProperty("taskId", "TASK.second");
         second.addProperty("replayGroupId", "REPLAY.second");
         second.addProperty("boundarySessionScope", "SESSION.second");
-        second.addProperty("familySnapshotDigest", "FAMILY.second");
         second.addProperty("topologyEpoch", "EPOCH.second");
         JsonObject nested = second.getAsJsonArray("pathCondition").get(0)
                 .getAsJsonObject().getAsJsonObject("_left");

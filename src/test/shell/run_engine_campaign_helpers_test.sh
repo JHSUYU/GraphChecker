@@ -625,7 +625,7 @@ printf '%s\n' '{"taskId":"t1","linkedReplayRole":"COMPANION"}' \
   || fail "a PRIMARY-less replay plan published a record: \
 $(cat "${primary_record}")"
 printf '%s\n' '{"taskId":"t2","linkedReplayRole":"PRIMARY","regionId":"R",
-  "occurrenceId":"R#a1","goalId":"g","familySnapshotDigest":"d",
+  "occurrenceId":"R#a1","goalId":"g",
   "topologyEpoch":"e"}' >>"${primary_plan}"
 campaign_publish_primary_record "${primary_plan}" k "${primary_record}" \
   || fail "the PRIMARY replay task published no exploration record"

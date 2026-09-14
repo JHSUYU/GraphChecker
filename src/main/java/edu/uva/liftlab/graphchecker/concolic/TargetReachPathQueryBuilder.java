@@ -346,7 +346,7 @@ public final class TargetReachPathQueryBuilder {
             JsonObject path = new JsonObject();
             for (String metadata : new String[]{"taskId", "sourceTaskId",
                     "boundarySessionScope", "replayGroupId",
-                    "topologyEpoch", "familySnapshotDigest"}) {
+                    "topologyEpoch"}) {
                 if (summary.has(metadata)) {
                     path.add(metadata, summary.get(metadata).deepCopy());
                 }
