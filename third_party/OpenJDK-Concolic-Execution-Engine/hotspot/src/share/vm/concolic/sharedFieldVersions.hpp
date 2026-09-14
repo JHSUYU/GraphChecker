@@ -419,19 +419,45 @@ public:
    */
   static bool initial_snapshot_note(sym_rid_t owner, int *answer,
                                     int *entries);
-  static bool is_carrier(const Location &location);
+  /**
+   * Whether this location's contents are being kept.
+   *
+   * They are, from the first symbolic value written here onwards.  There is
+   * no declaration: a location is tracked because of what was stored in it,
+   * not because anything said in advance that it might matter.
+   */
+  static bool is_tracked(const Location &location);
+
+  /**
+   * Versions one completed write, by value.
+   *
+   * `symbolic` says whether the value being stored is itself symbolic.  A
+   * symbolic store is always kept, and starts this location's log if it is
+   * the first.  A concrete store is kept only where a log already exists --
+   * there it must be, or a later read would resolve to an expression this
+   * store has overwritten -- and is free everywhere else.
+   *
+   * Returns the new fieldVersionId, or 0 when nothing was recorded.
+   */
+  static jlong publish_value(const Location &location, Expression *value,
+                             Expression *path_guard, bool symbolic,
+                             int version_kind,
+                             const char *operation = NULL);
 
   /**
    * Appends one version for a completed write.  `value` and `path_guard` must
    * already exist; nothing is constructed under the lock.  Returns the new
-   * fieldVersionId, or 0 when the location is not selected.
+   * fieldVersionId, or 0 when the location has no log and `start_tracking` is
+   * false.
    *
    * `operation` is the publisher's name for a whole-state mutation; NULL
-   * falls back to the version kind.
+   * falls back to the version kind.  Prefer publish_value(): it is the one
+   * that decides, from the value, whether the write is kept at all.
    */
   static jlong publish(const Location &location, Expression *value,
                        Expression *path_guard, int version_kind,
-                       const char *operation = NULL);
+                       const char *operation = NULL,
+                       bool start_tracking = false);
 
   /**
    * Records that this location has a writer nobody can name.

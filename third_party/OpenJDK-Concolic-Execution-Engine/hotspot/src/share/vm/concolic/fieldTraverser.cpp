@@ -292,20 +292,20 @@ bool FieldSymbolizer::do_field_helper(fieldDescriptor *fd, oop obj) {
     // neither reads the other.
     jlong minted_version = 0;
     std::string minted_version_kind;
-    if (exact && SharedFieldVersions::has_carriers()) {
+    if (exact) {
+      // A mint is a symbolic write: it is kept by value, and starts this
+      // field's log when it is the first symbolic value to reach it.
       SharedFieldVersions::Location location(
           sym_inst->get_sym_rid(), fd->offset(),
           SharedFieldVersions::LOC_INSTANCE_FIELD);
-      if (SharedFieldVersions::is_carrier(location)) {
-        // Folded outside every engine lock, as the store's concurrency
-        // contract requires; the same guard a putfield would publish.
-        Expression *guard = _ctx.path_guard();
-        minted_version = SharedFieldVersions::publish(
-            location, symbol, guard, SharedFieldVersions::VERSION_WRITE);
-        if (minted_version > 0) {
-          minted_version_kind = SharedFieldVersions::version_kind_name(
-              SharedFieldVersions::VERSION_WRITE);
-        }
+      // Folded outside every engine lock, as the store's concurrency
+      // contract requires; the same guard a putfield would publish.
+      Expression *guard = _ctx.path_guard();
+      minted_version = SharedFieldVersions::publish_value(
+          location, symbol, guard, true, SharedFieldVersions::VERSION_WRITE);
+      if (minted_version > 0) {
+        minted_version_kind = SharedFieldVersions::version_kind_name(
+            SharedFieldVersions::VERSION_WRITE);
       }
     }
     _ctx.record_path_condition(new OpSymExpression(

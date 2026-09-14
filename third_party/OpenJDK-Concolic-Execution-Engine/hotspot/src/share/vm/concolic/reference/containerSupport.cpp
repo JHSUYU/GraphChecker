@@ -252,20 +252,19 @@ SharedFieldVersions::Location ContainerSupport::state_location(oop container) {
 
 jlong ContainerSupport::publish_state(oop container, Expression *new_state,
                                       const char *operation) {
-  // The store's own relaxed counter first: with nothing selected anywhere
-  // there is no provenance question, and this is on the path of every tracked
-  // container mutation the workload performs.
-  if (new_state == NULL || !SharedFieldVersions::has_carriers()) return 0;
+  // A container state expression exists only because something symbolic went
+  // into the container, so reaching here at all is the by-value condition:
+  // the state is kept, and starts this container's log if it is the first.
+  if (new_state == NULL) return 0;
   SharedFieldVersions::Location location = state_location(container);
-  if (!location.is_valid() || !SharedFieldVersions::is_carrier(location)) {
-    return 0;
-  }
+  if (!location.is_valid()) return 0;
   // The publishing task already names the merged local path case.  Copying
   // the complete PC into every PUT/REMOVE version is both redundant and
   // prohibitively large in service loops; the Composer binds read-from arms
   // to that task's case selector instead.
-  return SharedFieldVersions::publish(
-      location, new_state, NULL, SharedFieldVersions::VERSION_STATE, operation);
+  return SharedFieldVersions::publish_value(
+      location, new_state, NULL, true, SharedFieldVersions::VERSION_STATE,
+      operation);
 }
 
 bool ContainerSupport::mark_state_gap(oop container, const char *reason) {
@@ -285,7 +284,7 @@ ContainerSupport::StateQuery ContainerSupport::query_state(
 
   if (!SharedFieldVersions::has_carriers()) return answer;
   SharedFieldVersions::Location location = state_location(container);
-  if (!location.is_valid() || !SharedFieldVersions::is_carrier(location)) {
+  if (!location.is_valid() || !SharedFieldVersions::is_tracked(location)) {
     return answer;
   }
   answer.selected = true;

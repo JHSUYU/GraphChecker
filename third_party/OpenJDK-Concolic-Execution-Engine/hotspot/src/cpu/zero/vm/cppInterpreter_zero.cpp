@@ -616,7 +616,7 @@ int CppInterpreter::accessor_entry(Method* method, intptr_t UNUSED, TRAPS) {
           sym_inst->get_sym_rid(), field_offset,
           SharedFieldVersions::LOC_INSTANCE_FIELD);
       const bool versioned_read = SharedFieldVersions::has_carriers()
-          && SharedFieldVersions::is_carrier(location);
+          && SharedFieldVersions::is_tracked(location);
       const bool demand_read = sym_inst->demand_symbolic_fields_enabled()
           && sym_inst->get(field_offset) == NULL;
       if (versioned_read || demand_read) {

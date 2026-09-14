@@ -2332,7 +2332,7 @@ run:
     SharedFieldVersions::Location location(                                    \
         arrObj->get_sym_rid(), index,                                          \
         SharedFieldVersions::LOC_ARRAY_ELEMENT);                               \
-    if (SharedFieldVersions::is_carrier(location)) {                           \
+    if (SharedFieldVersions::is_tracked(location)) {                           \
       aload_selected = true;                                                   \
       aload_location = location;                                               \
       aload_anchor = stack_offset + (res_off);                                 \
@@ -2540,14 +2540,17 @@ run:
   SharedFieldVersions::Location astore_location;                               \
   Expression *astore_value = NULL;                                             \
   Expression *astore_guard = NULL;                                             \
-  bool astore_selected = false;
+  bool astore_selected = false;                                                \
+  bool astore_symbolic = false;
 
 #define CONCOLIC_ASTORE_SELECT(value_exp)                                      \
-  if (SharedFieldVersions::has_carriers() && arrObj->is_symbolic()) {          \
+  if (arrObj->is_symbolic()                                                    \
+      && ((value_exp) != NULL || SharedFieldVersions::has_carriers())) {       \
     SharedFieldVersions::Location location(                                    \
         arrObj->get_sym_rid(), index,                                          \
         SharedFieldVersions::LOC_ARRAY_ELEMENT);                               \
-    if (SharedFieldVersions::is_carrier(location)) {                           \
+    astore_symbolic = (value_exp) != NULL;                                     \
+    if (astore_symbolic || SharedFieldVersions::is_tracked(location)) {        \
       astore_selected = true;                                                  \
       astore_location = location;                                              \
       astore_value = (value_exp);                                              \
@@ -2561,8 +2564,8 @@ run:
     if (published == NULL) {                                                   \
       published = SharedFieldVersions::primitive_expression(T, (bits));        \
     }                                                                          \
-    SharedFieldVersions::publish(                                              \
-        astore_location, published, astore_guard,                              \
+    SharedFieldVersions::publish_value(                                        \
+        astore_location, published, astore_guard, astore_symbolic,             \
         SharedFieldVersions::VERSION_WRITE);                                   \
   }
 
@@ -2725,8 +2728,8 @@ run:
               published =
                   SharedFieldVersions::reference_expression(STACK_OBJECT(-1));
             }
-            SharedFieldVersions::publish(
-                astore_location, published, astore_guard,
+            SharedFieldVersions::publish_value(
+                astore_location, published, astore_guard, astore_symbolic,
                 SharedFieldVersions::VERSION_WRITE);
           }
 #endif
@@ -3052,7 +3055,7 @@ run:
                   (Bytecodes::Code)opcode == Bytecodes::_getstatic
                       ? SharedFieldVersions::LOC_STATIC_FIELD
                       : SharedFieldVersions::LOC_INSTANCE_FIELD);
-              if (SharedFieldVersions::is_carrier(location)) {
+              if (SharedFieldVersions::is_tracked(location)) {
                 carrier_read = true;
                 carrier_location = location;
                 carrier_owner_rid = sym_inst->get_sym_rid();
@@ -3330,6 +3333,7 @@ run:
           Expression *carrier_value = NULL;
           Expression *carrier_guard = NULL;
           bool carrier_write = false;
+          bool carrier_symbolic = false;
 
           if (ConcolicMngr::can_do_concolic()) {
             int stack_offset = GET_STACK_OFFSET;
@@ -3370,10 +3374,12 @@ run:
                 owner_instance = sym_inst;
               }
             }
-            // One relaxed counter read when nothing is selected, which is what
-            // keeps this bytecode at its old cost for every workload that
-            // never asks a read-from question.
-            if (SharedFieldVersions::has_carriers()) {
+            // What is kept is decided by the value, not by any declaration.
+            // A symbolic store is always kept; a concrete one only where a
+            // log already exists, and the relaxed counter dismisses that case
+            // outright for a workload that has written nothing symbolic
+            // anywhere -- which is what keeps this bytecode at its old cost.
+            if (sym_exp != NULL || SharedFieldVersions::has_carriers()) {
               SymInstance *carrier_shadow = owner_instance != NULL
                   ? owner_instance : ConcolicMngr::ctx->find_sym_inst(obj);
               if (carrier_shadow != NULL) {
@@ -3382,12 +3388,15 @@ run:
                     (Bytecodes::Code)opcode == Bytecodes::_putstatic
                         ? SharedFieldVersions::LOC_STATIC_FIELD
                         : SharedFieldVersions::LOC_INSTANCE_FIELD);
-                if (SharedFieldVersions::is_carrier(location)) {
+                carrier_symbolic = sym_exp != NULL;
+                if (carrier_symbolic
+                    || SharedFieldVersions::is_tracked(location)) {
                   carrier_write = true;
                   carrier_location = location;
-                  // May be NULL for a purely concrete store; the publisher
-                  // below turns that into the constant that was written,
-                  // because a concrete writer is still a competing writer.
+                  // NULL for a purely concrete store into a location that is
+                  // already tracked; the publisher below turns that into the
+                  // constant written, because it supersedes the expression a
+                  // reader would otherwise still see there.
                   carrier_value = sym_exp;
                   // Folded outside every engine lock, as the store's
                   // concurrency contract requires.
@@ -3482,8 +3491,8 @@ run:
                     stored_type, bits);
               }
             }
-            SharedFieldVersions::publish(
-                carrier_location, published, carrier_guard,
+            SharedFieldVersions::publish_value(
+                carrier_location, published, carrier_guard, carrier_symbolic,
                 SharedFieldVersions::VERSION_WRITE);
           }
 #endif

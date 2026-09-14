@@ -118,7 +118,7 @@ SharedFieldVersions::Slot *SharedFieldVersions::find_slot_locked(
   return found == _slots.end() ? NULL : &found->second;
 }
 
-bool SharedFieldVersions::is_carrier(const Location &location) {
+bool SharedFieldVersions::is_tracked(const Location &location) {
   if (!location.is_valid()) return false;
   VERSION_LOCK;
   return _open && _slots.find(location) != _slots.end();
@@ -187,10 +187,28 @@ jlong SharedFieldVersions::select_carrier(const Location &location,
   return version_id;
 }
 
+jlong SharedFieldVersions::publish_value(const Location &location,
+                                         Expression *value,
+                                         Expression *path_guard,
+                                         bool symbolic, int version_kind,
+                                         const char *operation) {
+  if (!location.is_valid() || value == NULL) return 0;
+  // A location no symbolic value has ever reached has nothing a reader could
+  // want back, and costs one lock-free counter read to dismiss: the store
+  // leaves it alone and it stays concrete.  Once one symbolic value has
+  // landed, every later store -- concrete ones included -- must be versioned,
+  // or a read would go on resolving to an expression the program has since
+  // overwritten.
+  if (!symbolic && (!has_carriers() || !is_tracked(location))) return 0;
+  return publish(location, value, path_guard, version_kind, operation,
+                 symbolic);
+}
+
 jlong SharedFieldVersions::publish(const Location &location, Expression *value,
                                    Expression *path_guard,
                                    int version_kind,
-                                   const char *operation) {
+                                   const char *operation,
+                                   bool start_tracking) {
   if (!location.is_valid() || value == NULL) return 0;
 
   const bool named = operation != NULL && operation[0] != '\0';
@@ -212,7 +230,14 @@ jlong SharedFieldVersions::publish(const Location &location, Expression *value,
   VERSION_LOCK;
   if (!_open) return 0;
   Slot *slot = find_slot_locked(location);
-  if (slot == NULL) return 0;
+  if (slot == NULL) {
+    // The first symbolic value to reach this location starts its log.  A
+    // fresh Slot is complete by construction: nothing was written here before
+    // that a reader could be missing, because nothing symbolic was.
+    if (!start_tracking) return 0;
+    slot = &_slots[location];
+    _carrier_count = (int) _slots.size();
+  }
   slot->versions.push_back(version);
   if (slot->versions.size() > MAX_VERSIONS_PER_LOCATION) {
     // A dropped writer is a writer a later read can no longer name.  Say so
@@ -826,7 +851,7 @@ jlong ConcolicMngr::selectSharedFieldCarrier(
     // carrier retained by this workload session.  The location already has
     // its writer universe, but this fresh thread context still needs its path
     // gate opened before the real getfield resolves that universe.
-    if (SharedFieldVersions::is_carrier(location)) {
+    if (SharedFieldVersions::is_tracked(location)) {
       ctx->set_pc_admitted(true);
     }
     return SharedFieldVersions::SELECT_ALREADY_SELECTED;
@@ -905,7 +930,7 @@ jlong ConcolicMngr::selectSharedElementCarrier(Handle array, jint index) {
       shadow->get_sym_rid(), index, SharedFieldVersions::LOC_ARRAY_ELEMENT);
   jlong version_id = SharedFieldVersions::select_carrier(location, initial);
   if (version_id == 0) {
-    if (SharedFieldVersions::is_carrier(location)) {
+    if (SharedFieldVersions::is_tracked(location)) {
       ctx->set_pc_admitted(true);
     }
     return SharedFieldVersions::SELECT_ALREADY_SELECTED;
@@ -985,7 +1010,7 @@ jlong ConcolicMngr::selectSharedMapCarrier(Handle map) {
   jlong version_id = SharedFieldVersions::select_carrier(
       location, root, snapshot);
   if (version_id == 0) {
-    if (SharedFieldVersions::is_carrier(location)) {
+    if (SharedFieldVersions::is_tracked(location)) {
       ctx->set_pc_admitted(true);
     }
     return SharedFieldVersions::SELECT_ALREADY_SELECTED;
