@@ -4,11 +4,13 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
@@ -86,6 +88,16 @@ public final class InSessionReadResolver {
      * something to reconstruct from the versions it did not see.</p>
      */
     public static final String OBSERVED_VERSION = "observedVersion";
+    /**
+     * What the read a joined value stands for actually observed.
+     *
+     * <p>A projection the walk followed becomes the writer's expression, and
+     * the recording's own reading of it -- the {@code concreteValue} the VM
+     * stated beside the projection -- would otherwise be dropped with the
+     * node.  Stamping it here keeps one fact available to a composition: at
+     * this replay's valuation that expression had this value.</p>
+     */
+    public static final String RECORDED_READING = "inSessionRecordedReading";
     /** Marks a leaf this replay could not determine. */
     public static final String UNRESOLVED_TAG = "inSessionUnresolved";
     /** Why an unresolved leaf could not be determined. */
@@ -466,51 +478,69 @@ public final class InSessionReadResolver {
         if (versions == null || versions.isEmpty()) return null;
         // The node states the version it read, so nothing is inferred from
         // it.  The VM emits this on a projection exactly as it does on a
-        // read; the ordering below is only for a node that carries none.
+        // read; the counting below is only for a node that carries none.
         long stated = observedVersionOf(node);
         if (stated >= 0L) {
-            return valueOf(location, stated,
-                    "INITIAL".equals(versions.get(stated)), visiting, depth);
+            return stamp(node, valueOf(location, stated,
+                    "INITIAL".equals(versions.get(stated)), visiting, depth),
+                    visiting, depth);
         }
-        long written = -1L;
-        int writeCount = 0;
+        // The writes this replay made to the slot, and which of them are
+        // before the read.  The session event counter is the one that
+        // numbers versions, so it is what "before" means and the write live
+        // at the read is the greatest of them -- one order, one answer, not
+        // a choice between writers.  The branch marker's per-thread
+        // sequence is not that counter and is never compared here.  A node
+        // with no event to order against has no such order: several writes
+        // then say nothing about which one it saw, and it is refused with
+        // the versions it could not choose between.
+        List<Long> written = new ArrayList<>();
+        Long live = null;
         for (Map.Entry<Long, String> version : versions.entrySet()) {
             if ("INITIAL".equals(version.getValue())) continue;
-            writeCount++;
-            written = version.getKey();
-        }
-        boolean initial = writeCount == 0;
-        if (writeCount > 1) {
-            // One execution wrote this field several times, and the value
-            // the projection read is the write that was live when it ran.
-            // The node says which, when the VM stated it; otherwise the
-            // decision's own session event does, because that counter is the
-            // one that numbers versions.  The branch marker's per-thread
-            // sequence is not, and is never compared here.
-            if (atSessionEventId <= 0L) {
-                return unresolved("field " + location + " was written "
-                        + writeCount + " times, the node states no "
-                        + OBSERVED_VERSION + " and the decision that read it"
-                        + " carries no " + SESSION_EVENT_ID + ", so which"
-                        + " write it saw is unstated");
-            } else {
-                Long live = null;
-                for (Map.Entry<Long, String> version : versions.entrySet()) {
-                    if ("INITIAL".equals(version.getValue())) continue;
-                    if (version.getKey() >= atSessionEventId) break;
-                    live = version.getKey();
-                }
-                if (live == null) {
-                    // Every write is after the access: what it read is what
-                    // was there before this recording tracked the location.
-                    initial = true;
-                } else {
-                    written = live;
-                }
+            written.add(version.getKey());
+            if (atSessionEventId <= 0L
+                    || version.getKey() < atSessionEventId) {
+                live = version.getKey();
             }
         }
-        return valueOf(location, initial ? versions.firstKey() : written,
-                initial, visiting, depth);
+        if (atSessionEventId <= 0L && written.size() > 1) {
+            return unresolved("field " + location + " was written "
+                    + written.size() + " times " + written
+                    + ", the node states no " + OBSERVED_VERSION
+                    + " and the decision that read it carries no "
+                    + SESSION_EVENT_ID + ", so which write it saw is "
+                    + "unstated");
+        }
+        // No write before the read: what it read is what was there before
+        // this recording tracked the location.
+        boolean initial = live == null;
+        return stamp(node, valueOf(location,
+                initial ? versions.firstKey() : live,
+                initial, visiting, depth), visiting, depth);
+    }
+
+    /**
+     * Carries the projection's own reading onto the value it joined to.
+     *
+     * <p>The pair the VM states beside a projection -- the object read from
+     * and what its field then held -- is evidence about this execution, not
+     * the value of the read: the value is the write's expression, which is
+     * what continues the chain.  So the reading rides along under
+     * {@link #RECORDED_READING}, for a caller that states each path's own
+     * valuation.</p>
+     */
+    private JsonElement stamp(JsonObject node, JsonElement joined,
+                              Set<JsonElement> visiting, int depth) {
+        JsonElement observed = node.get("concreteValue");
+        if (observed == null || observed.isJsonNull()
+                || !joined.isJsonObject() || unresolved(joined)) {
+            return joined;
+        }
+        JsonElement value = rewrite(observed, visiting, depth + 1);
+        if (unresolved(value)) return joined;
+        joined.getAsJsonObject().add(RECORDED_READING, value);
+        return joined;
     }
 
     /** One location's value at one version, tagged when it predates tracking. */

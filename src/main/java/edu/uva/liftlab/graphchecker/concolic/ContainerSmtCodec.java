@@ -346,6 +346,30 @@ public final class ContainerSmtCodec {
                 optionalString(expression.getAsJsonObject(), "_type"));
     }
 
+    /** The one refusal for a projection no evidence values. */
+    public static final String UNSTATED_FIELD_PROJECTION =
+            "UNSTATED_FIELD_PROJECTION:";
+
+    /**
+     * One field projection, by the one rule both queries lower it under.
+     *
+     * <p>A read whose location this replay's write log covers is not a
+     * projection by the time it reaches here: {@link InSessionReadResolver}
+     * has already replaced it with the expression of the write version the
+     * read observed, which is what carries a value from a root, or from a
+     * handoff variable, through the object it was stored in and on to the
+     * branch that reads it.  What is left is a read the log does not cover,
+     * and for that the VM states the pair -- the object read from and what
+     * its field then held -- so the projection is that value.</p>
+     *
+     * <p>Neither query may leave it free.  An accessor over an
+     * uninterpreted Ref is a function the solver may define however it
+     * likes, which lets a model hold by a value no execution produced: a
+     * composed query answered that way names no cause, and a flip model
+     * answered that way is not materializable.  So a projection with no
+     * stated value is refused by name instead, in the composition and in
+     * the flip query alike.</p>
+     */
     public static Term field(JsonObject expression, Host host) {
         Term owner = host.operand(expression.get("owner"), Sort.REF);
         if (owner == null) return null;
@@ -354,27 +378,23 @@ public final class ContainerSmtCodec {
         if (boxedPrimitiveValue(owner, ownerClass, javaType)) {
             return owner;
         }
-        int offset = JsonFields.optionalInteger(
-                expression, "fieldOffset", -1);
         // Both members are written together by the VM or not at all; a
         // half-present pair is a payload this codec does not recognise and
-        // is dropped rather than guessed at.
-        JsonElement concreteOwnerNode = expression.get("concreteOwner");
-        JsonElement concreteValueNode = expression.get("concreteValue");
-        if (concreteOwnerNode == null || concreteValueNode == null
-                || concreteOwnerNode.isJsonNull()
-                || concreteValueNode.isJsonNull()) {
-            return host.field(owner, ownerClass, offset, javaType);
+        // is refused rather than guessed at.
+        JsonElement concreteOwner = expression.get("concreteOwner");
+        JsonElement concreteValue = expression.get("concreteValue");
+        if (concreteOwner != null && concreteValue != null
+                && !concreteOwner.isJsonNull()
+                && !concreteValue.isJsonNull()) {
+            // No expectation: the observed value carries its own Java type
+            // and the host's own table is the authority on its sort.
+            Term value = host.operand(concreteValue, null);
+            if (value != null) return value;
         }
-        Term concreteOwner = host.operand(concreteOwnerNode, Sort.REF);
-        // No expectation: the observed value carries its own Java type and
-        // the host's own table is the authority on the sort it lowers to.
-        Term concreteValue = host.operand(concreteValueNode, null);
-        if (concreteOwner == null || concreteValue == null) {
-            return host.field(owner, ownerClass, offset, javaType);
-        }
-        return host.field(owner, ownerClass, offset, javaType,
-                concreteOwner, concreteValue);
+        host.unsupported(UNSTATED_FIELD_PROJECTION + ownerClass + "@"
+                + JsonFields.optionalInteger(expression, "fieldOffset", -1)
+                + ":" + javaType);
+        return null;
     }
 
     private static boolean boxedPrimitiveValue(
@@ -2225,24 +2245,6 @@ public final class ContainerSmtCodec {
         Term unbox(Term value, String javaType);
 
         void require(String predicate);
-
-        Term field(Term owner, String ownerClass, int fieldOffset,
-                   String javaType);
-
-        /**
-         * The same projection, with the pair of facts a read through a
-         * reference-typed shared carrier also recorded: the object this
-         * execution actually read from, and what its field then held.
-         *
-         * <p>A host that has no representation for the owner's choice
-         * ignores them and answers exactly as before -- the projection is
-         * still correct, merely free where the run had evidence.</p>
-         */
-        default Term field(Term owner, String ownerClass, int fieldOffset,
-                           String javaType, Term concreteOwner,
-                           Term concreteValue) {
-            return field(owner, ownerClass, fieldOffset, javaType);
-        }
 
         void unsupported(String reason);
 

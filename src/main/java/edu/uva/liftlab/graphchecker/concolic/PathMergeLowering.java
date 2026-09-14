@@ -48,7 +48,6 @@ final class PathMergeLowering extends VmLoweringCore {
 
     private final SmtSymbolTable symbols = new SmtSymbolTable();
     private final Map<String, Sort> declarations = new LinkedHashMap<>();
-    private final Map<String, String> functions = new LinkedHashMap<>();
     private final List<String> assertions = new ArrayList<>();
     private final Set<String> assertedOnce = new LinkedHashSet<>();
     /** Raw VM symbol -> the root inventory row that declares it. */
@@ -170,6 +169,53 @@ final class PathMergeLowering extends VmLoweringCore {
         }
         return new ContainerSmtCodec.Term(held.name, value.sort,
                 value.integralWidth);
+    }
+
+    /**
+     * Conjoins one fact into the path being lowered, or the query.
+     *
+     * <p>A fact a path's own lowering raised is true where that path ran
+     * and nowhere else, so while a path is open it goes into that path's
+     * conjunction; between paths there is one query to state it in.</p>
+     */
+    private void sideCondition(String predicate) {
+        if (predicate == null || predicate.isEmpty()
+                || "true".equals(predicate)) {
+            return;
+        }
+        if (pathSideConditions != null) {
+            if (!pathSideConditions.contains(predicate)) {
+                pathSideConditions.add(predicate);
+            }
+        } else if (assertedOnce.add(predicate)) {
+            assertions.add("(assert " + predicate + ")");
+        }
+    }
+
+    /**
+     * What a joined read observed, conjoined into the path that read it.
+     *
+     * <p>A projection the resolver joined is the writer's own expression,
+     * not a value, and that is what makes the chain from a root to this
+     * read one formula.  The recording also states what the read returned,
+     * and that fact is this path's own control exactly as the value it read
+     * at a handoff is: the path is admitted only where its replay's own
+     * valuation satisfies it.  Stating it is therefore a conjunct of the
+     * path, never a pin on the expression -- the expression stays free to
+     * take other values under other paths' arms.</p>
+     */
+    @Override
+    void recordedReading(Term value, JsonElement observed, String origin) {
+        if (value == null) return;
+        Term recorded = dispatch(observed, value.sort,
+                origin + ":recorded-reading");
+        if (recorded == null || recorded.sort != value.sort) {
+            refuse("RECORDED_READING_SORT:" + origin,
+                    "the value this read observed does not lower to the "
+                            + "sort the read itself has");
+            return;
+        }
+        sideCondition("(= " + value.text + " " + recorded.text + ")");
     }
 
     /** Records one refusal; a cut is the subset the gate reads. */
@@ -536,42 +582,7 @@ final class PathMergeLowering extends VmLoweringCore {
 
             @Override
             public void require(String predicate) {
-                if (predicate == null || predicate.isEmpty()
-                        || "true".equals(predicate)) {
-                    return;
-                }
-                if (pathSideConditions != null) {
-                    if (!pathSideConditions.contains(predicate)) {
-                        pathSideConditions.add(predicate);
-                    }
-                } else if (assertedOnce.add(predicate)) {
-                    assertions.add("(assert " + predicate + ")");
-                }
-            }
-
-            @Override
-            public ContainerSmtCodec.Term field(ContainerSmtCodec.Term owner,
-                                                String ownerClass,
-                                                int fieldOffset,
-                                                String javaType) {
-                Sort result = JavaSmtSorts.sortOfJava(javaType);
-                if (owner == null
-                        || owner.sort != ContainerSmtCodec.Sort.REF
-                        || fieldOffset < 0 || result == Sort.UNKNOWN
-                        || result.containerState()) {
-                    unsupported("FieldAccessExpression:" + ownerClass + "@"
-                            + fieldOffset + ":" + javaType);
-                    return null;
-                }
-                String identity = ownerClass + "#" + fieldOffset + "#"
-                        + javaType;
-                String function = symbols.mint("field__", identity, 10);
-                functions.put(function,
-                        "(declare-fun " + function + " (Ref) "
-                                + result.smt + ")");
-                return new ContainerSmtCodec.Term(
-                        "(" + function + " " + owner.text + ")",
-                        VmTermLowering.containerSortOf(result));
+                sideCondition(predicate);
             }
 
             @Override
@@ -776,9 +787,6 @@ final class PathMergeLowering extends VmLoweringCore {
                 .append('\n');
         query.append(JavaPrimitiveSmtSemantics.LONG_WRAP_DEFINITION)
                 .append('\n');
-        for (String declaration : functions.values()) {
-            query.append(declaration).append('\n');
-        }
         for (Map.Entry<String, Sort> declaration : declarations.entrySet()) {
             query.append("(declare-const ").append(declaration.getKey())
                     .append(' ').append(declaration.getValue().smt)
@@ -804,7 +812,7 @@ final class PathMergeLowering extends VmLoweringCore {
 
     /** Named rows of the rendered query, the formula-size measure. */
     int namedRows() {
-        return declarations.size() + functions.size()
+        return declarations.size()
                 + sharedTerms.size() + assertions.size();
     }
 }

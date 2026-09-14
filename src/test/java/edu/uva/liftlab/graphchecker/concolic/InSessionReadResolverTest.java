@@ -104,7 +104,9 @@ public class InSessionReadResolverTest {
      *
      * <p>A cycle is refused rather than followed; a version nothing
      * published is refused rather than guessed; a location this replay wrote
-     * twice does not say which write the access saw; and a node stating no
+     * twice with no event to order the read against does not say which
+     * write it saw -- and the refusal names the versions it could not
+     * choose between; and a node stating no
      * {@link InSessionReadResolver#OBSERVED_VERSION} and no event to order
      * it by states no version at all.</p>
      */
@@ -127,7 +129,7 @@ public class InSessionReadResolverTest {
                 version(39, "INITIAL", constant(0)),
                 version(41, "WRITE", constant(119982)),
                 version(44, "WRITE", symbol(ROOT)))),
-                projection(9, 56), "written 2 times");
+                projection(9, 56), "written 2 times [41, 44]");
 
         String unstated = refuses(Collections.singletonList(
                 row("INSTANCE_FIELD", 9, 56,

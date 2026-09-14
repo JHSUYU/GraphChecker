@@ -246,9 +246,9 @@ public final class ConcolicScheduler {
                         arguments.targetOccurrence)
                 : arguments.closureMode == ClosureMode.SEED_REPLAY
                 ? RuntimeWorkflowDiscovery.seedReplayWorkflow(
-                        loaded.regionPlans)
-                : RuntimeWorkflowDiscovery.rankedWorkflow(
-                        loaded.regionPlans);
+                        loaded.regionPlans, arguments.targetOccurrence)
+                : RuntimeWorkflowDiscovery.candidateWorkflow(
+                        loaded.regionPlans, arguments.targetOccurrence);
         // The replay task set is narrowed against the same slice every
         // selection narrows its inputs against, seeded once here, and then
         // against the backward slice of the read that fails.  An occurrence

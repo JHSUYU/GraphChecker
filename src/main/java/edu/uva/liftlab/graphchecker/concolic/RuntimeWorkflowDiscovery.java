@@ -37,17 +37,19 @@ public final class RuntimeWorkflowDiscovery {
     private RuntimeWorkflowDiscovery() {
     }
 
-    static RankedWorkflow rankedWorkflow(List<RegionInstancePlan> plans)
+    static RankedWorkflow candidateWorkflow(List<RegionInstancePlan> plans,
+                                            String declaredOccurrence)
             throws IOException {
         return rankedWorkflow(plans, Collections.<JsonObject>emptyList(),
-                Scope.CANDIDATE, "");
+                Scope.CANDIDATE, declaredOccurrence);
     }
 
     /** The first replay activates the target's complete dynamic ancestry. */
-    static RankedWorkflow seedReplayWorkflow(List<RegionInstancePlan> plans)
+    static RankedWorkflow seedReplayWorkflow(List<RegionInstancePlan> plans,
+                                             String declaredOccurrence)
             throws IOException {
         return rankedWorkflow(plans, Collections.<JsonObject>emptyList(),
-                Scope.SEED_VALUE, "");
+                Scope.SEED_VALUE, declaredOccurrence);
     }
 
     /**
@@ -61,13 +63,6 @@ public final class RuntimeWorkflowDiscovery {
      * because each candidate keeps its own expression and PC. This does not
      * promote unrelated writers from the static candidate graph.</p>
      */
-    static RankedWorkflow rankedWorkflow(
-            List<RegionInstancePlan> plans,
-            Collection<JsonObject> observedSummaries) throws IOException {
-        return rankedWorkflow(plans, observedSummaries, "");
-    }
-
-    /** The same, with the occurrence the case declares as its target. */
     static RankedWorkflow rankedWorkflow(
             List<RegionInstancePlan> plans,
             Collection<JsonObject> observedSummaries,

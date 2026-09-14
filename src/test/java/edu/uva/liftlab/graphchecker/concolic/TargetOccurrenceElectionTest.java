@@ -9,6 +9,7 @@ import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 
 import java.io.IOException;
+import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -84,6 +85,19 @@ public class TargetOccurrenceElectionTest {
                 RuntimeWorkflowDiscovery.declares(
                         "hdfs-17897/client#epoch0/striped-file-checksum#1",
                         at));
+
+        // And every closure mode has to read it: lane11741i declared dn0
+        // balance-block#1 and composed four occurrences, because PLAN's
+        // candidate and seed-replay schedules discovered the workflow
+        // through entry points that took no declaration at all.
+        for (Method entry
+                : RuntimeWorkflowDiscovery.class.getDeclaredMethods()) {
+            if (!entry.getName().endsWith("Workflow")) continue;
+            Class<?>[] parameters = entry.getParameterTypes();
+            assertEquals(entry.getName()
+                            + " must take the declared occurrence",
+                    String.class, parameters[parameters.length - 1]);
+        }
     }
 
     private static JsonObject row(JsonObject ledger, int index) {
