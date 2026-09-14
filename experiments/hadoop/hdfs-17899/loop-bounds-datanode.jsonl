@@ -14,5 +14,5 @@
 # exportAllKeys() has no CFG loop at all (values().toArray is a library call).
 {"loopSiteId":"<org.apache.hadoop.hdfs.security.token.block.BlockTokenSecretManager: void removeExpiredKeys()>#u7","loopBodyBound":8,"reason":"covers the retained expiry scan"}
 {"loopSiteId":"<org.apache.hadoop.hdfs.protocolPB.PBHelper: org.apache.hadoop.hdfs.security.token.block.BlockKey[] convertBlockKeys(java.util.List)>#u6","loopBodyBound":8,"reason":"covers the bounded block-key reply conversion"}
-{"loopSiteId":"<org.apache.hadoop.ipc.Client$Connection: void sendRpcRequest(org.apache.hadoop.ipc.Client$Call)>#u49","loopBodyBound":8,"reason":"covers the retained bounded RPC request serialization loop"}
-{"loopSiteId":"<org.apache.hadoop.ipc.Client$Connection: void sendRpcRequest(org.apache.hadoop.ipc.Client$Call)>#u54","loopBodyBound":8,"reason":"the retained RPC request loop has two control sites and one shared prefix"}
+{"loopSiteId":"<org.apache.hadoop.ipc.Client$Connection: void sendRpcRequest(org.apache.hadoop.ipc.Client$Call)>#u50","loopBodyBound":8,"reason":"covers the retained bounded RPC request serialization loop"}
+{"loopSiteId":"<org.apache.hadoop.ipc.Client$Connection: void sendRpcRequest(org.apache.hadoop.ipc.Client$Call)>#u55","loopBodyBound":8,"reason":"the retained RPC request loop has two control sites and one shared prefix"}
