@@ -190,13 +190,14 @@ jlong SharedFieldVersions::select_carrier(const Location &location,
 }
 
 jlong SharedFieldVersions::publish_initial(const Location &location,
-                                           Expression *base) {
+                                           Expression *base,
+                                           const InitialSnapshot &snapshot) {
   if (!location.is_valid() || base == NULL) return 0;
   if (is_tracked(location)) return 0;
   // The base a later mutation extends.  Published as its own version so the
   // log begins where the container did, which is what a relation chain stands
   // on: without it the first PUT has no receiver a reader can resolve.
-  return publish(location, base, NULL, VERSION_INITIAL, NULL, true);
+  return publish(location, base, NULL, VERSION_INITIAL, NULL, true, &snapshot);
 }
 
 bool SharedFieldVersions::adopt_initial_snapshot(
@@ -239,7 +240,8 @@ jlong SharedFieldVersions::publish(const Location &location, Expression *value,
                                    Expression *path_guard,
                                    int version_kind,
                                    const char *operation,
-                                   bool start_tracking) {
+                                   bool start_tracking,
+                                   const InitialSnapshot *snapshot) {
   if (!location.is_valid() || value == NULL) return 0;
 
   const bool named = operation != NULL && operation[0] != '\0';
@@ -250,6 +252,12 @@ jlong SharedFieldVersions::publish(const Location &location, Expression *value,
   if (named) version.operation = operation;
   version.value = value;
   version.path_guard = path_guard;
+  if (snapshot != NULL) {
+    version.initial_snapshot_present = snapshot->present();
+    version.initial_snapshot_entries = snapshot->entries;
+    version.initial_snapshot_truncated = snapshot->truncated;
+    version.initial_snapshot_unsupported_class = snapshot->unsupported_class;
+  }
   if (ConcolicMngr::ctx != NULL) {
     version.writer_context_id = ConcolicMngr::ctx->get_context_id();
     version.region_id = ConcolicMngr::ctx->get_region_id();
@@ -629,13 +637,26 @@ bool SharedFieldVersions::write_versions_envelope(
     writer.String(version.task_id.c_str());
     writer.Key("regionEnterEventId");
     writer.Int64(version.region_enter_event_id);
-    if (version.initial_snapshot_present) {
+    // Emitted whenever this engine has something to say about the contents
+    // that predate tracking -- a stated count, a refusal over the bound, or a
+    // class it cannot read.  `stated` is explicit so an absent count is never
+    // mistaken for an empty container.
+    if (version.initial_snapshot_present
+        || !version.initial_snapshot_unsupported_class.empty()) {
       writer.Key("initialSnapshot");
       writer.StartObject();
+      writer.Key("stated");
+      writer.Bool(version.initial_snapshot_present
+                  && !version.initial_snapshot_truncated);
       writer.Key("entries");
       writer.Int(version.initial_snapshot_entries);
       writer.Key("truncated");
       writer.Bool(version.initial_snapshot_truncated);
+      if (!version.initial_snapshot_unsupported_class.empty()) {
+        writer.Key("unsupportedClass");
+        writer.String(
+            version.initial_snapshot_unsupported_class.c_str());
+      }
       writer.EndObject();
     }
     writer.Key("expression");
@@ -814,11 +835,18 @@ std::string SharedFieldVersions::tracked_locations(jlong after_event_id,
       break;
     }
     const TrackedLocation &entry = selected[index];
+    // Deliberately not `budget`: the document's budget is a boundary between
+    // locations, never a cut inside one.  Passing it down here let an envelope
+    // be truncated mid-location while the document still reported
+    // complete:true -- a silent truncation, which is the one failure mode a
+    // reader cannot see.  Each envelope keeps its own per-envelope bound; one
+    // oversized location may overshoot maxBytes, which is what "the first
+    // location is always emitted" already concedes.
     write_versions_envelope(writer, buffer, expression_artifact,
                             entry.location, entry.slot.versions,
                             entry.slot.reads, true,
                             entry.slot.writer_set_complete,
-                            entry.slot.read_log_complete, budget);
+                            entry.slot.read_log_complete, 0);
     writer.EndObject();
     emitted++;
   }

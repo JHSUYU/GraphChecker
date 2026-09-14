@@ -94,6 +94,54 @@ std::string unsupported(const char *category,
 // carrier nobody has to reconstruct marked unknown.
 int snapshot_entry_count(Expression *state);
 
+/**
+ * Reads a container's concrete members straight from the heap.
+ *
+ * Retention is by value, so when a symbolic operand first reaches a container
+ * the engine must state what it already held and has nobody to ask.  This
+ * walks the backing storage of the classes the models admit -- HashMap and
+ * LinkedHashMap (and HashSet/LinkedHashSet through the map they wrap),
+ * ArrayList, ArrayDeque, and object arrays.
+ *
+ * `keys` is filled only for an associative container; every shape fills
+ * `values`.  Returns false when the class is not one this engine walks, and
+ * then sets `*unsupported_class` to its name so the refusal can be published
+ * by name rather than mistaken for an empty container.
+ */
+bool read_concrete_members(oop container, std::vector<oop> *keys,
+                           std::vector<oop> *values,
+                           const char **unsupported_class);
+
+/**
+ * Installs a SNAPSHOT_BASE chain stating what `container` holds right now,
+ * and reports how many members it stated.
+ *
+ * Same node shape the Java-driven offer used to install, so nothing
+ * downstream changes: a bare SNAPSHOT_BASE for an empty container, one
+ * PUT/APPEND per member on top of it.  Returns -1 and sets
+ * `*unsupported_class` when the class cannot be walked, and -2 when the
+ * member count is over the engine's snapshot bound -- both of which are
+ * published as a stated refusal rather than as an empty container.
+ */
+int install_receiver_snapshot(oop container, const char *shape,
+                              bool *truncated,
+                              const char **unsupported_class);
+
+/**
+ * Fills `out` with what `container` holds, for the INITIAL version that
+ * starts its log.
+ *
+ * `receiver_is_base` says whether the container is still in the state the
+ * log should begin from -- true on a first symbolic read, false on a first
+ * symbolic write, where the concrete mutation has already run and a walk
+ * would overstate the base by the entry being written.  When it cannot be
+ * stated exactly the refusal is recorded by name; the snapshot is never
+ * guessed.
+ */
+void snapshot_for_receiver(oop container,
+                           SharedFieldVersions::InitialSnapshot *out,
+                           bool receiver_is_base);
+
 // Whether `state` stands on a base this recorder stated, however many
 // recorded mutations sit on top of it.  A chain that bottoms out in the bare
 // STATE root does not, and is the state whose contents are unknown.

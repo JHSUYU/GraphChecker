@@ -206,12 +206,19 @@ public:
   struct InitialSnapshot {
     bool stated;
     bool truncated;
+    // Set when the container's class is admitted by a model but is not one
+    // the engine can read the members of.  Published by name so the runtime
+    // raises a blocking gap instead of reading an absent snapshot as "held
+    // nothing".
+    std::string unsupported_class;
     // Members the INITIAL value states, or the count that went unstated, or
     // -1 when even the count is unknown.
     int entries;
     InitialSnapshot() : stated(false), truncated(false), entries(0) {}
     // Whether the version should publish an `initialSnapshot` block at all.
-    bool present() const { return stated || truncated; }
+    bool present() const {
+      return stated || truncated || !unsupported_class.empty();
+    }
   };
 
   struct Version {
@@ -239,6 +246,9 @@ public:
     bool initial_snapshot_present;
     int initial_snapshot_entries;
     bool initial_snapshot_truncated;
+    // Non-empty when the snapshot was refused because the container's class
+    // is not one this engine walks.
+    std::string initial_snapshot_unsupported_class;
     Version()
         : version_id(0), version_kind(VERSION_WRITE), writer_context_id(0),
           region_enter_event_id(0), value(NULL), path_guard(NULL),
@@ -479,7 +489,8 @@ public:
    *
    * Returns 0 when the location is already tracked.
    */
-  static jlong publish_initial(const Location &location, Expression *base);
+  static jlong publish_initial(const Location &location, Expression *base,
+                               const InitialSnapshot &snapshot);
 
   /**
    * Records what a location's INITIAL version says about the contents that
@@ -506,7 +517,8 @@ public:
   static jlong publish(const Location &location, Expression *value,
                        Expression *path_guard, int version_kind,
                        const char *operation = NULL,
-                       bool start_tracking = false);
+                       bool start_tracking = false,
+                       const InitialSnapshot *snapshot = NULL);
 
   /**
    * Records that this location has a writer nobody can name.
