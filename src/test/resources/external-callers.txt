@@ -1,0 +1,44 @@
+# GraphChecker APIs called from OUTSIDE this repository: the eight
+# /opt/hadoop-hdfs-* workload checkouts and /opt/solr.  They are not woven,
+# so ConcolicHookAbiTest's catalog check cannot see them and a `git grep` of
+# src/ returns empty for every one.  The checkouts compile against an older
+# jar in ~/.m2, so a rename or a deletion here surfaces only when a campaign
+# loads the new jar -- at SEED, as NoSuchMethodError, after the build is
+# already green.  MECHANISMS §9/§10: deleting line 1 killed every campaign.
+#
+# Format: <class under edu.uva.liftlab.graphchecker.> <method> <return> <parameters...>
+# Also external, and checked by the compiler rather than here:
+#   annotation.CausynthExceptionTarget, the marker on BlockTokenSecretManager
+#   (7 trees) and FSImageFormatPBSnapshot (17960, 17960-jdk8).
+
+# ipc.CausynthSymbolicSource.symbolize -- every case's configured roots
+runtime.ConcolicRegionRuntime symbolizeConfiguredSourceField boolean string object string
+# annotation.Debug.makeSymbolicBoolean <- ipc.Client:1247 (bug1, bug2, bug3)
+annotation.Debug makeSymbolicBoolean boolean string
+runtime.ConcolicRegionRuntime materializeSymbolicBoolean boolean string
+# Solr CausynthHttpPropagation$RuntimeApi:237-238, bound reflectively: a
+# deletion turns Solr propagation off silently instead of failing.
+runtime.ConcolicRegionRuntime pauseObservation void
+runtime.ConcolicRegionRuntime resumeObservation void
+
+# ipc.CausynthMessagePropagation, all eight trees unless noted
+runtime.CausynthTraceRecorder captureScope object
+runtime.CausynthTraceRecorder outboundExchange string string string string string object object
+runtime.CausynthTraceRecorder inboundExchange long string string string string string object
+runtime.CausynthTraceRecorder endInboundExchange void long
+runtime.CausynthTraceRecorder registerSource void object string string string long
+runtime.CausynthTraceRecorder registerSourceAlias void object object
+runtime.CausynthTraceRecorder beginSourceRequest long object string
+runtime.CausynthTraceRecorder endSourceRequest void long string
+# not in 17899-base
+runtime.CausynthTraceRecorder startRecording void
+# 17960 and 17960-jdk8 only
+runtime.CausynthTraceRecorder restartSource void object string string string long
+# 17899-bug1 only
+runtime.CausynthTraceRecorder captureAsync void object
+# Solr RuntimeApi:225 only -- the five-argument overload
+runtime.CausynthTraceRecorder outboundExchange string string string string string object
+
+runtime.SymbolicMessageEnvelope takeOutbound string
+runtime.SymbolicMessageEnvelope installInbound void string
+runtime.SymbolicMessageEnvelope clearInbound void
