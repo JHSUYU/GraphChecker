@@ -2209,7 +2209,19 @@ public final class ConcolicRegionRuntime {
         } finally {
             endBookkeeping();
         }
-        if (site == null) return;
+        if (site == null) {
+            // A capture ran for a port no task of this campaign declares.
+            // Rule 5: the run says so rather than returning in silence --
+            // an attach that files nothing and an attach nobody planned
+            // read identically from the corpus, and only one of them is a
+            // coverage question.
+            recordHandoffGap(RpcExpressionHandoff.gap(
+                    RpcExpressionHandoff.STAGE_ATTACH,
+                    RpcExpressionHandoff.MISSING_METADATA, 0L,
+                    "no task of this campaign declares this capture's port: "
+                            + safe(portId)));
+            return;
+        }
         if (carrier == null) {
             recordHandoffGap(RpcExpressionHandoff.gap(
                     RpcExpressionHandoff.STAGE_ATTACH,
@@ -2375,7 +2387,18 @@ public final class ConcolicRegionRuntime {
         beginBookkeeping();
         try {
             ActiveRegion active = attachConsumerRegion(site);
-            if (active == null) return;
+            if (active == null) {
+                // Nothing is live to carry the mint.  Named, not silent:
+                // "the capture ran outside every selected occurrence" is a
+                // statement about coverage, and it is the only remaining
+                // way this path can publish nothing.
+                recordHandoffGap(RpcExpressionHandoff.gap(
+                        RpcExpressionHandoff.STAGE_ATTACH,
+                        RpcExpressionHandoff.NO_ACTIVE_REGION, 0L,
+                        "capture ran outside every selected occurrence: "
+                                + site.portId()));
+                return;
+            }
             noteAttachFiledElsewhere(site, active);
             mintHandoffVariable(active, site, 0L, 0L, null, "", "", carrier,
                     CARRIER_CLASS, field, descriptor, true);

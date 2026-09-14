@@ -345,8 +345,22 @@ public final class VmHandoffEvidence {
             if (!isEvent(event)) continue;
             JsonObject identity = shallowCopy(event);
             JsonElement expression = identity.remove(EXPRESSION);
-            identity.addProperty(SharedExpressionTable.ANCHOR,
-                    anchors.contentAnchor(expression));
+            // A delivery that carried no producer expression has nothing to
+            // anchor, and its identity is already complete without one --
+            // the phase id, the consumer and the element type say which
+            // handoff it is.  Asking for the anchor anyway threw
+            // "content anchor requires one expression object" out of this
+            // loop, and the throw took the whole vmHandoffEvents array AND
+            // the rpcHandoffGaps written after it off the result row: on
+            // hdfs-17899 bug3 laneVM21 the flip replay minted v_H at all
+            // four consumer activations -- the HOFF symbols are in their
+            // sharedExpressionTable -- and published neither a handoff row
+            // nor a gap, so the answer looked unapplied when it had been
+            // applied.
+            if (expression != null) {
+                identity.addProperty(SharedExpressionTable.ANCHOR,
+                        anchors.contentAnchor(expression));
+            }
             byPayload.put(CanonicalJson.render(identity), event);
         }
         if (byPayload.isEmpty()) return;
