@@ -103,6 +103,35 @@ public class PublicationContractTest {
 
         // A task whose anchor names no request diverges from nothing.
         assertTrue(check(target("TASK.a"), ran, null).isEmpty());
+
+        // And a divergence is not merely "not a stop": it is the recording
+        // of the next epoch, and the row names the replay it seeds from, so
+        // the harness plans epoch e+1 from that replay's own trace instead
+        // of re-deriving which one diverged.
+        assertTrue("a diverged request seeds the next epoch",
+                ConcolicSummaryImporter.seedsAnEpoch(
+                        PublicationContract.ACTIVATION_REQUEST_DIVERGED));
+        assertTrue("so does an unplanned topology",
+                ConcolicSummaryImporter.seedsAnEpoch(
+                        ConcolicSummaryImporter.TOPOLOGY_DIVERGENCE));
+        assertTrue("a contract failure does not",
+                !ConcolicSummaryImporter.seedsAnEpoch(
+                        PublicationContract.TASK_SILENT));
+
+        JsonObject seedRow = new JsonObject();
+        seedRow.addProperty("code",
+                PublicationContract.ACTIVATION_REQUEST_DIVERGED);
+        seedRow.addProperty(ConcolicSummaryImporter.SEEDS_NEXT_EPOCH, true);
+        seedRow.addProperty(ConcolicSummaryImporter.SEED_REPLAY_GROUP,
+                "REPLAY.GROUP.24f524c7");
+        seedRow.addProperty(ConcolicSummaryImporter.SEED_REPLAY_TASK,
+                "TASK.REPLAY.0bba7367");
+        JsonObject quiet = new JsonObject();
+        quiet.addProperty("code", "REGION_ROOT_NEVER_EXECUTED");
+        assertEquals("the wave names the replay epoch e+1 is seeded from",
+                Collections.singletonList("REPLAY.GROUP.24f524c7"),
+                ConcolicSummaryImporter.seedingReplays(
+                        java.util.Arrays.asList(seedRow, quiet, seedRow)));
     }
 
     /** The contract, over one kept task and the rows the wave published. */

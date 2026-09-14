@@ -661,14 +661,16 @@ public final class GapLedger {
                         + " predicate to compose");
         diagnostic(contract, "ACTIVATION_REQUEST_DIVERGED",
                 "a request ordinal or scope that differs between executions"
-                        + " is evidence of divergence consumed by epoch"
-                        + " re-seeding (EPOCH2), not a contract failure: the"
-                        + " address is the identity and the request is a"
-                        + " circumstance, and the k-th request of a periodic"
-                        + " api -- a heartbeat, say -- or the scope a"
-                        + " background thread happens to sit under is a"
-                        + " timing fact about the run, not a fact about the"
-                        + " workload");
+                        + " is evidence of divergence, not a contract"
+                        + " failure: the address is the identity and the"
+                        + " request is a circumstance, and the k-th request"
+                        + " of a periodic api -- a heartbeat, say -- or the"
+                        + " scope a background thread happens to sit under"
+                        + " is a timing fact about the run, not a fact about"
+                        + " the workload.  The row SEEDS EPOCH e+1: its"
+                        + " bundle stays out of this epoch's composition and"
+                        + " the next epoch is planned from that replay's own"
+                        + " trace, which the row names");
         blocking(contract, "PUBLICATION_WRITE_LOG_INCOMPLETE",
                 "a published write log cannot be read back, so every read of"
                         + " that location is unresolvable");
@@ -687,10 +689,14 @@ public final class GapLedger {
         diagnostic(importer, "TOPOLOGY_DIVERGENCE",
                 "a flip that changes the topology found a new one: the"
                         + " handoff or occurrence it ran is exact evidence"
-                        + " the plan had not addressed, and the next"
-                        + " iteration addresses it -- withholding the claim"
-                        + " on it would refuse the run for having learned"
-                        + " something");
+                        + " the plan had not addressed, so the bundle is"
+                        + " kept whole, held out of this epoch's"
+                        + " composition, and SEEDS EPOCH e+1, where that"
+                        + " replay's own trace is the recording and PLAN,"
+                        + " INSTRUMENT and REPLAY run again on it --"
+                        + " withholding the claim on it would refuse the run"
+                        + " for having learned something, and composing it"
+                        + " with this epoch would merge two causal graphs");
         onKeptSlice(importer, "REGION_TASK_NO_PUBLISHED_ACTIVATION",
                 "a planned task published neither an activation nor a skip:"
                         + " on the kept slice its region contributes no case"

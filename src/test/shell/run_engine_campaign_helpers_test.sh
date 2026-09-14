@@ -728,4 +728,30 @@ jq -e '.finalStatus == "FINAL_READY" and .refusals == []
   || fail "a composed occurrence row does not carry its admitted paths: \
 $(cat "${campaign_target_reports}")"
 
+# A divergent epoch names the replay the next one is seeded from, and the
+# harness reads that name off the row rather than re-deriving which replay
+# diverged.  Both helpers answer empty when the topology closed, which is what
+# makes the loop return instead of planning an epoch from nothing.
+seed_dir="${test_tmp}/seeding/iteration-0000"
+mkdir -p "${seed_dir}"
+seed_results="${test_tmp}/seeding/iteration-0000/workers/task-a/results.jsonl"
+mkdir -p "$(dirname "${seed_results}")"
+printf '{"event":"CONCOLIC_REGION_RESULT"}\n' >"${seed_results}"
+: >"${seed_dir}/import_diagnostics.jsonl"
+[[ -z "$(campaign_seeding_replay "${seed_dir}")" ]] \
+  || fail "a closed topology seeds no epoch"
+jq -n --arg results "${seed_results}" '{kind: "CONCOLIC_IMPORT_DIAGNOSTIC",
+  code: "ACTIVATION_REQUEST_DIVERGED", taskId: "TASK.REPLAY.0bba7367",
+  seedsNextEpoch: true, seedReplayGroupId: "REPLAY.GROUP.24f524c7",
+  seedReplayTaskId: "TASK.REPLAY.0bba7367", seedReplayResults: $results}' \
+  -c >"${seed_dir}/import_diagnostics.jsonl"
+printf '%s\n' '{"kind":"CONCOLIC_IMPORT_DIAGNOSTIC","code":"REGION_ROOT_NEVER_EXECUTED"}' \
+  >>"${seed_dir}/import_diagnostics.jsonl"
+[[ "$(campaign_seeding_replay "${seed_dir}")" == "REPLAY.GROUP.24f524c7" ]] \
+  || fail "the seeding replay is not read off the divergent row: \
+$(campaign_seeding_replay "${seed_dir}")"
+[[ "$(campaign_seeding_results "${seed_dir}")" == "${seed_results}" ]] \
+  || fail "the next epoch is not planned from that replay's own results: \
+$(campaign_seeding_results "${seed_dir}")"
+
 echo "run_engine campaign helper tests passed"
