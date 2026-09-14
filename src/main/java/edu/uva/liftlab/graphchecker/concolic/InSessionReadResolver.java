@@ -221,7 +221,7 @@ public final class InSessionReadResolver {
     }
 
     /** {@code kind/rid#slot}, the way a read node addresses a location. */
-    static String sessionLocation(JsonObject location) {
+    public static String sessionLocation(JsonObject location) {
         if (location == null || location.size() == 0) return "";
         String kind = optionalString(location, "locationKind");
         if (kind.isEmpty() || !location.has("slot")) return "";

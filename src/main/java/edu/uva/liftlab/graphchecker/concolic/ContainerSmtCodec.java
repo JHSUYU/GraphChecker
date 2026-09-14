@@ -70,7 +70,7 @@ public final class ContainerSmtCodec {
     }
 
     /** One tagged transport value shared by path solving and composition. */
-    static String valueDatatypeDeclaration() {
+    public static String valueDatatypeDeclaration() {
         return "(declare-datatypes () ((Value"
                 + " (VByte (valueByte Int))"
                 + " (VChar (valueChar Int))"
@@ -84,13 +84,13 @@ public final class ContainerSmtCodec {
                 + " (VString (valueString String)))))";
     }
 
-    static String boxIntegral(String value, String javaType) {
+    public static String boxIntegral(String value, String javaType) {
         String constructor = integralValuePart(javaType, true);
         return constructor.isEmpty() ? "" : "(" + constructor + " "
                 + value + ")";
     }
 
-    static String unboxIntegral(String value, String javaType) {
+    public static String unboxIntegral(String value, String javaType) {
         String accessor = integralValuePart(javaType, false);
         return accessor.isEmpty() ? "" : "(" + accessor + " "
                 + value + ")";
@@ -112,7 +112,7 @@ public final class ContainerSmtCodec {
         return "VRef".equals(kind) ? "" : kind;
     }
 
-    static String valueKind(String javaType) {
+    public static String valueKind(String javaType) {
         String integral = integralValuePart(javaType, true);
         if (!integral.isEmpty()) return integral;
         String descriptor = JavaPrimitiveBoxing
@@ -1386,7 +1386,7 @@ public final class ContainerSmtCodec {
      * Refusal subject for a membership no recording decides: the same name
      * the shared-state evidence gives an INITIAL that states no base.
      */
-    static final String CONTAINER_BASE_UNSTATED =
+    public static final String CONTAINER_BASE_UNSTATED =
             SharedStateEvidence.CONTAINER_BASE_UNSTATED_FAULT;
 
     private static Term associativeRead(
@@ -2172,7 +2172,7 @@ public final class ContainerSmtCodec {
      * sort it holds.  The caller resolves the Java type to {@code cellSort}
      * because the two encoders answer that question differently.
      */
-    static Term unboxValue(Term value, String javaType, Sort cellSort,
+    public static Term unboxValue(Term value, String javaType, Sort cellSort,
                            Host host) {
         if (value == null || value.sort != Sort.VALUE) return value;
         String kind = valueKind(javaType);
@@ -2258,13 +2258,13 @@ public final class ContainerSmtCodec {
     public static final class Term {
         public final String text;
         public final Sort sort;
-        final IntegralWidth integralWidth;
+        public final IntegralWidth integralWidth;
 
         public Term(String text, Sort sort) {
             this(text, sort, IntegralWidth.NONE);
         }
 
-        Term(String text, Sort sort, IntegralWidth integralWidth) {
+        public Term(String text, Sort sort, IntegralWidth integralWidth) {
             this.text = text;
             this.sort = sort;
             this.integralWidth = sort == Sort.INT

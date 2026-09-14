@@ -9,32 +9,32 @@ import java.util.Locale;
 
 /** Shared SMT semantics for Java's integral computational types. */
 public final class JavaPrimitiveSmtSemantics {
-    static final String INT_WRAP_DEFINITION =
+    public static final String INT_WRAP_DEFINITION =
             "(define-fun java_int_wrap ((i Int)) Int"
                     + " (- (mod (+ i 2147483648) 4294967296)"
                     + " 2147483648))";
-    static final String LONG_WRAP_DEFINITION =
+    public static final String LONG_WRAP_DEFINITION =
             "(define-fun java_long_wrap ((i Int)) Int"
                     + " (- (mod (+ i 9223372036854775808)"
                     + " 18446744073709551616) 9223372036854775808))";
 
-    enum IntegralWidth {
+    public enum IntegralWidth {
         NONE,
         JAVA_INT,
         JAVA_LONG
     }
 
     /** Java's two binary IEEE-754 computational formats. */
-    enum FloatingKind {
+    public enum FloatingKind {
         NONE,
         JAVA_FLOAT,
         JAVA_DOUBLE
     }
 
-    static final class IntegralDomain {
-        final String lower;
-        final String upper;
-        final IntegralWidth width;
+    public static final class IntegralDomain {
+        public final String lower;
+        public final String upper;
+        public final IntegralWidth width;
 
         private IntegralDomain(String lower, String upper,
                                IntegralWidth width) {
@@ -154,7 +154,7 @@ public final class JavaPrimitiveSmtSemantics {
                 BigInteger.valueOf(maximum)};
     }
 
-    static IntegralWidth widthOfJavaType(String javaType) {
+    public static IntegralWidth widthOfJavaType(String javaType) {
         IntegralDomain domain = domainOfJavaType(javaType);
         return domain == null ? IntegralWidth.NONE : domain.width;
     }
@@ -397,7 +397,7 @@ public final class JavaPrimitiveSmtSemantics {
     }
 
     /** Returns the runtime value domain of an explicitly typed Java leaf. */
-    static IntegralDomain domainOfJavaType(String javaType) {
+    public static IntegralDomain domainOfJavaType(String javaType) {
         String type = normalize(javaType);
         if ("Z".equals(type) || "java/lang/Boolean".equals(type)) {
             return new IntegralDomain("0", "1", IntegralWidth.JAVA_INT);

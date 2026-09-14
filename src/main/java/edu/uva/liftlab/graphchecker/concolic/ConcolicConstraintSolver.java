@@ -389,7 +389,7 @@ public final class ConcolicConstraintSolver {
         }
 
         @Override
-        Sort sortOfJavaType(String javaType) {
+        public Sort sortOfJavaType(String javaType) {
             return sortOfJava(javaType);
         }
 
@@ -399,7 +399,7 @@ public final class ConcolicConstraintSolver {
          * on the term the way final composition carries it.
          */
         @Override
-        Term definedResult(String text, Sort sort, IntegralWidth width,
+        public Term definedResult(String text, Sort sort, IntegralWidth width,
                            String definedness, Term... inputs) {
             if (!"true".equals(definedness)) assertions.add(definedness);
             return Term.vm(text, sort, width);
@@ -410,7 +410,7 @@ public final class ConcolicConstraintSolver {
          * circuit has no operand obligation to guard and states nothing.
          */
         @Override
-        Term shortCircuit(String text, Term left, Term right,
+        public Term shortCircuit(String text, Term left, Term right,
                           boolean conjunction) {
             return Term.vm(text, Sort.BOOL);
         }
@@ -420,7 +420,7 @@ public final class ConcolicConstraintSolver {
          * non-null, so the query may assert it; unknown nullability refuses.
          */
         @Override
-        String stringDefinedness(String origin, String operation,
+        public String stringDefinedness(String origin, String operation,
                                  List<Term> dereferenced,
                                  List<Term> evaluated) {
             for (int index = 0; index < dereferenced.size(); index++) {
@@ -440,7 +440,7 @@ public final class ConcolicConstraintSolver {
         }
 
         @Override
-        void assertJavaIntegralDomain(String term, Sort sort,
+        public void assertJavaIntegralDomain(String term, Sort sort,
                                       String javaType, String identity) {
             if (sort != Sort.INT) return;
             JavaPrimitiveSmtSemantics.IntegralDomain domain =
@@ -451,7 +451,7 @@ public final class ConcolicConstraintSolver {
         }
 
         @Override
-        void noteJavaIntToString() {
+        public void noteJavaIntToString() {
             usesJavaIntString = true;
         }
 
@@ -554,18 +554,18 @@ public final class ConcolicConstraintSolver {
         }
 
         @Override
-        Term symbolTerm(JsonObject expression, Sort expected,
+        public Term symbolTerm(JsonObject expression, Sort expected,
                         String origin) {
             return symbol(expression, origin);
         }
 
         @Override
-        Term placeholderTerm(JsonObject expression, String origin) {
+        public Term placeholderTerm(JsonObject expression, String origin) {
             return placeholder(expression, origin);
         }
 
         @Override
-        Term caseMergeTerm(JsonObject expression, Sort expected,
+        public Term caseMergeTerm(JsonObject expression, Sort expected,
                            String origin) {
             // A value merged over another region's cases is a cross-replay
             // object.  One obligation is one replay's path condition.
@@ -576,14 +576,14 @@ public final class ConcolicConstraintSolver {
 
         /** A refused call yields no term, so no sort is needed for it. */
         @Override
-        Sort methodResultSort(JsonObject expression, String origin) {
+        public Sort methodResultSort(JsonObject expression, String origin) {
             return null;
         }
 
 
         /** Lowers the VM's read-time candidate snapshot directly. */
         @Override
-        Term guardedReadTerm(JsonObject read, Sort expected,
+        public Term guardedReadTerm(JsonObject read, Sort expected,
                              String origin) {
             // Every expression reaching this encoder was resolved inside its
             // own replay, so a surviving read is a value that replay did not
@@ -598,7 +598,7 @@ public final class ConcolicConstraintSolver {
 
 
         @Override
-        Term containerTerm(JsonObject expression, boolean field,
+        public Term containerTerm(JsonObject expression, boolean field,
                            String origin) {
             if (field) {
                 return fromContainerTerm(ContainerSmtCodec.field(
@@ -882,7 +882,7 @@ public final class ConcolicConstraintSolver {
 
         /** The composer's {@code splitElementTerm}, stated for this caller. */
         @Override
-        Term splitElementTerm(JsonObject expression, String origin) {
+        public Term splitElementTerm(JsonObject expression, String origin) {
             SplitPrefix match = exactSplitPrefix(expression);
             if (!match.complete()) {
                 return splitElementGap(match.gap);
