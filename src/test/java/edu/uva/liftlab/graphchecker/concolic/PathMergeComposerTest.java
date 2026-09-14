@@ -528,7 +528,9 @@ public class PathMergeComposerTest {
         // The consumer's predicate is false on the seed's delivery (9) and
         // true on the flip replay's (7), so the failure is reachable only
         // where that delivery is available.
-        query.getAsJsonArray("paths").add(path("only", "GROUP.SEED",
+        // The fatal path is the flip replay's: it ran with the marker
+        // moved and received the delivery its consumer fails on.
+        query.getAsJsonArray("paths").add(path("only", "GROUP.FLIP",
                 notEqual(handoff(), constant(0)),
                 notEqual(handoff(), constant(9))));
 
