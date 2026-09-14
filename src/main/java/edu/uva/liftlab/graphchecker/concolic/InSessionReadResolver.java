@@ -315,12 +315,21 @@ public final class InSessionReadResolver {
             // only at the recorded handoff.
             JsonObject row = handoffRows.get(event);
             JsonElement minted = handoffSymbol(row);
-            if (minted == null) {
-                return unresolved("boundary " + event + " mints no "
-                        + HANDOFF_SYMBOL + ": the value that crossed the"
-                        + " wire has no variable to be free in");
+            if (minted != null) return minted;
+            // Not every boundary has a row that mints one.  laneBN records
+            // boundaries whose attach publishes no VM_HANDOFF_EVENT at all,
+            // so "every published row carries handoffSymbol" is true there
+            // only vacuously.  Such a boundary is a family with exactly one
+            // pair -- the value this replay received, and the producer term
+            // the VM already substituted into the node -- and reading it is
+            // that family, not the arm vocabulary.  It goes when a corpus
+            // shows every boundary minting a variable, not before.
+            JsonElement source = node.get(VmExpressionIr.EXPRESSION);
+            if (source == null) {
+                return unresolved("boundary " + event + " carries neither a "
+                        + HANDOFF_SYMBOL + " nor a value");
             }
-            return minted;
+            return rewrite(source, visiting, depth + 1);
         }
         if ("ReadFromExpression".equals(type)) {
             return rewriteRead(node, visiting, depth);
