@@ -247,6 +247,75 @@ public class HandoffBelongsToItsConsumerTest {
         assertEquals(0, none.get("arms").getAsInt());
         assertTrue("a handoff no producer delivers says so",
                 none.get(HandoffFamilyRows.UNPRODUCIBLE).getAsBoolean());
+
+        // An arm is only as constraining as the roots inside it, and those
+        // roots obey the composition's domains -- exploration may explore
+        // only what composition can accept.  The arm here says the arrival
+        // IS the producer's root; the case declares no domain for that
+        // root, so COMPOSE pins it to what the recording read and this
+        // query does too.  Pinned at 7 the flip -- which needs the arrival
+        // above 10 -- is closed, instead of being explored on a move no
+        // composition would ever accept.
+        JsonObject pinned = wireQuery();
+        pinned.add(RegionPathWorklist.HANDOFF_CONTROLS, controlsOverRoot());
+        pinned.add(HandoffFamilyRows.ROOTS, familyRoots("", ""));
+        JsonObject closedByPin = solve(pinned, activation).record;
+        assertEquals(closedByPin.toString(), "UNSAT",
+                closedByPin.get("status").getAsString());
+        assertEquals("= 7", closedByPin
+                .getAsJsonArray(HandoffFamilyRows.ROOTS).get(0)
+                .getAsJsonObject().get("domain").getAsString());
+
+        // The same arm with the case declaring what that root may be: free
+        // INSIDE the domain, and the answer is a value the producer makes
+        // there -- which is how 17897's rotations are reached.
+        JsonObject declared = wireQuery();
+        declared.add(RegionPathWorklist.HANDOFF_CONTROLS,
+                controlsOverRoot());
+        declared.add(HandoffFamilyRows.ROOTS, familyRoots("11", "12"));
+        ConcolicConstraintSolver.Result rotated = solve(declared, activation);
+        assertEquals(rotated.record.toString(), "SAT_MODEL_READY",
+                rotated.record.get("status").getAsString());
+        String rotation = rotated.modelAssignments.get(0).getAsJsonObject()
+                .get("value").getAsString();
+        assertTrue("answered inside the declared domain, not beyond it: "
+                        + rotation,
+                "11".equals(rotation) || "12".equals(rotation));
+    }
+
+    /** The producer root one family arm delivers, in the test's corpus. */
+    private static final String FAMILY_ROOT =
+            "M_J_field_SRC.0f1e2d3c4b_test/Producer";
+
+    /** The one control, its single arm delivering that root itself. */
+    private static JsonArray controlsOverRoot() {
+        JsonArray rows = controls("0");
+        rows.get(0).getAsJsonObject().getAsJsonArray(HandoffFamilyRows.ARMS)
+                .get(0).getAsJsonObject().add(HandoffFamilyRows.DELIVERED,
+                        parse("{\"_type\":\"SymbolExpression\","
+                                + "\"_java_type\":\"J\",\"_exp\":\""
+                                + FAMILY_ROOT + "\"}"));
+        return rows;
+    }
+
+    /**
+     * The root that arm names, with the domain the case declares for it.
+     *
+     * @param min empty for a root the case declares nothing about, which
+     *            the composition pins to what the recording read
+     */
+    private static JsonArray familyRoots(String min, String max) {
+        JsonObject root = parse("{\"rawSymbol\":\"" + FAMILY_ROOT
+                + "\",\"javaType\":\"J\",\"sourceId\":"
+                + "\"TEST.PRODUCER\",\"recordedValue\":\"7\",\""
+                + HandoffFamilyRows.WALL_CLOCK + "\":false}");
+        if (!min.isEmpty()) {
+            root.addProperty(PathMergeComposer.DECLARED_DOMAIN_MIN, min);
+            root.addProperty(PathMergeComposer.DECLARED_DOMAIN_MAX, max);
+        }
+        JsonArray roots = new JsonArray();
+        roots.add(root);
+        return roots;
     }
 
     /**
