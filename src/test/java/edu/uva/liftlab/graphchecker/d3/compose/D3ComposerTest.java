@@ -448,8 +448,8 @@ public class D3ComposerTest {
 
         /** A declared counter, with the window the CASE states around it. */
         void serial(String recorded, String min, String max) {
-            roots.add(RootMintRow.of(id, PRODUCER, SERIAL_ROOT, SERIAL,
-                    RootKind.INTEGRAL, recorded, min, max, true));
+            roots.add(RootMintRow.of(id, ++seq, PRODUCER, SERIAL_ROOT,
+                    SERIAL, RootKind.INTEGRAL, recorded, min, max, true));
         }
 
         void expression(String ref, JsonObject node) {
