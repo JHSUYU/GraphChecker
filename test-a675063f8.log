@@ -1,0 +1,91 @@
+[main] INFO edu.uva.liftlab.graphchecker.causynth.CausynthPipeline - Indexed writers for 0 application fields, callers for 1 constructors, and callers for 0 methods from 3 relevant units in 2 methods in 3 ms
+[main] INFO edu.uva.liftlab.graphchecker.causynth.CausynthPipeline - Discovered 1 direct throw sites for example.RootFailure in 1 methods
+[[1;31mERROR[m] [1;31mTests [0;1mrun: [0;1m19[m, [1;31mFailures: [0;1;31m1[m, Errors: 0, Skipped: 0, Time elapsed: 1.085 s[1;31m <<< FAILURE![m - in edu.uva.liftlab.graphchecker.concolic.[1mPathMergeComposerTest[m
+[[1;31mERROR[m] aTimerNowMintIsAClockReadWithTheCaseBound(edu.uva.liftlab.graphchecker.concolic.PathMergeComposerTest)  Time elapsed: 0.057 s  <<< FAILURE!
+java.lang.AssertionError: 
+; GraphChecker path-merge composed query
+(set-logic ALL)
+(set-option :produce-models true)
+(set-option :smt.arith.solver 2)
+(declare-sort Ref 0)
+(declare-datatypes () ((Value (VByte (valueByte Int)) (VChar (valueChar Int)) (VShort (valueShort Int)) (VInt (valueInt Int)) (VLong (valueLong Int)) (VFloat (valueFloat (_ FloatingPoint 8 24))) (VDouble (valueDouble (_ FloatingPoint 11 53))) (VBool (valueBool Bool)) (VRef (valueRef Ref)) (VString (valueString String)))))
+(declare-const nullRef Ref)
+(declare-datatypes () ((IndexedState (mkIndexedState (indexed_size Int) (indexed_elements (Array Int Value))))))
+(declare-datatypes () ((AssocState (mkAssocState (assoc_size Int) (assoc_present (Array Value Bool)) (assoc_values (Array Value Value)) (assoc_order (Array Int Value)) (assoc_position (Array Value Int))))))
+(declare-fun indexed_state_of (Ref) IndexedState)
+(declare-fun assoc_state_of (Ref) AssocState)
+(define-fun indexed_read ((s IndexedState) (i Int)) Value (select (indexed_elements s) i))
+(define-fun indexed_write ((s IndexedState) (i Int) (v Value)) IndexedState (mkIndexedState (indexed_size s) (store (indexed_elements s) i v)))
+(define-fun indexed_append ((s IndexedState) (v Value)) IndexedState (mkIndexedState (+ (indexed_size s) 1) (store (indexed_elements s) (indexed_size s) v)))
+(define-fun indexed_insert ((s IndexedState) (i Int) (v Value)) IndexedState (mkIndexedState (+ (indexed_size s) 1) (lambda ((q Int)) (ite (< q i) (select (indexed_elements s) q) (ite (= q i) v (select (indexed_elements s) (- q 1)))))))
+(define-fun indexed_remove ((s IndexedState) (i Int)) IndexedState (mkIndexedState (- (indexed_size s) 1) (lambda ((q Int)) (ite (< q i) (select (indexed_elements s) q) (select (indexed_elements s) (+ q 1))))))
+(define-fun indexed_contains ((s IndexedState) (v Value)) Bool (exists ((i Int)) (and (<= 0 i) (< i (indexed_size s)) (= (indexed_read s i) v))))
+(define-fun assoc_has ((s AssocState) (k Value)) Bool (select (assoc_present s) k))
+(define-fun assoc_read ((s AssocState) (k Value)) Value (select (assoc_values s) k))
+(define-fun assoc_key_at ((s AssocState) (i Int)) Value (select (assoc_order s) i))
+(define-fun assoc_value_at ((s AssocState) (i Int)) Value (assoc_read s (assoc_key_at s i)))
+(define-fun assoc_put ((s AssocState) (k Value) (v Value)) AssocState (mkAssocState (ite (assoc_has s k) (assoc_size s) (+ (assoc_size s) 1)) (store (assoc_present s) k true) (store (assoc_values s) k v) (ite (assoc_has s k) (assoc_order s) (store (assoc_order s) (assoc_size s) k)) (ite (assoc_has s k) (assoc_position s) (store (assoc_position s) k (assoc_size s)))))
+(define-fun assoc_remove ((s AssocState) (k Value)) AssocState (ite (assoc_has s k) (let ((p (select (assoc_position s) k))) (mkAssocState (- (assoc_size s) 1) (store (assoc_present s) k false) (assoc_values s) (lambda ((q Int)) (ite (and (<= p q) (< q (- (assoc_size s) 1))) (select (assoc_order s) (+ q 1)) (select (assoc_order s) q))) (lambda ((q Value)) (ite (= q k) (- 1) (ite (and (assoc_has s q) (> (select (assoc_position s) q) p)) (- (select (assoc_position s) q) 1) (select (assoc_position s) q)))))) s))
+(define-fun java_int_to_string ((i Int)) String (ite (< i 0) (str.++ "-" (str.from_int (- i))) (str.from_int i)))
+(define-fun java_int_wrap ((i Int)) Int (- (mod (+ i 2147483648) 4294967296) 2147483648))
+(define-fun java_long_wrap ((i Int)) Int (- (mod (+ i 9223372036854775808) 18446744073709551616) 9223372036854775808))
+(declare-const case_selector__51ecdbf935abee7b280277216352ecc553884353445f1769cfc3e3abbaa6df1d Bool)
+(declare-const sym__EXAMPLE_ROOT__1 Bool)
+(declare-const sym__M_J_clock_example Int)
+(assert (and (<= (- 9223372036854775808) sym__M_J_clock_example) (<= sym__M_J_clock_example 9223372036854775807)))
+(assert (! (=> case_selector__51ecdbf935abee7b280277216352ecc553884353445f1769cfc3e3abbaa6df1d (and (and (>= sym__M_J_clock_example 1699999100666) (<= sym__M_J_clock_example 1700000900666)) (= sym__EXAMPLE_ROOT__1 true) (not (= sym__M_J_clock_example 0)))) :named path_fatal__0))
+(assert (! case_selector__51ecdbf935abee7b280277216352ecc553884353445f1769cfc3e3abbaa6df1d :named target_path_partition))
+(assert (! case_selector__51ecdbf935abee7b280277216352ecc553884353445f1769cfc3e3abbaa6df1d :named fatal_target))
+(check-sat)
+
+	at edu.uva.liftlab.graphchecker.concolic.PathMergeComposerTest.aTimerNowMintIsAClockReadWithTheCaseBound(PathMergeComposerTest.java:245)
+
+[[1;31mERROR[m] [1;31mFailures: [m
+[[1;31mERROR[m] [1;31m  PathMergeComposerTest.aTimerNowMintIsAClockReadWithTheCaseBound:245 ; GraphChecker path-merge composed query
+(set-logic ALL)
+(set-option :produce-models true)
+(set-option :smt.arith.solver 2)
+(declare-sort Ref 0)
+(declare-datatypes () ((Value (VByte (valueByte Int)) (VChar (valueChar Int)) (VShort (valueShort Int)) (VInt (valueInt Int)) (VLong (valueLong Int)) (VFloat (valueFloat (_ FloatingPoint 8 24))) (VDouble (valueDouble (_ FloatingPoint 11 53))) (VBool (valueBool Bool)) (VRef (valueRef Ref)) (VString (valueString String)))))
+(declare-const nullRef Ref)
+(declare-datatypes () ((IndexedState (mkIndexedState (indexed_size Int) (indexed_elements (Array Int Value))))))
+(declare-datatypes () ((AssocState (mkAssocState (assoc_size Int) (assoc_present (Array Value Bool)) (assoc_values (Array Value Value)) (assoc_order (Array Int Value)) (assoc_position (Array Value Int))))))
+(declare-fun indexed_state_of (Ref) IndexedState)
+(declare-fun assoc_state_of (Ref) AssocState)
+(define-fun indexed_read ((s IndexedState) (i Int)) Value (select (indexed_elements s) i))
+(define-fun indexed_write ((s IndexedState) (i Int) (v Value)) IndexedState (mkIndexedState (indexed_size s) (store (indexed_elements s) i v)))
+(define-fun indexed_append ((s IndexedState) (v Value)) IndexedState (mkIndexedState (+ (indexed_size s) 1) (store (indexed_elements s) (indexed_size s) v)))
+(define-fun indexed_insert ((s IndexedState) (i Int) (v Value)) IndexedState (mkIndexedState (+ (indexed_size s) 1) (lambda ((q Int)) (ite (< q i) (select (indexed_elements s) q) (ite (= q i) v (select (indexed_elements s) (- q 1)))))))
+(define-fun indexed_remove ((s IndexedState) (i Int)) IndexedState (mkIndexedState (- (indexed_size s) 1) (lambda ((q Int)) (ite (< q i) (select (indexed_elements s) q) (select (indexed_elements s) (+ q 1))))))
+(define-fun indexed_contains ((s IndexedState) (v Value)) Bool (exists ((i Int)) (and (<= 0 i) (< i (indexed_size s)) (= (indexed_read s i) v))))
+(define-fun assoc_has ((s AssocState) (k Value)) Bool (select (assoc_present s) k))
+(define-fun assoc_read ((s AssocState) (k Value)) Value (select (assoc_values s) k))
+(define-fun assoc_key_at ((s AssocState) (i Int)) Value (select (assoc_order s) i))
+(define-fun assoc_value_at ((s AssocState) (i Int)) Value (assoc_read s (assoc_key_at s i)))
+(define-fun assoc_put ((s AssocState) (k Value) (v Value)) AssocState (mkAssocState (ite (assoc_has s k) (assoc_size s) (+ (assoc_size s) 1)) (store (assoc_present s) k true) (store (assoc_values s) k v) (ite (assoc_has s k) (assoc_order s) (store (assoc_order s) (assoc_size s) k)) (ite (assoc_has s k) (assoc_position s) (store (assoc_position s) k (assoc_size s)))))
+(define-fun assoc_remove ((s AssocState) (k Value)) AssocState (ite (assoc_has s k) (let ((p (select (assoc_position s) k))) (mkAssocState (- (assoc_size s) 1) (store (assoc_present s) k false) (assoc_values s) (lambda ((q Int)) (ite (and (<= p q) (< q (- (assoc_size s) 1))) (select (assoc_order s) (+ q 1)) (select (assoc_order s) q))) (lambda ((q Value)) (ite (= q k) (- 1) (ite (and (assoc_has s q) (> (select (assoc_position s) q) p)) (- (select (assoc_position s) q) 1) (select (assoc_position s) q)))))) s))
+(define-fun java_int_to_string ((i Int)) String (ite (< i 0) (str.++ "-" (str.from_int (- i))) (str.from_int i)))
+(define-fun java_int_wrap ((i Int)) Int (- (mod (+ i 2147483648) 4294967296) 2147483648))
+(define-fun java_long_wrap ((i Int)) Int (- (mod (+ i 9223372036854775808) 18446744073709551616) 9223372036854775808))
+(declare-const case_selector__51ecdbf935abee7b280277216352ecc553884353445f1769cfc3e3abbaa6df1d Bool)
+(declare-const sym__EXAMPLE_ROOT__1 Bool)
+(declare-const sym__M_J_clock_example Int)
+(assert (and (<= (- 9223372036854775808) sym__M_J_clock_example) (<= sym__M_J_clock_example 9223372036854775807)))
+(assert (! (=> case_selector__51ecdbf935abee7b280277216352ecc553884353445f1769cfc3e3abbaa6df1d (and (and (>= sym__M_J_clock_example 1699999100666) (<= sym__M_J_clock_example 1700000900666)) (= sym__EXAMPLE_ROOT__1 true) (not (= sym__M_J_clock_example 0)))) :named path_fatal__0))
+(assert (! case_selector__51ecdbf935abee7b280277216352ecc553884353445f1769cfc3e3abbaa6df1d :named target_path_partition))
+(assert (! case_selector__51ecdbf935abee7b280277216352ecc553884353445f1769cfc3e3abbaa6df1d :named fatal_target))
+(check-sat)
+[m
+[[1;31mERROR[m] [1;31mTests run: 267, Failures: 1, Errors: 0, Skipped: 0[m
+[[1;31mERROR[m] Failed to execute goal [32morg.apache.maven.plugins:maven-surefire-plugin:2.22.2:test[m [1m(default-test)[m on project [36mGraphChecker[m: [1;31mThere are test failures.[m
+[[1;31mERROR[m] [1;31m[m
+[[1;31mERROR[m] [1;31mPlease refer to /tmp/claude-20003/-opt-GraphChecker/99c84a54-86ac-44a4-a030-760f664ae2a1/scratchpad/wt-stage/target/surefire-reports for the individual test results.[m
+[[1;31mERROR[m] [1;31mPlease refer to dump files (if any exist) [date].dump, [date]-jvmRun[N].dump and [date].dumpstream.[m
+[[1;31mERROR[m] -> [1m[Help 1][m
+[[1;31mERROR[m] 
+[[1;31mERROR[m] To see the full stack trace of the errors, re-run Maven with the [1m-e[m switch.
+[[1;31mERROR[m] Re-run Maven using the [1m-X[m switch to enable full debug logging.
+[[1;31mERROR[m] 
+[[1;31mERROR[m] For more information about the errors and possible solutions, please read the following articles:
+[[1;31mERROR[m] [1m[Help 1][m http://cwiki.apache.org/confluence/display/MAVEN/MojoFailureException
+tests exit=1

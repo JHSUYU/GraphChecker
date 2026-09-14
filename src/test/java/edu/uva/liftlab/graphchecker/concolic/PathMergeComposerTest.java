@@ -240,12 +240,14 @@ public class PathMergeComposerTest {
         assertEquals(ClockRootPhysics.window(term, CLOCK_READING, 900000L),
                 read.get("windowAssertion").getAsString());
 
-        // The formula lets it move within that window; the Boolean root
-        // beside it is still exactly what the recording read.
+        // The formula lets it move within that window centred on what THIS
+        // execution read at the mint (observedValue), not on the recording's
+        // reading the ledger states; the Boolean root beside it is still
+        // exactly what the recording read.
         assertTrue(result.smtLib, result.smtLib.contains(
-                "(>= " + term + " " + (CLOCK_READING - 900000L) + ")"));
+                "(>= " + term + " " + (CLOCK_READING + 666L - 900000L) + ")"));
         assertTrue(result.smtLib, result.smtLib.contains(
-                "(<= " + term + " " + (CLOCK_READING + 900000L) + ")"));
+                "(<= " + term + " " + (CLOCK_READING + 666L + 900000L) + ")"));
 
         boolean sawClock = false;
         for (com.google.gson.JsonElement element
