@@ -12,6 +12,7 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertSame;
+import static org.junit.Assert.assertTrue;
 
 /**
  * An activation is counted, and addressed, where it RAN.
@@ -136,6 +137,56 @@ public class ActivationIsCountedWhereItRanTest {
                 targetTask, send(plan, sourceTask, targetDn, connection));
         assertSame("and source-dn's own is still source-dn's first",
                 sourceTask, send(plan, sourceTask, sourceDn, connection));
+    }
+
+    /**
+     * An ordinal refusal says which node the run attributed the activation
+     * to -- or that it attributed it to none.
+     *
+     * <p>Lane B2's question. The DataNode's heartbeat there runs on its own
+     * BPServiceActor thread, whose stamp the workload opens with
+     * {@code beginRequestIfRegistered(dn.getDatanodeId(), "heartbeat")}, so
+     * whether a given heartbeat carries the node at all depends on when the
+     * workload registered that object. "occurrence is activation 2, not 1"
+     * reads identically for an activation that really was the planned
+     * node's second and for one this run could name no node for, which was
+     * counted in the planned node's bucket by the fallback -- two findings
+     * with two different owners, and the row could not tell them apart.</p>
+     */
+    @Test
+    public void anOrdinalRefusalNamesWhatTheRunAttributed() {
+        registerCluster();
+        ConcolicTaskPlan.RuntimeTask targetTask =
+                task("TASK.target", TARGET_DN, STATIC_ROOT);
+        ConcolicTaskPlan plan = new ConcolicTaskPlan(null,
+                Arrays.asList(targetTask));
+
+        // Two activations this run can name no node for: the first answers
+        // the address by the plan's own fallback, the second cannot.
+        assertSame(targetTask, decode(plan, targetTask, null));
+        assertNull(decode(plan, targetTask, null));
+
+        String refusal = targetTask.unansweredAddress();
+        assertTrue(refusal, refusal.contains("occurrence is activation 2"));
+        assertTrue(refusal, refusal.contains(
+                "this run attributed the activation to no node"));
+    }
+
+    /** And names the node when there was one. */
+    @Test
+    public void anOrdinalRefusalNamesTheAttributedNode() {
+        registerCluster();
+        ConcolicTaskPlan.RuntimeTask targetTask =
+                task("TASK.target", TARGET_DN, STATIC_ROOT);
+        ConcolicTaskPlan plan = new ConcolicTaskPlan(null,
+                Arrays.asList(targetTask));
+
+        assertSame(targetTask, decode(plan, targetTask, targetDn));
+        assertNull(decode(plan, targetTask, targetDn));
+
+        assertTrue(targetTask.unansweredAddress(),
+                targetTask.unansweredAddress().contains(
+                        "(attributed to " + TARGET_DN + ")"));
     }
 
     /** The bucket is the node that ran it, whatever the plan names. */

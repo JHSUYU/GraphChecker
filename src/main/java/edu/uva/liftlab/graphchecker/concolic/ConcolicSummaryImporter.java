@@ -1466,6 +1466,24 @@ public final class ConcolicSummaryImporter {
         return replayPrefixAdmission(task.goalId(), observed.events, replay);
     }
 
+    /**
+     * The seed-wave branch refusal for one task and one published decision
+     * set, as {@link #branchReplayAdmission} computes it.
+     *
+     * <p>The seam a test can reach: the surrounding admission needs a whole
+     * result row and a VM summary, and the rule under test is this one
+     * comparison.</p>
+     */
+    static String seedBranchMismatchForTest(ExecutionTask task,
+                                            JsonArray mappings) {
+        BranchEventCatalog seed = taskSeedEvents(task);
+        if (!seed.issue.isEmpty()) return seed.issue;
+        BranchEventCatalog observed = observedBranchEvents(mappings, task);
+        if (!observed.issue.isEmpty()) return observed.issue;
+        return exactSeedMismatch(task.goalId(), seed.events, observed.events,
+                false, task.loopExitSites());
+    }
+
     private static BranchEventCatalog taskSeedEvents(ExecutionTask task) {
         BranchEventCatalog result = new BranchEventCatalog();
         JsonObject selectedTarget = object(task.json(), "targetBranch");
@@ -1593,12 +1611,24 @@ public final class ConcolicSummaryImporter {
             Set<String> admittedBoundarySites) {
         Map<String, Set<String>> wanted = decisionsBySite(expected);
         Map<String, Set<String>> actual = decisionsBySite(observed);
+        Set<String> rootDependent = rootDependentSites(observed);
         for (Map.Entry<String, Set<String>> entry : wanted.entrySet()) {
             Set<String> found = actual.get(entry.getKey());
             if (found == null || found.isEmpty()) {
                 if (earlyStop) continue;
                 return replayDetail(replayId, "missing " + entry.getKey());
             }
+            // The prefix a replay must reproduce is pi: the decisions this
+            // region took over a root.  A site the replay decided without
+            // contributing a path condition has no predicate over anything,
+            // so it cannot be part of pi, and its outcome is not something a
+            // replay can be asked to reproduce -- on hdfs-17899 bug2 every
+            // decision of REGION.763d087e is concrete, and
+            // Client$Connection.sendRpcRequest#u16 came out true where the
+            // recording had false, which is the IPC client's own state and
+            // not a divergence of this region's path.  Recorded here as
+            // evidence; refused nowhere.
+            if (!rootDependent.contains(entry.getKey())) continue;
             for (String decision : entry.getValue()) {
                 if (!found.contains(decision)) {
                     return replayDetail(replayId, "wrong decision at "
@@ -1609,11 +1639,22 @@ public final class ConcolicSummaryImporter {
         }
         for (String site : actual.keySet()) {
             if (!wanted.containsKey(site)
-                    && !admittedBoundarySites.contains(site)) {
+                    && !admittedBoundarySites.contains(site)
+                    && rootDependent.contains(site)) {
                 return replayDetail(replayId, "unexpected " + site);
             }
         }
         return "";
+    }
+
+    /** Sites whose observed decisions carried a path condition. */
+    private static Set<String> rootDependentSites(
+            List<BranchEvent> observed) {
+        Set<String> sites = new LinkedHashSet<>();
+        for (BranchEvent event : observed) {
+            if (event.rootDependent) sites.add(event.site);
+        }
+        return sites;
     }
 
     private static ReplayAdmission replayPrefixAdmission(
@@ -1675,7 +1716,10 @@ public final class ConcolicSummaryImporter {
             throw new IllegalArgumentException(
                     "switch outcome differs from exact successor");
         }
-        return new BranchEvent(site, occurrence, token, "");
+        // A planned event states no root-dependence: every branch of a
+        // region is planned with policy EXPLORE, so the observation is the
+        // only side that can answer it.
+        return new BranchEvent(site, occurrence, token, "", false);
     }
 
     private static Boolean exactBoolean(JsonObject object, String field) {
@@ -1838,27 +1882,41 @@ public final class ConcolicSummaryImporter {
         private final String identity;
         private final String decisionToken;
         private final String symbolicSupportDigest;
+        /**
+         * Whether this decision carried a path condition.
+         *
+         * <p>The replay's own statement about the decision, and the only one
+         * that answers "does its condition mention a root": a decision the
+         * VM contributed no condition for has no predicate at all, so no
+         * root occurs in it.  A planned event states nothing about this --
+         * every branch of a region is planned with policy EXPLORE -- so it
+         * is read off the observation.</p>
+         */
+        private final boolean rootDependent;
 
         private BranchEvent(String site, int occurrence, boolean outcome) {
             this(site, occurrence,
                     ExactConcreteBranchObservation.binaryDecisionToken(
-                            outcome), "");
+                            outcome), "", false);
         }
 
         private BranchEvent(String site, int occurrence, String decisionToken,
-                            String symbolicSupportDigest) {
+                            String symbolicSupportDigest,
+                            boolean rootDependent) {
             this.site = site;
             this.occurrence = occurrence;
             this.identity = site + "\u0000" + occurrence;
             this.decisionToken = decisionToken;
             this.symbolicSupportDigest = symbolicSupportDigest == null
                     ? "" : symbolicSupportDigest;
+            this.rootDependent = rootDependent;
         }
 
         private static BranchEvent mapping(SummaryBranchMapping mapping) {
             return new BranchEvent(mapping.siteId(), mapping.occurrence(),
                     mapping.exactDecisionToken(), mapping.isWitnessed()
-                    ? mapping.witness().symbolicSupportDigest() : "");
+                    ? mapping.witness().symbolicSupportDigest() : "",
+                    mapping.isWitnessed());
         }
 
         private boolean matches(SummaryBranchMapping mapping) {
