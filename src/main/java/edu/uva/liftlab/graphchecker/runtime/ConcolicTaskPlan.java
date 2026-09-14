@@ -1377,7 +1377,10 @@ final class ConcolicTaskPlan {
             this.configuredSourcePhases = task.configuredSourcePhases();
             for (ConfiguredSourcePhaseContract.Occurrence phase
                     : configuredSourcePhases) {
-                configuredSourcePhasesById.put(phase.phaseId(), phase);
+                // One id, many executions: the first is the one the
+                // recording saw first, and the rest differ only in where.
+                configuredSourcePhasesById.putIfAbsent(phase.phaseId(),
+                        phase);
             }
             this.replayContract = task.replaySchedule();
             JsonObject targetBranch = object(task.json(), "targetBranch");
