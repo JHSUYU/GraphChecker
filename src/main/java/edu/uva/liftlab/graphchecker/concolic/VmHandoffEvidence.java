@@ -57,7 +57,7 @@ public final class VmHandoffEvidence {
      * anything they carry, and inferring it is the exact defect the version
      * bump exists to refuse.
      */
-    public static final int SCHEMA_VERSION = 6;
+    public static final int SCHEMA_VERSION = 7;
     /** Kind of one case-local handoff reference. */
     public static final String KIND = "VM_HANDOFF_EVENT";
     /** Authority of one VM-propagated expression. */
@@ -93,6 +93,18 @@ public final class VmHandoffEvidence {
      * two replays; this can, and it is the only thing that may.</p>
      */
     public static final String HANDOFF_PHASE_ID = "handoffPhaseId";
+    /**
+     * The occurrence H belongs to: the consumer the plan declares this
+     * port's IN site on.
+     *
+     * <p>Not always the activation whose row carries the evidence.  A
+     * CALL_RETURN attach happens in the caller's frame, after the callee's
+     * activation has closed and published, so the row rides on whatever is
+     * still live -- but the handoff is the callee's, and H is its
+     * address.</p>
+     */
+    public static final String CONSUMER_OCCURRENCE_ID =
+            "consumerOccurrenceId";
     /** Raw name of the fresh variable v_H the runtime minted at H. */
     public static final String HANDOFF_SYMBOL = "handoffSymbol";
     /** The concrete value this attach delivered, before any model write. */
@@ -127,6 +139,7 @@ public final class VmHandoffEvidence {
                                    JsonElement exactExpression,
                                    String producerTaskId,
                                    String producerOccurrenceId,
+                                   String consumerOccurrenceId,
                                    String handoffPhaseId,
                                    String handoffSymbol,
                                    String recordedValue,
@@ -143,6 +156,8 @@ public final class VmHandoffEvidence {
         row.addProperty(PRODUCER_OCCURRENCE_ID,
                 nonNull(producerOccurrenceId));
         row.add(EXPRESSION, exactExpression);
+        row.addProperty(CONSUMER_OCCURRENCE_ID,
+                nonNull(consumerOccurrenceId));
         row.addProperty(HANDOFF_PHASE_ID, nonNull(handoffPhaseId));
         row.addProperty(HANDOFF_SYMBOL, nonNull(handoffSymbol));
         row.addProperty(RECORDED_VALUE, nonNull(recordedValue));
@@ -214,6 +229,9 @@ public final class VmHandoffEvidence {
         if (!HandoffPhaseContract.isPhaseId(
                 optionalString(row, HANDOFF_PHASE_ID))) {
             return "handoff reference names no handoff occurrence";
+        }
+        if (optionalString(row, CONSUMER_OCCURRENCE_ID).isEmpty()) {
+            return "handoff reference names no consumer occurrence";
         }
         if (optionalString(row, HANDOFF_SYMBOL).isEmpty()) {
             return "handoff reference names no handoff variable";

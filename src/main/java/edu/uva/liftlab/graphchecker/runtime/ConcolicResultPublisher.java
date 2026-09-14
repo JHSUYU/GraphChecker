@@ -366,7 +366,15 @@ final class ConcolicResultPublisher {
                 ? "BOUNDED" : exitKind;
         if (!active.activation.symbolize.isEmpty()
                 && !active.pathRecordingStarted) {
-            active.addUnresolvedOnce("NO_SELECTED_INPUT_MATERIALIZED");
+            // Named, not counted.  "No selected input materialized" is true
+            // of an activation that reached no mint site, of one whose hook
+            // returned without minting, and of one whose declared cut never
+            // arrived, and a reader cannot tell them apart from the bare
+            // words -- on hdfs-17899 bug2 it is one declared fault marker,
+            // the local $z5 in Client$Connection.sendRpcRequest, and the
+            // row said only that something was missing.
+            active.addUnresolvedOnce("NO_SELECTED_INPUT_MATERIALIZED: "
+                    + active.activation.declaredInputCells());
         }
         populateCompletedResult(result, active, completedExitKind,
                 active.exceptionType, active.exitThrowable, identity);

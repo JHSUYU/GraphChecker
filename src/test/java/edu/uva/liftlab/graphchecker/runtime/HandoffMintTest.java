@@ -63,7 +63,11 @@ public class HandoffMintTest {
     public void theRowStatesTheHandoffVariableAndItsDeliveredValue() {
         JsonObject row = row("");
 
-        assertEquals(6, row.get("schemaVersion").getAsInt());
+        assertEquals(7, row.get("schemaVersion").getAsInt());
+        assertEquals("H is the consumer the plan declares, not the row",
+                CONSUMER,
+                row.get(VmHandoffEvidence.CONSUMER_OCCURRENCE_ID)
+                        .getAsString());
         assertEquals(HandoffPhaseContract.phaseId(PORT, CONSUMER, 1, ELEMENT),
                 row.get(VmHandoffEvidence.HANDOFF_PHASE_ID).getAsString());
         assertEquals("M_I_field_HOFF.9c1d_org/apache/hadoop/ipc/Client$Call",
@@ -82,6 +86,7 @@ public class HandoffMintTest {
     @Test
     public void aRowMissingAnyOfThemIsRefused() {
         for (String member : new String[]{
+                VmHandoffEvidence.CONSUMER_OCCURRENCE_ID,
                 VmHandoffEvidence.HANDOFF_PHASE_ID,
                 VmHandoffEvidence.HANDOFF_SYMBOL,
                 VmHandoffEvidence.RECORDED_VALUE,
@@ -148,6 +153,7 @@ public class HandoffMintTest {
         return VmHandoffEvidence.event(PORT, 466L, 468L, producerExpression,
                 "TASK.SEED.78bb59b2", "hdfs-17899/source-dn#epoch0/region/"
                         + "REGION.d930c3a2#1#a1",
+                CONSUMER,
                 HandoffPhaseContract.phaseId(PORT, CONSUMER, 1, ELEMENT),
                 "M_I_field_HOFF.9c1d_org/apache/hadoop/ipc/Client$Call",
                 "119982", "I", answeredValue);

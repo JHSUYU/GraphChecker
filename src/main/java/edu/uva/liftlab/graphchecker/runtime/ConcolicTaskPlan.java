@@ -1727,6 +1727,20 @@ final class ConcolicTaskPlan {
             }
         }
 
+        /**
+         * The cells this task's declared SYMBOLIC inputs stand on.
+         *
+         * <p>For the one row that has to say what did not materialize.</p>
+         */
+        List<String> declaredInputCells() {
+            List<String> cells = new ArrayList<>();
+            for (SymbolizeAction action : symbolize) {
+                cells.add(safe(action.cell).isEmpty()
+                        ? safe(action.symbol) : safe(action.cell));
+            }
+            return cells;
+        }
+
         /** The declared handoff site of one communication port role. */
         CommunicationHandoffSpec communicationHandoff(
                 String portId, boolean exporting) {
