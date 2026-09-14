@@ -370,7 +370,24 @@ public final class PathMergeComposer {
             gate(gates, PROPAGATION_CUT, subject);
         }
 
+        // Fatal_T is conjoined with the roots' own domains, and a root's
+        // freedom is exactly what the case declares.  Without them the
+        // solver reaches the failure by moving whatever is free: on
+        // laneVM14's healthy-polarity model the clock cells took
+        // -9223372036854775808 and the serial number a value the recording
+        // never read, so the polarity with no fault came back satisfiable
+        // and the marker read as not determining.  A declared Boolean
+        // marker is free in {recorded, flipped} -- both values of a Bool,
+        // so nothing to assert.  A clock read is free within the case's
+        // declared skew of what it recorded.  Every other root with a
+        // recorded value is pinned to it: a value the recording states and
+        // the case does not declare varyable is not something the campaign
+        // may vary.  A handoff variable is not a root and is constrained by
+        // its family alone.
         JsonArray rootRows = new JsonArray();
+        JsonObject clockPhysics = ClockRootPhysics.manifest(
+                arguments.clockSkewMillis, new ArrayList<JsonObject>());
+        int rootDomains = 0;
         for (Map.Entry<String, String> used
                 : lowering.rootTerms().entrySet()) {
             // The same map the lowering declared from: a handoff variable
@@ -397,6 +414,11 @@ public final class PathMergeComposer {
                 }
             }
             rootRows.add(rootRow);
+            String domainTerm = rootDomain(rootRow, declared, clockPhysics);
+            if (!domainTerm.isEmpty()) {
+                lowering.assertNamed("root_domain__" + rootDomains++,
+                        domainTerm);
+            }
             // A handoff variable is not a root whose movement is a
             // mechanism: it is the value that arrived over a wire, free in
             // this replay's formula and tied back by its family.  Each
@@ -830,6 +852,65 @@ public final class PathMergeComposer {
      * all and the SOLVE stage refused it -- twelve rows on laneVM14, every
      * one a manual input.  The mint row is where the identity is.</p>
      */
+    /**
+     * What one root may be, as the case declares it, or {@code ""} when the
+     * case leaves it free.
+     */
+    private static String rootDomain(JsonObject rootRow, JsonObject declared,
+                                     JsonObject clockPhysics) {
+        String term = optionalString(rootRow, "solverTerm");
+        String recorded = optionalString(rootRow,
+                ComposedManifest.RECORDED_SOURCE_VALUE);
+        if (term.isEmpty() || recorded.isEmpty()) return "";
+        // A handoff variable is not a root; its family says what it may be.
+        if (declared != null && !optionalString(declared,
+                InSessionReadResolver.HANDOFF_PHASE_ID).isEmpty()) {
+            return "";
+        }
+        // A declared marker is free in {recorded, flipped}, which for a
+        // Boolean is every value it has.
+        if ("BOOL".equals(optionalString(rootRow, "sort"))) return "";
+        String literal = smtIntegerLiteral(recorded);
+        if (literal.isEmpty()) return "";
+        long skew = clockRead(clockPhysics, rootRow)
+                ? optionalLongInteger(clockPhysics, "clockSkewMillis", 0L)
+                : 0L;
+        if (skew <= 0L) return "(= " + term + " " + literal + ")";
+        java.math.BigInteger value = new java.math.BigInteger(
+                recorded.trim());
+        java.math.BigInteger window = java.math.BigInteger.valueOf(skew);
+        return "(and (>= " + term + " "
+                + smtIntegerLiteral(value.subtract(window).toString())
+                + ") (<= " + term + " "
+                + smtIntegerLiteral(value.add(window).toString()) + "))";
+    }
+
+    /** Whether the case declares this root a clock read. */
+    private static boolean clockRead(JsonObject clockPhysics,
+                                     JsonObject rootRow) {
+        String term = optionalString(rootRow, "solverTerm");
+        for (JsonElement element : array(clockPhysics, "clockReads")) {
+            if (!element.isJsonObject()) continue;
+            if (term.equals(optionalString(element.getAsJsonObject(),
+                    "solverTerm"))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** An SMT integer literal, negatives in prefix form, or {@code ""}. */
+    private static String smtIntegerLiteral(String recorded) {
+        try {
+            java.math.BigInteger parsed =
+                    new java.math.BigInteger(recorded.trim());
+            return parsed.signum() < 0
+                    ? "(- " + parsed.negate() + ")" : parsed.toString();
+        } catch (NumberFormatException notAnInteger) {
+            return "";
+        }
+    }
+
     private static Map<String, JsonObject> manualDeclarations(
             List<JsonObject> summaries) {
         Map<String, JsonObject> declarations = new LinkedHashMap<>();
