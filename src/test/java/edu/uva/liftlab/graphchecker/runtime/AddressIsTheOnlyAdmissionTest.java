@@ -97,6 +97,31 @@ public class AddressIsTheOnlyAdmissionTest {
         assertFalse(planned.difference(address(3)).trim().isEmpty());
     }
 
+    /**
+     * A k taken on the plan's word says so on the row.
+     *
+     * <p>Provisional admission is the one path that is not the address: the
+     * run attributed the activation to no node, and it is offered the
+     * PLANNED node's next k because the plan says the occurrence is there.
+     * Whether the close confirms it decides who owns that k. Neither half
+     * was on any row, so on lane11741d dn0's bucket ran past the addressed
+     * activation 4 with nothing to say which activations had taken 2, 4 and
+     * 6 -- the genuine activations on {@code main} were left observing
+     * 1, 3, 5, 7.</p>
+     */
+    @Test
+    public void aProvisionalKIsStatedOnTheRow() throws Exception {
+        ConcolicTaskPlan.RuntimeTask task = task(4);
+        task.noteProvisionalAdmission("read BUCKET as activation 4");
+        task.noteUnaddressedCandidate("occurrence is activation 5, not 4");
+
+        String statement = task.unansweredAddress();
+        assertTrue(statement, statement.contains("provisional: "));
+        assertTrue(statement, statement.contains("read BUCKET as activation 4"));
+        assertTrue("every note names its thread",
+                statement.contains("[thread=" + Thread.currentThread().getName() + "]"));
+    }
+
     private static OccurrenceAddress address(int ordinal) {
         return OccurrenceAddress.of(NODE, REGION, ordinal);
     }
