@@ -181,7 +181,7 @@ public final class ConcolicConstraintSolver {
                 writableReplayControlSymbols);
         ModelProjection projection = modelAssignments(encoder, values,
                 actions, linked.configuredSourcePhaseCatalogs,
-                projectedSymbols);
+                projectedSymbols, handoffControls(task));
         JsonArray assignments = projection.assignments;
         if (projectedSymbols.isEmpty()) {
             record.addProperty("status", "MATERIALIZATION_GAP");
@@ -1314,12 +1314,35 @@ public final class ConcolicConstraintSolver {
         }
     }
 
+    /**
+     * The handoff rows the obligation says it flips through, by raw symbol.
+     *
+     * <p>Empty for a flip over roots alone.  The worklist writes them
+     * (R2): each names the variable the VM minted at one attach and the
+     * handoff occurrence an assignment to it is answered at.</p>
+     */
+    private static Map<String, JsonObject> handoffControls(JsonObject task) {
+        Map<String, JsonObject> controls = new LinkedHashMap<>();
+        for (JsonElement element
+                : array(task, RegionPathWorklist.HANDOFF_CONTROLS)) {
+            if (!element.isJsonObject()) continue;
+            JsonObject row = element.getAsJsonObject();
+            String raw = optionalString(row, "rawSymbol");
+            String phase = optionalString(row,
+                    InSessionReadResolver.HANDOFF_PHASE_ID);
+            if (raw.isEmpty() || phase.isEmpty()) continue;
+            controls.putIfAbsent(raw, row);
+        }
+        return controls;
+    }
+
     private static ModelProjection modelAssignments(
             Encoder encoder, Map<String, String> values,
             List<JsonObject> actions,
             List<List<ConfiguredSourcePhaseContract.Occurrence>>
                     configuredSourcePhaseCatalogs,
-            Set<String> projectedSymbols) {
+            Set<String> projectedSymbols,
+            Map<String, JsonObject> handoffControls) {
         JsonArray result = new JsonArray();
         Set<String> unresolved = new LinkedHashSet<>(projectedSymbols);
         for (String raw : encoder.controlledSymbols) {
@@ -1334,7 +1357,19 @@ public final class ConcolicConstraintSolver {
                     raw, configuredSourcePhaseCatalogs, names.sort);
             ActionMatch symbolicAction = registeredSymbolicAction(
                     raw, actions, names.sort);
-            if ((source == null) == (symbolicAction == null)) continue;
+            // A value that arrived on a wire is minted at an attach, not at
+            // a configured source and not at a task input action, so it
+            // matched neither and every model that assigned one was refused
+            // as not materializable -- which is what left bug3's one target
+            // obligation unflipped with five HOFF symbols named.  The
+            // handoff contract says what such an assignment is:
+            // "a handoff assignment is a configured-source assignment whose
+            // phase id is this one" (HandoffPhaseContract).
+            JsonObject handoff = source == null && symbolicAction == null
+                    ? handoffControls.get(raw) : null;
+            if (handoff == null && (source == null) == (symbolicAction == null)) {
+                continue;
+            }
             String modelName = names.sort.floating()
                     ? names.floatingBits : names.solver;
             String value = values.get(modelName);
@@ -1347,7 +1382,16 @@ public final class ConcolicConstraintSolver {
             }
             JsonObject assignment = new JsonObject();
             assignment.addProperty("engineSymbol", raw);
-            if (source != null) {
+            if (handoff != null) {
+                String phase = optionalString(handoff,
+                        InSessionReadResolver.HANDOFF_PHASE_ID);
+                assignment.addProperty("inputSymbol",
+                        "SOURCE_PHASE:" + phase);
+                assignment.addProperty("configuredSourceId", phase);
+                assignment.addProperty("configuredSourcePhaseId", phase);
+                assignment.addProperty("configuredSourceFieldSignature",
+                        optionalString(handoff, "fieldSignature"));
+            } else if (source != null) {
                 assignment.addProperty("inputSymbol",
                         "SOURCE_PHASE:" + source.sourcePhaseId);
                 assignment.addProperty("configuredSourceId",
