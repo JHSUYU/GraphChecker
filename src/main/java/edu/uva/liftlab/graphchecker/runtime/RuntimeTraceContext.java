@@ -188,14 +188,13 @@ final class RuntimeTraceContext {
 
         // The receiver's own registration first, and only then anything
         // ambient.
-        SourceRef source = sourceFor(receiver);
+        SourceRef registered = sourceFor(receiver);
         // Which authority answered: the receiver's own registration, or the
         // context this thread inherited.  Replay can reproduce the first by
         // object identity and the second only by thread context, so the
         // activation has to say which one named it.
-        boolean receiverAttributed = source != null;
-        if (source == null && seed != null) source = seed.source;
-        if (source == null) source = state.source;
+        boolean receiverAttributed = registered != null;
+        SourceRef source = attributedSource(registered, seed, state.source);
         // A receiver that named no source of its own keeps the ambient stamp,
         // which is the only answer available while the trace is being written.
         String requestKey = seed == null ? state.requestKey : seed.requestKey;
@@ -381,6 +380,50 @@ final class RuntimeTraceContext {
         synchronized (LOCK) {
             return ASYNC_SEEDS.remove(carrier);
         }
+    }
+
+    private static Seed peekSeed(Object carrier) {
+        if (carrier == null) return null;
+        synchronized (LOCK) {
+            return ASYNC_SEEDS.get(carrier);
+        }
+    }
+
+    /**
+     * The source one root activation is attributed to, or {@code null}.
+     *
+     * <p>The receiver's own registration, then the async seed the thread or
+     * the receiver carries, then this thread's ambient execution context --
+     * and nothing else.  Every arm is execution scope: a node's registration
+     * of its own instances, and the context a registered node's thread
+     * carries.  Since a value arriving over the wire no longer writes the
+     * ambient context, the answer is where the activation RAN.</p>
+     *
+     * <p>It is one function because the recorder stamps every {@code
+     * METHOD_ENTER} with it ({@link #enterRoot}), the planner names and
+     * counts the occurrence by that stamp ({@code
+     * RuntimeRegionPlanner.activationSource}), and the replay has to ask the
+     * same question of the same inputs.  When the replay asked its own
+     * version -- the registration, else the ambient context only when it
+     * already named the planned node, else the plan's own key -- every
+     * activation of one region in a JVM running three nodes fell into the
+     * planned node's bucket, and on hdfs-17899 bug3 the planned first
+     * activation of {@code REGION.16ba41cf} on target-dn was answered by
+     * "invocation 2 instead of 1" while the NameNode's own activation of it,
+     * counted as target-dn's first, was published as source-dn's.</p>
+     */
+    static SourceRef activationSource(Object receiver) {
+        SourceRef registered = sourceFor(receiver);
+        Seed seed = peekSeed(Thread.currentThread());
+        if (seed == null) seed = peekSeed(receiver);
+        return attributedSource(registered, seed, CURRENT.get().source);
+    }
+
+    private static SourceRef attributedSource(SourceRef registered, Seed seed,
+                                              SourceRef ambient) {
+        if (registered != null) return registered;
+        if (seed != null && seed.source != null) return seed.source;
+        return ambient;
     }
 
     private static SourceRef canonicalSourceLocked(SourceRef source) {

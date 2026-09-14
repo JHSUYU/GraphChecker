@@ -90,7 +90,7 @@ public class ConcolicRegionRuntimeSourceAnchorTest {
         SymbolicMessageEnvelope.installInbound(
                 SymbolicMessageEnvelope.takeOutbound());
         assertFalse(ConcolicRegionRuntime.rootInvocationAddressMatches(
-                99, 1, producers, "consumer#1", false));
+                planned(1), planned(99), producers, "consumer#1", false));
 
         SymbolicMessageEnvelope.clear();
         assertTrue(SymbolicMessageEnvelope.stage("block-key", 41L,
@@ -102,7 +102,7 @@ public class ConcolicRegionRuntimeSourceAnchorTest {
         SymbolicMessageEnvelope.installInbound(
                 SymbolicMessageEnvelope.takeOutbound());
         assertFalse(ConcolicRegionRuntime.rootInvocationAddressMatches(
-                99, 1, producers, "consumer#1", false));
+                planned(1), planned(99), producers, "consumer#1", false));
 
         SymbolicMessageEnvelope.clear();
         assertTrue(SymbolicMessageEnvelope.stage("block-key", 41L,
@@ -114,7 +114,14 @@ public class ConcolicRegionRuntimeSourceAnchorTest {
         SymbolicMessageEnvelope.installInbound(
                 SymbolicMessageEnvelope.takeOutbound());
         assertTrue(ConcolicRegionRuntime.rootInvocationAddressMatches(
-                99, 1, producers, "consumer#1", false));
+                planned(1), planned(99), producers, "consumer#1", false));
+    }
+
+    /** One address of a region on one node, at the given activation. */
+    private static edu.uva.liftlab.graphchecker.contract.OccurrenceAddress
+            planned(int ordinal) {
+        return edu.uva.liftlab.graphchecker.contract.OccurrenceAddress.of(
+                "hdfs-17899/target-dn#epoch0", "REGION.r", ordinal);
     }
 
     private static JsonObject variable(String name) {

@@ -31,6 +31,7 @@ import edu.uva.liftlab.graphchecker.contract.FieldPathSpec.DeclaredField;
 import edu.uva.liftlab.graphchecker.contract.InputActionCatalog;
 import edu.uva.liftlab.graphchecker.contract.JavaPrimitiveBoxing;
 import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
+import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceId;
 
 import edu.uva.liftlab.graphchecker.contract.SiteId;
@@ -2442,9 +2443,9 @@ public final class ConcolicRegionRuntime {
         return planned;
     }
 
-    /** Communication-addressed roots ignore an unrelated local ordinal. */
+    /** Communication-addressed roots ignore an unrelated local address. */
     static boolean rootInvocationAddressMatches(
-            Integer actualOrdinal, int plannedOrdinal,
+            OccurrenceAddress planned, OccurrenceAddress observed,
             Map<String, String> inboundProducers,
             String consumerOccurrenceId,
             boolean exactOutgoingAddress) {
@@ -2453,8 +2454,7 @@ public final class ConcolicRegionRuntime {
         // invocation try it; the raw call count must not consume it.
         if (exactOutgoingAddress) return true;
         if (inboundProducers == null || inboundProducers.isEmpty()) {
-            return actualOrdinal != null
-                    && actualOrdinal.intValue() == plannedOrdinal;
+            return planned.matches(observed);
         }
         return inboundMessageAddressMatches(inboundProducers,
                 consumerOccurrenceId);
