@@ -2740,6 +2740,31 @@ public final class ConcolicRegionRuntime {
             Collections.synchronizedList(new ArrayList<JsonObject>());
 
     /** Files one handoff gap with the active region, or holds it. */
+    /**
+     * Says why a selected occurrence's outbound envelope came out empty.
+     *
+     * <p>The recorder swallows the refusal and returns an empty header,
+     * which is right -- most sends in a workload are outside any request --
+     * but inside a selected region it is the whole story: on hdfs-17899
+     * bug2 the fault marker is guarded by {@code causynth.active()}, so an
+     * empty Outbound means {@code Debug.makeSymbolicBoolean} is never
+     * called and the region publishes NO_SELECTED_INPUT_MATERIALIZED with
+     * nothing saying why.  Only a live region records it, so a workload's
+     * ordinary unscoped traffic stays quiet.</p>
+     */
+    static void noteOutboundEnvelopeRefused(String transport,
+                                            String correlationId,
+                                            String half, String detail) {
+        if (activeRegion() == null) return;
+        recordHandoffGap(RpcExpressionHandoff.gap(
+                RpcExpressionHandoff.OUTBOUND_SCOPE_REFUSED,
+                RpcExpressionHandoff.STAGE_EXPORT,
+                RpcExpressionHandoff.MISSING_METADATA, 0L,
+                "outbound envelope refused for " + safe(transport) + " "
+                        + safe(half) + " " + safe(correlationId) + ": "
+                        + safe(detail)));
+    }
+
     private static void recordHandoffGap(JsonObject gap) {
         ActiveRegion active = activeRegion();
         if (active != null) {

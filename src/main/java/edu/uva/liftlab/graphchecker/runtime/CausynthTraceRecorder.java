@@ -483,6 +483,8 @@ public final class CausynthTraceRecorder {
             header = RuntimeTraceContext.outboundHeader(localOwner,
                     carriedScope);
         } catch (IllegalStateException noFlow) {
+            ConcolicRegionRuntime.noteOutboundEnvelopeRefused(transport,
+                    correlationId, half, noFlow.getMessage());
             return "";
         }
         recordExchange("SEND", transport, correlationId, attemptId, half,
