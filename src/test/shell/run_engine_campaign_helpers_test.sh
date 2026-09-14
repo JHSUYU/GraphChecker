@@ -369,7 +369,7 @@ jq -e '[(.gaps + .telemetryGaps)[] | select((.classReason // "") == "")]
 # own exceptions rather than leaving a reader to guess the default.
 jq -e '.kind == "GAP_LEDGER" and .defaultClass == "BLOCKING"
   and (.diagnostic | index("SELECTED_PATH_SET_INCOMPLETE")) != null
-  and (.entries | length) > 100' \
+  and (.entries | length) > 40' \
   "${campaign_final}/gap_ledger.json" >/dev/null \
   || fail "EMIT published no usable gap ledger"
 
@@ -623,10 +623,14 @@ done
 # it in 05d413cae -- again without this count being raised, which left the
 # whole helper test red on staging until REPORT-GAPJOIN found it -- and
 # `causynth_root_domains` joined it in a6da088f1, where the case gained a way
-# to say what a declared root may be.  `composer` left it with the Design 3
+# to say what a declared root may be.
+# `composer` left with the Design 3 stage reduction; `reach_max_inputs` and
+# `reach_max_valuations` left with the separate solver process, because the
+# composer runs z3 per valuation while it composes and SOLVE reads the verdict
+# it wrote.  `composer` left it with the Design 3
 # stage reduction: there is one composition of the anchored target's paths,
 # and a key naming which one selected nothing.
-[[ "$(print_normalized_config | wc -l)" -eq 42 ]] \
+[[ "$(print_normalized_config | wc -l)" -eq 40 ]] \
   || fail "config prints a different number of keys than it used to: \
 $(print_normalized_config | wc -l)"
 

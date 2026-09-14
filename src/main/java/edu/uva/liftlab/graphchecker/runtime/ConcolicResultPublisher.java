@@ -5,7 +5,6 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.concolic.RecordedEvidenceIdentity;
 import edu.uva.liftlab.graphchecker.concolic.SymbolicSourceEvidence;
-import edu.uva.liftlab.graphchecker.concolic.VmHandoffEvidence;
 import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.ActiveRegion;
 import edu.uva.liftlab.graphchecker.runtime.ConcolicTaskPlan.RuntimeTask;
@@ -477,11 +476,8 @@ final class ConcolicResultPublisher {
         result.add("branchMappings", sharedRows(active.branchMappings));
         // Every evidence row this activation publishes names the run, the
         // session, the activation, and the read-out batch it came from.
-        VmHandoffEvidence.writeTo(result, active.vmHandoffEvents);
-        if (!active.rpcHandoffGaps.isEmpty()) {
-            result.add("rpcHandoffGaps",
-                    stamped(active.rpcHandoffGaps, identity));
-        }
+        // D2: export, attach and gap rows are published per kind by
+        // runtime/d3 SessionPublisher (M2).
     }
 
     /** Whether this candidate supplied the evidence its selected goal needs. */
@@ -517,7 +513,7 @@ final class ConcolicResultPublisher {
      * the missing declaration is filed as {@code TARGET_REACH_NOT_OBSERVED}
      * by {@code nameUnreachedTargetBranch}.  An occurrence that was never
      * composed is already a first-class answer downstream: {@code
-     * TargetOccurrenceElection.SKIPPED_UNOBSERVED}.</p>
+     * the occurrence was planned and its fatal read never observed.</p>
      */
     /** Package-visible for the target-reach contract test. */
     static boolean targetReachedByActivation(ActiveRegion active) {

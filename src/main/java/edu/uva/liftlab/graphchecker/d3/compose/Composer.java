@@ -272,6 +272,8 @@ public final class Composer {
      */
     private final Map<String, Set<String>> unattestedRoots =
             new LinkedHashMap<String, Set<String>>();
+    /** Attaches already named as unpaired; one row per attach, not per path. */
+    private final Set<String> unpairedNamed = new LinkedHashSet<String>();
 
     private Composer(CorpusIndex corpus, OccurrenceAddress anchor,
                      Map<String, RootDomain> declaredDomains,
@@ -306,6 +308,20 @@ public final class Composer {
                     collision.getKey(), "one solver name for "
                             + collision.getValue().size() + " roots: "
                             + collision.getValue());
+        }
+
+        // Which recording a claim is about has to have one answer.  Two
+        // sessions that focused nothing are two recordings, and
+        // RECORDED_FAILURE_EXPLAINED and MESSAGE_PAIRING_FLIPPED would each
+        // pick whichever came first.
+        List<String> seeds = new ArrayList<String>();
+        for (SessionReader session : corpus.sessions()) {
+            if (!session.explored()) seeds.add(session.sessionId());
+        }
+        if (seeds.size() > 1) {
+            gap(GapKind.UNSTATED_VALUE, GapClass.BLOCKING, seeds.toString(),
+                    "more than one session of this corpus focused nothing, "
+                            + "so which one is the recording has no answer");
         }
 
         List<Disjunct> disjuncts = new ArrayList<Disjunct>();
@@ -423,7 +439,7 @@ public final class Composer {
         //     execution still happened under that value.  A root every
         //     session read the same way is pinned by its own domain and is
         //     not repeated here.
-        terms.addAll(valuationOf(session));
+        terms.addAll(valuationOf(session, refusals));
 
         // (2) What this path read at each handoff of the anchor: answered,
         //     else the paired arm where it carries a movable root, else
@@ -477,20 +493,61 @@ public final class Composer {
     }
 
     /** What this replay ran every varied root at. */
-    private List<String> valuationOf(String session) {
+    private List<String> valuationOf(String session,
+                                     List<GapRow> refusals) {
         List<String> valuation = new ArrayList<String>();
         for (Map.Entry<String, List<RootMintRow>> entry
                 : corpus.roots().entrySet()) {
+            RootMintRow any = corpus.anyRoot(entry.getKey());
             RootMintRow row = corpus.root(entry.getKey(), session);
-            if (row == null || row.kind() == RootKind.CLOCK) continue;
+            if (any == null || any.kind() == RootKind.CLOCK) continue;
+            if (row == null) {
+                // A root the case declares and THIS replay did not mint:
+                // the path states nothing about it, and pinning it to some
+                // other session's reading would state a fact about an
+                // execution that never read it.
+                if (any.declared() && lowering.declared(any.symbol())) {
+                    refusals.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
+                            GapClass.BLOCKING, any.rootId(),
+                            "this session minted no value for a declared "
+                                    + "root the composition constrains"));
+                }
+                continue;
+            }
             if (!corpus.varied(row.rootId())) continue;
-            String literal = JsonText.smtLiteral(row.recordedValue());
-            if (literal.isEmpty()) continue;
             lowering.declare(row.symbol(),
                     row.kind() == RootKind.MARKER ? Sort.BOOL : Sort.INT);
+            // A DECLARED domain is relative to what THIS replay read, and
+            // what each replay read is its own fact: the NameNode's serial
+            // advances between sessions, so one session's window is not
+            // another's.  The path carries its own window; pinning it to
+            // the value it happened to read would answer the case's own
+            // question before the solver is asked.
+            String window = windowOf(row);
+            if (!window.isEmpty()) {
+                valuation.add(window);
+                continue;
+            }
+            String literal = JsonText.smtLiteral(row.recordedValue());
+            if (literal.isEmpty()) continue;
             valuation.add("(= " + row.symbol() + " " + literal + ")");
         }
         return valuation;
+    }
+
+    /** One declared root's window around THIS session's reading, or "". */
+    private String windowOf(RootMintRow row) {
+        if (!row.declared() || row.kind() == RootKind.MARKER) return "";
+        RootDomain domain = domainOf(row);
+        String min = domain.min();
+        String max = domain.max();
+        if (min == null || max == null || JsonText.smtInteger(min).isEmpty()
+                || JsonText.smtInteger(max).isEmpty()) {
+            return "";
+        }
+        return "(and (>= " + row.symbol() + " " + JsonText.smtInteger(min)
+                + ") (<= " + row.symbol() + " " + JsonText.smtInteger(max)
+                + "))";
     }
 
     /**
@@ -516,7 +573,16 @@ public final class Composer {
         for (AttachRow attach : corpus.attachesRead(session, anchor)) {
             if (!stated.add(attach.symbol())) continue;
             Interaction interaction = attach.interaction();
-            if (interaction != null) interactionIds.add(interaction.id());
+            if (interaction != null) {
+                interactionIds.add(interaction.id());
+            } else {
+                // The wire delivered something and the recording cannot say
+                // from where.  The arrival is still this path's own fact,
+                // stated below, but there is no interaction to build a
+                // family on -- and a variable no family constrains is the
+                // one thing a witness must not rest on unremarked.
+                unpaired(session, attach);
+            }
             if (attach.answered()) {
                 String literal = JsonText.smtLiteral(attach.answeredValue());
                 if (literal.isEmpty()) {
@@ -526,7 +592,9 @@ public final class Composer {
                                     + "literal: " + attach.answeredValue()));
                     continue;
                 }
-                reads.add(bind(attach.symbol(), literal, attach));
+                String read = bind(attach.symbol(), literal, attach,
+                        refusals);
+                if (!read.isEmpty()) reads.add(read);
                 continue;
             }
             String paired = pairedArm(session, attach);
@@ -542,7 +610,8 @@ public final class Composer {
                                 + "and no producer arm delivers it"));
                 continue;
             }
-            reads.add(bind(attach.symbol(), arrival, attach));
+            String read = bind(attach.symbol(), arrival, attach, refusals);
+            if (!read.isEmpty()) reads.add(read);
         }
         return reads;
     }
@@ -554,9 +623,41 @@ public final class Composer {
      * long, a char and a false all at once, and a variable whose sort came
      * from one reading of it is a variable two paths can declare twice.</p>
      */
-    private String bind(String symbol, String literal, AttachRow attach) {
-        lowering.declare(symbol, JavaSmtSorts.sortOfJava(attach.javaType()));
+    private String bind(String symbol, String literal, AttachRow attach,
+                        List<GapRow> refusals) {
+        Sort sort = scalarSort(attach.javaType(), attach.sessionId(),
+                symbol, refusals);
+        if (sort == null) return "";
+        lowering.declare(symbol, sort);
         return "(= " + symbol + " " + literal + ")";
+    }
+
+    /**
+     * The scalar sort one JVM descriptor denotes, or a named refusal.
+     *
+     * <p>A descriptor this lowering cannot place falls through to a
+     * reference, and a reference is not a wrong answer -- it is a DIFFERENT
+     * question: a numeric value declared {@code Ref} is compared with
+     * nothing the rest of the formula says, and the solver answers freely.
+     * A handoff variable and a read symbol are scalars by construction, so
+     * anything else is refused by the name of the spelling that caused
+     * it.</p>
+     */
+    private Sort scalarSort(String javaType, String session, String subject,
+                            List<GapRow> refusals) {
+        Sort sort = JavaSmtSorts.sortOfJava(javaType);
+        if (sort == Sort.BOOL || sort == Sort.INT || sort == Sort.FLOAT32
+                || sort == Sort.FLOAT64 || sort == Sort.STRING) {
+            return sort;
+        }
+        refusals.add(GapRow.of(session == null || session.isEmpty()
+                        ? COMPOSITION : session, GapKind.UNSTATED_VALUE,
+                GapClass.DIAGNOSTIC, subject,
+                "the row states the Java type as \""
+                        + (javaType == null ? "" : javaType)
+                        + "\", which names no scalar this lowering can "
+                        + "place"));
+        return null;
     }
 
     /**
@@ -615,8 +716,10 @@ public final class Composer {
             }
             String literal = JsonText.smtLiteral(read.concreteValue());
             if (!literal.isEmpty()) {
-                lowering.declare(read.symbol(),
-                        JavaSmtSorts.sortOfJava(read.javaType()));
+                Sort sort = scalarSort(read.javaType(), session,
+                        read.symbol(), refusals);
+                if (sort == null) continue;
+                lowering.declare(read.symbol(), sort);
                 joins.add("(= " + read.symbol() + " " + literal + ")");
                 continue;
             }
@@ -756,6 +859,33 @@ public final class Composer {
     }
 
     /**
+     * An attach whose producer the recording does not name.
+     *
+     * <p>Two different absences, and the row says which.  A producer
+     * endpoint that exists but could not be addressed in full is
+     * LINEAGE_LOST -- the interaction is there and the naming failed.  An
+     * attach with no producer at all is an UNSTATED_VALUE: the recording
+     * does not say the delivery happened, only that a value arrived.</p>
+     */
+    private void unpaired(String session, AttachRow attach) {
+        if (!unpairedNamed.add(session + "|" + attach.endpoint().id())) {
+            return;
+        }
+        Endpoint producer = attach.producer();
+        boolean degraded = producer != null
+                && producer.occurrence() != null
+                && producer.occurrence().lineageLost();
+        gaps.add(GapRow.of(session,
+                producer == null && !degraded ? GapKind.UNSTATED_VALUE
+                        : GapKind.LINEAGE_LOST,
+                GapClass.DIAGNOSTIC, attach.endpoint().toString(),
+                "this attach names no producer endpoint, so the value it "
+                        + "received joins no interaction and has no family; "
+                        + "the arrival this session recorded is all the "
+                        + "composition states about it"));
+    }
+
+    /**
      * The delivering replay's valuation of ONLY the roots this arm's own
      * expression depends on.
      *
@@ -835,6 +965,21 @@ public final class Composer {
                 // for a Boolean is every value it has: nothing to assert.
                 if (row.declared()) continue;
             }
+            // FIRST: is "the" recorded value one thing at all?  A root two
+            // sessions recorded differently has no corpus-wide reading, so
+            // it has no corpus-wide window either: a declared domain is
+            // RELATIVE to a reading, and resolving it against the seed's
+            // would exclude another session from its own legal window and
+            // close that session's disjunct for a reason nothing states.
+            // Each path carries its own (valuationOf); nothing is asserted
+            // here.
+            if (corpus.varied(row.rootId())) {
+                gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
+                        row.rootId(), "sessions of this corpus recorded "
+                                + "this root at different values, so its "
+                                + "domain is stated per path and not once");
+                continue;
+            }
             String min = domain.min();
             String max = domain.max();
             if (min != null && max != null && !min.isEmpty()
@@ -844,16 +989,6 @@ public final class Composer {
                                 + JsonText.smtInteger(min) + ") (<= "
                                 + row.symbol() + " "
                                 + JsonText.smtInteger(max) + "))");
-                continue;
-            }
-            if (corpus.varied(row.rootId())) {
-                // Two sessions recorded it differently: which one "the"
-                // recorded value is has no answer, and each path states its
-                // own.  Pinning it here would close every other path.
-                gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
-                        row.rootId(), "sessions of this corpus recorded "
-                                + "this root at different values and the "
-                                + "case declares no domain for it");
                 continue;
             }
             String literal = JsonText.smtLiteral(row.recordedValue());

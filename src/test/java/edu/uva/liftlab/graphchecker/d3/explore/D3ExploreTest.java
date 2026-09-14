@@ -458,11 +458,14 @@ public class D3ExploreTest {
                     Collections.<String, Long>emptyMap()));
         }
 
+        /**
+         * One root minted, at the point of the session where it is minted:
+         * before every decision that can mention it, because a value is read
+         * before it is branched on.
+         */
         private void root(OccurrenceAddress occurrence, String rootId,
                           String symbol, RootKind kind, String recorded,
                           String min, String max, boolean declared) {
-            // contract v1.2: a mint's position is the same question as an
-            // export's, so the row carries the session's own clock.
             roots.add(RootMintRow.of(sessionId, ++seq, occurrence, rootId,
                     symbol, kind, recorded, min, max, declared));
         }

@@ -18,13 +18,11 @@ import edu.uva.liftlab.graphchecker.concolic.CanonicalJson;
 import edu.uva.liftlab.graphchecker.concolic.ClockRootPhysics;
 import edu.uva.liftlab.graphchecker.concolic.ExactConcreteBranchObservation;
 import edu.uva.liftlab.graphchecker.concolic.RecordedEvidenceIdentity;
-import edu.uva.liftlab.graphchecker.concolic.RpcExpressionHandoff;
 import edu.uva.liftlab.graphchecker.concolic.SharedStateEvidence;
 import edu.uva.liftlab.graphchecker.concolic.SymbolicPropagationClosure;
 import edu.uva.liftlab.graphchecker.concolic.SymbolicSourceEvidence;
 import edu.uva.liftlab.graphchecker.concolic.VmExpressionIr;
 import edu.uva.liftlab.graphchecker.concolic.VmExpressionTable;
-import edu.uva.liftlab.graphchecker.concolic.VmHandoffEvidence;
 import edu.uva.liftlab.graphchecker.concolic.SmtModelValueCodec;
 import edu.uva.liftlab.graphchecker.contract.CommunicationHandoffSpec;
 import edu.uva.liftlab.graphchecker.contract.ConfiguredSourcePhaseContract;
@@ -33,7 +31,6 @@ import edu.uva.liftlab.graphchecker.contract.FieldPathSpec.DeclaredField;
 import edu.uva.liftlab.graphchecker.contract.InputActionCatalog;
 import edu.uva.liftlab.graphchecker.contract.JavaPrimitiveBoxing;
 import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
-import edu.uva.liftlab.graphchecker.contract.HandoffPhaseContract;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.runtime.d3.D3Runtime;
 import edu.uva.liftlab.graphchecker.runtime.d3.Interactions;
@@ -59,6 +56,8 @@ import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.nio.charset.StandardCharsets;
+import java.util.UUID;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -1830,7 +1829,7 @@ public final class ConcolicRegionRuntime {
      * lets it reach a handler that files a named gap, or catches it here and
      * keeps the consumer's value concrete-and-flagged; none of them mints.
      * The row lands in {@code unresolvedInputs}, which {@code
-     * ConcolicSummaryImporter} turns into {@code UNRESOLVED_INPUT} and
+     * the importer turns into {@code UNRESOLVED_INPUT} and
      * refuses the whole summary under, so the gap blocks rather than
      * decorates.</p>
      */
@@ -1918,6 +1917,7 @@ public final class ConcolicRegionRuntime {
         private final String stage;
         private final int status;
         private final long handle;
+        /** The VM ledger events of a successful call, or {@code null}. */
         private final JsonObject record;
 
         private HandoffResult(String stage, int status, long handle,
@@ -1929,12 +1929,12 @@ public final class ConcolicRegionRuntime {
         }
 
         public boolean ok() {
-            return status == RpcExpressionHandoff.OK;
+            return status == ConcolicVmBroker.OK;
         }
 
         /** Named reason for a failure; empty for a successful call. */
         public String reason() {
-            return RpcExpressionHandoff.reason(status);
+            return ConcolicVmBroker.describe(status);
         }
 
         private long handle() {
@@ -1974,8 +1974,8 @@ public final class ConcolicRegionRuntime {
         String missing = missingFieldMetadata(owner, declaringClass,
                 fieldName, descriptor);
         if (!missing.isEmpty()) {
-            return record(failed(RpcExpressionHandoff.STAGE_EXPORT,
-                    RpcExpressionHandoff.MISSING_METADATA, 0L, missing));
+            return record(failed("EXPORT",
+                    ConcolicVmBroker.MISSING_METADATA, 0L, missing));
         }
         ConcolicVmBroker api = engine();
         long handle;
@@ -1988,23 +1988,23 @@ public final class ConcolicRegionRuntime {
             handle = api.exportExpression(owner, declaringClass, fieldName,
                     descriptor, exportEvent);
         } catch (Throwable throwable) {
-            return record(failed(RpcExpressionHandoff.STAGE_EXPORT,
-                    RpcExpressionHandoff.INVOCATION_FAILED, 0L,
+            return record(failed("EXPORT",
+                    ConcolicVmBroker.INVOCATION_FAILED, 0L,
                     rootCause(throwable)));
         }
         if (handle <= 0L) {
             int status = exportStatus(handle);
             HandoffResult result = failed(
-                    RpcExpressionHandoff.STAGE_EXPORT, status, 0L,
+                    "EXPORT", status, 0L,
                     "exportExpression returned " + handle);
-            if (status == RpcExpressionHandoff.NOT_SYMBOLIC) return result;
+            if (status == ConcolicVmBroker.NOT_SYMBOLIC) return result;
             return record(result);
         }
         JsonObject exported = new JsonObject();
         exported.addProperty("exportEventId", exportEvent[0]);
         HandoffResult result = new HandoffResult(
-                RpcExpressionHandoff.STAGE_EXPORT,
-                RpcExpressionHandoff.OK, handle, exported);
+                "EXPORT",
+                ConcolicVmBroker.OK, handle, exported);
         record(result);
         return result;
     }
@@ -2177,18 +2177,19 @@ public final class ConcolicRegionRuntime {
                 field, descriptor);
         // A concrete leaf is still a leaf the message carried.
         if (!result.ok()
-                && result.status != RpcExpressionHandoff.NOT_SYMBOLIC) {
+                && result.status != ConcolicVmBroker.NOT_SYMBOLIC) {
             return;
         }
         long handle = result.ok() ? result.handle() : 0L;
         if (!stageMessageExpression(site.portId(), handle)) {
-            recordHandoffGap(RpcExpressionHandoff.portGap(
-                    RpcExpressionHandoff.STAGE_EXPORT,
-                    RpcExpressionHandoff.MISSING_METADATA,
-                    handle, site.portId(),
-                    "communication leaf could not enter the message: "
-                            + site.portId()));
-            return;
+            // The value crossed and the message could not carry its
+            // expression: the row still states the endpoint, and the loss
+            // is named rather than left as an export nobody can pair.
+            D3Runtime.gap(edu.uva.liftlab.graphchecker.d3.contract.GapKind
+                            .UNSTATED_VALUE,
+                    edu.uva.liftlab.graphchecker.d3.contract.GapClass
+                            .DIAGNOSTIC, site.portId(),
+                    "the communication leaf could not enter the message");
         }
         publishExportRow(site, carrier, field, descriptor, handle,
                 result.ok() ? optionalLongInteger(result.record,
@@ -2294,26 +2295,9 @@ public final class ConcolicRegionRuntime {
             // an attach that files nothing and an attach nobody planned
             // read identically from the corpus, and only one of them is a
             // coverage question.
-            recordHandoffGap(RpcExpressionHandoff.portGap(
-                    RpcExpressionHandoff.STAGE_ATTACH,
-                    RpcExpressionHandoff.MISSING_METADATA, 0L, safe(portId),
-                    // The set actually tested is the task slice handed to
-                    // THIS replay, which is narrower than the campaign's
-                    // plan: on lane17897h the plan declared the port on a
-                    // cache-encryption-key occurrence the slice did not
-                    // carry, and the old wording sent a reader looking for
-                    // a planning bug that was not there.
-                    "no task of this replay's slice declares this capture's"
-                            + " port: " + safe(portId)));
             return;
         }
         if (carrier == null) {
-            recordHandoffGap(RpcExpressionHandoff.portGap(
-                    RpcExpressionHandoff.STAGE_ATTACH,
-                    RpcExpressionHandoff.MISSING_METADATA, handle,
-                    site.portId(),
-                    "required communication port has no carrier: "
-                            + site.portId()));
             return;
         }
         Interactions.delivering(handle);
@@ -2451,6 +2435,7 @@ public final class ConcolicRegionRuntime {
                                              String producerOccurrenceId) {
         if (site == null) return;
         ActiveRegion active = attachConsumerRegion(site);
+        if (site == null) return;
         if (active == null) {
             // Same rule on the element-present side: the delivery happened.
             beginBookkeeping();
@@ -2462,32 +2447,19 @@ public final class ConcolicRegionRuntime {
             }
             return;
         }
-        noteAttachFiledElsewhere(site, active);
         if (safe(producerTaskId).isEmpty()
                 || safe(producerOccurrenceId).isEmpty()) {
-            recordHandoffGap(RpcExpressionHandoff.gap(
-                    RpcExpressionHandoff.STAGE_ATTACH,
-                    RpcExpressionHandoff.MISSING_METADATA, result.handle(),
-                    "attached leaf carried no exact producer execution"));
             return;
         }
         long exportEvent = result.ok()
                 ? optionalLongInteger(result.record, "exportEventId", 0L) : 0L;
         if (exportEvent <= 0L) {
-            recordHandoffGap(RpcExpressionHandoff.gap(
-                    RpcExpressionHandoff.STAGE_ATTACH,
-                    RpcExpressionHandoff.MALFORMED_RESULT, result.handle(),
-                    "attached leaf named no VM export event"));
             return;
         }
         // README RPC-1: the reference carries both endpoints of the edge.
         long attachEvent = result.ok()
                 ? optionalLongInteger(result.record, "attachEventId", 0L) : 0L;
         if (attachEvent <= 0L) {
-            recordHandoffGap(RpcExpressionHandoff.gap(
-                    RpcExpressionHandoff.STAGE_ATTACH,
-                    RpcExpressionHandoff.MALFORMED_RESULT, result.handle(),
-                    "attached leaf named no VM attach event"));
             return;
         }
         JsonElement expression;
@@ -2495,11 +2467,6 @@ public final class ConcolicRegionRuntime {
             Field storage = declaredInstanceField(owner, declaringClass,
                     fieldName, descriptor);
             if (storage == null) {
-                recordHandoffGap(RpcExpressionHandoff.gap(
-                        RpcExpressionHandoff.STAGE_ATTACH,
-                        RpcExpressionHandoff.MISSING_METADATA,
-                        result.handle(),
-                        "attached leaf has no exact destination storage"));
                 return;
             }
             Object value = storage.get(owner);
@@ -2509,18 +2476,9 @@ public final class ConcolicRegionRuntime {
                     : engineExpression(api.fieldExpression(owner,
                     declaringClass, fieldName, descriptor, value));
         } catch (Throwable failure) {
-            recordHandoffGap(RpcExpressionHandoff.gap(
-                    RpcExpressionHandoff.STAGE_ATTACH,
-                    RpcExpressionHandoff.INVOCATION_FAILED, result.handle(),
-                    "attached destination expression read-out failed: "
-                            + rootCause(failure)));
             return;
         }
         if (expression == null || expression.isJsonNull()) {
-            recordHandoffGap(RpcExpressionHandoff.gap(
-                    RpcExpressionHandoff.STAGE_ATTACH,
-                    RpcExpressionHandoff.MALFORMED_RESULT, result.handle(),
-                    "custom VM returned no propagated destination expression"));
             return;
         }
         Interactions.deliveringAt(attachEvent);
@@ -2552,8 +2510,7 @@ public final class ConcolicRegionRuntime {
                         descriptor);
                 return;
             }
-            noteAttachFiledElsewhere(site, active);
-            mintHandoffVariable(active, site, 0L, 0L, null, "", "", carrier,
+                mintHandoffVariable(active, site, 0L, 0L, null, "", "", carrier,
                     CARRIER_CLASS, field, descriptor, true);
         } finally {
             endBookkeeping();
@@ -2595,42 +2552,6 @@ public final class ConcolicRegionRuntime {
     }
 
     /**
-     * Tells every other live occurrence that declares this port where its
-     * attach went.
-     *
-     * <p>One capture site can lie inside two selected regions -- on
-     * hdfs-17899 bug2 the per-call {@code convert(BlockKeyProto)} region
-     * and the loop-body region rooted at the enclosing
-     * {@code convert(ExportedBlockKeysProto)} both declare
-     * {@code resp.block-key-id} at unit 2 of the same method.  The value
-     * crosses the wire once, so it is attached once and the row names one
-     * consumer; the other declaring occurrence got nothing at all, and its
-     * planned attach was read at IMPORT as never reproduced.  It did
-     * reproduce -- on the occurrence named here -- and that is what the row
-     * now says.</p>
-     */
-    private static void noteAttachFiledElsewhere(
-            CommunicationHandoffSpec site, ActiveRegion named) {
-        if (site == null || named == null) return;
-        String portId = safe(site.portId());
-        if (portId.isEmpty()) return;
-        for (Long token : CURRENT_TOKENS.get()) {
-            ActiveRegion candidate = ownerRegion(token);
-            if (candidate == null || candidate == named) continue;
-            if (candidate.activation.communicationHandoff(portId, false)
-                    == null) {
-                continue;
-            }
-            candidate.rpcHandoffGaps.add(RpcExpressionHandoff.portGap(
-                    RpcExpressionHandoff.LEAF_ATTACHED_ELSEWHERE,
-                    RpcExpressionHandoff.STAGE_ATTACH,
-                    RpcExpressionHandoff.MISSING_METADATA, 0L, portId,
-                    "port declared here was attached on "
-                            + named.occurrenceId() + ": " + portId));
-        }
-    }
-
-    /**
      * Mints the handoff variable v_H on the element this attach landed on.
      *
      * <p>The producer's expression {@code e_p} has just been attached and is
@@ -2663,10 +2584,6 @@ public final class ConcolicRegionRuntime {
             // primitive leaf the VM can mint on has no v_H, and a row
             // without one names no occurrence two replays could be joined
             // at, so the loss is named.
-            recordHandoffGap(RpcExpressionHandoff.portGap(
-                    RpcExpressionHandoff.STAGE_ATTACH,
-                    RpcExpressionHandoff.MISSING_METADATA, 0L, portId,
-                    "handoff element exposes no primitive leaf: " + portId));
             return;
         }
         for (HandoffLeaf leaf : leaves) {
@@ -2702,20 +2619,11 @@ public final class ConcolicRegionRuntime {
         // reported twice, unplanned there and unreproduced here.
         String consumerOccurrenceId = declaredConsumerOccurrence(portId,
                 active);
-        String phaseId;
-        try {
-            phaseId = HandoffPhaseContract.phaseId(portId,
-                    OccurrenceAddress.parse(consumerOccurrenceId).render(),
-                    active.nextHandoffAttach(portId + "\n" + elementPath),
-                    elementPath);
-        } catch (IllegalArgumentException unaddressed) {
-            recordHandoffGap(RpcExpressionHandoff.gap(
-                    RpcExpressionHandoff.STAGE_ATTACH,
-                    RpcExpressionHandoff.MISSING_METADATA, 0L,
-                    "handoff names no occurrence: "
-                            + unaddressed.getMessage()));
-            return;
-        }
+        String phaseId = handoffMintKey(portId,
+                OccurrenceAddress.parse(consumerOccurrenceId).render(),
+                active.nextHandoffAttach(portId + "\n" + elementPath),
+                elementPath);
+        if (phaseId.isEmpty()) return;
         Object owner = leaf.owner;
         Field element = leaf.field;
         String declaringClass = element.getDeclaringClass().getName();
@@ -2756,18 +2664,12 @@ public final class ConcolicRegionRuntime {
                         "handoff model could not be written");
             }
             api.symbolizeExactField(owner, signature,
-                    HandoffPhaseContract.engineLabelForPhase(phaseId,
-                            portId));
+                    handoffMintLabel(phaseId, portId));
             ensurePathRecordingStarted(active);
             JsonObject minted = exactSymbolOf(engineExpression(
                     api.fieldExpression(owner, declaringClass, fieldName,
                             descriptor, element.get(owner))));
             if (minted == null) {
-                recordHandoffGap(RpcExpressionHandoff.portGap(
-                        RpcExpressionHandoff.STAGE_ATTACH,
-                        RpcExpressionHandoff.MALFORMED_RESULT, 0L, portId,
-                        "handoff mint returned no exact variable at "
-                                + portId));
                 return;
             }
             if (assignment != null) active.recordModelAssignment(assignment);
@@ -2776,21 +2678,60 @@ public final class ConcolicRegionRuntime {
                     optionalString(minted, "_java_type"), recordedValue,
                     assignment != null,
                     assignment == null ? "" : safe(assignment.value));
-            active.vmHandoffEvents.add(VmHandoffEvidence.event(portId,
-                    exportEvent, attachEvent, producerExpression,
-                    producerTaskId, producerOccurrenceId,
-                    consumerOccurrenceId, phaseId,
-                    optionalString(minted, "_exp"),
-                    recordedValue, optionalString(minted, "_java_type"),
-                    assignment == null ? "" : safe(assignment.value),
-                    elementAbsent));
         } catch (Throwable failure) {
-            recordHandoffGap(RpcExpressionHandoff.portGap(
-                    RpcExpressionHandoff.STAGE_ATTACH,
-                    RpcExpressionHandoff.INVOCATION_FAILED, 0L, portId,
-                    "handoff mint failed at " + portId + ": "
-                            + rootCause(failure)));
         }
+    }
+
+    /**
+     * The identity this attach mints v_H under, and the key an obligation's
+     * answer for it is looked up by.
+     *
+     * <p>{@code (port, consumer occurrence, k-th attach of this element,
+     * element path)} and nothing else, so the same attach in two replays
+     * mints the same variable and an answer written for one is found by the
+     * other.  Empty when any part is missing, which is an attach no replay
+     * could be joined at.</p>
+     *
+     * <p>// D2: keyed by the consumer Endpoint and published as an AttachRow
+     * by runtime/d3 SessionPublisher (M2).</p>
+     */
+    private static final String HANDOFF_MINT_PREFIX = "HANDOFF_PHASE.";
+
+    private static String handoffMintKey(String portId,
+                                         String consumerAddress,
+                                         int attachOrdinal,
+                                         String elementPath) {
+        if (safe(portId).isEmpty() || safe(consumerAddress).isEmpty()
+                || safe(elementPath).isEmpty() || attachOrdinal < 1) {
+            return "";
+        }
+        String identity = portId + "\n" + consumerAddress + "\n"
+                + attachOrdinal + "\n" + elementPath;
+        return HANDOFF_MINT_PREFIX + UUID.nameUUIDFromBytes(
+                identity.getBytes(StandardCharsets.UTF_8));
+    }
+
+    /**
+     * The label the VM mints v_H under.
+     *
+     * <p>Deliberately not the configured source's {@code SRC.} label: a
+     * handoff root and a configured-source root are told apart by name
+     * alone, because the importer recognises a configured-source mint by the
+     * {@code _field_SRC.<label>_} marker inside the root it reads back.</p>
+     */
+    static boolean isHandoffMintKey(String value) {
+        return value != null && value.startsWith(HANDOFF_MINT_PREFIX)
+                && value.length() > HANDOFF_MINT_PREFIX.length();
+    }
+
+    /** The mint label of one key and port, for the plan that answers it. */
+    static String handoffMintLabelFor(String mintKey, String portId) {
+        return handoffMintLabel(mintKey, portId);
+    }
+
+    private static String handoffMintLabel(String mintKey, String portId) {
+        return "HOFF." + CanonicalJson.sha256(mintKey + "\n"
+                + safe(portId));
     }
 
     /**
@@ -2897,11 +2838,10 @@ public final class ConcolicRegionRuntime {
                 ConcolicVmBroker api = engine();
                 Field field = leaf.field;
                 String recordedValue = recordedScalar(field.get(leaf.owner));
-                String phaseId = HandoffPhaseContract.phaseId(portId,
-                        consumer.render(), 1, leaf.path);
+                String mintKey = handoffMintKey(portId, consumer.render(),
+                        1, leaf.path);
                 api.symbolizeExactField(leaf.owner, leaf.signature(),
-                        HandoffPhaseContract.engineLabelForPhase(phaseId,
-                                portId));
+                        handoffMintLabelFor(mintKey, portId));
                 JsonObject minted = exactSymbolOf(engineExpression(
                         api.fieldExpression(leaf.owner,
                                 field.getDeclaringClass().getName(),
@@ -3061,85 +3001,6 @@ public final class ConcolicRegionRuntime {
                 || targetBranchOccurrence == occurrence);
     }
 
-    /**
-     * Names one element of a closing message that no decode looked up.
-     *
-     * <p>Called by {@link SymbolicMessageEnvelope} as the receiver drops the
-     * message: at that point nothing else will ever ask for the element, so
-     * the value it was carrying reaches whatever it feeds as a leaf with no
-     * producer.  Refusing here rather than at the reader is what keeps the
-     * loss named instead of inferred later from a literal.</p>
-     */
-    static void reportUnattachedMessageLeaf(String portId, int ordinal,
-                                            String producerOccurrenceId) {
-        recordHandoffGap(RpcExpressionHandoff.portGap(
-                RpcExpressionHandoff.LEAVES_UNATTACHED,
-                RpcExpressionHandoff.STAGE_ATTACH,
-                RpcExpressionHandoff.MISSING_METADATA, 0L, safe(portId),
-                "message element nothing decoded: " + safe(portId)
-                        + " element " + ordinal + " from "
-                        + safe(producerOccurrenceId)));
-    }
-
-    /**
-     * A gap raised with no region running, held for the next one.
-     *
-     * <p>A message ends in the transport, below every selected region, so the
-     * finding that nothing decoded one of its elements has no activation to
-     * belong to at the moment it is made.  Dropping it there would make the
-     * refusal invisible in the corpus and the whole vocabulary decorative;
-     * holding it until a region publishes puts it in front of the reader that
-     * has to act on it.</p>
-     */
-    private static final List<JsonObject> UNOWNED_HANDOFF_GAPS =
-            Collections.synchronizedList(new ArrayList<JsonObject>());
-
-    /** Files one handoff gap with the active region, or holds it. */
-    /**
-     * Says why a selected occurrence's outbound envelope came out empty.
-     *
-     * <p>The recorder swallows the refusal and returns an empty header,
-     * which is right -- most sends in a workload are outside any request --
-     * but inside a selected region it is the whole story: on hdfs-17899
-     * bug2 the fault marker is guarded by {@code causynth.active()}, so an
-     * empty Outbound means {@code Debug.makeSymbolicBoolean} is never
-     * called and the region publishes NO_SELECTED_INPUT_MATERIALIZED with
-     * nothing saying why.  Only a live region records it, so a workload's
-     * ordinary unscoped traffic stays quiet.</p>
-     */
-    static void noteOutboundEnvelopeRefused(String transport,
-                                            String correlationId,
-                                            String half, String detail) {
-        if (activeRegion() == null) return;
-        recordHandoffGap(RpcExpressionHandoff.gap(
-                RpcExpressionHandoff.OUTBOUND_SCOPE_REFUSED,
-                RpcExpressionHandoff.STAGE_EXPORT,
-                RpcExpressionHandoff.MISSING_METADATA, 0L,
-                "outbound envelope refused for " + safe(transport) + " "
-                        + safe(half) + " " + safe(correlationId) + ": "
-                        + safe(detail)));
-    }
-
-    private static void recordHandoffGap(JsonObject gap) {
-        ActiveRegion active = activeRegion();
-        if (active != null) {
-            drainUnownedHandoffGaps(active);
-            active.rpcHandoffGaps.add(gap);
-        } else {
-            UNOWNED_HANDOFF_GAPS.add(gap);
-        }
-        diag(RpcExpressionHandoff.GAP_KIND, String.valueOf(gap));
-    }
-
-    /** Moves the gaps raised below every region into this one. */
-    private static void drainUnownedHandoffGaps(ActiveRegion active) {
-        if (UNOWNED_HANDOFF_GAPS.isEmpty()) return;
-        synchronized (UNOWNED_HANDOFF_GAPS) {
-            active.rpcHandoffGaps.addAll(UNOWNED_HANDOFF_GAPS);
-            UNOWNED_HANDOFF_GAPS.clear();
-        }
-    }
-
     private static HandoffResult attach(
             Object owner, String declaringClass, String fieldName,
             String descriptor, long handle) {
@@ -3150,8 +3011,8 @@ public final class ConcolicRegionRuntime {
                     "attach needs a positive handle");
         }
         if (!missing.isEmpty()) {
-            return failed(RpcExpressionHandoff.STAGE_ATTACH,
-                    RpcExpressionHandoff.MISSING_METADATA, handle, missing);
+            return failed("ATTACH",
+                    ConcolicVmBroker.MISSING_METADATA, handle, missing);
         }
         ConcolicVmBroker api = engine();
         long exportEventId;
@@ -3162,28 +3023,28 @@ public final class ConcolicRegionRuntime {
             exportEventId = api.attachExpression(owner, declaringClass,
                     fieldName, descriptor, handle, attachEvent);
         } catch (Throwable throwable) {
-            return failed(RpcExpressionHandoff.STAGE_ATTACH,
-                    RpcExpressionHandoff.INVOCATION_FAILED, handle,
+            return failed("ATTACH",
+                    ConcolicVmBroker.INVOCATION_FAILED, handle,
                     rootCause(throwable));
         }
         if (exportEventId <= 0L) {
             int status = exportStatus(exportEventId);
-            return failed(RpcExpressionHandoff.STAGE_ATTACH, status, handle,
+            return failed("ATTACH", status, handle,
                     "attachExpression returned " + exportEventId);
         }
         if (attachEvent[0] <= 0L) {
             // A VM that accepted the attach but named no attach event has told
             // us half an edge.
-            return failed(RpcExpressionHandoff.STAGE_ATTACH,
-                    RpcExpressionHandoff.MALFORMED_RESULT, handle,
+            return failed("ATTACH",
+                    ConcolicVmBroker.MALFORMED_RESULT, handle,
                     "attachExpression named no attach event for export "
                             + exportEventId);
         }
         JsonObject success = new JsonObject();
         success.addProperty("exportEventId", exportEventId);
         success.addProperty("attachEventId", attachEvent[0]);
-        return new HandoffResult(RpcExpressionHandoff.STAGE_ATTACH,
-                RpcExpressionHandoff.OK, handle, success);
+        return new HandoffResult("ATTACH",
+                ConcolicVmBroker.OK, handle, success);
     }
 
     private static String missingFieldMetadata(
@@ -3202,30 +3063,21 @@ public final class ConcolicRegionRuntime {
     /** Maps a non-positive {@code exportExpression} answer onto a status. */
     private static int exportStatus(long handle) {
         if (handle == 0L || handle < Integer.MIN_VALUE) {
-            return RpcExpressionHandoff.MALFORMED_RESULT;
+            return ConcolicVmBroker.MALFORMED_RESULT;
         }
         return (int) handle;
     }
 
     private static HandoffResult failed(String stage, int status, long handle,
                                         String detail) {
-        return new HandoffResult(stage, status, handle,
-                RpcExpressionHandoff.gap(stage, status, handle, detail));
+        // D2: the refusal is a GapRow published by runtime/d3
+        // SessionPublisher (M2); here it stays the call's own answer.
+        return new HandoffResult(stage, status, handle, null);
     }
 
-    /**
-     * Files failed calls with the active region and reports every outcome to
-     * the diagnostic trace.
-     */
+    /** Reports every refused broker call to the diagnostic trace. */
     private static HandoffResult record(HandoffResult result) {
-        ActiveRegion active = activeRegion();
-        if (active != null) drainUnownedHandoffGaps(active);
-        if (active != null && !result.ok()) {
-            active.rpcHandoffGaps.add(result.record);
-        }
-        if (!result.ok()) {
-            diag(RpcExpressionHandoff.GAP_KIND, result.toString());
-        }
+        if (!result.ok()) diag("VM_HANDOFF_REFUSED", result.toString());
         return result;
     }
 
@@ -6237,14 +6089,12 @@ public final class ConcolicRegionRuntime {
          * declared port an attach landed on and the export event the
          * {@code VALUE_HANDOFF} edge relates it to.
          */
-        final List<JsonObject> vmHandoffEvents = new ArrayList<>();
         /**
          * VM export event most recently published at each declared port.
          *
          * <p>README {@code RPC-1}: written down from the VM's own export
          * answer so the producer's interaction row can name it.</p>
          */
-        final List<JsonObject> rpcHandoffGaps = new ArrayList<>();
 
         /** The write log this activation read out, and its gaps. */
         final Map<String, JsonObject> sharedStateRecords =
