@@ -135,8 +135,19 @@ public final class ConcolicPathFlipSolver {
         String record = PRETTY.toJson(solved.record);
         ArtifactIO.replace(directory.resolve("path_flip_solver_result.json"),
                 record + System.lineSeparator());
+        // Always written, whatever the verdict.  An UNSAT obligation is the
+        // one a reader most needs to see the query for -- what a flip
+        // asserted that contradicts negating its decision is not derivable
+        // from the verdict -- and an obligation that never reached an
+        // encoding says that in the file rather than leaving none.
         ArtifactIO.replace(directory.resolve("path_flip_query.smt2"),
-                solved.smtLib);
+                solved.smtLib.isEmpty()
+                        ? "; no query was encoded: "
+                        + firstNonBlank(optionalString(solved.record,
+                        "status"), "UNKNOWN") + " "
+                        + optionalString(solved.record, "reason")
+                        + System.lineSeparator()
+                        : solved.smtLib);
         ArtifactIO.replaceJsonl(directory.resolve("execution_task_plan.jsonl"),
                 replay);
         System.out.println(record);

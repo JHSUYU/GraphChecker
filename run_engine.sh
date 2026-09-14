@@ -2156,6 +2156,9 @@ campaign_worker_task() {
     --solver-timeout-ms "${solver_timeout_ms}"
   require_nonempty "path solver result" \
     "${worker}/path_flip_solver_result.json"
+  # The query is the artifact an UNSAT obligation is diagnosed from, so a
+  # missing one fails here rather than being noticed a campaign later.
+  require_nonempty "path flip query" "${worker}/path_flip_query.smt2"
   [[ "${status}" -eq 0 ]] || die "the path solver failed with exit ${status}"
   outcome=$(jq -er '.status' "${worker}/path_flip_solver_result.json")
   # The solver owns what a finished flip is. ConcolicPathFlipSolver exits 0

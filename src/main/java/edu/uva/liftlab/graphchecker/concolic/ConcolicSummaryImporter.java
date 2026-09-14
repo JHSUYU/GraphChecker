@@ -408,6 +408,21 @@ public final class ConcolicSummaryImporter {
         // A planned activation that produced no row at all is the plainest
         // "planned event that did not occur"; it is named, never dropped.
 
+        // An occurrence one run did not answer is not a refusal when another
+        // run of the same replay did.  A workload with two JVM epochs on one
+        // node asks both about every task addressed at that node, and the
+        // epoch that never registered the addressed one says so -- that is a
+        // statement about which JVM was asked, not about the region.  It
+        // stays only where no run answered the task at all.
+        Set<String> answered = new LinkedHashSet<>();
+        for (JsonObject summary : summaries) {
+            answered.add(optionalString(summary, "taskId"));
+        }
+        diagnostics.removeIf(row ->
+                "REGION_OCCURRENCE_ANCHOR_UNMATCHED".equals(
+                        optionalString(row, "code"))
+                        && answered.contains(optionalString(row, "taskId")));
+
         // The contract runs last, over what was actually written: every
         // check it makes is a statement the corpus can make about itself,
         // and making it here is what keeps a missing publication from
