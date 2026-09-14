@@ -279,6 +279,35 @@ jq -e '.accepted == false and .gapCount == 1' \
 [[ -s "${campaign_root}/final/gaps.json" ]] \
   || fail "the published final lost the gaps that withheld it"
 
+# EMIT-3: a corpus whose generated indexes exceed one command-line argument.
+# Linux caps a single argument at MAX_ARG_STRLEN -- 32 pages, 128 KiB -- which
+# no ARG_MAX headroom relaxes, and every document campaign_write_coverage_gaps
+# builds is proportional to the corpus.  lane11741j reached DECIDE with
+# SAT_CANDIDATE and 0 blockers and then died at EMIT with "Argument list too
+# long" on a 134,436-byte kept-slice index, publishing nothing.  The fixture
+# below makes the attached-handoff index alone larger than that.
+emit_fixture
+python3 - "${emit_iteration}/seed-result/concolic_region_results.jsonl" <<'OVERSIZED'
+import json, sys
+events = [{"portId": "XCH.%048d.resp.leaf" % n,
+           "handoffPhaseId": "HANDOFF_PHASE.%048d" % n} for n in range(1600)]
+with open(sys.argv[1], "w") as handle:
+    handle.write(json.dumps({"taskId": "task-target", "published": True,
+                             "vmHandoffEvents": events}) + "\n")
+OVERSIZED
+oversized=$(campaign_attached_handoff_phases_json "${emit_iteration}")
+[[ "${#oversized}" -gt 131072 ]] \
+  || fail "the oversized fixture is only ${#oversized} bytes; it must exceed \
+one argument (131072) for this check to mean anything"
+run_emit
+[[ "${emit_status}" -eq 0 ]] \
+  || fail "an oversized index broke EMIT (exit ${emit_status}): \
+$(<"${emit_root}/emit.log")"
+[[ -s "${campaign_root}/final/gaps.json" ]] \
+  || fail "an oversized index published no gaps.json"
+[[ -s "${campaign_root}/final/run-manifest.json" ]] \
+  || fail "an oversized index published no run manifest"
+
 # GAP-3: a code nobody registered is blocking.  This fixture used to publish
 # two invented composition gap reasons as accepted telemetry; under one
 # ledger they withhold the candidate until somebody writes down why they
