@@ -146,6 +146,23 @@ public class PublicationContractTest {
                 Collections.<JsonObject>emptyList()).isEmpty());
     }
 
+    /**
+     * The row is evidence, not a contract failure.
+     *
+     * <p>The k-th request of a periodic api -- bug1's heartbeat#4 where the
+     * anchor names heartbeat#2 -- and the scope a background thread happens
+     * to sit under are timing facts about the run, not facts about the
+     * workload.  The address is the identity, so the activation is admitted
+     * and the row published; epoch re-seeding is what consumes it.</p>
+     */
+    @Test
+    public void aDivergedRequestIsDiagnosticNotBlocking() {
+        assertEquals(edu.uva.liftlab.graphchecker.contract.GapLedger
+                        .GapClass.DIAGNOSTIC,
+                edu.uva.liftlab.graphchecker.contract.GapLedger.classOf(
+                        PublicationContract.ACTIVATION_REQUEST_DIVERGED));
+    }
+
     /** A task whose anchor names no request diverges from nothing. */
     @Test
     public void aTaskWithNoAnchoredRequestIsNotNamed() {
