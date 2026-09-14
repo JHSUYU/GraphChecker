@@ -126,8 +126,7 @@ public final class RuntimeWorkflowDiscovery {
         // names which instance can fail has said which occurrence carries
         // the replay closure, and ranking is how the answer is found when
         // it did not.
-        Set<String> anchors = anchorGoals(targets, observedSummaries,
-                declaredOccurrence);
+        Set<String> anchors = anchorGoals(targets, declaredOccurrence);
         Target target = targets.get(0);
         for (Target candidate : targets) {
             if (anchors.contains(candidate.goal.goalId())) {
@@ -212,19 +211,16 @@ public final class RuntimeWorkflowDiscovery {
     /**
      * The goals of the occurrence(s) this campaign is about.
      *
-     * <p>Three answers, in this order. The case's own declaration, when it
-     * states one -- "we know which target instance can fail" -- read as an
-     * occurrence address, or as the request family and k when it names no
-     * region. Otherwise the occurrence(s) at which the RECORDING took the
-     * fatal arm: the annotated exception happened at one execution of the
-     * site, and the others reached it healthily. Otherwise every observed
-     * occurrence, which is the shape of a case whose recording is healthy
-     * and whose failure has to be flipped into (HDFS-17960): there is no
-     * recorded-fatal occurrence to prefer, so none is privileged.</p>
+     * <p>Two answers. The case's own declaration, when it states one --
+     * "we know which target instance can fail" -- read as an occurrence
+     * address, or as the request family and k when it names no region.
+     * Otherwise every observed occurrence: a recording is the healthy path
+     * by nature -- the fatal condition is what the composition builds --
+     * so nothing in the corpus distinguishes one occurrence of the site
+     * from another, and none is privileged.</p>
      */
     private static Set<String> anchorGoals(
-            List<Target> targets, Collection<JsonObject> observedSummaries,
-            String declaredOccurrence) {
+            List<Target> targets, String declaredOccurrence) {
         Set<String> everyGoal = new LinkedHashSet<>();
         for (Target candidate : targets) {
             everyGoal.add(candidate.goal.goalId());
@@ -238,19 +234,12 @@ public final class RuntimeWorkflowDiscovery {
                     byDeclaration.add(candidate.goal.goalId());
                 }
             }
-            // A declaration naming no observed occurrence is not a silent
-            // fall-back to every occurrence: the recorded rule below still
-            // answers, and the composition names what the case declared
-            // beside what the recording did.
+            // A declaration naming no observed occurrence keeps every
+            // occurrence rather than selecting none: the composition then
+            // states what the case declared beside what it observed.
             if (!byDeclaration.isEmpty()) return byDeclaration;
         }
-        Set<String> recordedFatal = new LinkedHashSet<>();
-        for (Target candidate : targets) {
-            if (recordedTheFatalArm(candidate, observedSummaries)) {
-                recordedFatal.add(candidate.goal.goalId());
-            }
-        }
-        return recordedFatal.isEmpty() ? everyGoal : recordedFatal;
+        return everyGoal;
     }
 
     /**
@@ -277,55 +266,6 @@ public final class RuntimeWorkflowDiscovery {
         } catch (NumberFormatException notAnOrdinal) {
             return false;
         }
-    }
-
-    /**
-     * Whether the recording took the fatal arm at this occurrence.
-     *
-     * <p>The plan states, per failure site, the outcome that reaches the
-     * annotated exception; the summaries state what that execution decided
-     * there. An occurrence that decided the required outcome is where the
-     * failure happened; one that decided the other reached the site and
-     * returned normally.</p>
-     */
-    private static boolean recordedTheFatalArm(
-            Target target, Collection<JsonObject> observedSummaries) {
-        Map<String, Boolean> required = new LinkedHashMap<>();
-        for (JsonElement element : target.goal.branches()) {
-            if (!element.isJsonObject()) continue;
-            JsonObject branch = element.getAsJsonObject();
-            if (!optionalBool(branch, "failureTarget", false)
-                    || !branch.has("requiredOutcome")
-                    || branch.get("requiredOutcome").isJsonNull()) {
-                continue;
-            }
-            String site = optionalString(branch, "siteId");
-            if (!site.isEmpty()) {
-                required.put(site, branch.get("requiredOutcome")
-                        .getAsBoolean());
-            }
-        }
-        if (required.isEmpty()) return false;
-        for (JsonObject summary : observedSummaries == null
-                ? Collections.<JsonObject>emptyList() : observedSummaries) {
-            if (!target.occurrenceId.equals(OccurrenceId.parse(
-                    optionalString(summary, "occurrenceId")).planned())) {
-                continue;
-            }
-            for (JsonElement element : array(summary, "branchMappings")) {
-                if (!element.isJsonObject()) continue;
-                JsonObject witness = object(element.getAsJsonObject(),
-                        "witness");
-                Boolean arm = required.get(optionalString(
-                        object(witness, "site"), "siteId"));
-                if (arm != null && witness.has("sourceTakenOutcome")
-                        && arm == witness.get("sourceTakenOutcome")
-                        .getAsBoolean()) {
-                    return true;
-                }
-            }
-        }
-        return false;
     }
 
     /** All graph-connected occurrences of every execution of the same
