@@ -78,8 +78,48 @@ public final class RegionPathWorklist {
                        List<JsonObject> explorationRecords,
                        Bounds bounds,
                        SymbolicRootInventory roots) {
+        return plan(summaries, executionTasks, explorationRecords, bounds,
+                roots, attachedHandoffPorts(summaries));
+    }
+
+    /**
+     * Plans one member against the ports the whole wave delivered.
+     *
+     * <p>A member's summaries are its own region's, and a handoff gap it
+     * imports is usually about a port some OTHER region consumes: on
+     * lane17897j the striped-file-checksum member imported 114 rows for
+     * {@code resp.block-key-id}, a port whose 47 attaches are on the
+     * refresh-block-keys member's summaries.  Asking "did anything deliver
+     * this port" of one member's own rows can only answer no, which withheld
+     * closure on all ten paths of an anchor whose ledger classed every one of
+     * those rows DIAGNOSTIC.  The wave's index is the same question the
+     * campaign fold asks at EMIT, so the two readers cannot disagree.</p>
+     *
+     * @param delivered every {@code portId} some replay of this wave attached
+     */
+    static Result plan(List<JsonObject> summaries,
+                       List<JsonObject> executionTasks,
+                       List<JsonObject> explorationRecords,
+                       Bounds bounds,
+                       SymbolicRootInventory roots,
+                       Set<String> delivered) {
         return new Planner(summaries, executionTasks, explorationRecords,
-                bounds, roots).run();
+                bounds, roots, delivered).run();
+    }
+
+    /** Every communication port some summary in {@code rows} attached. */
+    static Set<String> attachedHandoffPorts(List<JsonObject> rows) {
+        Set<String> ports = new LinkedHashSet<>();
+        for (JsonObject row : rows == null
+                ? Collections.<JsonObject>emptyList() : rows) {
+            for (JsonElement encoded : array(row, VmHandoffEvidence.FIELD)) {
+                if (!encoded.isJsonObject()) continue;
+                String port = optionalString(encoded.getAsJsonObject(),
+                        RpcExpressionHandoff.PORT_FIELD);
+                if (!port.isEmpty()) ports.add(port);
+            }
+        }
+        return ports;
     }
 
     /** Telemetry kind for an obligation the recording already decided. */
@@ -102,7 +142,7 @@ public final class RegionPathWorklist {
         private final List<JsonObject> coverageGaps = new ArrayList<>();
         private final Set<String> coverageGapKeys = new LinkedHashSet<>();
         /**
-         * Communication ports some replay of this exploration attached.
+         * Communication ports some replay of THE WAVE attached.
          *
          * <p>The join GapLedger's COMPOSED_PORT scope names, evaluated with
          * the evidence this layer has.  The campaign fold asks whether the
@@ -113,9 +153,12 @@ public final class RegionPathWorklist {
          * unbacked ones.  The case the two readers could still differ on --
          * a phase the formula names and no attach backs -- is already
          * blocking by its own name, HANDOFF_CONTROL_ROW_ABSENT.</p>
+         *
+         * <p>The wave's, not this member's: a member consumes ports other
+         * members deliver, and a set built from one member's own summaries
+         * answers "nothing delivered it" for every one of them.</p>
          */
-        private final Set<String> attachedHandoffPorts =
-                new LinkedHashSet<>();
+        private final Set<String> attachedHandoffPorts;
         private final Set<String> emitted = new LinkedHashSet<>();
         private final Set<String> observedFlipKeys = new LinkedHashSet<>();
         /** Activation-exact local paths already explored. */
@@ -136,7 +179,11 @@ public final class RegionPathWorklist {
                         List<JsonObject> executionTasks,
                         List<JsonObject> explorationRecords,
                         Bounds bounds,
-                        SymbolicRootInventory roots) {
+                        SymbolicRootInventory roots,
+                        Set<String> delivered) {
+            this.attachedHandoffPorts = delivered == null
+                    ? new LinkedHashSet<String>()
+                    : new LinkedHashSet<>(delivered);
             this.bounds = bounds;
             this.roots = roots == null
                     ? SymbolicRootInventory.disabled() : roots;
@@ -147,12 +194,6 @@ public final class RegionPathWorklist {
             for (JsonObject record : explorationRecords) {
                 String key = optionalString(record, "queryKey");
                 if (!key.isEmpty()) this.records.put(key, record);
-            }
-            // Two passes, because the first gap read would otherwise ask a
-            // question the later summaries answer: a port attached by the
-            // third replay is attached for the first one's rows too.
-            for (JsonObject summary : summaries) {
-                indexAttachedHandoffPorts(summary);
             }
             for (JsonObject summary : summaries) {
                 PathObservation path = PathObservation.decode(summary,
@@ -1001,17 +1042,6 @@ public final class RegionPathWorklist {
                                  int occurrence) {
             addIssue(coverageGaps, coverageGapKeys, kind, reason, region,
                     pathKey, site, occurrence);
-        }
-
-        /** Records every port a replay of this exploration attached. */
-        private void indexAttachedHandoffPorts(JsonObject summary) {
-            for (JsonElement encoded
-                    : array(summary, "vmHandoffEvents")) {
-                if (!encoded.isJsonObject()) continue;
-                String port = optionalString(encoded.getAsJsonObject(),
-                        RpcExpressionHandoff.PORT_FIELD);
-                if (!port.isEmpty()) attachedHandoffPorts.add(port);
-            }
         }
 
         /**

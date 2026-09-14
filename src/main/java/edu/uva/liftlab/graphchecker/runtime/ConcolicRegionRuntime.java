@@ -2048,13 +2048,6 @@ public final class ConcolicRegionRuntime {
         boolean staged = SymbolicMessageEnvelope.stage(
                 portId, handle, producerTask, producerOccurrence,
                 consumerOccurrences);
-        if (staged && active != null) {
-            beginBookkeeping();
-            try {
-            } finally {
-                endBookkeeping();
-            }
-        }
         return staged;
     }
 
