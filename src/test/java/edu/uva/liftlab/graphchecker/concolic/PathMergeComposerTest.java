@@ -19,7 +19,10 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -52,6 +55,12 @@ public class PathMergeComposerTest {
             + SymbolicSourceEvidence.engineLabelForPhase(SERIAL_PHASE,
             SERIAL_SOURCE) + "_com/example/Service";
     private static final String SERIAL_TERM = "sym__EXAMPLE_SERIAL__1";
+    private static final String CLOCK_SIGNATURE =
+            "<com.example.Service: long now>";
+    private static final String RAW_CLOCK = "M_J_field_"
+            + SymbolicSourceEvidence.engineLabelForPhase("SOURCE_PHASE.now",
+            "EXAMPLE.NOW") + "_com/example/Service";
+    private static final String CLOCK_TERM = "sym__EXAMPLE_NOW__1";
     private static final String CLOCK_CALLEE =
             "<org.apache.hadoop.util.Timer: long now()>";
     private static final String CLOCK_PORT = "REGION.example.in.clock";
@@ -776,6 +785,262 @@ public class PathMergeComposerTest {
                         directory.resolve("manifest.json").toString()}));
         assertEquals("the delivery was made at a serial the domain does not"
                 + " allow", "unsat", solve(result.smtLib));
+    }
+
+    /**
+     * A clock read is carried as this execution's window, not as a value.
+     *
+     * <p>Every execution reads the wall clock fresh, so a clock cell is not
+     * an assignment its replay ran under and pinning it to one reading
+     * contradicts every other replay's decisions over it.  What a path owes
+     * is the case's declared skew around the instant THIS execution read.
+     * Keyed on the mint row's own declaration -- the callee the hook named
+     * -- and on nothing about the site.</p>
+     */
+    @Test
+    public void aClockReadIsCarriedAsThisExecutionsWindow() {
+        JsonObject summary = ranWithSerial("GROUP.FLIP", "119981");
+        Map<String, JsonObject> declared = new LinkedHashMap<>();
+        declared.put(RAW_SERIAL, SymbolicSourceEvidence.eventsOf(summary)
+                .get(0));
+        PathMergeComposer.RootInventory roots =
+                PathMergeComposer.RootInventory.of(Arrays.asList(
+                        ranWithSerial("GROUP.SEED", "119982"), summary));
+        PathMergeLowering lowering = new PathMergeLowering(declared);
+
+        List<String> valued = PathMergeComposer.deliveringValuation(
+                summary, declared, lowering, roots, 300000L);
+        assertEquals("a root no hook calls a clock is one equality",
+                1, valued.size());
+        assertTrue("and it is an equality: " + valued.get(0),
+                valued.get(0).contains("=")
+                        && !valued.get(0).contains(">="));
+
+        JsonObject clock = clockReading("1789361019285");
+        JsonObject clocked = new JsonObject();
+        clocked.addProperty("replayGroupId", "GROUP.FLIP");
+        clocked.addProperty("summaryId", "GROUP.FLIP");
+        JsonArray rows = new JsonArray();
+        rows.add(clock);
+        clocked.add("manualSymbolicInputObservations", rows);
+        Map<String, JsonObject> withClock = new LinkedHashMap<>();
+        withClock.put(RAW_CLOCK, clock);
+        List<String> windowed = PathMergeComposer.deliveringValuation(
+                clocked, withClock, new PathMergeLowering(withClock),
+                null, 300000L);
+        assertEquals("a declared clock read is one window",
+                1, windowed.size());
+        assertTrue("centred on what THIS execution read, +/- the skew: "
+                        + windowed.get(0),
+                windowed.get(0).contains(" 1789360719285)")
+                        && windowed.get(0).contains(" 1789361319285))")
+                        && windowed.get(0).startsWith("(and (>= "));
+    }
+
+    /**
+     * A path that contradicts its own execution is named, not composed.
+     *
+     * <p>The invariant: a path must be satisfiable as the execution that
+     * made it -- that replay's roots as it read them, its clock cells in its
+     * own window, the deliveries it received.  One that is not says the
+     * composition has mis-stated that execution, so every answer it
+     * contributes is about the mis-statement; it is refused by name with the
+     * conjunct that closes it.</p>
+     */
+    @Test
+    public void aPathThatContradictsItsOwnReplayIsRefusedByName()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+        Path directory = Files.createTempDirectory("path-merge-self");
+        JsonObject query = query();
+        // The replay read the marker false; this path's own condition says
+        // it was true.
+        query.getAsJsonArray("paths").add(path("self", "GROUP.FLIP",
+                rootIs(true), notEqual(constant(1), constant(0))));
+        Path queryFile = directory.resolve("reach_query.jsonl");
+        write(queryFile, JsonFields.WRITER.toJson(
+                SharedExpressionTable.compact(query)));
+        Path summaryFile = directory.resolve("summaries.jsonl");
+        write(summaryFile, JsonFields.WRITER.toJson(
+                SharedExpressionTable.compact(ranAt("GROUP.SEED", "true")))
+                + "\n" + JsonFields.WRITER.toJson(
+                SharedExpressionTable.compact(ranAt("GROUP.FLIP", "false")))
+                + "\n");
+        PathMergeComposer.Result result = PathMergeComposer.compose(
+                PathMergeComposer.Arguments.parse(new String[]{
+                        "--fatal-query", queryFile.toString(),
+                        "--summaries", summaryFile.toString(),
+                        "--z3", "z3",
+                        "--output",
+                        directory.resolve("candidate.smt2").toString(),
+                        "--manifest",
+                        directory.resolve("manifest.json").toString()}));
+
+        JsonObject merge = result.manifest.getAsJsonObject(
+                PathMergeComposer.MANIFEST_FIELD);
+        assertTrue("the refusal names the invariant",
+                merge.getAsJsonArray("gates").toString()
+                        .contains(PathMergeComposer.PATH_NOT_SELF_CONSISTENT));
+        assertFalse("and the path is not composed",
+                merge.getAsJsonArray("paths").get(0).getAsJsonObject()
+                        .get("admitted").getAsBoolean());
+    }
+
+    /**
+     * A handoff variable is not a root, and its family says what it is.
+     *
+     * <p>Two things the artifact must state for a witness to be read
+     * through the family rather than against one replay's delivery: the
+     * variable carries its handoff phase, so no reader mistakes it for a
+     * root with a recorded value; and each arm names the replay that
+     * delivered it and the valuation that replay ran under, which is the
+     * mechanism behind taking that arm.</p>
+     */
+    @Test
+    public void aHandoffVariableCarriesItsPhaseAndItsArmsTheirReplays()
+            throws Exception {
+        Path directory = Files.createTempDirectory("path-merge-arms");
+        JsonObject query = query();
+        query.getAsJsonArray("paths").add(path("only", "GROUP.FLIP",
+                notEqual(handoff(), constant(0)),
+                notEqual(handoff(), constant(9))));
+        JsonObject seed = ranAt("GROUP.SEED", "true");
+        seed.add("vmHandoffEvents", handoffEvents(constant(9), 11L, 12L));
+        JsonObject flip = ranAt("GROUP.FLIP", "false");
+        flip.add("vmHandoffEvents", handoffEvents(constant(7), 21L, 22L));
+        Path queryFile = directory.resolve("reach_query.jsonl");
+        write(queryFile, JsonFields.WRITER.toJson(
+                SharedExpressionTable.compact(query)));
+        Path summaryFile = directory.resolve("summaries.jsonl");
+        write(summaryFile, JsonFields.WRITER.toJson(
+                SharedExpressionTable.compact(seed)) + "\n"
+                + JsonFields.WRITER.toJson(
+                SharedExpressionTable.compact(flip)) + "\n");
+        PathMergeComposer.Result result = PathMergeComposer.compose(
+                PathMergeComposer.Arguments.parse(new String[]{
+                        "--fatal-query", queryFile.toString(),
+                        "--summaries", summaryFile.toString(),
+                        "--output",
+                        directory.resolve("candidate.smt2").toString(),
+                        "--manifest",
+                        directory.resolve("manifest.json").toString()}));
+
+        boolean phased = false;
+        for (com.google.gson.JsonElement row : result.manifest
+                .getAsJsonArray(ComposedManifest
+                        .CONFIGURED_SOURCE_MATERIALIZATION_FIELD)) {
+            if (!HANDOFF_SYMBOL.equals(JsonFields.optionalString(
+                    row.getAsJsonObject(), "rawSymbol"))) {
+                continue;
+            }
+            phased = !JsonFields.optionalString(row.getAsJsonObject(),
+                    InSessionReadResolver.HANDOFF_PHASE_ID).isEmpty();
+        }
+        assertTrue("the handoff variable carries its phase, so no reader"
+                + " measures it against a recorded value", phased);
+        JsonObject family = result.manifest.getAsJsonObject(
+                PathMergeComposer.MANIFEST_FIELD)
+                .getAsJsonArray("handoffFamilies").get(0).getAsJsonObject();
+        assertFalse("the family names the variable it constrains",
+                JsonFields.optionalString(family, "handoffSolverTerm")
+                        .isEmpty());
+        JsonArray arms = family.getAsJsonArray("arms");
+        assertEquals("one arm per delivering replay", 2, arms.size());
+        for (com.google.gson.JsonElement element : arms) {
+            JsonObject arm = element.getAsJsonObject();
+            assertFalse("an arm names its replay",
+                    JsonFields.optionalString(arm, "replayGroupId")
+                            .isEmpty());
+            assertEquals("and the valuation that replay ran under", 1,
+                    arm.getAsJsonArray("valuation").size());
+        }
+    }
+
+    /** One replay's reading of a cell the clock hook minted. */
+    private static JsonObject clockReading(String reading) {
+        JsonObject row = SymbolicSourceEvidence.manualEvent("PORT.now",
+                "node0/region/REGION.source#1#a1", CLOCK_SIGNATURE, "J",
+                RAW_CLOCK, CLOCK_TERM,
+                "<org.apache.hadoop.util.Timer: long now()>",
+                "<com.example.Service: void serve()>#u3", 11L, reading);
+        return row;
+    }
+
+    /**
+     * Membership is read off the base the VM walked, not left to the solver.
+     *
+     * <p>An INITIAL publishes the container it began from as
+     * {@code SNAPSHOT_BASE} with one {@code PUT} per entry it walked, so
+     * whether the map held a key is a recorded fact and the read's answer
+     * follows from the chain.  A chain that reaches no such base states no
+     * membership: lowering that as a free "does this opaque state hold the
+     * key" let a witness decide it, so it is refused instead.</p>
+     */
+    @Test
+    public void membershipComesFromTheWalkedBaseOrIsRefused()
+            throws Exception {
+        Path directory = Files.createTempDirectory("path-merge-base");
+        JsonObject walked = query();
+        walked.getAsJsonArray("paths").add(path("base", "GROUP.FLIP",
+                rootIs(false),
+                notEqual(mapRead(reconstructedMap(), 119980), constant(0))));
+        PathMergeComposer.Result decided = compose(directory, walked);
+        assertEquals("a membership the base decides is no gate", 0,
+                decided.manifest.getAsJsonObject(
+                        PathMergeComposer.MANIFEST_FIELD)
+                        .getAsJsonArray("gates").size());
+
+        Path other = Files.createTempDirectory("path-merge-nobase");
+        JsonObject unwalked = query();
+        unwalked.getAsJsonArray("paths").add(path("nobase", "GROUP.FLIP",
+                rootIs(false),
+                notEqual(mapRead(mapState(), 119980), constant(0))));
+        PathMergeComposer.Result refused = compose(other, unwalked);
+        assertTrue("a membership nothing decides is refused by name",
+                refused.manifest.getAsJsonObject(
+                        PathMergeComposer.MANIFEST_FIELD)
+                        .getAsJsonArray("gates").toString()
+                        .contains("CONTAINER_BASE_UNSTATED"));
+    }
+
+    /** The map as the VM's INITIAL publishes it: a base and its entries. */
+    private static JsonObject reconstructedMap() {
+        JsonObject base = containerRelation("SNAPSHOT_BASE", mapState());
+        JsonObject first = containerRelation("PUT", base);
+        first.getAsJsonArray("arguments").add(constant(119981));
+        first.getAsJsonArray("arguments").add(constant(7));
+        JsonObject second = containerRelation("PUT", first);
+        second.getAsJsonArray("arguments").add(constant(119980));
+        second.getAsJsonArray("arguments").add(constant(9));
+        return second;
+    }
+
+    /** The same map with nothing stating what it began with. */
+    private static JsonObject mapState() {
+        JsonObject identity = new JsonObject();
+        identity.addProperty("_type", "SymbolExpression");
+        identity.addProperty("_java_type", "java/util/Map");
+        identity.addProperty("_exp", "MAP_STATE.v1.example");
+        return containerRelation("STATE", identity);
+    }
+
+    private static JsonObject mapRead(JsonObject chain, int key) {
+        JsonObject read = containerRelation("READ", chain);
+        read.addProperty("_java_type", "I");
+        read.getAsJsonArray("arguments").add(constant(key));
+        return read;
+    }
+
+    private static JsonObject containerRelation(String operation,
+                                                JsonObject receiver) {
+        JsonObject relation = new JsonObject();
+        relation.addProperty("_type", "ContainerRelation");
+        relation.addProperty("_java_type", "L");
+        relation.addProperty("shape", "ASSOCIATIVE");
+        relation.addProperty("operation", operation);
+        relation.add("receiver", receiver);
+        relation.add("arguments", new JsonArray());
+        return relation;
     }
 
     /** Two replays of one handoff, each stating the serial it ran at. */

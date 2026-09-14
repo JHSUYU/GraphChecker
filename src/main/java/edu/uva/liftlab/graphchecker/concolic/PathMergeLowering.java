@@ -64,6 +64,7 @@ final class PathMergeLowering extends VmLoweringCore {
      * whose lowering raised it.</p>
      */
     private List<String> pathSideConditions;
+    private List<String> pathRefusals;
     /**
      * Which replay's values are being lowered.
      *
@@ -121,6 +122,7 @@ final class PathMergeLowering extends VmLoweringCore {
     /** Records one refusal; a cut is the subset the gate reads. */
     private void refuse(String subject, String detail) {
         unsupported.add(subject);
+        if (pathRefusals != null) pathRefusals.add(subject);
         if (detail != null && !detail.isEmpty()) {
             unsupportedDetail.put(subject, detail);
         }
@@ -593,7 +595,20 @@ final class PathMergeLowering extends VmLoweringCore {
     /** Opens one path: its side conditions belong to it alone. */
     void beginPath(String scope) {
         pathSideConditions = new ArrayList<>();
+        pathRefusals = new ArrayList<>();
         pathScope = scope == null ? "" : scope;
+    }
+
+    /**
+     * What this path's own lowering refused.
+     *
+     * <p>The global set dedups by subject, so a second path that hits the
+     * same refusal adds nothing to it and would read as clean.  A caller
+     * deciding whether to admit THIS path needs its own list.</p>
+     */
+    List<String> pathRefusals() {
+        return pathRefusals == null
+                ? Collections.<String>emptyList() : pathRefusals;
     }
 
     /** Closes it, answering the side conditions its lowering raised. */
@@ -601,6 +616,7 @@ final class PathMergeLowering extends VmLoweringCore {
         List<String> conditions = pathSideConditions == null
                 ? Collections.<String>emptyList() : pathSideConditions;
         pathSideConditions = null;
+        pathRefusals = null;
         pathScope = "";
         return conditions;
     }
@@ -648,9 +664,19 @@ final class PathMergeLowering extends VmLoweringCore {
         return absentKeyDefaults.values();
     }
 
-    /** The whole query: preamble, declarations, assertions, check-sat. */
-    String render() {
+    /**
+     * Preamble and declarations, with no assertion and no check.
+     *
+     * <p>What a caller needs to ask a question about one path on its own:
+     * the sorts and the names, without the other paths' conjunctions.</p>
+     */
+    String declarationsOnly() {
         StringBuilder query = new StringBuilder();
+        appendPreamble(query);
+        return query.toString();
+    }
+
+    private void appendPreamble(StringBuilder query) {
         query.append("; GraphChecker path-merge composed query").append('\n');
         query.append("(set-logic ALL)").append('\n');
         query.append("(set-option :produce-models true)").append('\n');
@@ -670,6 +696,12 @@ final class PathMergeLowering extends VmLoweringCore {
                     .append(' ').append(declaration.getValue().smt)
                     .append(")").append('\n');
         }
+    }
+
+    /** The whole query: preamble, declarations, assertions, check-sat. */
+    String render() {
+        StringBuilder query = new StringBuilder();
+        appendPreamble(query);
         for (String assertion : assertions) {
             query.append(assertion).append('\n');
         }

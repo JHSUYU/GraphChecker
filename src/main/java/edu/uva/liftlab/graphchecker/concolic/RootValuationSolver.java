@@ -1252,6 +1252,16 @@ public final class RootValuationSolver {
         for (Map.Entry<String, String> assigned : witnessValues.entrySet()) {
             JsonObject ledger = recorded.get(assigned.getKey());
             if (ledger == null) continue;
+            // A handoff variable is not a root and has no recorded value of
+            // its own: what the ledger carries for it is whichever replay's
+            // delivery the inventory saw first, and calling the difference
+            // "a root moved" reported twelve unexplained moves on bug3 for
+            // a formula in which no root had moved at all.  What may be
+            // said about a delivery is said through its family, below.
+            if (!optionalString(ledger,
+                    InSessionReadResolver.HANDOFF_PHASE_ID).isEmpty()) {
+                continue;
+            }
             String was = optionalString(ledger, "recordedValue");
             String now = normalizeIntegral(assigned.getValue());
             if (was.isEmpty() || now.isEmpty() || was.equals(now)) continue;
@@ -1275,6 +1285,90 @@ public final class RootValuationSolver {
                 mechanism.addProperty("kind", WitnessLegitimacy.ROOT_MOVED);
             }
             mechanisms.add(mechanism);
+        }
+        for (JsonElement element : familyMechanisms(manifest, witnessValues,
+                recorded)) {
+            mechanisms.add(element);
+        }
+        return mechanisms;
+    }
+
+    /**
+     * The mechanism behind each delivery the witness took, via its family.
+     *
+     * <p>A handoff variable is free and its family says what it may be: one
+     * arm per replay that delivered there, each guarded by the valuation
+     * that replay ran under.  So the model's value at {@code v_H} names an
+     * arm, the arm names the delivering replay, and that replay's own
+     * assignment is the mechanism -- a marker it flipped, a clock it read
+     * later, a configured root its obligation moved.  An arm whose replay
+     * ran at everything the recording read states no mechanism at all: the
+     * delivery is one the recorded topology made under the recorded roots,
+     * and nothing here claims otherwise.</p>
+     */
+    private static JsonArray familyMechanisms(
+            JsonObject manifest, Map<String, String> witnessValues,
+            Map<String, JsonObject> recorded) {
+        JsonArray mechanisms = new JsonArray();
+        JsonObject merge = object(manifest, "pathMerge");
+        Set<String> stated = new LinkedHashSet<>();
+        for (JsonElement element : array(merge, "handoffFamilies")) {
+            if (!element.isJsonObject()) continue;
+            JsonObject family = element.getAsJsonObject();
+            String term = optionalString(family, "handoffSolverTerm");
+            String delivered = normalizeIntegral(witnessValues.get(term));
+            if (term.isEmpty() || delivered.isEmpty()) continue;
+            for (JsonElement encoded : array(family, "arms")) {
+                if (!encoded.isJsonObject()) continue;
+                JsonObject arm = encoded.getAsJsonObject();
+                if (!delivered.equals(normalizeIntegral(
+                        optionalString(arm, "deliveredValue")))) {
+                    continue;
+                }
+                for (JsonElement stated_element
+                        : array(arm, "valuation")) {
+                    if (!stated_element.isJsonObject()) continue;
+                    JsonObject ran = stated_element.getAsJsonObject();
+                    String rootTerm = optionalString(ran, "solverTerm");
+                    JsonObject ledger = recorded.get(rootTerm);
+                    if (ledger == null) continue;
+                    String was = optionalString(ledger, "recordedValue");
+                    String now = normalizeIntegral(optionalString(ran,
+                            "value"));
+                    if (was.isEmpty() || now.isEmpty() || was.equals(now)
+                            || !stated.add(term + "\n" + rootTerm)) {
+                        continue;
+                    }
+                    JsonObject mechanism = new JsonObject();
+                    mechanism.addProperty("sourceKey",
+                            optionalString(ledger, "sourceKey"));
+                    mechanism.addProperty("siteId",
+                            optionalString(ledger, "siteId"));
+                    mechanism.addProperty("solverTerm", rootTerm);
+                    mechanism.addProperty("recordedValue", was);
+                    mechanism.addProperty("witnessValue", now);
+                    mechanism.addProperty("deliveredAt",
+                            optionalString(family,
+                                    InSessionReadResolver
+                                            .HANDOFF_PHASE_ID));
+                    mechanism.addProperty("deliveredBy",
+                            optionalString(arm, "replayGroupId"));
+                    if (optionalBool(ran, "wallClock", false)) {
+                        mechanism.addProperty("kind", "CLOCK_SKEW");
+                        Long delta = skewMillis(was, now);
+                        if (delta != null) {
+                            mechanism.addProperty("skewMillis", delta);
+                        }
+                    } else if ("true".equals(was) || "false".equals(was)) {
+                        mechanism.addProperty("kind", "MARKER_FLIPPED");
+                    } else {
+                        mechanism.addProperty("kind",
+                                WitnessLegitimacy.ROOT_MOVED);
+                    }
+                    mechanisms.add(mechanism);
+                }
+                break;
+            }
         }
         return mechanisms;
     }
