@@ -43,25 +43,69 @@ public class MapCarrierReceiverIdentityTest {
             "<" + OWNER + ": java.util.List getSnapshot(byte[])>#u7";
 
     /**
-     * The identity is replay-stable and per planned occurrence: two sessions
-     * of the same occurrence agree, two occurrences do not.
+     * One object is one receiver, in every activation that touches it.
+     *
+     * <p>The name answers "which object is this".  A map read from two
+     * activations of two occurrences is one object and must get one id; two
+     * maps read at one site are two objects and must get two.  The VM states
+     * its own identity for the object in the location key it answers the
+     * capture with, and that is what is used.</p>
+     *
+     * <p>It used to be a hash of the access anchor with the planned
+     * occurrence folded in, which got the second half right and the first
+     * half exactly wrong: every worker of a replay group replays a different
+     * occurrence, so one map was given four names and IMPORT stopped on six
+     * SHARED_STATE_MAP_STATE_IDENTITY_AMBIGUOUS rows.</p>
      */
     @Test
-    public void theIdentityIsStablePerPlannedOccurrence() throws Exception {
+    public void oneObjectIsOneReceiverAcrossActivations() throws Exception {
+        long first = namedByVm(24L, "occ#1", SITE, 1);
+        long second = namedByVm(24L, "occ#2", SITE, 1);
+        long otherMap = namedByVm(25L, "occ#1", SITE, 1);
+
+        assertEquals("one object, one receiver, two activations",
+                first, second);
+        assertNotEquals("two objects at one site are two receivers",
+                first, otherMap);
+        assertTrue("and it is not mistaken for an anchor hash",
+                (first & 1L << 62) == 0L);
+    }
+
+    /** With no object to name, the anchor answers -- without an activation. */
+    @Test
+    public void theAnchorFallbackDoesNotNameAnActivation() throws Exception {
         long first = named("occ#1", SITE, 1);
-        long again = named("occ#1", SITE, 1);
         long other = named("occ#2", SITE, 1);
         long elsewhere = named("occ#1", SITE + "x", 1);
 
-        assertEquals("the same occurrence names the same receiver",
-                first, again);
-        assertNotEquals("two planned occurrences are two receivers",
+        assertEquals("the activation is not part of the name",
                 first, other);
         assertNotEquals("two access sites are two receivers",
                 first, elsewhere);
     }
 
+    /** A frozen plan locator outranks the replay-side object identity. */
+    @Test
+    public void aFrozenLocatorIsNotOverwritten() throws Exception {
+        SharedStateCapture.SharedCarrier carrier = mapCarrier();
+        carrier.recordConsumerAccess(anchor(SITE, 1));
+        carrier.bindPlannedReceiver(4242L);
+        carrier.bindVmOwnerIdentity(24L);
+
+        assertEquals(4242L, carrier.plannedReceiverObjectId());
+    }
+
     // ---------- harness ----------
+
+    private static long namedByVm(long vmOwnerRid, String occurrenceId,
+                                  String site, int occurrence)
+            throws Exception {
+        SharedStateCapture.SharedCarrier carrier = mapCarrier();
+        carrier.recordConsumerAccess(anchor(site, occurrence));
+        carrier.bindPlannedReceiver(task(occurrenceId));
+        carrier.bindVmOwnerIdentity(vmOwnerRid);
+        return carrier.plannedReceiverObjectId();
+    }
 
     private static long named(String occurrenceId, String site,
                               int occurrence) throws Exception {

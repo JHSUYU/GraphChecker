@@ -291,9 +291,16 @@ final class SharedStateCapture {
         JsonObject record = SharedStateEvidence.versionsRecord(locationKey,
                 envelope, identity);
         if (carrier != null) {
-            // The VM addresses a location by its own session identity, which
-            // is a number that means nothing in the next session.  The
-            // carrier is the only name that crosses: the declaring class,
+            // The VM addresses a location by its own object identity.  That
+            // identity is what a receiver name should be: the object is what
+            // a name identifies, and one object read from two activations is
+            // one receiver, while two objects at one site are two.  It is
+            // reproducible across the replays of one recording -- which is
+            // the scope every consumer of this name joins in, and the scope
+            // the VM's own location key is already trusted in.
+            carrier.bindVmOwnerIdentity(
+                    SharedStateEvidence.locationOwnerOf(locationKey));
+            // The carrier is the name that crosses: the declaring class,
             // field, descriptor and receiver that say which location in the
             // program this is.  One per location -- it describes the slot,
             // not any one write to it.
@@ -828,8 +835,42 @@ final class SharedStateCapture {
             // them an object id -- so the exclusion bought nothing and cost
             // the location.
             bindPlannedReceiver(planned > 0L ? planned
-                    : accessAnchorReceiverObjectId(task == null ? ""
-                    : task.occurrenceId));
+                    : accessAnchorReceiverObjectId());
+        }
+
+        /**
+         * Names this carrier's receiver by the object the VM read it from.
+         *
+         * <p>A receiver identity answers "which object is this", and at the
+         * moment a carrier is captured the object is in hand: the VM states
+         * its own identity for it in the location key it just answered with
+         * ({@code MAP_STATE/<rid>#<slot>}, {@code INSTANCE_FIELD/<rid>#
+         * <offset>}).  Two activations that touch one map read one rid, and
+         * two maps at one site read two, which is exactly what the name has
+         * to do and exactly what an anchor hash could not: the anchor names
+         * the <em>access</em>, so it needed the activation folded in to keep
+         * distinct objects apart, and folding the activation in gave one
+         * object a different name in every worker.  On 17960 that was four
+         * names for {@code DirectorySnapshottableFeature#snapshotsByNames}
+         * and six MAP_STATE_IDENTITY_AMBIGUOUS rows, which stopped IMPORT.
+         *
+         * <p>The plan's own frozen locator still wins when it has one: it is
+         * the recording's name for the object and joins a replay to the
+         * recording, which a replay-side rid cannot.  This answers for the
+         * locations the plan froze no locator for, which is where the
+         * ambiguity was.</p>
+         */
+        void bindVmOwnerIdentity(long vmOwnerRid) {
+            if (vmOwnerRid <= 0L || !requiresPlannedReceiver()) return;
+            if (plannedReceiverObjectId > 0L
+                    && (plannedReceiverObjectId
+                    & ACCESS_ANCHOR_RECEIVER_TAG) == 0L) {
+                // A frozen plan locator is already here; it outranks a
+                // replay-side identity because it also names the recording.
+                return;
+            }
+            plannedReceiverObjectId = VM_OWNER_RECEIVER_TAG
+                    | vmOwnerRid & VM_OWNER_RECEIVER_TAG - 1L;
         }
 
         /**
@@ -841,6 +882,14 @@ final class SharedStateCapture {
                 1L << 62;
 
         /**
+         * Tag distinguishing a receiver named by the VM's own object
+         * identity from both the plan's frozen locators and the hashed
+         * anchor fallback.
+         */
+        private static final long VM_OWNER_RECEIVER_TAG =
+                1L << 61;
+
+        /**
          * A replay-stable receiver identity built from this carrier's own
          * access anchor, inside the activation that selected it.
          *
@@ -848,20 +897,19 @@ final class SharedStateCapture {
          * so that two sessions which read the same receiver at the same set
          * of sites name it alike whatever order the reads ran in.</p>
          *
-         * <p>The anchor alone is not an identity.  One static access site
-         * read once per activation names its receiver the same way in every
-         * activation, so six calls of {@code PBHelper.convert(BlockKeyProto)}
-         * -- six freshly allocated {@code BlockKey}s, each read at that one
-         * site as its first occurrence -- collapsed onto a single receiver
-         * id, and with it onto a single versioned location whose versions
-         * came from six different objects.  A read could then take a value
-         * one of the other five objects held.  The planned occurrence that
-         * published this carrier is what separates them: it is the same
-         * name in every replay of that occurrence, and different for each
-         * of the six calls, so the identity stays joinable across sessions
-         * and stops joining distinct allocations.</p>
+         * <p>The planned occurrence is deliberately <em>not</em> in the
+         * material.  It was, to keep six freshly allocated {@code BlockKey}s
+         * read at one site from collapsing onto one receiver id -- but that
+         * is the object's job, and {@link #bindVmOwnerIdentity} now does it
+         * with the VM's own identity for the object, which separates those
+         * six without naming any activation.  Folding the activation in here
+         * gave one object a different name in every worker of a replay group
+         * and six MAP_STATE_IDENTITY_AMBIGUOUS rows on 17960.  This is the
+         * last resort, for a carrier with no frozen locator and no object
+         * identity to answer with, and a name that means "this slot, reached
+         * at these sites" is the most it can honestly say.</p>
          */
-        private long accessAnchorReceiverObjectId(String occurrenceId) {
+        private long accessAnchorReceiverObjectId() {
             String canonical = "";
             List<ConsumerAccessAnchor> naming = consumerAccesses.isEmpty()
                     && entryAnchor != null
@@ -879,10 +927,9 @@ final class SharedStateCapture {
             }
             if (canonical.isEmpty()) return 0L;
             return ACCESS_ANCHOR_RECEIVER_TAG
-                    | (stableHash(declaringClass + "#" + fieldName + ":"
-                    + descriptor + "\n" + safe(occurrenceId) + "\n"
-                    + canonical)
-                    & (ACCESS_ANCHOR_RECEIVER_TAG - 1L));
+                    | stableHash(declaringClass + "#" + fieldName + ":"
+                    + descriptor + "\n" + canonical)
+                    & ACCESS_ANCHOR_RECEIVER_TAG - 1L;
         }
 
         /** FNV-1a over UTF-16 units: identical in every JVM and session. */
