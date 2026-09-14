@@ -258,6 +258,17 @@ jlong ContainerSupport::publish_state(oop container, Expression *new_state,
   if (new_state == NULL) return 0;
   SharedFieldVersions::Location location = state_location(container);
   if (!location.is_valid()) return 0;
+  // Start the log at the state this mutation extends, not at the mutation.
+  // A container relation resolves as base + PUT/REMOVE_IF/..., so a log whose
+  // first entry is already a PUT leaves that PUT's receiver unresolvable --
+  // which is what retention by value did to bug3's allKeys base until this
+  // existed.  The receiver of the relation being published *is* that base,
+  // and publish_initial is a no-op once the location is tracked.
+  if (!SharedFieldVersions::is_tracked(location)) {
+    ContainerExpression *relation = new_state->as_container_relation();
+    Expression *base = relation == NULL ? NULL : relation->get_receiver();
+    if (base != NULL) SharedFieldVersions::publish_initial(location, base);
+  }
   // The publishing task already names the merged local path case.  Copying
   // the complete PC into every PUT/REMOVE version is both redundant and
   // prohibitively large in service loops; the Composer binds read-from arms

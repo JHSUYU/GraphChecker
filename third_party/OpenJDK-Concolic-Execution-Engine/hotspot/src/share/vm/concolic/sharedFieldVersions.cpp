@@ -2,6 +2,8 @@
 
 #include "concolic/sharedFieldVersions.hpp"
 
+#include <algorithm>
+
 #include "classfile/javaClasses.hpp"
 #include "classfile/symbolTable.hpp"
 #include "classfile/systemDictionary.hpp"
@@ -185,6 +187,35 @@ jlong SharedFieldVersions::select_carrier(const Location &location,
   slot.versions.push_back(version);
   _carrier_count = (int) _slots.size();
   return version_id;
+}
+
+jlong SharedFieldVersions::publish_initial(const Location &location,
+                                           Expression *base) {
+  if (!location.is_valid() || base == NULL) return 0;
+  if (is_tracked(location)) return 0;
+  // The base a later mutation extends.  Published as its own version so the
+  // log begins where the container did, which is what a relation chain stands
+  // on: without it the first PUT has no receiver a reader can resolve.
+  return publish(location, base, NULL, VERSION_INITIAL, NULL, true);
+}
+
+bool SharedFieldVersions::adopt_initial_snapshot(
+    const Location &location, const InitialSnapshot &snapshot) {
+  if (!location.is_valid() || !snapshot.present()) return false;
+  VERSION_LOCK;
+  if (!_open) return false;
+  Slot *slot = find_slot_locked(location);
+  if (slot == NULL || slot->versions.empty()) return false;
+  Version &first = slot->versions.front();
+  // Only an INITIAL base can carry a pre-tracking snapshot, and only once:
+  // the offer that arrives first is the authority, exactly as it was when
+  // selection created the version itself.
+  if (first.version_kind != VERSION_INITIAL) return false;
+  if (first.initial_snapshot_present) return false;
+  first.initial_snapshot_present = true;
+  first.initial_snapshot_entries = snapshot.entries;
+  first.initial_snapshot_truncated = snapshot.truncated;
+  return true;
 }
 
 jlong SharedFieldVersions::publish_value(const Location &location,
@@ -531,29 +562,28 @@ std::string SharedFieldVersions::version_label(const Version &version) {
   return kind + "_" + version.operation;
 }
 
-std::string SharedFieldVersions::describe(const Location &location) {
+// One `SHARED_FIELD_VERSIONS` envelope, written into a caller's document.
+//
+// Split out of describe() so the single-location answer and the whole
+// read-out emit byte-identical envelopes: there is one writer, and neither
+// caller can drift from the other.  The caller owns the artifact scope and
+// writes the expression table once for the whole document, so a subgraph two
+// locations share is defined once rather than per location.
+//
+// `budget_bytes` bounds this envelope alone (0 = the default per-envelope
+// bound); `document_bytes` is what the caller has already committed, so the
+// bound is checked against the real document rather than this envelope in
+// isolation.  Returns true when the envelope was cut short.
+bool SharedFieldVersions::write_versions_envelope(
+    rapidjson::Writer<rapidjson::StringBuffer> &writer,
+    const rapidjson::StringBuffer &buffer,
+    VmExpressionArtifactScope &expression_artifact,
+    const Location &location, const VersionList &versions,
+    const std::vector<ReadRecord> &reads, bool selected, bool complete,
+    bool read_log_complete, size_t budget_bytes) {
   using namespace rapidjson;
-  VersionList versions;
-  std::vector<ReadRecord> reads;
-  bool complete = true;
-  bool read_log_complete = true;
-  bool selected = false;
-  {
-    VERSION_LOCK;
-    Slot *slot = location.is_valid() && _open
-        ? find_slot_locked(location) : NULL;
-    if (slot != NULL) {
-      selected = true;
-      versions = slot->versions;
-      reads = slot->reads;
-      complete = slot->writer_set_complete;
-      read_log_complete = slot->read_log_complete;
-    }
-  }
-
-  StringBuffer buffer;
-  Writer<StringBuffer> writer(buffer);
-  VmExpressionArtifactScope expression_artifact;
+  const size_t bound = budget_bytes == 0
+      ? MAX_VERSION_ENVELOPE_BYTES : budget_bytes;
   writer.StartObject();
   writer.Key("schemaVersion");
   writer.Int(1);
@@ -581,8 +611,7 @@ std::string SharedFieldVersions::describe(const Location &location) {
   writer.StartArray();
   bool serialization_truncated = false;
   for (size_t index = 0; index < versions.size(); ++index) {
-    if (envelope_bytes(buffer, expression_artifact)
-        >= MAX_VERSION_ENVELOPE_BYTES) {
+    if (envelope_bytes(buffer, expression_artifact) >= bound) {
       serialization_truncated = true;
       break;
     }
@@ -616,8 +645,7 @@ std::string SharedFieldVersions::describe(const Location &location) {
       version.value->serialize(writer);
     }
     writer.Key("pathGuard");
-    if (envelope_bytes(buffer, expression_artifact)
-        >= MAX_VERSION_ENVELOPE_BYTES) {
+    if (envelope_bytes(buffer, expression_artifact) >= bound) {
       // Keep the current version structurally valid.  The explicit envelope
       // flag below makes this null unusable as an allegedly empty guard.
       writer.Null();
@@ -641,8 +669,7 @@ std::string SharedFieldVersions::describe(const Location &location) {
     // The read log is bounded by the same budget as the versions.  It used to
     // be unbounded: a location with a full read log appended its rows after
     // the versions loop had already decided the envelope was full.
-    if (envelope_bytes(buffer, expression_artifact)
-        >= MAX_VERSION_ENVELOPE_BYTES) {
+    if (envelope_bytes(buffer, expression_artifact) >= bound) {
       serialization_truncated = true;
       break;
     }
@@ -667,6 +694,174 @@ std::string SharedFieldVersions::describe(const Location &location) {
   // in a JSON object carries no meaning to its reader.
   writer.Key("serializationTruncated");
   writer.Bool(serialization_truncated);
+  // Deliberately NOT closed here.  The caller writes its expression table
+  // into this object (single-location answer) or closes it and writes one
+  // table for the whole document (the read-out), and those are the only two
+  // shapes.  Leaving the brace to the caller is what lets both exist without
+  // the single-location envelope changing by a byte.
+  return serialization_truncated;
+}
+
+namespace {
+
+// The clock value a location is ordered and selected by: the lowest event id
+// it carries, over both its versions and its reads.  A location written
+// before an activation and only read during it is selected by its read, which
+// is why reads count here as well as writes.
+jlong location_low_event(const SharedFieldVersions::Slot &slot) {
+  jlong low = 0;
+  for (size_t i = 0; i < slot.versions.size(); ++i) {
+    const jlong id = slot.versions[i].version_id;
+    if (id > 0 && (low == 0 || id < low)) low = id;
+  }
+  for (size_t i = 0; i < slot.reads.size(); ++i) {
+    const jlong id = slot.reads[i].read_event_id;
+    if (id > 0 && (low == 0 || id < low)) low = id;
+  }
+  return low;
+}
+
+// The highest event id a location carries; the resume point when a read-out
+// stops before it.
+jlong location_high_event(const SharedFieldVersions::Slot &slot) {
+  jlong high = 0;
+  for (size_t i = 0; i < slot.versions.size(); ++i) {
+    if (slot.versions[i].version_id > high) high = slot.versions[i].version_id;
+  }
+  for (size_t i = 0; i < slot.reads.size(); ++i) {
+    if (slot.reads[i].read_event_id > high) high = slot.reads[i].read_event_id;
+  }
+  return high;
+}
+
+struct TrackedLocation {
+  SharedFieldVersions::Location location;
+  SharedFieldVersions::Slot slot;
+  jlong low;
+  TrackedLocation() : low(0) {}
+};
+
+bool by_low_event(const TrackedLocation &a, const TrackedLocation &b) {
+  if (a.low != b.low) return a.low < b.low;
+  // A total order even when two locations share a lowest id, so a resume is
+  // well defined rather than dependent on map iteration order.
+  if (a.location.owner != b.location.owner) {
+    return a.location.owner < b.location.owner;
+  }
+  if (a.location.slot != b.location.slot) {
+    return a.location.slot < b.location.slot;
+  }
+  return a.location.kind < b.location.kind;
+}
+
+} // anonymous namespace
+
+std::string SharedFieldVersions::tracked_locations(jlong after_event_id,
+                                                   jint max_bytes) {
+  using namespace rapidjson;
+  // Snapshot under the lock, serialize outside it: an Expression may not be
+  // rendered while the version lock is held, and the engine lock order
+  // (membership -> versions -> arena) forbids taking the arena beneath it.
+  std::vector<TrackedLocation> selected;
+  bool open = false;
+  {
+    VERSION_LOCK;
+    open = _open;
+    if (open) {
+      for (SlotStore::const_iterator it = _slots.begin();
+           it != _slots.end(); ++it) {
+        const jlong high = location_high_event(it->second);
+        // Selected when anything it carries is at or after the watermark.
+        if (after_event_id > 0 && high < after_event_id) continue;
+        TrackedLocation entry;
+        entry.location = it->first;
+        entry.slot = it->second;
+        entry.low = location_low_event(it->second);
+        selected.push_back(entry);
+      }
+    }
+  }
+  std::sort(selected.begin(), selected.end(), by_low_event);
+
+  StringBuffer buffer;
+  Writer<StringBuffer> writer(buffer);
+  VmExpressionArtifactScope expression_artifact;
+  writer.StartObject();
+  writer.Key("schemaVersion");
+  writer.Int(1);
+  writer.Key("kind");
+  writer.String("SHARED_TRACKED_LOCATIONS");
+  writer.Key("sessionId");
+  writer.Int64(GlobalSymbolicSession::session_id());
+  writer.Key("authority");
+  writer.String("VM_TRACKED_LOCATION_VERSIONS_V1");
+  writer.Key("locations");
+  writer.StartArray();
+
+  const size_t budget = max_bytes > 0 ? (size_t) max_bytes : 0;
+  bool complete = true;
+  jlong next_after = 0;
+  size_t emitted = 0;
+  for (size_t index = 0; index < selected.size(); ++index) {
+    // Stop at a location boundary, never inside one: a half-written envelope
+    // would be a cardinality fault downstream, and the resume point would not
+    // be expressible.  The first location is always emitted, so a budget
+    // smaller than one envelope makes progress instead of looping forever.
+    if (budget != 0 && emitted > 0
+        && envelope_bytes(buffer, expression_artifact) >= budget) {
+      complete = false;
+      next_after = selected[index].low;
+      break;
+    }
+    const TrackedLocation &entry = selected[index];
+    write_versions_envelope(writer, buffer, expression_artifact,
+                            entry.location, entry.slot.versions,
+                            entry.slot.reads, true,
+                            entry.slot.writer_set_complete,
+                            entry.slot.read_log_complete, budget);
+    writer.EndObject();
+    emitted++;
+  }
+  writer.EndArray();
+  writer.Key("locationCount");
+  writer.Int64((jlong) emitted);
+  // What this answer holds, and where to resume.  A truncated read-out that
+  // did not say so is the one failure mode invisible downstream.
+  writer.Key("complete");
+  writer.Bool(complete);
+  writer.Key("nextAfterEventId");
+  writer.Int64(next_after);
+  expression_artifact.write_table(writer);
+  writer.EndObject();
+  return std::string(buffer.GetString(), buffer.GetLength());
+}
+
+std::string SharedFieldVersions::describe(const Location &location) {
+  using namespace rapidjson;
+  VersionList versions;
+  std::vector<ReadRecord> reads;
+  bool complete = true;
+  bool read_log_complete = true;
+  bool selected = false;
+  {
+    VERSION_LOCK;
+    Slot *slot = location.is_valid() && _open
+        ? find_slot_locked(location) : NULL;
+    if (slot != NULL) {
+      selected = true;
+      versions = slot->versions;
+      reads = slot->reads;
+      complete = slot->writer_set_complete;
+      read_log_complete = slot->read_log_complete;
+    }
+  }
+
+  StringBuffer buffer;
+  Writer<StringBuffer> writer(buffer);
+  VmExpressionArtifactScope expression_artifact;
+  write_versions_envelope(writer, buffer, expression_artifact, location,
+                          versions, reads, selected, complete,
+                          read_log_complete, 0);
   expression_artifact.write_table(writer);
   writer.EndObject();
   return std::string(buffer.GetString(), buffer.GetLength());
@@ -742,40 +937,6 @@ bool resolve_field_location(oop owner_oop, const char *declaring_class,
   return true;
 }
 
-/** The value a field holds right now, as an expression. */
-void observe_field(oop owner_oop, const fieldDescriptor &field,
-                   SymInstance *shadow, Expression **value) {
-  const int offset = field.offset();
-  const BasicType type = field.field_type();
-  Expression *existing = shadow == NULL ? NULL : shadow->get(offset);
-
-  if (type == T_OBJECT || type == T_ARRAY) {
-    oop referent = owner_oop->obj_field(offset);
-    *value = existing != NULL
-        ? existing : SharedFieldVersions::reference_expression(referent);
-    // reference_expression never returns NULL for a resolvable oop, but a
-    // context-less caller would; fall back to the explicit null symbol rather
-    // than publishing a version with no value at all.
-    if (*value == NULL) *value = SymbolExpression::get(Sym_NULL);
-    return;
-  }
-
-  jlong bits = 0;
-  switch (type) {
-    case T_BOOLEAN: bits = owner_oop->bool_field(offset) ? 1 : 0; break;
-    case T_BYTE:    bits = owner_oop->byte_field(offset); break;
-    case T_CHAR:    bits = owner_oop->char_field(offset); break;
-    case T_SHORT:   bits = owner_oop->short_field(offset); break;
-    case T_INT:     bits = owner_oop->int_field(offset); break;
-    case T_LONG:    bits = owner_oop->long_field(offset); break;
-    case T_FLOAT:   bits = (jlong) jint_cast(owner_oop->float_field(offset));
-                    break;
-    case T_DOUBLE:  bits = jlong_cast(owner_oop->double_field(offset)); break;
-    default:        break;
-  }
-  *value = existing != NULL
-      ? existing : SharedFieldVersions::primitive_expression(type, bits);
-}
 
 /** The value an array element holds right now. */
 bool observe_element(arrayOop array, int index, Expression **value) {
@@ -811,55 +972,9 @@ bool observe_element(arrayOop array, int index, Expression **value) {
 
 } // anonymous namespace
 
-jlong ConcolicMngr::selectSharedFieldCarrier(
-    Handle owner, const char *declaring_class, const char *field_name,
-    const char *descriptor) {
-  if (!can_explicitly_symbolize()) {
-    return SharedFieldVersions::SELECT_NO_ACTIVE_CONTEXT;
-  }
-  if (owner.is_null()
-      || declaring_class == NULL || declaring_class[0] == '\0'
-      || field_name == NULL || field_name[0] == '\0'
-      || descriptor == NULL || descriptor[0] == '\0') {
-    return SharedFieldVersions::SELECT_MISSING_METADATA;
-  }
-
-  ResourceMark rm;
-  fieldDescriptor field;
-  SharedFieldVersions::Location location;
-  oop carrier_owner = NULL;
-  jlong status = 0;
-  if (!resolve_field_location(owner(), declaring_class, field_name, descriptor,
-                              &location, &field, &carrier_owner, &status)) {
-    return status;
-  }
-
-  // The owner shadow must exist before the location is selected: the
-  // interpreter hooks recognise a carrier by its owner's sym_rid, and an owner
-  // with no shadow can never match one.
-  SymInstance *shadow = ctx->get_or_alloc_sym_inst(carrier_owner);
-  if (shadow == NULL) return SharedFieldVersions::SELECT_UNSUPPORTED_TARGET;
-  location.owner = shadow->get_sym_rid();
-
-  Expression *initial = NULL;
-  observe_field(carrier_owner, field, shadow, &initial);
-  if (initial == NULL) return SharedFieldVersions::SELECT_UNSUPPORTED_TARGET;
-
-  jlong version_id = SharedFieldVersions::select_carrier(location, initial);
-  if (version_id == 0) {
-    // Re-selection is how a later region declares that it is about to read a
-    // carrier retained by this workload session.  The location already has
-    // its writer universe, but this fresh thread context still needs its path
-    // gate opened before the real getfield resolves that universe.
-    if (SharedFieldVersions::is_tracked(location)) {
-      ctx->set_pc_admitted(true);
-    }
-    return SharedFieldVersions::SELECT_ALREADY_SELECTED;
-  }
-  // A selected carrier is a materialized symbolic input in the same sense as
-  // an explicit symbolize: from here on this thread's branches are relevant.
-  ctx->set_pc_admitted(true);
-  return version_id;
+std::string ConcolicMngr::getTrackedLocationVersions(jlong after_event_id,
+                                                     jint max_bytes) {
+  return SharedFieldVersions::tracked_locations(after_event_id, max_bytes);
 }
 
 jlong ConcolicMngr::armSharedPrimitiveFieldRead(
@@ -1011,6 +1126,14 @@ jlong ConcolicMngr::selectSharedMapCarrier(Handle map) {
       location, root, snapshot);
   if (version_id == 0) {
     if (SharedFieldVersions::is_tracked(location)) {
+      // Retention by value may have started this container's log before the
+      // runtime reached here, in which case publish_state already wrote its
+      // INITIAL base -- but only this offer knows what the container held
+      // *before* tracking, so hand that fact to the version that exists.
+      // Without it the base reads as "contents unknown" and a relation chain
+      // standing on it cannot be closed, which is what happened to bug3's
+      // allKeys base on laneVM4.
+      SharedFieldVersions::adopt_initial_snapshot(location, snapshot);
       ctx->set_pc_admitted(true);
     }
     return SharedFieldVersions::SELECT_ALREADY_SELECTED;

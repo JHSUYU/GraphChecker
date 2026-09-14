@@ -47,6 +47,8 @@ class ContainerExpression : public Expression {
   const std::string &get_operation() const { return _operation; }
   const std::string &get_shape() const { return _shape; }
   Expression *get_receiver() const { return _receiver; }
+
+  virtual ContainerExpression *as_container_relation() { return this; }
   Expression *get_guard() const { return _guard; }
   const exp_list_t &get_arguments() const { return _arguments; }
 

@@ -429,6 +429,30 @@ public:
   static bool is_tracked(const Location &location);
 
   /**
+   * Every tracked location, as the envelopes `describe()` emits.
+   *
+   * The read-out the runtime needs once retention is by value: it no longer
+   * knows which locations exist, because it never saw the writes that started
+   * them.  One document, `SHARED_TRACKED_LOCATIONS`, holding one
+   * `SHARED_FIELD_VERSIONS` envelope per location and one expression table
+   * for all of them.
+   *
+   * `after_event_id` selects every location carrying a version or a read at
+   * or after that point on the session clock, and each selected location is
+   * returned with its *complete* retained version list -- a read that
+   * observed an older version still needs that version's expression.  0 means
+   * everything.  A region scopes itself by passing its entry event.
+   *
+   * `max_bytes` bounds one answer: the read-out stops at a location boundary,
+   * reports `complete: false` and names `nextAfterEventId` to resume from.  0
+   * means no budget.  The first location is always emitted, so a budget
+   * smaller than one envelope makes progress rather than looping.
+   *
+   * Locations ascend by their lowest event id, so a resume is well defined.
+   */
+  static std::string tracked_locations(jlong after_event_id, jint max_bytes);
+
+  /**
    * Versions one completed write, by value.
    *
    * `symbolic` says whether the value being stored is itself symbolic.  A
@@ -443,6 +467,31 @@ public:
                              Expression *path_guard, bool symbolic,
                              int version_kind,
                              const char *operation = NULL);
+
+  /**
+   * Starts an untracked location's log with an INITIAL base version.
+   *
+   * A container's relation chain resolves as base + PUT/REMOVE..., so the
+   * base has to be a version of its own or the first mutation has no
+   * receiver a reader can resolve.  Under retention by value the log begins
+   * at the first symbolic write, so the base is published there rather than
+   * at a declaration that may never come or may come later.
+   *
+   * Returns 0 when the location is already tracked.
+   */
+  static jlong publish_initial(const Location &location, Expression *base);
+
+  /**
+   * Records what a location's INITIAL version says about the contents that
+   * predate tracking, when the version already exists.
+   *
+   * The snapshot offer and the first symbolic write race: whichever arrives
+   * first creates the version, and this lets the other one still contribute
+   * the fact it owns.  Only an INITIAL version can carry it and only once.
+   * Returns false when there is nothing to fill in.
+   */
+  static bool adopt_initial_snapshot(const Location &location,
+                                     const InitialSnapshot &snapshot);
 
   /**
    * Appends one version for a completed write.  `value` and `path_guard` must
@@ -504,20 +553,6 @@ public:
    */
   static std::string version_label(const Version &version);
 
-  /** Serializes one location's versions as evidence, for tests and tracing. */
-  static std::string describe(const Location &location);
-
-private:
-  // Bounded on purpose; see the retention note above.  A location that needs
-  // more than this many live writers is not a bounded carrier.
-  static const size_t MAX_VERSIONS_PER_LOCATION = 64;
-  // The read log is evidence rather than a constraint, so its bound is larger
-  // and its truncation is reported separately from the writer set.  Sized for
-  // a service workload in which one selected map is read by the target path
-  // and by every observer of it: a few hundred reads per location is ordinary,
-  // so this is generous enough that hitting it means something unexpected.
-  static const size_t MAX_READS_PER_LOCATION = 1024;
-
   /** One resolved read, kept so that a consumer can audit the decision. */
   struct ReadRecord {
     jlong read_event_id;
@@ -530,6 +565,13 @@ private:
           region_enter_event_id(0) {}
   };
 
+  /**
+   * One location's retained history.
+   *
+   * Public only because the read-out's ordering helpers take one by
+   * reference; it is engine-internal state and nothing outside this file
+   * constructs or mutates one.
+   */
   struct Slot {
     VersionList versions;
     std::vector<ReadRecord> reads;
@@ -537,6 +579,35 @@ private:
     bool read_log_complete;
     Slot() : writer_set_complete(true), read_log_complete(true) {}
   };
+
+  /** Serializes one location's versions as evidence, for tests and tracing. */
+  static std::string describe(const Location &location);
+
+private:
+  /**
+   * Writes one SHARED_FIELD_VERSIONS envelope, without closing its object and
+   * without an expression table: the caller owns both, so a single-location
+   * answer and the whole read-out emit byte-identical envelopes.  Returns
+   * true when the envelope was cut short by `budget_bytes` (0 = the default
+   * per-envelope bound).
+   */
+  static bool write_versions_envelope(
+      rapidjson::Writer<rapidjson::StringBuffer> &writer,
+      const rapidjson::StringBuffer &buffer,
+      VmExpressionArtifactScope &expression_artifact,
+      const Location &location, const VersionList &versions,
+      const std::vector<ReadRecord> &reads, bool selected, bool complete,
+      bool read_log_complete, size_t budget_bytes);
+
+  // Bounded on purpose; see the retention note above.  A location that needs
+  // more than this many live writers is not a bounded carrier.
+  static const size_t MAX_VERSIONS_PER_LOCATION = 64;
+  // The read log is evidence rather than a constraint, so its bound is larger
+  // and its truncation is reported separately from the writer set.  Sized for
+  // a service workload in which one selected map is read by the target path
+  // and by every observer of it: a few hundred reads per location is ordinary,
+  // so this is generous enough that hitting it means something unexpected.
+  static const size_t MAX_READS_PER_LOCATION = 1024;
 
   typedef std::map<Location, Slot> SlotStore;
 

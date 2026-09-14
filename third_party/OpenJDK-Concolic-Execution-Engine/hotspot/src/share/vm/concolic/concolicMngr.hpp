@@ -229,9 +229,15 @@ public:
   // `owner` is the receiver for an instance field and the declaring class's
   // Class object for a static one; `index` selects one element of a
   // fixed-shape array.
-  static jlong selectSharedFieldCarrier(
-      Handle owner, const char *declaring_class, const char *field_name,
-      const char *descriptor);
+  /**
+   * Every location this session is tracking, as one
+   * SHARED_TRACKED_LOCATIONS document.  See
+   * SharedFieldVersions::tracked_locations() for the selection and budget
+   * rules; this is the Java-facing spelling of it.
+   */
+  static std::string getTrackedLocationVersions(jlong after_event_id,
+                                                jint max_bytes);
+
   static jlong armSharedPrimitiveFieldRead(
       Handle owner, const char *declaring_class, const char *field_name,
       const char *descriptor, jlong value_bits);

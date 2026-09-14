@@ -634,28 +634,6 @@ public final class System {
     public static native String getConcolicPathConditionRange(int startIndex,
                                                               int endIndex);
 
-    /**
-     * Selects one shared location as a symbolic carrier, so that every later
-     * write to it publishes a version and every later read of it resolves to
-     * a guarded choice over the retained writer expressions.
-     *
-     * Nothing is versioned until it is selected.  The field access hooks fire
-     * on every field of every shadowed object, so versioning everything would
-     * charge a bounded analysis for state it never asks about; selection is
-     * what keeps the cost proportional to the question.
-     *
-     * {@code owner} is the receiver for an instance field, or the declaring
-     * class's {@code Class} object for a static one.  Selecting also records
-     * an INITIAL version holding the value the location has right now, so the
-     * state a read observes before any tracked write is an ordinary candidate
-     * rather than a hole.
-     *
-     * @return a positive INITIAL field-version id, {@code 0} if the location
-     *         was already selected, or a negative refusal code
-     */
-    public static native long selectSharedFieldCarrier(
-            Object owner, String declaringClass, String fieldName,
-            String descriptor);
 
     /**
      * Replaces only the concrete primitive operand of the next matching
@@ -720,6 +698,27 @@ public final class System {
      *         rather than selected and then silently never versioned.
      */
     public static native long selectSharedMapCarrier(Object map);
+
+    /**
+     * Every location this session is tracking, as shared-field-version
+     * envelopes.
+     *
+     * Retention is by value: a location is tracked from the first symbolic
+     * value written to it, so the caller cannot enumerate the tracked set on
+     * its own -- it never saw those writes.  This returns them.
+     *
+     * {@code afterEventId} selects every location carrying a version or a
+     * read at or after that point on the session event clock, each with its
+     * complete retained version list; pass {@code 0} for everything, or a
+     * region's entry event to scope the answer to that activation.
+     * {@code maxBytes} bounds one answer: the read-out stops at a location
+     * boundary and reports {@code complete:false} with a
+     * {@code nextAfterEventId} to resume from; pass {@code 0} for no bound.
+     *
+     * @return one SHARED_TRACKED_LOCATIONS document
+     */
+    public static native String getTrackedLocationVersions(
+            long afterEventId, int maxBytes);
 
     /**
      * Serializes the versions published for one selected field, together with

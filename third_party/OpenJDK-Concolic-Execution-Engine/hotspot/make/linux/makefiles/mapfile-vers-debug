@@ -276,12 +276,12 @@ SUNWprivate_1.1 {
                 JVM_ExportExpression;
                 JVM_AttachExpression;
                 JVM_GetConcolicPathConditionRange;
-                JVM_SelectSharedFieldCarrier;
                 JVM_ArmSharedPrimitiveFieldRead;
                 JVM_ConfirmSharedPrimitiveFieldRead;
                 JVM_SelectSharedElementCarrier;
                 JVM_SelectSharedMapCarrier;
                 JVM_GetSharedFieldVersions;
+                JVM_GetTrackedLocationVersions;
                 JVM_GetSharedElementVersions;
                 JVM_GetSharedMapVersions;
                 JVM_GetConcolicRegionSummary;

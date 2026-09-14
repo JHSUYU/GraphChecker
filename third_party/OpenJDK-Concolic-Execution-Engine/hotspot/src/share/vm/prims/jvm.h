@@ -226,11 +226,6 @@ JVM_GetConcolicPathConditionRange(JNIEnv *env, jclass ignored,
                                   jint start_index, jint end_index);
 
 JNIEXPORT jlong JNICALL
-JVM_SelectSharedFieldCarrier(JNIEnv *env, jclass ignored, jobject owner,
-                             jstring declaring_class, jstring field_name,
-                             jstring descriptor);
-
-JNIEXPORT jlong JNICALL
 JVM_ArmSharedPrimitiveFieldRead(JNIEnv *env, jclass ignored, jobject owner,
                                 jstring declaring_class, jstring field_name,
                                 jstring descriptor, jlong value_bits);
@@ -250,6 +245,10 @@ JNIEXPORT jstring JNICALL
 JVM_GetSharedFieldVersions(JNIEnv *env, jclass ignored, jobject owner,
                            jstring declaring_class, jstring field_name,
                            jstring descriptor);
+
+JNIEXPORT jstring JNICALL
+JVM_GetTrackedLocationVersions(JNIEnv *env, jclass ignored,
+                               jlong after_event_id, jint max_bytes);
 
 JNIEXPORT jstring JNICALL
 JVM_GetSharedElementVersions(JNIEnv *env, jclass ignored, jobject array,
