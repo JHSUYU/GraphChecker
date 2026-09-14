@@ -115,6 +115,18 @@ public final class VmHandoffEvidence {
     public static final String ANSWERED = "answered";
     /** The model value the mint returned, when it was answered. */
     public static final String ANSWERED_VALUE = "answeredValue";
+    /**
+     * Whether the message carried no element for this decode.
+     *
+     * <p>v_H is the consumer's variable, minted at the consumer's declared
+     * capture on the value that arrived.  The envelope element supplies the
+     * producer's expression e_p, which is one member of H's family; a
+     * delivery that carries none states it here and contributes no arm.  The
+     * endpoints and the producer of a VM {@code VALUE_HANDOFF} edge are what
+     * such a row does not have, and that is what this member licenses --
+     * nothing else about the row is weaker.</p>
+     */
+    public static final String ELEMENT_ABSENT = "elementAbsent";
 
     private VmHandoffEvidence() {
     }
@@ -144,7 +156,8 @@ public final class VmHandoffEvidence {
                                    String handoffSymbol,
                                    String recordedValue,
                                    String javaType,
-                                   String answeredValue) {
+                                   String answeredValue,
+                                   boolean elementAbsent) {
         JsonObject row = new JsonObject();
         row.addProperty("kind", KIND);
         row.addProperty("schemaVersion", SCHEMA_VERSION);
@@ -155,7 +168,8 @@ public final class VmHandoffEvidence {
         row.addProperty(PRODUCER_TASK_ID, nonNull(producerTaskId));
         row.addProperty(PRODUCER_OCCURRENCE_ID,
                 nonNull(producerOccurrenceId));
-        row.add(EXPRESSION, exactExpression);
+        if (exactExpression != null) row.add(EXPRESSION, exactExpression);
+        if (elementAbsent) row.addProperty(ELEMENT_ABSENT, true);
         row.addProperty(CONSUMER_OCCURRENCE_ID,
                 nonNull(consumerOccurrenceId));
         row.addProperty(HANDOFF_PHASE_ID, nonNull(handoffPhaseId));
@@ -207,20 +221,33 @@ public final class VmHandoffEvidence {
         if (optionalString(row, "portId").isEmpty()) {
             return "handoff reference names no receiving port";
         }
-        if (optionalLongInteger(row, EXPORT_EVENT_ID, 0L) <= 0L) {
-            return "handoff reference names no export event";
-        }
-        if (optionalLongInteger(row, ATTACH_EVENT_ID, 0L) <= 0L) {
-            return "handoff reference names no attach event";
-        }
-        if (optionalString(row, PRODUCER_TASK_ID).isEmpty()) {
-            return "handoff reference names no producer task";
-        }
-        if (optionalString(row, PRODUCER_OCCURRENCE_ID).isEmpty()) {
-            return "handoff reference names no producer occurrence";
-        }
-        if (!row.has(EXPRESSION) || !row.get(EXPRESSION).isJsonObject()) {
-            return "handoff reference carries no exact expression";
+        // What a delivery with no element does not have.  It is one member
+        // that says so, checked once: a row claiming an endpoint, a producer
+        // or an expression while saying the element was absent is malformed
+        // in the other direction, and is refused below with the rest.
+        boolean elementAbsent = isElementAbsent(row);
+        if (!elementAbsent) {
+            if (optionalLongInteger(row, EXPORT_EVENT_ID, 0L) <= 0L) {
+                return "handoff reference names no export event";
+            }
+            if (optionalLongInteger(row, ATTACH_EVENT_ID, 0L) <= 0L) {
+                return "handoff reference names no attach event";
+            }
+            if (optionalString(row, PRODUCER_TASK_ID).isEmpty()) {
+                return "handoff reference names no producer task";
+            }
+            if (optionalString(row, PRODUCER_OCCURRENCE_ID).isEmpty()) {
+                return "handoff reference names no producer occurrence";
+            }
+            if (!row.has(EXPRESSION) || !row.get(EXPRESSION).isJsonObject()) {
+                return "handoff reference carries no exact expression";
+            }
+        } else if (row.has(EXPRESSION)
+                || !optionalString(row, PRODUCER_TASK_ID).isEmpty()
+                || !optionalString(row, PRODUCER_OCCURRENCE_ID).isEmpty()
+                || optionalLongInteger(row, EXPORT_EVENT_ID, 0L) > 0L
+                || optionalLongInteger(row, ATTACH_EVENT_ID, 0L) > 0L) {
+            return "a handoff with no element states a producer";
         }
         // The handoff variable and its identity.  Fail-closed exactly like
         // the endpoints above: a row missing any of these names no handoff
@@ -251,6 +278,7 @@ public final class VmHandoffEvidence {
                     ? "an answered handoff states no model value"
                     : "an unanswered handoff states a model value";
         }
+        if (elementAbsent) return "";
         JsonElement expression = row.get(EXPRESSION);
         if (VmExpressionIr.isConsumerBoundaryReference(expression)) {
             JsonObject raw = shallowCopy(expression.getAsJsonObject());
@@ -260,6 +288,14 @@ public final class VmHandoffEvidence {
         return VmExpressionIr.consumerBoundaryFault(expression,
                 VmExpressionIr.RPC_ATTACH,
                 optionalLongInteger(row, ATTACH_EVENT_ID, -1L));
+    }
+
+    /** Whether this delivery carried no envelope element. */
+    public static boolean isElementAbsent(JsonObject row) {
+        return row != null && row.has(ELEMENT_ABSENT)
+                && row.get(ELEMENT_ABSENT).isJsonPrimitive()
+                && row.get(ELEMENT_ABSENT).getAsJsonPrimitive().isBoolean()
+                && row.get(ELEMENT_ABSENT).getAsBoolean();
     }
 
     /**

@@ -770,8 +770,11 @@ public final class GapLedger {
         // REPLAY / COMMUNICATION -- the message envelope's own findings.  A
         // declared port is one pair of bytecode sites, and a protocol sends
         // many unrelated values through it, so each leaf is addressed by its
-        // element ordinal within its message.  These two say the two sides
-        // of one message disagreed about which elements exist.
+        // element ordinal within its message.  This one says the sender put
+        // a value in a message nothing on the other side looked up.  The
+        // other direction is not a gap: a decode whose message carries no
+        // element still mints the consumer's boundary variable on the value
+        // that arrived, and the handoff row states elementAbsent.
         // ------------------------------------------------------------------
         String messages = "REPLAY/COMMUNICATION";
         blocking(messages, "WIRE_LEAVES_UNATTACHED",
@@ -779,10 +782,6 @@ public final class GapLedger {
                         + " receiving side looked it up, so whatever that"
                         + " value feeds is a leaf with no producer and the"
                         + " chain the message was carrying stops there");
-        blocking(messages, "WIRE_LEAF_MISSING",
-                "a decode asked its message for an element the sender never"
-                        + " staged, so the value it went on to use carries"
-                        + " no expression from the node that produced it");
 
         // ------------------------------------------------------------------
         // PLAN / STATIC -- the static catalog and the runtime-selected region

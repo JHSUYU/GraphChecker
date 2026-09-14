@@ -2190,17 +2190,21 @@ public final class ConcolicRegionRuntime {
                             + site.portId()));
             return;
         }
-        ActiveRegion active = activeRegion();
         if (!leafCarried) {
-            // The message does not have the element this decode asked for.
-            // Ordinals address elements, so this is not "the queue ran dry":
-            // it is the two sides disagreeing about what the message holds.
-            recordHandoffGap(RpcExpressionHandoff.gap(
-                    RpcExpressionHandoff.LEAF_MISSING,
-                    RpcExpressionHandoff.STAGE_ATTACH,
-                    RpcExpressionHandoff.MISSING_METADATA, 0L,
-                    "message carries no element for this decode: "
-                            + site.portId()));
+            // The message carried no element for this decode, and the mint
+            // happens anyway.  v_H is the consumer's boundary variable,
+            // minted at the consumer's declared capture on the value that
+            // ARRIVED; the envelope element only supplies the producer's
+            // expression e_p, which is one member of H's family and not a
+            // condition of H existing.  Absent, the row says so and this
+            // delivery contributes no family arm -- which is exactly right
+            // for a flip replay whose job is the consumer's path under an
+            // assigned v_H, with the producing node running concretely.
+            // Refusing here left the assignment unapplied: on hdfs-17899
+            // bug3 the flip replay of the target published zero handoff
+            // rows, the fatal read still found the recorded key, and the
+            // obligation ended REPLAY_NOT_ADMITTED with no primary case.
+            mintArrivedCommunicationLeaf(site, carrier, field, descriptor);
             return;
         }
         if (handle <= 0L) {
@@ -2323,7 +2327,31 @@ public final class ConcolicRegionRuntime {
         }
         mintHandoffVariable(active, site, exportEvent, attachEvent,
                 expression, producerTaskId, producerOccurrenceId, owner,
-                declaringClass, fieldName, descriptor);
+                declaringClass, fieldName, descriptor, false);
+    }
+
+    /**
+     * Mints v_H at a declared capture whose message carried no element.
+     *
+     * <p>The consumer's boundary variable is the consumer's, so it is minted
+     * from what arrived: the row states {@code elementAbsent}, the delivered
+     * value, and no producer -- and an assignment for this H answers the
+     * mint exactly as it does when the element is there, because the answer
+     * is written on the carrier leaf the receiving frame reads back.</p>
+     */
+    private static void mintArrivedCommunicationLeaf(
+            CommunicationHandoffSpec site, Object carrier, String field,
+            String descriptor) {
+        beginBookkeeping();
+        try {
+            ActiveRegion active = attachConsumerRegion(site);
+            if (active == null) return;
+            noteAttachFiledElsewhere(site, active);
+            mintHandoffVariable(active, site, 0L, 0L, null, "", "", carrier,
+                    CARRIER_CLASS, field, descriptor, true);
+        } finally {
+            endBookkeeping();
+        }
     }
 
     /**
@@ -2419,7 +2447,7 @@ public final class ConcolicRegionRuntime {
             long exportEvent, long attachEvent, JsonElement producerExpression,
             String producerTaskId, String producerOccurrenceId,
             Object owner, String declaringClass, String fieldName,
-            String descriptor) {
+            String descriptor, boolean elementAbsent) {
         String portId = safe(site.portId());
         Field element = declaredInstanceField(owner, declaringClass,
                 fieldName, descriptor);
@@ -2438,7 +2466,7 @@ public final class ConcolicRegionRuntime {
         for (HandoffLeaf leaf : leaves) {
             mintHandoffLeaf(active, portId, exportEvent, attachEvent,
                     producerExpression, producerTaskId, producerOccurrenceId,
-                    leaf);
+                    leaf, elementAbsent);
         }
     }
 
@@ -2456,7 +2484,7 @@ public final class ConcolicRegionRuntime {
             ActiveRegion active, String portId, long exportEvent,
             long attachEvent, JsonElement producerExpression,
             String producerTaskId, String producerOccurrenceId,
-            HandoffLeaf leaf) {
+            HandoffLeaf leaf, boolean elementAbsent) {
         String elementPath = leaf.path;
         // H belongs to the occurrence the plan declares this IN site on,
         // not to whichever activation is live when the value arrives.  A
@@ -2532,7 +2560,8 @@ public final class ConcolicRegionRuntime {
                     consumerOccurrenceId, phaseId,
                     optionalString(minted, "_exp"),
                     recordedValue, optionalString(minted, "_java_type"),
-                    assignment == null ? "" : safe(assignment.value)));
+                    assignment == null ? "" : safe(assignment.value),
+                    elementAbsent));
         } catch (Throwable failure) {
             recordHandoffGap(RpcExpressionHandoff.gap(
                     RpcExpressionHandoff.STAGE_ATTACH,

@@ -142,6 +142,98 @@ public class HandoffMintTest {
                 VmHandoffEvidence.isEvent(answered));
     }
 
+    /**
+     * A message with no element for this decode still mints the consumer's
+     * variable, on the value that arrived.
+     *
+     * <p>e_p is a member of H's family, not a condition of H existing.  The
+     * mint used to be refused with {@code RPC_HANDOFF_MISSING_METADATA}, and
+     * the consequence was not a missing family arm but a replay that ignored
+     * its own obligation: on hdfs-17899 bug3 the flip replay of the target
+     * ran with nn0 concrete, published zero handoff rows, read the recorded
+     * key, and the obligation ended REPLAY_NOT_ADMITTED.</p>
+     */
+    @Test
+    public void aDeliveryWithNoElementStillMintsTheConsumersVariable() {
+        JsonObject row = arrivedRow("");
+
+        assertTrue("the row says what it does not have",
+                row.get(VmHandoffEvidence.ELEMENT_ABSENT).getAsBoolean());
+        assertTrue(VmHandoffEvidence.isElementAbsent(row));
+        assertFalse("no producer expression travels on it",
+                row.has(VmHandoffEvidence.EXPRESSION));
+        assertEquals("what arrived is stated", "119982",
+                row.get(VmHandoffEvidence.RECORDED_VALUE).getAsString());
+        assertEquals("and v_H is minted all the same",
+                "M_I_field_HOFF.9c1d_org/apache/hadoop/ipc/Client$Call",
+                row.get(VmHandoffEvidence.HANDOFF_SYMBOL).getAsString());
+        assertEquals(HandoffPhaseContract.phaseId(PORT, CONSUMER, 1, ELEMENT),
+                row.get(VmHandoffEvidence.HANDOFF_PHASE_ID).getAsString());
+        assertFalse(row.get(VmHandoffEvidence.ANSWERED).getAsBoolean());
+        assertTrue(VmHandoffEvidence.eventFault(row),
+                VmHandoffEvidence.isEvent(row));
+
+        JsonObject claiming = arrivedRow("");
+        claiming.addProperty(VmHandoffEvidence.PRODUCER_TASK_ID, "TASK.X");
+        assertFalse("a row with no element may not name a producer",
+                VmHandoffEvidence.isEvent(claiming));
+    }
+
+    /**
+     * The assignment answers that mint, and the receiving frame reads the
+     * answered value back off the carrier leaf.
+     */
+    @Test
+    public void anAssignmentAnswersAMintWithNoElement() {
+        JsonObject answered = arrivedRow("119981");
+
+        assertTrue(answered.get(VmHandoffEvidence.ANSWERED).getAsBoolean());
+        assertEquals("119981", answered.get(
+                VmHandoffEvidence.ANSWERED_VALUE).getAsString());
+        assertEquals("what arrived is still stated", "119982",
+                answered.get(VmHandoffEvidence.RECORDED_VALUE).getAsString());
+        assertTrue(VmHandoffEvidence.eventFault(answered),
+                VmHandoffEvidence.isEvent(answered));
+
+        // The one write the mint performs: instrumentation reads the leaf
+        // back into the receiving frame's own local right after the hook, so
+        // writing the carrier IS the receiver seeing the value.
+        ConcolicRegionRuntime.HandoffLeafCarrier carrier =
+                new ConcolicRegionRuntime.HandoffLeafCarrier();
+        carrier.i = 119982;
+        assertEquals("the value that arrived", "119982",
+                ConcolicRegionRuntime.recordedScalar(carrier.i));
+        assertTrue(ConcolicRegionRuntime.writeModeledField(carrier,
+                "<" + ConcolicRegionRuntime.HandoffLeafCarrier.class.getName()
+                        + ": int i>", answer()));
+        assertEquals("the receiving frame reads back the answer",
+                119981, carrier.i);
+    }
+
+    /** The obligation assignment for this handoff occurrence. */
+    private static ConcolicRegionRuntime.ModelAssignment answer() {
+        String phaseId = HandoffPhaseContract.phaseId(PORT, CONSUMER, 1,
+                ELEMENT);
+        JsonObject encoded = new JsonObject();
+        encoded.addProperty("engineSymbol", "M_I_field_HOFF.9c1d");
+        encoded.addProperty("inputSymbol", "SOURCE_PHASE:" + phaseId);
+        encoded.addProperty("valueType", "INT");
+        encoded.addProperty("value", "119981");
+        encoded.addProperty("configuredSourcePhaseId", phaseId);
+        encoded.addProperty("configuredSourceId", phaseId);
+        encoded.addProperty("configuredSourceFieldSignature", "");
+        return new ConcolicRegionRuntime.ModelAssignment(encoded);
+    }
+
+    /** One row as the runtime writes it when the message had no element. */
+    private static JsonObject arrivedRow(String answeredValue) {
+        return VmHandoffEvidence.event(PORT, 0L, 0L, null, "", "",
+                CONSUMER,
+                HandoffPhaseContract.phaseId(PORT, CONSUMER, 1, ELEMENT),
+                "M_I_field_HOFF.9c1d_org/apache/hadoop/ipc/Client$Call",
+                "119982", "I", answeredValue, true);
+    }
+
     /** One published row, as the runtime writes it after the mint. */
     private static JsonObject row(String answeredValue) {
         JsonObject producerExpression = new JsonObject();
@@ -160,7 +252,7 @@ public class HandoffMintTest {
                 CONSUMER,
                 HandoffPhaseContract.phaseId(PORT, CONSUMER, 1, ELEMENT),
                 "M_I_field_HOFF.9c1d_org/apache/hadoop/ipc/Client$Call",
-                "119982", "I", answeredValue);
+                "119982", "I", answeredValue, false);
     }
 
     /**
