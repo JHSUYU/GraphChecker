@@ -139,15 +139,20 @@ public class TargetOccurrenceElectionTest {
                 .contains("one occurrence"));
 
         // And which occurrence a campaign is about is the case's to
-        // declare: the whole address, or the request family and k.
+        // declare, as the whole address.  A declaration that named the
+        // request family and k instead is no longer one: the family is not
+        // part of an occurrence's identity, and an id that spells one names
+        // the occurrence it always named with the suffix discarded.
         String at = "hdfs-17897/dn0#epoch0/region/REGION.53092d3e"
                 + "@hdfs-17897/client#epoch0/striped-file-checksum#2";
         assertTrue(RuntimeWorkflowDiscovery.declares(at, at));
-        assertTrue(RuntimeWorkflowDiscovery.declares(
-                "hdfs-17897/client#epoch0/striped-file-checksum#2", at));
-        assertFalse("another k of that family is another occurrence",
+        assertTrue("with or without the retired family suffix",
                 RuntimeWorkflowDiscovery.declares(
-                        "hdfs-17897/client#epoch0/striped-file-checksum#1",
+                        "hdfs-17897/dn0#epoch0/region/REGION.53092d3e#2",
+                        at));
+        assertFalse("a family and k declares no occurrence",
+                RuntimeWorkflowDiscovery.declares(
+                        "hdfs-17897/client#epoch0/striped-file-checksum#2",
                         at));
 
         // And every closure mode has to read it: lane11741i declared dn0

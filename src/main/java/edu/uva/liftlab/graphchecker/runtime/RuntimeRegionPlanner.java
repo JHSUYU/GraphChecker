@@ -2527,20 +2527,14 @@ final class RuntimeRegionPlanner {
      * ConcolicTaskPlan.RuntimeTask.invocationCounterKey} also calls.  Two
      * spellings of one rule is how the ordinal drifted before.</p>
      *
-     * <p>The whole request was in this key and in the replay's.  That was
-     * consistent while matching compared it too; once matching stopped, a
-     * count partitioned by request handed out ordinal 1 in several buckets
-     * and any of them satisfied a planned ordinal of 1.  The request FAMILY
-     * is in both again, and in the address itself, so the two cannot
-     * drift -- and it is the family, not the request, so a replay whose
-     * request counter ran further than the recording's still counts in the
-     * same bucket.</p>
+     * <p>The request, and then the request family, were in this key and in
+     * the replay's.  Both are gone from both at once: what a count is
+     * partitioned by has to be what matching compares, and matching compares
+     * the address.</p>
      */
     private static String replayInvocationScope(
             String regionId, MethodEvent root, SourceRef source) {
-        return OccurrenceAddress.of(source.key(), safe(regionId),
-                OccurrenceAddress.familyOf(
-                        root == null ? "" : root.requestKey), 1)
+        return OccurrenceAddress.of(source.key(), safe(regionId), 1)
                 .counterScope(safe(root == null ? "" : root.method));
     }
 

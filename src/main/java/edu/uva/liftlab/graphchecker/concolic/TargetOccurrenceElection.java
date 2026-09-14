@@ -318,20 +318,17 @@ public final class TargetOccurrenceElection {
      * then k.
      *
      * <p>Read through {@link OccurrenceAddress} rather than off the id's
-     * text: the family the request grammar added sits between the region and
-     * the ordinal, and an order that parsed around it would sort by the
-     * family's spelling.  The ordinal is zero-padded so #10 follows #9
-     * instead of #1, and an id the address grammar does not name sorts by
-     * itself, which keeps the order total without inventing a position for
-     * it.</p>
+     * text, so a spelling change in the grammar cannot reorder the anchors.
+     * The ordinal is zero-padded so #10 follows #9 instead of #1, and an id
+     * the address grammar does not name sorts by itself, which keeps the
+     * order total without inventing a position for it.</p>
      */
     private static String anchorAddress(JsonObject row) {
         String occurrence = optionalString(row, "occurrenceId");
         OccurrenceAddress address = OccurrenceAddress.parse(occurrence);
         if (!address.isNamed()) return occurrence;
         StringBuilder padded = new StringBuilder(address.sourceKey())
-                .append('\n').append(address.regionId())
-                .append('\n').append(address.family()).append('\n');
+                .append('\n').append(address.regionId()).append('\n');
         String ordinal = Integer.toString(address.ordinal());
         for (int pad = ordinal.length(); pad < 12; pad++) padded.append('0');
         return padded.append(ordinal).toString();
