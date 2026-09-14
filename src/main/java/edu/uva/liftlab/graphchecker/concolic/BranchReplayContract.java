@@ -747,6 +747,19 @@ public final class BranchReplayContract {
             // current invocation and before observing the next one.
             actualLoops.advance(empty(siteId), empty(decisionToken));
             if (failed() || complete()) return false;
+            // Nothing after the flipped decision is part of the contract,
+            // later turns of its own loop included.  A flip at #u15#1
+            // changes what the rest of that loop does -- that is what a flip
+            // is for -- and #u15#2 is then an execution the recording never
+            // had, not a prefix event to reproduce.  It was being compared:
+            // a prefix event inside a bounded loop is addressed by the
+            // propagated value of the element it tested, and the same
+            // element decided again on a later turn carries the same
+            // digest, so the later turn matched an earlier expectation and
+            // refused on its outcome -- "wrong decision at
+            // removeExpiredKeys()#u15#2", nine times on lane VM12, each of
+            // them a flip working.
+            if (afterFlippedDecision(actual)) return false;
             int selected = matchingEvent(actual);
             if (selected < 0) return false;
             ReplayEvent wanted = expected.get(selected);
@@ -778,6 +791,16 @@ public final class BranchReplayContract {
             }
             failure = complete() ? "" : incomplete();
             return wanted.source;
+        }
+
+        /** Whether this observation is past the flipped decision. */
+        private boolean afterFlippedDecision(ReplayEvent actual) {
+            for (ReplayEvent event : expected) {
+                if (!event.source) continue;
+                return event.siteId.equals(actual.siteId)
+                        && actual.occurrence > event.occurrence;
+            }
+            return false;
         }
 
         private int matchingEvent(ReplayEvent actual) {

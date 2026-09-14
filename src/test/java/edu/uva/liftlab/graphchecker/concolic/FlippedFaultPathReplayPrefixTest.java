@@ -111,6 +111,40 @@ public class FlippedFaultPathReplayPrefixTest {
                         + EXPIRED_KEY + "#1"));
     }
 
+    /**
+     * Lane VM12: a later turn of the flipped loop is not the contract.
+     *
+     * <p>The flip at {@code #u15#1} changes what the rest of that loop does
+     * -- that is what a flip is for -- so {@code #u15#2} is an execution the
+     * recording never had. It was being compared: a prefix event inside a
+     * bounded loop is addressed by the propagated value of the element it
+     * tested, and the same element decided again on a later turn carries the
+     * same digest, so the later turn matched an earlier expectation and was
+     * refused on its outcome. Nine obligations on lane VM12 died that way,
+     * each of them a flip working.</p>
+     */
+    @Test
+    public void aLaterTurnOfTheFlippedSiteIsNotPartOfTheContract() {
+        BranchReplayContract.RuntimeSchedule schedule = schedule(
+                loopTranscript(), EXPIRED_KEY, 1, retainedLoop());
+        BranchReplayContract.ReplayProgress replay =
+                new BranchReplayContract.ReplayProgress(schedule);
+
+        assertFalse(replay.observeBinary(LOOP_EXIT, 1, false, "SUPPORT.run"));
+        assertTrue("the flip is honoured at its own occurrence",
+                replay.observeBinary(EXPIRED_KEY, 1, false, "SUPPORT.run"));
+
+        // The loop runs on, and the same element decides again with the
+        // recorded outcome.  It is not a prefix event and refuses nothing.
+        assertFalse(replay.observeBinary(EXPIRED_KEY, 2, true,
+                "SUPPORT.run"));
+        assertFalse(replay.observeBinary(LOOP_EXIT, 2, true, "SUPPORT.run"));
+
+        assertTrue(replay.complete());
+        assertFalse(replay.failed());
+        assertEquals("", replay.failure());
+    }
+
     /** One activation of the key-expiry loop, as the summary records it. */
     private static JsonObject loopTranscript() {
         JsonObject exitTest = binary(variable("I_index"), "<",
