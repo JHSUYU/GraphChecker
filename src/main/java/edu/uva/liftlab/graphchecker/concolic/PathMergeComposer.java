@@ -202,7 +202,6 @@ public final class PathMergeComposer {
         JsonArray pathRows = new JsonArray();
         JsonArray gates = new JsonArray();
         List<String> selectors = new ArrayList<>();
-        List<String> disjuncts = new ArrayList<>();
         JsonArray reachLedger = new JsonArray();
         Set<String> usedHandoffSymbols = new LinkedHashSet<>();
         int ordinal = 0;
@@ -332,7 +331,6 @@ public final class PathMergeComposer {
             lowering.assertNamed("path_fatal__" + pathOrdinal,
                     "(=> " + selector + " " + conjunction + ")");
             selectors.add(selector);
-            disjuncts.add(conjunction);
             for (JsonElement term : resolved) {
                 collectHandoffSymbols(term, usedHandoffSymbols);
             }
@@ -359,7 +357,14 @@ public final class PathMergeComposer {
         } else {
             lowering.assertNamed("target_path_partition",
                     exactlyOne(selectors));
-            lowering.assertNamed("fatal_target", or(disjuncts));
+            // The disjunction is over the SELECTORS, not over the path
+            // conjunctions again.  Each path already asserts
+            // "selector => (pi_p and phi_p)", so asserting that some
+            // selector holds says exactly OR_p (pi_p and phi_p) -- while
+            // re-inlining the conjunctions here wrote every path's formula
+            // into the artifact a second time.  On laneVM14 that one
+            // assertion was 45 MB of the file's 91 MB.
+            lowering.assertNamed("fatal_target", or(selectors));
         }
         for (String subject : lowering.cuts()) {
             gate(gates, PROPAGATION_CUT, subject);
