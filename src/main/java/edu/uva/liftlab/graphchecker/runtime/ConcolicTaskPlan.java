@@ -324,13 +324,20 @@ final class ConcolicTaskPlan {
                     task, activationSource));
             countInvocation(scope, actualOrdinalByScope);
             // An activation this run attributed nowhere is counted in the
-            // unregistered population, where the planner counts it -- and
-            // provisionally in the planned one too, because its own frames
-            // may still name the planned node before it ends.  The provisional
-            // ordinal is given back at close when they do not.
+            // unregistered population, where the planner counts it.  In the
+            // planned one it takes no k at all until it is confirmed: it
+            // only reads what the next confirmed k would be, and the close
+            // takes it if the frame arm names the planned node.  Taking it
+            // at entry and giving it back needed the k to still be the last
+            // one handed out, and on hdfs-17899 bug2 it was not -- the real
+            // heartbeat convert had already been numbered against it and
+            // came out "activation 2, not 1".
             if (unattributed(activationSource)) {
-                countInvocation(task.invocationCounterKey(),
-                        actualOrdinalByScope);
+                String planned = task.invocationCounterKey();
+                if (!actualOrdinalByScope.containsKey(planned)) {
+                    actualOrdinalByScope.put(planned,
+                            invocationOrdinals.getOrDefault(planned, 0) + 1);
+                }
             }
             String sourceMismatch = sourceAdmissionMismatch(task,
                     registeredReceiverSource, context);
@@ -459,13 +466,20 @@ final class ConcolicTaskPlan {
                     task, activationSource));
             countInvocation(scope, actualOrdinalByScope);
             // An activation this run attributed nowhere is counted in the
-            // unregistered population, where the planner counts it -- and
-            // provisionally in the planned one too, because its own frames
-            // may still name the planned node before it ends.  The provisional
-            // ordinal is given back at close when they do not.
+            // unregistered population, where the planner counts it.  In the
+            // planned one it takes no k at all until it is confirmed: it
+            // only reads what the next confirmed k would be, and the close
+            // takes it if the frame arm names the planned node.  Taking it
+            // at entry and giving it back needed the k to still be the last
+            // one handed out, and on hdfs-17899 bug2 it was not -- the real
+            // heartbeat convert had already been numbered against it and
+            // came out "activation 2, not 1".
             if (unattributed(activationSource)) {
-                countInvocation(task.invocationCounterKey(),
-                        actualOrdinalByScope);
+                String planned = task.invocationCounterKey();
+                if (!actualOrdinalByScope.containsKey(planned)) {
+                    actualOrdinalByScope.put(planned,
+                            invocationOrdinals.getOrDefault(planned, 0) + 1);
+                }
             }
             String sourceMismatch = sourceAdmissionMismatch(task,
                     registeredReceiverSource, context);
@@ -761,18 +775,26 @@ final class ConcolicTaskPlan {
     /**
      * Gives back an ordinal a provisional admission took.
      *
-     * <p>Only when it is still the last one handed out in that bucket: a
-     * later activation that already took the next one has numbered itself
-     * against this one, and renumbering it afterwards would move an address
-     * the run has already answered.</p>
+     * <p>Nothing to give back: a provisional admission never took the k,
+     * it only read what the next confirmed one would be.</p>
      */
     synchronized void releaseProvisionalOrdinal(RuntimeTask task) {
+        if (task != null) task.clearProvisionalOrdinal();
+    }
+
+    /**
+     * Takes the k a provisional admission was reading, now that the frame
+     * arm has confirmed it.
+     *
+     * <p>Numbering by confirmed order: a provisional activation holds no k
+     * while it runs, so an activation the close refuses never displaces the
+     * one that follows it.  Only here does the bucket advance.</p>
+     */
+    synchronized void confirmProvisionalOrdinal(RuntimeTask task) {
         if (task == null || task.provisionalOrdinal <= 0) return;
-        Integer held = invocationOrdinals.get(task.provisionalScope);
-        if (held != null && held == task.provisionalOrdinal) {
-            invocationOrdinals.put(task.provisionalScope,
-                    task.provisionalOrdinal - 1);
-        }
+        invocationOrdinals.put(task.provisionalScope,
+                invocationOrdinals.getOrDefault(task.provisionalScope, 0)
+                        + 1);
         task.clearProvisionalOrdinal();
     }
 

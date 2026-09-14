@@ -2293,7 +2293,7 @@ public final class ConcolicRegionRuntime {
                                              String descriptor,
                                              String producerTaskId,
                                              String producerOccurrenceId) {
-        ActiveRegion active = activeRegion();
+        ActiveRegion active = attachConsumerRegion(site);
         if (active == null || site == null) return;
         if (safe(producerTaskId).isEmpty()
                 || safe(producerOccurrenceId).isEmpty()) {
@@ -2358,6 +2358,40 @@ public final class ConcolicRegionRuntime {
         mintHandoffVariable(active, site, exportEvent, attachEvent,
                 expression, producerTaskId, producerOccurrenceId, owner,
                 declaringClass, fieldName, descriptor);
+    }
+
+    /**
+     * The activation this attach belongs to: the innermost live region whose
+     * own plan declares this port as an IN site.
+     *
+     * <p>An attach happens inside whichever regions are live, and the
+     * innermost of them is not always the one whose slice owns the attach
+     * site: a loop-body region's activation spans one turn, and the same
+     * decode site also runs outside the loop.  Filing on the innermost live
+     * region regardless published the row under a region that never
+     * declared the port -- on hdfs-17899 bug2, REGION.b7266d53, the caller,
+     * carried both rows while REGION.16ba41cf, which declares them IN,
+     * published none, so one attach was reported twice: unplanned there and
+     * unreproduced here.</p>
+     *
+     * <p>When no live region declares it, the innermost live one still
+     * carries the row: the replay is exact about what it did, and R5 then
+     * says truthfully that a region ran a handoff nobody planned there.</p>
+     */
+    private static ActiveRegion attachConsumerRegion(
+            CommunicationHandoffSpec site) {
+        ActiveRegion innermost = activeRegion();
+        if (site == null) return innermost;
+        String portId = safe(site.portId());
+        for (Long token : CURRENT_TOKENS.get()) {
+            ActiveRegion candidate = ownerRegion(token);
+            if (candidate == null) continue;
+            if (candidate.activation.communicationHandoff(portId, false)
+                    != null) {
+                return candidate;
+            }
+        }
+        return innermost;
     }
 
     /**
@@ -3649,8 +3683,9 @@ public final class ConcolicRegionRuntime {
         // A later prefix or materialization rejection owns the sole durable
         // diagnostic; do not also report the same activation as an unmatched
         // occurrence when the workload terminates.
-        // Confirmed by the frame arm: a provisional k is this occurrence's.
-        active.activation.clearProvisionalOrdinal();
+        // Confirmed by the frame arm: the provisional k becomes this
+        // occurrence's, and the bucket advances here and nowhere else.
+        configuration().confirmProvisionalOrdinal(active.activation);
         configuration().markOccurrenceClaimed(active.activation);
         // A target address that several activations of one region on one
         // source answer is separated by the only thing that distinguishes

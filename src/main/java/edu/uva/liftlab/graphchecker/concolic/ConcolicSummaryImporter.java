@@ -1626,6 +1626,15 @@ public final class ConcolicSummaryImporter {
             Set<String> found = actual.get(entry.getKey());
             if (found == null || found.isEmpty()) {
                 if (earlyStop) continue;
+                // An activation that decided nothing over a root has an
+                // empty pi, so no site can be missing from it.  On
+                // hdfs-17899 bug2 REGION.763d087e publishes ten decisions
+                // and every one of them is concrete: once the concrete
+                // sites stopped refusing, the next complaint was that
+                // sendRpcRequest#u18 was "missing" -- a site the replay
+                // never reached because a concrete decision upstream, the
+                // IPC client's own connection state, went the other way.
+                if (rootDependent.isEmpty()) continue;
                 return replayDetail(replayId, "missing " + entry.getKey());
             }
             // The prefix a replay must reproduce is pi: the decisions this
