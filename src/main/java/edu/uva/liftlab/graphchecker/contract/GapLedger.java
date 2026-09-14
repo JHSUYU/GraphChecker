@@ -389,28 +389,17 @@ public final class GapLedger {
         // of these is a read whose writer, arm, case or payload the closure
         // could not name; that is exactly a link of the read-from chain.
         // ------------------------------------------------------------------
+        // The consumer-boundary family is gone with the arms that built it:
+        // nineteen codes -- CONSUMER_BOUNDARY_* and
+        // RPC_CONSUMER_BOUNDARY_MALFORMED -- were defined nowhere but here,
+        // naming producer-case linking and boundary families that no stage
+        // raises any more.  A handoff is now one variable v_H at one
+        // occurrence H, and what can be missing about it is stated on the
+        // row by VmHandoffEvidence.eventFault.
         String propagation = "COMPOSE/SYMBOLIC_PROPAGATION";
         for (String code : new String[]{
                 "CASE_CLOSURE_IDENTITY_MISSING",
                 "CASE_CLOSURE_IDENTITY_AMBIGUOUS",
-                "CONSUMER_BOUNDARY_ARM_BOUND",
-                "CONSUMER_BOUNDARY_ARM_INCOMPLETE",
-                "CONSUMER_BOUNDARY_EVENT_AMBIGUOUS",
-                "CONSUMER_BOUNDARY_FAMILY_CYCLE",
-                "CONSUMER_BOUNDARY_FAMILY_EPOCH_CONFLICT",
-                "CONSUMER_BOUNDARY_FAMILY_MISSING",
-                "CONSUMER_BOUNDARY_FAMILY_TYPE_CONFLICT",
-                "CONSUMER_BOUNDARY_FAMILY_TYPE_MISSING",
-                "CONSUMER_BOUNDARY_FAMILY_UNOBSERVED",
-                "CONSUMER_BOUNDARY_LOCATION_UNSTABLE",
-                "CONSUMER_BOUNDARY_OBSERVATION_AMBIGUOUS",
-                "CONSUMER_BOUNDARY_OBSERVATION_MISSING",
-                "CONSUMER_BOUNDARY_OBSERVATION_SCOPE_MISSING",
-                "CONSUMER_BOUNDARY_OWNER_CASE_AMBIGUOUS",
-                "CONSUMER_BOUNDARY_OWNER_CASE_MISSING",
-                "CONSUMER_BOUNDARY_PAYLOAD_TRUNCATED",
-                "CONSUMER_BOUNDARY_PRODUCER_CASE_AMBIGUOUS",
-                "CONSUMER_BOUNDARY_PRODUCER_CASE_MISSING",
                 "INITIAL_SNAPSHOT_HOST_UNKNOWN",
                 "LOCAL_CASE_OBSERVATION_AMBIGUOUS",
                 "LOCAL_CASE_OBSERVATION_MISSING",
@@ -431,8 +420,7 @@ public final class GapLedger {
                 "READ_FROM_WRITER_CASE_PARTITION_INCOMPLETE",
                 "READ_FROM_WRITER_CASE_PC_MISSING",
                 "READ_FROM_WRITER_VERSION_AMBIGUOUS",
-                "RPC_ATTACH_SENDER_EXPRESSION_MISSING",
-                "RPC_CONSUMER_BOUNDARY_MALFORMED"}) {
+                "RPC_ATTACH_SENDER_EXPRESSION_MISSING"}) {
             blocking(propagation, code,
                     "a read whose writer, arm, case, version or payload the"
                             + " propagation closure could not name is a link"

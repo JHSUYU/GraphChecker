@@ -139,7 +139,10 @@ public class RuntimeWorkflowHandoffClosureTest {
         expression.addProperty("_java_type", "I");
         expression.add("expression", payload);
         JsonObject event = VmHandoffEvidence.event("port", attachEvent - 1L,
-                attachEvent, expression, producerTask, producerOccurrence);
+                attachEvent, expression, producerTask, producerOccurrence,
+                edu.uva.liftlab.graphchecker.contract.HandoffPhaseContract
+                        .phaseId("port", consumerOccurrence, 1, "<a.B: int v>"),
+                "M_I_field_HOFF.1_a/B", "7", "I", "");
         event.addProperty("boundarySessionScope", scope);
         event.addProperty("consumerOccurrenceId", consumerOccurrence);
         JsonArray events = new JsonArray();

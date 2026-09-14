@@ -10,6 +10,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
+import edu.uva.liftlab.graphchecker.contract.HandoffPhaseContract;
+
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalInteger;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalLongInteger;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.nonNull;
@@ -55,7 +57,7 @@ public final class VmHandoffEvidence {
      * anything they carry, and inferring it is the exact defect the version
      * bump exists to refuse.
      */
-    public static final int SCHEMA_VERSION = 5;
+    public static final int SCHEMA_VERSION = 6;
     /** Kind of one case-local handoff reference. */
     public static final String KIND = "VM_HANDOFF_EVENT";
     /** Authority of one VM-propagated expression. */
@@ -82,6 +84,26 @@ public final class VmHandoffEvidence {
     public static final String PRODUCER_TASK_ID = "producerTaskId";
     public static final String PRODUCER_OCCURRENCE_ID =
             "producerOccurrenceId";
+    /**
+     * The identity of this handoff occurrence H, and the join key.
+     *
+     * <p>{@code H = (portId, consumer OccurrenceAddress, k-th attach of this
+     * element in the activation, element path)}.  The two event ids are this
+     * replay's evidence of H and differ in every run, so they cannot join
+     * two replays; this can, and it is the only thing that may.</p>
+     */
+    public static final String HANDOFF_PHASE_ID = "handoffPhaseId";
+    /** Raw name of the fresh variable v_H the runtime minted at H. */
+    public static final String HANDOFF_SYMBOL = "handoffSymbol";
+    /** The concrete value this attach delivered, before any model write. */
+    public static final String RECORDED_VALUE = "recordedValue";
+    /** The domain of v_H: the element's VM type. */
+    public static final String JAVA_TYPE = "javaType";
+    /** Whether an obligation assignment for H answered this mint. */
+    public static final String ANSWERED = "answered";
+    /** The model value the mint returned, when it was answered. */
+    public static final String ANSWERED_VALUE = "answeredValue";
+
     private VmHandoffEvidence() {
     }
 
@@ -104,7 +126,12 @@ public final class VmHandoffEvidence {
                                    long attachEventId,
                                    JsonElement exactExpression,
                                    String producerTaskId,
-                                   String producerOccurrenceId) {
+                                   String producerOccurrenceId,
+                                   String handoffPhaseId,
+                                   String handoffSymbol,
+                                   String recordedValue,
+                                   String javaType,
+                                   String answeredValue) {
         JsonObject row = new JsonObject();
         row.addProperty("kind", KIND);
         row.addProperty("schemaVersion", SCHEMA_VERSION);
@@ -116,6 +143,14 @@ public final class VmHandoffEvidence {
         row.addProperty(PRODUCER_OCCURRENCE_ID,
                 nonNull(producerOccurrenceId));
         row.add(EXPRESSION, exactExpression);
+        row.addProperty(HANDOFF_PHASE_ID, nonNull(handoffPhaseId));
+        row.addProperty(HANDOFF_SYMBOL, nonNull(handoffSymbol));
+        row.addProperty(RECORDED_VALUE, nonNull(recordedValue));
+        row.addProperty(JAVA_TYPE, nonNull(javaType));
+        boolean answered = answeredValue != null
+                && !answeredValue.isEmpty();
+        row.addProperty(ANSWERED, answered);
+        if (answered) row.addProperty(ANSWERED_VALUE, answeredValue);
         return row;
     }
 
@@ -171,6 +206,32 @@ public final class VmHandoffEvidence {
         }
         if (!row.has(EXPRESSION) || !row.get(EXPRESSION).isJsonObject()) {
             return "handoff reference carries no exact expression";
+        }
+        // The handoff variable and its identity.  Fail-closed exactly like
+        // the endpoints above: a row missing any of these names no handoff
+        // occurrence two replays could be joined at, and none of them can be
+        // completed from another field.
+        if (!HandoffPhaseContract.isPhaseId(
+                optionalString(row, HANDOFF_PHASE_ID))) {
+            return "handoff reference names no handoff occurrence";
+        }
+        if (optionalString(row, HANDOFF_SYMBOL).isEmpty()) {
+            return "handoff reference names no handoff variable";
+        }
+        if (optionalString(row, RECORDED_VALUE).isEmpty()) {
+            return "handoff reference states no delivered value";
+        }
+        if (optionalString(row, JAVA_TYPE).isEmpty()) {
+            return "handoff reference states no element type";
+        }
+        boolean answered = row.has(ANSWERED)
+                && row.get(ANSWERED).isJsonPrimitive()
+                && row.get(ANSWERED).getAsJsonPrimitive().isBoolean()
+                && row.get(ANSWERED).getAsBoolean();
+        if (answered != !optionalString(row, ANSWERED_VALUE).isEmpty()) {
+            return answered
+                    ? "an answered handoff states no model value"
+                    : "an unanswered handoff states a model value";
         }
         JsonElement expression = row.get(EXPRESSION);
         if (VmExpressionIr.isConsumerBoundaryReference(expression)) {
