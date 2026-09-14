@@ -508,6 +508,10 @@ final class RuntimeTraceContext {
         }
         CURRENT.remove();
         IDS.set(1L);
+        // A fixture models a run that is recording: the workload under test
+        // has opened its window.  A test about the window itself says
+        // otherwise for itself.
+        CausynthTraceRecorder.setRecordingStartedForTests(true);
     }
 
     private static Seed takeSeed(Object carrier) {
@@ -711,20 +715,23 @@ final class RuntimeTraceContext {
     /**
      * Whether the recording window has opened in this run.
      *
-     * <p>A workload starts its cluster, then names its sources, then does
-     * the thing being recorded.  Everything the process did before the first
-     * source was registered is outside the window: the recording never saw
+     * <p>A workload starts its cluster, names its sources, and then opens
+     * the window over the thing being recorded.  Everything the process did
+     * before the window is outside it: the recording never wrote a line for
      * it, so the plan counted none of it, and a replay that counts it is
      * numbering a different population than the plan numbered.</p>
      *
-     * <p>The first registration is the moment, and it is the same moment in
-     * every replay of one recording because it is the workload that makes
-     * it, not the engine.</p>
+     * <p>{@code startRecording()} is that moment, and it is the same moment
+     * in every replay of one recording because it is the workload that makes
+     * it, not the engine.  "A source has been registered" was a second
+     * implementation of the same notion: it coincided until a workload put a
+     * cluster restart between its first registration and its
+     * {@code startRecording()} -- hdfs-11741 does -- and then the replay
+     * counted a whole NameNode generation the recording never saw.
+     * Registration before the window is state, not the window.</p>
      */
     static boolean recordingWindowOpen() {
-        synchronized (LOCK) {
-            return !SOURCES_BY_KEY.isEmpty();
-        }
+        return CausynthTraceRecorder.recordingStarted();
     }
 
     /** Whether {@code sourceKey} names an epoch of its node at all. */

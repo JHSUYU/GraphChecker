@@ -208,11 +208,17 @@ public class OccurrenceAddressIsNotARequestTest {
      * behaviour.</p>
      */
     @Test
-    public void theWindowOpensWhenTheWorkloadNamesItsFirstSource() {
+    public void theWindowOpensWhenTheWorkloadStartsRecording() {
+        CausynthTraceRecorder.setRecordingStartedForTests(false);
         RuntimeTraceContext.registerSource(new Object(),
                 new SourceRef("CLUSTER_NODE", "NAMENODE", "hdfs/nn0", 0L));
 
-        assertTrue("a named source is a recording window",
+        assertFalse("a named source is state, not the window",
+                RuntimeTraceContext.recordingWindowOpen());
+
+        CausynthTraceRecorder.startRecording();
+
+        assertTrue("the workload opens the window by recording",
                 RuntimeTraceContext.recordingWindowOpen());
     }
 
@@ -271,12 +277,19 @@ public class OccurrenceAddressIsNotARequestTest {
      * is the unregistered source's -- the planner counts it there and so
      * does the replay -- so it could not answer this address in either run
      * and would not pin anything about the window.</p>
+     *
+     * <p>Outside the window means before the workload started recording, not
+     * before it named a source: a workload may register long before it
+     * records, and hdfs-11741 restarts its cluster in between.</p>
      */
     private static Set<String> replayOnce() {
         RuntimeTraceContext.resetForTests();
+        CausynthTraceRecorder.setRecordingStartedForTests(false);
         ConcolicTaskPlan.RuntimeTask task = task();
         ConcolicTaskPlan plan = plan(task);
         Object node = new Object();
+        RuntimeTraceContext.registerSource(node,
+                new SourceRef("NAMENODE", "nn", "hdfs-17899/nn0", 0L));
 
         assertTrue("the cluster start is outside the window",
                 plan.addressLoopRootInvocation(task.rootMethod,
@@ -285,8 +298,7 @@ public class OccurrenceAddressIsNotARequestTest {
                 task.unansweredAddress().startsWith(
                         "0 compatible activation(s)"));
 
-        RuntimeTraceContext.registerSource(node,
-                new SourceRef("NAMENODE", "nn", "hdfs-17899/nn0", 0L));
+        CausynthTraceRecorder.setRecordingStartedForTests(true);
 
         Set<String> admitted = plan.addressLoopRootInvocation(
                 task.rootMethod, task.rootMethod, node, new Object[0]);

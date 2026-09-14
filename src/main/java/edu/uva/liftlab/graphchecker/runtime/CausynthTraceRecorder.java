@@ -59,6 +59,8 @@ public final class CausynthTraceRecorder {
     /** A concolic replay keeps call stacks but does not publish a trace. */
     private static volatile boolean contextOnlyConcolicReplay;
     private static volatile boolean recordingEnabled = true;
+    /** Whether the workload has called {@link #startRecording()} here. */
+    private static volatile boolean recordingStarted;
 
     private static volatile File outputDir;
     private static volatile String testName;
@@ -76,6 +78,34 @@ public final class CausynthTraceRecorder {
     public static void startRecording() {
         initialize();
         recordingEnabled = true;
+        recordingStarted = true;
+    }
+
+    /**
+     * Whether the workload has opened its recorded window in this run.
+     *
+     * <p>One moment, shared by both executions because the workload makes
+     * it: the recording writes its first trace line here, so the plan counts
+     * activations from here and a replay must count from here too.</p>
+     *
+     * <p>Monotonic, and deliberately not {@link #recordingEnabled}: the
+     * trace pass starts paused and the replay pass does not, so that flag is
+     * already true in a replay before the workload has opened anything.
+     * Nor is it "a source has been registered" -- registration is state the
+     * workload may establish long before it starts recording.  On hdfs-11741
+     * it registers the balancer, then {@code TestBalancer} restarts the
+     * cluster, and only then registers the new NameNode's RPC server and
+     * starts recording; a whole NameNode generation runs in between, whose
+     * handler activations the recording never wrote a line for and the
+     * replay counted, numbering a population the plan never numbered.</p>
+     */
+    static boolean recordingStarted() {
+        return recordingStarted;
+    }
+
+    /** Test hook: a fixture states whether its run has opened the window. */
+    static void setRecordingStartedForTests(boolean started) {
+        recordingStarted = started;
     }
 
     private static boolean configuredContextOnlyConcolicReplay() {
