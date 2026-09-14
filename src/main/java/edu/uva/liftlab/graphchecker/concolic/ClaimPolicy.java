@@ -782,6 +782,52 @@ public final class ClaimPolicy {
     }
 
     /**
+     * Whether the witness's own path observed the arm the failure needs.
+     *
+     * <p>"The recording is itself the failing run" is a statement about the
+     * execution the witness rests on, so that execution has to have taken
+     * the fatal arm.  Each attested path states the outcome its replay
+     * observed at the target site and the case guard it was composed under;
+     * a witness that pins a guard is therefore asking about exactly one of
+     * them.  A composition with one path pins none, and then every attested
+     * path is the question.</p>
+     *
+     * <p>HDFS-17960 is the shape this admits: its one path observed the
+     * fatal arm and reproduces it with every root at the recorded value.
+     * lane17897h's target #2 is the shape it refuses: the witness pins a
+     * healthy-observed path, while the two that took the arm are elsewhere
+     * in the disjunction and unsatisfiable.</p>
+     */
+    private static boolean recordingTookTheFatalArm(JsonObject manifest,
+                                                    JsonObject witness) {
+        boolean required = optionalBool(manifest,
+                "requiredTakenOutcome", false);
+        Set<String> pinned = new LinkedHashSet<>();
+        if (witness != null) {
+            for (JsonElement guard
+                    : array(witness, "pinnedCaseSelectors")) {
+                if (guard.isJsonPrimitive()) pinned.add(guard.getAsString());
+            }
+        }
+        int asked = 0;
+        for (JsonElement element : array(manifest,
+                ComposedManifest.TARGET_REACH_LEDGER)) {
+            if (!element.isJsonObject()) continue;
+            JsonObject row = element.getAsJsonObject();
+            if (!pinned.isEmpty() && !pinned.contains(
+                    optionalString(row, "caseGuard"))) {
+                continue;
+            }
+            asked++;
+            if (optionalBool(row, "sourceObservedOutcome", !required)
+                    != required) {
+                return false;
+            }
+        }
+        return asked > 0;
+    }
+
+    /**
      * Whether the recording is itself the failing run, root-determined.
      *
      * <p>The shape HDFS-17960 has, and the fourth finding kind: the fatal
@@ -800,7 +846,14 @@ public final class ClaimPolicy {
      * whole of what this kind says.</p>
      */
     private static boolean recordedFailureExplained(JsonArray valuations,
-                                                    List<Marker> markers) {
+                                                    List<Marker> markers,
+                                                    JsonObject manifest) {
+        // "The recording is itself the failing run" is a statement about the
+        // recording, so the recording has to have failed: its own observation
+        // at this anchor has to be the arm the failure needs.  A run that
+        // reached the site healthily every time explains no recorded failure
+        // -- there is none -- and lane17897h elected exactly that, a healthy
+        // path satisfying the formula with nothing moved.
         for (Marker marker : markers) {
             if (!marker.stated()) {
                 return false;
@@ -810,6 +863,7 @@ public final class ClaimPolicy {
         if (atRecorded == null || !satisfied(atRecorded)) {
             return false;
         }
+        if (!recordingTookTheFatalArm(manifest, atRecorded)) return false;
         int refutedFlips = 0;
         for (int ordinal = 0; ordinal < valuations.size(); ordinal++) {
             JsonObject candidate = row(valuations, ordinal);
@@ -1179,7 +1233,7 @@ public final class ClaimPolicy {
             }
         }
         boolean recordedFailure = recordedFailureExplained(valuations,
-                markers);
+                markers, manifest);
         // What the necessity probe said about each valuation's clock group.
         Map<Integer, WitnessLegitimacy.ClockNecessity> clockNecessity =
                 clockNecessityByValuation(reach);
@@ -1329,6 +1383,9 @@ public final class ClaimPolicy {
         result.addProperty("declaredMarkers", markers.size());
         result.addProperty("plantedMarkers", planted.size());
         result.addProperty("recordedFailureExplained", recordedFailure);
+        result.addProperty("recordingTookTheFatalArm",
+                recordingTookTheFatalArm(manifest,
+                        allRecordedValuation(valuations, markers)));
         // Which of the four shapes the accepted witness is, read off the row
         // itself rather than re-derived: one answer, published once.
         JsonObject acceptedRow = restsOn < 0 ? null
@@ -1733,11 +1790,31 @@ public final class ClaimPolicy {
         String findingKind = optionalString(legitimacy,
                 WitnessLegitimacy.FINDING_KIND);
         if ("REACHABLE".equals(reachability) && findingKind.isEmpty()) {
+            // A healthy recording cannot explain a recorded failure, so the
+            // two kinds left are the ones the case declares something for.
+            // Where it declares nothing that can move, no witness this run
+            // could produce would be a finding, and saying which is missing
+            // is the whole of the refusal.
+            boolean healthy = !optionalBool(legitimacy,
+                    "recordingTookTheFatalArm", false);
             blockers.add(blocker(FINDING_MECHANISM_UNNAMED,
-                    optionalInteger(legitimacy, "acceptedValuationOrdinal",
-                            -1) < 0 ? "NO_ACCEPTED_WITNESS" : "NO_MECHANISM",
-                    "no satisfying witness this run would rest on names one"
-                            + " of " + WitnessLegitimacy.MARKER_FLIPPED + ", "
+                    healthy ? "NO_SUPPORTED_WITNESS"
+                            : optionalInteger(legitimacy,
+                            "acceptedValuationOrdinal", -1) < 0
+                            ? "NO_ACCEPTED_WITNESS" : "NO_MECHANISM",
+                    healthy
+                            ? "the recording observed the healthy arm at"
+                            + " every attested path, so "
+                            + WitnessLegitimacy.RECORDED_FAILURE_EXPLAINED
+                            + " does not apply, and no witness moved a"
+                            + " declared root inside its domain ("
+                            + WitnessLegitimacy.MARKER_FLIPPED + ") or a"
+                            + " clock inside its window that the formula"
+                            + " needs (" + WitnessLegitimacy.CLOCK_SKEW
+                            + "): nothing declared can move"
+                            : "no satisfying witness this run would rest on"
+                            + " names one of "
+                            + WitnessLegitimacy.MARKER_FLIPPED + ", "
                             + WitnessLegitimacy.CLOCK_SKEW + " or "
                             + WitnessLegitimacy.RECORDED_FAILURE_EXPLAINED
                             + ", so the solver's sat answer is a statement"

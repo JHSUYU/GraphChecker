@@ -327,13 +327,9 @@ public final class PathMergeComposer {
                         arguments.clockSkewMillis)) {
                     if (!terms.contains(conjunct)) terms.add(conjunct);
                 }
-                // An assignment that answered a handoff mint is this path's
-                // control, exactly as a root assignment is: the replay ran
-                // with v_H at the value the obligation gave it, and a path
-                // that does not say so is a path the composition cannot
-                // state.  The row's recordedValue is what arrived and stays
-                // evidence only.
-                for (String conjunct : answeredHandoffs(member,
+                // What this replay read at each of its handoffs is this
+                // path's control, exactly as a root assignment is.
+                for (String conjunct : handoffReads(member,
                         declaredVariables, lowering)) {
                     if (!terms.contains(conjunct)) terms.add(conjunct);
                 }
@@ -371,8 +367,7 @@ public final class PathMergeComposer {
             // healthy path did not take it, and that is not an
             // inconsistency.
             String failing = selfInconsistentConjunct(arguments.z3, lowering,
-                    terms, replayDeliveries(replayGroup, declaredVariables,
-                            usedHandoffSymbols));
+                    terms);
             if (!failing.isEmpty()) {
                 row.addProperty("admitted", false);
                 row.addProperty("reason", PATH_NOT_SELF_CONSISTENT);
@@ -553,8 +548,12 @@ public final class PathMergeComposer {
                     || !roots.minted(declared.getKey())) {
                 continue;
             }
+            // Named by its source id as well as by its field: two sources
+            // of one field are two roots, and rendering both as the field
+            // published one row for the two expiry roots of bug3.
             gate(gates, ROOT_NOT_ON_ANY_PATH, "root "
                     + roots.name(declared.getKey())
+                    + " (" + roots.sourceIdOf(declared.getKey()) + ")"
                     + " was minted at " + roots.sourceKeyOf(declared.getKey())
                     + " and is in no path condition and no fatal predicate"
                     + " of any path admitted at " + site + "#" + occurrence);
@@ -1194,48 +1193,6 @@ public final class PathMergeComposer {
     }
 
     /**
-     * What this path's own replay READ at every handoff it used.
-     *
-     * <p>The family says a delivery is one of the values some replay made
-     * there; asking whether THIS path is consistent with itself means
-     * asking under the value its own replay read.  Where an obligation
-     * answered the mint, that is the answer and not what the wire carried:
-     * the model was written into the leaf at the attach, every decision
-     * after it was taken on the answer, and asserting the wire's value of
-     * that replay contradicts its own decisions -- lane17897g's two paths,
-     * closed by {@code (= v_H 119992)} where their replays read 0.</p>
-     */
-    private static List<String> replayDeliveries(
-            List<JsonObject> replayGroup,
-            Map<String, JsonObject> declaredVariables,
-            Set<String> usedHandoffSymbols) {
-        List<String> deliveries = new ArrayList<>();
-        Set<String> stated = new LinkedHashSet<>();
-        for (JsonObject summary : replayGroup) {
-            for (JsonElement element : array(summary, "vmHandoffEvents")) {
-                if (!element.isJsonObject()) continue;
-                JsonObject event = element.getAsJsonObject();
-                String symbol = optionalString(event,
-                        InSessionReadResolver.HANDOFF_SYMBOL);
-                String value = firstNonBlank(optionalString(event,
-                        VmHandoffEvidence.ANSWERED_VALUE),
-                        optionalString(event,
-                                ComposedManifest.RECORDED_SOURCE_VALUE));
-                if (symbol.isEmpty() || value.isEmpty()
-                        || !declaredVariables.containsKey(symbol)
-                        || smtIntegerLiteral(value).isEmpty()
-                        || !stated.add(symbol)) {
-                    continue;
-                }
-                deliveries.add("(= " + rootTermOf(
-                        declaredVariables.get(symbol), symbol) + " "
-                        + smtIntegerLiteral(value) + ")");
-            }
-        }
-        return deliveries;
-    }
-
-    /**
      * The first conjunct that makes this path contradict its own execution,
      * or {@code ""} when it does not.
      *
@@ -1243,11 +1200,9 @@ public final class PathMergeComposer {
      * ends at the conjunct that closed it.</p>
      */
     private static String selfInconsistentConjunct(
-            Path z3, PathMergeLowering lowering, List<String> terms,
-            List<String> deliveries) {
+            Path z3, PathMergeLowering lowering, List<String> terms) {
         if (z3 == null) return "";
         List<String> conjuncts = new ArrayList<>(terms);
-        conjuncts.addAll(deliveries);
         if (conjuncts.isEmpty()) return "";
         String preamble = lowering.declarationsOnly();
         if (!"unsat".equals(ask(z3, preamble, conjuncts,
@@ -1303,26 +1258,45 @@ public final class PathMergeComposer {
     }
 
     /**
-     * The handoff answers this replay ran under, as SMT equalities.
+     * What this replay READ at every handoff it used, as SMT equalities.
+     *
+     * <p>One notion, one place: these conjuncts are pi_p, and asking whether
+     * a path is consistent with itself is therefore asking about pi_p, with
+     * nothing computed twice.</p>
      *
      * <p>A mint an obligation answered returned the model's value, not the
-     * one that arrived; the row states both.  The answer is the assignment
-     * that made this replay the execution it is, so the path carries it the
-     * way it carries a root's value.  A mint nobody answered states no
-     * answer and adds nothing.</p>
+     * one that arrived, and the row states both; the answer is what every
+     * decision after the attach was taken on, so it is the read.  A mint
+     * nobody answered read the arrival, and that is just as much this
+     * execution's own fact: leaving it unconstrained -- which is what the
+     * answered-only rule did -- let a healthy path take any arm of any
+     * family, and lane17897h's elected SAT_CANDIDATE was exactly that, a
+     * witness that moved nothing and still reached the failure because the
+     * key it requested was free.  The family still binds the wire (v_H =
+     * e_p over the producers' paths); an answered value no producer
+     * delivered closes that path's disjunct, which is the fail-closed
+     * reading and not a contradiction to repair here.</p>
      */
-    private static List<String> answeredHandoffs(
+    private static List<String> handoffReads(
             JsonObject summary, Map<String, JsonObject> declaredVariables,
             PathMergeLowering lowering) {
-        List<String> answers = new ArrayList<>();
+        List<String> reads = new ArrayList<>();
         Set<String> stated = new LinkedHashSet<>();
         for (JsonElement element : array(summary, "vmHandoffEvents")) {
             if (!element.isJsonObject()) continue;
             JsonObject event = element.getAsJsonObject();
             String symbol = optionalString(event,
                     InSessionReadResolver.HANDOFF_SYMBOL);
-            String value = optionalString(event,
-                    VmHandoffEvidence.ANSWERED_VALUE);
+            // What the consumer read: the value an obligation answered the
+            // mint with where it answered one, and otherwise the arrival --
+            // the value the wire delivered, which is the producer's own
+            // term at its recorded valuation.  Both are this execution's
+            // own fact about that read, and a handoff stated under neither
+            // is a read this path cannot speak for.
+            String value = firstNonBlank(optionalString(event,
+                    VmHandoffEvidence.ANSWERED_VALUE),
+                    optionalString(event,
+                            ComposedManifest.RECORDED_SOURCE_VALUE));
             if (symbol.isEmpty() || value.isEmpty()
                     || !declaredVariables.containsKey(symbol)
                     || !stated.add(symbol)) {
@@ -1331,10 +1305,10 @@ public final class PathMergeComposer {
             JsonObject literal = literalOf(value, optionalString(
                     declaredVariables.get(symbol), "javaType"));
             if (literal == null) continue;
-            answers.add(lowering.condition(equals(symbol, literal),
-                    "handoff:answer:" + symbol));
+            reads.add(lowering.condition(equals(symbol, literal),
+                    "handoff:read:" + symbol));
         }
-        return answers;
+        return reads;
     }
 
     /** One recorded value as an expression node, or null. */
@@ -1776,6 +1750,14 @@ public final class PathMergeComposer {
         /** The node and epoch whose recording minted this root. */
         String sourceKeyOf(String rawSymbol) {
             return firstNonBlank(sourceKeys.get(rawSymbol));
+        }
+
+        /** The source this root was declared for; two are two roots. */
+        String sourceIdOf(String rawSymbol) {
+            JsonObject declared = byRawSymbol.get(rawSymbol);
+            return declared == null ? rawSymbol
+                    : firstNonBlank(optionalString(declared, "sourceId"),
+                            rawSymbol);
         }
 
         /** What a reader calls this root: its port, field, or raw symbol. */

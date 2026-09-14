@@ -69,6 +69,52 @@ public class InSessionReadResolverTest {
                 version(47, "WRITE", symbol(ROOT)));
         check("119982", false, 45, projection(9, 56), thrice);
         check("119980", true, 40, projection(9, 56), thrice);
+
+        // A read through the key map's iterator has no reference for an
+        // owner -- VALUE(NEXT(ITERATOR(ENTRY_VIEW(PUT(...))))) -- and the
+        // elements it put there are the objects it may have reached.  Where
+        // one of them is an object this replay published the slot for, that
+        // is the element read; bug3's expiry sweep is this shape.  Two are
+        // two objects and the walk does not say which, so nothing is chosen
+        // and the projection stays one.
+        check(ROOT, false, -1, elementProjection(56, 9, 4),
+                row("INSTANCE_FIELD", 9, 56,
+                        version(44, "WRITE", symbol(ROOT))));
+        assertEquals("FieldAccessExpression",
+                InSessionReadResolver.of(Arrays.asList(
+                        row("INSTANCE_FIELD", 9, 56,
+                                version(44, "WRITE", symbol(ROOT))),
+                        row("INSTANCE_FIELD", 4, 56,
+                                version(45, "WRITE", constant(7)))))
+                        .resolve(elementProjection(56, 9, 4))
+                        .getAsJsonObject().get("_type").getAsString());
+    }
+
+    /** One field read off an element the map's iterator yielded. */
+    private static JsonObject elementProjection(long offset, long... rids) {
+        // ~ stands for the quotes inside M_L'class'_rid, which the
+        // single-quoted JSON below would otherwise swallow.
+        StringBuilder chain = new StringBuilder(relation("STATE") + "}");
+        for (long rid : rids) {
+            chain = new StringBuilder(relation("PUT") + ",'receiver':"
+                    + chain + ",'arguments':[{'_type':'ConstExpr','_exp':'"
+                    + rid + "'},{'_type':'SymbolExpression','_exp':"
+                    + "'M_L~org/apache/hadoop/A~_" + rid + "'}]}");
+        }
+        for (String step : new String[]{"ENTRY_VIEW", "ITERATOR", "NEXT",
+                "VALUE"}) {
+            chain = new StringBuilder(relation(step) + ",'receiver':"
+                    + chain + "}");
+        }
+        return json(("{'_type':'FieldAccessExpression','ownerClass':"
+                + "'org/apache/hadoop/A','fieldOffset':" + offset
+                + ",'owner':" + chain + "}").replace('\'', '"')
+                .replace('~', '\''));
+    }
+
+    private static String relation(String operation) {
+        return "{'_type':'ContainerRelation','shape':'ASSOCIATIVE',"
+                + "'operation':'" + operation + "'";
     }
 
     /**

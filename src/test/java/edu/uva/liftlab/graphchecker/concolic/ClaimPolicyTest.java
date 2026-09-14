@@ -127,6 +127,23 @@ public class ClaimPolicyTest {
         assertTrue(markerRow(claim).get("polarityDecides").getAsBoolean());
         assertTrue(markerRow(claim).get("reachesAtRecordedValue")
                 .getAsBoolean());
+
+        // And only where the witness's own path took the arm.  A recording
+        // that observed the healthy outcome explains no recorded failure --
+        // lane17897h elected exactly that on a healthy-observed path, with
+        // the two that took the arm unsatisfiable elsewhere in the
+        // disjunction -- so the run refuses and names what is missing.
+        JsonObject healthy = orderedManifest();
+        healthy.add(ComposedManifest.TARGET_REACH_LEDGER, ledger(true));
+        JsonObject refused = withheld(healthy,
+                orderedReach("sat", "unsat"));
+        assertEquals("NO_SUPPORTED_WITNESS",
+                blocker(refused, ClaimPolicy.FINDING_MECHANISM_UNNAMED)
+                        .get("subject").getAsString());
+        assertEquals("", refused.getAsJsonObject("rootSpace")
+                .get("acceptedFindingKind").getAsString());
+        assertFalse(refused.getAsJsonObject("rootSpace")
+                .get("recordedFailureExplained").getAsBoolean());
     }
 
     private static JsonObject withheld(JsonObject manifest, JsonObject reach) {
@@ -157,7 +174,20 @@ public class ClaimPolicyTest {
                 "[{\"solverTerm\":\"" + BASE_TERM + "\",\"sourceId\":\""
                 + BASE_SOURCE + "\",\"siteId\":\"" + BASE_FIELD + "\","
                 + "\"recordedValue\":\"false\",\"wallClock\":false}]"));
+        // The anchor's attested path, as the composer publishes it: this
+        // recording observed the arm the failure needs, which is what
+        // HDFS-17960's own artifact states.
+        manifest.add(ComposedManifest.TARGET_REACH_LEDGER,
+                ledger(false));
         return manifest;
+    }
+
+    /** One attested path at the anchor, with the outcome it observed. */
+    private static JsonArray ledger(boolean observed) {
+        return parseArray("[{\"kind\":\"TARGET_REACH_EVENT\","
+                + "\"attestationRole\":\"REQUIRED_TARGET_REACH_EVENT\","
+                + "\"outcome\":" + observed + ",\"caseGuard\":\"\","
+                + "\"sourceObservedOutcome\":" + observed + "}]");
     }
 
     private static JsonObject reach() {
