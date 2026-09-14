@@ -213,35 +213,30 @@ public class OccurrenceAddressIsNotARequestTest {
                 ConcolicTaskPlan.lifecycleMismatch(NN0 + "#epoch1",
                         Collections.<String>emptySet()));
         assertNotEquals("epoch 0 is another bucket",
-                epochOne.invocationCounterKey(NN0 + "#epoch1", ""),
-                epochOne.invocationCounterKey(NN0 + "#epoch0", ""));
+                epochOne.invocationCounterKey(NN0 + "#epoch1"),
+                epochOne.invocationCounterKey(NN0 + "#epoch0"));
 
-        // Counting and matching use one scope, and the family is in both.
+        // Counting and matching use one scope, and the request is in
+        // neither: which request an activation was reached under is
+        // information about it, and information does not partition a count.
         ConcolicTaskPlan.RuntimeTask task = task();
-        String heartbeat = "hdfs-17899/target-dn#epoch0/heartbeat";
-        String refresh = "hdfs-17899/sps#epoch0/refresh-block-keys";
-
-        assertFalse("another family is another bucket",
-                task.invocationCounterKey(task.sourceKey, heartbeat).equals(
-                        task.invocationCounterKey(task.sourceKey, refresh)));
-        assertFalse("the request key itself is not in the bucket",
+        assertFalse("the request key is not in the bucket",
                 task.invocationCounterKey().contains("/request/"));
+        assertEquals("nor is the request family it used to be folded to",
+                task.invocationCounterKey(task.sourceKey),
+                task.invocationCounterKey());
 
-        // k=1 in each, and the two are different occurrences.
-        Map<String, Integer> first = new LinkedHashMap<>();
-        first.put(task.invocationCounterKey(task.sourceKey, heartbeat), 1);
-        Map<String, Integer> second = new LinkedHashMap<>();
-        second.put(task.invocationCounterKey(task.sourceKey, refresh), 1);
-        OccurrenceAddress one = task.observedAddress(task.sourceKey,
-                heartbeat, first);
-        OccurrenceAddress other = task.observedAddress(task.sourceKey,
-                refresh, second);
+        // The k-th activation of one region on one node and epoch, counted
+        // in one bucket whatever request each arrived under.
+        Map<String, Integer> counted = new LinkedHashMap<>();
+        counted.put(task.invocationCounterKey(task.sourceKey), 2);
+        OccurrenceAddress observed = task.observedAddress(task.sourceKey,
+                counted);
 
-        assertEquals(1, one.ordinal());
-        assertEquals(1, other.ordinal());
-        assertFalse("two families, two occurrences", one.matches(other));
-        assertTrue(one.difference(other),
-                one.difference(other).contains("request family"));
+        assertEquals(2, observed.ordinal());
+        assertTrue("and it is the address the same bucket is keyed on",
+                observed.matches(OccurrenceAddress.parse(
+                        observed.render())));
     }
 
     /**

@@ -54,31 +54,20 @@ public final class ConcolicPathFlipSolver {
                 requiredPath(options, "task-plan"));
         Map<String, JsonObject> taskById = ArtifactIO.uniqueIndex(
                 taskRows, "taskId");
-        JsonObject bundle;
-        try {
-            bundle = LinkedReplayBundle.decode(task);
-        } catch (IllegalArgumentException malformed) {
-            throw new IOException("Path task has an invalid linked bundle", malformed);
-        }
-        // The bundle is the one authority on which member is primary; the
-        // worklist's sourceTaskId is the same planner's copy of it.
-        String sourceId = LinkedReplayBundle.primarySourceTaskId(bundle);
+        // One focused occurrence per obligation: the worklist names it.
+        String sourceId = optionalString(task, "sourceTaskId");
         JsonObject source = taskById.get(sourceId);
         if (source == null) {
             throw new IOException("Source execution task not found: "
                     + sourceId);
         }
-        List<JsonObject> linkedSources;
         try {
             // Solver workers receive the task plan as an external artifact.
             // Decode the full task contract here - exact configured
             // source-phase sequencing and occurrence ownership included -
-            // and hand the decoded closure to the replay factory, which
-            // therefore never decodes a task or the bundle again.
-            linkedSources = LinkedReplayBundle.sourceTasks(bundle, taskById);
-            for (JsonObject linked : linkedSources) {
-                ExecutionTask.decode(linked);
-            }
+            // and hand the decoded task to the replay factory, which
+            // therefore never decodes it again.
+            ExecutionTask.decode(source);
         } catch (IllegalArgumentException malformed) {
             throw new IOException("Source execution task is malformed: "
                     + sourceId, malformed);
@@ -92,7 +81,7 @@ public final class ConcolicPathFlipSolver {
         long startedAtMillis = System.currentTimeMillis();
         long startedAtNanos = System.nanoTime();
         ConcolicConstraintSolver.Result solved =
-                ConcolicConstraintSolver.solve(task, linkedSources, source,
+                ConcolicConstraintSolver.solve(task, source,
                         Paths.get(firstNonBlank(options.get("z3"), "z3")),
                         number(options, "solver-timeout-ms", 20_000L),
                         options.containsKey("clock-skew-ms")
@@ -114,8 +103,8 @@ public final class ConcolicPathFlipSolver {
             solved.record.addProperty("status", status);
         }
         List<JsonObject> replay = "SAT_MODEL_READY".equals(status)
-                ? PathReplayTaskFactory.createLinked(task, bundle,
-                linkedSources, solved.modelAssignments,
+                ? PathReplayTaskFactory.createFocused(task,
+                source, solved.modelAssignments,
                 array(solved.record,
                         ExecutionTask.GUARDED_READ_ASSIGNMENTS),
                 solved.replayContract)
@@ -131,8 +120,8 @@ public final class ConcolicPathFlipSolver {
                 optionalString(task, "sourcePathKey"));
         solved.record.addProperty("sourceActivationOccurrenceId",
                 optionalString(task, "sourceActivationOccurrenceId"));
-        solved.record.addProperty(LinkedReplayBundle.TOPOLOGY_EPOCH_FIELD,
-                optionalString(bundle, LinkedReplayBundle.TOPOLOGY_EPOCH_FIELD));
+        solved.record.addProperty(VmExpressionIr.TOPOLOGY_EPOCH,
+                optionalString(task, VmExpressionIr.TOPOLOGY_EPOCH));
         Path directory = requiredPath(options, "output-dir");
         String record = PRETTY.toJson(solved.record);
         ArtifactIO.replace(directory.resolve("path_flip_solver_result.json"),

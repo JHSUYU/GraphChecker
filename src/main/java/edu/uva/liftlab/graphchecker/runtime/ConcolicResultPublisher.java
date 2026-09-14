@@ -593,7 +593,6 @@ final class ConcolicResultPublisher {
     private static void addReplayIdentity(JsonObject result,
                                           RuntimeTask task) {
         result.addProperty("replayGroupId", task.replayGroupId);
-        result.addProperty("linkedReplayRole", task.linkedReplayRole);
         result.addProperty("topologyEpoch", task.topologyEpoch);
     }
 

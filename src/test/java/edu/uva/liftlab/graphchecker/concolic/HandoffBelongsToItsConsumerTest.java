@@ -484,8 +484,7 @@ public class HandoffBelongsToItsConsumerTest {
     private static ConcolicConstraintSolver.Result solve(JsonObject query,
                                                          JsonObject activation)
             throws Exception {
-        return ConcolicConstraintSolver.solve(query,
-                Collections.singletonList(activation), activation,
+        return ConcolicConstraintSolver.solve(query, activation,
                 Paths.get("z3"), 10_000L,
                 ClockRootPhysics.DEFAULT_SKEW_MILLIS);
     }

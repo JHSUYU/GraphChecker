@@ -61,14 +61,13 @@ public final class ConcolicConstraintSolver {
     private ConcolicConstraintSolver() {
     }
 
-    /** Solves one primary flip against all materialization roots in its
-     * linked causal replay bundle. */
-    static Result solve(JsonObject task, List<JsonObject> linkedActivations,
-                        JsonObject primaryActivation, Path z3,
+    /** Solves one obligation against the materialization roots of the one
+     * focused occurrence it flips. */
+    static Result solve(JsonObject task,
+                        JsonObject focusedActivation, Path z3,
                         long timeoutMillis, long clockSkewMillis)
             throws IOException, InterruptedException {
-        LinkedActivation linked = linkedActivation(linkedActivations,
-                primaryActivation);
+        FocusedActivation linked = focusedActivation(focusedActivation);
         JsonObject activation = linked.inputs;
         PathQuery query = PathQuery.decode(task);
         BranchReplayContract replayContract = query.replayContract;
@@ -236,12 +235,12 @@ public final class ConcolicConstraintSolver {
     }
 
     /** One solver view over the input authorities of a linked replay plan. */
-    private static LinkedActivation linkedActivation(
-            List<JsonObject> activations, JsonObject primary)
+    private static FocusedActivation focusedActivation(JsonObject primary)
             throws IOException {
         if (primary == null) {
-            throw new IOException("linked replay has no primary activation");
+            throw new IOException("obligation has no focused activation");
         }
+        List<JsonObject> activations = Collections.singletonList(primary);
         JsonObject result = primary.deepCopy();
         Map<String, JsonObject> actions = new LinkedHashMap<>();
         List<List<ConfiguredSourcePhaseContract.Occurrence>> phaseCatalogs =
@@ -252,7 +251,7 @@ public final class ConcolicConstraintSolver {
             try {
                 catalog = InputActionCatalog.decode(activation);
             } catch (IllegalArgumentException malformed) {
-                throw new IOException("invalid linked input actions: "
+                throw new IOException("invalid focused input actions: "
                         + malformed.getMessage(), malformed);
             }
             for (JsonElement element : catalog.all()) {
@@ -268,7 +267,7 @@ public final class ConcolicConstraintSolver {
                                         .PLAN_FIELD));
                 if (!phases.isEmpty()) phaseCatalogs.add(phases);
             } catch (IllegalArgumentException malformed) {
-                throw new IOException("invalid linked configured source "
+                throw new IOException("invalid focused configured source "
                         + "phases: " + malformed.getMessage(), malformed);
             }
         }
@@ -276,16 +275,16 @@ public final class ConcolicConstraintSolver {
         for (JsonObject action : actions.values()) encodedActions.add(action);
         result.add(InputActionCatalog.FIELD, encodedActions);
         result.remove(ConfiguredSourcePhaseContract.PLAN_FIELD);
-        return new LinkedActivation(result, phaseCatalogs);
+        return new FocusedActivation(result, phaseCatalogs);
     }
 
     /** Input actions may be unioned, but ordered source-phase catalogs may
      * only be validated inside the activation that owns their ordinals. */
-    private static final class LinkedActivation {
+    private static final class FocusedActivation {
         private final JsonObject inputs;
         private final List<List<ConfiguredSourcePhaseContract.Occurrence>>
                 configuredSourcePhaseCatalogs;
-        private LinkedActivation(JsonObject inputs,
+        private FocusedActivation(JsonObject inputs,
                 List<List<ConfiguredSourcePhaseContract.Occurrence>> catalogs) {
             this.inputs = inputs;
             this.configuredSourcePhaseCatalogs = catalogs;

@@ -249,29 +249,12 @@ public final class ConcolicScheduler {
                         loaded.regionPlans, arguments.targetOccurrence)
                 : RuntimeWorkflowDiscovery.candidateWorkflow(
                         loaded.regionPlans, arguments.targetOccurrence);
-        // The replay task set is narrowed against the same slice every
-        // selection narrows its inputs against, seeded once here, and then
-        // against the backward slice of the read that fails.  An occurrence
-        // no root can reach -- or whose write that read never consults --
-        // replays only what the recording observed, so it is published as
-        // pruned rather than scheduled; the decision is a pure function of
-        // the plan, the graph and the roots, so a later active-observed
-        // schedule takes the same subset.
+        // The root-dependence slice scopes instrumentation and flips; it
+        // does not decide which occurrences are scheduled.  A replay task
+        // set is the anchor's closure, and an occurrence outside it runs
+        // concretely rather than being pruned from the plan.
         loaded.symbolicInputs.seedCarrierSlice(loaded.refinedGraph,
                 rawProposals(loaded.regionPlans));
-        ReplayTaskSlice replaySlice = ReplayTaskSlice.decide(
-                loaded.regionPlans, loaded.symbolicInputs,
-                loaded.refinedGraph);
-        List<String> selectedOccurrences = new ArrayList<>();
-        for (RuntimeWorkflowDiscovery.Selection selection
-                : workflow.selections()) {
-            selectedOccurrences.add(selection.occurrenceId);
-        }
-        ArtifactIO.replaceJsonl(arguments.outputDirectory.resolve(
-                        ReplayTaskSlice.ARTIFACT),
-                replaySlice.rows(selectedOccurrences));
-        workflow = workflow.retaining(
-                selection -> replaySlice.keeps(selection.occurrenceId));
         if (workflow.scheduledTaskCount() > arguments.maxJobs) {
             // A bare count says only that the campaign is too big; what a
             // reader needs is which admission rule bought the rows, so the
@@ -310,14 +293,6 @@ public final class ConcolicScheduler {
         Result result = new Result();
         result.executionTasks.addAll(sortedValues(tasks));
         result.queries.addAll(sortedValues(queries));
-        // Which of the locations each region touches a root can still
-        // move: recorded on the replay-task slice, which asks the same
-        // predicate about actions.  Nothing acts on the answer -- a location
-        // is versioned because a symbolic value reached it.
-        ArtifactIO.replaceJsonl(arguments.outputDirectory.resolve(
-                ReplayTaskSlice.ARTIFACT + ".locations"),
-                ReplayTaskSlice.locationDecisions(result.executionTasks,
-                        loaded.symbolicInputs));
         Path taskPlan = arguments.outputDirectory.resolve(
                 "execution_task_plan.jsonl");
         List<JsonObject> taskRows = new ArrayList<>();
@@ -340,8 +315,6 @@ public final class ConcolicScheduler {
         JsonObject taskPlanIdentity = artifactIdentity(taskPlan);
         JsonObject index = workflow.scheduleIndex(result.executionTasks,
                 loaded.regionPlanIdentity, taskPlanIdentity);
-        index.add("replayTaskSlice",
-                replaySlice.telemetry(selectedOccurrences));
         requireArtifactIdentity(arguments.regionPlan,
                 loaded.regionPlanIdentity,
                 "region plan changed while scheduling");
@@ -413,7 +386,7 @@ public final class ConcolicScheduler {
         List<JsonObject> named = new ArrayList<>(taskRows.size());
         for (JsonObject row : taskRows) {
             JsonObject stamped = row.deepCopy();
-            stamped.addProperty(LinkedReplayBundle.GROUP_FIELD, groupId);
+            stamped.addProperty("replayGroupId", groupId);
             named.add(stamped);
         }
         return named;
@@ -1188,8 +1161,10 @@ public final class ConcolicScheduler {
         Set<String> locations = new LinkedHashSet<>();
         for (JsonElement element : goal.sharedCarriers()) {
             if (!element.isJsonObject()) continue;
-            String location = ReplayTaskSlice.location(
-                    element.getAsJsonObject());
+            JsonObject carrier = element.getAsJsonObject();
+            String location = SharedFieldFlow.fieldKey(
+                    optionalString(carrier, "declaringClass"),
+                    optionalString(carrier, "fieldName"));
             if (!location.isEmpty()) locations.add(location);
         }
         return locations;
@@ -1203,8 +1178,7 @@ public final class ConcolicScheduler {
      * declaration the replay has nothing to select, the getfield resolves no
      * writer, and the port would reach the runtime as a SYMBOLIC input it
      * cannot serve.  The plan therefore admits the demand only where the
-     * planner declared the location and the slice keeps it -- the same two
-     * facts {@link ReplayTaskSlice} records about a location.  A
+     * planner declared the location and root dependence reaches it.  A
      * plan frozen before references were declared keeps its old concrete
      * answer rather than gaining a port with no carrier behind it.</p>
      */

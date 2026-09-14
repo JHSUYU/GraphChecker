@@ -246,21 +246,11 @@ public final class RuntimeWorkflowDiscovery {
         if (!address.isNamed()) return false;
         OccurrenceAddress stated = OccurrenceAddress.parse(declared);
         if (stated.isNamed()) return stated.equals(address);
-        // family + k: "<source>#<epoch>/<api>#<k>" states the population
-        // and the k inside it, which is what a case knows without having
-        // run -- the region is a hash of what the recording selected, and
-        // a case file that spells one is re-derived by hand every time.
-        int hash = declared.lastIndexOf('#');
-        if (hash <= 0) return false;
-        String family = declared.substring(0, hash).trim();
-        String ordinal = declared.substring(hash + 1).trim();
-        try {
-            return address.ordinal() == Integer.parseInt(ordinal)
-                    && !address.family().isEmpty()
-                    && family.equals(address.family());
-        } catch (NumberFormatException notAnOrdinal) {
-            return false;
-        }
+        // A declaration that is not a full address states nothing this can
+        // match: the request family it used to name is not part of an
+        // occurrence's identity, and the control lineage that replaces it is
+        // not in a string a case wrote by hand.
+        return false;
     }
 
     /** All graph-connected occurrences of every execution of the same

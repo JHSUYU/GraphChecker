@@ -87,26 +87,13 @@ public final class GapLedger {
     /**
      * What a registered code's class depends on.
      *
-     * <p>Most codes answer the same way wherever they are raised.  Three do
-     * not: a planned region that never ran is a broken chain when the replay
-     * slice kept that region, and an over-approximation of the static plan
-     * when root dependence never selected it.  Those carry
-     * {@link #KEPT_SLICE} and are decided against the slice the campaign
-     * actually ran.</p>
+     * <p>Most codes answer the same way wherever they are raised.  A few
+     * are decided by the campaign fold, which can see the composed formula
+     * the readers in this JVM cannot.</p>
      */
     public enum Scope {
         /** The class in the entry, wherever the code is raised. */
         ALWAYS,
-        /**
-         * BLOCKING when the row's subject names a task or occurrence the
-         * replay slice kept -- a task the plan said must run and publish,
-         * for one of TARGET_REACH, ROOT_SITE, CARRIER_WRITER,
-         * ROOT_DEPENDENT_FLOW or FATAL_READ_WRITER -- and DIAGNOSTIC when it
-         * names a statically planned region the slice pruned.  Where the
-         * slice is unknown, withheld, or the subject maps to no planned
-         * occurrence, the answer is BLOCKING.
-         */
-        KEPT_SLICE,
         /**
          * BLOCKING when the composed formula names a handoff phase of the
          * row's port that no replay of this campaign attached, and
@@ -142,10 +129,10 @@ public final class GapLedger {
          * Why this code is DIAGNOSTIC on a flip-wave row, or {@code ""}.
          *
          * <p>A qualifier, not a scope: it answers a different question from
-         * {@link Scope#KEPT_SLICE} and the two compose.  It applies only to
-         * a row whose subject is a linked-replay task, and only the campaign
-         * fold can see that, so every reader that cannot keeps answering
-         * with {@link #gapClass}.</p>
+         * {@link #scope} and the two compose.  It applies only to a row
+         * whose subject is a flip-replay task, and only the campaign fold
+         * can see that, so every reader that cannot keeps answering with
+         * {@link #gapClass}.</p>
          */
         public final String flipWaveReason;
 
@@ -240,13 +227,6 @@ public final class GapLedger {
         requireReason(code, reason);
         register(new Entry(code, source, GapClass.BLOCKING,
                 Scope.COMPOSED_PORT, reason, ""));
-    }
-
-    private static void onKeptSlice(String source, String code,
-                                    String reason) {
-        requireReason(code, reason);
-        register(new Entry(code, source, GapClass.BLOCKING, Scope.KEPT_SLICE,
-                reason, ""));
     }
 
     private static void requireReason(String code, String reason) {
@@ -585,15 +565,11 @@ public final class GapLedger {
         // Spelled as the importer publishes it.  A region skip reaches the
         // ledger as "REGION_" + the runtime's skipKind
         // (ConcolicSummaryImporter.skippedEventCode), and an entry under the
-        // bare skipKind matches no row at all: it left this code taking the
-        // blocking default on lane VM9 and lane VM10, with the KEPT_SLICE
-        // scope written here deciding nothing.
-        onKeptSlice(importer, "REGION_ROOT_NEVER_EXECUTED",
+        // bare skipKind matches no row at all.
+        blocking(importer, "REGION_ROOT_NEVER_EXECUTED",
                 "the planned root did not execute in this replay: no"
-                        + " compatible activation was offered at all, which"
-                        + " on the kept slice means the region the chain"
-                        + " names never ran, and off it means the task was an"
-                        + " over-approximation");
+                        + " compatible activation was offered at all, so the"
+                        + " region the chain names never ran");
         // ------------------------------------------------------------------
         // IMPORT / PUBLICATION_CONTRACT -- one pass at the end of IMPORT over
         // what the replay wave actually published.  Each code names a link
@@ -654,12 +630,10 @@ public final class GapLedger {
                         + " withholding the claim on it would refuse the run"
                         + " for having learned something, and composing it"
                         + " with this epoch would merge two causal graphs");
-        onKeptSlice(importer, "REGION_TASK_NO_PUBLISHED_ACTIVATION",
-                "a planned task published neither an activation nor a skip:"
-                        + " on the kept slice its region contributes no case"
-                        + " to a path set the chain runs through, off it the"
-                        + " task was an over-approximation that produced"
-                        + " nothing");
+        blocking(importer, "REGION_TASK_NO_PUBLISHED_ACTIVATION",
+                "a planned task published neither an activation nor a skip,"
+                        + " so its region contributes no case to a path set"
+                        + " the chain runs through");
         blocking(importer, "TARGET_REACH_NO_ACTIVATION_REACHED_TARGET",
                 "no activation of this region executed the target site, so"
                         + " the region states nothing about the target --"
@@ -722,12 +696,9 @@ public final class GapLedger {
         // CLASSIFY / IMPORTER -- topology deltas.
         // ------------------------------------------------------------------
         String classify = "CLASSIFY/IMPORTER";
-        onKeptSlice(classify, "COVERAGE_GAP",
-                "a planned task produced no result: on the kept slice that is"
-                        + " a case the plan demanded and the recording does"
-                        + " not contain, off it a task root dependence never"
-                        + " selected produced nothing, which is what the"
-                        + " slice already said about it");
+        blocking(classify, "COVERAGE_GAP",
+                "a planned task produced no result, so a case the plan"
+                        + " demanded is not in the recording");
 
         // ------------------------------------------------------------------
         // REPLAY / COMMUNICATION -- the message envelope's own findings.  A
@@ -839,10 +810,8 @@ public final class GapLedger {
     }
 
     /**
-     * The class of {@code code} for a reader that cannot see the replay
-     * slice.  An unregistered code is BLOCKING, and so is every
-     * {@link Scope#KEPT_SLICE} code, because not knowing whether a row is on
-     * the slice is not a reason to stop withholding on it.
+     * The class of {@code code}.  An unregistered code is BLOCKING: a gap
+     * nobody classified is not a reason to stop withholding on it.
      */
     public static GapClass classOf(String code) {
         Entry entry = code == null ? null : REGISTRY.get(code.trim());
@@ -850,34 +819,15 @@ public final class GapLedger {
     }
 
     /**
-     * The class of {@code code} for a row whose slice membership is known.
-     *
-     * @param onKeptSlice whether the row's subject names a task or
-     *                    occurrence the replay slice kept
-     */
-    public static GapClass classOf(String code, boolean onKeptSlice) {
-        Entry entry = code == null ? null : REGISTRY.get(code.trim());
-        if (entry == null) return GapClass.BLOCKING;
-        if (entry.scope != Scope.KEPT_SLICE) return entry.gapClass;
-        return onKeptSlice ? GapClass.BLOCKING : GapClass.DIAGNOSTIC;
-    }
-
-    /**
      * Whether {@code code} is decided against the composed formula's ports.
      *
-     * <p>Like the slice, a question only the campaign fold can answer, so
+     * <p>A question only the campaign fold can answer, so
      * {@link #classOf(String)} and {@link #blocking(String)} stay
      * fail-closed and never consult it.</p>
      */
     public static boolean composedPortConditional(String code) {
         Entry entry = code == null ? null : REGISTRY.get(code.trim());
         return entry != null && entry.scope == Scope.COMPOSED_PORT;
-    }
-
-    /** Whether {@code code} is decided against the replay slice. */
-    public static boolean sliceConditional(String code) {
-        Entry entry = code == null ? null : REGISTRY.get(code.trim());
-        return entry != null && entry.scope == Scope.KEPT_SLICE;
     }
 
     /**
@@ -957,13 +907,6 @@ public final class GapLedger {
         JsonArray diagnostic = new JsonArray();
         for (String code : diagnosticCodes()) diagnostic.add(code);
         ledger.add("diagnostic", diagnostic);
-        // Read by run_engine.sh, which is the reader that can see the slice.
-        JsonArray conditional = new JsonArray();
-        for (Entry entry : REGISTRY.values()) {
-            if (entry.scope != Scope.KEPT_SLICE) continue;
-            conditional.add(entry.code);
-        }
-        ledger.add("sliceConditional", conditional);
         // Read by run_engine.sh, the reader that can see the composed
         // manifest and the campaign's attaches at the same time.
         JsonArray composedPort = new JsonArray();

@@ -30,22 +30,22 @@ public class OccurrenceAddressTest {
         assertEquals("the activation suffix is not part of the address",
                 PLANNED, address(PLANNED + "#a2").render());
         assertEquals(PLANNED + "#a2", address(PLANNED).render(2));
-        assertEquals("an address under no request writes no family, so every"
-                        + " id minted before the family existed is its own",
-                PLANNED, OccurrenceAddress.of("hdfs-17960/nn0#epoch1",
-                        "REGION.9492ec77-0f65-34ba-a3af-14753ac7347d", "", 1)
+        assertEquals(PLANNED, OccurrenceAddress.of("hdfs-17960/nn0#epoch1",
+                        "REGION.9492ec77-0f65-34ba-a3af-14753ac7347d", 1)
                         .render());
-        assertEquals("", address(PLANNED).family());
 
+        // A corpus written while the request family was a component of the
+        // address still names the occurrence it always named: the suffix
+        // parses and is discarded, because which request an activation was
+        // reached under names neither endpoint of any interaction.
         String withFamily = PLANNED.substring(0, PLANNED.length() - 2)
                 + "@hdfs-17960/client#epoch0/checkpoint-namespace#1";
-        assertEquals(withFamily, address(withFamily).render());
-        assertEquals("hdfs-17960/client#epoch0/checkpoint-namespace",
-                address(withFamily).family());
+        assertEquals(PLANNED, address(withFamily).render());
         assertEquals("and the region is still read whole",
                 "REGION.9492ec77-0f65-34ba-a3af-14753ac7347d",
                 address(withFamily).regionId());
-        assertEquals(withFamily + "#a2", address(withFamily).render(2));
+        assertTrue("so the two spellings are one occurrence",
+                address(withFamily).matches(address(PLANNED)));
 
         // The same grammar read as an occurrence id: the activation splits
         // off the address, and one can be put back on.
@@ -129,7 +129,7 @@ public class OccurrenceAddressTest {
 
         assertEquals("two activations of one region are one bucket",
                 first, second);
-        assertEquals("node, region, family, root -- four parts", 4,
+        assertEquals("node, region, root -- three parts", 3,
                 first.split("\n", -1).length);
         assertFalse("the request key is not in the bucket",
                 first.contains("/request/"));
@@ -137,25 +137,20 @@ public class OccurrenceAddressTest {
                 "hdfs-17960/nn0#epoch0/region/REGION.9492ec77-0f65-34ba-"
                         + "a3af-14753ac7347d#1").counterScope(root)));
 
-        // The family partitions the count, and the request ordinal does not.
+        // The request an activation was reached under partitions nothing:
+        // two activations of one region on one node and epoch are one
+        // population however each arrived, and the k inside it is what the
+        // control lineage will refine (IDENTITY-V2), never a header.
         String region = "hdfs-17899/nn0#epoch0/region/REGION.2392e4b7";
         String heartbeat = region
                 + "@hdfs-17899/target-dn#epoch0/heartbeat#1";
         String refresh = region + "@hdfs-17899/sps#epoch0/refresh#1";
-        assertFalse("two families are two buckets",
-                address(heartbeat).counterScope(root)
-                        .equals(address(refresh).counterScope(root)));
-        assertEquals("a second round of one family is one bucket",
+        assertEquals("two requests are one bucket",
                 address(heartbeat).counterScope(root),
-                address(region + "@hdfs-17899/target-dn#epoch0/heartbeat#2")
-                        .counterScope(root));
-        assertEquals("and the family survives the address round-trip",
-                heartbeat, address(heartbeat).render());
-        assertEquals("which the request key it came from spells",
-                "hdfs-17899/target-dn#epoch0/heartbeat",
-                OccurrenceAddress.familyOf(
-                        "hdfs-17899/target-dn#epoch0/request/heartbeat#4"));
-        assertFalse("an activation under a family is not one under none",
-                address(heartbeat).matches(address(region + "#1")));
+                address(refresh).counterScope(root));
+        assertEquals("and the retired family spelling names the occurrence"
+                        + " it always named",
+                region + "#1", address(heartbeat).render());
+        assertTrue(address(heartbeat).matches(address(region + "#1")));
     }
 }
