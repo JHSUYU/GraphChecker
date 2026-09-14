@@ -217,17 +217,6 @@ public final class ConcolicConstraintSolver {
             if (!unassigned.isEmpty()) {
                 record.add("unassignedFlipVariables", strings(unassigned));
             }
-            Set<String> invented = modelRestsOnUnstatedField(
-                    encoder.unstatedProjections, encoder, values,
-                    targetAssertions, executable, timeoutMillis);
-            if (!invented.isEmpty()) {
-                record.addProperty("status", "MATERIALIZATION_GAP");
-                record.addProperty("reason",
-                        "FLIP_MODEL_RESTS_ON_UNSTATED_FIELD");
-                record.add("unstatedFieldProjections", strings(invented));
-                return new Result(record, smt, new JsonArray(),
-                        replayContract);
-            }
             record.addProperty("status", "SAT_MODEL_READY");
         }
         return new Result(record, smt, assignments, replayContract);
@@ -332,8 +321,6 @@ public final class ConcolicConstraintSolver {
         private static final String SHARED_TERM_PREFIX = "container_dag__";
         private final SmtSymbolTable smtSymbols = new SmtSymbolTable();
         private final Map<String, Sort> declarations = new LinkedHashMap<>();
-        private final Map<String, String> functionDeclarations =
-                new LinkedHashMap<>();
         private final Map<String, SymbolNames> names =
                 new LinkedHashMap<>();
         private final Map<String, String> containerStates =
@@ -358,8 +345,6 @@ public final class ConcolicConstraintSolver {
          * model that rests on such a choice can be named instead of
          * published as a plan the replay cannot reproduce.
          */
-        private final Set<String> unstatedProjections =
-                new LinkedHashSet<>();
         private final Set<String> javaIntRangeAssertions =
                 new LinkedHashSet<>();
         private boolean usesJavaIntString;
@@ -663,35 +648,6 @@ public final class ConcolicConstraintSolver {
                 @Override
                 public void require(String predicate) {
                     assertions.add(predicate);
-                }
-
-                @Override
-                public ContainerSmtCodec.Term field(
-                        ContainerSmtCodec.Term owner, String ownerClass,
-                        int fieldOffset, String javaType) {
-                    Sort result = sortOfJava(javaType);
-                    if (owner == null
-                            || owner.sort != ContainerSmtCodec.Sort.REF
-                            || fieldOffset < 0 || result == Sort.UNKNOWN
-                            || result.containerState()) {
-                        unsupported("FieldAccessExpression:" + ownerClass
-                                + "@" + fieldOffset + ":" + javaType);
-                        return null;
-                    }
-                    String identity = ownerClass + "\u0000" + fieldOffset
-                            + "\u0000" + javaType;
-                    String projection = ownerClass + "@" + fieldOffset
-                            + ":" + javaType;
-                    unstatedProjections.add(projection);
-                    String accessor = smtSymbols.mint(
-                            "container_field__", identity, 16);
-                    functionDeclarations.put(accessor,
-                            "(declare-fun " + accessor + " (Ref) "
-                                    + result.smt + ")");
-                    return toContainerTerm(Term.vm("(" + accessor + " "
-                            + owner.text + ")", result,
-                            JavaPrimitiveSmtSemantics.widthOfJavaType(
-                                    javaType)));
                 }
 
                 @Override
@@ -1001,14 +957,6 @@ public final class ConcolicConstraintSolver {
                             && reachable.add(name)) pending.add(name);
                 }
             }
-            for (String declaration : functionDeclarations.values()) {
-                for (SharedAliasToken token
-                        : sharedAliasTokens(declaration)) {
-                    String name = token.name;
-                    if (definitions.containsKey(name)
-                            && reachable.add(name)) pending.add(name);
-                }
-            }
             for (int index = 0; index < pending.size(); index++) {
                 for (String name : dependencies.get(pending.get(index))) {
                     if (definitions.containsKey(name)
@@ -1019,9 +967,6 @@ public final class ConcolicConstraintSolver {
             Map<String, Integer> references = new LinkedHashMap<>();
             for (String assertion : assertions) {
                 countSharedAliases(assertion, reachable, references);
-            }
-            for (String declaration : functionDeclarations.values()) {
-                countSharedAliases(declaration, reachable, references);
             }
             for (SharedTermDefinition definition : sharedTerms.values()) {
                 if (reachable.contains(definition.name)) {
@@ -1047,11 +992,7 @@ public final class ConcolicConstraintSolver {
             for (String assertion : assertions) {
                 roots.add(replaceSharedAliases(assertion, inline));
             }
-            List<String> functions = new ArrayList<>();
-            for (String declaration : functionDeclarations.values()) {
-                functions.add(replaceSharedAliases(declaration, inline));
-            }
-            return new SharedTermEmission(emitted, functions, roots);
+            return new SharedTermEmission(emitted, roots);
         }
 
         private static void countSharedAliases(String text,
@@ -1152,23 +1093,7 @@ public final class ConcolicConstraintSolver {
         }
 
         private String finish() {
-            return finish(Collections.<String>emptyList(),
-                    Collections.<String>emptySet());
-        }
-
-        /**
-         * The same query with {@code extra} asserted before the check and
-         * the {@code omitted} assertions replaced by their negation.
-         *
-         * <p>An assertion is named by the text this encoder collected; the
-         * emission rewrites it against the shared-term DAG, so the two are
-         * matched by position -- the roots are emitted in the order the
-         * assertions were added.</p>
-         */
-        private String finish(List<String> extra, Set<String> omitted) {
             SharedTermEmission shared = sharedTermEmission();
-            List<String> collected = new ArrayList<>(assertions);
-            List<String> negated = new ArrayList<>();
             StringBuilder result = new StringBuilder();
             result.append("(set-option :produce-models true)\n");
             result.append("(set-logic ALL)\n");
@@ -1194,9 +1119,6 @@ public final class ConcolicConstraintSolver {
                 result.append("(declare-const ").append(definition.name)
                         .append(' ').append(definition.sort.smt)
                         .append(")\n");
-            }
-            for (String declaration : shared.functionDeclarations) {
-                result.append(declaration).append('\n');
             }
             for (SymbolNames symbol : names.values()) {
                 if (symbol.sort != Sort.REF) continue;
@@ -1228,31 +1150,12 @@ public final class ConcolicConstraintSolver {
                 result.append("(assert (= ").append(definition.name)
                         .append(' ').append(definition.body).append("))\n");
             }
-            for (int index = 0; index < shared.assertions.size(); index++) {
-                String assertion = shared.assertions.get(index);
-                if (index < collected.size()
-                        && omitted.contains(collected.get(index))) {
-                    negated.add(assertion);
-                    continue;
-                }
+            for (String assertion : shared.assertions) {
                 result.append("(assert ").append(assertion).append(")\n");
-            }
-            if (!negated.isEmpty()) {
-                result.append("(assert (not ");
-                if (negated.size() > 1) result.append("(and ");
-                for (int index = 0; index < negated.size(); index++) {
-                    if (index > 0) result.append(' ');
-                    result.append(negated.get(index));
-                }
-                if (negated.size() > 1) result.append(')');
-                result.append("))\n");
             }
             for (String assertion : softAssertions) {
                 result.append("(assert-soft ").append(assertion)
                         .append(" :weight 1)\n");
-            }
-            for (String assertion : extra) {
-                result.append("(assert ").append(assertion).append(")\n");
             }
             result.append("(check-sat)\n");
             List<String> modelNames = new ArrayList<>();
@@ -1288,14 +1191,11 @@ public final class ConcolicConstraintSolver {
 
     private static final class SharedTermEmission {
         private final List<SharedTermDefinition> definitions;
-        private final List<String> functionDeclarations;
         private final List<String> assertions;
 
         private SharedTermEmission(List<SharedTermDefinition> definitions,
-                                   List<String> functionDeclarations,
                                    List<String> assertions) {
             this.definitions = definitions;
-            this.functionDeclarations = functionDeclarations;
             this.assertions = assertions;
         }
     }
@@ -1332,44 +1232,6 @@ public final class ConcolicConstraintSolver {
      * number of replay controls needed for the requested flip.
      */
     /** The flipped predicate's own variables that no assignment carries. */
-    /**
-     * The projections a model needs and the recording does not state.
-     *
-     * <p>A flip model is a plan: the replay sets the controls it names and
-     * the fatal arm must then hold.  Pin every control the model chose and
-     * ask whether the arm can still fail -- if it can, what makes it hold
-     * is not a control at all but a field the VM published no value for,
-     * and the accessor standing in for that field is a value this solve
-     * invented.  On laneVM23 that is {@code BlockKey@24:J}, the expiry the
-     * key map's {@code REMOVE_IF} guard compares against the clock: the
-     * model kept every recorded value and let the accessor expire the key,
-     * which no replay reproduces.</p>
-     *
-     * <p>Empty when the query states every projection it reads, or when
-     * the arm holds however those projections fall.</p>
-     */
-    private static Set<String> modelRestsOnUnstatedField(
-            Set<String> unstated, Encoder encoder,
-            Map<String, String> values,
-            List<String> targetAssertions, Path executable,
-            long timeoutMillis) throws IOException,
-            InterruptedException {
-        if (unstated.isEmpty()
-                || targetAssertions.isEmpty() || values.isEmpty()) {
-            return Collections.emptySet();
-        }
-        List<String> pinned = new ArrayList<>();
-        for (Map.Entry<String, String> entry : values.entrySet()) {
-            pinned.add("(= " + entry.getKey() + " " + entry.getValue() + ")");
-        }
-        SolverOutput output = run(executable, encoder.finish(pinned,
-                new LinkedHashSet<>(targetAssertions)),
-                Math.max(1L, timeoutMillis));
-        return "sat".equals(output.status())
-                ? new LinkedHashSet<>(unstated)
-                : Collections.<String>emptySet();
-    }
-
     private static Set<String> coversTarget(Set<String> targetSymbols,
                                             JsonArray assignments) {
         Set<String> missing = new LinkedHashSet<>(targetSymbols);

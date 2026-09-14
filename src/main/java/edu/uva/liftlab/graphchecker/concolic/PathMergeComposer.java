@@ -390,11 +390,17 @@ public final class PathMergeComposer {
             // a note on the side.  The read still lowers -- to "does this
             // opaque state hold the key", which the solver answers however
             // it likes -- so composing the path anyway would rest the
-            // disjunct on a map the recording never showed.
+            // disjunct on a map the recording never showed.  A field
+            // projection the recording states no value for is the same
+            // refusal one step down: the write log does not cover the read
+            // and the run recorded nothing it returned, so the disjunct
+            // would rest on a field nothing showed either.
             List<String> refusals = new ArrayList<>();
             for (String subject : lowering.pathRefusals()) {
                 if (subject.startsWith(
-                        ContainerSmtCodec.CONTAINER_BASE_UNSTATED)) {
+                        ContainerSmtCodec.CONTAINER_BASE_UNSTATED)
+                        || subject.startsWith(ContainerSmtCodec
+                        .UNSTATED_FIELD_PROJECTION)) {
                     refusals.add(subject);
                 }
             }

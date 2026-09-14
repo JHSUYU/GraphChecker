@@ -137,9 +137,35 @@ abstract class VmLoweringCore implements VmTermLowering.Policy {
     // Dispatch.
     // ------------------------------------------------------------------
 
+    /**
+     * States what a read this lowering resolved actually observed.
+     *
+     * <p>The resolver stamps a joined read with the value the recording saw
+     * come back from it.  A lowering that composes paths conjoins that into
+     * the path, so the path is admitted only at its own replay's valuation;
+     * one that asks about a single execution already has the execution and
+     * ignores it.</p>
+     */
+    void recordedReading(Term value, JsonElement observed, String origin) {
+    }
+
     /** Lowers one recorded VM expression of any kind. */
     final Term dispatch(JsonElement expression, Sort expected,
                         String origin) {
+        Term value = lowered(expression, expected, origin);
+        if (value != null && expression != null
+                && expression.isJsonObject()) {
+            JsonElement observed = expression.getAsJsonObject()
+                    .get(InSessionReadResolver.RECORDED_READING);
+            if (observed != null && !observed.isJsonNull()) {
+                recordedReading(value, observed, origin);
+            }
+        }
+        return value;
+    }
+
+    private Term lowered(JsonElement expression, Sort expected,
+                         String origin) {
         if (expression == null || expression.isJsonNull()
                 || !expression.isJsonObject()) {
             return refuse(Reason.ABSENT_EXPRESSION, origin, "",

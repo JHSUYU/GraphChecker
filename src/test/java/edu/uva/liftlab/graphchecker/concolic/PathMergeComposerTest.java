@@ -69,6 +69,8 @@ public class PathMergeComposerTest {
     private static final String LOOP_OCCURRENCE =
             "app/nn0#epoch0/region/REGION.a#1";
     private static final String LOOP_SITE = "<C: void m()>#u7";
+    private static final String OWNER = "{'_type':'SymbolExpression',"
+            + "'_java_type':'test/Key','_exp':\"M_L'test/Key'_9\"}";
 
     /**
      * Fatal_T is OR_p (pi_p AND phi_p): satisfiable exactly where some path's
@@ -191,6 +193,28 @@ public class PathMergeComposerTest {
                         .getAsString());
         assertEquals("", roots(unstated).get(0).getAsJsonObject()
                 .get("recordedValue").getAsString());
+
+        // A field read the write log does not cover is the value the run
+        // read there, and no accessor is declared over it: one the solver
+        // may define answers with a value no execution produced.
+        PathMergeComposer.Result valued = composed("path-merge-field",
+                path("seed", "GROUP.SEED",
+                        notEqual(projection(constant(119980)), constant(0)),
+                        notEqual(constant(1), constant(0))),
+                decision("GROUP.SEED", rootIs(true)));
+        assertEquals(0, gates(valued).size());
+        assertFalse("a projection the run valued is no free accessor",
+                valued.smtLib.contains("declare-fun field__"));
+        // And one it states no value for is refused by name, never minted.
+        PathMergeComposer.Result invented = composed("path-merge-unvalued",
+                path("seed", "GROUP.SEED",
+                        notEqual(projection(null), constant(0)),
+                        notEqual(constant(1), constant(0))),
+                decision("GROUP.SEED", rootIs(true)));
+        assertTrue(gates(invented).toString(), gates(invented).toString()
+                .contains(ContainerSmtCodec.UNSTATED_FIELD_PROJECTION
+                        + "test/Key@8:J"));
+        assertFalse(invented.smtLib.contains("declare-fun field__"));
 
         // A predicate published already concrete, at an activation whose
         // slice declares carriers and on a path that depends on no root.
@@ -794,6 +818,20 @@ public class PathMergeComposerTest {
         node.addProperty("_op", operator);
         node.add("_left", left);
         node.add("_right", right);
+        return node;
+    }
+
+    /** One field read, with the value the run read there or without it. */
+    private static JsonObject projection(JsonObject concreteValue) {
+        JsonObject node = JsonParser.parseString(
+                "{'_type':'FieldAccessExpression','_java_type':'J',"
+                + "'ownerClass':'test/Key','fieldOffset':8,'owner':"
+                + OWNER + "}").getAsJsonObject();
+        if (concreteValue != null) {
+            node.add("concreteOwner", JsonParser.parseString(OWNER)
+                    .getAsJsonObject());
+            node.add("concreteValue", concreteValue);
+        }
         return node;
     }
 

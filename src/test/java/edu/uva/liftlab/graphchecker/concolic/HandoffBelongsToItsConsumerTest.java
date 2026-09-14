@@ -152,30 +152,63 @@ public class HandoffBelongsToItsConsumerTest {
         assertFalse("so the target is covered, not reported unassigned",
                 result.record.has("unassignedFlipVariables"));
 
-        // And a model may not rest on a field the recording states no
-        // value for: the accessor standing in for BlockKey.expiryDate is
-        // free, so laneVM23's model expired a key the replay then kept.
+        // And a projection is never an accessor the solver may define:
+        // left free, the one standing in for BlockKey.expiryDate let
+        // laneVM23's model expire a key the replay then kept.  A
+        // projection the recording values is that value; one it does not
+        // is refused by name.
         JsonObject free = wireQuery();
         free.add(RegionPathWorklist.HANDOFF_CONTROLS,
                 query.get(RegionPathWorklist.HANDOFF_CONTROLS));
         free.add("replayContract", BranchReplayContract.atSource(
                 BranchWitness.vmPcImmutable("TEST#u2",
                         "<test.Wire: void run()>", 1, 1, false,
-                        BranchPredicateAlgebra.complement(parse(
-                                "{'_type':'BinaryExpression','_op':'>',"
-                                + "'_left':{'_type':'FieldAccessExpression',"
-                                + "'_java_type':'J','ownerClass':'test/Key',"
-                                + "'fieldOffset':8,'owner':{'_type':"
-                                + "'SymbolExpression','_java_type':'test/Key'"
-                                + ",'_exp':\"P_L'test/Key'_\"}},'_right':"
-                                + "{'_type':'SymbolExpression','_java_type':"
-                                + "'J','_exp':'" + WIRE_SYMBOL + "'}}")), 0,
+                        BranchPredicateAlgebra.complement(
+                                greaterThanWire(parse(PROJECTION))), 0,
                         parse("{'eventId':1,'contextId':1}"))).toJson());
         JsonObject refused = solve(free, activation).record;
-        assertEquals(refused.toString(), "FLIP_MODEL_RESTS_ON_UNSTATED_FIELD",
-                refused.get("reason").getAsString());
-        assertEquals("test/Key@8:J", refused.getAsJsonArray(
-                "unstatedFieldProjections").get(0).getAsString());
+        assertEquals(refused.toString(), "UNSUPPORTED",
+                refused.get("status").getAsString());
+        assertTrue(refused.toString(), refused.getAsJsonArray("unsupported")
+                .toString().contains(
+                        ContainerSmtCodec.UNSTATED_FIELD_PROJECTION
+                                + "test/Key@8:J"));
+
+        // The same projection with the pair the VM states beside it is that
+        // value, and the query is answered rather than refused.
+        JsonObject stated = wireQuery();
+        stated.add(RegionPathWorklist.HANDOFF_CONTROLS,
+                query.get(RegionPathWorklist.HANDOFF_CONTROLS));
+        JsonObject read = parse(PROJECTION);
+        read.add("concreteOwner", parse(KEY_OWNER));
+        read.add("concreteValue",
+                parse("{'_type':'ConstExpr','_java_type':'J',"
+                        + "'_exp':'Y_J_5'}"));
+        stated.add("replayContract", BranchReplayContract.atSource(
+                BranchWitness.vmPcImmutable("TEST#u2",
+                        "<test.Wire: void run()>", 1, 1, false,
+                        BranchPredicateAlgebra.complement(
+                                greaterThanWire(read)), 0,
+                        parse("{'eventId':1,'contextId':1}"))).toJson());
+        assertEquals("SAT_MODEL_READY",
+                solve(stated, activation).record.get("status")
+                        .getAsString());
+    }
+
+    private static final String KEY_OWNER = "{'_type':'SymbolExpression',"
+            + "'_java_type':'test/Key','_exp':\"P_L'test/Key'_\"}";
+    private static final String PROJECTION =
+            "{'_type':'FieldAccessExpression','_java_type':'J',"
+            + "'ownerClass':'test/Key','fieldOffset':8,'owner':"
+            + KEY_OWNER + "}";
+
+    /** The read compared against the value that arrived over the wire. */
+    private static JsonObject greaterThanWire(JsonObject read) {
+        JsonObject binary = parse("{'_type':'BinaryExpression','_op':'>',"
+                + "'_right':{'_type':'SymbolExpression','_java_type':'J',"
+                + "'_exp':'" + WIRE_SYMBOL + "'}}");
+        binary.add("_left", read);
+        return binary;
     }
 
     private static JsonObject handoff(String consumerOccurrenceId) {
