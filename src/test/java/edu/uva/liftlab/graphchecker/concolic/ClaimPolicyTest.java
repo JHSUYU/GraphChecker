@@ -144,6 +144,9 @@ public class ClaimPolicyTest {
                 .get("acceptedFindingKind").getAsString());
         assertFalse(refused.getAsJsonObject("rootSpace")
                 .get("recordedFailureExplained").getAsBoolean());
+        // And a formula that answers yes to the execution that did not fail
+        // is an alarm, named and blocking, not a witness.
+        blocker(refused, ClaimPolicy.FORMULA_SAT_AT_RECORDED_VALUATION);
 
         // A declared root is enumerated over its domain exactly as a marker
         // is over {recorded, flipped}, so the valuation that moved it is the

@@ -277,6 +277,12 @@ public final class GapLedger {
         blocking(composer, "COMPOSITION_GAP",
                 "the emitter refused a term it could not lower, so the"
                         + " formula does not contain the step it refused");
+        blocking(composer, "FORMULA_SAT_AT_RECORDED_VALUATION",
+                "the composed formula is satisfiable with every declared root"
+                        + " at the value the recording read, on a run whose"
+                        + " recording took the healthy arm: a formula that"
+                        + " answers yes to the execution that did not fail"
+                        + " answers nothing about the one that would");
         diagnostic(composer, "ROOT_NOT_ON_ANY_PATH",
                 "the recording minted a root and no admitted path's"
                         + " condition or fatal predicate mentions it.  That"

@@ -449,6 +449,8 @@ public final class PathMergeComposer {
         JsonArray families = handoffFamilies(summaries, replays,
                 usedHandoffSymbols, roots, declaredVariables, lowering,
                 gates, arguments.clockSkewMillis);
+        JsonArray pinnedArrivals = pinUnproducedArrivals(families,
+                declaredVariables, roots, lowering);
         if (selectors.isEmpty()) {
             gate(gates, TARGET_NOT_REACHED,
                     "no replay published a usable anchored row for " + site
@@ -573,6 +575,10 @@ public final class PathMergeComposer {
                 arguments.clockSkewMillis)) {
             lowering.assertNamed("clock_domain__" + clockDomains++, domain);
         }
+
+        // Every replay's objects are as many objects as the recording gave
+        // rids; stated once here, when every path has been lowered.
+        lowering.assertRecordedObjectsDistinct();
 
         BoundedLoopComposition loops = boundedLoops(regionPlans, fatal);
         JsonObject manifest = manifest(arguments, fatal, site, occurrence,
@@ -1032,6 +1038,62 @@ public final class PathMergeComposer {
             published.add(row);
         }
         return published;
+    }
+
+    /**
+     * Pins a handoff variable no producer path delivers.
+     *
+     * <p>A {@code v_H} is free because a family says what it may be: one of
+     * the values some producer of this corpus made there.  Where the corpus
+     * has no such producer -- the runtime materialised the port and no
+     * replay exported it -- there is no family, and the variable was left
+     * free with nothing to bind it.  A free variable is not "unknown", it is
+     * "any value at all", and the solver answers the target with a delivery
+     * the system never made: laneRA's nine block-key-expiry phases were
+     * exactly that.  The wire did deliver something, and the recording
+     * states it, so the arrival is what it is pinned to.  It cannot move,
+     * because moving it would need a producer expression and there is
+     * none.</p>
+     */
+    private static JsonArray pinUnproducedArrivals(
+            JsonArray families, Map<String, JsonObject> declaredVariables,
+            RootInventory roots, PathMergeLowering lowering) {
+        Set<String> bound = new LinkedHashSet<>();
+        for (JsonElement family : families) {
+            if (family.isJsonObject()) {
+                bound.add(optionalString(family.getAsJsonObject(),
+                        "handoffSymbol"));
+            }
+        }
+        JsonArray pinned = new JsonArray();
+        int ordinal = 0;
+        for (Map.Entry<String, JsonObject> declared
+                : declaredVariables.entrySet()) {
+            String symbol = declared.getKey();
+            if (bound.contains(symbol) || optionalString(declared.getValue(),
+                    InSessionReadResolver.HANDOFF_PHASE_ID).isEmpty()) {
+                continue;
+            }
+            String arrival = firstNonBlank(
+                    optionalString(declared.getValue(),
+                            ComposedManifest.RECORDED_SOURCE_VALUE),
+                    roots.recordedOf(symbol));
+            String literal = smtIntegerLiteral(arrival);
+            if (literal.isEmpty()) continue;
+            String term = rootTermOf(declared.getValue(), symbol);
+            lowering.assertNamed("handoff_pinned__" + ordinal++,
+                    "(= " + term + " " + literal + ")");
+            JsonObject row = new JsonObject();
+            row.addProperty("handoffSymbol", symbol);
+            row.addProperty(InSessionReadResolver.HANDOFF_PHASE_ID,
+                    optionalString(declared.getValue(),
+                            InSessionReadResolver.HANDOFF_PHASE_ID));
+            row.addProperty("handoffSolverTerm", term);
+            row.addProperty("arrival", arrival);
+            row.addProperty("unproduced", true);
+            pinned.add(row);
+        }
+        return pinned;
     }
 
     /**
@@ -1846,6 +1908,11 @@ public final class PathMergeComposer {
         boolean minted(String rawSymbol) {
             return !firstNonBlank(recorded.get(rawSymbol)).isEmpty()
                     || disagreed.contains(rawSymbol);
+        }
+
+        /** What the recording read for this root, or {@code ""}. */
+        String recordedOf(String rawSymbol) {
+            return firstNonBlank(recorded.get(rawSymbol));
         }
 
         /** The node and epoch whose recording minted this root. */

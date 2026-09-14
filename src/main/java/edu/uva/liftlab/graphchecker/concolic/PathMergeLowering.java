@@ -57,6 +57,9 @@ final class PathMergeLowering extends VmLoweringCore {
     /** Solver term -> the execution-local identity it stands for. */
     private final Map<String, String> opaqueIdentities =
             new LinkedHashMap<>();
+    /** Replay scope -> the objects it held, by the rid the VM gave them. */
+    private final Map<String, Map<Long, String>> recordedObjects =
+            new LinkedHashMap<>();
     /**
      * Side conditions the lowering of the path now being merged produced.
      *
@@ -388,13 +391,49 @@ final class PathMergeLowering extends VmLoweringCore {
                 "", "", "true");
     }
 
-    /** One execution-local identity, named once and left free. */
+    /**
+     * One execution-local identity, named once, free but not nothing.
+     *
+     * <p>Which object an execution ran on says nothing about the failure, so
+     * the identity is opaque.  Two things about it were recorded, though,
+     * and stating them is not an assumption: the execution read fields off
+     * the object, so it was not null; and two different rids in one replay
+     * are two different objects.  Left unsaid, a model answers a null check
+     * by making the reference null and a lookup by making two keys the same
+     * object -- lane17897j's healthy path had both arms satisfiable at its
+     * own recorded valuation for exactly that reason.</p>
+     */
     private String opaque(String raw, Sort sort) {
         String name = symbols.mint("identity__",
                 pathScope + "\0" + sort + "\0" + raw, 10);
         declare(name, sort);
-        opaqueIdentities.put(name, raw);
+        // Said once per identity: the mint answers with the same name every
+        // time the same object is reached, and the fact is about the object.
+        boolean minted = opaqueIdentities.put(name, raw) == null;
+        long rid = InSessionReadResolver.referencedObjectRid(raw);
+        if (minted && sort == Sort.REF && rid > 0L) {
+            assertPlain("(not (= " + name + " nullRef))");
+            Map<Long, String> held = recordedObjects.get(pathScope);
+            if (held == null) {
+                held = new LinkedHashMap<>();
+                recordedObjects.put(pathScope, held);
+            }
+            held.put(rid, name);
+        }
         return name;
+    }
+
+    /**
+     * "Different rids, different objects", once per replay.
+     *
+     * <p>One assertion per scope rather than a pair per pair: the fact is
+     * about the whole set, and z3 reads {@code distinct} that way.</p>
+     */
+    void assertRecordedObjectsDistinct() {
+        for (Map<Long, String> held : recordedObjects.values()) {
+            if (held.size() < 2) continue;
+            assertPlain("(distinct " + String.join(" ", held.values()) + ")");
+        }
     }
 
     /** The one solver name of one declared root. */
