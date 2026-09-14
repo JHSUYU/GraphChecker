@@ -563,7 +563,6 @@ do_import() {
     --runtime-plan "${runtime_region_plan}" \
     --output "${imported_summaries}" \
     --diagnostics "${import_diagnostics}" \
-    --topology-delta "${import_topology_delta}" \
     --iteration-id "${iteration_id}"
   campaign_store_import_cache "${key}" "${status}"
   return "${status}"
@@ -741,8 +740,6 @@ campaign_root=""
 campaign_final=""
 campaign_stage_metrics=""
 campaign_provenance=""
-campaign_delta_rows=0
-campaign_delta_divergences=0
 # This iteration's task-set membership, decoded once by PLAN from the frozen
 # schedule index (README "Minimal cross-stage contract": one owner per check).
 # IMPORT, EXPLORE, the iteration manifest and COMPOSE read these rows; they do
@@ -947,14 +944,14 @@ campaign_restore_import_cache() {
     and .key == $key
     and (.exitStatus | type) == "number"
     and (.artifacts | type) == "object"
-    and all(["summaries", "diagnostics", "topologyDelta"][];
+    and all(["summaries", "diagnostics"][];
       . as $name
       | ($entry.artifacts[$name].sha256 | type) == "string"
         and ($entry.artifacts[$name].sha256 | length) == 64)
   ' "${manifest}" >/dev/null \
     || campaign_fail CACHE ConcolicSummaryImporter "${manifest}" \
       "the import cache manifest has an unsupported schema"
-  for name in summaries diagnostics topologyDelta; do
+  for name in summaries diagnostics; do
     [[ -f "${entry}/${name}.jsonl" ]] \
       || campaign_fail CACHE ConcolicSummaryImporter "${entry}/${name}.jsonl" \
         "the import cache artifact is missing"
@@ -966,19 +963,16 @@ campaign_restore_import_cache() {
         "the import cache artifact digest does not match its manifest"
   done
   mkdir -p "$(dirname "${imported_summaries}")" \
-    "$(dirname "${import_diagnostics}")" \
-    "$(dirname "${import_topology_delta}")"
+    "$(dirname "${import_diagnostics}")"
   cp -- "${entry}/summaries.jsonl" "${imported_summaries}"
   cp -- "${entry}/diagnostics.jsonl" "${import_diagnostics}"
-  cp -- "${entry}/topologyDelta.jsonl" "${import_topology_delta}"
   campaign_cached_import_status=$(jq -r '.exitStatus' "${manifest}")
   return 0
 }
 
 campaign_store_import_cache() {
   local key=$1 status=$2 base entry lock temporary name path sha
-  [[ -f "${imported_summaries}" && -f "${import_diagnostics}"
-      && -f "${import_topology_delta}" ]] || return 0
+  [[ -f "${imported_summaries}" && -f "${import_diagnostics}" ]] || return 0
   base="${causynth_cache_dir}/import"
   entry="${base}/${key}"
   lock="${base}/.${key}.lock"
@@ -986,9 +980,8 @@ campaign_store_import_cache() {
   temporary=$(mktemp -d "${base}/.${key}.XXXXXX")
   cp -- "${imported_summaries}" "${temporary}/summaries.jsonl"
   cp -- "${import_diagnostics}" "${temporary}/diagnostics.jsonl"
-  cp -- "${import_topology_delta}" "${temporary}/topologyDelta.jsonl"
   local -a artifact_args=()
-  for name in summaries diagnostics topologyDelta; do
+  for name in summaries diagnostics; do
     path="${temporary}/${name}.jsonl"
     sha=$(campaign_digest "${path}")
     artifact_args+=(--arg "${name}Sha" "${sha}")
@@ -999,8 +992,7 @@ campaign_store_import_cache() {
      key: $key, exitStatus: $status,
      artifacts: {
        summaries: {sha256: $summariesSha},
-       diagnostics: {sha256: $diagnosticsSha},
-       topologyDelta: {sha256: $topologyDeltaSha}}}
+       diagnostics: {sha256: $diagnosticsSha}}}
   ' >"${temporary}/manifest.json"
   if mkdir "${lock}" 2>/dev/null; then
     if [[ ! -e "${entry}" ]]; then
@@ -1298,9 +1290,8 @@ CAMPAIGN_JSON
 
 # A stage condition the shell observed but does not own: a task with no result,
 # an obligation that did not finish, an artifact a semantic owner never
-# published. It is written once in the delta vocabulary so CLASSIFY collects it
-# and the Composer decides whether it blocks the selected target closure. The
-# shell never ends the iteration on one of these.
+# published. It is written once, and EMIT reads it beside every other gap.
+# The shell never ends the iteration on one of these.
 campaign_record_gap() {
   local iteration_dir=$1 code=$2 subject=$3 detail=$4
   local dir="${iteration_dir}/campaign-gaps"
@@ -1309,7 +1300,7 @@ campaign_record_gap() {
     --arg detail "${detail}" \
     '{deltaKind: "COVERAGE_GAP", source: "CAMPAIGN", code: $code,
       taskId: $subject, subject: $subject, reason: $detail}' \
-    >>"${dir}/topology_delta.jsonl"
+    >>"${dir}/campaign_gaps.jsonl"
   campaign_log "gap ${code} subject=${subject}: ${detail}"
 }
 
@@ -1430,7 +1421,7 @@ campaign_iteration_manifests_json() {
             == ([.members[].taskId] | unique | length))
           and ([.members[] | select(.role == "TARGET")] | length == 1))
       then {iterationId, parentIterationId, externalWorkerCount,
-            topologyDelta, taskIds: [.members[].taskId],
+            taskIds: [.members[].taskId],
             obligations: [.members[]
               | {taskId, digests: .obligationDigests}]}
       else error("invalid campaign iteration manifest") end
@@ -2004,8 +1995,7 @@ campaign_replay() {
   # a branch query for a TARGET_REACH goal only when an imported summary
   # answers that occurrence (ConcolicScheduler: exactTargetSummary), so a seed
   # replay that skipped every target occurrence leaves branch_queries.jsonl
-  # empty.  SEED_QUERY then records TARGET_QUERY_ABSENT, EXPLORE still plans
-  # the TARGET member the active-observed closure always keeps, and
+  # empty.  EXPLORE still plans the TARGET member the kept slice names, and
   # RegionPathWorklist refuses it as NO_OBSERVED_PATH_SEED -- four stages and
   # one JVM wave away from the workload exception that caused it.  Name the
   # unreached target here instead, beside the log that holds that exception.
@@ -2061,7 +2051,6 @@ campaign_import_session() {
   import_task_plan="${iteration_dir}/seed-replay/execution_task_plan.jsonl"
   imported_summaries="${summaries}"
   import_diagnostics="${seed}/import_diagnostics.jsonl"
-  import_topology_delta="${seed}/topology_delta.jsonl"
   run_capturing_status do_import "${iteration_id}"
   # Exit 3 is the publication contract: the corpus imported, and it is short
   # of what the plan asked for.  The importer has already printed the one
@@ -2080,61 +2069,13 @@ campaign_import_session() {
   require_nonempty "imported region summaries" "${summaries}"
   # Fan the importer's own rows out to the candidate directories.  Candidate
   # occurrences may be dormant on this replay; exact VM evidence selects the
-  # active observed closure in SEED_QUERY before any worklist is built.
+  # kept slice the plan named, which is the roster.
   while IFS=$'\t' read -r role campaign_id region occurrence goal task \
       target_reach; do
     campaign_json select-summary "${summaries}" "${task}" \
       >"${iteration_dir}/workers/${task}/concolic_region_summaries.jsonl"
   done <<<"${campaign_member_rows}"
   campaign_log "imported summaries: $(wc -l <"${summaries}")"
-}
-
-# Schedule pass three. The candidate pass feeds union instrumentation; the
-# value-frontier pass feeds the linked seed replay. This pass hands the
-# scheduler that replay's imported summaries, so VM propagation anchors and
-# GuardedRead candidates select the observed ancestry that owns path worklists
-# and the target query.
-#
-# It writes into its own directory because the scheduler always publishes a
-# task plan and an index beside its queries, and this iteration's frozen plan
-# is not rewritable.
-campaign_seed_query() {
-  local iteration_dir=$1
-  local query_dir="${iteration_dir}/seed-query"
-  local active_index="${query_dir}/runtime_workflow_schedule_index.json"
-  local seed_index="${iteration_dir}/seed-replay/runtime_workflow_schedule_index.json"
-  mkdir -p "${query_dir}"
-  schedule_output_dir="${query_dir}"
-  schedule_summaries="${iteration_dir}/concolic_region_summaries.jsonl"
-  schedule_closure_mode=active-observed
-  do_schedule
-  schedule_closure_mode=candidate
-  require_nonempty "active observed workflow index" "${active_index}"
-  require_nonempty "active observed task plan" \
-    "${query_dir}/execution_task_plan.jsonl"
-  # Active membership can only narrow this iteration's seed candidates.  A VM
-  # edge to a previously unknown occurrence remains a topology divergence and
-  # is replanned in the next epoch; it is never spliced into this frozen one.
-  jq -e --slurpfile seed "${seed_index}" '
-    . as $active
-    | $seed[0] as $seedIndex
-    | [$seedIndex.members[].taskId] as $seedTasks
-    | $active.target.taskId == $seedIndex.target.taskId
-      and all($active.members[];
-        .taskId as $task | ($seedTasks | index($task)) != null)
-  ' "${active_index}" >/dev/null || campaign_fail \
-    SEED_QUERY ConcolicScheduler "${active_index}" \
-    "the active observed closure is not a subset of the seed candidates"
-  if ! campaign_member_rows=$(campaign_decode_index_members \
-      "${active_index}"); then
-    campaign_fail SEED_QUERY ConcolicScheduler "${active_index}" \
-      "the active observed closure index is invalid"
-  fi
-  campaign_log "active observed tasks: $(jq -r '.members | length' \
-    "${active_index}")"
-  [[ -s "${query_dir}/branch_queries.jsonl" ]] || campaign_record_gap \
-    "${iteration_dir}" TARGET_QUERY_ABSENT "${iteration_dir}" \
-    "the scheduler published no branch query from the imported summaries"
 }
 
 campaign_report_worklist() {
@@ -2246,21 +2187,11 @@ campaign_worker_task() {
   import_task_plan="${worker}/execution_task_plan.jsonl"
   imported_summaries="${imported}"
   import_diagnostics="${worker}/import_diagnostics.jsonl"
-  import_topology_delta="${worker}/topology_delta.jsonl"
   run_capturing_status do_import "${iteration_id}"
   if [[ "${status}" -ne 0 && ! -s "${import_diagnostics}" ]]; then
     die "the importer failed without a semantic diagnostic for ${query_key} (exit ${status})"
   fi
-  if [[ -s "${worker}/topology_delta.jsonl" ]] \
-      && jq -e 'select(.deltaKind == "TOPOLOGY_DIVERGENCE")' \
-        "${worker}/topology_delta.jsonl" >/dev/null; then
-    [[ ! -s "${imported}" ]] || mv "${imported}" \
-      "${worker}/quarantined_concolic_region_summaries.jsonl"
-    : >"${imported}"
-    campaign_record_exploration "${worker}" "${query_key}" \
-      "${replay_tasks}" BUNDLE_TOPOLOGY_DIVERGENCE \
-      "linked replay left the frozen topology epoch"
-    : >"${worker}/../../../../.linked-topology-divergence"
+  if false; then
     return 0
   fi
   if [[ ! -s "${imported}" ]]; then
@@ -2428,7 +2359,7 @@ occurrence: its fatal read was not observed in any summary this run linked" \
     edu.uva.liftlab.graphchecker.concolic.TargetReachPathQueryBuilder \
     --summaries "${member}/observed_path_summaries.jsonl" \
     --path-manifest "${member}/path_closure.json" \
-    --seed-query "${iteration_dir}/seed-query/branch_queries.jsonl" \
+    --seed-query "${iteration_dir}/seed-replay/branch_queries.jsonl" \
     --output "${member}/reach_query.jsonl" \
     >"${member}/reach_query.log" 2>&1
   if [[ "${status}" -ne 0 || ! -s "${member}/reach_query.jsonl" ]]; then
@@ -2481,11 +2412,10 @@ campaign_explore() {
   local wave_signature="" previous_signature="" stop_kind="" stop_reason=""
   local summaries="${iteration_dir}/linked_observed_path_summaries.jsonl"
   local tasks="${iteration_dir}/linked_observed_execution_tasks.jsonl"
-  local active_plan="${iteration_dir}/seed-query/execution_task_plan.jsonl"
+  local active_plan="${iteration_dir}/seed-replay/execution_task_plan.jsonl"
   local active_seed="${iteration_dir}/active_seed_summaries.jsonl"
   local records="${iteration_dir}/linked_path_exploration_records.jsonl"
   local classes="${iteration_dir}/instrumented-classes"
-  local seed_delta="${iteration_dir}/seed-result/topology_delta.jsonl"
   local -a bound_args=() jobs=() pids=() planner_dirs=()
   local -a planner_all_dirs=()
   local -a planner_roles=() planner_tasks=()
@@ -2496,12 +2426,6 @@ campaign_explore() {
   campaign_json combine summaryId "${summaries}" "${active_seed}"
   campaign_json combine taskId "${tasks}" "${active_plan}"
   : >"${records}"
-  if [[ -s "${seed_delta}" ]] \
-      && jq -e 'select(.deltaKind == "TOPOLOGY_DIVERGENCE")' \
-        "${seed_delta}" >/dev/null; then
-    campaign_log "seed replay left ${iteration_id}; deferring all flips to the next topology epoch"
-    return 0
-  fi
   [[ -z "${region_path_max_paths_per_region}" ]] \
     || bound_args+=(--max-paths-per-region "${region_path_max_paths_per_region}")
   [[ -z "${region_path_max_flips_per_path}" ]] \
@@ -2661,10 +2585,6 @@ obligation(s) as the wave before it with no new verdict"
       campaign_fail EXPLORE CAMPAIGN "${iteration_dir}/workers" \
         "closure obligation wave ${wave} did not finish"
     fi
-    # One diverging linked bundle invalidates this frozen epoch. Keep every
-    # wave result private; CLASSIFY consumes the worker delta and the next
-    # iteration replans instead of mixing sibling results into the old corpus.
-    [[ ! -e "${iteration_dir}/.linked-topology-divergence" ]] || return 0
     for planner_dir in "${planner_dirs[@]}"; do
       campaign_publish_wave "${planner_dir}" "${summaries}" "${tasks}" \
         "${records}"
@@ -2714,49 +2634,42 @@ obligation(s) as the wave before it with no new verdict"
   campaign_log "closure exploration stopped after ${wave} global wave(s)"
 }
 
-# Classification is the importer's; this collects the rows it wrote, sorts them
-# deterministically, and publishes them as this iteration's delta. An iteration
-# whose importer declared nothing has an empty delta, which is a topology that
-# did not change, not evidence that nothing happened.
-campaign_classify() {
-  local iteration_dir=$1 iteration=$2
+# The importer writes one diagnostics file per worker and one per wave.  EMIT
+# reads one, so they are concatenated here, deterministically, before it does.
+# Nothing is classified: a gap is classed once, by the ledger, and the
+# publication contract at the end of IMPORT is what decides whether the corpus
+# is usable at all.
+campaign_collect_diagnostics() {
+  local iteration_dir=$1
   local diagnostics="${iteration_dir}/import_diagnostics.jsonl"
-  local published="${iteration_dir}/topology_delta.jsonl"
-  local counts source_list delta_list
+  local gaps="${iteration_dir}/campaign_gaps.jsonl"
+  local source_list gap_list
   local -a sources=()
-  local -a deltas=()
+  local -a gap_files=()
   if ! source_list=$(find "${iteration_dir}" -type f \
       -name 'import_diagnostics.jsonl' -not -path "${diagnostics}" \
       | LC_ALL=C sort); then
-    campaign_fail CLASSIFY CAMPAIGN "${iteration_dir}" \
+    campaign_fail EMIT CAMPAIGN "${iteration_dir}" \
       "failed to enumerate importer diagnostics"
   fi
   [[ -z "${source_list}" ]] || mapfile -t sources <<<"${source_list}"
   : >"${diagnostics}"
   [[ ${#sources[@]} -eq 0 ]] || cat "${sources[@]}" >>"${diagnostics}"
-  # The delta rows are the importer's, read from the artifacts it wrote.  The
-  # diagnostics are collected too, because a refusal names its own gap there.
-  if ! delta_list=$(find "${iteration_dir}" -type f \
-      -name 'topology_delta.jsonl' -not -path "${published}" \
+  if ! gap_list=$(find "${iteration_dir}" -type f \
+      -name 'campaign_gaps.jsonl' -not -path "${gaps}" \
       | LC_ALL=C sort); then
-    campaign_fail CLASSIFY CAMPAIGN "${iteration_dir}" \
-      "failed to enumerate topology deltas"
+    campaign_fail EMIT CAMPAIGN "${iteration_dir}" \
+      "failed to enumerate campaign gap rows"
   fi
-  [[ -z "${delta_list}" ]] || mapfile -t deltas <<<"${delta_list}"
-  if ! counts=$(campaign_json delta "${iteration}" "${published}" \
-      "${deltas[@]}" "${diagnostics}"); then
-    campaign_fail CLASSIFY CAMPAIGN "${published}" \
-      "failed to validate or aggregate topology deltas"
-  fi
-  campaign_delta_rows=${counts%% *}
-  campaign_delta_divergences=${counts##* }
-  campaign_log "topology delta rows=${campaign_delta_rows} divergences=${campaign_delta_divergences}"
+  [[ -z "${gap_list}" ]] || mapfile -t gap_files <<<"${gap_list}"
+  : >"${gaps}"
+  [[ ${#gap_files[@]} -eq 0 ]] || cat "${gap_files[@]}" >>"${gaps}"
 }
 
 campaign_publish_iteration_manifest() {
   local iteration_dir=$1 iteration=$2 parent=$3
-  local index="${iteration_dir}/seed-query/runtime_workflow_schedule_index.json"
-  local plan="${iteration_dir}/seed-query/execution_task_plan.jsonl"
+  local index="${iteration_dir}/seed-replay/runtime_workflow_schedule_index.json"
+  local plan="${iteration_dir}/seed-replay/execution_task_plan.jsonl"
   local members="${iteration_dir}/.members.jsonl"
   local role campaign_id region occurrence goal task worker
   local obligations plan_sha index_sha summaries_sha
@@ -2805,8 +2718,6 @@ campaign_publish_iteration_manifest() {
     --arg summariesSha "${summaries_sha}" \
     --arg classes "${iteration_dir}/instrumented-classes" \
     --argjson workers "${concolic_worker_count}" \
-    --argjson deltaRows "${campaign_delta_rows}" \
-    --argjson divergences "${campaign_delta_divergences}" \
     --slurpfile members "${members}" '
     {schemaVersion: 1,
      kind: "CAMPAIGN_ITERATION_MANIFEST",
@@ -2818,7 +2729,6 @@ campaign_publish_iteration_manifest() {
      importedSummaries: {path: $summaries, sha256: $summariesSha},
      instrumentedClasses: $classes,
      externalWorkerCount: $workers,
-     topologyDelta: {rows: $deltaRows, divergences: $divergences},
      members: $members}
   ' >"${iteration_dir}/iteration_manifest.json"
   rm -f "${members}"
@@ -3326,11 +3236,10 @@ campaign_write_coverage_gaps() {
        + [$diagnostics[]?
            | {stage: "IMPORT", source: "IMPORTER", code: (.code // ""),
               subject: (.taskId // ""), detail: (.detail // "")}]
-       + [$delta[]? | select(.deltaKind == "COVERAGE_GAP"
-             or .deltaKind == "TOPOLOGY_DIVERGENCE")
-           | {stage: "CLASSIFY", source: (.source // "IMPORTER"),
+       + [$delta[]? | select(.deltaKind == "COVERAGE_GAP")
+           | {stage: "CAMPAIGN", source: (.source // "CAMPAIGN"),
               code: (.code // .deltaKind), subject: (.taskId // ""),
-              detail: (.reason // .gap // "")}]
+              detail: (.reason // "")}]
        + [$staticGaps[]?
            | {stage: "PLAN", source: "STATIC",
               code: (.gapKind // .kind // ""),
@@ -3416,12 +3325,6 @@ campaign_emit() {
       "${iteration_dir}/import_diagnostics.jsonl" \
       "required diagnostics JSONL is missing or malformed"
   fi
-  if ! campaign_jsonl_array "topology delta" \
-      "${iteration_dir}/topology_delta.jsonl" >/dev/null; then
-    campaign_fail EMIT ConcolicSummaryImporter \
-      "${iteration_dir}/topology_delta.jsonl" \
-      "required topology-delta JSONL is missing or malformed"
-  fi
   if ! campaign_materialize_path_closures \
       "${iteration_dir}/workers" "${path_closures_artifact}"; then
     campaign_fail EMIT RegionPathWorklist "${iteration_dir}/workers" \
@@ -3439,7 +3342,7 @@ campaign_emit() {
     "${composition_manifest}" \
     "${reach_report}" \
     "${iteration_dir}/import_diagnostics.jsonl" \
-    "${iteration_dir}/topology_delta.jsonl" \
+    "${iteration_dir}/campaign_gaps.jsonl" \
     "${path_closures_artifact}" \
     "${campaign_final}/gap_ledger.json" \
     "${iteration_dir}" \
@@ -3676,23 +3579,11 @@ do_campaign() {
       "${iteration_dir}"
     campaign_stage "IMPORT[${iteration}]" campaign_import_session \
       "${iteration_dir}" "${iteration_id}"
-    campaign_stage "SEED_QUERY[${iteration}]" campaign_seed_query \
-      "${iteration_dir}"
     campaign_stage "EXPLORE[${iteration}]" campaign_explore \
       "${iteration_dir}" "${iteration_id}"
-    campaign_stage "CLASSIFY[${iteration}]" campaign_classify \
-      "${iteration_dir}" "${iteration_id}"
+    campaign_collect_diagnostics "${iteration_dir}"
     campaign_publish_iteration_manifest "${iteration_dir}" "${iteration_id}" \
       "${parent}"
-    if [[ "${campaign_delta_divergences}" -gt 0 ]]; then
-      # One iteration never adds tasks to its running campaign: a divergence
-      # closes this iteration and rebuilds the target frontier in the next one.
-      campaign_log "iteration ${iteration} diverged; rebuilding the target frontier"
-      carry="${iteration_dir}/concolic_region_summaries.jsonl"
-      parent="${iteration_id}"
-      iteration=$((iteration + 1))
-      continue
-    fi
     campaign_stage COMPOSE campaign_compose "${iteration_dir}"
     campaign_stage SOLVE campaign_solve
     campaign_stage DECIDE campaign_decide

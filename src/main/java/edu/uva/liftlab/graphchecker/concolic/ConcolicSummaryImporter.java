@@ -292,13 +292,11 @@ public final class ConcolicSummaryImporter {
                 options.get("diagnostics"),
                 ArtifactIO.sibling(results,
                         "concolic_import_diagnostics.jsonl").toString()));
-        Path delta = Paths.get(firstNonBlank(options.get("topology-delta"),
-                ArtifactIO.sibling(output, TopologyDelta.FILE_NAME).toString()));
         Set<String> regions = regionIds(RuntimePlanArtifact.read(
                 runtimePlan).regions());
         String iterationId = requiredValue(options, "iteration-id");
         ImportResult imported = importSummaries(results, tasks, regions,
-                output, diagnostics, delta, iterationId);
+                output, diagnostics, iterationId);
         if (imported.diagnosticCount > 0) {
             try (BufferedReader reader = Files.newBufferedReader(diagnostics,
                     StandardCharsets.UTF_8)) {
@@ -328,7 +326,7 @@ public final class ConcolicSummaryImporter {
 
     static ImportResult importSummaries(
             Path resultsFile, Path taskPlanFile, Set<String> regions,
-            Path outputFile, Path diagnosticFile, Path deltaFile,
+            Path outputFile, Path diagnosticFile,
             String iterationId) throws IOException {
         Map<String, ExecutionTask> tasks = taskIndex(
                 ArtifactIO.readJsonl(taskPlanFile));
@@ -341,10 +339,6 @@ public final class ConcolicSummaryImporter {
                 new IdentityHashMap<>();
         List<JsonObject> diagnostics = new ArrayList<>();
         Set<String> hashes = new LinkedHashSet<>();
-        // README "Delta ownership is also singular": the frozen-plan
-        // comparison happens here, while each raw row is imported, and not as
-        // a later pass over a second store.
-        TopologyDelta delta = new TopologyDelta(iterationId);
         // Every re-plan receives a new iteration id. Unlike a digest of the
         // task rows, it stays stable while linked replays add case tasks for
         // the same topology epoch.
@@ -363,30 +357,21 @@ public final class ConcolicSummaryImporter {
                 String code = skippedEventCode(row);
                 diagnostics.add(diagnostic(row, code,
                         skippedEventDetail(row)));
-                delta.classify(tasks.get(row.taskId), row,
-                        TopologyDelta.Observation.refused(code));
                 continue;
             }
             ExecutionTask task = tasks.get(row.taskId);
             if (task == null) {
                 diagnostics.add(diagnostic(row,
                         "UNKNOWN_EXECUTION_TASK", row.taskId));
-                delta.classify(null, row,
-                        TopologyDelta.Observation.unplanned(
-                                "UNKNOWN_EXECUTION_TASK"));
                 continue;
             }
             if (!regions.contains(task.regionId())) {
                 diagnostics.add(diagnostic(row,
                         "UNKNOWN_REGION", task.regionId()));
-                delta.classify(task, row,
-                        TopologyDelta.Observation.unplanned("UNKNOWN_REGION"));
                 continue;
             }
-            TopologyDelta.Observation observation =
-                    new TopologyDelta.Observation();
             JsonObject summary = importRow(row, task, hashes,
-                    diagnostics, observation, topologyEpoch, expressions);
+                    diagnostics, topologyEpoch, expressions);
             if (summary != null) {
                 // Content-addressed expressions returned by expandAll() are
                 // interned across result rows. Detach only MAP_STATE receiver
@@ -398,11 +383,9 @@ public final class ConcolicSummaryImporter {
                     diagnostics.add(diagnostic(row,
                             "LOCATION_NOT_NAMED_ACROSS_SESSIONS", location));
                 }
-                observation.summary = summary;
                 summaries.add(summary);
                 sourceRows.put(summary, row);
             }
-            delta.classify(task, row, observation);
         }
         // One propagated DN expression may still refer to the NN map owner.
         // Only the complete linked-replay/session scope contains the runtime
@@ -424,7 +407,6 @@ public final class ConcolicSummaryImporter {
         }
         // A planned activation that produced no row at all is the plainest
         // "planned event that did not occur"; it is named, never dropped.
-        delta.classifyUnobservedTasks(tasks.values());
 
         // The contract runs last, over what was actually written: every
         // check it makes is a statement the corpus can make about itself,
@@ -436,9 +418,6 @@ public final class ConcolicSummaryImporter {
 
         ArtifactIO.replaceJsonl(outputFile, summaries);
         ArtifactIO.replaceJsonl(diagnosticFile, diagnostics);
-        // Written even when empty: an absent file and an empty file must not
-        // mean the same thing to the campaign that validates it.
-        ArtifactIO.replaceJsonl(deltaFile, delta.rows());
         return new ImportResult(rawResults.size(), summaries.size(),
                 diagnostics.size(), contract);
     }
@@ -672,14 +651,12 @@ public final class ConcolicSummaryImporter {
     private static JsonObject importRow(
             ResultRow row, ExecutionTask task,
             Set<String> hashes, List<JsonObject> diagnostics,
-            TopologyDelta.Observation observation,
             String topologyEpoch,
             SharedExpressionTable.Decoder expressions) {
         // The decode already refused an artifact shape this importer does not
         // read; it is a named gap like any other.
         if (!row.refusal.isEmpty()) {
-            return refuse(row, row.refusal, row.exitKind, diagnostics,
-                    observation);
+            return refuse(row, row.refusal, row.exitKind, diagnostics);
         }
         // An aborted symbolic execution stops recording branch events and path
         // condition at the point it gave up, and the activation then runs on
@@ -695,12 +672,12 @@ public final class ConcolicSummaryImporter {
                     "result " + row.taskId + "/" + task.regionId()
                             + " contains VM summary " + engineTaskId + "/"
                             + engineRegionId,
-                    diagnostics, observation);
+                    diagnostics);
         }
         if (optionalBool(engine, "aborted", false)) {
             return refuse(row, "SYMBOLIC_EXECUTION_ABORTED",
                     firstNonBlank(optionalString(engine, "abortReason"),
-                            "UNSPECIFIED"), diagnostics, observation);
+                            "UNSPECIFIED"), diagnostics);
         }
         String exitKind = row.exitKind;
         boolean hasCut = row.pathCut != null || row.resourceCut != null;
@@ -718,7 +695,7 @@ public final class ConcolicSummaryImporter {
             // explicit gap rather than inventing an output relation.
             return refuse(row, resourceCut ? "REPLAY_LOOP_RESOURCE_CAP"
                             : "LOOP_BOUND_PATH_CUT", cutDetail,
-                    diagnostics, observation);
+                    diagnostics);
         }
         List<String> issues = new ArrayList<>();
         JsonArray phaseNotes = new JsonArray();
@@ -784,16 +761,16 @@ public final class ConcolicSummaryImporter {
                 : branchReplayAdmission(row, task, mappings);
         if (!replayAdmission.mismatch.isEmpty()) {
             return refuse(row, "BRANCH_REPLAY_MISMATCH",
-                    replayAdmission.mismatch, diagnostics, observation);
+                    replayAdmission.mismatch, diagnostics);
         }
         JsonObject targetReach = admittedTargetReach(row, task,
                 path.expressions, mappings, replayAdmission,
-                diagnostics, observation);
+                diagnostics);
         if (targetReach == null) return null;
         PathLoopCounts loopCounts = pathLoopCounts(row, task);
         if (!loopCounts.refusal.isEmpty()) {
             return refuse(row, LoopBoundPolicy.PATH_LOOP_COUNT_OUT_OF_BOUND,
-                    loopCounts.refusal, diagnostics, observation);
+                    loopCounts.refusal, diagnostics);
         }
         JsonArray alignmentGaps = alignmentGaps(row);
         JsonObject recordedSharedState =
@@ -887,7 +864,7 @@ public final class ConcolicSummaryImporter {
             return refuse(row, replayContract == null
                             ? "REGION_PATH_ADMISSION_REJECTED"
                             : "PATH_REPLAY_ADMISSION_REJECTED",
-                    String.join(";", issues), diagnostics, observation);
+                    String.join(";", issues), diagnostics);
         }
 
         // A local case is the region's control path.  Runtime observation
@@ -903,22 +880,17 @@ public final class ConcolicSummaryImporter {
         // observation identity.
         String hash = expressions.semanticDigest(semantic);
         if (!hashes.add(hash)) {
-            return refuse(row, "DUPLICATE_SUMMARY", hash, diagnostics,
-                    observation);
+            return refuse(row, "DUPLICATE_SUMMARY", hash, diagnostics);
         }
         summary.addProperty("summaryId",
                 "SUMMARY." + task.regionId() + "." + hash);
         if (!issues.isEmpty()) {
             diagnostics.add(diagnostic(row, "INCOMPLETE_RELATION",
                     String.join(";", issues)));
-            observation.gap = "INCOMPLETE_RELATION";
         }
-        observation.summary = summary;
         // Exact typed delivery evidence and recorded state versions are
         // different evidence classes from the guarded case itself, so the
         // delta names each of them once beside it.
-        observation.binding = !vmHandoffEvents.isEmpty();
-        observation.effect = recordedSharedState.size() > 0;
         return summary;
     }
 
@@ -1206,14 +1178,11 @@ public final class ConcolicSummaryImporter {
         }
     }
 
-    /** Files one named import gap and refuses the row under that same code,
-     * which is also what the delta carries as the gap. */
+    /** Files one named import gap and refuses the row under that code. */
     private static JsonObject refuse(ResultRow row, String code,
                                      String detail,
-                                     List<JsonObject> diagnostics,
-                                     TopologyDelta.Observation observation) {
+                                     List<JsonObject> diagnostics) {
         diagnostics.add(diagnostic(row, code, detail));
-        observation.gap = code;
         return null;
     }
 
@@ -1813,15 +1782,14 @@ public final class ConcolicSummaryImporter {
             ResultRow row, ExecutionTask task,
             JsonArray pathCondition, JsonArray mappings,
             ReplayAdmission replayAdmission,
-            List<JsonObject> diagnostics,
-            TopologyDelta.Observation observation) {
+            List<JsonObject> diagnostics) {
         if (!task.goalKind().capturesTargetReach()) {
             return new JsonObject();
         }
         if (row.targetReach == null) {
             return refuse(row, "TARGET_REACH_EVENT_MISSING",
                     "selected target execution published no targetReach",
-                    diagnostics, observation);
+                    diagnostics);
         }
         final PathObservation.TargetReachEvent event;
         try {
@@ -1829,7 +1797,7 @@ public final class ConcolicSummaryImporter {
         } catch (IllegalArgumentException malformed) {
             return refuse(row, "TARGET_REACH_EVENT_MALFORMED",
                     firstNonBlank(malformed.getMessage(), "UNKNOWN"),
-                    diagnostics, observation);
+                    diagnostics);
         }
 
         JsonObject selected = object(task.json(), "targetBranch");
@@ -1842,7 +1810,7 @@ public final class ConcolicSummaryImporter {
                     "event " + event.siteId() + "#" + event.occurrence()
                             + " does not match selected target "
                             + firstNonBlank(selectedSite, "<missing>") + "#"
-                            + selectedOccurrence, diagnostics, observation);
+                            + selectedOccurrence, diagnostics);
         }
 
         JsonObject canonical = new JsonObject();
@@ -1868,13 +1836,13 @@ public final class ConcolicSummaryImporter {
             return refuse(row, "TARGET_REACH_EVENT_MISMATCH",
                     "target branch evidence is malformed: "
                             + firstNonBlank(malformed.getMessage(),
-                            "UNKNOWN"), diagnostics, observation);
+                            "UNKNOWN"), diagnostics);
         }
         if (exactMappings != 1) {
             return refuse(row, "TARGET_REACH_EVENT_MISMATCH",
                     "event has " + exactMappings
                             + " exact branch mapping(s)",
-                    diagnostics, observation);
+                    diagnostics);
         }
         if (replayAdmission.matchedSource != null
                 && !ExactConcreteBranchObservation.binaryDecisionToken(
@@ -1882,7 +1850,7 @@ public final class ConcolicSummaryImporter {
                 replayAdmission.matchedSource.decisionToken)) {
             return refuse(row, "TARGET_REACH_EVENT_MISMATCH",
                     "planned target outcome differs from matched replay "
-                            + "source", diagnostics, observation);
+                            + "source", diagnostics);
         }
         return event.toJson();
     }
