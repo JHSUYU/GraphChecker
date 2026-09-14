@@ -273,16 +273,11 @@ public final class ConcolicPathFlipPlanner {
                 // and every composition then refused the path.  The arms
                 // are the same rows the composition merges.
                 HandoffFamilyRows.attach(task, families);
-                JsonObject bundle = LinkedReplayBundle.create(
-                        optionalString(task, "sourceTaskId"),
-                        allExecutionTasks, allSummaries,
-                        optionalString(task, "sourceSummaryId"),
+                task.addProperty(VmExpressionIr.TOPOLOGY_EPOCH,
                         topologyEpoch);
-                task.add(LinkedReplayBundle.FIELD, bundle);
             }
             if (!topologyEpoch.isEmpty()) {
-                result.manifest.addProperty(
-                        LinkedReplayBundle.TOPOLOGY_EPOCH_FIELD,
+                result.manifest.addProperty(VmExpressionIr.TOPOLOGY_EPOCH,
                         topologyEpoch);
             }
             result.manifest.add("symbolicPropagationGaps", new JsonArray());

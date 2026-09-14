@@ -103,16 +103,10 @@ workflow_config_keys=(
   # returned.  Cross-node skew is a failure mechanism the checker explores,
   # so this bounds it rather than pinning a clock to its recording.
   "clock_skew_ms CAUSYNTH_CLOCK_SKEW_MS krp 300000"
-  # Which composition builds candidate.smt2.  The merge of the anchored
-  # target's paths is the only one; the key stays so a future composition
-  # can be run against a recording beside it.
-  "composer COMPOSER krp path-merge"
   # The occurrence of the annotated site this campaign is about, as the case
-  # declares it: an occurrence address, or the request family and k.  A
-  # campaign is target-directed -- the case knows which instance can fail --
-  # and the declaration is what says so.  Empty means the run keeps every
-  # observed occurrence, which is the shape of a recording that never took
-  # the fatal arm.
+  # declares it: an occurrence address.  A campaign is target-directed -- the
+  # case knows which instance can fail -- and the declaration is what says
+  # so; it is the anchor COMPOSE composes and the claim DECIDE publishes.
   "declared_target_occurrence CAUSYNTH_TARGET_OCCURRENCE krp -"
 )
 
@@ -574,81 +568,17 @@ do_schedule() {
     "${args[@]}"
 }
 
-do_import() {
-  local iteration_id=${1:-} key status=0
-  [[ -n "${iteration_id//[[:space:]]/}" ]] \
-    || die "import iteration id is required"
-  require_file "raw concolic results" "${raw_concolic_results}"
-  require_file "import activation plan" "${import_task_plan}"
-  require_file "runtime region plan" "${runtime_region_plan}"
-  ensure_output_directory "$(dirname "${imported_summaries}")"
-  key=$(campaign_import_cache_key "${iteration_id}")
-  campaign_cached_import_status=0
-  if campaign_restore_import_cache "${key}"; then
-    campaign_log "cache hit IMPORT key=${key}"
-    return "${campaign_cached_import_status}"
-  fi
-  campaign_log "cache miss IMPORT key=${key}"
-  run_capturing_status run_java_main \
-    edu.uva.liftlab.graphchecker.concolic.ConcolicSummaryImporter \
-    --results "${raw_concolic_results}" \
-    --task-plan "${import_task_plan}" \
-    --runtime-plan "${runtime_region_plan}" \
-    --output "${imported_summaries}" \
-    --diagnostics "${import_diagnostics}" \
-    --iteration-id "${iteration_id}"
-  campaign_store_import_cache "${key}" "${status}"
-  return "${status}"
-}
-
-append_path_list_arguments() {
-  local option=$1
-  local values=$2
-  local entry
-  local -a entries
-  IFS=':' read -r -a entries <<< "${values}"
-  for entry in "${entries[@]}"; do
-    [[ -n "${entry}" ]] || continue
-    require_file "${option#--}" "${entry}"
-    PATH_LIST_ARGUMENTS+=("${option}" "${entry}")
-  done
-}
-
 do_compose() {
-  # The reach query path is handed over whether or not it exists: whether the
-  # target published one is the Composer's acceptance decision, and it names
-  # the absence as its own refusal row.
   ensure_output_directory "$(dirname "${composed_smt}")"
-  PATH_LIST_ARGUMENTS=()
-  # Each named summary must exist -- that is the immutable-path check the shell
-  # owns. Whether the named set states a closed path set is the Composer's
-  # acceptance gate, so an empty set is composed and refused there rather than
-  # stopped here.
-  append_path_list_arguments --summaries "${compose_summary_inputs}"
-  local -a selection
-  selection=()
+  local -a selection=()
   local declared
   declared=$(campaign_declared_target_occurrence)
-  [[ -z "${declared}" ]] \
-    || selection+=(--target-occurrence "${declared}")
+  [[ -z "${declared}" ]] || selection+=(--anchor "${declared}")
   [[ -z "${causynth_root_domains}" ]] \
     || selection+=(--root-domains "${causynth_root_domains}")
-  [[ -z "${fatal_region}" ]] || selection+=(--fatal-region "${fatal_region}")
-  [[ -z "${fatal_occurrence_id}" ]] \
-    || selection+=(--occurrence-id "${fatal_occurrence_id}")
   require_file "runtime region plan" "${runtime_region_plan}"
-  local composer_main
-  case "${composer}" in
-    path-merge)
-      composer_main=edu.uva.liftlab.graphchecker.concolic.PathMergeComposer
-      ;;
-    *)
-      die "unknown composer: ${composer} (expected path-merge)"
-      ;;
-  esac
-  run_java_main "${composer_main}" \
-    --fatal-query "${fatal_queries}" \
-    "${PATH_LIST_ARGUMENTS[@]}" \
+  run_java_main edu.uva.liftlab.graphchecker.d3.compose.ComposeMain \
+    --sessions "${compose_sessions_dir}" \
     --runtime-plan "${runtime_region_plan}" \
     --output "${composed_smt}" \
     --manifest "${composition_manifest}" \
@@ -792,8 +722,6 @@ campaign_member_rows=""
 # COMPOSE writes the rows, SOLVE rewrites them with its own artifact, DECIDE
 # turns them into the published ledger and EMIT copies that ledger into the
 # result.
-campaign_target_reports=""
-campaign_target_ledger=""
 
 campaign_log() {
   printf '[campaign] %s\n' "$*"
@@ -907,21 +835,6 @@ campaign_print_symbolic_variable_models() {
   ' "${report}")
 }
 
-# An empty JSONL stream is a valid empty collection, but a missing file or one
-# malformed row is not.  The caller captures and checks this function before
-# constructing a downstream artifact.
-campaign_jsonl_array() {
-  local label=$1 path=$2
-  [[ -f "${path}" ]] || {
-    echo "${label} is missing: ${path}" >&2
-    return 1
-  }
-  jq -e -c -s '
-    if all(.[]; type == "object") then .
-    else error("JSONL artifact contains a non-object row") end
-  ' "${path}"
-}
-
 campaign_optional_digest() {
   [[ -f "$1" ]] || return 0
   campaign_digest "$1"
@@ -952,97 +865,6 @@ campaign_kind_digest() {
     string) printf '%s' "$2" | sha256sum | awk '{print $1}' ;;
     *) return 2 ;;
   esac
-}
-
-# Content-addressed importer cache.  Import is a pure decode of four frozen
-# inputs: the tool, raw replay rows, the exact task plan, and the runtime plan.
-# A cache hit copies only artifacts whose manifest and content digests match;
-# a corrupt entry is refused instead of being treated as a miss.
-campaign_import_cache_key() {
-  local iteration_id=$1
-  local jar_sha raw_sha task_sha plan_sha
-  jar_sha=$(campaign_digest "${graphchecker_jar}")
-  raw_sha=$(campaign_digest "${raw_concolic_results}")
-  task_sha=$(campaign_digest "${import_task_plan}")
-  plan_sha=$(campaign_digest "${runtime_region_plan}")
-  printf '%s\0' "CONCOLIC_IMPORT_CACHE_V1" "${iteration_id}" \
-    "${jar_sha}" "${raw_sha}" "${task_sha}" "${plan_sha}" \
-    | sha256sum | awk '{print $1}'
-}
-
-campaign_restore_import_cache() {
-  local key=$1 entry manifest expected actual name
-  entry="${causynth_cache_dir}/import/${key}"
-  manifest="${entry}/manifest.json"
-  [[ -e "${entry}" ]] || return 1
-  campaign_require_json "import cache manifest" "${manifest}" \
-    || campaign_fail CACHE ConcolicSummaryImporter "${entry}" \
-      "the content-addressed import cache entry is incomplete"
-  jq -e --arg key "${key}" '
-    . as $entry
-    | .schemaVersion == 1
-    and .kind == "CONCOLIC_IMPORT_CACHE_ENTRY"
-    and .key == $key
-    and (.exitStatus | type) == "number"
-    and (.artifacts | type) == "object"
-    and all(["summaries", "diagnostics"][];
-      . as $name
-      | ($entry.artifacts[$name].sha256 | type) == "string"
-        and ($entry.artifacts[$name].sha256 | length) == 64)
-  ' "${manifest}" >/dev/null \
-    || campaign_fail CACHE ConcolicSummaryImporter "${manifest}" \
-      "the import cache manifest has an unsupported schema"
-  for name in summaries diagnostics; do
-    [[ -f "${entry}/${name}.jsonl" ]] \
-      || campaign_fail CACHE ConcolicSummaryImporter "${entry}/${name}.jsonl" \
-        "the import cache artifact is missing"
-    expected=$(jq -r --arg name "${name}" \
-      '.artifacts[$name].sha256' "${manifest}")
-    actual=$(campaign_digest "${entry}/${name}.jsonl")
-    [[ "${actual}" == "${expected}" ]] \
-      || campaign_fail CACHE ConcolicSummaryImporter "${entry}/${name}.jsonl" \
-        "the import cache artifact digest does not match its manifest"
-  done
-  mkdir -p "$(dirname "${imported_summaries}")" \
-    "$(dirname "${import_diagnostics}")"
-  cp -- "${entry}/summaries.jsonl" "${imported_summaries}"
-  cp -- "${entry}/diagnostics.jsonl" "${import_diagnostics}"
-  campaign_cached_import_status=$(jq -r '.exitStatus' "${manifest}")
-  return 0
-}
-
-campaign_store_import_cache() {
-  local key=$1 status=$2 base entry lock temporary name path sha
-  [[ -f "${imported_summaries}" && -f "${import_diagnostics}" ]] || return 0
-  base="${causynth_cache_dir}/import"
-  entry="${base}/${key}"
-  lock="${base}/.${key}.lock"
-  mkdir -p "${base}"
-  temporary=$(mktemp -d "${base}/.${key}.XXXXXX")
-  cp -- "${imported_summaries}" "${temporary}/summaries.jsonl"
-  cp -- "${import_diagnostics}" "${temporary}/diagnostics.jsonl"
-  local -a artifact_args=()
-  for name in summaries diagnostics; do
-    path="${temporary}/${name}.jsonl"
-    sha=$(campaign_digest "${path}")
-    artifact_args+=(--arg "${name}Sha" "${sha}")
-  done
-  jq -n --arg key "${key}" --argjson status "${status}" \
-    "${artifact_args[@]}" '
-    {schemaVersion: 1, kind: "CONCOLIC_IMPORT_CACHE_ENTRY",
-     key: $key, exitStatus: $status,
-     artifacts: {
-       summaries: {sha256: $summariesSha},
-       diagnostics: {sha256: $diagnosticsSha}}}
-  ' >"${temporary}/manifest.json"
-  if mkdir "${lock}" 2>/dev/null; then
-    if [[ ! -e "${entry}" ]]; then
-      mv -- "${temporary}" "${entry}"
-      temporary=""
-    fi
-    rmdir -- "${lock}"
-  fi
-  [[ -z "${temporary}" ]] || rm -r -- "${temporary}"
 }
 
 # The static discovery and both trace-index passes are one seed boundary.  We
@@ -1329,22 +1151,6 @@ else:
 CAMPAIGN_JSON
 }
 
-# A stage condition the shell observed but does not own: a task with no result,
-# an obligation that did not finish, an artifact a semantic owner never
-# published. It is written once, and EMIT reads it beside every other gap.
-# The shell never ends the iteration on one of these.
-campaign_record_gap() {
-  local iteration_dir=$1 code=$2 subject=$3 detail=$4
-  local dir="${iteration_dir}/campaign-gaps"
-  mkdir -p "${dir}"
-  jq -n -c --arg code "${code}" --arg subject "${subject}" \
-    --arg detail "${detail}" \
-    '{deltaKind: "COVERAGE_GAP", source: "CAMPAIGN", code: $code,
-      taskId: $subject, subject: $subject, reason: $detail}' \
-    >>"${dir}/campaign_gaps.jsonl"
-  campaign_log "gap ${code} subject=${subject}: ${detail}"
-}
-
 # The scheduler index is the only campaign membership authority.  Decode the
 # complete schema in one checked jq operation.  The seven fields are emitted
 # as TSV only after their types, non-blank identities, and task-set
@@ -1392,48 +1198,6 @@ campaign_decode_index_members() {
   ' "${index}"
 }
 
-campaign_path_closures_json() {
-  local workers=$1 path_list path
-  [[ -d "${workers}" ]] || {
-    echo "campaign workers directory is missing: ${workers}" >&2
-    return 1
-  }
-  if ! path_list=$(find "${workers}" -type f -name path_closure.json -print \
-      | LC_ALL=C sort); then
-    return 1
-  fi
-  [[ -n "${path_list}" ]] || { printf '[]\n'; return 0; }
-  while IFS= read -r path; do
-    [[ -n "${path}" ]] || continue
-    jq -e -c -s '
-      if length == 1
-          and .[0].schemaVersion == 1
-          and .[0].kind == "REGION_PATH_WORKLIST"
-          and (.[0].coverageGaps | type == "array")
-      then .[0]
-      else error("path closure must contain exactly one JSON document") end
-    ' "${path}" || return 1
-  done <<<"${path_list}" | jq -e -c -s .
-}
-
-# Publish one checked snapshot of the immutable worker closures.  Validation
-# and EMIT then consume the same bytes; a later process-substitution failure
-# cannot silently turn a prefix of the worker tree into the reported set.
-# campaign_path_closures_json is the one place a closure row is checked; the
-# snapshot is written from its checked output and is not re-checked here.
-campaign_materialize_path_closures() {
-  local workers=$1 output=$2 pending
-  pending="${output}.tmp"
-  [[ ! -e "${output}" ]] || {
-    echo "path-closure snapshot already exists: ${output}" >&2
-    return 1
-  }
-  if ! campaign_path_closures_json "${workers}" >"${pending}"; then
-    return 1
-  fi
-  mv -- "${pending}" "${output}"
-}
-
 campaign_iteration_manifests_json() {
   local root=$1 path_list path
   if ! path_list=$(find "${root}" -mindepth 2 -maxdepth 2 \
@@ -1473,22 +1237,6 @@ campaign_iteration_manifests_json() {
           == ([.[].iterationId] | unique | length))
     then . else error("duplicate or absent campaign iteration manifest") end
   '
-}
-
-campaign_decode_worklist_keys() {
-  local worklist=$1
-  [[ -f "${worklist}" ]] || {
-    echo "path-flip worklist is missing: ${worklist}" >&2
-    return 1
-  }
-  jq -e -r -s '
-    if all(.[]; type == "object"
-        and (.queryKey | type == "string" and length > 0))
-        and (([.[].queryKey] | length)
-          == ([.[].queryKey] | unique | length))
-    then sort_by(.queryKey)[] | .queryKey
-    else error("malformed or duplicate path-flip worklist row") end
-  ' "${worklist}"
 }
 
 campaign_wait_workers() {
@@ -1988,20 +1736,25 @@ campaign_instrument() {
 # $7 says what an all-skipped result means to this caller. A seed replay is
 # the iteration's only source of observed cases, so "required" (the default)
 # makes REPLAY fail closed on one. A flip worker may legitimately replay a
-# model the workload never realized, and campaign_worker_task already records
+# model the workload never realized, and campaign_obligation_worker already records
 # that as REPLAY_NOT_ADMITTED, so it passes "tolerated" and keeps that
 # recorded outcome instead of ending the campaign.
 campaign_replay() {
   local role=$1 plan=$2 ids=$3 classes=$4 results=$5 worker=$6
   local region_results=${7:-required}
   local status=0
+  # Where this replay writes its per-kind rows.  A focused replay is a
+  # session: every row it publishes is keyed by it, and every later stage
+  # reads the session rather than a folded result.
+  local sessions="${campaign_sessions_dir:-$(dirname "${results}")/sessions}"
+  mkdir -p "${sessions}"
   require_nonempty "concolic execution task plan" "${plan}"
   [[ ! -e "${results}" ]] || die \
     "replay output already exists; worker directories are written once: ${results}"
   mkdir -p "${worker}" "$(dirname "${results}")"
   # Every task in one workload JVM shares one propagation ledger, and the plan
   # names it: ConcolicScheduler stamps the seed replay's tasks and
-  # PathReplayTaskFactory stamps every flip bundle's, both as
+  # PathReplayTaskFactory stamps every focused flip replay's, both as
   # REPLAY.GROUP.<sha256>. One authority mints it, so nothing is derived or
   # cross-checked here.
   run_capturing_status \
@@ -2010,6 +1763,7 @@ campaign_replay() {
     "CAUSYNTH_CONCOLIC_TASK_PLAN=${plan}" \
     "CAUSYNTH_CONCOLIC_TASK_ID=${ids}" \
     "CAUSYNTH_CONCOLIC_RESULTS=${results}" \
+    "CAUSYNTH_CONCOLIC_SESSIONS=${sessions}" \
     "CAUSYNTH_CONCOLIC_CLASSES=${classes}" \
     "CAUSYNTH_CONCOLIC_WORKER_DIR=${worker}" \
     "CAUSYNTH_CONCOLIC_MAX_TASKS=${schedule_max_jobs}" \
@@ -2022,10 +1776,9 @@ campaign_replay() {
   # A workload that terminated before its selected regions ran still publishes
   # one CONCOLIC_REGION_SKIPPED row per unreached region, so a non-empty file
   # is not evidence that anything was replayed.  Only CONCOLIC_REGION_RESULT
-  # rows are importable (ConcolicSummaryImporter:354), so a result carrying
-  # none is a failed replay and is named here, beside the log that holds the
-  # workload's terminating exception -- not one stage later as a wall of
-  # anchor-miss rows the importer refuses.
+  # rows carry a session, so a result carrying none is a failed replay and is
+  # named here, beside the log that holds the workload's terminating
+  # exception -- not one stage later as a wall of anchor-miss rows.
   if [[ "${region_results}" == required ]] \
       && ! jq -e -n 'any(inputs; .event == "CONCOLIC_REGION_RESULT")' \
         "${results}" >/dev/null; then
@@ -2069,595 +1822,252 @@ campaign_replay() {
   campaign_log "replay role=${role} exit=${status} result=${results}"
 }
 
+
 campaign_session_replay() {
   local iteration_dir=$1
   local seed="${iteration_dir}/seed-result"
   local plan="${iteration_dir}/seed-replay/execution_task_plan.jsonl"
   local results="${seed}/concolic_region_results.jsonl"
-  local ids worker status=0
+  local ids
   ids=$(campaign_task_ids "${plan}")
-  worker="${seed}/linked-bundle"
+  # The seed replay is a focused replay like any other: one occurrence is
+  # symbolic, everything else runs concretely, recording its exports and
+  # minting v_H at every declared port.  It writes its rows per kind into its
+  # own session directory (CONTRACT-SPEC SS2), which is what IMPORT reads.
+  campaign_sessions_dir="${iteration_dir}/sessions"
+  mkdir -p "${campaign_sessions_dir}"
   campaign_replay worker "${plan}" "${ids}" \
-    "${iteration_dir}/instrumented-classes" "${results}" "${worker}"
+    "${iteration_dir}/instrumented-classes" "${results}" "${seed}/focused"
   require_nonempty "session replay results" "${results}"
 }
 
+
+# IMPORT: the replay's per-kind session files, checked and counted.
+#
+# A replay session writes one JSONL file per row kind under
+# <iteration>/sessions/<sessionId>/ (CONTRACT-SPEC SS2).  There is nothing to
+# fold here any more: a reader of exports never parses attaches, the kinds are
+# joined by Endpoint and Interaction id rather than by the activation envelope
+# they used to share, and no stage has to re-parse a whole result to read one
+# of them.  This stage checks that each session published every kind its
+# readers open, and publishes the census.
 campaign_import_session() {
   local iteration_dir=$1 iteration_id=$2
-  local seed="${iteration_dir}/seed-result"
-  local summaries="${iteration_dir}/concolic_region_summaries.jsonl"
-  local role campaign_id region occurrence goal task
-  local status=0
-  raw_concolic_results="${seed}/concolic_region_results.jsonl"
-  import_task_plan="${iteration_dir}/seed-replay/execution_task_plan.jsonl"
-  imported_summaries="${summaries}"
-  import_diagnostics="${seed}/import_diagnostics.jsonl"
-  run_capturing_status do_import "${iteration_id}"
-  # Exit 3 is the publication contract: the corpus imported, and it is short
-  # of what the plan asked for.  The importer has already printed the one
-  # summary table; stopping here is the point of the check, so that the same
-  # hole is not met at EXPLORE as an unexecutable worklist.
-  if [[ "${status}" -eq 3 ]]; then
-    campaign_fail IMPORT PublicationContract "${import_diagnostics}" \
-      "the replay wave published less than the plan asked for; see the"$'\n'"publication contract table above"
-  fi
-  if [[ "${status}" -ne 0 ]]; then
-    [[ ! -s "${import_diagnostics}" ]] \
-      || jq -c . "${import_diagnostics}" >&2 || true
-    campaign_fail IMPORT ConcolicSummaryImporter "${import_diagnostics}" \
-      "the campaign raw results could not be strictly imported"
-  fi
-  require_nonempty "imported region summaries" "${summaries}"
-  # Fan the importer's own rows out to the candidate directories.  Candidate
-  # occurrences may be dormant on this replay; exact VM evidence selects the
-  # kept slice the plan named, which is the roster.
-  while IFS=$'\t' read -r role campaign_id region occurrence goal task \
-      target_reach; do
-    campaign_json select-summary "${summaries}" "${task}" \
-      >"${iteration_dir}/workers/${task}/concolic_region_summaries.jsonl"
-  done <<<"${campaign_member_rows}"
-  campaign_log "imported summaries: $(wc -l <"${summaries}")"
+  local sessions="${iteration_dir}/sessions"
+  local census="${iteration_dir}/session_census.jsonl"
+  local session name kind path rows missing="" count=0
+  require_directory "replay sessions" "${sessions}"
+  : >"${census}"
+  for session in "${sessions}"/*/; do
+    [[ -d "${session}" ]] || continue
+    name=$(basename "${session}")
+    count=$((count + 1))
+    for kind in activations decisions exports attaches writes reads roots \
+        targets gaps; do
+      path="${session}${kind}.jsonl"
+      if [[ ! -e "${path}" ]]; then
+        missing="${missing} ${name}/${kind}.jsonl"
+        continue
+      fi
+      rows=$(wc -l <"${path}")
+      jq -n -c --arg session "${name}" --arg kind "${kind}" \
+        --arg epoch "${iteration_id}" --argjson rows "${rows}" \
+        '{schemaVersion: 1, kind: "SESSION_CENSUS", topologyEpoch: $epoch,
+          sessionId: $session, rowKind: $kind, rows: $rows}' >>"${census}"
+    done
+    [[ -s "${session}expressions.json" ]] \
+      || missing="${missing} ${name}/expressions.json"
+  done
+  [[ "${count}" -gt 0 ]] || campaign_fail IMPORT SessionDir "${sessions}" \
+    "the replay published no session directory"
+  [[ -z "${missing}" ]] || campaign_fail IMPORT SessionDir "${sessions}" \
+    "a replay session published no file for:${missing}"
+  require_nonempty "replay session census" "${census}"
+  campaign_log "sessions: ${count}, rows: $(jq -r -s '[.[].rows] | add // 0' \
+    "${census}")"
 }
 
-campaign_report_worklist() {
-  local planner_dir=$1
-  echo "[campaign] path planner artifacts: ${planner_dir}" >&2
-  jq -r '
-    "  state=\(.state)",
-    (.gaps[]?
-      | "  blocking-gap kind=\(.kind) reason=\(.reason) site=\(.siteId) occurrence=\(.occurrence) path=\(.pathKey)"),
-    (.deferredObservations[]?
-      | "  deferred kind=\(.kind) reason=\(.reason) site=\(.siteId) occurrence=\(.occurrence) path=\(.pathKey)")
-  ' "${planner_dir}/region_path_manifest.json" >&2 || true
-}
 
-campaign_report_wave() {
-  local wave_dir=$1
-  local worker
-  echo "[campaign] failed obligation wave: ${wave_dir}" >&2
-  while IFS= read -r worker; do
-    [[ ! -s "${worker}/exploration_record.jsonl" ]] || continue
-    echo "  failed obligation: ${worker}" >&2
-    if [[ -s "${worker}/path_flip_solver_result.json" ]]; then
-      jq -r '"    solver-status=\(.status // "missing") reason=\(.reason // "")"' \
-        "${worker}/path_flip_solver_result.json" >&2 || true
-    fi
-    [[ ! -s "${worker}/stderr.log" ]] \
-      || { echo "    stderr tail:" >&2; tail -n 20 "${worker}/stderr.log" >&2; }
-  done < <(find "${wave_dir}" -mindepth 1 -maxdepth 1 -type d \
-    | LC_ALL=C sort)
-}
-
-# One terminal exploration record: the solver's own result for this query,
-# stamped with the query it answers, the tasks it linked and why this is the
-# end of it.  Three call sites used to spell the same object literal.
-campaign_record_exploration() {
-  local worker=$1 key=$2 tasks=$3 record_status=$4 reason=$5
-  jq -c --arg key "${key}" --arg tasks "${tasks}" \
-    --arg status "${record_status}" --arg reason "${reason}" \
-    '. + {schemaVersion: 1, kind: "PATH_EXPLORATION_RECORD", queryKey: $key,
-      linkedTaskIds: ($tasks | split(",")), status: $status, reason: $reason}' \
-    "${worker}/path_flip_solver_result.json" \
-    >"${worker}/exploration_record.jsonl"
-  require_nonempty "path exploration record" \
-    "${worker}/exploration_record.jsonl"
-}
-
-# One obligation: solve the flip, replay it in its own fresh workload instance,
-# strictly import the result, and admit it only against its own planned task.
-# The terminal record for an obligation that was solved, replayed and
-# imported: which planned task it belongs to, stamped with the query it
-# answers.  Whether the imported case is admissible is the importer's
-# decision and is already in its artifacts.  An empty PRIMARY selection is
-# refused rather than published as a record of nulls.
-campaign_publish_primary_record() {
-  local task_plan=$1 key=$2 out=$3
-  jq -e -c -s --arg key "${key}" '
-    map(select(.linkedReplayRole == "PRIMARY")) | .[0]
-    | select(. != null)
-    | {schemaVersion: 1, kind: "PATH_EXPLORATION_RECORD", queryKey: $key,
-     regionId, taskId, occurrenceId, goalId,
-     topologyEpoch,
-     status: "VALIDATED_FRESH_REGION_PATH_FLIP_REPLAY"}
-    ' "${task_plan}" >"${out}"
-}
-
-campaign_worker_task() {
-  local query_key=$1 worklist=$2 tasks=$3 classes=$4 worker=$5 iteration_id=$6
-  local outcome replay_tasks primary_replay_task reason status=0
-  local raw="${worker}/concolic_region_results.jsonl"
-  local imported="${worker}/concolic_region_summaries.jsonl"
+# One obligation: solve it, replay it focused, record its verdict.
+#
+# The obligation names ONE focused occurrence, the decision it flips, the root
+# assignments to apply at the mints and the answers to apply at the attaches
+# (CONTRACT-SPEC SS3).  The replay writes its rows into its own session
+# directory, which is the only thing COMPOSE reads; this function's output is
+# the one ObligationResult row that says which verdict it reached.
+#
+# A single obligation that could not be solved or replayed is that
+# obligation's own result row, never the wave's death: on laneVM11 one planner
+# exception discarded ten finished replays and every verdict they carried.
+campaign_obligation_worker() {
+  local obligation_id=$1 obligations=$2 classes=$3 worker=$4 sessions=$5
+  local outcome replay_tasks status=0
+  local plan="${worker}/execution_task_plan.jsonl"
+  local results="${worker}/concolic_region_results.jsonl"
+  local result_row="${worker}/obligation_result.jsonl"
   run_capturing_status run_java_main \
-    edu.uva.liftlab.graphchecker.concolic.ConcolicPathFlipSolver \
-    --worklist "${worklist}" \
-    --task-plan "${tasks}" \
-    --query-key "${query_key}" \
+    edu.uva.liftlab.graphchecker.d3.explore.ObligationSolverMain \
+    --obligations "${obligations}" \
+    --obligation-id "${obligation_id}" \
+    --sessions "${sessions}" \
     --output-dir "${worker}" \
     --z3 "${z3_bin}" \
     --solver-timeout-ms "${solver_timeout_ms}" \
     --clock-skew-ms "${clock_skew_ms}"
-  # One obligation that could not be materialized, solved or planned is
-  # that obligation's gap row, never the wave's death.  It used to kill the
-  # worker, and the wave with it: on laneVM11 one linked-plan exception
-  # discarded ten finished flip replays and every verdict they carried.
-  # The row is what COMPOSE reads, and the other members finish.
   if [[ "${status}" -ne 0 ]]; then
-    campaign_log "path solver failed on ${query_key} (exit ${status}): \
-$(grep -v -E '^[[:space:]]+at ' "${worker}/stderr.log" 2>/dev/null \
-      | tail -n 1)"
-    jq -n -c --arg key "${query_key}" --arg reason "$(grep -v -E \
+    campaign_log "obligation solver failed on ${obligation_id} \
+(exit ${status}): $(grep -v -E '^[[:space:]]+at ' "${worker}/stderr.log" \
+      2>/dev/null | tail -n 1)"
+    jq -n -c --arg id "${obligation_id}" --arg detail "$(grep -v -E \
         '^[[:space:]]+at ' "${worker}/stderr.log" 2>/dev/null | tail -n 1)" \
-      '{schemaVersion: 1, kind: "PATH_EXPLORATION_RECORD", queryKey: $key,
-        status: "MATERIALIZATION_GAP",
-        reason: "PATH_FLIP_MATERIALIZATION_GAP",
-        detail: $reason, unsupported: []}' \
-      >"${worker}/exploration_record.jsonl"
+      '{schemaVersion: 1, kind: "OBLIGATION_RESULT", obligationId: $id,
+        verdict: "NOT_ADMITTED", sessionId: "", detail: $detail}' \
+      >"${result_row}"
     return 0
   fi
-  require_nonempty "path solver result" \
-    "${worker}/path_flip_solver_result.json"
-  # The query is the artifact an UNSAT obligation is diagnosed from, so a
-  # missing one fails here rather than being noticed a campaign later.
-  require_nonempty "path flip query" "${worker}/path_flip_query.smt2"
-  outcome=$(jq -er '.status' "${worker}/path_flip_solver_result.json")
-  # The solver owns what a finished flip is. ConcolicPathFlipSolver exits 0
-  # for UNSAT, UNSUPPORTED, MATERIALIZATION_GAP and SOLVER_TIMEOUT alike,
-  # calling all four "recorded terminal exploration outcomes, not process
-  # failures", and the planner records them by queryKey so the flip is not
-  # proposed again.  Killing the worker on any of them would make the shell
-  # overrule the semantic owner and discard the remaining local path cases
-  # in the wave.  A solver that crashed or rejected the query still exits
-  # non-zero above and remains fatal.
+  require_nonempty "obligation solver result" "${result_row}"
+  require_nonempty "obligation query" "${worker}/obligation_query.smt2"
+  outcome=$(jq -er '.verdict' "${result_row}")
+  # The solver owns what a finished obligation is.  UNSAT and NOT_ADMITTED
+  # are recorded terminal verdicts, not process failures, and the next wave
+  # reads them so the obligation is not proposed again.
   case "${outcome}" in
-    UNSAT|UNSUPPORTED|MATERIALIZATION_GAP|SOLVER_TIMEOUT)
-      jq -c '. + {schemaVersion: 1,
-                    kind: "PATH_EXPLORATION_RECORD"}' \
-        "${worker}/path_flip_solver_result.json" \
-        >"${worker}/exploration_record.jsonl"
-      return 0
-      ;;
+    UNSAT|NOT_ADMITTED|DIVERGED) return 0 ;;
   esac
   [[ "${outcome}" == "SAT_MODEL_READY" ]] \
-    || die "the path flip is not solver-backed: ${outcome}"
-  replay_tasks=$(campaign_task_ids "${worker}/execution_task_plan.jsonl")
+    || die "the obligation verdict is not solver-backed: ${outcome}"
+  replay_tasks=$(campaign_task_ids "${plan}")
   [[ -n "${replay_tasks}" ]] \
-    || die "the linked path solver emitted an empty replay bundle"
-
-  campaign_replay worker "${worker}/execution_task_plan.jsonl" \
-    "${replay_tasks}" "${classes}" "${raw}" "${worker}" tolerated
-  raw_concolic_results="${raw}"
-  import_task_plan="${worker}/execution_task_plan.jsonl"
-  imported_summaries="${imported}"
-  import_diagnostics="${worker}/import_diagnostics.jsonl"
-  run_capturing_status do_import "${iteration_id}"
-  if [[ "${status}" -ne 0 && ! -s "${import_diagnostics}" ]]; then
-    die "the importer failed without a semantic diagnostic for ${query_key} (exit ${status})"
-  fi
-  if false; then
-    return 0
-  fi
-  if [[ ! -s "${imported}" ]]; then
-    [[ -f "${import_diagnostics}" ]] || die \
-      "the importer published no diagnostics for ${query_key}; expected ${import_diagnostics}"
-    reason=$(jq -r -s '
-      map([(.code // ""), (.detail // "")]
-          | map(select(length > 0)) | join(": "))
-      | map(select(length > 0)) | unique | join(" | ")
-    ' "${import_diagnostics}")
-    campaign_record_exploration "${worker}" "${query_key}" \
-      "${replay_tasks}" REPLAY_NOT_ADMITTED "${reason}"
-    campaign_log "flip ${query_key}: replay admitted no case; recorded REPLAY_NOT_ADMITTED"
-    return 0
-  fi
-  # LinkedReplayBundle refuses a bundle without exactly one primary, and the
-  # replay plan carries that bundle's roles, so this reads the primary rather
-  # than counting the primaries again.
-  primary_replay_task=$(jq -e -r -s '
-    map(select(.linkedReplayRole == "PRIMARY")) | .[0].taskId
-    ' "${worker}/execution_task_plan.jsonl") \
-    || die "the linked replay plan for ${query_key} names no PRIMARY task"
-  if ! jq -e -s --arg task "${primary_replay_task}" \
-      'any(.[]; .taskId == $task)' "${imported}" >/dev/null; then
-    campaign_record_exploration "${worker}" "${query_key}" \
-      "${replay_tasks}" REPLAY_NOT_ADMITTED \
-      "linked replay admitted companion cases but no primary flip case"
-    campaign_log "flip ${query_key}: primary case was not admitted"
-    return 0
-  fi
-  campaign_publish_primary_record "${worker}/execution_task_plan.jsonl" \
-    "${query_key}" "${worker}/exploration_record.jsonl" \
-    || die "the linked replay plan for ${query_key} names no PRIMARY task to record"
-  require_nonempty "path exploration record" \
-    "${worker}/exploration_record.jsonl"
-}
-
-campaign_publish_wave() {
-  local planner_dir=$1 summaries=$2 tasks=$3 records=$4
-  local worker worker_list record_status
-  local -a summary_inputs task_inputs record_inputs
-  summary_inputs=("${summaries}")
-  task_inputs=("${tasks}")
-  record_inputs=("${records}")
-  if ! worker_list=$(find "${planner_dir}" -mindepth 1 -maxdepth 1 \
-      -type d -print | LC_ALL=C sort); then
-    campaign_fail EXPLORE CAMPAIGN "${planner_dir}" \
-      "failed to enumerate completed obligation workers"
-  fi
-  [[ -n "${worker_list}" ]] || campaign_fail EXPLORE CAMPAIGN \
-    "${planner_dir}" "a published obligation wave contains no worker"
-  while IFS= read -r worker; do
-    require_nonempty "path exploration record" \
-      "${worker}/exploration_record.jsonl"
-    record_inputs+=("${worker}/exploration_record.jsonl")
-    if ! record_status=$(jq -e -r -s '
-        if length == 1 and (.[0].status | type) == "string"
-        then .[0].status
-        else error("one terminal exploration status is required") end
-      ' "${worker}/exploration_record.jsonl"); then
-      campaign_fail EXPLORE CAMPAIGN \
-        "${worker}/exploration_record.jsonl" \
-        "the obligation published no unique terminal status"
-    fi
-    case "${record_status}" in
-      BUNDLE_TOPOLOGY_DIVERGENCE)
-        # This replay left the frozen topology epoch, so its rows are about a
-        # different arrangement of the system than the one being composed.
-        continue
-        ;;
-      UNSAT|UNSUPPORTED|MATERIALIZATION_GAP|SOLVER_TIMEOUT|REPLAY_NOT_ADMITTED)
-        # A solver-terminal obligation ran no replay and has no rows; the
-        # emptiness guards below drop it.
-        #
-        # REPLAY_NOT_ADMITTED does have rows, and they are published.  The
-        # status says the obligation's own flip did not materialize its
-        # primary case -- which is a fact about that obligation, not about
-        # the execution.  The replay ran, and every region it did execute
-        # published what it observed.  Dropping all of it used to be
-        # necessary because a companion's propagated boundary value was an
-        # arm that needed its producer's case to mean anything; a replay's
-        # values are resolved inside that replay now, so a row from it says
-        # what it says on its own.  Dropping them threw away the anchored
-        # target rows of exactly the replays a flip was cut to produce.
-        ;;
-      VALIDATED_FRESH_REGION_PATH_FLIP_REPLAY)
-        ;;
-      *)
-        campaign_fail EXPLORE CAMPAIGN \
-          "${worker}/exploration_record.jsonl" \
-          "the obligation published an unexpected terminal status ${record_status}"
-        ;;
-    esac
-    [[ -s "${worker}/execution_task_plan.jsonl" ]] || continue
-    require_nonempty "worker raw result" \
-      "${worker}/concolic_region_results.jsonl"
-    # A replay can validly remove the causal effect it was exploring.  The
-    # importer then publishes a diagnostic/delta but no relation summary, and
-    # campaign_worker_task records REPLAY_NOT_ADMITTED.  That terminal query
-    # belongs in the exploration record set, not in the relation-summary set.
-    [[ -s "${worker}/concolic_region_summaries.jsonl" ]] || continue
-    task_inputs+=("${worker}/execution_task_plan.jsonl")
-    summary_inputs+=("${worker}/concolic_region_summaries.jsonl")
-  done <<<"${worker_list}"
-  campaign_json combine summaryId "${summaries}" "${summary_inputs[@]}"
-  campaign_json combine taskId "${tasks}" "${task_inputs[@]}"
-  campaign_json combine queryKey "${records}" "${record_inputs[@]}"
+    || die "the solved obligation emitted no focused replay task"
+  campaign_sessions_dir="${sessions}" \
+    campaign_replay worker "${plan}" "${replay_tasks}" "${classes}" \
+      "${results}" "${worker}" tolerated
+  # The replay's own session is the evidence; the row says which one it is.
+  jq -c --arg session "$(jq -r '.sessionId // ""' "${result_row}")" \
+    '. + {verdict: "VALIDATED"}' "${result_row}" >"${result_row}.done" \
+    || campaign_fail EXPLORE ObligationSolverMain "${result_row}" \
+      "the obligation result could not be completed"
+  mv -- "${result_row}.done" "${result_row}"
 }
 
 # Region-path obligations are coordinated in closure-wide waves below.
 
-# The builder requires exactly one solver-ready target seed and publishes the
-# exact observed target paths it can justify.
-campaign_target_reach_query() {
-  local iteration_dir=$1
-  local resolved="${causynth_output_dir}/target_resolved.json"
-  local exception="" built=0
-  local role campaign_id region occurrence goal task target_reach
-  [[ ! -s "${resolved}" ]] \
-    || exception=$(jq -r '.exception // ""' "${resolved}")
-  if [[ -z "${exception}" ]]; then
-    campaign_fail EXPLORE TargetReachPathQueryBuilder "${resolved}" \
-      "no target attestation names the selected exception"
-  fi
-  # One reach query per observed occurrence of the annotated target.  Each is
-  # built from that occurrence's own closed worklist over the one shared
-  # closure the wave loop published, so the queries differ exactly where the
-  # executions differed.  No occurrence is privileged: there is no elected
-  # member here.  An occurrence whose worklist never closed has no path to
-  # state, and that is TARGET_NOT_REACHED for that one anchor -- a refusal
-  # the composition publishes about it, with the reason left beside the
-  # absent query -- not a failure of the run, which still has whatever the
-  # other anchored occurrences reached.
-  while IFS=$'\t' read -r role campaign_id region occurrence goal task \
-      target_reach; do
-    [[ "${target_reach}" == "true" ]] || continue
-    if campaign_member_reach_query "${iteration_dir}" "${task}" \
-        "${occurrence}"; then
-      built=$((built + 1))
-    fi
-  done <<<"${campaign_member_rows}"
-  campaign_log "target reach queries: ${built}"
-}
 
-# One member's exact reach query, or a named skip.  The skip reason is left
-# beside the absent query so COMPOSE can publish why this occurrence carries
-# no verdict instead of leaving a silent hole in the ledger.
-campaign_member_reach_query() {
-  local iteration_dir=$1 task=$2 occurrence=$3
-  local member="${iteration_dir}/workers/${task}"
-  local skipped="${member}/reach_query.skipped"
-  local status=0
-  rm -f "${skipped}"
-  if [[ ! -s "${member}/path_closure.json" ]]; then
-    printf '%s\n' "the linked replay published no path closure for this \
-occurrence: its fatal read was not observed in any summary this run linked" \
-      >"${skipped}"
-    campaign_log "target occurrence skipped (no closure): ${occurrence}"
-    return 1
-  fi
-  run_capturing_status run_java_main \
-    edu.uva.liftlab.graphchecker.concolic.TargetReachPathQueryBuilder \
-    --summaries "${member}/observed_path_summaries.jsonl" \
-    --path-manifest "${member}/path_closure.json" \
-    --seed-query "${iteration_dir}/seed-replay/branch_queries.jsonl" \
-    --output "${member}/reach_query.jsonl" \
-    >"${member}/reach_query.log" 2>&1
-  if [[ "${status}" -ne 0 || ! -s "${member}/reach_query.jsonl" ]]; then
-    rm -f "${member}/reach_query.jsonl"
-    # The last line of a Java stack trace is a frame, not a reason.  Take
-    # the last line that is not one, which is the exception the builder
-    # threw, so the skip beside the absent query names the refusal instead
-    # of the file it was thrown in.
-    printf '%s\n' "TargetReachPathQueryBuilder published no exact reach \
-query (exit ${status}): $(grep -v -E '^[[:space:]]+at ' \
-      "${member}/reach_query.log" | tail -n 1)" \
-      >"${skipped}"
-    campaign_log "target occurrence skipped (no query): ${occurrence}"
-    return 1
-  fi
-  campaign_log "target reach paths: $(jq -r '.paths | length' \
-    "${member}/reach_query.jsonl") ${occurrence}"
-  return 0
-}
-
-# EXPLORE-1: the closure loop stops on its own fixed point, and failing that
-# on a budget.  A wave that proposes the very same obligations as the wave
-# before it, and whose recorded verdicts have not changed either, has learned
-# nothing; continuing would re-solve and re-replay the same set forever.  Both
-# stops are coverage telemetry, never a campaign failure: an unexplored
-# sibling path blocks a closed UNSAT conclusion and says nothing about a SAT
-# candidate, so the gap is written onto the still-pending worklists and the
-# campaign goes on to publish what it did establish.
-campaign_explore_stop() {
-  local kind=$1 reason=$2
-  shift 2
-  local planner_dir member pending_manifest
-  for planner_dir in "$@"; do
-    member=$(dirname "${planner_dir}")
-    pending_manifest="${planner_dir}/region_path_manifest.json"
-    [[ -s "${pending_manifest}" ]] || continue
-    jq -c --arg kind "${kind}" --arg reason "${reason}" \
-      '.coverageGaps = ((.coverageGaps // []) + [{kind: $kind,
-         reason: $reason, regionId: .regionId,
-         occurrenceId: (.occurrenceId // "")}])' \
-      "${pending_manifest}" >"${pending_manifest}.stopped" \
-      || campaign_fail EXPLORE RegionPathWorklist "${pending_manifest}" \
-        "failed to record the closure stop on a pending worklist"
-    mv "${pending_manifest}.stopped" "${pending_manifest}"
-    cp -f "${pending_manifest}" "${member}/path_closure.json"
-  done
-  campaign_log "closure exploration stopped: ${kind}: ${reason}"
-}
-
+# EXPLORE: waves of focused obligations until the frontier stops moving.
+#
+# One JVM plans the wave -- d3.explore.ExploreMain reads every session this
+# epoch has produced and writes the obligations the frontier is owed -- and
+# one worker per obligation executes it.  A task is ONE focused occurrence
+# (or one state-connected factor); everything else in that replay runs
+# concretely, so there is no member roster to plan against and no per-member
+# worklist to reconcile: the sessions are the shared state, and a wave reads
+# every session the waves before it wrote.
+#
+# Both stops are coverage telemetry, never a campaign failure.  A wave that
+# proposes the same obligations as the wave before it, with the same verdicts
+# behind them, has learned nothing; continuing would re-solve the same set for
+# ever.  An unexplored sibling path blocks a closed UNSAT and says nothing
+# about a SAT candidate, so the stop is written as a gap row and the campaign
+# goes on to publish what it did establish.
 campaign_explore() {
   local iteration_dir=$1 iteration_id=$2
-  local role campaign_id region occurrence goal task member planner_dir
-  local worklist key_rows key worker_dir wave_dir roster
-  local status=0 wave=0 pending=0 job planner_index
-  local wave_signature="" previous_signature="" stop_kind="" stop_reason=""
-  local summaries="${iteration_dir}/linked_observed_path_summaries.jsonl"
-  local tasks="${iteration_dir}/linked_observed_execution_tasks.jsonl"
-  local active_plan="${iteration_dir}/seed-replay/execution_task_plan.jsonl"
-  local active_seed="${iteration_dir}/active_seed_summaries.jsonl"
-  local records="${iteration_dir}/linked_path_exploration_records.jsonl"
+  local sessions="${iteration_dir}/sessions"
+  local results="${iteration_dir}/obligation_results.jsonl"
   local classes="${iteration_dir}/instrumented-classes"
-  local -a bound_args=() jobs=() pids=() planner_dirs=()
-  local -a planner_all_dirs=()
-  local -a planner_roles=() planner_tasks=()
+  local wave=0 pending=0 status=0 obligation_id worker_dir wave_dir job
+  local wave_signature="" previous_signature="" stop_kind="" stop_reason=""
+  local obligations
+  local -a bound_args=() domain_args=() jobs=() pids=()
 
-  campaign_json select-tasks \
-    "${iteration_dir}/concolic_region_summaries.jsonl" "${active_plan}" \
-    >"${active_seed}"
-  campaign_json combine summaryId "${summaries}" "${active_seed}"
-  campaign_json combine taskId "${tasks}" "${active_plan}"
-  : >"${records}"
+  : >"${results}"
   [[ -z "${region_path_max_paths_per_region}" ]] \
     || bound_args+=(--max-paths-per-region "${region_path_max_paths_per_region}")
   [[ -z "${region_path_max_flips_per_path}" ]] \
     || bound_args+=(--max-flips-per-path "${region_path_max_flips_per_path}")
   [[ -z "${region_path_max_tasks}" ]] \
     || bound_args+=(--max-tasks "${region_path_max_tasks}")
+  # The same declaration COMPOSE reads.  An obligation's handoff answers are
+  # constrained by their interaction's family, and a family arm is only as
+  # constraining as the roots inside it: without the case's declared domain
+  # every arm pins its answer to what the recording delivered, and no
+  # rotation the case assumes could ever be explored.
+  [[ -z "${causynth_root_domains}" ]] \
+    || domain_args+=(--root-domains "${causynth_root_domains}")
 
-  # Every planner in a wave reads the same immutable family snapshot. All
-  # returned linked bundles are merged only after the wave settles; the next
-  # wave therefore sees every new upstream arm before declaring a downstream
-  # local path closed.
   while true; do
-    jobs=()
-    planner_dirs=()
-    planner_all_dirs=()
-    planner_roles=()
-    planner_tasks=()
-    pids=()
-    pending=0
     wave_dir=$(printf '%s/obligations-%04d' "${iteration_dir}" "${wave}")
     [[ ! -e "${wave_dir}" ]] || die \
       "obligation wave directory already exists: ${wave_dir}"
     mkdir -p "${wave_dir}"
-    roster="${wave_dir}/members.tsv"
-    : >"${roster}"
-    while IFS=$'\t' read -r role campaign_id region occurrence goal task \
-        target_reach; do
-      member="${iteration_dir}/workers/${task}"
-      planner_dir=$(printf '%s/obligations-%04d' "${member}" "${wave}")
-      [[ ! -e "${planner_dir}" ]] || die \
-        "obligation wave directory already exists: ${planner_dir}"
-      mkdir -p "${planner_dir}"
-      planner_roles+=("${role}")
-      planner_tasks+=("${task}")
-      planner_all_dirs+=("${planner_dir}")
-      printf '%s\t%s\t%s\n' "${region}" "${goal}" "${planner_dir}" \
-        >>"${roster}"
-    done <<<"${campaign_member_rows}"
-    # Every member of the wave is planned against the same summaries, the same
-    # task plan and therefore the same symbolic propagation closure.  One JVM
-    # computes that closure once and writes each member's own manifest and
-    # worklist into the member's own directory.
+    obligations="${wave_dir}/obligations.jsonl"
     status=0
-    # The same declaration COMPOSE reads.  An obligation's handoff controls
-    # are constrained by their family from this corpus, and a family arm is
-    # only as constraining as the roots inside it: without the case's
-    # declared domain the arms would pin every answer to what the recording
-    # delivered, and no rotation the case assumes could ever be explored.
-    local -a planner_domains
-    planner_domains=()
-    [[ -z "${causynth_root_domains}" ]] \
-      || planner_domains+=(--root-domains "${causynth_root_domains}")
-    run_java_main \
-      edu.uva.liftlab.graphchecker.concolic.ConcolicPathFlipPlanner \
-      --summaries "${summaries}" \
-      --task-plan "${tasks}" \
-      --records "${records}" \
-      --members "${roster}" \
+    run_java_main edu.uva.liftlab.graphchecker.d3.explore.ExploreMain \
+      --sessions "${sessions}" \
+      --task-plan "${iteration_dir}/seed-replay/execution_task_plan.jsonl" \
+      --results "${results}" \
       --topology-epoch "${iteration_id}" \
-      "${planner_domains[@]}" \
+      --wave "${wave}" \
+      --output-dir "${wave_dir}" \
+      "${domain_args[@]}" \
       "${bound_args[@]}" \
       >"${wave_dir}/stdout.log" 2>"${wave_dir}/stderr.log" || status=$?
-    # Exit 2 names a member whose worklist is not executable; which member it
-    # is, is read below from that member's own manifest state.
-    if [[ "${status}" -ne 0 && "${status}" -ne 2 ]]; then
-      campaign_fail EXPLORE ConcolicPathFlipPlanner \
-        "${wave_dir}/stderr.log" \
-        "the wave path planner failed with exit ${status}"
+    if [[ "${status}" -ne 0 ]]; then
+      campaign_fail EXPLORE ExploreMain "${wave_dir}/stderr.log" \
+        "the wave planner failed with exit ${status}"
     fi
+    require_nonempty "wave obligations" "${obligations}"
 
-    # Collect in the schedule index's original order. Completion order therefore
-    # cannot change manifest publication or the obligation launch order.
-    for ((planner_index = 0;
-          planner_index < ${#planner_all_dirs[@]}; planner_index++)); do
-      role="${planner_roles[planner_index]}"
-      task="${planner_tasks[planner_index]}"
-      planner_dir="${planner_all_dirs[planner_index]}"
-      member="${iteration_dir}/workers/${task}"
-      require_nonempty "${role} path worklist manifest" \
-        "${planner_dir}/region_path_manifest.json"
-      if jq -e '.state == "CLOSED"' \
-          "${planner_dir}/region_path_manifest.json" >/dev/null; then
-        cp -f "${planner_dir}/region_path_manifest.json" \
-          "${member}/path_closure.json"
-        continue
-      fi
-      # A GAPPED worklist has nothing to explore and says why, by name, in
-      # gaps the ledger already classes.  That is a statement about one
-      # member -- its region published no observed path, or the paths it
-      # published disagree -- and killing the run over it throws away every
-      # other member's exploration and the verdict the run had already
-      # earned.  So the worklist is published as this member's closure, the
-      # named gap travels to gaps.json and withholds the claim there, and
-      # the occurrence composes to TARGET_NOT_REACHED like any anchor with
-      # no path.  Only a state no reader can act on is still a failure.
-      if jq -e '.state == "GAPPED"' \
-          "${planner_dir}/region_path_manifest.json" >/dev/null; then
-        campaign_report_worklist "${planner_dir}"
-        cp -f "${planner_dir}/region_path_manifest.json" \
-          "${member}/path_closure.json"
-        campaign_log "path worklist gapped, nothing to explore: \
-${role} ${task} $(jq -r '[.gaps[]?.kind] | unique | join(",")' \
-          "${planner_dir}/region_path_manifest.json")"
-        continue
-      fi
-      if ! jq -e '.state == "PENDING"' \
-          "${planner_dir}/region_path_manifest.json" >/dev/null; then
-        campaign_report_worklist "${planner_dir}"
-        campaign_fail EXPLORE RegionPathWorklist \
-          "${planner_dir}/region_path_manifest.json" \
-          "the ${role} path worklist state is one no stage can act on"
-      fi
-      worklist="${planner_dir}/region_path_worklist.jsonl"
-      if ! key_rows=$(campaign_decode_worklist_keys "${worklist}"); then
-        campaign_fail EXPLORE RegionPathWorklist "${worklist}" \
-          "the pending path worklist is missing or malformed"
-      fi
-      [[ -n "${key_rows}" ]] || campaign_fail EXPLORE RegionPathWorklist \
-        "${worklist}" "a pending ${role} worklist named no obligation"
-      planner_dirs+=("${planner_dir}")
-      while IFS= read -r key; do
-        [[ -n "${key}" ]] || continue
-        worker_dir="${planner_dir}/${key}"
-        jobs+=("${worklist}"$'\t'"${key}"$'\t'"${worker_dir}")
-        pending=$((pending + 1))
-      done <<<"${key_rows}"
-    done
-
+    jobs=()
+    pending=0
+    while IFS= read -r obligation_id; do
+      [[ -n "${obligation_id}" ]] || continue
+      jobs+=("${obligation_id}")
+      pending=$((pending + 1))
+    done < <(jq -r '.obligationId' "${obligations}")
     [[ "${pending}" -gt 0 ]] || break
 
-    # The obligations this wave would solve, plus the verdicts every earlier
-    # wave recorded.  Obligation identity is stable across waves
-    # (RegionPathWorklist#emitTask), so an unchanged signature means an
-    # unchanged frontier over unchanged evidence: a fixed point the
-    # `pending -gt 0` test alone cannot see.
+    # Obligation identity is stable across waves, so an unchanged signature
+    # over the ids AND the verdicts recorded so far is a fixed point the
+    # "pending > 0" test alone cannot see.
     wave_signature=$({
-        printf '%s\n' "${jobs[@]}" | cut -f2 | LC_ALL=C sort
+        printf '%s\n' "${jobs[@]}" | LC_ALL=C sort
         printf -- '--\n'
-        jq -r '.status // ""' "${records}" | LC_ALL=C sort | uniq -c
+        jq -r '.verdict // ""' "${results}" | LC_ALL=C sort | uniq -c
       } | sha256sum | cut -d' ' -f1) \
-      || campaign_fail EXPLORE CAMPAIGN "${records}" \
-        "failed to summarise closure wave ${wave}"
+      || campaign_fail EXPLORE CAMPAIGN "${results}" \
+        "failed to summarise obligation wave ${wave}"
     stop_kind=""
     if [[ "${wave}" -ge "${region_path_max_waves}" ]]; then
       stop_kind=REGION_PATH_WAVE_BUDGET_REACHED
-      stop_reason="the closure loop reached its configured budget of \
+      stop_reason="the exploration loop reached its configured budget of \
 ${region_path_max_waves} wave(s) with ${pending} obligation(s) still open"
     elif [[ "${wave_signature}" == "${previous_signature}" ]]; then
       stop_kind=REGION_PATH_CLOSURE_NO_PROGRESS
-      stop_reason="closure wave ${wave} proposes the same ${pending} \
-obligation(s) as the wave before it with no new verdict"
+      stop_reason="wave ${wave} proposes the same ${pending} obligation(s) \
+as the wave before it with no new verdict"
     fi
     if [[ -n "${stop_kind}" ]]; then
-      campaign_explore_stop "${stop_kind}" "${stop_reason}" \
-        "${planner_dirs[@]}"
+      jq -n -c --arg kind "${stop_kind}" --arg detail "${stop_reason}" \
+        --arg epoch "${iteration_id}" \
+        '{schemaVersion: 1, kind: "GAP_ROW", sessionId: "",
+          gapKind: "ADMISSION_GAP", gapClass: "DIAGNOSTIC",
+          subject: $kind, detail: $detail, topologyEpoch: $epoch}' \
+        >>"${iteration_dir}/campaign_gaps.jsonl"
+      campaign_log "exploration stopped: ${stop_kind}: ${stop_reason}"
       break
     fi
     previous_signature=${wave_signature}
-    campaign_log "closure wave ${wave}: ${pending} linked obligation(s), workers=${concolic_worker_count}"
+    campaign_log "wave ${wave}: ${pending} obligation(s), \
+workers=${concolic_worker_count}"
     pids=()
     status=0
     for job in "${jobs[@]}"; do
-      IFS=$'\t' read -r worklist key worker_dir <<<"${job}"
+      worker_dir="${wave_dir}/${job}"
       mkdir -p "${worker_dir}"
       (
         set -euo pipefail
-        campaign_worker_task "${key}" "${worklist}" "${tasks}" \
-          "${classes}" "${worker_dir}" "${iteration_id}"
+        campaign_obligation_worker "${job}" "${obligations}" "${classes}" \
+          "${worker_dir}" "${sessions}"
       ) >"${worker_dir}/stdout.log" 2>"${worker_dir}/stderr.log" &
       pids+=("$!")
       if [[ ${#pids[@]} -eq ${concolic_worker_count} ]]; then
@@ -2668,83 +2078,29 @@ obligation(s) as the wave before it with no new verdict"
     if [[ ${#pids[@]} -gt 0 ]]; then
       campaign_wait_workers "${pids[@]}" || status=1
     fi
-    if [[ "${status}" -ne 0 ]]; then
-      for planner_dir in "${planner_dirs[@]}"; do
-        campaign_report_wave "${planner_dir}"
-      done
-      campaign_fail EXPLORE CAMPAIGN "${iteration_dir}/workers" \
-        "closure obligation wave ${wave} did not finish"
-    fi
-    for planner_dir in "${planner_dirs[@]}"; do
-      campaign_publish_wave "${planner_dir}" "${summaries}" "${tasks}" \
-        "${records}"
-    done
+    [[ "${status}" -eq 0 ]] || campaign_fail EXPLORE CAMPAIGN "${wave_dir}" \
+      "obligation wave ${wave} did not finish"
+    # Every verdict this wave reached, appended once the wave settled, so the
+    # next wave sees a complete frontier rather than a partial one.
+    find "${wave_dir}" -mindepth 2 -maxdepth 2 -name obligation_result.jsonl \
+      -print0 | LC_ALL=C sort -z | xargs -0 -r cat >>"${results}"
     wave=$((wave + 1))
   done
-
-  # A worklist can stop because its configured exploration bound was reached.
-  # Its state is then CLOSED, but its coverageState remains PARTIAL. Preserve
-  # that distinction in every summary so the final selected path family cannot
-  # be accepted before its bounded exploration is complete.
-  campaign_path_closures_json "${iteration_dir}/workers" \
-    >"${summaries}.path-closures" \
-    || campaign_fail EXPLORE RegionPathWorklist \
-      "${iteration_dir}/workers" \
-      "failed to read the closure-wide worklist reports"
-  jq -c --slurpfile closures "${summaries}.path-closures" '
-    . as $summary
-    | ([$closures[0][]
-        | select(.regionId == $summary.regionId
-            and .occurrenceId == $summary.plannedOccurrenceId
-            and .sourceKey == $summary.sourceKey)]) as $matches
-    | . + {pathSetClosed:
-        (($matches | length) == 1
-         and $matches[0].state == "CLOSED"
-         and $matches[0].coverageState == "CLOSED"
-         and (($matches[0].coverageGaps // []) | length) == 0)}
-  ' "${summaries}" >"${summaries}.closed" \
-    || campaign_fail EXPLORE RegionPathWorklist "${summaries}" \
-      "failed to publish the closure-wide fixed-point corpus"
-  rm -f "${summaries}.path-closures"
-  mv "${summaries}.closed" "${summaries}"
-
-  # Final consumers all read the identical closure-wide fixed point, so link
-  # it rather than copy it.  One copy per member is the largest thing a
-  # campaign writes: measured on recorded runs, l1/out5 held 25 copies of one
-  # 130.7 MB corpus (3266.9 MB) and 25 of one 24.6 MB task set (615.6 MB).
-  # Both files are published above by an atomic rename and nothing rewrites a
-  # member's entry in place, so the link cannot carry an edit between members.
-  while IFS=$'\t' read -r role campaign_id region occurrence goal task \
-      target_reach; do
-    member="${iteration_dir}/workers/${task}"
-    ln -f "${summaries}" "${member}/observed_path_summaries.jsonl"
-    ln -f "${tasks}" "${member}/observed_execution_tasks.jsonl"
-  done <<<"${campaign_member_rows}"
-  campaign_target_reach_query "${iteration_dir}"
-  campaign_log "closure exploration stopped after ${wave} global wave(s)"
+  campaign_log "exploration stopped after ${wave} wave(s), \
+$(wc -l <"${results}") obligation verdict(s)"
 }
 
-# The importer writes one diagnostics file per worker and one per wave.  EMIT
-# reads one, so they are concatenated here, deterministically, before it does.
-# Nothing is classified: a gap is classed once, by the ledger, and the
-# publication contract at the end of IMPORT is what decides whether the corpus
-# is usable at all.
+
+# Every gap row this iteration's stages wrote outside a session, in one file.
+#
+# Session gap rows stay where the replay wrote them: EMIT reads them straight
+# out of the session directories, because a GapRow states its own class and
+# nothing between the runtime and the report is in a position to change it.
 campaign_collect_diagnostics() {
   local iteration_dir=$1
-  local diagnostics="${iteration_dir}/import_diagnostics.jsonl"
   local gaps="${iteration_dir}/campaign_gaps.jsonl"
-  local source_list gap_list
-  local -a sources=()
+  local gap_list
   local -a gap_files=()
-  if ! source_list=$(find "${iteration_dir}" -type f \
-      -name 'import_diagnostics.jsonl' -not -path "${diagnostics}" \
-      | LC_ALL=C sort); then
-    campaign_fail EMIT CAMPAIGN "${iteration_dir}" \
-      "failed to enumerate importer diagnostics"
-  fi
-  [[ -z "${source_list}" ]] || mapfile -t sources <<<"${source_list}"
-  : >"${diagnostics}"
-  [[ ${#sources[@]} -eq 0 ]] || cat "${sources[@]}" >>"${diagnostics}"
   if ! gap_list=$(find "${iteration_dir}" -type f \
       -name 'campaign_gaps.jsonl' -not -path "${gaps}" \
       | LC_ALL=C sort); then
@@ -2826,337 +2182,81 @@ campaign_publish_iteration_manifest() {
     "${iteration_dir}/iteration_manifest.json"
 }
 
-# Composition consumes the closure-wide local cases. Consumer anchors inside
-# those path conditions already carry the propagated values into the formula.
+
+# COMPOSE: one anchor, one formula.
 #
-# COMPOSE-1: one composition per observed occurrence of the annotated target.
-# The planner plants a target-reach goal on every occurrence the recording
-# observed, and a formula composed for one of them states nothing about the
-# others: for hdfs-17897 the elected occurrence was the DataNode-to-DataNode
-# handshake while the chain the experiment is about ends at the client's.  So
-# every occurrence that published a reach query is composed into its own
-# directory and judged on its own; DECIDE elects which of those finished
-# answers the campaign publishes.  This is an outer loop over whole
-# compositions, never a disjunction inside one: no formula is weakened by
-# another, and each one remains exactly the formula this stage used to
-# compose for the elected member.
-#
-# The evidence every composition reads is built once -- one combined
-# closure-wide summary corpus and one task plan, shared by every occurrence.
-# The Composer still rebuilds its own propagation closure per run, because
-# that closure is cut to the fatal query it is lowering, so the stage costs
-# one composition per *composed* occurrence.  Occurrences whose fatal read
-# this run never observed publish no query and are skipped, which is what
-# keeps that count at the number of executions the recording actually had.
+# The anchor is the occurrence the case declares.  Which execution of the
+# annotated site a campaign answers about is the case's to state, so there is
+# no fan-out over observed occurrences here and nothing to elect afterwards:
+# the composer reads every session this epoch produced, factorizes the paths
+# that reach the declared anchor, and writes one candidate.smt2 beside one
+# manifest.
 campaign_compose() {
   local iteration_dir=$1
-  local role campaign_id region occurrence goal task target_reach
-  local target_task="" target_region="" target_occurrence=""
-  local status=0 observed elected_manifest=""
-  local -a observed_inputs=()
-  while IFS=$'\t' read -r role campaign_id region occurrence goal task \
-      target_reach; do
-    require_nonempty "linked member observed summaries" \
-      "${iteration_dir}/workers/${task}/observed_path_summaries.jsonl"
-    observed_inputs+=(
-      "${iteration_dir}/workers/${task}/observed_path_summaries.jsonl")
-    if [[ "${role}" == "TARGET" ]]; then
-      target_task=${task}
-      target_region=${region}
-      target_occurrence=${occurrence}
-    fi
-  done <<<"${campaign_member_rows}"
+  local started ended millis status=0
   [[ ! -e "${campaign_final}" ]] || die \
     "the final directory already exists: ${campaign_final}"
-  mkdir -p "${campaign_final}/targets"
-  iteration_workers="${iteration_dir}/workers"
-  observed="${iteration_dir}/closure_observed_summaries.jsonl"
-  campaign_json combine summaryId "${observed}" "${observed_inputs[@]}"
-  require_nonempty "closure-wide observed summaries" "${observed}"
-  compose_summary_inputs="${observed}"
-  compose_task_plan="${iteration_dir}/execution_task_plan.jsonl"
-  campaign_target_reports="${campaign_final}/target_occurrence_reports.jsonl"
-  : >"${campaign_target_reports}"
-  # The elected member first, so the mandatory composition is the one a
-  # failure is reported against, and so the ledger's first row is the
-  # occurrence every earlier run composed.
-  campaign_compose_occurrence "${iteration_dir}" TARGET "${target_task}" \
-    "${target_region}" "${target_occurrence}"
-  elected_manifest="${composition_manifest}"
-  while IFS=$'\t' read -r role campaign_id region occurrence goal task \
-      target_reach; do
-    [[ "${target_reach}" == "true" ]] || continue
-    [[ "${task}" != "${target_task}" ]] || continue
-    campaign_compose_occurrence "${iteration_dir}" SIBLING "${task}" \
-      "${region}" "${occurrence}"
-  done <<<"${campaign_member_rows}"
-  # Occurrences the runtime plan named and this iteration never scheduled at
-  # all: the active observed closure dropped them because no linked summary
-  # carried their fatal read.  The Composer's own occurrence ledger is the
-  # authority on the planned set, so they are read from it rather than
-  # re-derived here, and each is published as a skip with its reason.
-  campaign_compose_unscheduled "${elected_manifest}" "${iteration_dir}"
-  require_nonempty "target occurrence reports" "${campaign_target_reports}"
-  campaign_log "composed target occurrences: \
-$(jq -r -s '[.[] | select(.status == "COMPOSED")] | length' \
-    "${campaign_target_reports}") of $(wc -l <"${campaign_target_reports}")"
-}
-
-# One occurrence's own composition, timed and reported.  A Composer refusal
-# is an outcome this stage publishes: the refused stub carries its own
-# named refusal and DECIDE ranks it below every composed formula.  Only a
-# Composer that failed outright stops the campaign, and only for the elected
-# member, whose composition every later stage is guaranteed to have.
-campaign_compose_occurrence() {
-  local iteration_dir=$1 kind=$2 task=$3 region=$4 occurrence=$5
-  local member="${iteration_dir}/workers/${task}"
-  local key target_dir status=0 started ended millis detail=""
-  key=$(campaign_occurrence_key "${occurrence}")
-  target_dir="${campaign_final}/targets/${key}"
-  [[ ! -e "${target_dir}" ]] || die \
-    "two target occurrences share one artifact directory: ${target_dir}"
-  # An occurrence with no exact reach query still composes.  The Composer
-  # refuses it TARGET_NOT_REACHED and publishes the refusal as this
-  # occurrence's own artifact, which is what "no path at all" means about one
-  # anchor; the reason the query is absent is carried into the row beside it.
-  if [[ ! -s "${member}/reach_query.jsonl" ]]; then
-    [[ ! -s "${member}/reach_query.skipped" ]] \
-      || detail=$(<"${member}/reach_query.skipped")
-    detail="${detail:-this occurrence published no exact reach query}"
-  fi
-  mkdir -p "${target_dir}"
-  fatal_queries="${member}/reach_query.jsonl"
-  composed_smt="${target_dir}/candidate.smt2"
-  composition_manifest="${target_dir}/candidate_composition_manifest.json"
-  fatal_region="${region}"
-  fatal_occurrence_id="${occurrence}"
-  started=$(date +%s%N)
-  run_capturing_status do_compose >"${target_dir}/compose.log" 2>&1
-  ended=$(date +%s%N)
-  millis=$(( (ended - started) / 1000000 ))
-  if [[ "${status}" -ne 0 ]]; then
-    if [[ "${kind}" == "TARGET" ]]; then
-      campaign_fail COMPOSE ConcolicSmtComposer \
-        "${composition_manifest}" \
-        "the Composer failed with exit ${status} on inputs it was given"
-    fi
-    campaign_report_target_occurrence "${occurrence}" "${region}" \
-      "${task}" "${target_dir}" SKIPPED_UNOBSERVED \
-      "the Composer failed with exit ${status} on this occurrence" \
-      "${millis}"
-    campaign_log "target occurrence composition failed: ${occurrence}"
-    return 0
-  fi
-  require_nonempty "candidate SMT" "${composed_smt}"
-  require_nonempty "candidate composition manifest" "${composition_manifest}"
-  campaign_report_target_occurrence "${occurrence}" "${region}" "${task}" \
-    "${target_dir}" COMPOSED "${detail}" "${millis}"
-  printf '%s\t%s\n' "COMPOSE[${occurrence}]" "${millis}" \
-    >>"${campaign_stage_metrics}"
-  campaign_log "composed ${occurrence} in ${millis}ms status=$(jq -r \
-    '.finalStatus // ""' "${composition_manifest}")"
-}
-
-# Every planned target occurrence the member set never carried.  Read from
-# the elected composition's own occurrence ledger so the planned set and the
-# reported set come from one owner.
-campaign_compose_unscheduled() {
-  local manifest=$1 iteration_dir=$2
-  local reported planned occurrence region goal
-  reported=$(jq -r -s '[.[].occurrenceId] | join("\n")' \
-    "${campaign_target_reports}") || campaign_fail COMPOSE CAMPAIGN \
-    "${campaign_target_reports}" "the target occurrence reports are invalid"
-  planned=$(jq -r --arg reported "${reported}" '
-    ($reported | split("\n")) as $seen
-    | (.targetReachOccurrences // [])[]
-    | select((.occurrenceId as $id | $seen | index($id)) == null)
-    | [.occurrenceId, .regionId, .goalId] | @tsv' \
-    "${manifest}") || campaign_fail COMPOSE ConcolicSmtComposer \
-    "${manifest}" "the composition named no occurrence ledger"
-  [[ -n "${planned}" ]] || return 0
-  while IFS=$'\t' read -r occurrence region goal; do
-    [[ -n "${occurrence}" ]] || continue
-    # The declared occurrence is the one the campaign answers about, so it
-    # is composed even when no member carried it: the Composer publishes
-    # TARGET_NOT_REACHED as this occurrence's own artifacts and DECIDE
-    # elects a refusal that states its reason, instead of a row with no
-    # artifacts for any consumer to read.
-    if [[ -n "${declared_target_occurrence}" \
-        && "${occurrence}" == "${declared_target_occurrence}" ]]; then
-      campaign_compose_occurrence "${iteration_dir}" SIBLING "" \
-        "${region}" "${occurrence}"
-      continue
-    fi
-    campaign_report_target_occurrence "${occurrence}" "${region}" "" "" \
-      SKIPPED_UNOBSERVED "the active observed closure scheduled no replay \
-member for this occurrence: no linked summary carried its fatal read" -1
-    campaign_log "target occurrence unscheduled: ${occurrence}"
-  done <<<"${planned}"
-}
-
-# A filesystem name for one occurrence, from the occurrence identity alone so
-# the same occurrence always lands in the same directory.
-campaign_occurrence_key() {
-  printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '_'
-}
-
-# One row per anchored occurrence, and the row says what became of it.
-#
-# `status` is this stage's own outcome -- whether a composition artifact was
-# published at all -- and it used to be the only thing the row said, so a row
-# reading COMPOSED sat beside a result reading REFUSED with nothing in between
-# to reconcile them.  The outcome of the composition is the composition's to
-# state, so it is read back out of the manifest that was just written and
-# published here: what its final status is, which refusals it named, how many
-# of its paths were admitted, and whether this occurrence had an exact reach
-# query to compose from at all.  One artifact states it; this row quotes it.
-campaign_report_target_occurrence() {
-  local occurrence=$1 region=$2 task=$3 target_dir=$4 status=$5
-  local detail=$6 millis=$7
-  local manifest="" smt="" reach_query=false outcome="{}"
-  if [[ "${status}" == "COMPOSED" ]]; then
-    manifest="${target_dir}/candidate_composition_manifest.json"
-    smt="${target_dir}/candidate.smt2"
-  fi
-  [[ ! -s "${iteration_workers:-}/${task}/reach_query.jsonl" ]] \
-    || reach_query=true
-  if [[ -s "${manifest}" ]]; then
-    outcome=$(jq -c '{finalStatus: (.finalStatus // ""),
-      refusals: ([.finalStatusRefusals[]?.kind] | unique),
-      pathsTotal: ((.pathMerge.paths // []) | length),
-      pathsAdmitted: ([(.pathMerge.paths // [])[]
-                       | select(.admitted == true)] | length)}' \
-      "${manifest}") || campaign_fail COMPOSE ConcolicSmtComposer \
-      "${manifest}" "the composition manifest for ${occurrence} is invalid"
-  fi
-  jq -n -c --arg occurrence "${occurrence}" --arg region "${region}" \
-    --arg task "${task}" --arg dir "${target_dir}" --arg status "${status}" \
-    --arg detail "${detail}" --arg manifest "${manifest}" --arg smt "${smt}" \
-    --argjson reachQuery "${reach_query}" --argjson outcome "${outcome}" \
-    --argjson millis "${millis}" \
-    '{occurrenceId: $occurrence, regionId: $region, taskId: $task,
-      artifactDir: $dir, status: $status, detail: $detail,
-      manifest: $manifest, smt: $smt, reachQuery: $reachQuery,
-      finalStatus: ($outcome.finalStatus // ""),
-      refusals: ($outcome.refusals // []),
-      pathsTotal: ($outcome.pathsTotal // 0),
-      pathsAdmitted: ($outcome.pathsAdmitted // 0),
-      composeWallMillis: $millis, solveWallMillis: -1}' \
-    >>"${campaign_target_reports}" || campaign_fail COMPOSE CAMPAIGN \
-    "${campaign_target_reports}" \
-    "failed to report target occurrence ${occurrence}"
-}
-
-# The solver stage refuses a composition it may not conclude from and exits 2
-# on a gapped one. Both are outcomes the campaign publishes rather than hides.
-#
-# SOLVE-1: one solver run per composed occurrence.  Each formula is solved on
-# its own evidence and carries its own ClaimPolicy decision; nothing here
-# compares them, because which verdict the campaign publishes is DECIDE's
-# question and not the solver's.
-campaign_solve() {
-  local pending="${campaign_target_reports}.solved"
-  local occurrence dir state millis started ended report
-  local status=0
-  require_nonempty "target occurrence reports" "${campaign_target_reports}"
-  : >"${pending}"
-  while IFS=$'\t' read -r occurrence dir state; do
-    [[ -n "${occurrence}" ]] || continue
-    if [[ "${state}" != "COMPOSED" ]]; then
-      campaign_solve_report "${occurrence}" -1 >>"${pending}"
-      continue
-    fi
-    composed_smt="${dir}/candidate.smt2"
-    composition_manifest="${dir}/candidate_composition_manifest.json"
-    report="${composition_manifest}"
-    status=0
-    started=$(date +%s%N)
-    run_capturing_status do_reach >"${dir}/solve.log" 2>&1
-    ended=$(date +%s%N)
-    millis=$(( (ended - started) / 1000000 ))
-    require_nonempty "solved composition manifest" "${report}"
-    [[ "${status}" -eq 0 || "${status}" -eq 2 ]] \
-      || die "the solver stage failed with exit ${status}: ${report}"
-    campaign_log "z3 ${occurrence} state=$(jq -r '.solver.state' "${report}") reachability=$(jq -r '.solver.reachability' "${report}") in ${millis}ms"
-    printf '%s\t%s\n' "SOLVE[${occurrence}]" "${millis}" \
-      >>"${campaign_stage_metrics}"
-    campaign_solve_report "${occurrence}" "${millis}" \
-      >>"${pending}"
-  done < <(jq -r -c '[.occurrenceId, .artifactDir, .status] | @tsv' \
-    "${campaign_target_reports}")
-  require_nonempty "solved target occurrence reports" "${pending}"
-  mv -- "${pending}" "${campaign_target_reports}"
-}
-
-# One report row with its solver artifact and time filled in.  The row is
-# rewritten from the one on disk so nothing this stage knows can replace what
-# COMPOSE reported about the same occurrence.
-campaign_solve_report() {
-  local occurrence=$1 millis=$2
-  jq -c --arg occurrence "${occurrence}" \
-    --argjson millis "${millis}" \
-    'select(.occurrenceId == $occurrence)
-     | .solveWallMillis = $millis' \
-    "${campaign_target_reports}" || campaign_fail SOLVE CAMPAIGN \
-    "${campaign_target_reports}" \
-    "failed to record the solver result for ${occurrence}"
-}
-
-# DECIDE: the campaign has one claim and the run has one per occurrence of the
-# annotated target.  ClaimPolicy decided each of those; this stage asks the
-# one remaining question -- which of them the campaign publishes -- and it
-# asks it of TargetOccurrenceElection, so the ordering is a policy with a
-# name rather than a shell comparison.  The elected occurrence's artifacts are
-# copied to the paths every consumer already reads, and every occurrence's
-# verdict stays in the ledger beside them.
-campaign_decide() {
-  local chosen dir
-  local -a declaration
-  declaration=()
-  # Which execution of the annotated site the campaign answers about is the
-  # case's to declare, so the election is told the declaration rather than
-  # ranking around it.  Without this a run that composed exactly the
-  # declared occurrence published its claim about whichever unscheduled
-  # occurrence sorted first, and then stopped because that one had no
-  # artifacts (hdfs-17899 bug1, round 1).
-  [[ -z "${declared_target_occurrence}" ]] \
-    || declaration=(--target-occurrence "${declared_target_occurrence}")
-  campaign_target_ledger="${campaign_final}/target_occurrences.json"
-  run_java_main \
-    edu.uva.liftlab.graphchecker.concolic.TargetOccurrenceElection \
-    --reports "${campaign_target_reports}" \
-    --output "${campaign_target_ledger}" "${declaration[@]}" >/dev/null \
-    || campaign_fail DECIDE TargetOccurrenceElection \
-      "${campaign_target_reports}" \
-      "the target occurrence election published no ledger"
-  require_nonempty "target occurrence ledger" "${campaign_target_ledger}"
-  chosen=$(jq -r '.occurrences[] | select(.chosen) | .artifactDir' \
-    "${campaign_target_ledger}")
-  [[ -n "${chosen}" && -d "${chosen}" ]] || campaign_fail DECIDE \
-    TargetOccurrenceElection "${campaign_target_ledger}" \
-    "the elected target occurrence has no composed artifacts"
-  dir=${chosen}
+  mkdir -p "${campaign_final}"
+  compose_sessions_dir="${iteration_dir}/sessions"
+  require_directory "replay sessions" "${compose_sessions_dir}"
   composed_smt="${campaign_final}/candidate.smt2"
   composition_manifest="${campaign_final}/candidate_composition_manifest.json"
-  cp -f "${dir}/candidate.smt2" "${composed_smt}"
-  cp -f "${dir}/candidate_composition_manifest.json" \
-    "${composition_manifest}"
+  started=$(date +%s%N)
+  run_capturing_status do_compose >"${campaign_final}/compose.log" 2>&1
+  ended=$(date +%s%N)
+  millis=$(( (ended - started) / 1000000 ))
+  [[ "${status}" -eq 0 ]] || campaign_fail COMPOSE ComposeMain \
+    "${campaign_final}/compose.log" \
+    "the composer failed with exit ${status} on inputs it was given"
+  require_nonempty "candidate SMT" "${composed_smt}"
+  require_nonempty "candidate composition manifest" "${composition_manifest}"
+  printf '%s\t%s\n' "COMPOSE[anchor]" "${millis}" \
+    >>"${campaign_stage_metrics}"
+  campaign_log "composed $(jq -r '.anchor // ""' "${composition_manifest}") \
+in ${millis}ms status=$(jq -r '.finalStatus // ""' "${composition_manifest}")"
+}
+
+
+campaign_solve() {
+  local millis started ended status=0
+  local report="${composition_manifest}"
+  require_nonempty "candidate SMT" "${composed_smt}"
+  require_nonempty "candidate composition manifest" "${composition_manifest}"
+  started=$(date +%s%N)
+  run_capturing_status do_reach >"${campaign_final}/solve.log" 2>&1
+  ended=$(date +%s%N)
+  millis=$(( (ended - started) / 1000000 ))
+  require_nonempty "solved composition manifest" "${report}"
+  [[ "${status}" -eq 0 || "${status}" -eq 2 ]] \
+    || die "the solver stage failed with exit ${status}: ${report}"
+  printf '%s\t%s\n' "SOLVE[anchor]" "${millis}" >>"${campaign_stage_metrics}"
+  campaign_log "z3 state=$(jq -r '.solver.state' "${report}") \
+reachability=$(jq -r '.solver.reachability' "${report}") in ${millis}ms"
+}
+
+
+# DECIDE: the claim the solver's ClaimPolicy reached, checked and printed.
+#
+# There is one anchor and therefore one claim.  Ranking observed occurrences
+# into a campaign verdict is gone with the election: which execution of the
+# annotated site the campaign is about is the case's declaration, and the
+# claim about it is whatever its own formula decided.
+campaign_decide() {
   require_nonempty "candidate SMT" "${composed_smt}"
   require_nonempty "candidate composition manifest" "${composition_manifest}"
   campaign_print_symbolic_variable_models "${composition_manifest}" \
-    || die "the solver result has no valid symbolic variable model: ${composition_manifest}"
-  jq -r '"[campaign] " + .electionReason' "${campaign_target_ledger}"
-  jq -r '.occurrences[]
-    | "  occurrence=\(.occurrenceId) status=\(.status) support=\(.support)"
-      + " claim=\(.claim) blockers=\(.blockerCount) chosen=\(.chosen)"' \
-    "${campaign_target_ledger}"
+    || die "the solver result has no valid symbolic variable model: \
+${composition_manifest}"
+  jq -r '"  anchor=\(.anchor // "") finalStatus=\(.finalStatus // "")"
+    + " claim=\(.solver.campaignClaim.claim // "")"
+    + " blockers=\(.solver.campaignClaim.blockerCount // 0)"' \
+    "${composition_manifest}"
 }
 
 campaign_artifact_digests() {
   local name path bytes sha row
   local -a required=(candidate.smt2 candidate_composition_manifest.json
-    path-closures.json gaps.json gap_ledger.json result.json
-    target_occurrences.json)
+    gaps.json gap_ledger.json result.json)
   local -a names=()
   local -a rows=()
   for name in "${required[@]}"; do
@@ -3224,135 +2324,12 @@ campaign_plan_gaps_json() {
   head -n 1 -- "${runtime_region_plan}" | jq -c '.gaps // []' || return 1
 }
 
-# The replay slice the campaign actually ran, as one document:
-#
-#   {applied, keptOccurrences: [...], taskOccurrence: {taskId: occurrenceId}}
-#
-# The static plan over-approximates -- it admits every region the backward
-# walk reaches -- and ReplayTaskSlice then keeps the occurrences root
-# dependence selected, for one of TARGET_REACH, ROOT_SITE, CARRIER_WRITER,
-# ROOT_DEPENDENT_FLOW or FATAL_READ_WRITER.  A planned region that never ran
-# means two different things on the two sides of that line, so the ledger's
-# slice-conditional codes are decided against this.
-#
-# Fail-closed: an absent or withheld slice publishes applied=false, and the
-# fold then treats every such row as blocking rather than guessing.
-campaign_kept_slice_json() {
-  local iteration_dir=$1
-  local index="${iteration_dir}/runtime_workflow_schedule_index.json"
-  local slice="${iteration_dir}/replay_task_slice.jsonl"
-  local plans
-  if [[ ! -s "${index}" ]]; then
-    echo '{"applied": false, "keptOccurrences": [], "taskOccurrence": {}}'
-    return 0
-  fi
-  if ! plans=$(find "${iteration_dir}" -type f \
-      -name 'execution_task_plan.jsonl' -print | LC_ALL=C sort); then
-    echo '{"applied": false, "keptOccurrences": [], "taskOccurrence": {}}'
-    return 0
-  fi
-  {
-    cat "${index}"
-    [[ ! -s "${slice}" ]] || cat "${slice}"
-    [[ -z "${plans}" ]] || xargs -r -d '\n' cat <<<"${plans}"
-  } | jq -s '
-    ([.[] | select(.kind == "RUNTIME_REGION_PATH_SCHEDULE_INDEX"
-                   or (.replayTaskSlice? != null))] | first) as $index
-    | ([.[] | select(.kind == "REPLAY_TASK_DECISION")]) as $decisions
-    | ([.[] | select(.taskId? != null and .occurrenceId? != null)]) as $tasks
-    | (($index.replayTaskSlice.replayTaskSliceApplied // false)
-       and (($index.members // []) | length) > 0) as $applied
-    | {applied: $applied,
-       keptOccurrences:
-         ((($index.members // []) | map(.occurrenceId // ""))
-          + ($decisions | map(select(.decision == "KEEP")
-                              | .occurrenceId // ""))
-          | map(select(. != "")) | unique),
-       keptReasons:
-         ($decisions | map(select(.decision == "KEEP")
-            | {key: (.occurrenceId // ""),
-               value: ((.keepReasons // []) | join(","))})
-          | from_entries),
-       taskOccurrence:
-         ($tasks | map({key: .taskId, value: .occurrenceId})
-          | from_entries)}' \
-    || return 1
-}
-
-# The flip wave this iteration ran, as one document:
-#
-#   {applied, pathByTask: {taskId: path}}
-#
-# A linked replay is a hypothetical execution: the primary flips one decision
-# and its companions re-run the regions that path needs.  Every admission row
-# the seed wave raises can arrive again from such a replay, and there it says
-# the flipped execution did not have that occurrence -- a statement about the
-# path, not about the corpus.  The ledger names the codes; this names the
-# subjects, and the path each belongs to, so the row can say which one.
-#
-# Fail-closed: a subject this cannot name is classed as the ledger's own
-# entry says, which is the seed-wave answer.
-campaign_replay_wave_json() {
-  local iteration_dir=$1
-  local linked="${iteration_dir}/linked_observed_execution_tasks.jsonl"
-  if [[ ! -s "${linked}" ]]; then
-    echo '{"applied": false, "pathByTask": {}}'
-    return 0
-  fi
-  jq -s '
-    map(select(.taskId? != null and (.linkedReplayGroupId // "") != ""))
-    as $tasks
-    | ($tasks | map(select((.pathQueryKey // "") != ""))
-       | map({key: .linkedReplayGroupId, value: .pathQueryKey})
-       | from_entries) as $pathByGroup
-    | {applied: (($tasks | length) > 0),
-       pathByTask:
-         ($tasks | map(. as $task
-                       | {key: $task.taskId,
-                          value: (if ($task.pathQueryKey // "") != ""
-                                  then $task.pathQueryKey
-                                  else ($pathByGroup[
-                                          $task.linkedReplayGroupId]
-                                        // $task.linkedReplayGroupId)
-                                  end)})
-          | from_entries)}' "${linked}" || return 1
-}
-
-# Every (port, handoff phase) some replay of this epoch actually attached.
-#
-# The other half of GapLedger's COMPOSED_PORT join: a handoff gap says a
-# capture of some port could not be taken, and the question the design asks
-# is whether the composed formula rests on a delivery of that port that
-# nothing made.  This is the "something made it" side, read from the raw
-# replay results rather than from any stage's summary of them.
-campaign_attached_handoff_phases_json() {
-  local iteration_dir=$1
-  local -a results=()
-  local listing
-  listing=$(find "${iteration_dir}" -type f \
-    -name 'concolic_region_results.jsonl' -print | LC_ALL=C sort) || return 1
-  [[ -z "${listing}" ]] || mapfile -t results <<<"${listing}"
-  if [[ ${#results[@]} -eq 0 ]]; then
-    echo '{"ports": {}, "phases": {}}'
-    return 0
-  fi
-  jq -s '
-    [.[] | .vmHandoffEvents[]? | select((.portId // "") != "")]
-    as $events
-    | {ports: ($events | map({key: .portId, value: true}) | from_entries),
-       phases: ($events
-                | map(select((.handoffPhaseId // "") != "")
-                      | {key: (.portId + "\n" + .handoffPhaseId),
-                         value: true})
-                | from_entries)}' "${results[@]}" || return 1
-}
-
 # One generated JSON document, as a file jq can read.
 #
 # A command-line argument is capped at 128 KiB on Linux -- MAX_ARG_STRLEN,
 # 32 pages, a per-argument limit that no ARG_MAX headroom relaxes -- and the
 # documents below are proportional to the corpus.  lane11741j died at EMIT
-# with "Argument list too long" on a keptSlice of 134,436 bytes after
+# with "Argument list too long" on a generated document of 134,436 bytes
 # reaching DECIDE with SAT_CANDIDATE and 0 blockers: a whole campaign's
 # verdict lost to an argv limit.  Every generated document is written to a
 # file and slurped; none is passed with --argjson.
@@ -3362,215 +2339,96 @@ campaign_json_file() {
   printf '%s' "${destination}"
 }
 
-campaign_write_coverage_gaps() {
-  local composition=$1 diagnostics=$2 delta=$3
-  local path_closures=$4 ledger=$5 iteration_dir=$6 output=$7
+# Every gap this campaign raised, in one document, each row classed by the row
+# itself.
+#
+# A GapRow states its own kind and class (CONTRACT-SPEC SS2): the runtime
+# raises it where it knows what it could not do, and no later stage is in a
+# position to overrule that.  So this is a partition, not a classification --
+# the 190 lines of jq that used to decide a row's class against the replay
+# slice, the composed ports and the flip wave are gone with the questions they
+# asked.  Rows from the static catalog and the runtime plan carry no class of
+# their own; the ledger classes those, and an unregistered code is BLOCKING.
+campaign_write_gaps() {
+  local composition=$1 ledger=$2 iteration_dir=$3 output=$4
   local scratch status=0
   scratch=$(mktemp -d "${TMPDIR:-/tmp}/graphchecker-gapargs.XXXXXX") \
     || return 1
   campaign_json_file "${scratch}/static-gaps.json" \
-    "$(campaign_static_gaps_json)" >/dev/null || { rm -rf -- "${scratch}"; return 1; }
+    "$(campaign_static_gaps_json)" >/dev/null \
+    || { rm -rf -- "${scratch}"; return 1; }
   campaign_json_file "${scratch}/plan-gaps.json" \
-    "$(campaign_plan_gaps_json)" >/dev/null || { rm -rf -- "${scratch}"; return 1; }
-  campaign_json_file "${scratch}/kept-slice.json" \
-    "$(campaign_kept_slice_json "${iteration_dir}")" >/dev/null \
+    "$(campaign_plan_gaps_json)" >/dev/null \
     || { rm -rf -- "${scratch}"; return 1; }
-  campaign_json_file "${scratch}/replay-wave.json" \
-    "$(campaign_replay_wave_json "${iteration_dir}")" >/dev/null \
-    || { rm -rf -- "${scratch}"; return 1; }
-  campaign_json_file "${scratch}/attached-handoffs.json" \
-    "$(campaign_attached_handoff_phases_json "${iteration_dir}")" >/dev/null \
-    || { rm -rf -- "${scratch}"; return 1; }
+  # Every session's own gap rows, plus the campaign's.
+  find "${iteration_dir}" -type f -name 'gaps.jsonl' -print0 \
+    | LC_ALL=C sort -z | xargs -0 -r cat >"${scratch}/session-gaps.jsonl"
+  [[ ! -s "${iteration_dir}/campaign_gaps.jsonl" ]] \
+    || cat "${iteration_dir}/campaign_gaps.jsonl" \
+      >>"${scratch}/session-gaps.jsonl"
   jq -n \
+    --argjson provenance "${campaign_provenance}" \
     --slurpfile composedDocuments "${composition}" \
-    --slurpfile diagnostics "${diagnostics}" \
-    --slurpfile delta "${delta}" \
-    --slurpfile pathClosureDocuments "${path_closures}" \
     --slurpfile ledgerDocuments "${ledger}" \
     --slurpfile staticGapDocuments "${scratch}/static-gaps.json" \
     --slurpfile planGapDocuments "${scratch}/plan-gaps.json" \
-    --slurpfile keptSliceDocuments "${scratch}/kept-slice.json" \
-    --slurpfile replayWaveDocuments "${scratch}/replay-wave.json" \
-    --slurpfile attachedHandoffDocuments \
-      "${scratch}/attached-handoffs.json" '
+    --rawfile sessionGaps "${scratch}/session-gaps.jsonl" '
     ($staticGapDocuments[0] // []) as $staticGaps |
     ($planGapDocuments[0] // []) as $planGaps |
-    ($keptSliceDocuments[0] // {}) as $keptSlice |
-    ($replayWaveDocuments[0] // {}) as $replayWave |
-    ($attachedHandoffDocuments[0] // {}) as $attachedHandoffs |
     $composedDocuments[0] as $composed |
-    ($composed.solver // {}) as $reach |
-    $pathClosureDocuments[0] as $pathClosures |
     $ledgerDocuments[0] as $ledger |
-    # The ledger names its exceptions; everything else is blocking, which is
-    # the same default GapLedger.classOf applies in Java.
     ($ledger.diagnostic // []) as $diagnosticCodes |
-    ($ledger.sliceConditional // []) as $sliceCodes |
-    ($ledger.composedPortConditional // []) as $portCodes |
-    ($ledger.flipWaveDiagnostic // []) as $flipWaveCodes |
-    ($ledger.flipWaveReasonByCode // {}) as $flipWaveReasonByCode |
-    ($replayWave.pathByTask // {}) as $flipPathByTask |
     ($ledger.reasonByCode // {}) as $reasonByCode |
-    ($keptSlice.applied // false) as $sliceApplied |
-    (($keptSlice.keptOccurrences // []) | map({key: ., value: true})
-     | from_entries) as $keptOccurrence |
-    ($keptSlice.taskOccurrence // {}) as $taskOccurrence |
-    # A slice-conditional row is blocking on the kept slice and diagnostic
-    # off it.  Anything this cannot resolve -- no slice, a slice that
-    # narrowed nothing, or a subject naming no planned occurrence -- is
-    # blocking, because not knowing which side a row is on is not a reason
-    # to stop withholding on it.
-    def sliceVerdict($subject):
-      if $sliceApplied | not then {onSlice: true, why: "SLICE_NOT_APPLIED"}
-      else ($taskOccurrence[$subject] // "") as $occurrence
-        | if $occurrence == ""
-            then {onSlice: true, why: "SUBJECT_NAMES_NO_PLANNED_OCCURRENCE"}
-          elif ($keptOccurrence[$occurrence] // false)
-            then {onSlice: true, why: ("ON_KEPT_SLICE:" + $occurrence)}
-          else {onSlice: false, why: ("SLICE_PRUNED:" + $occurrence)}
-          end
-      end;
-    ($attachedHandoffs.ports // {}) as $attachedPort |
-    ($attachedHandoffs.phases // {}) as $attachedPhase |
-    ($composed.configuredSourceMaterializations // []
-     | map(select((.sourceId // "") != ""))) as $materialized |
-    # A composed-port row is blocking when the formula names a handoff phase
-    # of its port that no replay delivered, and diagnostic when every phase
-    # of that port the formula names has an attach behind it.  A row naming
-    # no port cannot be shown backed and stays blocking, which is the same
-    # fail-closed answer every other unknown gets here.
-    def portVerdict($port):
-      if $port == "" then {unbacked: true, why: "ROW_NAMES_NO_PORT"}
-      else ($materialized
-            | map(select(.sourceId == $port))) as $rows
-        | ($rows | map(select(($attachedPhase[$port + "\n"
-                               + (.sourcePhaseId // "")] // false) | not))
-           | map(.sourcePhaseId // "")) as $missing
-        | if ($rows | length) == 0
-            then (if ($attachedPort[$port] // false)
-                    then {unbacked: false,
-                          why: ("PORT_NOT_COMPOSED_AND_ATTACHED:" + $port)}
-                  else {unbacked: true,
-                        why: ("PORT_NEVER_ATTACHED:" + $port)} end)
-          elif ($missing | length) > 0
-            then {unbacked: true,
-                  why: ("COMPOSED_PHASE_NEVER_ATTACHED:"
-                        + ($missing | join(",")))}
-          else {unbacked: false,
-                why: ("EVERY_COMPOSED_PHASE_ATTACHED:" + $port)}
-          end
-      end;
-    # The acceptance gate publishes every emitter refusal under one
-    # COMPOSITION_GAP kind and spells the reason it actually named into the
-    # subject, as CODE[subject] or CODE:subject.  Left encoded, fifty
-    # distinct findings read as fifty rows of one code, the ledger could
-    # class none of them, and the same refusal arrived twice -- once
-    # generically here and once precisely from the array that raised it.
-    # So the spelling is decoded, and every COMPOSE row is published under
-    # one source so the two views of one refusal are one row.
-    def composeRow($row):
-      ($row.code // $row.reason // $row.kind // "") as $rawCode
-      | ($row.subject // "") as $rawSubject
-      | (if $rawCode == "COMPOSITION_GAP"
-           then ($rawSubject | capture("^(?<c>[A-Za-z_][A-Za-z0-9_]*)"
-                                      + "(\\[(?<b>.*)\\]|:(?<d>.*))$";
-                                      "s") // null)
-           else null end) as $named
-      | {stage: "COMPOSE", source: "COMPOSER",
-         code: (if $named == null then $rawCode else $named.c end),
-         subject: (if $named == null then $rawSubject
-                   else ($named.b // $named.d) end),
-         detail: ($row.detail // "")};
-    ([$composed.finalStatusRefusals[]? | composeRow(.)]
-       + [$composed.gaps[]? | composeRow(.)]
-       + [if ($composed.pathSetComplete // false)
-            then empty else
-            {stage: "COMPOSE", source: "COVERAGE",
-             code: "SELECTED_PATH_SET_INCOMPLETE", subject: "",
-             detail: "required only for a closed UNSAT conclusion"} end]
-       + [$composed.boundedLoopComposition.gaps[]? | composeRow(.)]
-       + [$composed.symbolicPropagationGaps[]? | composeRow(.)]
-       + [$composed.faultControlGaps[]? | composeRow(.)]
-       + [$reach.gaps[]?
-           | {stage: "SOLVE", source: "SOLVER", code: ., subject: "",
-              detail: ""}]
-       # A worklist publishes two arrays and both are EXPLORE gaps: the
-       # coverage it could not close, and the gaps that stopped it from
-       # planning at all.  The second used to reach no report because the
-       # wave died on it instead of publishing it.
-       + [$pathClosures[]? as $closure
-           | ($closure.coverageGaps[]?, $closure.gaps[]?)
-           | {stage: "EXPLORE", source: "PATH_WORKLIST",
-              code: (.kind // ""),
-              subject: (.queryKey // .regionId
-                        // .evidenceIdentity.taskId // ""),
-              portId: (.portId // ""),
-              detail: ([(.reason // ""), (.detail // "")]
-                       | map(select(. != "")) | join(": "))}]
-       + [$diagnostics[]?
-           # A region skip names its task in taskId; the rows the
-           # publication contract raises name it in subject, and dropping
-           # that left three rows no wave-aware or slice-aware class could
-           # place.
-           | {stage: "IMPORT", source: "IMPORTER", code: (.code // ""),
-              subject: (.taskId // .subject // ""),
-              detail: (.detail // "")}]
-       + [$delta[]? | select(.deltaKind == "COVERAGE_GAP")
-           | {stage: "CAMPAIGN", source: (.source // "CAMPAIGN"),
-              code: (.code // .deltaKind), subject: (.taskId // ""),
-              detail: (.reason // "")}]
-       + [$staticGaps[]?
-           | {stage: "PLAN", source: "STATIC",
-              code: (.gapKind // .kind // ""),
-              subject: ([(.gapReason // ""), (.enclosingMethod // .method
-                          // ""), (.siteId // "")]
-                        | map(select(. != "")) | join("\n")),
-              detail: (.detail // "")}]
-       + [$planGaps[]?
-           | {stage: "PLAN", source: "RUNTIME_PLAN",
-              code: (.code // .kind // ""),
-              subject: (.subject // ""), detail: (.detail // "")}]
-       | map(select(.code != ""))
-       # The flip wave first: a row whose subject is a linked-replay task of
-       # a named path is a statement about that path, and the ledger names
-       # which codes say so.  A subject this cannot name as one falls
-       # through to the seed-wave answer below.
-       | map(. as $row
-             | . + (if ($row.code | IN($flipWaveCodes[]))
-                       and ($flipPathByTask[$row.subject] != null)
-                  then {class: "DIAGNOSTIC",
-                        flipPath: $flipPathByTask[$row.subject],
-                        classReason: ($flipWaveReasonByCode[$row.code] // "")}
-                  elif (.code | IN($portCodes[]))
-                  then (portVerdict(.portId // "") as $v
-                        | {class: (if $v.unbacked
-                                   then "BLOCKING" else "DIAGNOSTIC" end),
-                           portVerdict: $v.why})
-                  elif (.code | IN($sliceCodes[]))
-                  then (sliceVerdict(.subject) as $v
-                        | {class: (if $v.onSlice
-                                   then "BLOCKING" else "DIAGNOSTIC" end),
-                           sliceVerdict: $v.why})
-                  elif (.code | IN($diagnosticCodes[]))
-                  then {class: "DIAGNOSTIC"}
-                  else {class: "BLOCKING"} end))
-       | map(. + {classReason: (.classReason // $reasonByCode[.code]
-                                // "no ledger entry: blocking by default")})
-       | unique_by([.stage, .source, .code, .subject, .detail]))
-       as $rows |
+    # A row that states its own class is taken at its word.
+    (($sessionGaps | split("\n") | map(select(length > 0) | fromjson))
+      | map({stage: "REPLAY", source: (.sessionId // "RUNTIME"),
+             code: (.gapKind // "ADMISSION_GAP"),
+             subject: (.subject // ""), detail: (.detail // ""),
+             class: (if (.gapClass // "BLOCKING") == "DIAGNOSTIC"
+                     then "DIAGNOSTIC" else "BLOCKING" end),
+             classReason: "the row states its own class"}))
+      as $sessionRows |
+    # The composer names its refusals; each is blocking by construction.  Its
+    # own gap rows state their class like any other GapRow, and a row that
+    # states none is blocking, which is what an unregistered code means.
+    (($composed.finalStatusRefusals // [])
+      | map({stage: "COMPOSE", source: "ComposeMain",
+             code: (.kind // "COMPOSITION_GAP"),
+             subject: (.subject // ""), detail: (.detail // ""),
+             class: "BLOCKING",
+             classReason: "a composition refusal withholds its own claim"}))
+      as $refusalRows |
+    ((($composed.gaps // []) + ($composed.claim.gaps // []))
+      | map({stage: "COMPOSE", source: "ComposeMain",
+             code: (.gapKind // .kind // .reason // ""),
+             subject: (.subject // ""), detail: (.detail // ""),
+             class: (if (.gapClass // "BLOCKING") == "DIAGNOSTIC"
+                     then "DIAGNOSTIC" else "BLOCKING" end),
+             classReason: (if (.gapClass // "") == "DIAGNOSTIC"
+                           then "the row states its own class"
+                           else "no stated class: blocking by default"
+                           end)}))
+      as $composerGapRows |
+    ($refusalRows + $composerGapRows) as $composeRows |
+    # Rows with no class of their own: the ledger decides, blocking by default.
+    (($staticGaps + $planGaps)
+      | map({stage: "PLAN", source: (.source // "CATALOG"),
+             code: (.code // .kind // ""),
+             subject: (.subject // .siteId // ""), detail: (.detail // ""),
+             class: (if ((.code // .kind // "") | IN($diagnosticCodes[]))
+                     then "DIAGNOSTIC" else "BLOCKING" end)}
+            | . + {classReason: ($reasonByCode[.code]
+                                 // "no ledger entry: blocking by default")}))
+      as $declaredRows |
+    (($sessionRows + $composeRows + $declaredRows)
+      | unique_by([.stage, .source, .code, .subject, .detail])) as $rows |
     {schemaVersion: 2,
      kind: "CAMPAIGN_COVERAGE_GAPS",
+     provenance: $provenance,
      gapLedger: {kind: ($ledger.kind // ""),
                  schemaVersion: ($ledger.schemaVersion // 0),
                  defaultClass: ($ledger.defaultClass // "BLOCKING"),
-                 diagnosticCodes: $diagnosticCodes,
-                 sliceConditionalCodes: $sliceCodes,
-                 composedPortConditionalCodes: $portCodes,
-                 flipWaveDiagnosticCodes: $flipWaveCodes,
-                 replayTaskSliceApplied: $sliceApplied,
-                 flipWaveTaskCount: ($flipPathByTask | length),
-                 keptOccurrenceCount:
-                   (($keptSlice.keptOccurrences // []) | length)},
+                 diagnosticCodes: $diagnosticCodes},
      gaps: [$rows[] | select(.class == "BLOCKING")],
      telemetryGaps: [$rows[] | select(.class == "DIAGNOSTIC")]}
     | .gapCount = (.gaps | length)
@@ -3579,8 +2437,6 @@ campaign_write_coverage_gaps() {
         | map({key: .[0].stage, value: length}) | from_entries)
     | .byCode = (.gaps | group_by(.code)
         | map({key: .[0].code, value: length}) | from_entries)
-    | .telemetryByStage = (.telemetryGaps | group_by(.stage)
-        | map({key: .[0].stage, value: length}) | from_entries)
   ' >"${output}" || status=$?
   rm -rf -- "${scratch}"
   return "${status}"
@@ -3591,7 +2447,6 @@ campaign_write_coverage_gaps() {
 campaign_emit() {
   local iteration_dir=$1
   local replay_rows replay_bytes gapCount raw_result_list
-  local path_closures_artifact="${campaign_final}/path-closures.json"
   local artifacts_json stages_json iterations_json
   local -a raw_results=()
   # Before anything is published: the generation this run was frozen on must
@@ -3613,19 +2468,10 @@ campaign_emit() {
   # the Composer's and the extractor's own contract, published by the layer
   # that writes them; the shell does not restate it.
   campaign_require_json "candidate composition manifest" \
-    "${composition_manifest}" || campaign_fail EMIT ConcolicSmtComposer \
+    "${composition_manifest}" || campaign_fail EMIT ComposeMain \
       "${composition_manifest}" "required composition JSON is malformed"
-  if ! campaign_jsonl_array "import diagnostics" \
-      "${iteration_dir}/import_diagnostics.jsonl" >/dev/null; then
-    campaign_fail EMIT ConcolicSummaryImporter \
-      "${iteration_dir}/import_diagnostics.jsonl" \
-      "required diagnostics JSONL is missing or malformed"
-  fi
-  if ! campaign_materialize_path_closures \
-      "${iteration_dir}/workers" "${path_closures_artifact}"; then
-    campaign_fail EMIT RegionPathWorklist "${iteration_dir}/workers" \
-      "a path-closure JSON is malformed or could not be enumerated"
-  fi
+  require_nonempty "replay session census" \
+    "${iteration_dir}/session_census.jsonl"
 
   # One ledger classes every gap this campaign raised, wherever it was
   # raised.  A code the ledger does not register is blocking, so a gap added
@@ -3634,11 +2480,8 @@ campaign_emit() {
   # reader of the final directory can check the classification without the
   # jar.
   campaign_write_gap_ledger "${campaign_final}/gap_ledger.json"
-  campaign_write_coverage_gaps \
+  campaign_write_gaps \
     "${composition_manifest}" \
-    "${iteration_dir}/import_diagnostics.jsonl" \
-    "${iteration_dir}/campaign_gaps.jsonl" \
-    "${path_closures_artifact}" \
     "${campaign_final}/gap_ledger.json" \
     "${iteration_dir}" \
     "${campaign_final}/gaps.json"
@@ -3652,18 +2495,12 @@ campaign_emit() {
   # reason, and every named blocker, so one Java policy decides acceptance and
   # the shell only publishes what it decided.
   campaign_require_claim "${composition_manifest}"
-  campaign_require_json "target occurrence ledger" \
-    "${campaign_target_ledger}" || campaign_fail EMIT \
-      TargetOccurrenceElection "${campaign_target_ledger}" \
-      "the run published no target occurrence ledger"
   jq -n \
     --argjson provenance "${campaign_provenance}" \
     --slurpfile composedDocuments "${composition_manifest}" \
-    --slurpfile gapDocuments "${campaign_final}/gaps.json" \
-    --slurpfile targetDocuments "${campaign_target_ledger}" '
+    --slurpfile gapDocuments "${campaign_final}/gaps.json" '
     $composedDocuments[0] as $c | ($c.solver // {}) as $r |
     $gapDocuments[0] as $gaps |
-    $targetDocuments[0] as $targets |
     ($r.campaignClaim) as $decided |
     ($r.reachability // "UNKNOWN") as $reachability |
     ($r.unsatClosureComplete // false) as $unsatClosureComplete |
@@ -3712,12 +2549,10 @@ campaign_emit() {
      # has, reads it here rather than opening the composition manifest to
      # find the claim this file was written from.
      rootSpace: ($decided.rootSpace // {}),
-     # Which execution of the annotated target this claim is about, and what
-     # every other observed execution of it concluded.  A verdict that rests
-     # on one of several occurrences says which one, in the result itself.
-     targetOccurrence: ($targets.chosenOccurrenceId // ""),
-     targetOccurrenceReason: ($targets.electionReason // ""),
-     targetOccurrences: ($targets.occurrences // []),
+     # Which execution of the annotated target this claim is about: the one
+     # the case declares and the composer anchored on.  A campaign answers
+     # about one anchor, so there is no ledger of runners-up to publish.
+     targetOccurrence: ($c.anchor // ""),
      valuations: ($r.valuations // [])}
   ' >"${campaign_final}/result.json"
   require_nonempty "campaign result" "${campaign_final}/result.json"
@@ -3742,7 +2577,7 @@ campaign_emit() {
     campaign_fail EMIT CAMPAIGN "${campaign_root}" \
       "iteration manifests are absent or malformed"
   fi
-  # Same rule as campaign_write_coverage_gaps: these three grow with the
+  # Same rule as campaign_write_gaps: these three grow with the
   # corpus -- one iteration manifest is already 72 KB on hdfs-11741, and the
   # campaign concatenates one per epoch -- so they travel as files.  The
   # provenance and the two counts are bounded and stay arguments.
@@ -3799,10 +2634,6 @@ campaign_emit() {
   campaign_log "artifacts in ${campaign_final}"
   jq -r '"  claim=\(.claim) reachability=\(.reachability) blockers=\(.blockerCount) gaps=\(.gapCount) telemetry=\(.telemetryCount) finalStatus=\(.finalStatus)"' \
     "${campaign_final}/result.json"
-  jq -r 'select((.targetOccurrences | length) > 1)
-    | "  target occurrence=\(.targetOccurrence) of "
-      + ((.targetOccurrences | length) | tostring) + " observed"' \
-    "${campaign_final}/result.json"
   # One view of why a run was not accepted, with a line per named blocker.
   # finalStatus stays printed above as the stage-local state it is; this is
   # the acceptance answer.
@@ -3856,54 +2687,62 @@ campaign_publish_bound_gap() {
   die "the campaign reached campaign_max_iterations=${iterations} with a diverging topology; named gap in ${campaign_final}/gaps.json"
 }
 
-# A refinement this run owes and did not take, as a row the gap report
-# classes like any other.  Stating it is the whole point: the divergent
-# bundles are held for an epoch the campaign has not planned, so a reader of
-# this run's verdict has to be able to see that it covers epoch e only.
+
+# A refinement this run owes and did not take, as a row the gap report classes
+# like any other.  Stating it is the whole point: the divergent sessions are
+# held for an epoch the campaign has not planned, so a reader of this run's
+# verdict has to be able to see that it covers epoch e only.
 campaign_publish_pending_refinement() {
   local iteration_dir=$1 iteration_id=$2 rows=$3
   jq -n -c --arg epoch "${iteration_id}" --argjson rows "${rows}" \
-    '{kind: "CONCOLIC_IMPORT_DIAGNOSTIC",
-      code: "TOPOLOGY_REFINEMENT_PENDING", taskId: $epoch,
-      detail: ("\($rows) topology divergence row(s) hold bundles for the "
+    '{schemaVersion: 1, kind: "GAP_ROW", sessionId: "",
+      gapKind: "TOPOLOGY_DIVERGENCE", gapClass: "DIAGNOSTIC",
+      subject: $epoch,
+      detail: ("\($rows) topology divergence row(s) hold sessions for the "
                + "epoch after \($epoch), which this run did not plan")}' \
-    >>"${iteration_dir}/import_diagnostics.jsonl" || true
+    >>"${iteration_dir}/campaign_gaps.jsonl" || true
   campaign_collect_diagnostics "${iteration_dir}"
 }
 
-# How many rows this iteration's replays published about a topology their
-# plan had not addressed.  Zero means the topology is closed.
+
+# How many rows this iteration's replays published about a topology their plan
+# had not addressed: a consumer endpoint paired with a producer endpoint the
+# epoch catalog does not carry (INTERACTION-ID R-I3).  Zero means the topology
+# is closed.
 campaign_topology_divergences() {
   local iteration_dir=$1
-  local diagnostics="${iteration_dir}/import_diagnostics.jsonl"
-  [[ -s "${diagnostics}" ]] || { printf '0'; return 0; }
-  jq -r -s '[.[] | select(.code == "TOPOLOGY_DIVERGENCE")] | length' \
-    "${diagnostics}" 2>/dev/null || printf '0'
+  local sessions="${iteration_dir}/sessions"
+  [[ -d "${sessions}" ]] || { printf '0'; return 0; }
+  find "${sessions}" -type f -name 'gaps.jsonl' -print0 \
+    | LC_ALL=C sort -z | xargs -0 -r cat \
+    | jq -r -s '[.[] | select(.gapKind == "TOPOLOGY_DIVERGENCE")] | length' \
+      2>/dev/null || printf '0'
 }
 
-# The replay whose own trace is the recording of the next epoch, as the
-# importer named it on the divergent row (seedsNextEpoch / seedReplayGroupId).
-# Empty when this epoch's topology closed.  The harness never re-derives which
-# replay diverged: one stage decides it and states it on the row.
+
+# The session whose own trace is the recording of the next epoch, as the
+# runtime named it on the divergent row.  Empty when this epoch's topology
+# closed.  The harness never re-derives which replay diverged: one stage
+# decides it and states it on the row.
 campaign_seeding_replay() {
   local iteration_dir=$1
-  local diagnostics="${iteration_dir}/import_diagnostics.jsonl"
-  [[ -s "${diagnostics}" ]] || { printf ''; return 0; }
-  jq -r -s 'first(.[] | select(.seedsNextEpoch == true)
-      | .seedReplayGroupId // .seedReplayTaskId // empty) // empty' \
-    "${diagnostics}" 2>/dev/null || printf ''
+  local sessions="${iteration_dir}/sessions"
+  [[ -d "${sessions}" ]] || { printf ''; return 0; }
+  find "${sessions}" -type f -name 'gaps.jsonl' -print0 \
+    | LC_ALL=C sort -z | xargs -0 -r cat \
+    | jq -r -s 'first(.[] | select(.seedsNextEpoch == true)
+        | .sessionId // empty) // empty' 2>/dev/null || printf ''
 }
 
-# The result file epoch e+1 is planned from: that replay's own published
-# results.  PLAN already forwards its `carry` argument to `do_schedule
-# --summaries`; this is the value the wire was built for and never given.
+
+# The session directory epoch e+1 is planned from: that replay's own rows.
+# PLAN forwards its `carry` argument to `do_schedule --summaries`.
 campaign_seeding_results() {
   local iteration_dir=$1
-  local diagnostics="${iteration_dir}/import_diagnostics.jsonl"
-  [[ -s "${diagnostics}" ]] || { printf ''; return 0; }
-  jq -r -s 'first(.[] | select(.seedsNextEpoch == true)
-      | .seedReplayResults // empty) // empty' \
-    "${diagnostics}" 2>/dev/null || printf ''
+  local session
+  session=$(campaign_seeding_replay "${iteration_dir}")
+  [[ -n "${session}" ]] || { printf ''; return 0; }
+  printf '%s' "${iteration_dir}/sessions/${session}"
 }
 
 # The campaign publishes the LAST epoch at ${campaign_root}/final, so every
