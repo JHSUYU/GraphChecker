@@ -47,6 +47,35 @@ public class SymbolicMessageEnvelopeTest {
         assertEquals(0, SymbolicMessageEnvelope.inboundUnattached());
     }
 
+    /**
+     * A concrete leaf arrives present, carrying no expression.
+     *
+     * <p>{@code exportCommunicationLeaf} stages handle 0 for a leaf the VM
+     * answered {@code NOT_SYMBOLIC} -- a concrete leaf is still a leaf the
+     * message carried -- so the consumer takes an element that is
+     * {@code present()} with no live handle.  For the consumer that is the
+     * same fact as no element at all: there is an arrived value and no
+     * producer expression, so it mints v_H from the arrival and the row
+     * states {@code elementAbsent}.  It used to be refused with
+     * RPC_HANDOFF_UNKNOWN_HANDLE, which left the obligation's assignment
+     * unapplied exactly as the no-element refusal did.</p>
+     */
+    @Test
+    public void aConcreteLeafArrivesPresentWithNoHandle() {
+        assertTrue("a concrete leaf is still staged",
+                SymbolicMessageEnvelope.stage(PORT, 0L, "TASK.SEED.1",
+                        "node/region/R#1", CONSUMERS));
+        SymbolicMessageEnvelope.installInbound(
+                SymbolicMessageEnvelope.takeOutbound());
+
+        SymbolicMessageEnvelope.Entry arrived =
+                SymbolicMessageEnvelope.take(PORT);
+        assertTrue("the element is there", arrived.present());
+        assertEquals("and it carries no expression", 0L, arrived.handle());
+        assertEquals("nothing is left unlooked-up", 0,
+                SymbolicMessageEnvelope.inboundUnattached());
+    }
+
     /** Ordinals are per port, so two ports do not shift each other. */
     @Test
     public void ordinalsAreCountedWithinOnePort() {

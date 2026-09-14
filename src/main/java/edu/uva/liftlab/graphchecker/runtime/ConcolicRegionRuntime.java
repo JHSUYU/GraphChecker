@@ -2218,29 +2218,31 @@ public final class ConcolicRegionRuntime {
                             + site.portId()));
             return;
         }
-        if (!leafCarried) {
-            // The message carried no element for this decode, and the mint
+        if (!leafCarried || handle <= 0L) {
+            // The delivery carried no producer expression, and the mint
             // happens anyway.  v_H is the consumer's boundary variable,
             // minted at the consumer's declared capture on the value that
-            // ARRIVED; the envelope element only supplies the producer's
-            // expression e_p, which is one member of H's family and not a
-            // condition of H existing.  Absent, the row says so and this
-            // delivery contributes no family arm -- which is exactly right
-            // for a flip replay whose job is the consumer's path under an
-            // assigned v_H, with the producing node running concretely.
+            // ARRIVED; the envelope element only supplies e_p, which is one
+            // member of H's family and not a condition of H existing.
+            // Absent, the row says so and this delivery contributes no
+            // family arm -- which is exactly right for a flip replay whose
+            // job is the consumer's path under an assigned v_H, with the
+            // producing node running concretely.
+            //
+            // Two ways for it to be absent, one fact for the consumer.  The
+            // message may carry no element for this decode at all; or it may
+            // carry one the producer staged with handle 0, which is what
+            // exportCommunicationLeaf stages for a leaf the VM answered
+            // NOT_SYMBOLIC -- "a concrete leaf is still a leaf the message
+            // carried".  Either way there is no e_p and there is an arrived
+            // value, so both take this path and the row states
+            // elementAbsent.
+            //
             // Refusing here left the assignment unapplied: on hdfs-17899
             // bug3 the flip replay of the target published zero handoff
             // rows, the fatal read still found the recorded key, and the
             // obligation ended REPLAY_NOT_ADMITTED with no primary case.
             mintArrivedCommunicationLeaf(site, carrier, field, descriptor);
-            return;
-        }
-        if (handle <= 0L) {
-            recordHandoffGap(RpcExpressionHandoff.gap(
-                    RpcExpressionHandoff.STAGE_ATTACH,
-                    RpcExpressionHandoff.UNKNOWN_HANDLE, 0L,
-                    "required communication port carried no live VM handle: "
-                            + site.portId()));
             return;
         }
         attachDeclaredCommunicationExpression(carrier, CARRIER_CLASS, field,
