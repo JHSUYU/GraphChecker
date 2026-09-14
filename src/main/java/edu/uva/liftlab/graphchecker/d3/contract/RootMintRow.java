@@ -11,9 +11,14 @@ import java.util.Objects;
  * ({@code domainMin} and {@code domainMax} null) is pinned everywhere, and
  * {@code declared} says whether the case declared it at all -- an undeclared
  * root is evidence, not a degree of freedom.</p>
+ *
+ * <p>{@code seq} is the session-monotonic event sequence number: it places the
+ * mint against the decisions and exports of its own session, so a root minted
+ * after a value was already exported cannot be read as having carried it.</p>
  */
 public final class RootMintRow {
     private final String sessionId;
+    private final long seq;
     private final OccurrenceAddress occurrence;
     private final String rootId;
     private final String symbol;
@@ -23,11 +28,12 @@ public final class RootMintRow {
     private final String domainMax;
     private final boolean declared;
 
-    private RootMintRow(String sessionId, OccurrenceAddress occurrence,
-                        String rootId, String symbol, RootKind kind,
-                        String recordedValue, String domainMin,
-                        String domainMax, boolean declared) {
+    private RootMintRow(String sessionId, long seq,
+                        OccurrenceAddress occurrence, String rootId,
+                        String symbol, RootKind kind, String recordedValue,
+                        String domainMin, String domainMax, boolean declared) {
         this.sessionId = sessionId;
+        this.seq = seq;
         this.occurrence = occurrence;
         this.rootId = rootId;
         this.symbol = symbol;
@@ -38,11 +44,13 @@ public final class RootMintRow {
         this.declared = declared;
     }
 
-    public static RootMintRow of(String sessionId, OccurrenceAddress occurrence,
-                                 String rootId, String symbol, RootKind kind,
+    public static RootMintRow of(String sessionId, long seq,
+                                 OccurrenceAddress occurrence, String rootId,
+                                 String symbol, RootKind kind,
                                  String recordedValue, String domainMin,
                                  String domainMax, boolean declared) {
         return new RootMintRow(Fields.text(sessionId, "sessionId"),
+                Fields.sequence(seq, "seq"),
                 Fields.required(occurrence, "occurrence"),
                 Fields.text(rootId, "rootId"), Fields.text(symbol, "symbol"),
                 Fields.required(kind, "kind"),
@@ -53,6 +61,11 @@ public final class RootMintRow {
 
     public String sessionId() {
         return sessionId;
+    }
+
+    /** Where this mint falls in its session's event order. */
+    public long seq() {
+        return seq;
     }
 
     public OccurrenceAddress occurrence() {
@@ -101,7 +114,8 @@ public final class RootMintRow {
         if (this == value) return true;
         if (!(value instanceof RootMintRow)) return false;
         RootMintRow other = (RootMintRow) value;
-        return declared == other.declared && kind == other.kind
+        return seq == other.seq && declared == other.declared
+                && kind == other.kind
                 && sessionId.equals(other.sessionId)
                 && occurrence.equals(other.occurrence)
                 && rootId.equals(other.rootId) && symbol.equals(other.symbol)
@@ -112,13 +126,13 @@ public final class RootMintRow {
 
     @Override
     public int hashCode() {
-        return Objects.hash(sessionId, occurrence, rootId, symbol, kind,
+        return Objects.hash(sessionId, seq, occurrence, rootId, symbol, kind,
                 recordedValue, domainMin, domainMax, declared);
     }
 
     @Override
     public String toString() {
-        return "RootMintRow{" + sessionId + " " + rootId + " " + kind + " "
-                + symbol + "=" + recordedValue + "}";
+        return "RootMintRow{" + sessionId + "#" + seq + " " + rootId + " "
+                + kind + " " + symbol + "=" + recordedValue + "}";
     }
 }
