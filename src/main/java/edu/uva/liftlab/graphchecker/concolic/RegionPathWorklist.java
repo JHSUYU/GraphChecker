@@ -819,7 +819,6 @@ public final class RegionPathWorklist {
                     path.occurrenceId());
             replay.addTo(task);
             if (path.scope().goalKind().capturesTargetReach()) {
-                VmHandoffEvidence.writeTo(task, path.vmHandoffEvents());
                 JsonObject sourceTask = taskById.get(path.sourceTaskId());
                 JsonObject selected = sourceTask == null
                         ? new JsonObject()

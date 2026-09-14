@@ -60,6 +60,15 @@ public final class SummaryBranchMapping {
      * observation is a decision too.  It is stated only when the VM assigned
      * one; a zero would order it ahead of everything the VM did number.</p>
      */
+    /**
+     * The member a branch decision publishes its VM event under.
+     *
+     * <p>Defined here, by the row that writes it: it used to be a constant on
+     * the in-session read resolver, which is a reader of a different kind of
+     * row entirely.</p>
+     */
+    public static final String SESSION_EVENT_ID = "eventId";
+
     private final long eventId;
 
     private SummaryBranchMapping(
@@ -165,17 +174,17 @@ public final class SummaryBranchMapping {
 
     /** The replay clock this row states, or 0 when it states none. */
     private static long clock(JsonObject json) {
-        JsonElement encoded = json.get(InSessionReadResolver.SESSION_EVENT_ID);
+        JsonElement encoded = json.get(SESSION_EVENT_ID);
         if (encoded == null || encoded.isJsonNull()) return 0L;
         if (!encoded.isJsonPrimitive()
                 || !encoded.getAsJsonPrimitive().isNumber()) {
             throw new IllegalArgumentException(
-                    InSessionReadResolver.SESSION_EVENT_ID + " must be a number");
+                    SESSION_EVENT_ID + " must be a number");
         }
         long value = encoded.getAsLong();
         if (value <= 0L) {
             throw new IllegalArgumentException(
-                    InSessionReadResolver.SESSION_EVENT_ID + " must be positive");
+                    SESSION_EVENT_ID + " must be positive");
         }
         return value;
     }
@@ -252,7 +261,7 @@ public final class SummaryBranchMapping {
         }
         result.addProperty("policy", policy.name());
         if (eventId > 0L) {
-            result.addProperty(InSessionReadResolver.SESSION_EVENT_ID, eventId);
+            result.addProperty(SESSION_EVENT_ID, eventId);
         }
         return defensivePredicate
                 ? (JsonObject) CanonicalJson.copy(result) : result;

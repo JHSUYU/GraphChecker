@@ -43,7 +43,7 @@ import java.util.Set;
  *       sentence a reader can check.</li>
  * </ul>
  *
- * <p>Two readers consume this table.  {@code ClaimPolicy} reads
+ * <p>Two readers consume this table.  the claim policy reads
  * {@link #blocking(String)} for every gap the composition manifest and the
  * reach report publish, so the Java claim and the published gap count rest on
  * one classification.  {@code run_engine.sh} reads the JSON this class emits
@@ -54,7 +54,7 @@ import java.util.Set;
  * <em>mechanism</em> is out of scope, and one is: {@code ROTATION_RACE} --
  * the fatal read taking the program's own last writer while the same
  * location is written again later -- was retired from
- * {@code WitnessLegitimacy}'s finding kinds rather than registered here.  No
+ * the claim's finding kinds rather than registered here.  No
  * gap replaces it, because nothing is missing from any chain this pipeline
  * builds: each replay fixes its own interleaving of that write and that
  * read, the merge is a disjunction over replays that ran, and no path can
@@ -370,7 +370,7 @@ public final class GapLedger {
         // naming producer-case linking and boundary families that no stage
         // raises any more.  A handoff is now one variable v_H at one
         // occurrence H, and what can be missing about it is stated on the
-        // row by VmHandoffEvidence.eventFault.
+        // row by the attach's own fault check.
         String propagation = "COMPOSE/SYMBOLIC_PROPAGATION";
         for (String code : new String[]{
                 "RPC_ATTACH_SENDER_EXPRESSION_MISSING"}) {
@@ -407,7 +407,7 @@ public final class GapLedger {
         // ------------------------------------------------------------------
         diagnostic("COMPOSE/COVERAGE", "SELECTED_PATH_SET_INCOMPLETE",
                 "path-set completeness is required only to close an UNSAT"
-                        + " refutation, and ClaimPolicy already withholds"
+                        + " refutation, and the claim policy already withholds"
                         + " that conclusion by name through"
                         + " UNSAT_CLOSURE_INCOMPLETE, so this row can never"
                         + " be the only thing between a SAT witness and its"
@@ -508,7 +508,7 @@ public final class GapLedger {
         // than the one the witness walks was not explored, and every one of
         // them lands in a summary's coverageGaps, which run_engine.sh reads
         // as pathSetClosed=false (see campaign_explore); the composer then
-        // publishes pathSetComplete=false and ClaimPolicy withholds
+        // publishes pathSetComplete=false and the claim policy withholds
         // UNSAT_CLOSED by name under UNSAT_CLOSURE_INCOMPLETE.  So the one
         // conclusion these can falsify is already withheld by name, and the
         // chain a SAT witness reports contains no sibling path by
@@ -530,7 +530,7 @@ public final class GapLedger {
                             + " the witness walks, and the one conclusion it"
                             + " can falsify -- a closed UNSAT -- is withheld"
                             + " by name, because this row makes the"
-                            + " summary's path set unclosed and ClaimPolicy"
+                            + " summary's path set unclosed and the claim policy"
                             + " blocks UNSAT_CLOSURE_INCOMPLETE on exactly"
                             + " that");
         }
@@ -564,7 +564,7 @@ public final class GapLedger {
                         + " blocks");
         // Spelled as the importer publishes it.  A region skip reaches the
         // ledger as "REGION_" + the runtime's skipKind
-        // (ConcolicSummaryImporter.skippedEventCode), and an entry under the
+        // (the importer's skip kind), and an entry under the
         // bare skipKind matches no row at all.
         blocking(importer, "REGION_ROOT_NEVER_EXECUTED",
                 "the planned root did not execute in this replay: no"
@@ -780,7 +780,7 @@ public final class GapLedger {
         //
         // None of them is an admission defect, and none of them is a link of
         // the chain a witness walks.  They make the path set unclosed, which
-        // ClaimPolicy already answers by withholding a closed UNSAT.
+        // the claim policy already answers by withholding a closed UNSAT.
         for (String code : new String[]{
                 "REGION_ROOT_NEVER_EXECUTED",
                 "REGION_REPLAY_PREFIX_UNMATCHED",
