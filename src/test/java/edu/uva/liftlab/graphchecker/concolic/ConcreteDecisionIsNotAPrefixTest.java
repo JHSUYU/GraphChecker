@@ -32,30 +32,35 @@ public class ConcreteDecisionIsNotAPrefixTest {
                     + "org.apache.hadoop.ipc.Client$Call)>";
     private static final String U16 = SEND + "#u16";
     private static final String U4 = SEND + "#u4";
+    private static final String U18 = SEND + "#u18";
 
     /** Lane B2: the recorded outcome differs and nothing is refused. */
     @Test
     public void aConcreteDecisionThatFlippedIsNotAMismatch() {
-        assertEquals("", mismatch(concrete(U16, 1, true)));
+        assertEquals("", mismatch(concrete(U16, 1, true),
+                concrete(U18, 1, true)));
     }
 
     /** A root-dependent decision that flipped is still a mismatch. */
     @Test
     public void aRootDependentDecisionThatFlippedIsStillAMismatch() {
-        String refusal = mismatch(witnessed(U16, 1, true));
+        String refusal = mismatch(witnessed(U16, 1, true),
+                concrete(U18, 1, true));
         assertTrue(refusal, refusal.contains("wrong decision at " + U16));
     }
 
     /** A concrete decision at its recorded outcome is admitted as before. */
     @Test
     public void aConcreteDecisionThatMatchesIsAdmitted() {
-        assertEquals("", mismatch(concrete(U16, 1, false)));
+        assertEquals("", mismatch(concrete(U16, 1, false),
+                concrete(U18, 1, true)));
     }
 
     /** A site the plan never named is evidence when it is concrete. */
     @Test
     public void anUnplannedConcreteSiteIsNotUnexpected() {
         assertEquals("", mismatch(concrete(U16, 1, false),
+                concrete(U18, 1, true),
                 concrete(SEND + "#u49", 1, true)));
     }
 
@@ -63,8 +68,31 @@ public class ConcreteDecisionIsNotAPrefixTest {
     @Test
     public void anUnplannedRootDependentSiteIsUnexpected() {
         String refusal = mismatch(concrete(U16, 1, false),
+                concrete(U18, 1, true),
                 witnessed(SEND + "#u49", 1, true));
         assertTrue(refusal, refusal.contains("unexpected " + SEND + "#u49"));
+    }
+
+    /**
+     * A site a concrete divergence never reached is not missing from pi.
+     *
+     * <p>Lane B2c, after the concrete sites stopped refusing: the plan
+     * declares {@code #u18} and the replay published no decision there at
+     * all, because {@code #u16} -- the IPC client's own connection state,
+     * concrete -- went the other way and the path never reached it. An
+     * activation that decided nothing over a root has an empty pi, so no
+     * site can be missing from it.</p>
+     */
+    @Test
+    public void aSiteAConcreteDivergenceNeverReachedIsNotMissing() {
+        assertEquals("", mismatch(concrete(U16, 1, true)));
+    }
+
+    /** With a root-dependent decision in the activation, missing refuses. */
+    @Test
+    public void aMissingSiteStillRefusesWhenThePathHasRoots() {
+        String refusal = mismatch(witnessed(U16, 1, false));
+        assertTrue(refusal, refusal.contains("missing " + U18));
     }
 
     /**
@@ -143,6 +171,7 @@ public class ConcreteDecisionIsNotAPrefixTest {
         JsonArray branches = new JsonArray();
         branches.add(branch(U4, 1, true));
         branches.add(branch(U16, 1, false));
+        branches.add(branch(U18, 1, true));
         encoded.add("branches", branches);
         encoded.add("inputActions", new JsonArray());
         JsonObject loopBound = new JsonObject();

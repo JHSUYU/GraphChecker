@@ -170,12 +170,20 @@ public class ActivationIsCountedWhereItRanTest {
         assertSame("admitted provisionally, to be decided at close",
                 targetTask, decode(plan, targetTask, null));
 
-        // The frame arm did not name target-dn: the k goes back, and the
-        // heartbeat that does carry the node is still target-dn's first.
+        // Lane B2c: a provisional admission holds no k while it runs, so a
+        // second unstamped activation reads the same next-confirmed k and
+        // the heartbeat that does carry the node is still target-dn's
+        // FIRST -- it used to come out "activation 2, not 1" because the
+        // release needed its k to still be the last one handed out, and by
+        // then it was not.
+        plan.releaseProvisionalOrdinal(targetTask);
+        plan.releaseCandidate(targetTask);
+        assertSame("a second unnamed activation reads the same k",
+                targetTask, decode(plan, targetTask, null));
         plan.releaseProvisionalOrdinal(targetTask);
         plan.releaseCandidate(targetTask);
 
-        assertSame("the unstamped one took no k from target-dn",
+        assertSame("the unstamped ones took no k from target-dn",
                 targetTask, decode(plan, targetTask, targetDn));
         assertEquals("and that one is the node's own, confirmed",
                 "", targetTask.provisionalScope);
