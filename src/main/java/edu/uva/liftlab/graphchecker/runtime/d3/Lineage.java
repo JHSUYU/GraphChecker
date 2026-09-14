@@ -59,6 +59,10 @@ public final class Lineage {
         private final String api;
         private final int k;
         private final boolean lost;
+        /** The producer endpoint whose message opened this scope, or "". */
+        private String anchor = "";
+        /** The transport site that message crossed, or "". */
+        private String rpcSite = "";
 
         private Frame(long token, Role role, String api, int k,
                       boolean lost) {
@@ -213,6 +217,52 @@ public final class Lineage {
     public static int k() {
         List<Frame> stack = STACK.get();
         return stack.isEmpty() ? 0 : stack.get(stack.size() - 1).k;
+    }
+
+    /**
+     * States which message opened the innermost scope.
+     *
+     * <p>IDENTITY-V3: the causal context of everything inside this scope is
+     * that producer's endpoint, which carries the producer's own occurrence
+     * and where in it the export was -- recursively, all the way back to a
+     * workload action or a tick.</p>
+     */
+    public static void anchor(String producerEndpointId, String rpcSite) {
+        List<Frame> stack = STACK.get();
+        if (stack.isEmpty()) return;
+        Frame frame = stack.get(stack.size() - 1);
+        frame.anchor = Text.safe(producerEndpointId);
+        frame.rpcSite = Text.safe(rpcSite);
+    }
+
+    /** The producer endpoint of the message that opened this scope, or "". */
+    public static String anchor() {
+        List<Frame> stack = STACK.get();
+        for (int i = stack.size() - 1; i >= 0; i--) {
+            if (!stack.get(i).anchor.isEmpty()) return stack.get(i).anchor;
+        }
+        return "";
+    }
+
+    /** The transport site of that message, or "". */
+    public static String rpcSite() {
+        List<Frame> stack = STACK.get();
+        for (int i = stack.size() - 1; i >= 0; i--) {
+            if (!stack.get(i).anchor.isEmpty()) return stack.get(i).rpcSite;
+        }
+        return "";
+    }
+
+    /** The role of the OUTERMOST frame: the root this scope descends from. */
+    public static Role rootRole() {
+        List<Frame> stack = STACK.get();
+        return stack.isEmpty() ? Role.UNKNOWN : stack.get(0).role;
+    }
+
+    /** The window index of that root, or 0. */
+    public static int rootWindowIndex() {
+        List<Frame> stack = STACK.get();
+        return stack.isEmpty() ? 0 : stack.get(0).k;
     }
 
     /** The rendered lineage path, {@code ""} at a root. */

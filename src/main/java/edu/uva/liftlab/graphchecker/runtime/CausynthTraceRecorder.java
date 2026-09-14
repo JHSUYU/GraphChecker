@@ -280,6 +280,10 @@ public final class CausynthTraceRecorder {
         if (isThreadStart(declaredCallee, receiver)) {
             RuntimeTraceContext.captureAsync(receiver);
         }
+        // The execution index's stack: one frame per instrumented call
+        // site, carrying the iteration of the loop enclosing it.
+        edu.uva.liftlab.graphchecker.runtime.d3.Identity.enterCall(
+                event.siteId);
         if (event.id > 0L) {
             ACTIVE_CALL_SITES.get().push(new ActiveCallSite(event.id, ownerCallId,
                     event.siteId, event.method, event.declaredCallee));
@@ -302,6 +306,11 @@ public final class CausynthTraceRecorder {
             RuntimeTraceContext.captureAsync(value);
         }
         emitExecutionEvent(event);
+    }
+
+    /** Leaves the call site {@link #beginCall} pushed. */
+    private static void exitCallFrame() {
+        edu.uva.liftlab.graphchecker.runtime.d3.Identity.exitCall();
     }
 
     public static void endCall(long invocationId, Object returnValue,

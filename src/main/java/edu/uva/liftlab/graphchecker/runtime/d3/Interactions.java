@@ -129,7 +129,49 @@ public final class Interactions {
         return delivery == null ? 0L : delivery[1];
     }
 
+    /**
+     * Files the endpoint of one whole MESSAGE, for the anchor its receiver
+     * will state.
+     *
+     * <p>A declared port's leaf is paired by handle; a request's causal
+     * anchor is the message, which may carry no declared leaf at all.  Both
+     * are the producer's endpoint -- this one is the exchange itself.</p>
+     */
+    public static synchronized void sent(String transport,
+                                         String correlationId, String half,
+                                         String producerEndpointId) {
+        String key = message(transport, correlationId, half);
+        if (key.isEmpty() || Text.safe(producerEndpointId).isEmpty()) return;
+        MESSAGES.put(key, Text.safe(producerEndpointId));
+    }
+
+    /** The endpoint that sent this message, or {@code ""}. */
+    public static synchronized String sender(String transport,
+                                             String correlationId,
+                                             String half) {
+        String id = MESSAGES.get(message(transport, correlationId, half));
+        return id == null ? "" : id;
+    }
+
+    private static String message(String transport, String correlationId,
+                                  String half) {
+        String correlation = Text.safe(correlationId);
+        if (correlation.isEmpty()) return "";
+        return Text.safe(transport) + "\n" + correlation + "\n"
+                + Text.safe(half);
+    }
+
+    private static final Map<String, String> MESSAGES =
+            new LinkedHashMap<String, String>(64, 0.75f, false) {
+                @Override
+                protected boolean removeEldestEntry(
+                        Map.Entry<String, String> eldest) {
+                    return size() > LIMIT;
+                }
+            };
+
     public static synchronized void resetForTests() {
+        MESSAGES.clear();
         DELIVERY.remove();
         PRODUCERS.clear();
         EXPRESSIONS.clear();
