@@ -458,11 +458,16 @@ public class D3ExploreTest {
                     Collections.<String, Long>emptyMap()));
         }
 
+        /**
+         * One root minted, at the point of the session where it is minted:
+         * before every decision that can mention it, because a value is read
+         * before it is branched on.
+         */
         private void root(OccurrenceAddress occurrence, String rootId,
                           String symbol, RootKind kind, String recorded,
                           String min, String max, boolean declared) {
-            roots.add(RootMintRow.of(sessionId, occurrence, rootId, symbol,
-                    kind, recorded, min, max, declared));
+            roots.add(RootMintRow.of(sessionId, ++seq, occurrence, rootId,
+                    symbol, kind, recorded, min, max, declared));
         }
 
         private void export(Endpoint endpoint, String ref, long handle,
