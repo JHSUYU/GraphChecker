@@ -243,6 +243,18 @@ bool SharedFieldVersions::plan_read(const Location &location,
     return false;
   }
 
+  // Reading tracked state is what makes this thread's branches relevant, so
+  // it is also what opens its path-condition gate.  The three carrier
+  // selectors used to do this -- on fresh selection and again on
+  // re-selection, which is how a later region declared "I am about to read a
+  // carrier this session retained" -- and they are gone with the carrier
+  // layer.  Without it a region that only reads records no conditions at all:
+  // record_path_condition() returns early on !_path_condition_admitted, so
+  // laneBJ's REGION.f0132fca published 0 symbolized inputs and bare
+  // decisions while bug3's serialNo survived only because its region also
+  // writes.  By value, the read is the declaration.
+  ConcolicMngr::ctx->set_pc_admitted(true);
+
   plan->read_event_id = GlobalSymbolicSession::next_event_id();
   // Versions are appended in publish order and their ids come from the one
   // session counter, so the last one is the newest and is what the location
