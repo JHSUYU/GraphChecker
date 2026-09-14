@@ -75,6 +75,16 @@ public final class SymbolicSourceEvidence {
      * wall clock.</p>
      */
     public static final String DECLARED_CALLEE = "declaredCallee";
+    /**
+     * What the execution that minted this root read there.
+     *
+     * <p>Beside {@link #RECORDED_VALUE}, not instead of it.  For every root
+     * but a clock the two are the same value; a clock is the one root each
+     * execution genuinely reads differently, so the window centred on the
+     * recording and the window centred on this path's own instant are two
+     * different windows and each needs its own member.</p>
+     */
+    public static final String OBSERVED_VALUE = "observedValue";
     private static final Pattern FIELD_SIGNATURE = Pattern.compile(
             "^<[^:]+:\\s+([^()<>\\s]+)\\s+[^()<>\\s]+>(?:#.*)?$");
 
@@ -165,7 +175,7 @@ public final class SymbolicSourceEvidence {
                                          String javaType, String rawSymbol,
                                          String sourceIdentity) {
         return manualEvent(portId, occurrenceId, fieldSignature, javaType,
-                rawSymbol, sourceIdentity, "", "", -1L, "");
+                rawSymbol, sourceIdentity, "", "", -1L, "", "");
     }
 
     /**
@@ -184,7 +194,8 @@ public final class SymbolicSourceEvidence {
                                          String sourceIdentity,
                                          String declaredCallee,
                                          String siteId, long eventSeq,
-                                         String recordedValue) {
+                                         String recordedValue,
+                                         String observedValue) {
         JsonObject expression = new JsonObject();
         expression.addProperty("_type", "SymbolExpression");
         expression.addProperty("_java_type", required(javaType,
@@ -218,7 +229,15 @@ public final class SymbolicSourceEvidence {
         if (recordedValue != null && !recordedValue.trim().isEmpty()) {
             row.addProperty(RECORDED_VALUE, recordedValue.trim());
         }
+        if (observedValue != null && !observedValue.trim().isEmpty()) {
+            row.addProperty(OBSERVED_VALUE, observedValue.trim());
+        }
         return validate(row);
+    }
+
+    /** What this execution read at the mint, or "" when it states none. */
+    public static String observedValueOf(JsonObject event) {
+        return event == null ? "" : optionalString(event, OBSERVED_VALUE);
     }
 
     /** The call whose return this root was minted from, or "". */
@@ -389,8 +408,8 @@ public final class SymbolicSourceEvidence {
                     "javaType", "expression", ORDINAL, REUSED));
     private static final Set<String> OPTIONAL_MEMBERS =
             new LinkedHashSet<>(java.util.Arrays.asList(SYMBOL, "portId",
-                    "sourceIdentity", RECORDED_VALUE, DECLARED_CALLEE,
-                    "siteId", "eventSeq"));
+                    "sourceIdentity", RECORDED_VALUE, OBSERVED_VALUE,
+                    DECLARED_CALLEE, "siteId", "eventSeq"));
     private static final Set<String> MANUAL_REQUIRED_MEMBERS =
             new LinkedHashSet<>(java.util.Arrays.asList("schemaVersion",
                     "kind", "authority", "portId", "sourceOccurrenceId",

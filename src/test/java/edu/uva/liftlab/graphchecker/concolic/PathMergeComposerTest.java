@@ -266,7 +266,8 @@ public class PathMergeComposerTest {
         events.add(SymbolicSourceEvidence.manualEvent(CLOCK_PORT,
                 CLOCK_OCCURRENCE, "", "J", CLOCK_RAW,
                 "MANUAL.clock-example", CLOCK_CALLEE, CLOCK_SITE, 42L,
-                Long.toString(CLOCK_READING)));
+                Long.toString(CLOCK_READING),
+                Long.toString(CLOCK_READING + 666L)));
         SymbolicSourceEvidence.writeTo(summary, events);
         return summary;
     }
