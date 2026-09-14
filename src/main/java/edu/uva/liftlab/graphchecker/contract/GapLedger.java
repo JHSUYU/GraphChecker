@@ -534,6 +534,10 @@ public final class GapLedger {
                 "the fatal read's branch mapping is unusable");
         blocking(explore, "TARGET_PREFIX_FATAL_EVENT_INVALID",
                 "the fatal read's recorded event is unusable");
+        blocking(explore, "HANDOFF_CONTROL_ROW_ABSENT",
+                "an obligation assigns a value that arrived on a wire and no"
+                        + " summary of its own replay states the attach that"
+                        + " minted it, so the flip has nothing to answer");
         blocking(explore, "TARGET_FATAL_ARM_NOT_CONTROLLED",
                 "the target's fatal arm is the obligation the campaign"
                         + " exists for, and nothing the campaign varies"
