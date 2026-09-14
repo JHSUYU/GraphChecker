@@ -572,31 +572,33 @@ final class ConcolicTaskPlan {
      * instead of at the epoch-1 mint the plan addresses.  The recorded
      * execution was rewritten at a point the solver said nothing about.</p>
      *
-     * <p>Two facts refuse, and only these two.  A planned epoch this run
-     * never registered cannot have an activation here at all -- a workload
-     * declares its epochs literally ({@code registerSource(..., 0)} at start,
+     * <p>One fact refuses: evidence attributing this activation to the same
+     * node at a <em>different</em> epoch.  A workload declares its epochs
+     * literally ({@code registerSource(..., 0)} at start,
      * {@code restartSource(..., 1)} across a restart), so the label means the
-     * same lifecycle in every run of it.  And evidence attributing this
-     * activation to the same node at a <em>different</em> epoch is positive
-     * evidence of the wrong lifecycle.  An activation nothing attributed
-     * anywhere is still the occurrence, as everywhere else: absence of
+     * same lifecycle in every run of it and an activation that ran under
+     * another one is another occurrence.  An activation nothing attributed
+     * anywhere is still the occurrence, as everywhere else here: absence of
      * evidence is not evidence of another epoch.</p>
+     *
+     * <p>"This run never registered the planned epoch" was a second refusal
+     * here, and it was wrong in a way only a whole run shows.  It is a fact
+     * about a <em>moment</em> -- the epoch has not been registered YET -- and
+     * it was being read as a verdict about the run.  On hdfs-17960 the two
+     * activations of the {@code deleteSnapshot} region that precede the
+     * NameNode restart were refused by it, permanently, and the run then
+     * registered {@code nn0#epoch1} thirty lines of workload later and
+     * published epoch-1 occurrences for five other regions.  Both statements
+     * were in one seed replay's output: five regions answered at epoch 1, and
+     * eight tasks told that the run "never registered" it.  The activations
+     * that arm refused are refused anyway, by the arm that remains and for
+     * the reason that is actually true of them -- they ran at epoch 0 -- and
+     * the ones that come after the restart are now free to answer.</p>
      */
     static String lifecycleMismatch(String plannedSourceKey,
                                     Collection<String> attributed) {
         String planned = safe(plannedSourceKey);
         if (!RuntimeTraceContext.declaresEpoch(planned)) return "";
-        // Only a run that names this node at all can say anything about its
-        // epochs.  A run that registered no source for it may simply not
-        // attribute sources -- the unattributed activation is still the
-        // occurrence -- so the absence of the node is not the absence of the
-        // epoch.
-        if (RuntimeTraceContext.sourceIdentityRegistered(planned)
-                && !RuntimeTraceContext.sourceKeyRegistered(planned)) {
-            return "this run reached " + RuntimeTraceContext
-                    .registeredEpochsOf(planned) + " and never registered "
-                    + planned + ", so no activation in it is that epoch";
-        }
         if (attributed == null || attributed.contains(planned)) return "";
         for (String observed : attributed) {
             if (observed != null && !observed.equals(planned)
