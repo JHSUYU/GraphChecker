@@ -100,10 +100,17 @@ public final class Interactions {
      * (INTERACTION-ID §1).  Held here for the length of one attach instead
      * of threaded through every signature between the two.</p>
      */
-    private static final ThreadLocal<Long> DELIVERY = new ThreadLocal<Long>();
+    private static final ThreadLocal<long[]> DELIVERY =
+            new ThreadLocal<long[]>();
 
     public static void delivering(long handle) {
-        DELIVERY.set(handle);
+        DELIVERY.set(new long[] {handle, 0L});
+    }
+
+    /** States the VM ledger entry this delivery was attached at. */
+    public static void deliveringAt(long attachEventId) {
+        long[] delivery = DELIVERY.get();
+        if (delivery != null) delivery[1] = attachEventId;
     }
 
     public static void delivered() {
@@ -112,8 +119,14 @@ public final class Interactions {
 
     /** The handle of the delivery being attached on this thread, or 0. */
     public static long deliveryHandle() {
-        Long handle = DELIVERY.get();
-        return handle == null ? 0L : handle;
+        long[] delivery = DELIVERY.get();
+        return delivery == null ? 0L : delivery[0];
+    }
+
+    /** The VM event id of that attach, or 0: the row's place in the run. */
+    public static long deliverySeq() {
+        long[] delivery = DELIVERY.get();
+        return delivery == null ? 0L : delivery[1];
     }
 
     public static synchronized void resetForTests() {

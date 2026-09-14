@@ -163,17 +163,17 @@ public class D3RuntimeTest {
                 "hdfs-17899/nn0#epoch0", "REGION.2392e4b7",
                 Collections.singletonList(
                         LineageHop.of(Role.HEARTBEAT_TICK, "", 3)), false);
-        Endpoint exported = D3Runtime.exported(producer,
-                "XCH.resp.block-key-id", 4242L, "hadoop-ipc-7", 0, null,
+        Endpoint exported = D3Runtime.exported(producer, 61L,
+                "XCH.resp.block-key-id", 4242L, "hadoop-ipc-7", 0, null, "J",
                 "119981");
         assertNotNull(exported);
 
         OccurrenceAddress consumer = D3Runtime.degraded(
                 "hdfs-17899/target-dn#epoch0", "XCH.resp.block-key-id");
         assertTrue(consumer.lineageLost());
-        Endpoint attached = D3Runtime.attached(consumer,
+        Endpoint attached = D3Runtime.attached(consumer, 62L,
                 "XCH.resp.block-key-id", 4242L, "hadoop-ipc-7", 0,
-                "HOFF.5e10236f", "119981", false, "");
+                "HOFF.5e10236f", "J", "119981", false, "");
         D3Runtime.closeSession();
 
         List<AttachRow> rows = RowCodec.readAll(
@@ -200,19 +200,21 @@ public class D3RuntimeTest {
         expression.addProperty("_type", "SymbolExpression");
         expression.addProperty("_exp", "M_J_serial");
 
-        D3Runtime.decision(occurrence, "Klass.m()#u8", 1, true, expression);
-        D3Runtime.exported(occurrence, "XCH.port", 7L, "c1", 0, expression,
-                "1");
-        D3Runtime.attachedAt(endpoint, "XCH.port", 7L, "c1", "v_H", "1",
-                true, "2");
-        LocationId location = LocationId.of(LocationKind.INSTANCE, "22", "24");
-        D3Runtime.write(occurrence, "L#w#0:WRITE", location, 125L,
+        D3Runtime.decision(occurrence, 12L, "Klass.m()#u8", 1, true,
                 expression);
-        D3Runtime.read(occurrence, "L#r#0:READ", location, 125L, "s", "9");
+        D3Runtime.exported(occurrence, 4L, "XCH.port", 7L, "c1", 0,
+                expression, "J", "1");
+        D3Runtime.attachedAt(endpoint, 9L, "XCH.port", 7L, "c1", "v_H", "J",
+                "1", true, "2");
+        LocationId location = LocationId.of(LocationKind.INSTANCE, "22", "24");
+        D3Runtime.write(occurrence, 10L, "L#w#0:WRITE", location, 125L,
+                expression, "J");
+        D3Runtime.read(occurrence, 14L, "L#r#0:READ", location, 125L, "s",
+                "J", "9");
         D3Runtime.rootMint(occurrence, "HDFS.BLOCK_KEY.SERIAL_NO", "M_I_1",
                 RootKind.INTEGRAL, "3", "3", "6", true);
-        D3Runtime.target(occurrence, "Klass.m()#u8", expression, true, true,
-                true);
+        D3Runtime.target(occurrence, 15L, "Klass.m()#u8", expression, true,
+                true, true);
         D3Runtime.gap(GapKind.UNSTATED_VALUE, GapClass.BLOCKING, "s", "d");
         D3Runtime.closeSession();
 
@@ -226,6 +228,8 @@ public class D3RuntimeTest {
                 RowCodec::readExport);
         assertEquals(1, exports.size());
         assertEquals(7L, exports.get(0).handle());
+        assertEquals(4L, exports.get(0).seq());
+        assertEquals("J", exports.get(0).javaType());
         List<AttachRow> attaches = RowCodec.readAll(dir.attaches(),
                 RowCodec::readAttach);
         assertTrue(attaches.get(0).answered());
@@ -233,9 +237,11 @@ public class D3RuntimeTest {
         List<WriteRow> writes = RowCodec.readAll(dir.writes(),
                 RowCodec::readWrite);
         assertEquals(125L, writes.get(0).version());
+        assertEquals(10L, writes.get(0).seq());
         List<ReadRow> reads = RowCodec.readAll(dir.reads(),
                 RowCodec::readRead);
         assertEquals(125L, reads.get(0).observedVersion());
+        assertEquals(14L, reads.get(0).seq());
         List<RootMintRow> roots = RowCodec.readAll(dir.roots(),
                 RowCodec::readRootMint);
         assertEquals(RootKind.INTEGRAL, roots.get(0).kind());
@@ -267,10 +273,10 @@ public class D3RuntimeTest {
 
         // The run that took the fatal arm, and the run that took the
         // healthy one, state the same predicate about the same anchor.
-        D3Runtime.target(occurrence, "retrieveDataEncryptionKey#u8", condition,
-                true, true, true);
-        D3Runtime.target(occurrence, "retrieveDataEncryptionKey#u8", condition,
-                false, false, true);
+        D3Runtime.target(occurrence, 8L, "retrieveDataEncryptionKey#u8",
+                condition, true, true, true);
+        D3Runtime.target(occurrence, 9L, "retrieveDataEncryptionKey#u8",
+                condition, false, false, true);
         D3Runtime.closeSession();
 
         List<TargetRow> rows = RowCodec.readAll(session().targets(),

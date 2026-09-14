@@ -19,6 +19,7 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.OutputStreamWriter;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -61,16 +62,48 @@ public final class SessionPublisher {
 
     /** The publisher of one session, created once per JVM. */
     public static SessionPublisher of(Path iteration, String sessionId) {
-        String key = iteration.toAbsolutePath() + "\n" + Text.safe(sessionId);
+        return at(SessionDir.of(iteration, sessionId));
+    }
+
+    /**
+     * The publisher of one session under the sessions root the campaign
+     * named, rather than one derived from the result file.
+     */
+    public static SessionPublisher at(SessionDir layout) {
+        String key = layout.dir().toAbsolutePath().toString();
         synchronized (LOCK) {
             SessionPublisher publisher = SESSIONS.get(key);
             if (publisher == null) {
-                publisher = new SessionPublisher(
-                        SessionDir.of(iteration, sessionId));
+                publisher = new SessionPublisher(layout);
+                publisher.open();
                 SESSIONS.put(key, publisher);
             }
             return publisher;
         }
+    }
+
+    /**
+     * Creates every file of the layout, empty.
+     *
+     * <p>A kind with no rows is still a kind this session published: IMPORT
+     * reads one file per kind and an absent file is a session that did not
+     * publish it, which is a different fact from "this run had none".</p>
+     */
+    private void open() {
+        synchronized (LOCK) {
+            try {
+                layout.create();
+                for (Path file : new Path[] {layout.activations(),
+                        layout.decisions(), layout.exports(),
+                        layout.attaches(), layout.writes(), layout.reads(),
+                        layout.roots(), layout.targets(), layout.gaps()}) {
+                    if (!Files.exists(file)) Files.createFile(file);
+                }
+            } catch (IOException unwritable) {
+                fail(unwritable);
+            }
+        }
+        writeExpressions();
     }
 
     public String sessionId() {
@@ -165,6 +198,9 @@ public final class SessionPublisher {
             if (failed) return;
             try {
                 layout.create();
+                // Always written, empty or not: a session whose table is
+                // absent published no expressions, which is not the same as
+                // a session whose rows named none.
                 RowCodec.writeExpressions(layout.expressions(),
                         ExpressionTable.of(expressions));
             } catch (IOException unwritable) {
@@ -215,7 +251,7 @@ public final class SessionPublisher {
     /** Closes every open file of this session. */
     public void close() {
         synchronized (LOCK) {
-            if (!expressions.isEmpty()) writeExpressions();
+            writeExpressions();
             for (BufferedWriter writer : writers.values()) {
                 try {
                     writer.flush();

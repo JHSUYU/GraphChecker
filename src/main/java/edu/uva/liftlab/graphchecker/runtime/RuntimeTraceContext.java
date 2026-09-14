@@ -514,11 +514,27 @@ final class RuntimeTraceContext {
         return kind.isEmpty() ? Role.UNKNOWN : Role.REQUEST;
     }
 
-    /** The remote family a served message belongs to, else its api. */
+    /**
+     * Who the served message belongs to: {@code <source>/<api>} of the
+     * request in force, else the bare api.
+     *
+     * <p>Not the whole request key: its trailing ordinal counts requests in
+     * the recording window, which is the one part a replay cannot be held
+     * to.  Not a request FAMILY either, in the deleted sense -- nothing is
+     * addressed by it.  It is the hop's api, and it carries the caller
+     * because two callers of one api are two populations and their hops
+     * must not share a k.</p>
+     */
     private static String inboundFamily(String requestKey, String requestApi) {
-        String family = edu.uva.liftlab.graphchecker.contract
-                .OccurrenceAddress.familyOf(requestKey);
-        return family.isEmpty() ? MapFields.safe(requestApi) : family;
+        String key = MapFields.safe(requestKey).trim();
+        int marker = key.lastIndexOf("/request/");
+        if (marker <= 0) return MapFields.safe(requestApi).trim();
+        String source = key.substring(0, marker);
+        String api = key.substring(marker + "/request/".length());
+        int ordinal = api.lastIndexOf('#');
+        if (ordinal > 0) api = api.substring(0, ordinal);
+        return source.isEmpty() || api.isEmpty()
+                ? MapFields.safe(requestApi).trim() : source + "/" + api;
     }
 
     static void exitInbound(long token) {

@@ -2185,7 +2185,9 @@ public final class ConcolicRegionRuntime {
                             + site.portId()));
             return;
         }
-        publishExportRow(site, carrier, field, descriptor, handle);
+        publishExportRow(site, carrier, field, descriptor, handle,
+                result.ok() ? optionalLongInteger(result.record,
+                        "exportEventId", 0L) : 0L);
     }
 
     /**
@@ -2199,7 +2201,8 @@ public final class ConcolicRegionRuntime {
      */
     private static void publishExportRow(CommunicationHandoffSpec site,
                                          Object carrier, String field,
-                                         String descriptor, long handle) {
+                                         String descriptor, long handle,
+                                         long exportEventId) {
         beginBookkeeping();
         try {
             if (!D3Runtime.open()) return;
@@ -2236,9 +2239,9 @@ public final class ConcolicRegionRuntime {
                         "the exported leaf's expression could not be read: "
                                 + rootCause(unreadable));
             }
-            D3Runtime.exported(producer, site.portId(), handle,
-                    view.exchangeCorrelationId, attemptOf(view), exported,
-                    recordedValue);
+            D3Runtime.exported(producer, exportEventId, site.portId(),
+                    handle, view.exchangeCorrelationId, attemptOf(view),
+                    exported, descriptor, recordedValue);
         } catch (Throwable ignored) {
             // Publishing never ends a workload run.
         } finally {
@@ -2515,6 +2518,7 @@ public final class ConcolicRegionRuntime {
                     "custom VM returned no propagated destination expression"));
             return;
         }
+        Interactions.deliveringAt(attachEvent);
         mintHandoffVariable(active, site, exportEvent, attachEvent,
                 expression, producerTaskId, producerOccurrenceId, owner,
                 declaringClass, fieldName, descriptor, false);
@@ -2763,7 +2767,8 @@ public final class ConcolicRegionRuntime {
             }
             if (assignment != null) active.recordModelAssignment(assignment);
             publishAttachRow(consumer, portId,
-                    optionalString(minted, "_exp"), recordedValue,
+                    optionalString(minted, "_exp"),
+                    optionalString(minted, "_java_type"), recordedValue,
                     assignment != null,
                     assignment == null ? "" : safe(assignment.value));
             active.vmHandoffEvents.add(VmHandoffEvidence.event(portId,
@@ -2826,15 +2831,15 @@ public final class ConcolicRegionRuntime {
      */
     private static void publishAttachRow(
             edu.uva.liftlab.graphchecker.d3.contract.Endpoint consumer,
-            String portId, String symbol, String arrival, boolean answered,
-            String answeredValue) {
+            String portId, String symbol, String javaType, String arrival,
+            boolean answered, String answeredValue) {
         if (consumer == null || !D3Runtime.open()) return;
         try {
             RuntimeTraceContext.View view = RuntimeTraceContext.current();
-            D3Runtime.attachedAt(consumer, portId,
+            D3Runtime.attachedAt(consumer, Interactions.deliverySeq(), portId,
                     Interactions.deliveryHandle(),
-                    view.exchangeCorrelationId, symbol, arrival, answered,
-                    answeredValue);
+                    view.exchangeCorrelationId, symbol, javaType, arrival,
+                    answered, answeredValue);
         } catch (Throwable ignored) {
             // Publishing never ends a workload run.
         }
@@ -2901,6 +2906,8 @@ public final class ConcolicRegionRuntime {
                 publishAttachRow(D3Runtime.nextEndpoint(consumer, portId,
                                 attemptOf(view)), portId,
                         minted == null ? "" : optionalString(minted, "_exp"),
+                        minted == null ? ""
+                                : optionalString(minted, "_java_type"),
                         recordedValue, false, "");
             } catch (Throwable failure) {
                 D3Runtime.gap(edu.uva.liftlab.graphchecker.d3.contract.GapKind

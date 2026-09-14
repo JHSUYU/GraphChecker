@@ -74,14 +74,15 @@ final class D3RowPublication {
             JsonObject concrete = object(mapping, "concreteObservation");
             String siteId = optionalString(mapping, "siteId");
             int ordinal = optionalInteger(mapping, "occurrence", 1);
+            long seq = optionalLongInteger(mapping, "vmEventId", 0L);
             if (witness.size() > 0) {
-                D3Runtime.decision(occurrence, siteId, ordinal,
+                D3Runtime.decision(occurrence, seq, siteId, ordinal,
                         optionalBool(witness, "sourceTakenOutcome", false),
                         predicate(witness));
             } else if (concrete.size() > 0) {
                 // A decision the VM held no condition for still happened,
                 // and the arm it took is a fact of this run.
-                D3Runtime.decision(occurrence, siteId, ordinal,
+                D3Runtime.decision(occurrence, seq, siteId, ordinal,
                         optionalBool(concrete, "observedOutcome",
                                 optionalBool(concrete, "outcome", false)),
                         null);
@@ -154,13 +155,16 @@ final class D3RowPublication {
                 if (id < 0L) continue;
                 namedSiteMissing = true;
                 JsonElement expression = version.get("expression");
-                D3Runtime.write(occurrence,
+                JsonObject written =
+                        expression != null && expression.isJsonObject()
+                                ? expression.getAsJsonObject() : null;
+                D3Runtime.write(occurrence, id,
                         Endpoint.stateSite(locationKey,
                                 optionalString(version, "versionKind"), 0,
                                 true),
-                        location, id,
-                        expression != null && expression.isJsonObject()
-                                ? expression.getAsJsonObject() : null);
+                        location, id, written,
+                        written == null ? "" : optionalString(written,
+                                "_java_type"));
                 reads(active, occurrence, expression);
             }
         }
@@ -229,9 +233,10 @@ final class D3RowPublication {
         }
         String identity = locationKey + "#" + observed;
         if (!published.add(identity)) return;
-        D3Runtime.read(occurrence,
+        D3Runtime.read(occurrence, Math.max(0L, observed),
                 Endpoint.stateSite(locationKey, "READ_FROM", 0, false),
-                location, observed, optionalString(node, "_exp"), "");
+                location, observed, optionalString(node, "_exp"),
+                optionalString(node, "_java_type"), "");
     }
 
     /**
@@ -251,10 +256,11 @@ final class D3RowPublication {
         LocationId location = LocationId.of(LocationKind.INSTANCE,
                 ownerClass.isEmpty() ? "<unstated>" : ownerClass,
                 String.valueOf(offset));
-        D3Runtime.read(occurrence,
+        D3Runtime.read(occurrence, 0L,
                 Endpoint.stateSite(locationKey, "FIELD", offset, false),
                 location, ReadRow.UNKNOWN_VERSION,
                 optionalString(node, "_exp"),
+                optionalString(node, "_java_type"),
                 value.isJsonObject()
                         ? optionalString(value.getAsJsonObject(), "_exp")
                         : value.getAsString());
@@ -320,7 +326,9 @@ final class D3RowPublication {
             JsonObject witness = object(mapping, "witness");
             if (witness.size() > 0) condition = predicate(witness);
         }
-        D3Runtime.target(occurrence, task.targetBranchLabel(), condition,
+        D3Runtime.target(occurrence,
+                reach == null ? 0L : optionalLongInteger(reach, "vmEventId",
+                        0L), task.targetBranchLabel(), condition,
                 observed == fatalArm, reached && observed == fatalArm,
                 reached);
     }

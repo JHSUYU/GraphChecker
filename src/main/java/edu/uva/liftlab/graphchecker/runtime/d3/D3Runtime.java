@@ -18,6 +18,7 @@ import edu.uva.liftlab.graphchecker.d3.contract.Role;
 import edu.uva.liftlab.graphchecker.d3.contract.RootKind;
 import edu.uva.liftlab.graphchecker.d3.contract.RootMintRow;
 import edu.uva.liftlab.graphchecker.d3.contract.RowCodec;
+import edu.uva.liftlab.graphchecker.d3.contract.SessionDir;
 import edu.uva.liftlab.graphchecker.d3.contract.TargetRow;
 import edu.uva.liftlab.graphchecker.d3.contract.WriteRow;
 import java.lang.management.ManagementFactory;
@@ -38,6 +39,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 public final class D3Runtime {
     /** Where the wave names this replay's session, when it does. */
     public static final String SESSION_PROPERTY = "causynth.d3.session";
+    /** Where the campaign's REPLAY stage puts every worker's session. */
+    public static final String SESSIONS_PROPERTY = "causynth.d3.sessions";
 
     private static final Object LOCK = new Object();
     private static final Map<Long, OccurrenceAddress> ACTIVATIONS =
@@ -66,8 +69,12 @@ public final class D3Runtime {
         synchronized (LOCK) {
             if (publisher != null) return;
             sessionId = sessionId(resultFile);
-            publisher = SessionPublisher.of(iterationOf(resultFile),
-                    sessionId);
+            Path sessions = declaredSessionsRoot();
+            publisher = sessions == null
+                    ? SessionPublisher.of(iterationOf(resultFile), sessionId)
+                    : SessionPublisher.at(SessionDir.of(sessions.getParent()
+                            == null ? sessions : sessions.getParent(),
+                            sessionId));
         }
     }
 
@@ -82,6 +89,22 @@ public final class D3Runtime {
 
     public static SessionPublisher publisher() {
         return publisher;
+    }
+
+    /**
+     * The sessions directory the campaign named, or null.
+     *
+     * <p>{@code CAUSYNTH_CONCOLIC_SESSIONS} is what REPLAY passes every
+     * worker; deriving it from the result file is the fallback for a run
+     * nothing told.</p>
+     */
+    private static Path declaredSessionsRoot() {
+        String declared = Text.safe(System.getProperty(SESSIONS_PROPERTY));
+        if (declared.isEmpty()) {
+            declared = Text.safe(System.getenv("CAUSYNTH_CONCOLIC_SESSIONS"));
+        }
+        return declared.isEmpty() ? null
+                : java.nio.file.Paths.get(declared).toAbsolutePath();
     }
 
     /** The iteration directory a campaign path belongs to. */
@@ -164,16 +187,16 @@ public final class D3Runtime {
     // ------------------------------------------------------------------
 
     /** One decision, its term in the polarity it was taken. */
-    public static void decision(OccurrenceAddress occurrence, String siteId,
-                                int ordinal, boolean outcome,
+    public static void decision(OccurrenceAddress occurrence, long seq,
+                                String siteId, int ordinal, boolean outcome,
                                 JsonObject condition) {
         if (occurrence == null) return;
         SessionPublisher session = publisher;
         if (session != null) {
             String ref = expressionRef(condition);
-            session.decision(DecisionRow.of(sessionId(), occurrence,
-                    Text.safe(siteId), ordinal, outcome, term(ref, outcome),
-                    clockReadings()));
+            session.decision(DecisionRow.of(sessionId(), sequence(seq),
+                    occurrence, Text.safe(siteId), ordinal, outcome,
+                    term(ref, outcome), clockReadings()));
         }
         FocusedReplay.observeDecision(occurrence, siteId, ordinal, outcome);
     }
@@ -194,9 +217,10 @@ public final class D3Runtime {
     }
 
     /** One export, and the producer endpoint a delivery can be paired to. */
-    public static Endpoint exported(OccurrenceAddress producer, String portId,
-                                    long handle, String correlationId,
-                                    int attempt, JsonObject expression,
+    public static Endpoint exported(OccurrenceAddress producer, long seq,
+                                    String portId, long handle,
+                                    String correlationId, int attempt,
+                                    JsonObject expression, String javaType,
                                     String recordedValue) {
         if (producer == null) return null;
         Endpoint endpoint = endpoint(producer, portId, attempt);
@@ -204,7 +228,8 @@ public final class D3Runtime {
         Interactions.exported(portId, handle, correlationId, endpoint, ref);
         SessionPublisher session = publisher;
         if (session != null) {
-            session.export(ExportRow.of(sessionId(), endpoint, ref, handle,
+            session.export(ExportRow.of(sessionId(), sequence(seq), endpoint,
+                    ref, javaType(javaType, expression), handle,
                     Text.safe(recordedValue)));
         }
         FocusedReplay.observeInteraction(endpoint.id());
@@ -225,9 +250,10 @@ public final class D3Runtime {
     }
 
     /** One v_H minted at an endpoint already allocated. */
-    public static Endpoint attachedAt(Endpoint endpoint, String portId,
-                                      long handle, String correlationId,
-                                      String symbol, String arrival,
+    public static Endpoint attachedAt(Endpoint endpoint, long seq,
+                                      String portId, long handle,
+                                      String correlationId, String symbol,
+                                      String javaType, String arrival,
                                       boolean answered,
                                       String answeredValue) {
         if (endpoint == null) return null;
@@ -235,8 +261,9 @@ public final class D3Runtime {
                 correlationId);
         SessionPublisher session = publisher;
         if (session != null) {
-            session.attach(AttachRow.of(sessionId(), endpoint,
-                    Text.safe(symbol), Text.safe(arrival), answered,
+            session.attach(AttachRow.of(sessionId(), sequence(seq), endpoint,
+                    Text.safe(symbol), javaType(javaType, null),
+                    Text.safe(arrival), answered,
                     answered ? Text.safe(answeredValue) : null, producer,
                     Text.safe(correlationId)));
             if (producer == null) {
@@ -251,30 +278,16 @@ public final class D3Runtime {
     }
 
     /** One v_H minted at a declared port, paired to its producer. */
-    public static Endpoint attached(OccurrenceAddress consumer, String portId,
-                                    long handle, String correlationId,
-                                    int attempt, String symbol,
+    public static Endpoint attached(OccurrenceAddress consumer, long seq,
+                                    String portId, long handle,
+                                    String correlationId, int attempt,
+                                    String symbol, String javaType,
                                     String arrival, boolean answered,
                                     String answeredValue) {
         if (consumer == null) return null;
-        Endpoint endpoint = endpoint(consumer, portId, attempt);
-        Endpoint producer = Interactions.producer(portId, handle,
-                correlationId);
-        SessionPublisher session = publisher;
-        if (session != null) {
-            session.attach(AttachRow.of(sessionId(), endpoint,
-                    Text.safe(symbol), Text.safe(arrival), answered,
-                    answered ? Text.safe(answeredValue) : null, producer,
-                    Text.safe(correlationId)));
-            if (producer == null) {
-                session.gap(GapRow.of(sessionId(), GapKind.LINEAGE_LOST,
-                        GapClass.DIAGNOSTIC, endpoint.id(),
-                        "the delivery at " + Text.safe(portId)
-                                + " was paired with no export of this run"));
-            }
-        }
-        FocusedReplay.observeInteraction(endpoint.id());
-        return endpoint;
+        return attachedAt(endpoint(consumer, portId, attempt), seq, portId,
+                handle, correlationId, symbol, javaType, arrival, answered,
+                answeredValue);
     }
 
     /**
@@ -291,22 +304,25 @@ public final class D3Runtime {
         return OccurrenceMinterV2.degraded(nodeKey, role, site);
     }
 
-    public static void write(OccurrenceAddress occurrence, String site,
-                             LocationId location, long version,
-                             JsonObject expression) {
+    public static void write(OccurrenceAddress occurrence, long seq,
+                             String site, LocationId location, long version,
+                             JsonObject expression, String javaType) {
         SessionPublisher session = publisher;
         if (session == null || occurrence == null || location == null) return;
-        session.write(WriteRow.of(sessionId(), endpoint(occurrence, site, 0),
-                location, version, expressionRef(expression)));
+        session.write(WriteRow.of(sessionId(), sequence(seq),
+                endpoint(occurrence, site, 0), location, version,
+                expressionRef(expression), javaType(javaType, expression)));
     }
 
-    public static void read(OccurrenceAddress occurrence, String site,
-                            LocationId location, long observedVersion,
-                            String symbol, String concreteValue) {
+    public static void read(OccurrenceAddress occurrence, long seq,
+                            String site, LocationId location,
+                            long observedVersion, String symbol,
+                            String javaType, String concreteValue) {
         SessionPublisher session = publisher;
         if (session == null || occurrence == null || location == null) return;
-        session.read(ReadRow.of(sessionId(), endpoint(occurrence, site, 0),
-                location, observedVersion, Text.safe(symbol),
+        session.read(ReadRow.of(sessionId(), sequence(seq),
+                endpoint(occurrence, site, 0), location, observedVersion,
+                Text.safe(symbol), javaType(javaType, null),
                 Text.safe(concreteValue).isEmpty() ? null
                         : Text.safe(concreteValue)));
     }
@@ -332,13 +348,13 @@ public final class D3Runtime {
     }
 
     /** The anchor, with phi stated in the FATAL polarity as published. */
-    public static void target(OccurrenceAddress occurrence,
+    public static void target(OccurrenceAddress occurrence, long seq,
                               String anchorSiteId, JsonObject condition,
                               boolean fatalArm, boolean observedFatal,
                               boolean reachedAnchor) {
         SessionPublisher session = publisher;
         if (session == null || occurrence == null) return;
-        session.target(TargetRow.of(sessionId(), occurrence,
+        session.target(TargetRow.of(sessionId(), sequence(seq), occurrence,
                 Text.safe(anchorSiteId),
                 term(expressionRef(condition), fatalArm), observedFatal,
                 reachedAnchor));
@@ -368,6 +384,38 @@ public final class D3Runtime {
     /** What every clock this replay minted read, for the decisions' rows. */
     public static Map<String, Long> clockReadings() {
         return new java.util.LinkedHashMap<String, Long>(CLOCKS);
+    }
+
+    /**
+     * Where one row sits in the run: the VM's own event id.
+     *
+     * <p>One counter for every kind, so a producer's prefix can be cut at
+     * its export and a read ordered against the write it saw.  The VM's
+     * ledger is that counter -- decisions carry its event id, versions are
+     * drawn from it -- so a row states the id it was produced at rather
+     * than a second numbering of the same events.  A row the VM gave no id
+     * states 0, which says "this row carries no VM clock" and never
+     * pretends to an order it does not have.</p>
+     */
+    private static long sequence(long vmEventId) {
+        return Math.max(0L, vmEventId);
+    }
+
+    /**
+     * The JVM descriptor a row states, from the declaration where there is
+     * one and from the expression the VM published otherwise.
+     */
+    private static String javaType(String declared, JsonObject expression) {
+        String type = Text.safe(declared);
+        if (!type.isEmpty()) return type;
+        if (expression != null && expression.has("_java_type")) {
+            String published =
+                    Text.safe(expression.get("_java_type").getAsString());
+            if (!published.isEmpty()) return published;
+        }
+        // Never blank: the contract refuses one, and "the type was not
+        // stated" is a fact about the row, not an absence of a member.
+        return "Ljava/lang/Object;";
     }
 
     private static Long longOrNull(String value) {
