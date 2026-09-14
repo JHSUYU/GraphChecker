@@ -560,6 +560,13 @@ final class ConcolicResultPublisher {
         // hashes these and no replay match can turn on them.
         result.addProperty("startedAtMillis", active.startedAtMillis);
         result.addProperty("elapsedMillis", active.elapsedMillis());
+        // Which thread ran it.  The recording writes threadName on every
+        // METHOD_ENTER and the replay published none, so a row that says an
+        // activation was attributed to no node could not say whether the
+        // thread it ran on was one the workload's own request scope could
+        // ever have reached -- an IPC sender thread is created once, at
+        // connection setup, and an InheritableThreadLocal never reaches it.
+        result.addProperty("threadName", active.threadName);
         if (task.capturesTargetReach) {
             // Only a target-reach address selects on this.
             result.addProperty("targetReached",

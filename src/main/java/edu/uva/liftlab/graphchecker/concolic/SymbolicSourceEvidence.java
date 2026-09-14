@@ -66,6 +66,15 @@ public final class SymbolicSourceEvidence {
      * the recording's, so it states none.</p>
      */
     public static final String RECORDED_VALUE = "recordedValue";
+    /**
+     * The external call whose return this root was minted from.
+     *
+     * <p>The declaration, not an inference: the plan names the callee on
+     * the port that mints the root, so a cell minted through the clock hook
+     * says so here and the composer needs no site heuristic to recognise a
+     * wall clock.</p>
+     */
+    public static final String DECLARED_CALLEE = "declaredCallee";
     private static final Pattern FIELD_SIGNATURE = Pattern.compile(
             "^<[^:]+:\\s+([^()<>\\s]+)\\s+[^()<>\\s]+>(?:#.*)?$");
 
@@ -155,6 +164,27 @@ public final class SymbolicSourceEvidence {
                                          String fieldSignature,
                                          String javaType, String rawSymbol,
                                          String sourceIdentity) {
+        return manualEvent(portId, occurrenceId, fieldSignature, javaType,
+                rawSymbol, sourceIdentity, "", "", -1L, "");
+    }
+
+    /**
+     * The same root, with what the mint row states about the read.
+     *
+     * <p>{@code declaredCallee} is the hook's own declaration: a cell
+     * minted through the clock hook is a wall-clock read by construction,
+     * and carrying the callee here is what lets the composer window that
+     * root instead of pinning it -- without any reader inferring a clock
+     * from a site name.  {@code recordedValue} is what the recording read
+     * there, which is the value such a window is centred on.</p>
+     */
+    public static JsonObject manualEvent(String portId, String occurrenceId,
+                                         String fieldSignature,
+                                         String javaType, String rawSymbol,
+                                         String sourceIdentity,
+                                         String declaredCallee,
+                                         String siteId, long eventSeq,
+                                         String recordedValue) {
         JsonObject expression = new JsonObject();
         expression.addProperty("_type", "SymbolExpression");
         expression.addProperty("_java_type", required(javaType,
@@ -176,7 +206,24 @@ public final class SymbolicSourceEvidence {
         row.add("expression", expression);
         row.addProperty("sourceIdentity", required(sourceIdentity,
                 "sourceIdentity"));
+        if (declaredCallee != null && !declaredCallee.trim().isEmpty()) {
+            row.addProperty(DECLARED_CALLEE, declaredCallee.trim());
+        }
+        if (siteId != null && !siteId.trim().isEmpty()) {
+            row.addProperty("siteId", siteId.trim());
+        }
+        if (eventSeq >= 0L) {
+            row.addProperty("eventSeq", eventSeq);
+        }
+        if (recordedValue != null && !recordedValue.trim().isEmpty()) {
+            row.addProperty(RECORDED_VALUE, recordedValue.trim());
+        }
         return validate(row);
+    }
+
+    /** The call whose return this root was minted from, or "". */
+    public static String declaredCalleeOf(JsonObject event) {
+        return event == null ? "" : optionalString(event, DECLARED_CALLEE);
     }
 
     public static boolean isManual(JsonObject event) {
@@ -342,7 +389,8 @@ public final class SymbolicSourceEvidence {
                     "javaType", "expression", ORDINAL, REUSED));
     private static final Set<String> OPTIONAL_MEMBERS =
             new LinkedHashSet<>(java.util.Arrays.asList(SYMBOL, "portId",
-                    "sourceIdentity", RECORDED_VALUE));
+                    "sourceIdentity", RECORDED_VALUE, DECLARED_CALLEE,
+                    "siteId", "eventSeq"));
     private static final Set<String> MANUAL_REQUIRED_MEMBERS =
             new LinkedHashSet<>(java.util.Arrays.asList("schemaVersion",
                     "kind", "authority", "portId", "sourceOccurrenceId",

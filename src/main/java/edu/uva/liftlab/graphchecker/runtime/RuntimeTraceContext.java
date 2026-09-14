@@ -249,23 +249,85 @@ final class RuntimeTraceContext {
         return CURRENT.get().view().source;
     }
 
+    /**
+     * The request scope of the thread that is calling, as a value.
+     *
+     * <p>A request scope belongs to the work, not to the thread: Hadoop's
+     * {@code Client} builds a {@code Call} on the caller's thread and writes
+     * it from a sender thread of its own pool, created once when the
+     * connection was set up.  This state is an
+     * {@link InheritableThreadLocal}, so it reaches a thread created inside
+     * a scope and never one created before it -- and which of the two the
+     * sender is, is an accident of when the connection happened to be
+     * opened.  Captured here at the moment the work is created and carried
+     * with it, the scope is the same in a recording and in a replay whatever
+     * the pool does.</p>
+     */
+    static Object captureScope() {
+        View view = CURRENT.get().view();
+        return new RequestScope(view.source, view.requestKey,
+                view.requestApi);
+    }
+
+    /** One captured request scope; opaque to its carrier. */
+    static final class RequestScope {
+        private final SourceRef source;
+        private final String requestKey;
+        private final String requestApi;
+
+        private RequestScope(SourceRef source, String requestKey,
+                             String requestApi) {
+            this.source = source;
+            this.requestKey = requestKey == null ? "" : requestKey;
+            this.requestApi = requestApi == null ? "" : requestApi;
+        }
+
+        boolean names() {
+            return source != null && !requestKey.isEmpty()
+                    && !requestApi.isEmpty();
+        }
+
+        /** The node this work belongs to, or null. */
+        SourceRef source() {
+            return source;
+        }
+    }
+
     /** Encodes the current node and request flow for the next message. */
     static String outboundHeader(Object localOwner) {
+        return outboundHeader(localOwner, null);
+    }
+
+    /**
+     * The same header, for work whose scope was captured where it was made.
+     *
+     * <p>The carried scope decides when it names one: the thread doing the
+     * write may be a pool thread that never saw the request.  Without one --
+     * every caller before this and every send the workload makes inline --
+     * the thread's own scope answers exactly as before.</p>
+     */
+    static String outboundHeader(Object localOwner, Object carriedScope) {
         State state = CURRENT.get();
         bindLocalOwner(state, localOwner);
-        View view = state.view();
+        View view = scoped(state.view(), carriedScope);
         if (view.source == null || view.requestKey.isEmpty()
                 || view.requestApi.isEmpty()) {
             throw new IllegalStateException(
                     "outbound message requires source and request flow");
         }
-        SourceRef source = view.source;
-        return "1|" + view.spanId + "|" + source.epoch()
+        return header(view.source, view.requestKey, view.requestApi,
+                view.spanId);
+    }
+
+    /** One wire header; the same eight fields whatever named the scope. */
+    private static String header(SourceRef source, String requestKey,
+                                 String requestApi, long spanId) {
+        return "1|" + spanId + "|" + source.epoch()
                 + "|" + encoded(source.kind())
                 + "|" + encoded(source.role())
                 + "|" + encoded(source.id())
-                + "|" + encoded(view.requestKey)
-                + "|" + encoded(view.requestApi);
+                + "|" + encoded(requestKey)
+                + "|" + encoded(requestApi);
     }
 
     /** Installs one received message and its exact transport exchange. */
@@ -317,10 +379,31 @@ final class RuntimeTraceContext {
 
     /** Attributes a local exchange leg without inferring any remote state. */
     static View exchange(Object localOwner) {
+        return exchange(localOwner, null);
+    }
+
+    /**
+     * The same leg, for work carrying the scope it was made in.
+     *
+     * <p>The node the send is filed under is the node the carried scope
+     * names, so the recorded row and the wire header agree and neither
+     * depends on which thread performed the write.</p>
+     */
+    static View exchange(Object localOwner, Object carriedScope) {
         State state = CURRENT.get();
         bindLocalOwner(state, localOwner);
-        publishCausalSource(state);
-        return state.view();
+        View view = scoped(state.view(), carriedScope);
+        publishCausalSource(view);
+        return view;
+    }
+
+    /** The view this work speaks with: its carried scope when it names one. */
+    private static View scoped(View view, Object carriedScope) {
+        RequestScope scope = carriedScope instanceof RequestScope
+                ? (RequestScope) carriedScope : null;
+        if (scope == null || !scope.names()) return view;
+        return view.withScope(scope.source, scope.requestKey,
+                scope.requestApi);
     }
 
     private static void bindLocalOwner(State state, Object localOwner) {
@@ -360,7 +443,10 @@ final class RuntimeTraceContext {
      * on it.
      */
     private static void publishCausalSource(State state) {
-        View view = state.view();
+        publishCausalSource(state.view());
+    }
+
+    private static void publishCausalSource(View view) {
         ConcolicRegionRuntime.observeCausalSource(
                 view.source == null ? "" : view.source.key());
     }
@@ -696,6 +782,15 @@ final class RuntimeTraceContext {
             this.exchangeCorrelationId = normalized(exchangeCorrelationId);
             this.exchangeAttemptId = normalized(exchangeAttemptId);
             this.exchangeHalf = normalizedUpper(exchangeHalf);
+        }
+
+        /** The same view speaking for a carried request scope. */
+        private View withScope(SourceRef scopeSource, String scopeKey,
+                               String scopeApi) {
+            return new View(laneId, spanId, parentSpanId, remoteParentSpanId,
+                    scopeSource, receiverAttributed, scopeKey, scopeApi,
+                    exchangeTransport, exchangeCorrelationId,
+                    exchangeAttemptId, exchangeHalf);
         }
     }
 

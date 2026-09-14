@@ -448,20 +448,45 @@ public final class CausynthTraceRecorder {
         }
     }
 
+    /**
+     * The request scope of the calling thread, to be carried with the work
+     * it is creating.
+     *
+     * <p>Hadoop builds a {@code Call} on the caller's thread and writes it
+     * from a sender thread its connection pool created once; the scope has
+     * to travel with the call, because the thread that performs the write
+     * may never have been inside it.</p>
+     */
+    public static Object captureScope() {
+        initialize();
+        return RuntimeTraceContext.captureScope();
+    }
+
     /** Sends one exchange leg and returns its message-carried trace context. */
     public static String outboundExchange(String transport,
                                           String correlationId,
                                           String attemptId, String half,
                                           Object localOwner) {
+        return outboundExchange(transport, correlationId, attemptId, half,
+                localOwner, null);
+    }
+
+    /** The same exchange, for work carrying the scope it was made in. */
+    public static String outboundExchange(String transport,
+                                          String correlationId,
+                                          String attemptId, String half,
+                                          Object localOwner,
+                                          Object carriedScope) {
         initialize();
         String header;
         try {
-            header = RuntimeTraceContext.outboundHeader(localOwner);
+            header = RuntimeTraceContext.outboundHeader(localOwner,
+                    carriedScope);
         } catch (IllegalStateException noFlow) {
             return "";
         }
         recordExchange("SEND", transport, correlationId, attemptId, half,
-                localOwner);
+                localOwner, carriedScope);
         return header;
     }
 
@@ -491,6 +516,15 @@ public final class CausynthTraceRecorder {
     public static void recordExchange(String direction, String transport,
                                       String correlationId, String attemptId,
                                       String half, Object localOwner) {
+        recordExchange(direction, transport, correlationId, attemptId, half,
+                localOwner, null);
+    }
+
+    /** The same boundary, attributed to the scope the work carries. */
+    public static void recordExchange(String direction, String transport,
+                                      String correlationId, String attemptId,
+                                      String half, Object localOwner,
+                                      Object carriedScope) {
         String normalizedDirection = MapFields.safe(direction).toUpperCase();
         String normalizedTransport = MapFields.safe(transport).trim();
         String normalizedCorrelation = MapFields.safe(correlationId).trim();
@@ -507,7 +541,7 @@ public final class CausynthTraceRecorder {
         initialize();
         String normalizedAttempt = MapFields.safe(attemptId).trim();
         RuntimeTraceContext.View context =
-                RuntimeTraceContext.exchange(localOwner);
+                RuntimeTraceContext.exchange(localOwner, carriedScope);
         if (contextOnlyConcolicReplay) return;
         long id = EVENT_COUNTER.incrementAndGet();
         if (id > maxEvents) {

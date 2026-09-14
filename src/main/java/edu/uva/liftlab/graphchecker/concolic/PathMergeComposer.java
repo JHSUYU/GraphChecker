@@ -409,8 +409,6 @@ public final class PathMergeComposer {
         // may vary.  A handoff variable is not a root and is constrained by
         // its family alone.
         JsonArray rootRows = new JsonArray();
-        JsonObject clockPhysics = ClockRootPhysics.manifest(
-                arguments.clockSkewMillis, new ArrayList<JsonObject>());
         int rootDomains = 0;
         for (Map.Entry<String, String> used
                 : lowering.rootTerms().entrySet()) {
@@ -438,7 +436,8 @@ public final class PathMergeComposer {
                 }
             }
             rootRows.add(rootRow);
-            String domainTerm = rootDomain(rootRow, declared, clockPhysics);
+            String domainTerm = rootDomain(rootRow, declared,
+                    arguments.clockSkewMillis);
             if (!domainTerm.isEmpty()) {
                 lowering.assertNamed("root_domain__" + rootDomains++,
                         domainTerm);
@@ -970,7 +969,7 @@ public final class PathMergeComposer {
      * case leaves it free.
      */
     private static String rootDomain(JsonObject rootRow, JsonObject declared,
-                                     JsonObject clockPhysics) {
+                                     long clockSkewMillis) {
         String term = optionalString(rootRow, "solverTerm");
         String recorded = optionalString(rootRow,
                 ComposedManifest.RECORDED_SOURCE_VALUE);
@@ -985,9 +984,7 @@ public final class PathMergeComposer {
         if ("BOOL".equals(optionalString(rootRow, "sort"))) return "";
         String literal = smtIntegerLiteral(recorded);
         if (literal.isEmpty()) return "";
-        long skew = clockRead(clockPhysics, rootRow)
-                ? optionalLongInteger(clockPhysics, "clockSkewMillis", 0L)
-                : 0L;
+        long skew = wallClockRead(rootRow) ? clockSkewMillis : 0L;
         if (skew <= 0L) return "(= " + term + " " + literal + ")";
         java.math.BigInteger value = new java.math.BigInteger(
                 recorded.trim());
@@ -998,18 +995,57 @@ public final class PathMergeComposer {
                 + smtIntegerLiteral(value.add(window).toString()) + "))";
     }
 
-    /** Whether the case declares this root a clock read. */
-    private static boolean clockRead(JsonObject clockPhysics,
-                                     JsonObject rootRow) {
-        String term = optionalString(rootRow, "solverTerm");
-        for (JsonElement element : array(clockPhysics, "clockReads")) {
+    /**
+     * Whether this root is a wall-clock read.
+     *
+     * <p>By construction, never by site: the mint row states the callee the
+     * hook declared, and {@link ClockRootPhysics} names which callees are
+     * millisecond clocks.  One predicate answers both the root's domain and
+     * the clock ledger, so a root the formula lets move within the window
+     * is exactly a root the manifest lists as a clock read.</p>
+     */
+    private static boolean wallClockRead(JsonObject rootRow) {
+        return ClockRootPhysics.clockCallee(optionalString(rootRow,
+                SymbolicSourceEvidence.DECLARED_CALLEE));
+    }
+
+    /** Every wall-clock root the merge lowered, as ledger rows. */
+    private static List<JsonObject> clockReads(JsonArray rootRows,
+                                               long clockSkewMillis) {
+        List<JsonObject> reads = new ArrayList<>();
+        for (JsonElement element : rootRows) {
             if (!element.isJsonObject()) continue;
-            if (term.equals(optionalString(element.getAsJsonObject(),
-                    "solverTerm"))) {
-                return true;
-            }
+            JsonObject read = clockLedgerRow(element.getAsJsonObject(),
+                    clockSkewMillis);
+            if (read != null) reads.add(read);
         }
-        return false;
+        return reads;
+    }
+
+    /** The ledger row for one clock read, or null when it states no value. */
+    private static JsonObject clockLedgerRow(JsonObject rootRow,
+                                             long clockSkewMillis) {
+        if (!wallClockRead(rootRow)) return null;
+        String term = optionalString(rootRow, "solverTerm");
+        String recorded = optionalString(rootRow,
+                ComposedManifest.RECORDED_SOURCE_VALUE);
+        if (term.isEmpty() || smtIntegerLiteral(recorded).isEmpty()) {
+            return null;
+        }
+        long value;
+        try {
+            value = Long.parseLong(recorded.trim());
+        } catch (NumberFormatException notIntegral) {
+            return null;
+        }
+        ClockRootPhysics.ClockRead read = new ClockRootPhysics.ClockRead(
+                optionalString(rootRow, "sourceKey"),
+                optionalString(rootRow, "portId"),
+                optionalString(rootRow, "siteId"),
+                optionalString(rootRow, "sourceOccurrenceId"),
+                optionalLongInteger(rootRow, "eventSeq", -1L), value);
+        return ClockRootPhysics.ledgerRow(read, term,
+                ClockRootPhysics.window(term, value, clockSkewMillis), "");
     }
 
     /** An SMT integer literal, negatives in prefix form, or {@code ""}. */
@@ -1339,10 +1375,13 @@ public final class PathMergeComposer {
                                     : optionalString(declared,
                                     "sourceKey")));
             for (String member : new String[]{"sourceId", "sourcePhaseId",
-                    "sourceOccurrenceId", "fieldSignature", "portId"}) {
+                    "sourceOccurrenceId", "fieldSignature", "portId",
+                    SymbolicSourceEvidence.DECLARED_CALLEE, "siteId"}) {
                 row.addProperty(member, declared == null ? ""
                         : optionalString(declared, member));
             }
+            row.addProperty("eventSeq", declared == null ? -1L
+                    : optionalLongInteger(declared, "eventSeq", -1L));
             String javaType = declared == null ? ""
                     : optionalString(declared, "javaType");
             VmTermLowering.Sort sort = JavaSmtSorts.sortOfJava(javaType);
@@ -1453,9 +1492,15 @@ public final class PathMergeComposer {
                 recordedRootValues(rootRows));
         manifest.add(BoundedLoopComposition.MANIFEST_FIELD,
                 loops.manifest());
+        // The ledger lists exactly the roots whose domain the merge widened
+        // to a window, because both read the one predicate over the same
+        // rows.  Composing it from an empty list left every clock pinned to
+        // one replay's reading -- eleven of bug3's twelve paths
+        // unsatisfiable at every valuation, and clockDecisions refusing to
+        // probe at all with NO_CLOCK_ROOT.
         manifest.add(ClockRootPhysics.MANIFEST_FIELD,
                 ClockRootPhysics.manifest(arguments.clockSkewMillis,
-                        new ArrayList<JsonObject>()));
+                        clockReads(rootRows, arguments.clockSkewMillis)));
         // Ledgers the read-from reconstruction used to publish.  The merge
         // builds no such model, so each one is empty rather than absent:
         // a reader of this artifact must see "there is none", not "the
@@ -1622,7 +1667,7 @@ public final class PathMergeComposer {
                     optionalString(root, "recordedValue"));
             row.addProperty("solverTerm",
                     optionalString(root, "solverTerm"));
-            row.addProperty("wallClock", false);
+            row.addProperty("wallClock", wallClockRead(root));
             values.add(row);
         }
         return values;
