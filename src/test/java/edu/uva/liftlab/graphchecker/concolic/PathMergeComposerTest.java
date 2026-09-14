@@ -444,12 +444,15 @@ public class PathMergeComposerTest {
         Path directory = Files.createTempDirectory("path-merge-handoff");
         JsonObject query = query();
         // The consumer decided the anchor both ways, over v_H alone.
+        // Each path accepts the delivery its own replay made: the seed
+        // received 9 and its predicate is false there, the flip received 7
+        // and its predicate is true there.
         query.getAsJsonArray("paths").add(path("seed", "GROUP.SEED",
-                notEqual(handoff(), constant(7)),
+                notEqual(handoff(), constant(0)),
                 notEqual(handoff(), constant(9))));
         query.getAsJsonArray("paths").add(path("flip", "GROUP.FLIP",
-                notEqual(handoff(), constant(7)),
-                notEqual(handoff(), constant(7))));
+                notEqual(handoff(), constant(0)),
+                notEqual(handoff(), constant(9))));
 
         JsonObject producerSeed = summary("GROUP.SEED");
         producerSeed.add("vmHandoffEvents",
@@ -503,6 +506,94 @@ public class PathMergeComposerTest {
         assertEquals("the family must let the fatal delivery through",
                 "sat", solve(result.smtLib + "(assert (= " + ROOT_TERM
                         + " false))\n(check-sat)\n"));
+    }
+
+    /**
+     * A delivery is available only under the valuation that produced it.
+     *
+     * <p>Two producer replays deliver different values at one handoff: the
+     * seed ran with the marker at its recorded polarity and delivered 9, the
+     * flip replay ran with the marker moved and delivered 7.  The consumer's
+     * fatal predicate is over v_H alone, so without the guard the family is
+     * a menu and the recorded polarity can help itself to the flip replay's
+     * delivery.  With each arm carrying the valuation its replay ran under,
+     * the recorded polarity has only its own delivery available.</p>
+     */
+    @Test
+    public void aDeliveryIsAvailableOnlyUnderTheValuationThatProducedIt()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+        Path directory = Files.createTempDirectory("path-merge-guard");
+        JsonObject query = query();
+        // The consumer's predicate is false on the seed's delivery (9) and
+        // true on the flip replay's (7), so the failure is reachable only
+        // where that delivery is available.
+        query.getAsJsonArray("paths").add(path("only", "GROUP.SEED",
+                notEqual(handoff(), constant(0)),
+                notEqual(handoff(), constant(9))));
+
+        JsonObject seed = ranAt("GROUP.SEED", "true");
+        seed.add("vmHandoffEvents", handoffEvents(constant(9), 11L, 12L));
+        JsonObject flip = ranAt("GROUP.FLIP", "false");
+        flip.add("vmHandoffEvents", handoffEvents(constant(7), 21L, 22L));
+
+        Path queryFile = directory.resolve("reach_query.jsonl");
+        write(queryFile, JsonFields.WRITER.toJson(
+                SharedExpressionTable.compact(query)));
+        Path summaryFile = directory.resolve("summaries.jsonl");
+        write(summaryFile, JsonFields.WRITER.toJson(
+                SharedExpressionTable.compact(seed)) + "\n"
+                + JsonFields.WRITER.toJson(
+                SharedExpressionTable.compact(flip)) + "\n");
+        PathMergeComposer.Result result = PathMergeComposer.compose(
+                PathMergeComposer.Arguments.parse(new String[]{
+                        "--fatal-query", queryFile.toString(),
+                        "--summaries", summaryFile.toString(),
+                        "--output",
+                        directory.resolve("candidate.smt2").toString(),
+                        "--manifest",
+                        directory.resolve("manifest.json").toString()}));
+
+        // The seed replay states the marker at true, the flip at false, so
+        // each arm is guarded by the polarity that produced its delivery.
+        assertTrue("the family must carry the delivering valuation",
+                result.smtLib.contains(ROOT_TERM));
+        // At the recorded polarity only the seed's own delivery is
+        // available, and the consumer does not fail on it.
+        assertEquals("the recorded polarity must not reach the failure",
+                "unsat", solve(result.smtLib + "(assert (= " + ROOT_TERM
+                        + " true))\n(check-sat)\n"));
+        // Move the marker and the flip replay's delivery becomes available,
+        // which is the delivery the consumer fails on.
+        assertEquals("the flipped polarity reaches it",
+                "sat", solve(result.smtLib + "(assert (= " + ROOT_TERM
+                        + " false))\n(check-sat)\n"));
+    }
+
+    /** One replay's summary, stating the marker polarity it ran under. */
+    private static JsonObject ranAt(String group, String polarity) {
+        JsonObject summary = new JsonObject();
+        summary.addProperty("replayGroupId", group);
+        List<JsonObject> events = new ArrayList<>();
+        events.add(SymbolicSourceEvidence.event(PHASE, SOURCE,
+                "node0/region/REGION.source#1#a1", FIELD_SIGNATURE,
+                rootSymbol(), 1, false, ROOT_TERM, polarity));
+        SymbolicSourceEvidence.writeTo(summary, events);
+        return summary;
+    }
+
+    /** The solver term the composition gave the handoff variable. */
+    private static String handoffTerm(PathMergeComposer.Result result) {
+        for (com.google.gson.JsonElement row : result.manifest
+                .getAsJsonArray(ComposedManifest
+                        .CONFIGURED_SOURCE_MATERIALIZATION_FIELD)) {
+            if (HANDOFF_SYMBOL.equals(JsonFields.optionalString(
+                    row.getAsJsonObject(), "rawSymbol"))) {
+                return JsonFields.optionalString(row.getAsJsonObject(),
+                        "solverTerm");
+            }
+        }
+        throw new IllegalStateException("no handoff materialization");
     }
 
     /** The consumer's view of the value that arrived: one free variable. */
