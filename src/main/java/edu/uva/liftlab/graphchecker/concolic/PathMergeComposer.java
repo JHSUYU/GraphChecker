@@ -955,7 +955,28 @@ public final class PathMergeComposer {
                     terms.add(lowering.condition(decision,
                             "handoff:" + phase + ":pi"));
                 }
-                terms.add(lowering.condition(equals(symbol, delivered),
+                // What the CONSUMER read in this replay.  A replay whose
+                // obligation answered the mint did not take the producer's
+                // expression at all -- the model was written into the leaf
+                // at the attach -- so binding the arm to e_p states of that
+                // replay something it did not do, and the path that ran it
+                // carries v_H = the answer in its own condition.  The two
+                // then contradict, which is what refused lane17897g's
+                // paths 4 and 9 as not self-consistent.
+                String answered = optionalString(event,
+                        VmHandoffEvidence.ANSWERED_VALUE);
+                JsonElement read = delivered;
+                if (!answered.isEmpty()) {
+                    read = literalOf(answered, optionalString(
+                            declaredVariables.get(symbol), "javaType"));
+                    if (read == null) {
+                        gate(gates, PROPAGATION_CUT, "handoff " + symbol
+                                + " was answered with a value this"
+                                + " composition cannot state: " + answered);
+                        continue;
+                    }
+                }
+                terms.add(lowering.condition(equals(symbol, read),
                         "handoff:" + phase + ":bind"));
                 armsBySymbol.computeIfAbsent(symbol,
                         ignored -> new ArrayList<String>()).add(and(terms));
@@ -971,8 +992,15 @@ public final class PathMergeComposer {
                 JsonObject arm = new JsonObject();
                 arm.addProperty("replayGroupId", optionalString(summary,
                         "replayGroupId"));
-                arm.addProperty("deliveredValue", optionalString(event,
-                        ComposedManifest.RECORDED_SOURCE_VALUE));
+                String wire = optionalString(event,
+                        ComposedManifest.RECORDED_SOURCE_VALUE);
+                arm.addProperty("deliveredValue",
+                        answered.isEmpty() ? wire : answered);
+                if (!answered.isEmpty()) {
+                    // What the wire carried, beside what the consumer read:
+                    // the two differ exactly where an obligation answered.
+                    arm.addProperty("wireValue", wire);
+                }
                 arm.add("valuation", armValuation(summary,
                         declaredVariables, roots));
                 armRowsBySymbol.computeIfAbsent(symbol,
@@ -1168,11 +1196,16 @@ public final class PathMergeComposer {
     }
 
     /**
-     * What this path's own replay received at every handoff it used.
+     * What this path's own replay READ at every handoff it used.
      *
      * <p>The family says a delivery is one of the values some replay made
      * there; asking whether THIS path is consistent with itself means
-     * asking under the delivery its own replay made.</p>
+     * asking under the value its own replay read.  Where an obligation
+     * answered the mint, that is the answer and not what the wire carried:
+     * the model was written into the leaf at the attach, every decision
+     * after it was taken on the answer, and asserting the wire's value of
+     * that replay contradicts its own decisions -- lane17897g's two paths,
+     * closed by {@code (= v_H 119992)} where their replays read 0.</p>
      */
     private static List<String> replayDeliveries(
             List<JsonObject> replayGroup,
@@ -1186,8 +1219,10 @@ public final class PathMergeComposer {
                 JsonObject event = element.getAsJsonObject();
                 String symbol = optionalString(event,
                         InSessionReadResolver.HANDOFF_SYMBOL);
-                String value = optionalString(event,
-                        ComposedManifest.RECORDED_SOURCE_VALUE);
+                String value = firstNonBlank(optionalString(event,
+                        VmHandoffEvidence.ANSWERED_VALUE),
+                        optionalString(event,
+                                ComposedManifest.RECORDED_SOURCE_VALUE));
                 if (symbol.isEmpty() || value.isEmpty()
                         || !declaredVariables.containsKey(symbol)
                         || smtIntegerLiteral(value).isEmpty()

@@ -297,10 +297,9 @@ public class PathMergeComposerTest {
      * A path that contradicts its own execution is named, not composed.
      *
      * <p>The invariant: a path must be satisfiable as the execution that
-     * made it -- that replay's roots as it read them, its clock cells in its
-     * own window, the deliveries it received.  One that is not says the
-     * composition has mis-stated that execution, so it is refused by name
-     * rather than composed over.</p>
+     * made it -- that replay's roots as it read them, its clock cells in
+     * its own window, the values it READ at its handoffs.  One that is not
+     * says the composition mis-stated that execution.</p>
      */
     @Test
     public void aPathIsSatisfiableAsTheExecutionThatMadeIt()
@@ -340,8 +339,8 @@ public class PathMergeComposerTest {
         Assume.assumeTrue(z3Available());
         Path directory = Files.createTempDirectory("path-merge-handoff");
         JsonObject query = query();
-        // The fatal path is the flip replay's: it received the delivery its
-        // consumer fails on, and decided the anchor over v_H alone.
+        // The fatal path is the flip replay's: it received the delivery
+        // its consumer fails on and decided the anchor over v_H alone.
         query.getAsJsonArray("paths").add(path("only", "GROUP.FLIP",
                 notEqual(handoff(), constant(0)),
                 notEqual(handoff(), constant(9))));
@@ -372,6 +371,22 @@ public class PathMergeComposerTest {
         assertEquals("the flipped polarity reaches it",
                 "sat", solve(armed.smtLib + "(assert (= " + ROOT_TERM
                         + " false))\n(check-sat)\n"));
+
+        // A replay whose obligation answered the mint read the answer, not
+        // the wire, so its arm binds v_H to the answer.
+        JsonArray answered = handoffEvents(constant(7), 21L, 22L);
+        answered.get(0).getAsJsonObject().addProperty(
+                VmHandoffEvidence.ANSWERED_VALUE, "0");
+        JsonObject answeredFlip = ranAt("GROUP.FLIP", "false");
+        answeredFlip.add("vmHandoffEvents", answered);
+        JsonArray arms = run(directory, query,
+                Arrays.asList(seed, answeredFlip)).manifest
+                .getAsJsonObject(PathMergeComposer.MANIFEST_FIELD)
+                .getAsJsonArray("handoffFamilies").get(0).getAsJsonObject()
+                .getAsJsonArray("arms");
+        JsonObject arm = arms.get(arms.size() - 1).getAsJsonObject();
+        assertEquals("0", arm.get("deliveredValue").getAsString());
+        assertEquals("9", arm.get("wireValue").getAsString());
     }
 
     /**

@@ -56,9 +56,8 @@ public class RegionPathWorklistTest {
      * obligation carries the row that flips it.
      *
      * <p>Nothing about the arrived value is a root, so a walk for root
-     * support finds none.  What makes it varyable is the replay's own
-     * handoff row at that attach: an assignment to the variable the VM
-     * minted there is the whole replay control.</p>
+     * support finds none; what makes it varyable is an assignment to the
+     * variable the replay's own handoff row names.</p>
      */
     @Test
     public void aDecisionOverAnArrivedValueIsFlippableThroughItsHandoff() {

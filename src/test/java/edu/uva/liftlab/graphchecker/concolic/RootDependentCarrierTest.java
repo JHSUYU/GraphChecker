@@ -45,11 +45,9 @@ public class RootDependentCarrierTest {
     /**
      * A branch the recording never took still carries the root.
      *
-     * <p>The refined graph is the static candidate graph <em>annotated</em>
-     * with what one execution bound, not filtered by it: a site the run
-     * never reached keeps its edges, stamped {@code runtimeObserved:
-     * false}.  Root dependence is what the <em>program</em> can do, not
-     * what one recording did.</p>
+     * <p>The refined graph is the static candidate graph annotated with
+     * what one execution bound, not filtered by it: a site the run never
+     * reached keeps its edges, stamped {@code runtimeObserved: false}.</p>
      */
     @Test
     public void anEdgeTheRecordingNeverExecutedStillCarriesTheRoot()

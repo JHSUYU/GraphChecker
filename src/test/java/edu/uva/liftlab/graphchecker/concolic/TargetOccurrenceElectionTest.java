@@ -22,10 +22,9 @@ import static org.junit.Assert.assertTrue;
  * The campaign claim rests on one occurrence of the annotated target, and it
  * is the best-supported one.
  *
- * <p>A run finishes with one {@link ClaimPolicy} decision per observed
- * occurrence; the election turns that set into one campaign claim from the
- * published claims alone, ranking explained over unexplained over closed
- * over inconclusive over refused.</p>
+ * <p>The election turns one {@link ClaimPolicy} decision per observed
+ * occurrence into one campaign claim, ranking explained over unexplained
+ * over closed over inconclusive over refused.</p>
  */
 public class TargetOccurrenceElectionTest {
 
