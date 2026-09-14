@@ -2509,12 +2509,31 @@ campaign_explore() {
           "${member}/path_closure.json"
         continue
       fi
+      # A GAPPED worklist has nothing to explore and says why, by name, in
+      # gaps the ledger already classes.  That is a statement about one
+      # member -- its region published no observed path, or the paths it
+      # published disagree -- and killing the run over it throws away every
+      # other member's exploration and the verdict the run had already
+      # earned.  So the worklist is published as this member's closure, the
+      # named gap travels to gaps.json and withholds the claim there, and
+      # the occurrence composes to TARGET_NOT_REACHED like any anchor with
+      # no path.  Only a state no reader can act on is still a failure.
+      if jq -e '.state == "GAPPED"' \
+          "${planner_dir}/region_path_manifest.json" >/dev/null; then
+        campaign_report_worklist "${planner_dir}"
+        cp -f "${planner_dir}/region_path_manifest.json" \
+          "${member}/path_closure.json"
+        campaign_log "path worklist gapped, nothing to explore: \
+${role} ${task} $(jq -r '[.gaps[]?.kind] | unique | join(",")' \
+          "${planner_dir}/region_path_manifest.json")"
+        continue
+      fi
       if ! jq -e '.state == "PENDING"' \
           "${planner_dir}/region_path_manifest.json" >/dev/null; then
         campaign_report_worklist "${planner_dir}"
         campaign_fail EXPLORE RegionPathWorklist \
           "${planner_dir}/region_path_manifest.json" \
-          "the ${role} path worklist is not executable"
+          "the ${role} path worklist state is one no stage can act on"
       fi
       worklist="${planner_dir}/region_path_worklist.jsonl"
       if ! key_rows=$(campaign_decode_worklist_keys "${worklist}"); then
@@ -3250,8 +3269,12 @@ campaign_write_coverage_gaps() {
        + [$reach.gaps[]?
            | {stage: "SOLVE", source: "SOLVER", code: ., subject: "",
               detail: ""}]
+       # A worklist publishes two arrays and both are EXPLORE gaps: the
+       # coverage it could not close, and the gaps that stopped it from
+       # planning at all.  The second used to reach no report because the
+       # wave died on it instead of publishing it.
        + [$pathClosures[]? as $closure
-           | $closure.coverageGaps[]?
+           | ($closure.coverageGaps[]?, $closure.gaps[]?)
            | {stage: "EXPLORE", source: "PATH_WORKLIST",
               code: (.kind // ""),
               subject: (.queryKey // .regionId

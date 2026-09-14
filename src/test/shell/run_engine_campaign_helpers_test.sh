@@ -279,18 +279,26 @@ jq -e '[.gaps[].code] | sort == ["LOOP_BOUND_OPEN", "UNRELATED_FAMILY_OPEN"]' \
   || fail "the unregistered codes were not both blocking: \
 $(jq -c '[.gaps[].code]' "${campaign_final}/gaps.json")"
 
-# GAP-4: the three region codes are decided against the replay slice, not by
+# GAP-4: a slice-conditional code is decided against the replay slice, not by
 # a blanket rule.  The static plan over-approximates; a region root
 # dependence never selected is not a chain element.  With no schedule index
 # in the fixture the slice is unknown, and an unknown slice blocks.
+#
+# The fixture used to name ROOT_NEVER_EXECUTED.  That code was
+# retired with its raiser and its ledger entry ("Admit an activation by its
+# address, and nothing else", 0429b03f7) and the fixture was not, so the
+# case had been asserting the slice reading of a code the ledger no longer
+# classes slice-conditionally -- it read as blocking-by-default and the
+# assertion failed on the staging tip.  ROOT_NEVER_EXECUTED is registered
+# onKeptSlice (GapLedger:580) and states the same thing about a task.
 emit_fixture
-printf '%s\n' '{"code":"REGION_CAUSAL_ANCHOR_NOT_OBSERVED","taskId":"TASK.REPLAY.kept","detail":"anchor never observed"}' \
+printf '%s\n' '{"code":"ROOT_NEVER_EXECUTED","taskId":"TASK.REPLAY.kept","detail":"anchor never observed"}' \
   >"${emit_iteration}/import_diagnostics.jsonl"
 run_emit
 [[ "${emit_status}" -eq 3 ]] \
   || fail "an unknown replay slice did not block a region code \
 (exit ${emit_status}): $(<"${emit_root}/emit.log")"
-jq -e '[.gaps[] | select(.code == "REGION_CAUSAL_ANCHOR_NOT_OBSERVED")
+jq -e '[.gaps[] | select(.code == "ROOT_NEVER_EXECUTED")
         | .sliceVerdict] == ["SLICE_NOT_APPLIED"]' \
   "${campaign_final}/gaps.json" >/dev/null \
   || fail "the unknown slice was not named on the row: \
@@ -300,8 +308,8 @@ $(jq -c '.gaps' "${campaign_final}/gaps.json")"
 # blocks on the kept task and is diagnostic on the pruned one.
 emit_fixture
 printf '%s\n' \
-  '{"code":"REGION_CAUSAL_ANCHOR_NOT_OBSERVED","taskId":"TASK.REPLAY.kept","detail":"anchor never observed"}' \
-  '{"code":"REGION_CAUSAL_ANCHOR_NOT_OBSERVED","taskId":"TASK.REPLAY.pruned","detail":"anchor never observed"}' \
+  '{"code":"ROOT_NEVER_EXECUTED","taskId":"TASK.REPLAY.kept","detail":"anchor never observed"}' \
+  '{"code":"ROOT_NEVER_EXECUTED","taskId":"TASK.REPLAY.pruned","detail":"anchor never observed"}' \
   >"${emit_iteration}/import_diagnostics.jsonl"
 jq -n '{schemaVersion: 1, kind: "RUNTIME_REGION_PATH_SCHEDULE_INDEX",
   replayTaskSlice: {replayTaskSliceApplied: true, keptOccurrenceCount: 1},
@@ -482,6 +490,34 @@ run_emit
   || fail "a result was published for a drifted generation"
 grep -q 'changed after it was frozen' "${emit_root}/emit.log" \
   || fail "the drifted frozen input was not named"
+
+# The laneBK shape: a member whose region published no observed path.  The
+# worklist is GAPPED with NO_OBSERVED_PATH_SEED and nothing to explore, and
+# the wave publishes it as that member's closure instead of killing the run.
+# Its own `gaps` array is an EXPLORE gap exactly like its `coverageGaps`, so
+# it has to reach gaps.json and withhold the claim by name.
+emit_fixture
+printf '%s\n' \
+  '{"schemaVersion":1,"kind":"REGION_PATH_WORKLIST","state":"GAPPED",
+    "coverageState":"SEED_ONLY","coverageGaps":[],
+    "gaps":[{"kind":"NO_OBSERVED_PATH_SEED",
+             "reason":"REGION_PATH_SEED_REQUIRED",
+             "regionId":"REGION.T","pathKey":"","siteId":"",
+             "occurrence":-1}]}' \
+  >"${emit_iteration}/workers/task-target/path_closure.json"
+run_emit
+[[ "${emit_status}" -eq 3 ]] \
+  || fail "a gapped worklist did not withhold the candidate \
+(exit ${emit_status}): $(<"${emit_root}/emit.log")"
+jq -e '[.gaps[] | select(.code == "NO_OBSERVED_PATH_SEED")] as $rows
+  | ($rows | length) == 1
+  and $rows[0].stage == "EXPLORE"
+  and $rows[0].source == "PATH_WORKLIST"
+  and $rows[0].class == "BLOCKING"
+  and $rows[0].subject == "REGION.T"' \
+  "${campaign_final}/gaps.json" >/dev/null \
+  || fail "the worklist gap did not reach gaps.json as blocking: \
+$(jq -c '.gaps' "${campaign_final}/gaps.json")"
 
 # CONFIG-1: the one workflow-key table answers all four questions about a key.
 config_table_keys=()
