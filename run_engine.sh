@@ -3679,10 +3679,58 @@ campaign_topology_divergences() {
     "${diagnostics}" 2>/dev/null || printf '0'
 }
 
+# The replay whose own trace is the recording of the next epoch, as the
+# importer named it on the divergent row (seedsNextEpoch / seedReplayGroupId).
+# Empty when this epoch's topology closed.  The harness never re-derives which
+# replay diverged: one stage decides it and states it on the row.
+campaign_seeding_replay() {
+  local iteration_dir=$1
+  local diagnostics="${iteration_dir}/import_diagnostics.jsonl"
+  [[ -s "${diagnostics}" ]] || { printf ''; return 0; }
+  jq -r -s 'first(.[] | select(.seedsNextEpoch == true)
+      | .seedReplayGroupId // .seedReplayTaskId // empty) // empty' \
+    "${diagnostics}" 2>/dev/null || printf ''
+}
+
+# The result file epoch e+1 is planned from: that replay's own published
+# results.  PLAN already forwards its `carry` argument to `do_schedule
+# --summaries`; this is the value the wire was built for and never given.
+campaign_seeding_results() {
+  local iteration_dir=$1
+  local diagnostics="${iteration_dir}/import_diagnostics.jsonl"
+  [[ -s "${diagnostics}" ]] || { printf ''; return 0; }
+  jq -r -s 'first(.[] | select(.seedsNextEpoch == true)
+      | .seedReplayResults // empty) // empty' \
+    "${diagnostics}" 2>/dev/null || printf ''
+}
+
+# The campaign publishes the LAST epoch at ${campaign_root}/final, so every
+# reader keeps reading one path while each epoch keeps its own artifacts under
+# its iteration directory.  A copy rather than a symlink: the published
+# directory is what a later stage and the harness's own validation read, and a
+# dangling link into an iteration directory is a worse failure than a copy.
+campaign_publish_epoch_final() {
+  local iteration_dir=$1
+  local epoch_final="${iteration_dir}/final"
+  local published="${campaign_root}/final"
+  [[ -d "${epoch_final}" ]] || return 0
+  rm -rf -- "${published}"
+  mkdir -p "${published}"
+  cp -a "${epoch_final}/." "${published}/"
+}
+
+# A campaign refines its topology at most this many times.  Three epochs is
+# the owner's bound: the recording, one refinement, and one more in case the
+# refinement itself found a new binding.  Beyond it the pending-refinement row
+# stands and the campaign publishes what it has.
+campaign_max_epochs=3
+
 do_campaign() {
   local iteration=0 iteration_id="" parent="" carry="" iteration_dir
-  local divergences=0
+  local divergences=0 seeding_replay="" seeding_results=""
   campaign_root="${schedule_output_dir}"
+  # Set per iteration inside the loop: each epoch composes into its own
+  # final/, and the last one is published at ${campaign_root}/final.
   campaign_final="${campaign_root}/final"
   campaign_stage_metrics="${campaign_root}/stage_metrics.tsv"
   # Refused before any work rather than after the seed: a campaign root that
@@ -3751,11 +3799,49 @@ ${iteration_id} composes its own paths and the refinement is pending"
       campaign_publish_pending_refinement "${iteration_dir}" \
         "${iteration_id}" "${divergences}"
     fi
-    campaign_stage COMPOSE campaign_compose "${iteration_dir}"
-    campaign_stage SOLVE campaign_solve
-    campaign_stage DECIDE campaign_decide
-    campaign_stage EMIT campaign_emit "${iteration_dir}"
-    return 0
+    # Every epoch composes, solves, decides and emits its own evidence, into
+    # its own final/.  Path merging never crosses epochs -- a path row carries
+    # its topologyEpoch and the anchor key includes it -- so these are two
+    # answers about two causal graphs, not one answer averaged over both.
+    campaign_final="${iteration_dir}/final"
+    campaign_stage "COMPOSE[${iteration}]" campaign_compose "${iteration_dir}"
+    campaign_stage "SOLVE[${iteration}]" campaign_solve
+    campaign_stage "DECIDE[${iteration}]" campaign_decide
+    campaign_stage "EMIT[${iteration}]" campaign_emit "${iteration_dir}"
+    campaign_publish_epoch_final "${iteration_dir}"
+
+    # The seam the whole re-seeding turns on: epoch e+1 is planned from the
+    # DIVERGENT REPLAY'S OWN trace, not from the original recording.  Getting
+    # this input wrong would re-plan the old topology and loop; the seeding
+    # replay is named on the row by the one stage that saw both.
+    seeding_replay=$(campaign_seeding_replay "${iteration_dir}")
+    if [[ -z "${seeding_replay}" ]]; then
+      campaign_log "topology closed at ${iteration_id}"
+      return 0
+    fi
+    seeding_results=$(campaign_seeding_results "${iteration_dir}")
+    if [[ -z "${seeding_results}" || ! -s "${seeding_results}" ]]; then
+      campaign_log "topology divergence names replay ${seeding_replay} but \
+no result file to seed epoch e+1 from; publishing this epoch"
+      return 0
+    fi
+    if [[ "${seeding_results}" == "${carry}" ]]; then
+      # The same seed twice is the guard EPOCH2 named: a re-plan that read the
+      # old topology would propose the same epoch for ever.
+      campaign_log "epoch e+1 would be seeded from the same replay results \
+as this epoch; the topology is not refining, publishing ${iteration_id}"
+      return 0
+    fi
+    if [[ $((iteration + 1)) -ge "${campaign_max_epochs}" ]]; then
+      campaign_log "topology divergence at ${iteration_id} seeds no further \
+epoch: the campaign's bound of ${campaign_max_epochs} epoch(s) is reached"
+      return 0
+    fi
+    campaign_log "topology divergence: epoch $((iteration + 1)) is seeded \
+from replay ${seeding_replay} (${seeding_results})"
+    carry="${seeding_results}"
+    parent="${iteration_id}"
+    iteration=$((iteration + 1))
   done
   campaign_publish_bound_gap "${campaign_max_iterations}"
 }
