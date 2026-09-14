@@ -373,6 +373,13 @@ public final class ConcolicSummaryImporter {
         // and whether any activation of a target task reached the target.
         ActivationCensus census = ActivationCensus.of(rawResults);
         census.refusals(tasks, diagnostics);
+        // Which ports this corpus attached, by the consumer occurrence the
+        // handoff names.  Also a whole-file question: a CALL_RETURN attach
+        // runs in the CALLER's frame, after the callee has closed and
+        // published, so the row that carries the evidence is not the
+        // occurrence whose port it is.
+        Map<String, Set<String>> attachedByConsumer =
+                attachedPortsByConsumer(rawResults);
 
         for (int index = 0; index < rawResults.size(); index++) {
             // The one decode of this raw result; nothing below re-reads it.
@@ -400,7 +407,8 @@ public final class ConcolicSummaryImporter {
             // topology, so "the same anchor" is not guaranteed across the
             // two.  It is kept whole, named by its own rows, and it
             // instantiates epoch e+1 instead of extending this one.
-            if (topologyDivergences(row, task, diagnostics)) {
+            if (topologyDivergences(row, task, diagnostics,
+                    attachedByConsumer)) {
                 continue;
             }
             JsonObject summary = importRow(row, task, hashes,
@@ -2193,6 +2201,29 @@ public final class ConcolicSummaryImporter {
                 : row.event + ": " + row.skipReason;
     }
 
+    /** Ports attached in this corpus, keyed by the consumer H names. */
+    private static Map<String, Set<String>> attachedPortsByConsumer(
+            List<JsonObject> rawResults) {
+        Map<String, Set<String>> attached = new LinkedHashMap<>();
+        for (JsonObject raw : rawResults) {
+            JsonElement encoded = raw == null ? null
+                    : raw.get(VmHandoffEvidence.FIELD);
+            if (encoded == null || !encoded.isJsonArray()) continue;
+            for (JsonElement element : encoded.getAsJsonArray()) {
+                if (!element.isJsonObject()) continue;
+                JsonObject event = element.getAsJsonObject();
+                String consumer = OccurrenceAddress.parse(optionalString(
+                        event, VmHandoffEvidence.CONSUMER_OCCURRENCE_ID))
+                        .render();
+                String port = optionalString(event, "portId");
+                if (consumer.isEmpty() || port.isEmpty()) continue;
+                attached.computeIfAbsent(consumer,
+                        ignored -> new LinkedHashSet<>()).add(port);
+            }
+        }
+        return attached;
+    }
+
     /** Every gap code this stage publishes for a changed topology. */
     static final String TOPOLOGY_DIVERGENCE = "TOPOLOGY_DIVERGENCE";
 
@@ -2213,6 +2244,22 @@ public final class ConcolicSummaryImporter {
     static boolean topologyDivergences(ResultRow row,
                                                ExecutionTask task,
                                                List<JsonObject> diagnostics) {
+        return topologyDivergences(row, task, diagnostics,
+                java.util.Collections.<String, Set<String>>emptyMap());
+    }
+
+    /**
+     * @param attachedByConsumer ports every row of this corpus attached, by
+     *                           the consumer occurrence the handoff names --
+     *                           a CALL_RETURN attach runs in the caller's
+     *                           frame, so the row that carries it is not the
+     *                           occurrence whose port it is
+     */
+    static boolean topologyDivergences(ResultRow row,
+                                               ExecutionTask task,
+                                               List<JsonObject> diagnostics,
+                                               Map<String, Set<String>>
+                                                       attachedByConsumer) {
         boolean divergent = false;
         Set<String> planned = new LinkedHashSet<>();
         Set<String> attached = new LinkedHashSet<>();
@@ -2235,15 +2282,24 @@ public final class ConcolicSummaryImporter {
                     InSessionReadResolver.HANDOFF_PHASE_ID);
             String port = optionalString(event, "portId");
             ran.add(port);
-            if (!phase.isEmpty() && !planned.contains(port)) {
+            String consumer = optionalString(event,
+                    VmHandoffEvidence.CONSUMER_OCCURRENCE_ID);
+            // A handoff that names the occurrence its port is declared on is
+            // planned, wherever its evidence had to ride.
+            if (!phase.isEmpty() && !planned.contains(port)
+                    && consumer.isEmpty()) {
                 diagnostics.add(diagnostic(row, TOPOLOGY_DIVERGENCE,
                         "UNPLANNED_HANDOFF:" + phase + " at port " + port
                                 + " on " + row.rowOccurrenceId));
                 divergent = true;
             }
         }
+        String occurrence = OccurrenceAddress.parse(
+                task.occurrenceId()).render();
+        Set<String> elsewhere = attachedByConsumer.get(occurrence);
         for (String port : attached) {
-            if (!ran.contains(port)) {
+            if (!ran.contains(port)
+                    && (elsewhere == null || !elsewhere.contains(port))) {
                 // Not a new topology: a selected binding this replay did
                 // not reproduce is an admission gap of this epoch, and the
                 // paths it did publish still extend it.

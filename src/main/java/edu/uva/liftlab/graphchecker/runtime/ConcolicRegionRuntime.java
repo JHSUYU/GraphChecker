@@ -2456,10 +2456,20 @@ public final class ConcolicRegionRuntime {
             String producerTaskId, String producerOccurrenceId,
             HandoffLeaf leaf) {
         String elementPath = leaf.path;
+        // H belongs to the occurrence the plan declares this IN site on,
+        // not to whichever activation is live when the value arrives.  A
+        // CALL_RETURN attach runs in the CALLER's frame -- the callee has
+        // returned, so its activation has closed and published -- and the
+        // row therefore rides on the caller while the handoff is the
+        // callee's.  On hdfs-17899 bug2 that is REGION.16ba41cf's decode:
+        // its rows landed on REGION.b7266d53, its caller, so one attach was
+        // reported twice, unplanned there and unreproduced here.
+        String consumerOccurrenceId = declaredConsumerOccurrence(portId,
+                active);
         String phaseId;
         try {
             phaseId = HandoffPhaseContract.phaseId(portId,
-                    active.activation.address.render(),
+                    OccurrenceAddress.parse(consumerOccurrenceId).render(),
                     active.nextHandoffAttach(portId + "\n" + elementPath),
                     elementPath);
         } catch (IllegalArgumentException unaddressed) {
@@ -2511,7 +2521,8 @@ public final class ConcolicRegionRuntime {
             if (assignment != null) active.recordModelAssignment(assignment);
             active.vmHandoffEvents.add(VmHandoffEvidence.event(portId,
                     exportEvent, attachEvent, producerExpression,
-                    producerTaskId, producerOccurrenceId, phaseId,
+                    producerTaskId, producerOccurrenceId,
+                    consumerOccurrenceId, phaseId,
                     optionalString(minted, "_exp"),
                     recordedValue, optionalString(minted, "_java_type"),
                     assignment == null ? "" : safe(assignment.value)));
@@ -2522,6 +2533,24 @@ public final class ConcolicRegionRuntime {
                     "handoff mint failed at " + portId + ": "
                             + rootCause(failure)));
         }
+    }
+
+    /**
+     * The occurrence this port's IN site is declared on.
+     *
+     * <p>The plan names it, so it is the same string on both sides and in
+     * every replay; the live activation is whatever the value happened to
+     * arrive under.  Falls back to the carrying activation when no task
+     * declares the port, which is the case R5 names UNPLANNED_HANDOFF.</p>
+     */
+    private static String declaredConsumerOccurrence(String portId,
+                                                     ActiveRegion carrying) {
+        for (ConcolicTaskPlan.RuntimeTask task : configuration().tasks) {
+            if (task.communicationHandoff(portId, false) != null) {
+                return task.occurrenceId;
+            }
+        }
+        return carrying.activation.occurrenceId;
     }
 
     /** One primitive leaf of one attach, and how the row names it. */

@@ -140,6 +140,7 @@ public class RuntimeWorkflowHandoffClosureTest {
         expression.add("expression", payload);
         JsonObject event = VmHandoffEvidence.event("port", attachEvent - 1L,
                 attachEvent, expression, producerTask, producerOccurrence,
+                consumerOccurrence,
                 edu.uva.liftlab.graphchecker.contract.HandoffPhaseContract
                         .phaseId("port", consumerOccurrence, 1, "<a.B: int v>"),
                 "M_I_field_HOFF.1_a/B", "7", "I", "");
