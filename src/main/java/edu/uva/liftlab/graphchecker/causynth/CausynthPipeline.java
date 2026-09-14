@@ -628,8 +628,6 @@ public final class CausynthPipeline {
         instrumentConcolicAccessorCallContexts(envelope.materializations,
                 refs);
         instrumentConcolicMethodArguments(envelope.materializations, refs);
-        instrumentConcolicFieldWrites(envelope.writerMethods,
-                envelope.materializations, refs);
         instrumentConcolicMaterializations(envelope, refs);
         instrumentConcolicBranches(envelope.branches, refs);
         envelope.report();
@@ -1623,77 +1621,6 @@ public final class CausynthPipeline {
         units.add(readCarrierLeaf(carrier, leaf, attached));
         units.add(Jimple.v().newAssignStmt(target,
                 Jimple.v().newCastExpr(attached, valueType)));
-    }
-
-    /** Records exact heap definitions without enabling the runtime trace. */
-    private void instrumentConcolicFieldWrites(
-            Set<String> methods,
-            ConcolicMaterializationSelection materializations,
-            HookCatalog refs) {
-        instrumentMethods(methods, "",
-                (body, method, originalUnits, entry, lowerBound, receiver) -> {
-            for (int index = instrumentableFrom(originalUnits, lowerBound);
-                    index >= 0 && index < originalUnits.size(); index++) {
-                Unit unit = originalUnits.get(index);
-                if (!(unit instanceof Stmt)) continue;
-                Stmt stmt = (Stmt) unit;
-
-                // AtomicInteger/Long RMWs update their private value field
-                // inside JDK/Unsafe code, so no application putfield can run
-                // the ordinary write-carrier hook. Select the exact receiver
-                // at the modeled invocation instead; SymbolicAtomic then
-                // resolves its pre-state and publishes the linearized write.
-                InvokeExpr invoke = stmt.containsInvokeExpr()
-                        ? stmt.getInvokeExpr() : null;
-                String atomicCarrier = invoke == null ? ""
-                        : materializations.selectedAtomicWriteCarrier(
-                        invoke.getMethodRef());
-                if (!atomicCarrier.isEmpty()
-                        && invoke instanceof InstanceInvokeExpr) {
-                    List<Unit> before = new ArrayList<>();
-                    Value selectionOwner = objectArg(body,
-                            ((InstanceInvokeExpr) invoke).getBase(), before);
-                    refs.bracket(before, Hook.SELECT_FIELD_WRITE_CARRIER,
-                            StringConstant.v(method.getSignature()),
-                            IntConstant.v(index), selectionOwner,
-                            StringConstant.v(atomicCarrier));
-                    insertBeforeSequence(body, unit, before);
-                }
-
-                if (!(stmt instanceof AssignStmt)) continue;
-                Value left = ((AssignStmt) stmt).getLeftOp();
-                if (!(left instanceof InstanceFieldRef)) {
-                    continue;
-                }
-                InstanceFieldRef field = (InstanceFieldRef) left;
-                if (!materializations.matchesWriteCarrier(
-                        field.getFieldRef())) {
-                    continue;
-                }
-                String declaredField =
-                        CausynthStaticFacts.declaredFieldSignature(
-                                field.getFieldRef());
-                // Before the store, not after it.
-                List<Unit> before = new ArrayList<>();
-                emit(before, refs.ref(Hook.PAUSE_OBSERVATION));
-                Value selectionOwner = objectArg(body, field.getBase(),
-                        before);
-                emit(before, refs.ref(Hook.SELECT_FIELD_WRITE_CARRIER),
-                        StringConstant.v(method.getSignature()),
-                        IntConstant.v(index), selectionOwner,
-                        StringConstant.v(declaredField));
-                emit(before, refs.ref(Hook.RESUME_OBSERVATION));
-                insertBeforeSequence(body, unit, before);
-
-                List<Unit> after = new ArrayList<>();
-                emit(after, refs.ref(Hook.PAUSE_OBSERVATION));
-                Value owner = objectArg(body, field.getBase(), after);
-                emit(after, refs.ref(Hook.RECORD_FIELD_WRITE), owner,
-                        StringConstant.v(declaredField));
-                emit(after, refs.ref(Hook.RESUME_OBSERVATION));
-                insertAfterSequence(body, unit, after);
-            }
-        });
     }
 
     /**
@@ -3410,8 +3337,6 @@ public final class CausynthPipeline {
         MATERIALIZE_STATIC_PRIMITIVE_FIELD,
         MATERIALIZE_FIELD,
         MATERIALIZE_ASSOCIATIVE_READ,
-        SELECT_FIELD_WRITE_CARRIER,
-        RECORD_FIELD_WRITE,
         EXPORT_COMMUNICATION_LEAF,
         ATTACH_COMMUNICATION_LEAF,
         PUSH_OUTBOUND_MESSAGE_FRAME,
@@ -3570,11 +3495,6 @@ public final class CausynthPipeline {
                     .add(Hook.MATERIALIZE_ASSOCIATIVE_READ, runtime,
                             "materializeAssociativeRead", VoidType.v(),
                             object, object)
-                    .add(Hook.SELECT_FIELD_WRITE_CARRIER, runtime,
-                            "selectFieldWriteCarrier", VoidType.v(), string,
-                            IntType.v(), object, string)
-                    .add(Hook.RECORD_FIELD_WRITE, runtime,
-                            "recordFieldWrite", VoidType.v(), object, string)
                     .add(Hook.EXPORT_COMMUNICATION_LEAF, runtime,
                             "exportCommunicationLeaf", VoidType.v(), string,
                             object, string, string)

@@ -88,21 +88,23 @@ public final class SharedStateEvidence {
     // Declared VM carrier-selection refusals (sharedFieldVersions.hpp).
     // Their numeric values are mirrored here so Java reports the same reason.
     public static final int SELECT_NO_ACTIVE_CONTEXT = -1;
-    public static final int SELECT_MISSING_METADATA = -2;
     public static final int SELECT_FIELD_NOT_FOUND = -3;
     public static final int SELECT_UNSUPPORTED_TARGET = -4;
     public static final int INVOCATION_FAILED = -1001;
     public static final int MALFORMED_ENVELOPE = -1002;
-    /** The location was never selected, so it has no recorded evidence. */
-    public static final int NOT_SELECTED = -1003;
-    /** Addressing that names no single location. */
-    public static final int MISSING_METADATA = -1004;
     /** One expression root was serialized only up to the VM's safety bound. */
     public static final int EXPRESSION_SERIALIZATION_TRUNCATED = -1007;
-    /** A map-state receiver has no complete runtime carrier identity. */
-    public static final int MAP_STATE_IDENTITY_MISSING = -1010;
-    /** One session-local map owner claims conflicting carrier identities. */
-    public static final int MAP_STATE_IDENTITY_AMBIGUOUS = -1011;
+    /**
+     * A container's INITIAL version does not state the contents tracking
+     * began from.
+     *
+     * <p>A container relation resolves as its base plus the mutation chain,
+     * so a base the VM could not state leaves every read of that container
+     * standing on nothing.  The VM walks a container at the first symbolic
+     * access to it; when it has no walker for the class it says so, and the
+     * class name travels in the gap because that is the fix.</p>
+     */
+    public static final int CONTAINER_BASE_UNSTATED = -1012;
 
     /** Exact coverage reason for a VM-bounded expression tree. */
     public static final String VM_EXPRESSION_SERIALIZATION_TRUNCATED =
@@ -156,8 +158,6 @@ public final class SharedStateEvidence {
                 return "";
             case SELECT_NO_ACTIVE_CONTEXT:
                 return REASON_PREFIX + "NO_ACTIVE_CONTEXT";
-            case SELECT_MISSING_METADATA:
-                return REASON_PREFIX + "SELECT_MISSING_METADATA";
             case SELECT_FIELD_NOT_FOUND:
                 return REASON_PREFIX + "FIELD_NOT_FOUND";
             case SELECT_UNSUPPORTED_TARGET:
@@ -166,16 +166,10 @@ public final class SharedStateEvidence {
                 return REASON_PREFIX + "INVOCATION_FAILED";
             case MALFORMED_ENVELOPE:
                 return REASON_PREFIX + "MALFORMED_ENVELOPE";
-            case NOT_SELECTED:
-                return REASON_PREFIX + "NOT_SELECTED";
-            case MISSING_METADATA:
-                return REASON_PREFIX + "MISSING_METADATA";
             case EXPRESSION_SERIALIZATION_TRUNCATED:
                 return VM_EXPRESSION_SERIALIZATION_TRUNCATED;
-            case MAP_STATE_IDENTITY_MISSING:
-                return REASON_PREFIX + "MAP_STATE_IDENTITY_MISSING";
-            case MAP_STATE_IDENTITY_AMBIGUOUS:
-                return REASON_PREFIX + "MAP_STATE_IDENTITY_AMBIGUOUS";
+            case CONTAINER_BASE_UNSTATED:
+                return REASON_PREFIX + "CONTAINER_BASE_UNSTATED";
             default:
                 return UNDECLARED_REASON;
         }
@@ -353,461 +347,6 @@ public final class SharedStateEvidence {
         return session.isEmpty() ? optionalString(row, "locationKey") : session;
     }
 
-    /**
-     * Renames one summary's locations from the VM's session-local rid to a
-     */
-    public static Collection<String> canonicalizeLocations(
-            JsonObject summary) {
-        Set<String> unresolved = new LinkedHashSet<>();
-        String occurrenceId = optionalString(summary, "occurrenceId");
-        JsonObject recorded = object(summary, RECORDED_FIELD);
-        if (recorded.size() > 0) {
-            for (JsonElement element : array(recorded, "versions")) {
-                if (!element.isJsonObject()) continue;
-                JsonObject row = element.getAsJsonObject();
-                String key = optionalString(row, "locationKey");
-                if (isMapState(sessionLocationKey(row))) continue;
-                String named = carrierLocationKey(row, occurrenceId);
-                if (named.isEmpty()) {
-                    // Name the Java field too: a bare session-local rid does
-                    // not tell a reader which location went unnamed.
-                    if (!key.isEmpty()) {
-                        unresolved.add(key + " " + unnamedCarrierDetail(row));
-                    }
-                    continue;
-                }
-                rename(row, key, named);
-            }
-        }
-        return unresolved;
-    }
-
-    /**
-     * The three names one selected shared location answers to.
-     *
-     * <p>A location key alone does not say which name it is: the importer
-     * renames a location it can attribute to a declared field, and leaves a
-     * MAP_STATE whole-state key in its session spelling.  A reader chasing a
-     * guarded read back to the Java field it came from needs the canonical
-     * name, the session name, and the field, stated rather than inferred from
-     * the key's shape.</p>
-     */
-    public static final class LocationProvenance {
-        public final String locationKey;
-        public final String sessionLocationKey;
-        public final String declaredField;
-
-        LocationProvenance(String locationKey, String sessionLocationKey,
-                           String declaredField) {
-            this.locationKey = locationKey;
-            this.sessionLocationKey = sessionLocationKey;
-            this.declaredField = declaredField;
-        }
-    }
-
-
-    /**
-     * Names which part of a carrier left one location unnamed, so that the
-     * diagnostic says what is missing instead of only which slot it was.
-     */
-    private static String unnamedCarrierDetail(JsonObject row) {
-        JsonObject carrier = object(row, "carrier");
-        if (carrier.size() == 0) return "(no carrier)";
-        String declaringClass = optionalString(carrier, "declaringClass");
-        String fieldName = optionalString(carrier, "fieldName");
-        String declared = declaringClass.isEmpty() || fieldName.isEmpty()
-                ? "(undeclared field)"
-                : declaringClass + "#" + fieldName;
-        return optionalLongInteger(carrier, "receiverObjectId", 0L) <= 0L
-                ? declared + " (no receiver identity)"
-                : declared + " (no occurrence)";
-    }
-
-    /** Prefix of a content-addressed runtime map-state witness. */
-    static final String MAP_STATE_SYMBOL_PREFIX = "MAP_STATE.v1.";
-
-
-    private static String mapStateSymbol(
-            String sourceKey, String declaringClass, String fieldName,
-            String descriptor, long receiverObjectId) {
-        JsonObject material = new JsonObject();
-        material.addProperty("schemaVersion", 1);
-        material.addProperty("kind", "RUNTIME_MAP_STATE_IDENTITY");
-        material.addProperty("sourceKey", sourceKey);
-        material.addProperty("carrierKind", LOCATION_KIND_MAP_STATE);
-        material.addProperty("declaringClass", declaringClass);
-        material.addProperty("fieldName", fieldName);
-        material.addProperty("descriptor", descriptor);
-        material.addProperty("plannedReceiverObjectId", receiverObjectId);
-        return MAP_STATE_SYMBOL_PREFIX + CanonicalJson.sha256(material);
-    }
-
-    /** One fail-closed result of scope-wide map-state canonicalization. */
-    static final class ContainerStateIssue {
-        final JsonObject summary;
-        final JsonObject gap;
-
-        private ContainerStateIssue(JsonObject summary, JsonObject gap) {
-            this.summary = summary;
-            this.gap = gap;
-        }
-    }
-
-    /**
-     * Gives every occurrence of one runtime map owner the same stable value
-     * identity within a linked replay/session scope.
-     *
-     * <p>The VM propagates an associative state as a session-local
-     * {@code M_L..._<owner>} expression. A downstream summary can mention an
-     * upstream owner without carrying that owner's carrier. This pass first
-     * indexes all recorded MAP_STATE carriers in the scope, then rewrites all
-     * summaries. It never reads an edge port: graph edges select and schedule
-     * occurrences, while runtime carrier evidence proves value identity.</p>
-     *
-     * <p>Each returned issue is also attached to its summary's
-     * {@code alignmentGaps}; downstream worklists consequently stay open
-     * instead of solving with a guessed map.</p>
-     */
-    static List<ContainerStateIssue> canonicalizeContainerStateSymbols(
-            Collection<JsonObject> summaries) {
-        List<JsonObject> rows = new ArrayList<>();
-        if (summaries != null) {
-            for (JsonObject summary : summaries) {
-                if (summary != null) rows.add(summary);
-            }
-        }
-
-        Map<RuntimeMapOwner, RuntimeMapIdentitySet> identities =
-                new LinkedHashMap<>();
-        // Owners a carrier record names, which is what "selected" means
-        // here.  A container the VM merely tracked is referenced by its
-        // state root without ever having been selected, and owes no
-        // identity at all.
-        Set<RuntimeMapOwner> selectedOwners = new LinkedHashSet<>();
-        IdentityHashMap<JsonObject, Set<RuntimeMapOwner>> subjects =
-                new IdentityHashMap<>();
-        List<MapRecordBinding> records = new ArrayList<>();
-        List<MapReceiverBinding> receivers = new ArrayList<>();
-        List<ContainerStateIssue> issues = new ArrayList<>();
-
-        for (JsonObject summary : rows) {
-            String scope = optionalString(summary, "boundarySessionScope");
-            String sourceKey = optionalString(summary, "sourceKey");
-            JsonObject recorded = object(summary, RECORDED_FIELD);
-            for (JsonElement element : array(recorded, "versions")) {
-                if (!element.isJsonObject()) continue;
-                JsonObject record = element.getAsJsonObject();
-                String session = sessionLocationKey(record);
-                if (!isMapState(session)) continue;
-                long owner = locationOwnerOf(session);
-                if (scope.isEmpty() || owner <= 0L) {
-                    addContainerStateIssue(issues, summary,
-                            MAP_STATE_IDENTITY_MISSING, session,
-                            "MAP_STATE record has no replay scope or "
-                                    + "positive runtime owner");
-                    continue;
-                }
-                RuntimeMapOwner key = new RuntimeMapOwner(scope, session,
-                        owner);
-                selectedOwners.add(key);
-                subjects.computeIfAbsent(summary,
-                        ignored -> new LinkedHashSet<>()).add(key);
-                RuntimeMapIdentitySet set = identities.computeIfAbsent(key,
-                        ignored -> new RuntimeMapIdentitySet());
-                RuntimeMapIdentity identity = RuntimeMapIdentity.of(record,
-                        sourceKey);
-                if (identity.fault.isEmpty()) {
-                    set.admit(identity);
-                } else {
-                    set.faults.add(identity.fault);
-                }
-                records.add(new MapRecordBinding(record, key));
-            }
-            collectMapStateReceivers(summary, scope, subjects, receivers,
-                    issues);
-        }
-
-        for (MapRecordBinding binding : records) {
-            RuntimeMapIdentity identity = uniqueIdentity(
-                    identities.get(binding.owner));
-            if (identity != null) {
-                String held = sessionLocationKey(binding.record);
-                if (optionalString(binding.record, SESSION_LOCATION_FIELD).isEmpty()) {
-                    binding.record.addProperty(SESSION_LOCATION_FIELD, held);
-                }
-                binding.record.addProperty("locationKey",
-                        identity.locationKey);
-            }
-        }
-        for (MapReceiverBinding binding : receivers) {
-            RuntimeMapIdentity identity = uniqueIdentity(
-                    identities.get(binding.owner));
-            if (identity != null) {
-                binding.receiver.addProperty("_exp", identity.symbol);
-            }
-        }
-
-        for (JsonObject summary : rows) {
-            Set<RuntimeMapOwner> referenced = subjects.get(summary);
-            if (referenced == null) continue;
-            for (RuntimeMapOwner owner : referenced) {
-                RuntimeMapIdentitySet set = identities.get(owner);
-                if (uniqueIdentity(set) != null) continue;
-                if (!selectedOwners.contains(owner)) {
-                    // Nothing selected this container, so no writer set was
-                    // ever claimed for it and there is no identity to be
-                    // missing.  Its state root stays the VM-local
-                    // structural witness it already is - an existential
-                    // witness of the recorded run, scoped per replay
-                    // session exactly like an allocated array's.  Demanding
-                    // a carrier identity of it held every worklist that
-                    // merely mentions an untracked container open.
-                    continue;
-                }
-                boolean ambiguous = set != null
-                        && (set.identities.size() > 1
-                        || !set.identities.isEmpty()
-                        && !set.faults.isEmpty());
-                String detail = "scope=" + owner.scope + ", runtimeOwner="
-                        + owner.owner;
-                if (set != null && !set.faults.isEmpty()) {
-                    detail += ", evidence="
-                            + String.join(" | ", set.faults);
-                }
-                addContainerStateIssue(issues, summary, ambiguous
-                                ? MAP_STATE_IDENTITY_AMBIGUOUS
-                                : MAP_STATE_IDENTITY_MISSING,
-                        owner.sessionLocationKey, detail);
-            }
-        }
-        return issues;
-    }
-
-    private static RuntimeMapIdentity uniqueIdentity(
-            RuntimeMapIdentitySet set) {
-        return set != null && set.faults.isEmpty()
-                && set.identities.size() == 1
-                ? set.identities.values().iterator().next() : null;
-    }
-
-    private static void collectMapStateReceivers(
-            JsonObject summary, String scope,
-            IdentityHashMap<JsonObject, Set<RuntimeMapOwner>> subjects,
-            List<MapReceiverBinding> receivers,
-            List<ContainerStateIssue> issues) {
-        Deque<JsonElement> pending = new ArrayDeque<>();
-        Set<JsonElement> visited = Collections.newSetFromMap(
-                new IdentityHashMap<JsonElement, Boolean>());
-        pending.push(summary);
-        while (!pending.isEmpty()) {
-            JsonElement current = pending.pop();
-            if (current == null || current.isJsonNull()
-                    || current.isJsonPrimitive() || !visited.add(current)) {
-                continue;
-            }
-            if (current.isJsonArray()) {
-                for (JsonElement child : current.getAsJsonArray()) {
-                    pending.push(child);
-                }
-                continue;
-            }
-            JsonObject node = current.getAsJsonObject();
-            if (isWholeStateRoot(node)) {
-                JsonObject receiver = object(node, "receiver");
-                if ("SymbolExpression".equals(
-                        optionalString(receiver, "_type"))) {
-                    String raw = optionalString(receiver, "_exp");
-                    long owner = associativeStateOwner(raw);
-                    if (owner > 0L && !scope.isEmpty()) {
-                        RuntimeMapOwner key = new RuntimeMapOwner(scope,
-                                LOCATION_KIND_MAP_STATE + "/" + owner + "#"
-                                        + MAP_STATE_SLOT, owner);
-                        subjects.computeIfAbsent(summary,
-                                ignored -> new LinkedHashSet<>()).add(key);
-                        receivers.add(new MapReceiverBinding(receiver, key));
-                    } else if (raw.startsWith("M_L")) {
-                        addContainerStateIssue(issues, summary,
-                                MAP_STATE_IDENTITY_MISSING, "",
-                                "associative STATE receiver has no "
-                                        + "resolvable runtime owner in scope "
-                                        + scope + ": " + raw);
-                    }
-                }
-            }
-            for (Map.Entry<String, JsonElement> field : node.entrySet()) {
-                pending.push(field.getValue());
-            }
-        }
-    }
-
-    private static void addContainerStateIssue(
-            List<ContainerStateIssue> issues, JsonObject summary, int status,
-            String locationKey, String detail) {
-        JsonObject failure = gap(STAGE_IDENTITY, status, locationKey, detail);
-        JsonArray gaps;
-        JsonElement existing = summary.get("alignmentGaps");
-        if (existing != null && existing.isJsonArray()) {
-            gaps = existing.getAsJsonArray();
-        } else {
-            gaps = new JsonArray();
-            summary.add("alignmentGaps", gaps);
-        }
-        String rendered = CanonicalJson.render(failure);
-        for (JsonElement element : gaps) {
-            if (element.isJsonObject()
-                    && rendered.equals(CanonicalJson.render(element))) {
-                return;
-            }
-        }
-        gaps.add(failure);
-        issues.add(new ContainerStateIssue(summary, failure));
-    }
-
-    private static final class RuntimeMapOwner {
-        private final String scope;
-        private final String sessionLocationKey;
-        private final long owner;
-
-        private RuntimeMapOwner(String scope, String sessionLocationKey,
-                                long owner) {
-            this.scope = scope;
-            this.sessionLocationKey = sessionLocationKey;
-            this.owner = owner;
-        }
-
-        @Override
-        public boolean equals(Object other) {
-            if (!(other instanceof RuntimeMapOwner)) return false;
-            RuntimeMapOwner that = (RuntimeMapOwner) other;
-            return owner == that.owner && scope.equals(that.scope)
-                    && sessionLocationKey.equals(that.sessionLocationKey);
-        }
-
-        @Override
-        public int hashCode() {
-            int result = scope.hashCode();
-            result = 31 * result + sessionLocationKey.hashCode();
-            return 31 * result + (int) (owner ^ owner >>> 32);
-        }
-    }
-
-    private static final class RuntimeMapIdentitySet {
-        private final Map<String, RuntimeMapIdentity> identities =
-                new LinkedHashMap<>();
-        private final Set<String> faults = new LinkedHashSet<>();
-
-        private void admit(RuntimeMapIdentity identity) {
-            identities.putIfAbsent(identity.symbol, identity);
-        }
-    }
-
-    private static final class RuntimeMapIdentity {
-        private final String symbol;
-        private final String locationKey;
-        private final String fault;
-
-        private RuntimeMapIdentity(String symbol, String locationKey,
-                                   String fault) {
-            this.symbol = symbol;
-            this.locationKey = locationKey;
-            this.fault = fault;
-        }
-
-        private static RuntimeMapIdentity of(
-                JsonObject record, String sourceKey) {
-            JsonObject carrier = object(record, "carrier");
-            String kind = optionalString(carrier, "kind");
-            String declaringClass = optionalString(carrier, "declaringClass");
-            String fieldName = optionalString(carrier, "fieldName");
-            String descriptor = optionalString(carrier, "descriptor");
-            long receiverObjectId = optionalLongInteger(carrier,
-                    "receiverObjectId", 0L);
-            String evidenceSource = optionalString(object(record,
-                    RecordedEvidenceIdentity.FIELD), "sourceKey");
-            String expectedField = declaringClass + "#" + fieldName + ":"
-                    + descriptor;
-            String statedField = optionalString(carrier, "fieldKey");
-            List<String> missing = new ArrayList<>();
-            if (sourceKey.isEmpty()) missing.add("sourceKey");
-            if (!sourceKey.equals(evidenceSource)) {
-                missing.add("evidence sourceKey agreement");
-            }
-            if (!LOCATION_KIND_MAP_STATE.equals(kind)) {
-                missing.add("MAP_STATE carrier kind");
-            }
-            if (declaringClass.isEmpty()) missing.add("declaringClass");
-            if (fieldName.isEmpty()) missing.add("fieldName");
-            if (descriptor.isEmpty()) missing.add("descriptor");
-            if (receiverObjectId <= 0L) {
-                missing.add("planned receiverObjectId");
-            }
-            if (!statedField.isEmpty() && !expectedField.equals(statedField)) {
-                missing.add("fieldKey agreement");
-            }
-            if (!missing.isEmpty()) {
-                return new RuntimeMapIdentity("", "",
-                        "missing or conflicting " + String.join(", ", missing));
-            }
-            // Scope and VM owner locate this evidence inside one imported
-            // execution only. They restart across replays and therefore must
-            // never enter the stable value identity.
-            String symbol = mapStateSymbol(sourceKey, declaringClass,
-                    fieldName, descriptor, receiverObjectId);
-            String digest = symbol.substring(MAP_STATE_SYMBOL_PREFIX.length());
-            return new RuntimeMapIdentity(symbol,
-                    LOCATION_KIND_MAP_STATE + "/" + digest + "#"
-                            + MAP_STATE_SLOT, "");
-        }
-    }
-
-    private static final class MapRecordBinding {
-        private final JsonObject record;
-        private final RuntimeMapOwner owner;
-
-        private MapRecordBinding(JsonObject record, RuntimeMapOwner owner) {
-            this.record = record;
-            this.owner = owner;
-        }
-    }
-
-    private static final class MapReceiverBinding {
-        private final JsonObject receiver;
-        private final RuntimeMapOwner owner;
-
-        private MapReceiverBinding(JsonObject receiver,
-                                   RuntimeMapOwner owner) {
-            this.receiver = receiver;
-            this.owner = owner;
-        }
-    }
-
-    static long associativeStateOwner(String symbol) {
-        if (symbol == null || !symbol.startsWith("M_L")) return 0L;
-        int separator = symbol.lastIndexOf('_');
-        if (separator < 0 || separator + 1 >= symbol.length()) return 0L;
-        try {
-            long owner = Long.parseLong(symbol.substring(separator + 1));
-            return owner > 0L ? owner : 0L;
-        } catch (NumberFormatException invalid) {
-            return 0L;
-        }
-    }
-
-    /**
-     * The canonical name a version row builds from its own carrier, or "" if
-     */
-    private static String carrierLocationKey(
-            JsonObject row, String occurrenceId) {
-        JsonObject carrier = object(row, "carrier");
-        if (carrier.size() == 0) return "";
-        String declaringClass = optionalString(carrier, "declaringClass");
-        String fieldName = optionalString(carrier, "fieldName");
-        if (declaringClass.isEmpty() || fieldName.isEmpty()) return "";
-        return canonicalLocationKey(optionalString(row, "locationKey"),
-                declaringClass + "#" + fieldName,
-                occurrenceId,
-                optionalLongInteger(carrier, "receiverObjectId", 0L));
-    }
 
     private static void rename(JsonObject row, String session,
                                String canonical) {
@@ -896,6 +435,48 @@ public final class SharedStateEvidence {
     /**
      * Admits one published version.
      */
+
+    /**
+     * Why a container's INITIAL version states no base, or {@code ""}.
+     *
+     * <p>Only a container has one: a scalar's INITIAL is the value the field
+     * held, which the expression already carries.  A container's is the
+     * contents tracking began from, which the VM walks at the first symbolic
+     * access, and every relation over that container stands on it.  An
+     * INITIAL that carries no snapshot member at all is an older image; one
+     * that says {@code stated:false} is this image telling us it has no
+     * walker for the class, and the class name is in the gap because naming
+     * it is what gets it walked.</p>
+     */
+    private static String containerBaseFault(JsonObject version,
+                                             String versionKind,
+                                             boolean mapState) {
+        if (!mapState || !INITIAL_VERSION_KIND.equals(versionKind)) return "";
+        JsonElement encoded = version.get("initialSnapshot");
+        if (encoded == null || !encoded.isJsonObject()) {
+            return CONTAINER_BASE_UNSTATED_FAULT
+                    + ": INITIAL states no container base";
+        }
+        JsonObject snapshot = encoded.getAsJsonObject();
+        if (!snapshot.has("stated")
+                || optionalBool(snapshot, "stated", false)) {
+            return "";
+        }
+        String unsupported = optionalString(snapshot, "unsupportedClass");
+        return CONTAINER_BASE_UNSTATED_FAULT + ": the VM walks no container "
+                + "of class " + (unsupported.isEmpty() ? "<unnamed>"
+                : unsupported);
+    }
+
+    /** Fault prefix that maps to {@link #CONTAINER_BASE_UNSTATED}. */
+    public static final String CONTAINER_BASE_UNSTATED_FAULT =
+            "CONTAINER_BASE_UNSTATED";
+
+    /** Whether {@code fault} is an unstated container base. */
+    public static boolean containerBaseUnstatedFault(String fault) {
+        return fault != null && fault.startsWith(CONTAINER_BASE_UNSTATED_FAULT);
+    }
+
     private static String versionFault(JsonObject version, boolean mapState) {
         long id = optionalLongInteger(version, "fieldVersionId", 0L);
         if (id <= 0L) return "version has no fieldVersionId";
@@ -918,6 +499,8 @@ public final class SharedStateEvidence {
             // means the guard was never captured, which is a different and
             return "version " + id + " omits its writer path guard";
         }
+        String base = containerBaseFault(version, versionKind, mapState);
+        if (!base.isEmpty()) return base;
         JsonElement expression = version.get("expression");
         if (expression == null || expression.isJsonNull()) {
             return "version " + id + " carries no value expression";

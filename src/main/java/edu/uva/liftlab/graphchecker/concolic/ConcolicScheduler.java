@@ -309,13 +309,14 @@ public final class ConcolicScheduler {
         Result result = new Result();
         result.executionTasks.addAll(sortedValues(tasks));
         result.queries.addAll(sortedValues(queries));
-        // The planner declared every shared field a region touches; the
-        // task versions only the ones a root can still reach, the same
-        // slice its inputs and its replay set were narrowed against.
-        SharedCarrierSlice carrierSlice = SharedCarrierSlice.apply(
-                result.executionTasks, loaded.symbolicInputs);
+        // Which of the locations each region touches a root can still
+        // move: recorded on the replay-task slice, which asks the same
+        // predicate about actions.  Nothing acts on the answer -- a location
+        // is versioned because a symbolic value reached it.
         ArtifactIO.replaceJsonl(arguments.outputDirectory.resolve(
-                SharedCarrierSlice.ARTIFACT), carrierSlice.rows());
+                ReplayTaskSlice.ARTIFACT + ".locations"),
+                ReplayTaskSlice.locationDecisions(result.executionTasks,
+                        loaded.symbolicInputs));
         Path taskPlan = arguments.outputDirectory.resolve(
                 "execution_task_plan.jsonl");
         List<JsonObject> taskRows = new ArrayList<>();
@@ -340,7 +341,6 @@ public final class ConcolicScheduler {
                 loaded.regionPlanIdentity, taskPlanIdentity);
         index.add("replayTaskSlice",
                 replaySlice.telemetry(selectedOccurrences));
-        index.add("sharedCarrierSlice", carrierSlice.telemetry());
         requireArtifactIdentity(arguments.regionPlan,
                 loaded.regionPlanIdentity,
                 "region plan changed while scheduling");
@@ -1187,7 +1187,7 @@ public final class ConcolicScheduler {
         Set<String> locations = new LinkedHashSet<>();
         for (JsonElement element : goal.sharedCarriers()) {
             if (!element.isJsonObject()) continue;
-            String location = SharedCarrierSlice.location(
+            String location = ReplayTaskSlice.location(
                     element.getAsJsonObject());
             if (!location.isEmpty()) locations.add(location);
         }
@@ -1203,7 +1203,7 @@ public final class ConcolicScheduler {
      * writer, and the port would reach the runtime as a SYMBOLIC input it
      * cannot serve.  The plan therefore admits the demand only where the
      * planner declared the location and the slice keeps it -- the same two
-     * facts {@link SharedCarrierSlice} uses to decide what is versioned.  A
+     * facts {@link ReplayTaskSlice} records about a location.  A
      * plan frozen before references were declared keeps its old concrete
      * answer rather than gaining a port with no carrier behind it.</p>
      */

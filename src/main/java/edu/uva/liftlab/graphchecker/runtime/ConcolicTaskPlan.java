@@ -41,11 +41,10 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalInteger;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalLongInteger;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
-import edu.uva.liftlab.graphchecker.runtime.SharedStateCapture.ConsumerAccessAnchor;
+import edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.ConsumerAccessAnchor;
 import edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.GuardedReadAssignment;
 import edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.ModelAssignment;
 import edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.RootHookGroup;
-import edu.uva.liftlab.graphchecker.runtime.SharedStateCapture.SharedCarrierRequest;
 import edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.SymbolizeAction;
 
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.DEFAULT_EXECUTOR_THREAD_NAME;
@@ -1291,9 +1290,6 @@ final class ConcolicTaskPlan {
         /** OUT ports backed by one exact traced exchange in this task row. */
         final Set<String> exactOutgoingSourceCandidatePorts =
                 new LinkedHashSet<>();
-        /** Shared locations this task selects as carriers at region entry. */
-        final List<SharedCarrierRequest> sharedCarriers =
-                new ArrayList<>();
         /** Frozen runtime bindings used to resolve exact Map producers. */
         final JsonArray edgeBindings;
         /** Declared field -> unique frozen receiver locator for this task. */
@@ -1490,74 +1486,6 @@ final class ConcolicTaskPlan {
             }
             indexAttachProducerOccurrences(edgeBindings);
             indexExportConsumerOccurrences(task, edgeBindings);
-            for (JsonElement element : task.sharedCarriers()) {
-                if (element.isJsonObject()) {
-                    sharedCarriers.add(new SharedCarrierRequest(
-                            element.getAsJsonObject(), true));
-                }
-            }
-            declareSymbolicFieldCarriers();
-        }
-
-        /**
-         * Every SYMBOLIC field this region declares is a shared location.
-         *
-         * <p>Wave 3 concurrency: the manual input is WHICH FIELDS, and a
-         * declared field keeps every symbolic write of the session as a
-         * version.  Nothing selects a subset of the declared fields.</p>
-         *
-         * <p>These are added beside the planner's carrier list because
-         * explicit field declarations need not cover every planned carrier.
-         * The planner owns their reconciliation.</p>
-         */
-        void declareSymbolicFieldCarriers() {
-            Set<String> declared = new LinkedHashSet<>();
-            for (SharedCarrierRequest request : sharedCarriers) {
-                declared.add(request.declaringClass + "\n"
-                        + request.fieldName);
-            }
-            for (SymbolizeAction action : symbolize) {
-                DeclaredField field = FieldPathSpec.declaredField(
-                        firstNonBlank(action.exactLeafFieldSignature(),
-                                action.accessFieldSignature));
-                if (field == null
-                        || !declared.add(field.owner() + "\n"
-                        + field.name())) {
-                    continue;
-                }
-                JsonObject declaration = new JsonObject();
-                // A bounded-container demand on a container field is a
-                // whole-state location, not a reference slot: declaring it
-                // as an instance field would version the reference and lose
-                // every state transition the composer reads from.  This
-                // holds for an indexed container exactly as it does for a
-                // map - a List field versioned as a pointer publishes one
-                // WRITE for its construction and nothing for any add or
-                // remove.
-                boolean mapState = "BOUNDED_CONTAINER_STATE".equals(
-                        action.symbolicDemand)
-                        && javaTypeDescriptor(field.type()).startsWith("L")
-                        && isWholeStateContainerType(field);
-                declaration.addProperty("kind", mapState
-                        ? SharedStateEvidence.LOCATION_KIND_MAP_STATE
-                        : "INSTANCE_FIELD");
-                declaration.addProperty("sourceKind",
-                        "ACTIVATION_FIELD_RECEIVER");
-                declaration.addProperty("declaringClass", field.owner());
-                declaration.addProperty("fieldName", field.name());
-                declaration.addProperty("descriptor",
-                        javaTypeDescriptor(field.type()));
-                sharedCarriers.add(new SharedCarrierRequest(
-                        declaration, false));
-            }
-        }
-
-        /** A selected shared read observes the VM carrier; it never mints. */
-        boolean observesSharedRead(String fieldSignature) {
-            for (SharedCarrierRequest request : sharedCarriers) {
-                if (request.observesSharedRead(fieldSignature)) return true;
-            }
-            return false;
         }
 
         /** Solver value for the one exact getfield this hook precedes. */
@@ -1816,42 +1744,6 @@ final class ConcolicTaskPlan {
         private static String fieldAccessKey(String fieldKey, String site,
                                              int occurrence) {
             return fieldKey + "\n" + site + "\n" + occurrence;
-        }
-
-        long plannedReceiverObjectId(String declaringClass,
-                                             String fieldName) {
-            return plannedReceiverObjectIdByField.getOrDefault(
-                    safe(declaringClass) + "#" + safe(fieldName), 0L);
-        }
-
-        /**
-         * The frozen locator of the one receiver read at {@code accesses}.
-         *
-         * <p>Returns 0 when the plan names no receiver, and also when the
-         * anchors of one live carrier resolve to different planned
-         * receivers: that contradicts this carrier being one object, and a
-         * guessed locator would name two receivers alike across sessions.</p>
-         */
-        long plannedReceiverObjectId(String declaringClass, String fieldName,
-                                     List<ConsumerAccessAnchor> accesses) {
-            String fieldKey = safe(declaringClass) + "#" + safe(fieldName);
-            Set<Long> resolved = new LinkedHashSet<>();
-            for (ConsumerAccessAnchor access : accesses == null
-                    ? Collections.<ConsumerAccessAnchor>emptyList()
-                    : accesses) {
-                if (access == null || access.siteId.isEmpty()
-                        || access.occurrence < 1) {
-                    continue;
-                }
-                Long planned = plannedReceiverObjectIdByFieldAccess.get(
-                        fieldAccessKey(fieldKey, access.siteId,
-                                access.occurrence));
-                if (planned != null) resolved.add(planned);
-            }
-            if (resolved.size() == 1) return resolved.iterator().next();
-            return resolved.isEmpty()
-                    ? plannedReceiverObjectIdByField.getOrDefault(fieldKey, 0L)
-                    : 0L;
         }
 
         static String handoffKey(String portId, boolean exporting) {

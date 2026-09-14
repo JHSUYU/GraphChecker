@@ -4,6 +4,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.contract.ConfiguredSourcePhaseContract;
+import edu.uva.liftlab.graphchecker.contract.ExecutionTask;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceId;
 import edu.uva.liftlab.graphchecker.contract.RegionInstancePlan;
 import edu.uva.liftlab.graphchecker.contract.RegionInstancePlan.Goal;
@@ -95,6 +96,76 @@ final class ReplayTaskSlice {
     static final String ROOT_DEPENDENT_FLOW = "ROOT_DEPENDENT_FLOW";
     /** Keep reason of an occurrence the failing read consumes directly. */
     static final String FATAL_READ_WRITER = "FATAL_READ_WRITER";
+
+    /**
+     * The second decision kind on this artifact: which declared locations a
+     * root can still reach.
+     *
+     * <p>It was its own artifact and its own class while a location had to be
+     * declared before the VM would version it -- the decision then had two
+     * halves, "is this worth versioning" and "declare it", and the second
+     * half made it a carrier layer.  The VM now versions a location because a
+     * symbolic value reached it, so the declaration is gone and what is left
+     * is one predicate, {@code RootDependenceSlice.reachesLocation}, which is
+     * the same predicate this slice already applies to actions.  Two places
+     * asking one question is what this whole round has been removing, so it
+     * asks here.</p>
+     */
+    static final String LOCATION_DECISION = "SHARED_CARRIER_DECISION";
+    /** Decision reason of a location no root reaches. */
+    static final String LOCATION_DROPPED =
+            "SHARED_CARRIER_NOT_ROOT_DEPENDENT";
+    /** Decision reason of a location the slice keeps. */
+    static final String LOCATION_KEPT = "SHARED_CARRIER_KEPT";
+    /** Decision reason when the slice narrowed nothing. */
+    static final String LOCATION_WITHHELD = "SHARED_CARRIER_SLICE_WITHHELD";
+
+    /** The {@code owner#field} key of one declared location. */
+    static String location(JsonObject carrier) {
+        return SharedFieldFlow.fieldKey(
+                optionalString(carrier, "declaringClass"),
+                optionalString(carrier, "fieldName"));
+    }
+
+    /**
+     * One decision per declared location of one task, for the record.
+     *
+     * <p>Nothing acts on these any more: a location is versioned because a
+     * symbolic value reached it, not because this said so.  They are kept
+     * because the question "which of the locations this region touches can a
+     * root still move" is worth answering out loud -- on HDFS-17960 the
+     * planner declares ten and the slice reaches three -- and because a
+     * campaign that suddenly reaches more or fewer should be visible.</p>
+     */
+    static List<JsonObject> locationDecisions(
+            Collection<ExecutionTask> tasks,
+            ConcolicScheduler.SymbolicInputSelection selection) {
+        ConcolicScheduler.RootDependenceSlice slice =
+                selection.carrierSlice();
+        boolean applied = slice.usable();
+        List<JsonObject> decisions = new ArrayList<>();
+        for (ExecutionTask task : tasks) {
+            for (JsonElement element : task.sharedCarriers()) {
+                if (!element.isJsonObject()) continue;
+                JsonObject carrier = element.getAsJsonObject();
+                String location = location(carrier);
+                boolean keep = !applied || location.isEmpty()
+                        || slice.reachesLocation(location,
+                        array(carrier, "fieldPath"));
+                JsonObject row = new JsonObject();
+                row.addProperty("schemaVersion", 2);
+                row.addProperty("kind", LOCATION_DECISION);
+                row.addProperty("taskId", task.taskId());
+                row.addProperty("occurrenceId", task.occurrenceId());
+                row.addProperty("location", location);
+                row.addProperty("decision", keep ? "KEEP" : "DROP");
+                row.addProperty("reason", !applied ? LOCATION_WITHHELD
+                        : keep ? LOCATION_KEPT : LOCATION_DROPPED);
+                decisions.add(row);
+            }
+        }
+        return decisions;
+    }
 
     private final boolean applied;
     private final String sliceReason;
@@ -281,7 +352,7 @@ final class ReplayTaskSlice {
      * without it, an occurrence whose delivery the plan attributed to a
      * sibling region of the same method is unreachable at occurrence grain
      * however squarely its reads sit on the slice, and the carriers only it
-     * declares are never offered to {@link SharedCarrierSlice}.  That is how
+     * declares are never offered to the location decisions.  That is how
      * hdfs-17899 lost {@code BlockKeyProto#expiryDate_}: the loop-body view
      * of {@code PBHelper.convert(BlockKeyProto)} is the one occurrence that
      * reads it, and the wire delivery bound the communication-entry view of

@@ -47,7 +47,6 @@ final class ConcolicVmBroker {
     private Method symbolizeField;
     private Method symbolizeExactField;
     private Method trackContainer;
-    private Method snapshotContainer;
     private Method getExpression;
     private Method getFieldExpression;
     private Method finishRegion;
@@ -58,14 +57,9 @@ final class ConcolicVmBroker {
     private Method export;
     private Method attach;
     private Method range;
-    private Method selectField;
+    private Method trackedLocations;
     private Method armPrimitiveFieldRead;
     private Method confirmPrimitiveFieldRead;
-    private Method selectElement;
-    private Method selectMap;
-    private Method fieldVersions;
-    private Method elementVersions;
-    private Method mapVersions;
 
     void requireCurrentCapabilities() {
         List<String> missing = new ArrayList<>();
@@ -162,25 +156,6 @@ final class ConcolicVmBroker {
                 null, value, prefix));
     }
 
-    /**
-     * States one container's exact content to the recorder, so the INITIAL
-     * version of a carrier over it is the content rather than an opaque root.
-     *
-     * <p>{@code kind} is 0 for an indexed container and 1 for a map; the
-     * members are the caller's, because the VM never iterates a Java
-     * collection itself. Must be called before the container is selected: the
-     * INITIAL version records what the state root already said.</p>
-     *
-     * <p>Answers one {@code InitialContainerSnapshot} answer code.</p>
-     */
-    int snapshotContainer(Object container, Object[] keys,
-                          Object[] values, int kind) throws Exception {
-        Object answer = snapshotContainer.invoke(
-                null, container, keys, values, kind);
-        return answer instanceof Number ? ((Number) answer).intValue()
-                : InitialContainerSnapshot.NOT_SELECTABLE;
-    }
-
     String expression(Object value) throws Exception {
         return String.valueOf(getExpression.invoke(null, value));
     }
@@ -248,18 +223,6 @@ final class ConcolicVmBroker {
         return String.valueOf(range.invoke(null, startIndex, endIndex));
     }
 
-    long selectSharedFieldCarrier(
-            Object owner, String declaringClass, String fieldName,
-            String descriptor) throws Exception {
-        Object version = selectField.invoke(null, owner, declaringClass,
-                fieldName, descriptor);
-        if (!(version instanceof Number)) {
-            throw new IllegalStateException(
-                    "selectSharedFieldCarrier returned no numeric version");
-        }
-        return ((Number) version).longValue();
-    }
-
     /** Arms the concrete operand of the immediately following getfield. */
     long armSharedPrimitiveFieldRead(
             Object owner, String declaringClass, String fieldName,
@@ -278,42 +241,20 @@ final class ConcolicVmBroker {
                 ? ((Number) status).longValue() : Long.MIN_VALUE;
     }
 
-    long selectSharedElementCarrier(Object array, int index)
+    /**
+     * Every location a symbolic value reached, with its versions and reads.
+     *
+     * <p>The write log, read out by the object the VM filed it under rather
+     * than by a location Java declared.  {@code afterEventId} selects on the
+     * session clock over versions and reads, so an activation scopes itself
+     * by passing its own entry event and the VM needs no notion of a region;
+     * {@code maxBytes} bounds one answer, which then says {@code complete:
+     * false} and where to resume.  0 means "everything" and "no bound".</p>
+     */
+    String trackedLocationVersions(long afterEventId, int maxBytes)
             throws Exception {
-        Object version = selectElement.invoke(null, array, index);
-        if (!(version instanceof Number)) {
-            throw new IllegalStateException(
-                    "selectSharedElementCarrier returned no numeric version");
-        }
-        return ((Number) version).longValue();
-    }
-
-    long selectSharedMapCarrier(Object map) throws Exception {
-        Object version = selectMap.invoke(null, map);
-        if (!(version instanceof Number)) {
-            throw new IllegalStateException(
-                    "selectSharedMapCarrier returned no numeric version");
-        }
-        return ((Number) version).longValue();
-    }
-
-    String sharedMapVersions(Object map) throws Exception {
-        return requiredVmJson(mapVersions.invoke(null, map),
-                "getSharedMapVersions");
-    }
-
-    String sharedFieldVersions(
-            Object owner, String declaringClass, String fieldName,
-            String descriptor) throws Exception {
-        return requiredVmJson(fieldVersions.invoke(null, owner,
-                declaringClass, fieldName, descriptor),
-                "getSharedFieldVersions");
-    }
-
-    String sharedElementVersions(Object array, int index)
-            throws Exception {
-        return requiredVmJson(elementVersions.invoke(null, array, index),
-                "getSharedElementVersions");
+        return requiredVmJson(trackedLocations.invoke(null, afterEventId,
+                maxBytes), "getTrackedLocationVersions");
     }
 
     private static String requiredVmJson(Object value, String api) {
@@ -347,9 +288,6 @@ final class ConcolicVmBroker {
                 String.class);
         api.trackContainer = method(system, "trackContainerExpression",
                 Object.class, String.class);
-        api.snapshotContainer = method(system,
-                "snapshotContainerExpression", Object.class,
-                Object[].class, Object[].class, int.class);
         api.getExpression = method(system, "getSymbolicExpression",
                 Object.class);
         api.getFieldExpression = method(system,
@@ -367,25 +305,15 @@ final class ConcolicVmBroker {
         api.attach = method(system, "attachExpression", Object.class,
                 String.class, String.class, String.class, long.class,
                 long[].class);
+        api.trackedLocations = method(system,
+                "getTrackedLocationVersions", long.class, int.class);
         api.range = method(system, "getConcolicPathConditionRange",
                 int.class, int.class);
-        api.selectField = method(system, "selectSharedFieldCarrier",
-                Object.class, String.class, String.class, String.class);
         api.armPrimitiveFieldRead = method(system,
                 "armSharedPrimitiveFieldRead", Object.class,
                 String.class, String.class, String.class, long.class);
         api.confirmPrimitiveFieldRead = method(system,
                 "confirmSharedPrimitiveFieldRead", long.class);
-        api.selectElement = method(system, "selectSharedElementCarrier",
-                Object.class, int.class);
-        api.selectMap = method(system, "selectSharedMapCarrier",
-                Object.class);
-        api.fieldVersions = method(system, "getSharedFieldVersions",
-                Object.class, String.class, String.class, String.class);
-        api.elementVersions = method(system, "getSharedElementVersions",
-                Object.class, int.class);
-        api.mapVersions = method(system, "getSharedMapVersions",
-                Object.class);
         return api;
     }
 
