@@ -143,6 +143,12 @@ final class D3RowPublication {
     private static void writes(ActiveRegion active,
                                OccurrenceAddress occurrence) {
         boolean namedSiteMissing = false;
+        // One activation, one population of reads: the same node is reached
+        // from many versions of one location, and a row per reachable path
+        // would count one read many times.
+        Set<String> published = new LinkedHashSet<String>();
+        Map<JsonElement, Boolean> seen =
+                new IdentityHashMap<JsonElement, Boolean>();
         for (JsonObject record : active.sharedStateRecords.values()) {
             String locationKey = optionalString(record, "locationKey");
             LocationId location = location(locationKey);
@@ -165,11 +171,11 @@ final class D3RowPublication {
                         location, id, written,
                         written == null ? "" : optionalString(written,
                                 "_java_type"));
-                reads(active, occurrence, expression);
+                collect(expression, occurrence, published, seen, 0);
             }
         }
         for (JsonObject mapping : active.branchMappings) {
-            reads(active, occurrence, mapping.get("witness"));
+            collect(mapping.get("witness"), occurrence, published, seen, 0);
         }
         if (namedSiteMissing) {
             D3Runtime.gap(GapKind.DECLARATION_MISSING, GapClass.DIAGNOSTIC,
@@ -180,16 +186,6 @@ final class D3RowPublication {
     }
 
     /** Every read one expression tree states, by the version it observed. */
-    private static void reads(ActiveRegion active,
-                              OccurrenceAddress occurrence,
-                              JsonElement expression) {
-        if (expression == null) return;
-        Set<String> published = new LinkedHashSet<String>();
-        Map<JsonElement, Boolean> seen =
-                new IdentityHashMap<JsonElement, Boolean>();
-        collect(expression, occurrence, published, seen, 0);
-    }
-
     private static void collect(JsonElement node, OccurrenceAddress occurrence,
                                 Set<String> published,
                                 Map<JsonElement, Boolean> seen, int depth) {

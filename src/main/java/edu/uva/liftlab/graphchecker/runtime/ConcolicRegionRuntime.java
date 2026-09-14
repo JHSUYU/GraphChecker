@@ -540,6 +540,11 @@ public final class ConcolicRegionRuntime {
      * @return an empty string on success, otherwise a named diagnostic
      */
     public static String openWorkloadSession() {
+        // The session is open before the first region is admitted: an
+        // export can cross a declared port before anything is selected, and
+        // a row that is not published because nothing was live yet reads
+        // afterwards as a site that never ran.
+        D3Runtime.configure(configuration().resultFile);
         if (configuration().tasks.isEmpty()) {
             workloadExpressionStore = new VmExpressionTable.Store();
             return "";

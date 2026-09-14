@@ -104,7 +104,10 @@ public final class FocusedReplay {
      */
     public static boolean focused(OccurrenceAddress occurrence) {
         load();
-        if (task == null || occurrence == null) return task == null;
+        // A replay nothing focused -- the seed -- focuses nothing: every
+        // occurrence of it ran as the plan had it, and the composer reads
+        // the session whose activations are unfocused as the seed.
+        if (task == null || occurrence == null) return false;
         if (occurrence.equals(task.focused())) return true;
         if (task.factor() == null) return false;
         for (OccurrenceAddress member : task.factor()) {
