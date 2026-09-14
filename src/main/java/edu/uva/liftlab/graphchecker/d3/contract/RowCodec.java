@@ -30,7 +30,8 @@ import java.util.function.Function;
  *
  * <p>Contract v1.1 added {@code seq} (the session-monotonic event sequence
  * number) to the six event rows and {@code javaType} (the JVM descriptor) to
- * the four value-carrying ones; both are always written.</p>
+ * the four value-carrying ones; v1.2 added {@code seq} to the root mints.
+ * Both are always written.</p>
  */
 public final class RowCodec {
     private static final Gson GSON = new Gson();
@@ -223,7 +224,7 @@ public final class RowCodec {
     }
 
     public static JsonObject writeRootMint(RootMintRow row) {
-        JsonObject json = row(row.sessionId());
+        JsonObject json = row(row.sessionId(), row.seq());
         json.add(OCCURRENCE, writeOccurrence(row.occurrence()));
         json.addProperty("rootId", row.rootId());
         json.addProperty("symbol", row.symbol());
@@ -240,7 +241,7 @@ public final class RowCodec {
     }
 
     public static RootMintRow readRootMint(JsonObject json) {
-        return RootMintRow.of(string(json, SESSION_ID),
+        return RootMintRow.of(string(json, SESSION_ID), number(json, SEQ),
                 readOccurrence(object(json, OCCURRENCE)),
                 string(json, "rootId"), string(json, "symbol"),
                 RootKind.valueOf(string(json, "kind")),
