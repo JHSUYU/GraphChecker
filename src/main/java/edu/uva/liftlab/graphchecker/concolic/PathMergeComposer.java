@@ -340,25 +340,21 @@ public final class PathMergeComposer {
                 terms.add(lowering.condition(resolved.get(index),
                         "path" + pathOrdinal + ":pi" + index));
             }
-            // phi_p is the FATAL arm, not this path's own observation.
+            // phi_p is the FATAL arm, and the anchor already states it in
+            // that polarity -- so it is lowered, never re-derived.
             //
-            // The anchor states its target decision as the constraint the
-            // replay observed -- predicate == observedTakenOutcome -- which
-            // is that path's consistency with itself and is true on every
-            // path by construction.  Asserting it made a path that decided
-            // the target the healthy way satisfiable whenever its own pi
-            // was, so the recorded root polarity came back sat and the
-            // marker read as not determining.  Fatal_T asks whether the
-            // target takes the arm the failure needs: predicate ==
-            // requiredTakenOutcome.  Where the path observed that arm the
-            // two agree; where it observed the other one the fatal arm is
-            // the negation of what it observed, and the path contributes
-            // false -- which is exactly what a healthy execution should
-            // contribute to "can this fail".
-            String observedTerm = lowering.condition(phi,
+            // The rule is one rule, stated once where the anchor is built:
+            // for a path that observed the fatal arm, phi_p is its own
+            // observed predicate; for a healthy-observed path, phi_p is the
+            // negation of what it observed -- the arm it did not take.
+            // Re-deriving it here from observedTakenOutcome negated a term
+            // that was already the complement, so every healthy-observed
+            // path was handed its own observation back.  pi_p then entailed
+            // phi_p, its disjunct was satisfiable at the recorded
+            // valuation, and "the failure is reachable" said only that the
+            // run which did not fail did not fail.
+            String fatalTerm = lowering.condition(phi,
                     "path" + pathOrdinal + ":phi");
-            String fatalTerm = required == anchor.observedTakenOutcome()
-                    ? observedTerm : "(not " + observedTerm + ")";
             // INVARIANT: a path must be satisfiable as the execution that
             // made it -- its replay's roots as that replay read them, its
             // clock cells inside its own window, the deliveries it actually

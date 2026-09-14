@@ -146,6 +146,42 @@ public class PathMergeComposerTest {
         assertTrue(paths(alone).get(0).getAsJsonObject()
                 .get("admitted").getAsBoolean());
         assertEquals("unsat", solve(alone.smtLib));
+
+        // phi_p is the required arm, whichever arm the replay observed.
+        // Two rows at one anchor of one recording: the first observed the
+        // arm the failure needs and states its own predicate, the second
+        // observed the other one and states the complement of what it saw.
+        // With the root pinned to what the recording read, the first
+        // disjunct must be satisfiable and the second must not -- a healthy
+        // observation contributes false to "can this fail", and a composer
+        // that negates an arm already stated in fatal polarity hands that
+        // path its own observation back and makes the recorded valuation
+        // reachable.
+        JsonObject arms = query();
+        arms.getAsJsonArray("paths").add(path("fatal", "GROUP.SEED", false,
+                rootIs(true), rootIs(true), new ArrayList<String>()));
+        arms.getAsJsonArray("paths").add(path("healthy", "GROUP.SEED", true,
+                rootIs(true), rootIs(false), new ArrayList<String>()));
+        PathMergeComposer.Result polarity = compose(
+                Files.createTempDirectory("path-merge-polarity"), arms);
+        String pinned = polarity.smtLib + "(assert (= " + ROOT_TERM
+                + " true))\n";
+        assertEquals(2, paths(polarity).size());
+        for (JsonElement element : paths(polarity)) {
+            JsonObject row = element.getAsJsonObject();
+            boolean tookTheFatalArm = !JsonFields.optionalBool(row,
+                    "observedTakenOutcome", false);
+            assertEquals("phi must be the required arm, not the observation",
+                    "(= " + ROOT_TERM + " " + tookTheFatalArm + ")",
+                    optionalString(row, "fatalPredicateTerm"));
+            assertEquals(tookTheFatalArm
+                            ? "the path that took the fatal arm carries it"
+                            : "a healthy observation contributes false",
+                    tookTheFatalArm ? "sat" : "unsat",
+                    solve(pinned + "(assert "
+                            + optionalString(row, "selector")
+                            + ")\n(check-sat)\n"));
+        }
     }
 
     /**
@@ -815,6 +851,23 @@ public class PathMergeComposerTest {
                                    JsonObject pathCondition,
                                    JsonObject fatalPredicate,
                                    List<String> carriers) {
+        return path(caseId, group, false, pathCondition, fatalPredicate,
+                carriers);
+    }
+
+    /**
+     * The same row with the arm this replay observed stated.
+     *
+     * <p>{@code fatalPredicate} is phi_p as the query builder publishes it:
+     * the arm the failure needs whatever the replay saw -- its own
+     * predicate where it observed that arm, the complement of what it
+     * observed where it did not.</p>
+     */
+    private static JsonObject path(String caseId, String group,
+                                   boolean observedOutcome,
+                                   JsonObject pathCondition,
+                                   JsonObject fatalPredicate,
+                                   List<String> carriers) {
         JsonObject path = new JsonObject();
         path.addProperty(LocalCaseIdentity.FIELD, "LOCAL_CASE." + caseId);
         path.addProperty("replayGroupId", group);
@@ -829,7 +882,7 @@ public class PathMergeComposerTest {
         path.add(TargetAnchorEvidence.FIELD, TargetAnchorEvidence.build(
                 SITE, 1, "node0", "REGION.example",
                 "node0/region/REGION.example#1#a1", "iteration-0000",
-                false, false, constraints, new JsonObject(),
+                observedOutcome, false, constraints, new JsonObject(),
                 new ArrayList<JsonObject>(), carriers));
         return path;
     }

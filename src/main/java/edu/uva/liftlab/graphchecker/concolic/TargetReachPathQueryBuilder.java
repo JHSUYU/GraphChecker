@@ -408,8 +408,14 @@ public final class TargetReachPathQueryBuilder {
                 path.add(SharedStateEvidence.RECORDED_FIELD,
                         shared);
             }
+            // Three shapes, one rule: the last constraint is phi_p, in the
+            // polarity that fails.  A path that observed the fatal arm
+            // states its own predicate; one that observed the healthy arm
+            // states the complement of it; a target that published no
+            // predicate at all states the constant its recorded decision
+            // makes the arm.
             JsonArray constraints = targetMapping.isConcreteObservation()
-                    ? observation.pathCondition()
+                    ? concreteTargetConstraints(observation, requiredAttested)
                     : requiredAttested
                     ? witnessedTargetConstraints(summary, observation,
                     targetMapping)
@@ -962,6 +968,31 @@ public final class TargetReachPathQueryBuilder {
                 optionalString(summary, "topologyEpoch"),
                 target.sourceTakenOutcome(), fatalRequiredOutcome,
                 whole, selectors, roots, carriers);
+    }
+
+    /**
+     * A target branch that added no path predicate at all.
+     *
+     * <p>Its arm is a fact of the recording and not an expression over
+     * anything, so phi_p is the constant that fact makes it: true where
+     * this activation took the arm the failure needs, false where it took
+     * the other one -- which is the disjunct a healthy execution owes "can
+     * this fail".  Reading the last recorded decision instead made phi_p a
+     * copy of a pi term about some other site, and a path that recorded no
+     * decision had no last element to read.</p>
+     */
+    private static JsonArray concreteTargetConstraints(
+            PathObservation observation, boolean requiredAttested) {
+        JsonArray result = new JsonArray();
+        for (JsonElement decision : observation.pathCondition()) {
+            result.add(decision);
+        }
+        JsonObject arm = new JsonObject();
+        arm.addProperty("_type", "ConstExpr");
+        arm.addProperty("_java_type", "Z");
+        arm.addProperty("_exp", requiredAttested ? "Y_Z_1" : "Y_Z_0");
+        result.add(arm);
+        return result;
     }
 
     private static JsonArray flippedTargetConstraints(
