@@ -21,6 +21,10 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
+import com.google.gson.JsonNull;
+import edu.uva.liftlab.graphchecker.concolic.SharedStateEvidence;
+import java.util.ArrayList;
+import java.util.HashMap;
 
 /**
  * Four places where the replay used to invent a chain element, and what each
@@ -59,7 +63,22 @@ public class NoFabricatedChainElementTest {
 
     /** A well-formed envelope that simply carries no expression still does. */
     @Test
-    public void anAbsentExpressionIsStillTheHonestNothing() throws Exception {
+    public void noFabricatedChainElementRules() throws Exception {
+        anAbsentExpressionIsStillTheHonestNothing();
+        aSeedReplayAnswersAControlledMarkerFromTheRecording();
+        aFlipReplayAnswersAControlledMarkerFromItsModel();
+        neitherAModelNorARecordedValueStillBlocks();
+        anyThrowIsNoLongerATargetReach();
+        theDeclaredTargetOccurrenceStillReaches();
+        TrackedLocationWriteLogTest t0 =
+                new TrackedLocationWriteLogTest();
+        t0.trackedLocationWriteLogRules();
+        ConcolicContainerMaterializationTest t1 =
+                new ConcolicContainerMaterializationTest();
+        t1.writesHashMapValueAtItsCurrentIterationFrontier();
+    }
+
+    private void anAbsentExpressionIsStillTheHonestNothing() throws Exception {
         ConcolicRegionRuntime.ActiveRegion active = region(false);
         assertNull(ConcolicRegionRuntime.engineExpression("{}"));
         assertTrue("no expression is not a failure",
@@ -79,8 +98,7 @@ public class NoFabricatedChainElementTest {
      * recording's polarity is stated on the action as {@code primitiveValue}
      * gated on {@code observed}, i.e. a value the mint witnessed.</p>
      */
-    @Test
-    public void aSeedReplayAnswersAControlledMarkerFromTheRecording()
+    private void aSeedReplayAnswersAControlledMarkerFromTheRecording()
             throws Exception {
         ConcolicRegionRuntime.ActiveRegion recordedFalse = region(false,
                 recordedFaultAction(MARKER, 1, "false"));
@@ -101,8 +119,7 @@ public class NoFabricatedChainElementTest {
      * recorded value -- moving the marker off what the recording saw is the
      * entire point of the flip.
      */
-    @Test
-    public void aFlipReplayAnswersAControlledMarkerFromItsModel()
+    private void aFlipReplayAnswersAControlledMarkerFromItsModel()
             throws Exception {
         JsonObject action = recordedFaultAction(MARKER, 1, "false");
         ConcolicRegionRuntime.ActiveRegion active = region(false,
@@ -115,8 +132,7 @@ public class NoFabricatedChainElementTest {
     }
 
     /** Neither a model nor a recorded value is the unanswered case. */
-    @Test
-    public void neitherAModelNorARecordedValueStillBlocks()
+    private void neitherAModelNorARecordedValueStillBlocks()
             throws Exception {
         ConcolicRegionRuntime.ActiveRegion active = region(false,
                 faultAction(MARKER, 1));
@@ -138,8 +154,7 @@ public class NoFabricatedChainElementTest {
      * stand in for one -- and {@code nameUnreachedTargetBranch} returned
      * early for that exact case, so nothing was filed either.</p>
      */
-    @Test
-    public void anyThrowIsNoLongerATargetReach() throws Exception {
+    private void anyThrowIsNoLongerATargetReach() throws Exception {
         ConcolicRegionRuntime.ActiveRegion active = region(false);
         active.exitKind = "THROW";
         active.exceptionType = "java.lang.IllegalStateException";
@@ -153,8 +168,7 @@ public class NoFabricatedChainElementTest {
     }
 
     /** The declared occurrence, decided at its required outcome, still is. */
-    @Test
-    public void theDeclaredTargetOccurrenceStillReaches() throws Exception {
+    private void theDeclaredTargetOccurrenceStillReaches() throws Exception {
         ConcolicRegionRuntime.ActiveRegion active = region(true);
         active.exitKind = "THROW";
         active.exceptionType = "java.lang.IllegalStateException";
@@ -349,4 +363,188 @@ public class NoFabricatedChainElementTest {
         field.setAccessible(true);
         return ((ThreadLocal<Deque<Long>>) field.get(null)).get();
     }
+
+    /**
+     * The write log, read out by object.
+     *
+     * <p>A location is tracked because a symbolic value reached it, and the VM
+     * files it under the identity of the object actually written.  So the runtime
+     * names nothing: it publishes the envelope the VM hands back, keyed by the
+     * location the VM states, which is the key the read nodes carry.</p>
+     */
+    static final class TrackedLocationWriteLogTest {
+
+        /** The published record is the location, its versions, and no carrier.
+         *
+         * <p>The container's INITIAL keeps its {@code initialSnapshot}: it states
+         * the contents tracking began from, every relation over that container
+         * stands on them, and without it the corpus cannot say whether the base
+         * was stated at all.</p> */
+        public void trackedLocationWriteLogRules() throws Exception {
+            theRecordIsNamedByTheObjectAndCarriesNoCarrier();
+            aContainerThatStatesItsBaseIsAdmitted();
+            aContainerWithNoStatedBaseIsRefused();
+            aContainerWithNoSnapshotMemberIsRefused();
+            aScalarIsNotAskedForAContainerBase();
+        }
+
+        private void theRecordIsNamedByTheObjectAndCarriesNoCarrier() {
+            JsonObject published = SharedStateCapture.reduceWriteLogForTest(
+                    SharedStateEvidence.versionsRecord("MAP_STATE/24#-3",
+                            envelope("MAP_STATE", 24, -3,
+                                    new int[] {39, 41, 44}), null));
+
+            assertEquals("MAP_STATE/24#-3",
+                    published.get("locationKey").getAsString());
+            assertFalse("no carrier names this location any more",
+                    published.has("carrier"));
+            JsonObject envelope = published.getAsJsonObject("envelope");
+            assertTrue("the object identity is stated", envelope.has("location"));
+            assertEquals("the session the clock belongs to is stated", 1,
+                    envelope.get("sessionId").getAsInt());
+            JsonArray versions = envelope.getAsJsonArray("versions");
+            assertEquals(3, versions.size());
+            long previous = -1L;
+            for (int index = 0; index < versions.size(); index++) {
+                JsonObject version = versions.get(index).getAsJsonObject();
+                assertEquals("version id, kind, container base, expression",
+                        index == 0 ? 4 : 3, version.size());
+                long clock = version.get("fieldVersionId").getAsLong();
+                assertTrue("the clock increases with the writes",
+                        clock > previous);
+                previous = clock;
+            }
+        }
+
+        /** A container whose base the VM stated is admitted. */
+        private void aContainerThatStatesItsBaseIsAdmitted() {
+            assertEquals("", SharedStateEvidence.versionsFault(
+                    envelope("MAP_STATE", 24, -3, new int[] {39, 41})));
+        }
+
+        /**
+         * A container whose base the VM could not state is refused, by name.
+         *
+         * <p>A container relation resolves as its base plus the mutation chain,
+         * so a base nobody stated leaves every read of that container standing on
+         * nothing.  The class travels in the fault because naming it is what gets
+         * it walked.</p>
+         */
+        private void aContainerWithNoStatedBaseIsRefused() {
+            JsonObject envelope = envelope("MAP_STATE", 24, -3,
+                    new int[] {39, 41});
+            JsonObject initial = envelope.getAsJsonArray("versions").get(0)
+                    .getAsJsonObject();
+            JsonObject snapshot = new JsonObject();
+            snapshot.addProperty("stated", false);
+            snapshot.addProperty("unsupportedClass",
+                    "org.apache.hadoop.util.LightWeightGSet");
+            initial.add("initialSnapshot", snapshot);
+
+            String fault = SharedStateEvidence.versionsFault(envelope);
+
+            assertTrue(fault, SharedStateEvidence.containerBaseUnstatedFault(
+                    fault));
+            assertTrue(fault, fault.contains("LightWeightGSet"));
+            assertEquals("SHARED_STATE_CONTAINER_BASE_UNSTATED",
+                    SharedStateEvidence.reason(
+                            SharedStateEvidence.CONTAINER_BASE_UNSTATED));
+        }
+
+        /** An INITIAL with no snapshot member at all is refused the same way. */
+        private void aContainerWithNoSnapshotMemberIsRefused() {
+            JsonObject envelope = envelope("MAP_STATE", 24, -3,
+                    new int[] {39, 41});
+            envelope.getAsJsonArray("versions").get(0).getAsJsonObject()
+                    .remove("initialSnapshot");
+
+            assertTrue(SharedStateEvidence.containerBaseUnstatedFault(
+                    SharedStateEvidence.versionsFault(envelope)));
+        }
+
+        /** A scalar has no container base and is not asked for one. */
+        private void aScalarIsNotAskedForAContainerBase() {
+            JsonObject envelope = envelope("INSTANCE_FIELD", 9, 56,
+                    new int[] {39, 41});
+            envelope.getAsJsonArray("versions").get(0).getAsJsonObject()
+                    .remove("initialSnapshot");
+
+            assertEquals("", SharedStateEvidence.versionsFault(envelope));
+        }
+
+        // ---------- the envelope the VM emits per tracked location ----------
+
+        private static JsonObject envelope(String kind, long ownerSymRid,
+                                           int slot, int[] fieldVersionIds) {
+            JsonObject location = new JsonObject();
+            location.addProperty("locationKind", kind);
+            location.addProperty("ownerSymRid", ownerSymRid);
+            location.addProperty("slot", slot);
+            JsonArray versions = new JsonArray();
+            for (int index = 0; index < fieldVersionIds.length; index++) {
+                JsonObject version = new JsonObject();
+                version.addProperty("fieldVersionId", fieldVersionIds[index]);
+                version.addProperty("versionKind", index == 0 ? "INITIAL"
+                        : "MAP_STATE".equals(kind) ? "STATE_PUT" : "WRITE");
+                version.addProperty("regionEnterEventId", 2);
+                version.addProperty("writerContextId", 2);
+                version.addProperty("regionId", "REGION.r");
+                version.addProperty("taskId", "TASK.t");
+                version.add("pathGuard", JsonNull.INSTANCE);
+                if (index == 0) {
+                    JsonObject snapshot = new JsonObject();
+                    snapshot.addProperty("entries", 2);
+                    snapshot.addProperty("truncated", false);
+                    version.add("initialSnapshot", snapshot);
+                }
+                JsonObject expression = new JsonObject();
+                expression.addProperty("_type", "ConstExpr");
+                expression.addProperty("value", index);
+                version.add("expression", expression);
+                versions.add(version);
+            }
+            JsonObject envelope = new JsonObject();
+            envelope.addProperty("schemaVersion", 1);
+            envelope.addProperty("kind", "SHARED_FIELD_VERSIONS");
+            envelope.addProperty("sessionId", 1);
+            envelope.addProperty("selected", true);
+            envelope.addProperty("writerSetComplete", true);
+            envelope.addProperty("serializationTruncated", false);
+            envelope.addProperty("readLogTruncated", false);
+            envelope.add("location", location);
+            envelope.add("versions", versions);
+            envelope.add("reads", new JsonArray());
+            return envelope;
+        }
+    }
+
+
+    static final class ConcolicContainerMaterializationTest {
+        public void writesHashMapValueAtItsCurrentIterationFrontier() {
+            JsonObject target = new JsonObject();
+            target.addProperty("shape", "ASSOCIATIVE");
+            target.addProperty("selectorKind", "ITERATION_INDEX");
+            target.addProperty("index", 1);
+            target.addProperty("projection", "VALUE");
+            JsonObject encoded = new JsonObject();
+            encoded.addProperty("modelAssignmentKey", "container.cell");
+            encoded.addProperty("engineSymbol", "container.cell");
+            encoded.addProperty("inputSymbol", "map.input");
+            encoded.addProperty("valueType", "NULL");
+            encoded.addProperty("value", "null");
+            encoded.add("containerTarget", target);
+
+            Map<String, Object> values = new HashMap<>();
+            values.put("first", new Object());
+            values.put("second", new Object());
+            String selectedKey = new ArrayList<>(values.keySet()).get(1);
+            ConcolicRegionRuntime.ModelAssignment assignment =
+                    new ConcolicRegionRuntime.ModelAssignment(encoded);
+
+            assertTrue(ConcolicRegionRuntime.writeContainerTarget(
+                    values, assignment));
+            assertNull(values.get(selectedKey));
+        }
+    }
+
 }

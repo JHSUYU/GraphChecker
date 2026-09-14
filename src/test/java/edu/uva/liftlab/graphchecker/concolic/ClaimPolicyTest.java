@@ -22,6 +22,11 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
+import edu.uva.liftlab.graphchecker.contract.ExecutionTask;
+import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
+import edu.uva.liftlab.graphchecker.contract.RegionInstancePlan;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 /**
  * The campaign acceptance gate. Each test names one blocker the jq gate did
@@ -40,7 +45,26 @@ public class ClaimPolicyTest {
      * freedom findings are still reported; the claim is not.</p>
      */
     @Test
-    public void anExplainedWitnessThatNamesNoMechanismIsNotAFinding() {
+    public void claimPolicyRules() throws Exception {
+        anExplainedWitnessThatNamesNoMechanismIsNotAFinding();
+        onlyOneRootFlipAtATimeProvesSensitivity();
+        noExactReachabilityIsItsOwnBlocker();
+        aClockOutsideItsWindowIsUnexplainedFreedom();
+        faultMarkerThatFlipsTheVerdictIsAccepted();
+        interiorClockSkewShownNecessaryIsALegitimateFinding();
+        oneFlippedMarkerNamesItselfInTheWitnessFinding();
+        anUnstatedRecordedValueBlocksTheClaim();
+        aConfiguredSourceWitnessAtItsRecordedValueIsAccepted();
+        aReproducedRecordingNeedsTheOtherPolarityRefuted();
+        TargetOccurrenceLedgerTest t0 =
+                new TargetOccurrenceLedgerTest();
+        t0.targetOccurrenceLedgerRules();
+        UnansweredOccurrenceTest t1 =
+                new UnansweredOccurrenceTest();
+        t1.unansweredOccurrenceRules();
+    }
+
+    private void anExplainedWitnessThatNamesNoMechanismIsNotAFinding() {
         JsonObject reach = reach();
         reach.add("valuations", parseArray(
                 "[{\"values\":[false],\"status\":\"sat\"},"
@@ -63,8 +87,7 @@ public class ClaimPolicyTest {
     }
 
     /** A flip of two roots at once proves nothing about either of them. */
-    @Test
-    public void onlyOneRootFlipAtATimeProvesSensitivity() {
+    private void onlyOneRootFlipAtATimeProvesSensitivity() {
         JsonArray twoAtOnce = parseArray(
                 "[{\"values\":[false,false],\"status\":\"sat\"},"
                         + "{\"values\":[true,true],\"status\":\"unsat\"}]");
@@ -76,8 +99,7 @@ public class ClaimPolicyTest {
         assertTrue(ClaimPolicy.faultSensitive(oneAtATime, false));
     }
 
-    @Test
-    public void noExactReachabilityIsItsOwnBlocker() {
+    private void noExactReachabilityIsItsOwnBlocker() {
         JsonObject reach = reach();
         reach.addProperty("reachability",
                 "UNKNOWN");
@@ -257,8 +279,7 @@ public class ClaimPolicyTest {
      * under its own name, with the marker row now saying which freedom it
      * was.</p>
      */
-    @Test
-    public void aClockOutsideItsWindowIsUnexplainedFreedom() {
+    private void aClockOutsideItsWindowIsUnexplainedFreedom() {
         JsonObject claim = ClaimPolicy.decide(markerManifest(),
                 markerReach(true, "-300001"), noFlows());
 
@@ -275,8 +296,7 @@ public class ClaimPolicyTest {
     }
 
     /** The marker deciding the verdict is what an accepted claim rests on. */
-    @Test
-    public void faultMarkerThatFlipsTheVerdictIsAccepted() {
+    private void faultMarkerThatFlipsTheVerdictIsAccepted() {
         JsonObject reach = markerReach(true, "-300000");
         reach.getAsJsonArray("valuations").get(0).getAsJsonObject()
                 .addProperty("status", "unsat");
@@ -300,8 +320,7 @@ public class ClaimPolicyTest {
      * necessity probe stays in the report as evidence a reader may weigh, and
      * decides nothing.</p>
      */
-    @Test
-    public void interiorClockSkewShownNecessaryIsALegitimateFinding() {
+    private void interiorClockSkewShownNecessaryIsALegitimateFinding() {
         JsonObject claim = ClaimPolicy.decide(markerManifest(),
                 markerReach(true, "245021"), noFlows());
 
@@ -322,8 +341,7 @@ public class ClaimPolicyTest {
      * One marker: the buggy polarity is the valuation that moves it, and the
      * finding names which marker moved and where.
      */
-    @Test
-    public void oneFlippedMarkerNamesItselfInTheWitnessFinding() {
+    private void oneFlippedMarkerNamesItselfInTheWitnessFinding() {
         JsonObject claim = ClaimPolicy.decide(markerManifest(),
                 markerReach(true, "-300000"), noFlows());
 
@@ -351,8 +369,7 @@ public class ClaimPolicyTest {
      * a witness value of {@code false}, {@code flipped:true}, and an empty
      * mechanism list under the reason "a symbolic root flips it".</p>
      */
-    @Test
-    public void anUnstatedRecordedValueBlocksTheClaim() {
+    private void anUnstatedRecordedValueBlocksTheClaim() {
         JsonObject manifest = markerManifest();
         manifest.add(ComposedManifest.RECORDED_ROOT_VALUES,
                 new JsonArray());
@@ -400,8 +417,7 @@ public class ClaimPolicyTest {
      * it refused the run for reproducing its own recording, and the defaulted
      * polarity hid that by reporting the reproduction as a flip.</p>
      */
-    @Test
-    public void aConfiguredSourceWitnessAtItsRecordedValueIsAccepted() {
+    private void aConfiguredSourceWitnessAtItsRecordedValueIsAccepted() {
         JsonObject claim = ClaimPolicy.decide(orderedManifest("false"),
                 orderedReach("sat", "unsat"), noFlows());
 
@@ -440,8 +456,7 @@ public class ClaimPolicyTest {
      * anyway shows the opposite. Without the refutation the witness is a sat
      * answer with nothing named behind it.</p>
      */
-    @Test
-    public void aReproducedRecordingNeedsTheOtherPolarityRefuted() {
+    private void aReproducedRecordingNeedsTheOtherPolarityRefuted() {
         JsonObject claim = ClaimPolicy.decide(orderedManifest("false"),
                 orderedReach("sat", "sat"), noFlows());
 
@@ -581,5 +596,259 @@ public class ClaimPolicyTest {
                 + "\"necessary\":" + necessary + "}]}");
     }
 
+
+
+    /**
+     * Every observed occurrence of the annotated target is named, and the ones
+     * a composition did not lower are reported.
+     *
+     * <p>The planner plants a {@code TARGET_REACH_CLOSURE} goal on every
+     * execution of the annotated site -- hdfs-17897's SASL handshake is observed
+     * twice, hdfs-11741's site four times.  Everything after it narrows to one:
+     * {@code RuntimeWorkflowDiscovery} elects a single {@code TARGET} member, the
+     * campaign builds a reach query for that member alone, and the composition
+     * lowers that query.  Nothing published said so, so a verdict about one
+     * execution of the site read as a verdict about the site.  hdfs-17897 elected
+     * {@code REGION.53092d3e#2}, the DataNode's own handshake, leaving the
+     * client's handshake -- where the bug's chain ends -- off the slice with
+     * nothing naming why.</p>
+     */
+    static final class TargetOccurrenceLedgerTest {
+
+        private static final String SITE =
+                "<org.apache.hadoop.hdfs.security.token.block."
+                        + "BlockTokenSecretManager: "
+                        + "org.apache.hadoop.hdfs.security.token.block."
+                        + "DataEncryptionKey retrieveDataEncryptionKey(int,"
+                        + "byte[])>#u12";
+        private static final String CLIENT_HANDSHAKE =
+                "hdfs-17897/dn0#epoch0/region/REGION.53092d3e#1";
+        private static final String DATANODE_HANDSHAKE =
+                "hdfs-17897/dn0#epoch0/region/REGION.53092d3e#2";
+
+        /** Both handshakes are named, and exactly the elected one is composed. */
+        public void targetOccurrenceLedgerRules() throws Exception {
+            everyObservedTargetOccurrenceIsNamed();
+            everyTargetOccurrenceIsScheduledAsATargetReachMember();
+        }
+
+        private void everyObservedTargetOccurrenceIsNamed() {
+            JsonArray ledger = PathMergeComposer.targetReachOccurrences(
+                    bothHandshakes(), fatalQuery(DATANODE_HANDSHAKE,
+                            "GOAL.TARGET_REACH.2"));
+            assertEquals(2, ledger.size());
+            assertEquals(CLIENT_HANDSHAKE, occurrence(ledger, 0));
+            assertEquals(DATANODE_HANDSHAKE, occurrence(ledger, 1));
+            assertTrue(composed(ledger, 1));
+            assertTrue("the client's handshake is not in this formula",
+                    !composed(ledger, 0));
+            assertEquals(SITE, ledger.get(0).getAsJsonObject()
+                    .getAsJsonArray("failureSites").get(0).getAsString());
+        }
+
+        /**
+         * The schedule names every target occurrence as one, not only the one it
+         * elects.
+         *
+         * <p>Exactly one member carries the {@code TARGET} role -- that is the
+         * replay closure this bundle is built around and every stage still
+         * dispatches on it -- but each occurrence of the annotated site is
+         * flagged as carrying a target-reach goal.  That flag is what EXPLORE
+         * builds a reach query per occurrence from and what COMPOSE composes per
+         * occurrence from; without it the other occurrences are indistinguishable
+         * from an ordinary causal dependency.</p>
+         */
+        private void everyTargetOccurrenceIsScheduledAsATargetReachMember()
+                throws java.io.IOException {
+            List<RuntimeWorkflowDiscovery.Selection> selections =
+                    RuntimeWorkflowDiscovery.rankedWorkflow(distinctHandshakes())
+                            .selections();
+            assertEquals(2, selections.size());
+            int elected = 0;
+            for (RuntimeWorkflowDiscovery.Selection selection : selections) {
+                assertTrue("occurrence " + selection.occurrenceId
+                        + " is not named as a target occurrence",
+                        selection.targetReach);
+                if (selection.target) elected++;
+            }
+            assertEquals("one member carries the replay closure", 1, elected);
+        }
+
+        private static List<RegionInstancePlan> bothHandshakes() {
+            return Arrays.asList(
+                    plan(CLIENT_HANDSHAKE, "REGION.53092d3e",
+                            "GOAL.TARGET_REACH.1", true),
+                    plan(DATANODE_HANDSHAKE, "REGION.53092d3e",
+                            "GOAL.TARGET_REACH.2", true));
+        }
+
+        /** The same two handshakes, with the runtime event that separates them:
+         *  the ranking refuses evidence that does not distinguish occurrences. */
+        private static List<RegionInstancePlan> distinctHandshakes() {
+            return Arrays.asList(
+                    plan(CLIENT_HANDSHAKE, "REGION.53092d3e",
+                            "GOAL.TARGET_REACH.1", true, 11L),
+                    plan(DATANODE_HANDSHAKE, "REGION.53092d3e",
+                            "GOAL.TARGET_REACH.2", true, 27L));
+        }
+
+        private static String occurrence(JsonArray ledger, int index) {
+            return ledger.get(index).getAsJsonObject()
+                    .get("occurrenceId").getAsString();
+        }
+
+        private static boolean composed(JsonArray ledger, int index) {
+            return ledger.get(index).getAsJsonObject()
+                    .get("composed").getAsBoolean();
+        }
+
+        private static JsonObject fatalQuery(String occurrence, String goal) {
+            JsonObject fatal = new JsonObject();
+            fatal.addProperty("occurrenceId", occurrence);
+            fatal.addProperty("goalId", goal);
+            return fatal;
+        }
+
+        private static RegionInstancePlan plan(String occurrence, String region,
+                                               String goal, boolean target) {
+            return plan(occurrence, region, goal, target, -1L);
+        }
+
+        private static RegionInstancePlan plan(String occurrence, String region,
+                                               String goal, boolean target,
+                                               long runtimeEventSeq) {
+            JsonObject branch = new JsonObject();
+            branch.addProperty("failureTarget", target);
+            branch.addProperty("loopControlGuard", false);
+            branch.addProperty("observed", target);
+            branch.addProperty("siteId", SITE);
+            if (runtimeEventSeq >= 0) {
+                branch.addProperty("selectedRuntimeEventSeq", runtimeEventSeq);
+            }
+            if (target) branch.addProperty("requiredOutcome", false);
+            JsonArray branches = new JsonArray();
+            branches.add(branch);
+            JsonObject admission = new JsonObject();
+            admission.addProperty("state", "READY");
+            JsonObject closure = new JsonObject();
+            closure.addProperty("goalId", goal);
+            closure.addProperty("kind", target
+                    ? "TARGET_REACH_CLOSURE" : "REGION_PATH_CLOSURE");
+            closure.add("admission", admission);
+            closure.add("branches", branches);
+            closure.add("runtimeDefinitionMethods", new JsonArray());
+            closure.add("edgeBindings", new JsonArray());
+            JsonArray closures = new JsonArray();
+            closures.add(closure);
+            JsonObject encoded = new JsonObject();
+            encoded.addProperty("sourceKey", "hdfs-17897/dn0#epoch0");
+            encoded.addProperty("occurrenceId", occurrence);
+            encoded.addProperty("relationKey",
+                    "hdfs-17897/dn0/relation/" + region);
+            encoded.addProperty("regionId", region);
+            encoded.add("closureGoals", closures);
+            return RegionInstancePlan.decode(encoded);
+        }
+    }
+
+
+    /**
+     * An occurrence one run declined and another answered, and one neither did.
+     *
+     * <p>A workload with two JVM epochs on one node offers every task addressed
+     * at that node to both.  The epoch that never registered the addressed one
+     * says so, and that is a statement about which JVM was asked.  Where another
+     * run answered the task it is noise; where none did, the region was not
+     * replayed at all -- which is how a campaign came back FINAL_READY over a
+     * formula whose only root-dependent region never ran.</p>
+     */
+    static final class UnansweredOccurrenceTest {
+
+        private static final String UNMATCHED =
+                "REGION_OCCURRENCE_ANCHOR_UNMATCHED";
+
+        /** No run answered it: the contract names the task and blocks. */
+        public void unansweredOccurrenceRules() throws Exception {
+            aTaskEveryRunDeclinedIsNamed();
+            aTaskAnotherRunAnsweredIsClean();
+            aRegionThatDidNotRunIsNotAnUnansweredTask();
+        }
+
+        private void aTaskEveryRunDeclinedIsNamed() {
+            List<JsonObject> rows = PublicationContract.check(
+                    tasks(task("TASK.a")), Collections.<JsonObject>emptyList(),
+                    Collections.singletonList(declined("TASK.a")));
+
+            assertEquals(1, rows.size());
+            assertEquals(PublicationContract.TASK_ANSWERED_BY_NO_RUN,
+                    rows.get(0).get("code").getAsString());
+            assertEquals("TASK.a", rows.get(0).get("subject").getAsString());
+        }
+
+        /** Another run answered it, so the decline says nothing to block on. */
+        private void aTaskAnotherRunAnsweredIsClean() {
+            assertTrue(PublicationContract.check(tasks(task("TASK.a")),
+                    Collections.singletonList(summary("TASK.a")),
+                    Collections.singletonList(declined("TASK.a"))).isEmpty());
+        }
+
+        /** A real skip is an answer about the region, and is not this. */
+        private void aRegionThatDidNotRunIsNotAnUnansweredTask() {
+            JsonObject observed = new JsonObject();
+            observed.addProperty("code", "REGION_ROOT_NEVER_EXECUTED");
+            observed.addProperty("taskId", "TASK.a");
+
+            assertTrue(PublicationContract.check(tasks(task("TASK.a")),
+                    Collections.<JsonObject>emptyList(),
+                    Collections.singletonList(observed)).isEmpty());
+        }
+
+        private static JsonObject declined(String taskId) {
+            JsonObject row = new JsonObject();
+            row.addProperty("code", UNMATCHED);
+            row.addProperty("taskId", taskId);
+            row.addProperty("detail", "this run reached [wl/nn0#epoch0] and never"
+                    + " registered wl/nn0#epoch1");
+            return row;
+        }
+
+        private static JsonObject summary(String taskId) {
+            JsonObject row = new JsonObject();
+            row.addProperty("taskId", taskId);
+            row.addProperty("occurrenceId", "wl/nn0#epoch1/region/R#1#a1");
+            row.add("branchMappings", new JsonArray());
+            return row;
+        }
+
+        private static Map<String, ExecutionTask> tasks(JsonObject... rows) {
+            Map<String, ExecutionTask> tasks = new LinkedHashMap<>();
+            for (JsonObject row : rows) {
+                tasks.put(row.get("taskId").getAsString(),
+                        ExecutionTask.decode(row));
+            }
+            return tasks;
+        }
+
+        private static JsonObject task(String taskId) {
+            JsonObject row = new JsonObject();
+            row.addProperty("schemaVersion", 1);
+            row.addProperty("kind", "CONCOLIC_EXECUTION_TASK");
+            row.addProperty("taskId", taskId);
+            row.addProperty("goalId", "GOAL." + taskId);
+            row.addProperty("goalKind", "REGION_PATH_CLOSURE");
+            row.addProperty("regionId", "REGION.fixture");
+            row.addProperty("sourceKey", "wl/nn0#epoch1");
+            row.addProperty("occurrenceId", "wl/nn0#epoch1/region/R#1");
+            row.addProperty("relationKey", "wl/nn0/relation/R");
+            row.add("branches", new JsonArray());
+            row.add("inputActions", new JsonArray());
+            JsonObject admission = new JsonObject();
+            admission.addProperty("state", "EXECUTABLE");
+            row.add("admission", admission);
+            LoopBoundPolicy.cfgBackedges(
+                    LoopBoundPolicy.MAX_LOOP_BODY_ITERATIONS).writeTo(row);
+            return row;
+        }
+    }
 
 }

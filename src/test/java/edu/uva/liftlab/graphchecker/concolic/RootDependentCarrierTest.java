@@ -63,9 +63,18 @@ public class RootDependentCarrierTest {
     @Rule
     public final TemporaryFolder folder = new TemporaryFolder();
 
+    private int declarationFiles;
+
     /** A read of a carrier that feeds another store carries it too. */
     @Test
-    public void aCarrierThatFeedsAnotherStoreCarriesItToo() throws Exception {
+    public void rootDependentCarrierRules() throws Exception {
+        aCarrierThatFeedsAnotherStoreCarriesItToo();
+        anEdgeTheRecordingNeverExecutedStillCarriesTheRoot();
+        aFieldNothingWritesIsNeverACarrier();
+        anInSliceReferenceIsTrackedAsAnIdentityCarrier();
+    }
+
+    private void aCarrierThatFeedsAnotherStoreCarriesItToo() throws Exception {
         ConcolicScheduler.SymbolicInputSelection selection = seeded(
                 graph(edge(ORDERED, GUARD_LOCAL, "HEAP_READ"),
                         edge(GUARD_LOCAL, COUNTER, "GUARD"),
@@ -99,8 +108,7 @@ public class RootDependentCarrierTest {
      * exactly that shape: the decrement and the list removal the fatal count
      * mismatch needs live on the branch the healthy run skips.</p>
      */
-    @Test
-    public void anEdgeTheRecordingNeverExecutedStillCarriesTheRoot()
+    private void anEdgeTheRecordingNeverExecutedStillCarriesTheRoot()
             throws Exception {
         // The only path from the root to the counter runs through the arm
         // this execution did not take.
@@ -133,8 +141,7 @@ public class RootDependentCarrierTest {
      * ({@code STATIC_FIELD_MATERIALIZATION_UNSUPPORTED} on
      * {@code FSDirectory.DOT_RESERVED}).</p>
      */
-    @Test
-    public void aFieldNothingWritesIsNeverACarrier() throws Exception {
+    private void aFieldNothingWritesIsNeverACarrier() throws Exception {
         String constant = "<D: byte[] DOT_RESERVED>";
         String reader = "<D: boolean isReservedName(E)>::$r2";
         ConcolicScheduler.SymbolicInputSelection selection = seeded(
@@ -164,8 +171,7 @@ public class RootDependentCarrierTest {
      * getfield, never minted -- while the exact-field-path half of the leaf
      * contract still applies to it.</p>
      */
-    @Test
-    public void anInSliceReferenceIsTrackedAsAnIdentityCarrier()
+    private void anInSliceReferenceIsTrackedAsAnIdentityCarrier()
             throws Exception {
         ConcolicScheduler.RootDependenceSlice slice =
                 ConcolicScheduler.RootDependenceSlice.forward(
@@ -347,7 +353,8 @@ public class RootDependentCarrierTest {
     }
 
     private Path declarations(String... rows) throws IOException {
-        Path path = folder.newFile("symbolic-inputs.jsonl").toPath();
+        Path path = folder.newFile("symbolic-inputs-"
+                + (declarationFiles++) + ".jsonl").toPath();
         StringBuilder text = new StringBuilder();
         for (String row : rows) text.append(row).append('\n');
         Files.write(path, text.toString().getBytes(StandardCharsets.UTF_8));
