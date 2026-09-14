@@ -17,65 +17,93 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.Callable;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
 import java.util.function.Predicate;
 
 /**
- * The obligations of one task: one per decision of one admitted path.
+ * The obligations of one task, and the solving of one of them.
  *
  * <p>An obligation is the path <em>as its replay ran it</em> -- every prefix
  * decision in the arm it took -- with exactly one decision negated.  Nothing
  * else is asked for: not the fatal predicate (that is the composition's
- * question), not another region's path (that region is its own task).  The
- * model of that query says what the replay must be handed to take the other
- * arm: a value per root at its mint, and a value per handoff at its attach.
- * A query the solver refuses is closed here and never issued, so a wave costs
- * a replay only for a flip that some world of the corpus supports.</p>
+ * question), not another region's path (that region is its own task).</p>
+ *
+ * <p>Planning and solving are separate on purpose, and the campaign runs them
+ * in separate processes: one JVM plans a wave ({@link ExploreMain}) and one
+ * worker per obligation solves and replays it
+ * ({@link ObligationSolverMain}).  A solve is what an obligation costs before
+ * any replay runs, and a wave's queries are independent -- each is one path
+ * with one decision negated over a corpus nobody writes to while the wave is
+ * open.</p>
  */
 public final class ObligationFactory {
-    /** How many obligations one task may open in one wave. */
-    public static final int DEFAULT_MAX_PER_TASK = 256;
     /** What one obligation's query may cost. */
     public static final long DEFAULT_TIMEOUT_MILLIS = 20_000L;
-    /** How many queries of one task are solved at a time. */
-    public static final int DEFAULT_SOLVER_THREADS = 4;
+    /** How many recorded paths of one task a wave proposes flips from. */
+    public static final int DEFAULT_MAX_PATHS_PER_TASK = 32;
+    /** How many flips one path may offer in one wave. */
+    public static final int DEFAULT_MAX_FLIPS_PER_PATH = 32;
 
-    private final Corpus corpus;
-    private final Path z3;
-    private final long timeoutMillis;
-    private final int maxPerTask;
-    private final int threads;
-
-    public ObligationFactory(Corpus corpus, Path z3, long timeoutMillis,
-                             int maxPerTask, int threads) {
-        this.corpus = corpus;
-        this.z3 = z3 == null ? Paths.get("z3") : z3;
-        this.timeoutMillis = timeoutMillis <= 0
-                ? DEFAULT_TIMEOUT_MILLIS : timeoutMillis;
-        this.maxPerTask = maxPerTask <= 0 ? DEFAULT_MAX_PER_TASK : maxPerTask;
-        this.threads = threads <= 0 ? DEFAULT_SOLVER_THREADS : threads;
+    private ObligationFactory() {
     }
 
-    public ObligationFactory(Corpus corpus, Path z3, long timeoutMillis,
-                             int maxPerTask) {
-        this(corpus, z3, timeoutMillis, maxPerTask, DEFAULT_SOLVER_THREADS);
+    /** What a wave may propose per task. */
+    public static final class Bounds {
+        public final int maxPathsPerTask;
+        public final int maxFlipsPerPath;
+
+        public Bounds(int maxPathsPerTask, int maxFlipsPerPath) {
+            this.maxPathsPerTask = maxPathsPerTask <= 0
+                    ? DEFAULT_MAX_PATHS_PER_TASK : maxPathsPerTask;
+            this.maxFlipsPerPath = maxFlipsPerPath <= 0
+                    ? DEFAULT_MAX_FLIPS_PER_PATH : maxFlipsPerPath;
+        }
+
+        public static Bounds defaults() {
+            return new Bounds(DEFAULT_MAX_PATHS_PER_TASK,
+                    DEFAULT_MAX_FLIPS_PER_PATH);
+        }
     }
 
-    public ObligationFactory(Corpus corpus, Path z3) {
-        this(corpus, z3, DEFAULT_TIMEOUT_MILLIS, DEFAULT_MAX_PER_TASK);
+    /** One flip a wave proposes: the path, the decision, and its identity. */
+    public static final class Candidate {
+        public final String obligationId;
+        public final Task task;
+        public final Corpus.RecordedPath path;
+        public final int index;
+        public final DecisionRow decision;
+
+        private Candidate(Task task, Corpus.RecordedPath path, int index) {
+            this.task = task;
+            this.path = path;
+            this.index = index;
+            this.decision = path.decisions.get(index);
+            this.obligationId = obligationId(task.taskId(), path.pathId,
+                    decision);
+        }
+
+        /**
+         * The row a wave publishes: what to flip, with no model yet.
+         *
+         * <p>The assignments are the solver's answer, not the planner's; a
+         * wave says which flips are worth a query, and the worker that solves
+         * one writes the values its replay is to apply.</p>
+         */
+        public Obligation proposal() {
+            return Obligation.of(obligationId, task.taskId(), path.pathId,
+                    decision.siteId(), decision.ordinal(),
+                    !decision.outcome(),
+                    Collections.<String, String>emptyMap(),
+                    Collections.<String, String>emptyMap(),
+                    Collections.<String>emptyList());
+        }
     }
 
-    /** One flip, solved: issued to the runtime, closed here, or refused. */
+    /** One obligation solved: the query, the verdict, and what to apply. */
     public static final class Outcome {
         public final String obligationId;
         public final String taskId;
         /** Null unless the query is satisfiable and the flip can be run. */
         public final Obligation obligation;
-        /** Null when the obligation is issued; the verdict otherwise. */
         public final ObligationResult result;
         public final String smt2;
         public final List<GapRow> gaps;
@@ -94,6 +122,10 @@ public final class ObligationFactory {
         public boolean issued() {
             return obligation != null;
         }
+
+        public Verdict verdict() {
+            return result.verdict();
+        }
     }
 
     /** One obligation's id: the task, the path and the decision it flips. */
@@ -105,136 +137,110 @@ public final class ObligationFactory {
     }
 
     /**
-     * Every obligation this task's paths offer.
+     * Every flip this task's paths offer that the corpus has not answered.
      *
      * <p>A path is one recorded run of the FOCUSED occurrence.  The task's
      * factor replays with it -- the writers and readers of one location on
      * one node are one symbolic unit -- but the decisions that are flipped
      * are the focused occurrence's, because an obligation names a site and an
      * ordinal and nothing that would say in which co-occurrence they are.</p>
+     *
+     * @param asked a query already answered in an earlier wave, which is
+     *              never proposed again: the answer would be the same
      */
-    public List<Outcome> obligations(Task task) {
-        return obligations(task, new Predicate<String>() {
-            @Override public boolean test(String obligationId) {
-                return false;
-            }
-        });
-    }
-
-    /**
-     * @param asked a query already asked in an earlier wave, which is never
-     *              solved again: the answer would be the same one, and a
-     *              solve is what an obligation costs before any replay runs
-     */
-    public List<Outcome> obligations(final Task task,
-                                     Predicate<String> asked) {
-        final List<Corpus.RecordedPath> paths =
-                new ArrayList<Corpus.RecordedPath>();
-        final List<Integer> indexes = new ArrayList<Integer>();
+    public static List<Candidate> candidates(Corpus corpus, Task task,
+                                             Bounds bounds,
+                                             Predicate<String> asked) {
+        List<Candidate> candidates = new ArrayList<Candidate>();
+        int paths = 0;
         for (Corpus.RecordedPath path : corpus.pathsOf(task.focused())) {
+            if (paths++ >= bounds.maxPathsPerTask) break;
+            int flips = 0;
             for (int index = 0; index < path.decisions.size()
-                    && paths.size() < maxPerTask; index++) {
+                    && flips < bounds.maxFlipsPerPath; index++) {
                 DecisionRow decision = path.decisions.get(index);
                 if (!FlipQuery.flippable(corpus, path.sessionId, decision)) {
                     continue;
                 }
-                if (asked.test(obligationId(task.taskId(), path.pathId,
-                        decision))) {
+                Candidate candidate = new Candidate(task, path, index);
+                if (asked != null && asked.test(candidate.obligationId)) {
                     continue;
                 }
-                paths.add(path);
-                indexes.add(index);
+                candidates.add(candidate);
+                flips++;
             }
         }
-        return solveAll(task, paths, indexes);
+        return candidates;
     }
 
     /**
-     * Solves one task's candidate flips, several at a time.
+     * Finds the flip one published obligation names.
      *
-     * <p>A solve is what an obligation costs before any replay runs, and the
-     * queries of one wave are independent -- each is one path with one
-     * decision negated, over a corpus nobody writes to while the wave is
-     * planned.  The order of the answers is the order of the candidates, so
-     * a wave's file is the same however many threads produced it.</p>
+     * <p>The worker that solves an obligation is handed the row and the
+     * sessions, and nothing else: a task is its focused occurrence's id and a
+     * path is a session and an occurrence, so both are recoverable from the
+     * corpus rather than carried in a second file that could disagree.</p>
      */
-    private List<Outcome> solveAll(final Task task,
-                                   final List<Corpus.RecordedPath> paths,
-                                   final List<Integer> indexes) {
-        List<Outcome> outcomes = new ArrayList<Outcome>();
-        if (paths.isEmpty()) return outcomes;
-        if (threads <= 1 || paths.size() == 1) {
-            for (int candidate = 0; candidate < paths.size(); candidate++) {
-                Corpus.RecordedPath path = paths.get(candidate);
-                int index = indexes.get(candidate);
-                outcomes.add(solve(task, path, index,
-                        path.decisions.get(index)));
-            }
-            return outcomes;
-        }
-        ExecutorService workers = Executors.newFixedThreadPool(
-                Math.min(threads, paths.size()));
-        try {
-            List<Future<Outcome>> pending = new ArrayList<Future<Outcome>>();
-            for (int candidate = 0; candidate < paths.size(); candidate++) {
-                final Corpus.RecordedPath path = paths.get(candidate);
-                final int index = indexes.get(candidate);
-                pending.add(workers.submit(new Callable<Outcome>() {
-                    @Override public Outcome call() {
-                        return solve(task, path, index,
-                                path.decisions.get(index));
-                    }
-                }));
-            }
-            for (Future<Outcome> future : pending) {
-                try {
-                    outcomes.add(future.get());
-                } catch (InterruptedException interrupted) {
-                    Thread.currentThread().interrupt();
-                    break;
-                } catch (ExecutionException failed) {
-                    throw new IllegalStateException(
-                            "solving an obligation of task " + task.taskId()
-                                    + " failed", failed.getCause());
+    public static Candidate locate(Corpus corpus, Obligation obligation) {
+        Task task = ClosurePlanner.taskOf(corpus, obligation.taskId());
+        if (task == null) return null;
+        for (Corpus.RecordedPath path : corpus.pathsOf(task.focused())) {
+            if (!path.pathId.equals(obligation.pathId())) continue;
+            for (int index = 0; index < path.decisions.size(); index++) {
+                DecisionRow decision = path.decisions.get(index);
+                if (decision.siteId().equals(obligation.siteId())
+                        && decision.ordinal() == obligation.ordinal()) {
+                    return new Candidate(task, path, index);
                 }
             }
-        } finally {
-            workers.shutdownNow();
         }
-        return outcomes;
+        return null;
     }
 
-    private Outcome solve(Task task, Corpus.RecordedPath path, int index,
-                          DecisionRow decision) {
-        String id = obligationId(task.taskId(), path.pathId, decision);
-        FlipQuery.Built built = FlipQuery.build(corpus, task, path, index);
+    /** Solves one candidate: its query, its verdict and its model. */
+    public static Outcome solve(Corpus corpus, Candidate candidate, Path z3,
+                                long timeoutMillis) {
+        String id = candidate.obligationId;
+        DecisionRow decision = candidate.decision;
+        FlipQuery.Built built = FlipQuery.build(corpus, candidate.task,
+                candidate.path, candidate.index);
         List<GapRow> gaps = new ArrayList<GapRow>(built.gaps);
         if (!built.ok()) {
-            return new Outcome(id, task.taskId(), null, null, "", gaps);
+            return new Outcome(id, candidate.task.taskId(), null,
+                    ObligationResult.of(id, Verdict.NOT_ADMITTED, "",
+                            "the query was refused: " + built.refusal),
+                    "", gaps);
         }
         Z3Solver.Answer answer;
+        long budget = timeoutMillis <= 0 ? DEFAULT_TIMEOUT_MILLIS
+                : timeoutMillis;
         try {
-            answer = Z3Solver.solve(z3, built.smt2, timeoutMillis);
+            answer = Z3Solver.solve(z3 == null ? Paths.get("z3") : z3,
+                    built.smt2, budget);
         } catch (IOException | InterruptedException failed) {
             if (failed instanceof InterruptedException) {
                 Thread.currentThread().interrupt();
             }
-            gaps.add(GapRow.of(path.sessionId, GapKind.ADMISSION_GAP,
-                    GapClass.DIAGNOSTIC, id,
+            gaps.add(GapRow.of(candidate.path.sessionId,
+                    GapKind.SOLVER_TIMEOUT, GapClass.DIAGNOSTIC, id,
                     "the solver could not be run: " + failed));
-            return new Outcome(id, task.taskId(), null, null, built.smt2,
-                    gaps);
+            return new Outcome(id, candidate.task.taskId(), null,
+                    ObligationResult.of(id, Verdict.NOT_ADMITTED, "",
+                            "the solver could not be run: " + failed),
+                    built.smt2, gaps);
         }
         if (answer.timedOut) {
-            gaps.add(GapRow.of(path.sessionId, GapKind.ADMISSION_GAP,
-                    GapClass.DIAGNOSTIC, id,
-                    "SOLVER_TIMEOUT after " + timeoutMillis + "ms: the flip "
-                            + "is an unexplored sibling, not a closed one"));
-            return new Outcome(id, task.taskId(), null, null, built.smt2,
-                    gaps);
+            gaps.add(GapRow.of(candidate.path.sessionId,
+                    GapKind.SOLVER_TIMEOUT, GapClass.DIAGNOSTIC, id,
+                    "no verdict in " + budget + "ms: the flip is an "
+                            + "unexplored sibling, not a closed one"));
+            return new Outcome(id, candidate.task.taskId(), null,
+                    ObligationResult.of(id, Verdict.NOT_ADMITTED, "",
+                            "SOLVER_TIMEOUT after " + budget + "ms"),
+                    built.smt2, gaps);
         }
         if (!answer.sat) {
-            return new Outcome(id, task.taskId(), null,
+            return new Outcome(id, candidate.task.taskId(), null,
                     ObligationResult.of(id, Verdict.UNSAT, "",
                             "no world of this corpus takes the other arm at "
                                     + decision.siteId() + "#"
@@ -256,10 +262,15 @@ public final class ObligationFactory {
                 unproducible.add(control.attachEndpointId);
             }
         }
-        Obligation obligation = Obligation.of(id, task.taskId(), path.pathId,
-                decision.siteId(), decision.ordinal(), !decision.outcome(),
-                roots, answers, unproducible);
-        return new Outcome(id, task.taskId(), obligation, null, built.smt2,
-                gaps);
+        Obligation solved = Obligation.of(id, candidate.task.taskId(),
+                candidate.path.pathId, decision.siteId(), decision.ordinal(),
+                !decision.outcome(), roots, answers, unproducible);
+        return new Outcome(id, candidate.task.taskId(), solved,
+                ObligationResult.of(id, Verdict.SAT_MODEL_READY, "",
+                        "the flip at " + decision.siteId() + "#"
+                                + decision.ordinal() + " is reachable under "
+                                + roots.size() + " root value(s) and "
+                                + answers.size() + " answered handoff(s)"),
+                built.smt2, gaps);
     }
 }

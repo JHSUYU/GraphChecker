@@ -2,12 +2,14 @@ package edu.uva.liftlab.graphchecker.d3.explore;
 
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
+import edu.uva.liftlab.graphchecker.d3.contract.GapClass;
+import edu.uva.liftlab.graphchecker.d3.contract.GapKind;
 import edu.uva.liftlab.graphchecker.d3.contract.GapRow;
-import edu.uva.liftlab.graphchecker.d3.contract.Obligation;
-import edu.uva.liftlab.graphchecker.d3.contract.ObligationResult;
 import edu.uva.liftlab.graphchecker.d3.contract.OccurrenceAddress;
+import edu.uva.liftlab.graphchecker.d3.contract.RootDomain;
 import edu.uva.liftlab.graphchecker.d3.contract.RowCodec;
 import edu.uva.liftlab.graphchecker.d3.contract.Task;
 
@@ -17,191 +19,220 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
- * The EXPLORE stage: plan the anchor's closure, then run waves against it.
+ * EXPLORE, one wave: plan the closure, propose the flips still open.
  *
  * <pre>
- *   --iteration &lt;dir&gt;            the corpus: &lt;dir&gt;/sessions/&lt;sessionId&gt;/...
- *   --target-occurrence &lt;addr&gt;   the declared anchor (v2 or either v1 form)
- *   --root-domains &lt;file&gt;        what the case declares its roots may be
- *   --max-waves N                the wave budget
- *   --out &lt;dir&gt;                  tasks.jsonl, wave-NNNN/obligations.jsonl
+ *   --sessions &lt;dir&gt;           the corpus (the campaign's own layout), or
+ *   --iteration &lt;dir&gt;          its parent, which holds sessions/
+ *   --task-plan &lt;file&gt;         the seed replay's plan; its occurrences are
+ *                              the closure's roots
+ *   --target-occurrence &lt;addr&gt; one more root, in v2 or either v1 spelling
+ *   --results &lt;file&gt;           every ObligationResult the waves before this
+ *                              one recorded; a query answered there is never
+ *                              proposed again
+ *   --root-domains &lt;file&gt;      what the CASE says each root may be
+ *   --wave &lt;n&gt;                 which wave this is
+ *   --topology-epoch &lt;id&gt;      the epoch these sessions belong to
+ *   --output-dir &lt;dir&gt;         obligations.jsonl, tasks.jsonl, gaps.jsonl,
+ *                              root-domains.jsonl, explore_manifest.json
+ *   --max-tasks / --max-paths-per-region / --max-flips-per-path
  * </pre>
  *
- * <p>One invocation plans every wave it can: it writes a wave's obligations,
- * and if the runtime has already written that wave's {@code results.jsonl} it
- * consumes them, re-reads the corpus (a VALIDATED replay published a session)
- * and plans the next.  It stops at {@code PENDING_RESULTS} when a wave is
- * waiting to be run, at {@code FIXED_POINT} when no task has a pending
- * obligation and no new one is offered, or at {@code MAX_WAVES}.  Re-invoking
- * it after the runtime has run a wave continues from the files, so the stage
- * is resumable and the engine drives it in a loop.</p>
+ * <p>ONE invocation is ONE wave: the campaign owns the loop, because it also
+ * owns the workers that solve and replay what a wave proposes.  This process
+ * reads every session the epoch has produced -- including the ones the last
+ * wave's replays wrote -- rebuilds the frontier from the recorded verdicts,
+ * and writes the flips no wave has answered yet.  It never solves: a query
+ * costs a z3 run, and the campaign runs those one worker per obligation
+ * ({@link ObligationSolverMain}).</p>
  */
 public final class ExploreMain {
-    private static final String OBLIGATIONS = "obligations.jsonl";
-    private static final String RESULTS = "results.jsonl";
-    private static final String CLOSED = "closed.jsonl";
-    private static final String GAPS = "gaps.jsonl";
-
     private ExploreMain() {
     }
 
     public static void main(String[] argv) throws Exception {
         Map<String, String> options = options(argv);
-        JsonObject manifest = run(
-                Paths.get(required(options, "iteration")),
-                OccurrenceAddress.parse(required(options, "target-occurrence")),
-                path(options, "root-domains"),
-                Paths.get(required(options, "out")),
-                (int) number(options, "max-waves", 8),
-                Paths.get(value(options, "z3", "z3")),
-                number(options, "solver-timeout-ms",
-                        ObligationFactory.DEFAULT_TIMEOUT_MILLIS),
+        Path sessions = path(options, "sessions");
+        Path iteration = path(options, "iteration");
+        if (iteration == null && sessions != null) {
+            iteration = sessions.getParent();
+        }
+        if (iteration == null) {
+            throw new IllegalArgumentException(
+                    "Missing --sessions (or --iteration)");
+        }
+        Path out = path(options, "output-dir");
+        if (out == null) out = path(options, "out");
+        if (out == null) {
+            throw new IllegalArgumentException("Missing --output-dir");
+        }
+        JsonObject manifest = plan(iteration, anchors(options),
+                path(options, "root-domains"), path(options, "results"), out,
+                (int) number(options, "wave", 0),
+                value(options, "topology-epoch", ""),
                 (int) number(options, "max-tasks",
                         ClosurePlanner.DEFAULT_MAX_TASKS),
-                (int) number(options, "max-obligations-per-task",
-                        ObligationFactory.DEFAULT_MAX_PER_TASK),
-                (int) number(options, "solver-threads",
-                        ObligationFactory.DEFAULT_SOLVER_THREADS));
-        System.out.println(new GsonBuilder().disableHtmlEscaping()
-                .setPrettyPrinting().create().toJson(manifest));
+                new ObligationFactory.Bounds(
+                        (int) number(options, "max-paths-per-region",
+                                ObligationFactory.DEFAULT_MAX_PATHS_PER_TASK),
+                        (int) number(options, "max-flips-per-path",
+                                ObligationFactory.DEFAULT_MAX_FLIPS_PER_PATH)));
+        System.out.println(pretty(manifest));
     }
 
-    /** Plans the closure and runs every wave the corpus already answers. */
-    public static JsonObject run(Path iteration, OccurrenceAddress anchor,
-                                 Path rootDomains, Path out, int maxWaves,
-                                 Path z3, long timeoutMillis, int maxTasks,
-                                 int maxPerTask) throws IOException {
-        return run(iteration, anchor, rootDomains, out, maxWaves, z3,
-                timeoutMillis, maxTasks, maxPerTask,
-                ObligationFactory.DEFAULT_SOLVER_THREADS);
-    }
-
-    /** As above, solving each task's candidate flips {@code threads} at a time. */
-    public static JsonObject run(Path iteration, OccurrenceAddress anchor,
-                                 Path rootDomains, Path out, int maxWaves,
-                                 Path z3, long timeoutMillis, int maxTasks,
-                                 int maxPerTask, int threads)
+    /**
+     * Plans one wave.
+     *
+     * @param roots the occurrences the closure starts from: the declared
+     *              anchor, or the seed plan's own occurrences
+     */
+    public static JsonObject plan(Path iteration,
+                                  List<OccurrenceAddress> roots,
+                                  Path rootDomains, Path results, Path out,
+                                  int wave, String topologyEpoch,
+                                  int maxTasks,
+                                  ObligationFactory.Bounds bounds)
             throws IOException {
         Corpus corpus = Corpus.read(iteration, rootDomains);
-        ClosurePlanner.Plan plan = ClosurePlanner.plan(corpus, anchor,
-                maxTasks);
-        Files.createDirectories(out);
-        RowCodec.writeAll(out.resolve("tasks.jsonl"), plan.tasks,
-                ExploreCodec::writeTask);
-        List<GapRow> gaps = new ArrayList<GapRow>(plan.gaps);
-        Frontier frontier = new Frontier(plan.tasks);
-        String state = "FIXED_POINT";
-        int wave = 0;
-        for (; wave < maxWaves; wave++) {
-            Path directory = out.resolve(String.format("wave-%04d", wave));
-            Path obligations = directory.resolve(OBLIGATIONS);
-            Path results = directory.resolve(RESULTS);
-            if (Files.isRegularFile(obligations)) {
-                frontier.restore(RowCodec.readAll(obligations,
-                                ExploreCodec::readObligation),
-                        RowCodec.readAll(results, ExploreCodec::readResult));
-                frontier.consume(RowCodec.readAll(directory.resolve(CLOSED),
-                        ExploreCodec::readResult));
-                if (!Files.isRegularFile(results)) {
-                    state = "PENDING_RESULTS";
-                    break;
-                }
-                corpus = Corpus.read(iteration, rootDomains);
-                continue;
+        List<Task> tasks = new ArrayList<Task>();
+        List<GapRow> gaps = new ArrayList<GapRow>();
+        Set<String> planned = new LinkedHashSet<String>();
+        for (OccurrenceAddress root : roots) {
+            if (corpus.pathsOf(root).isEmpty()) {
+                gaps.add(GapRow.of("", GapKind.ADMISSION_GAP,
+                        GapClass.DIAGNOSTIC, root.render(),
+                        "no session of this epoch activated the occurrence "
+                                + "the plan names, so its closure is empty"));
             }
-            ObligationFactory factory = new ObligationFactory(corpus, z3,
-                    timeoutMillis, maxPerTask, threads);
-            List<ObligationFactory.Outcome> outcomes =
-                    new ArrayList<ObligationFactory.Outcome>();
+            ClosurePlanner.Plan plan = ClosurePlanner.plan(corpus, root,
+                    maxTasks);
+            gaps.addAll(plan.gaps);
             for (Task task : plan.tasks) {
-                outcomes.addAll(factory.obligations(task, frontier::asked));
+                if (planned.add(task.taskId())) tasks.add(task);
             }
-            Frontier.Wave issued = frontier.open(wave, outcomes);
-            gaps.addAll(issued.gaps);
-            if (issued.empty()) {
-                state = "FIXED_POINT";
-                break;
-            }
-            publish(directory, issued, outcomes);
-            if (issued.obligations.isEmpty()) {
-                // Every flip of this wave was closed here; nothing to run,
-                // so the next wave can be planned at once.
-                continue;
-            }
-            state = "PENDING_RESULTS";
-            break;
         }
-        if (wave >= maxWaves) state = "MAX_WAVES";
-        RowCodec.writeAll(out.resolve(GAPS), distinct(gaps),
+        Frontier frontier = new Frontier(tasks);
+        frontier.consume(RowCodec.readAll(results,
+                ExploreCodec::readResult));
+        List<ObligationFactory.Candidate> candidates =
+                new ArrayList<ObligationFactory.Candidate>();
+        for (Task task : tasks) {
+            candidates.addAll(ObligationFactory.candidates(corpus, task,
+                    bounds, frontier::asked));
+        }
+        Frontier.Wave open = frontier.open(wave, candidates);
+
+        Files.createDirectories(out);
+        RowCodec.writeAll(out.resolve("tasks.jsonl"), tasks,
+                ExploreCodec::writeTask);
+        List<JsonObject> rows = new ArrayList<JsonObject>();
+        for (edu.uva.liftlab.graphchecker.d3.contract.Obligation obligation
+                : open.obligations) {
+            rows.add(ExploreCodec.writeObligation(obligation));
+        }
+        if (rows.isEmpty()) {
+            rows.add(ExploreCodec.fixedPoint(wave, frontier.answeredCount()));
+        }
+        RowCodec.writeJsonl(out.resolve("obligations.jsonl"), rows);
+        RowCodec.writeAll(out.resolve("gaps.jsonl"), distinct(gaps),
                 RowCodec::writeGap);
-        JsonObject manifest = manifest(anchor, plan, frontier, state, wave,
-                gaps);
+        // The domains the CASE declares, beside the obligations they were
+        // planned under: the worker that solves one is handed the wave
+        // directory and nothing else, and a root whose domain it cannot see
+        // is a root it must pin -- which is exploration refusing to vary the
+        // very quantity the case says may move.
+        RowCodec.writeAll(out.resolve(ObligationSolverMain.DOMAINS),
+                domains(corpus, rootDomains), ExploreCodec::writeDomain);
+        JsonObject manifest = manifest(roots, tasks, frontier, open,
+                topologyEpoch, gaps);
         Files.write(out.resolve("explore_manifest.json"),
-                (new GsonBuilder().disableHtmlEscaping().setPrettyPrinting()
-                        .create().toJson(manifest) + System.lineSeparator())
+                (pretty(manifest) + System.lineSeparator())
                         .getBytes(StandardCharsets.UTF_8));
         return manifest;
     }
 
-    /** One wave on disk: what to run, what closed, and every query's text. */
-    private static void publish(Path directory, Frontier.Wave wave,
-                                List<ObligationFactory.Outcome> outcomes)
+    /** The closure's roots: the declared anchor and the seed plan's own. */
+    private static List<OccurrenceAddress> anchors(Map<String, String> options)
             throws IOException {
-        Files.createDirectories(directory);
-        RowCodec.writeAll(directory.resolve(OBLIGATIONS), wave.obligations,
-                ExploreCodec::writeObligation);
-        RowCodec.writeAll(directory.resolve(CLOSED), wave.closed,
-                ExploreCodec::writeResult);
-        RowCodec.writeAll(directory.resolve(GAPS), distinct(wave.gaps),
-                RowCodec::writeGap);
-        if (wave.obligations.isEmpty()) {
-            // Nothing for the runtime to run, so this wave's results are
-            // complete as they stand: say so, or resuming would wait for a
-            // file nobody is going to write.
-            RowCodec.writeAll(directory.resolve(RESULTS),
-                    Collections.<ObligationResult>emptyList(),
-                    ExploreCodec::writeResult);
+        List<OccurrenceAddress> roots = new ArrayList<OccurrenceAddress>();
+        Set<String> seen = new LinkedHashSet<String>();
+        String declared = value(options, "target-occurrence", "");
+        if (!declared.isEmpty()) {
+            OccurrenceAddress anchor = OccurrenceAddress.parse(declared);
+            seen.add(anchor.id());
+            roots.add(anchor);
         }
-        Path queries = directory.resolve("smt");
-        Files.createDirectories(queries);
-        for (ObligationFactory.Outcome outcome : outcomes) {
-            if (outcome.smt2.isEmpty()) continue;
-            Files.write(queries.resolve(outcome.obligationId + ".smt2"),
-                    outcome.smt2.getBytes(StandardCharsets.UTF_8));
+        Path plan = path(options, "task-plan");
+        if (plan != null && Files.isRegularFile(plan)) {
+            for (JsonObject row : RowCodec.readJsonl(plan)) {
+                JsonElement occurrence = row.get("occurrenceId");
+                if (occurrence == null || !occurrence.isJsonPrimitive()) {
+                    continue;
+                }
+                OccurrenceAddress address;
+                try {
+                    address = OccurrenceAddress.parse(
+                            occurrence.getAsString());
+                } catch (IllegalArgumentException malformed) {
+                    continue;
+                }
+                if (seen.add(address.id())) roots.add(address);
+            }
         }
+        if (roots.isEmpty()) {
+            throw new IllegalArgumentException("the closure has no root: "
+                    + "pass --target-occurrence, or a --task-plan whose rows "
+                    + "name an occurrenceId");
+        }
+        return roots;
     }
 
-    private static JsonObject manifest(OccurrenceAddress anchor,
-                                       ClosurePlanner.Plan plan,
-                                       Frontier frontier, String state,
-                                       int wave, List<GapRow> gaps) {
+    /** Every root of this corpus with the domain the case declares for it. */
+    private static List<RootDomain> domains(Corpus corpus, Path declared)
+            throws IOException {
+        List<RootDomain> domains = new ArrayList<RootDomain>();
+        if (declared == null || !Files.isRegularFile(declared)) {
+            return domains;
+        }
+        return RowCodec.readAll(declared, ExploreCodec::readDomain);
+    }
+
+    private static JsonObject manifest(List<OccurrenceAddress> roots,
+                                       List<Task> tasks, Frontier frontier,
+                                       Frontier.Wave open,
+                                       String topologyEpoch,
+                                       List<GapRow> gaps) {
         JsonObject manifest = new JsonObject();
-        manifest.addProperty("anchor", anchor.render());
-        manifest.addProperty("state", state);
-        manifest.addProperty("wave", wave);
-        manifest.addProperty("tasks", plan.tasks.size());
-        manifest.addProperty("pending", frontier.pending().size());
-        JsonArray tasks = new JsonArray();
+        JsonArray anchors = new JsonArray();
+        for (OccurrenceAddress root : roots) anchors.add(root.render());
+        manifest.add("anchors", anchors);
+        manifest.addProperty("topologyEpoch", topologyEpoch);
+        manifest.addProperty("wave", open.index);
+        manifest.addProperty("state", open.empty()
+                ? "FIXED_POINT" : "OBLIGATIONS_PROPOSED");
+        manifest.addProperty("tasks", tasks.size());
+        manifest.addProperty("proposed", open.obligations.size());
+        manifest.addProperty("answered", frontier.answeredCount());
+        JsonArray rows = new JsonArray();
         Map<String, int[]> perTask = frontier.perTask();
-        for (Task task : plan.tasks) {
+        for (Task task : tasks) {
             int[] counts = perTask.get(task.taskId());
             JsonObject row = new JsonObject();
             row.addProperty("taskId", task.taskId());
             row.addProperty("focused", task.focused().render());
             row.addProperty("factor", task.factor().size());
             row.addProperty("seedSessionId", task.seedSessionId());
-            row.addProperty("asked", counts == null ? 0 : counts[0]);
-            row.addProperty("pending", counts == null ? 0 : counts[1]);
-            tasks.add(row);
+            row.addProperty("proposed", counts == null ? 0 : counts[1]);
+            rows.add(row);
         }
-        manifest.add("taskRows", tasks);
+        manifest.add("taskRows", rows);
         JsonObject verdicts = new JsonObject();
         for (Map.Entry<String, Integer> entry
                 : frontier.verdictHistogram().entrySet()) {
@@ -210,7 +241,7 @@ public final class ExploreMain {
         manifest.add("verdicts", verdicts);
         JsonObject kinds = new JsonObject();
         Map<String, Integer> byKind = new LinkedHashMap<String, Integer>();
-        for (GapRow gap : gaps) {
+        for (GapRow gap : distinct(gaps)) {
             Integer count = byKind.get(gap.kind().name());
             byKind.put(gap.kind().name(), count == null ? 1 : count + 1);
         }
@@ -222,8 +253,13 @@ public final class ExploreMain {
     }
 
     /** The same gap said twice is one gap. */
-    private static List<GapRow> distinct(List<GapRow> gaps) {
+    static List<GapRow> distinct(List<GapRow> gaps) {
         return new ArrayList<GapRow>(new LinkedHashSet<GapRow>(gaps));
+    }
+
+    static String pretty(JsonObject json) {
+        return new GsonBuilder().disableHtmlEscaping().setPrettyPrinting()
+                .create().toJson(json);
     }
 
     // ---- options ------------------------------------------------------
@@ -248,30 +284,26 @@ public final class ExploreMain {
         return options;
     }
 
-    private static String required(Map<String, String> options, String name) {
-        String value = options.get(name);
-        if (value == null || value.trim().isEmpty()) {
-            throw new IllegalArgumentException("Missing --" + name);
-        }
-        return value;
-    }
-
-    private static String value(Map<String, String> options, String name,
-                                String fallback) {
+    static String value(Map<String, String> options, String name,
+                        String fallback) {
         String value = options.get(name);
         return value == null || value.trim().isEmpty() ? fallback : value;
     }
 
-    private static Path path(Map<String, String> options, String name) {
+    static Path path(Map<String, String> options, String name) {
         String value = options.get(name);
         return value == null || value.trim().isEmpty()
                 ? null : Paths.get(value);
     }
 
-    private static long number(Map<String, String> options, String name,
-                               long fallback) {
+    static long number(Map<String, String> options, String name,
+                       long fallback) {
         String value = options.get(name);
-        return value == null || value.trim().isEmpty()
-                ? fallback : Long.parseLong(value.trim());
+        if (value == null || value.trim().isEmpty()) return fallback;
+        try {
+            return Long.parseLong(value.trim());
+        } catch (NumberFormatException notANumber) {
+            return fallback;
+        }
     }
 }

@@ -97,6 +97,23 @@ public final class ClosurePlanner {
     }
 
     /**
+     * The task one published obligation names.
+     *
+     * <p>A task id is its focused occurrence's id and nothing else, so the
+     * worker that executes an obligation recovers the task from the corpus
+     * rather than from a second file that could disagree with the wave's.</p>
+     */
+    public static Task taskOf(Corpus corpus, String taskId) {
+        if (taskId == null || taskId.isEmpty()) return null;
+        for (OccurrenceAddress occurrence : corpus.occurrences()) {
+            if (!taskId.equals(taskId(occurrence))) continue;
+            return Task.of(taskId, occurrence, stateConnected(corpus,
+                    occurrence), seedSession(corpus, occurrence));
+        }
+        return null;
+    }
+
+    /**
      * Everything one occurrence's failure can depend on outside its own node
      * state: the producers of the interactions it reads and the writers of
      * the versions it reads, plus the co-occurrences its factor names, whose

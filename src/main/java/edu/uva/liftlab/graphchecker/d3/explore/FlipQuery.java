@@ -385,6 +385,11 @@ final class FlipQuery {
             List<String> conjuncts = new ArrayList<String>();
             for (DecisionRow decision : corpus.decisionsOf(export.sessionId(),
                     export.endpoint().occurrence())) {
+                // The prefix of the DELIVERY: a decision the producer took
+                // after putting the value on the wire cannot be a condition
+                // of what it delivered.  The session's own event order says
+                // which those are (CONTRACT-SPEC v1.1 seq).
+                if (decision.seq() >= export.seq()) continue;
                 if (!flippable(corpus, export.sessionId(), decision)) continue;
                 String term = rename(decision.term(), export.sessionId(),
                         roots, unknown);
@@ -477,9 +482,10 @@ final class FlipQuery {
                             : "handoff|" + interaction.id();
                     String name = names.name(key, "vH_" + row.endpoint().site()
                             + "_" + row.endpoint().ordinal());
-                    declare(name, SmtText.sortOfValue(row.arrival()),
+                    declare(name, sortOf(row.javaType(), name,
+                            "handoff " + row.endpoint()),
                             "handoff " + row.endpoint() + " arrival "
-                                    + row.arrival());
+                                    + row.arrival() + " : " + row.javaType());
                     enqueue(sessionId, symbol);
                     return name;
                 }
@@ -489,9 +495,11 @@ final class FlipQuery {
                             + row.endpoint().id(), "st_"
                             + row.location().slot() + "_"
                             + row.endpoint().ordinal());
-                    declare(name, SmtText.sortOfValue(row.concreteValue()),
+                    declare(name, sortOf(row.javaType(), name,
+                            "read " + row.endpoint()),
                             "read " + row.endpoint() + " of " + row.location()
-                                    + " version " + row.observedVersion());
+                                    + " version " + row.observedVersion()
+                                    + " : " + row.javaType());
                     enqueue(sessionId, symbol);
                     return name;
                 }
@@ -508,6 +516,27 @@ final class FlipQuery {
             RootMintRow any = corpus.anyRoot(rootId);
             return any == null ? ""
                     : variable(any.sessionId(), any.symbol());
+        }
+
+        /**
+         * The sort the runtime declared one value at.
+         *
+         * <p>A descriptor this query cannot state -- a reference, a string, a
+         * floating value -- refuses the obligation under its own name instead
+         * of being lowered as an integer.  The shared lowering states those
+         * sorts; the flip query's own assembly does not, and guessing is how
+         * two formulas come to be about two different variables.</p>
+         */
+        private String sortOf(String javaType, String name, String subject) {
+            String sort = SmtText.sortOfJavaType(javaType);
+            if (!sort.isEmpty()) return sort;
+            refusal = "UNSTATED_VALUE:" + subject;
+            gaps.add(GapRow.of(path.sessionId, GapKind.UNSTATED_VALUE,
+                    GapClass.BLOCKING, subject,
+                    "the runtime declared " + name + " at javaType '"
+                            + javaType + "', which is not a sort this query "
+                            + "states"));
+            return "Int";
         }
 
         private void declare(String name, String sort, String what) {

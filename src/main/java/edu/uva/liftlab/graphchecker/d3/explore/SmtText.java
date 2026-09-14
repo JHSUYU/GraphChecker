@@ -125,11 +125,31 @@ final class SmtText {
         }
     }
 
-    /** The sort one recorded reading is of. */
-    static String sortOfValue(String value) {
-        String text = value == null ? "" : value.trim();
-        return "true".equalsIgnoreCase(text) || "false".equalsIgnoreCase(text)
-                ? "Bool" : "Int";
+    /**
+     * The sort one JVM descriptor lowers to, or "" for one this query cannot
+     * state.
+     *
+     * <p>The descriptor is what the runtime declared the value at
+     * (CONTRACT-SPEC v1.1 {@code javaType}); reading the sort off the
+     * recorded value instead was a second opinion about a fact the recording
+     * already states, and the width conflicts the old encoder hit came from
+     * exactly that.  A descriptor this query has no sort for -- a reference,
+     * a string, a float -- is refused by its caller under its own name
+     * rather than lowered as an integer.</p>
+     */
+    static String sortOfJavaType(String javaType) {
+        String descriptor = javaType == null ? "" : javaType.trim();
+        if ("Z".equals(descriptor) || "boolean".equals(descriptor)) {
+            return "Bool";
+        }
+        if ("B".equals(descriptor) || "C".equals(descriptor)
+                || "S".equals(descriptor) || "I".equals(descriptor)
+                || "J".equals(descriptor) || "byte".equals(descriptor)
+                || "char".equals(descriptor) || "short".equals(descriptor)
+                || "int".equals(descriptor) || "long".equals(descriptor)) {
+            return "Int";
+        }
+        return "";
     }
 
     /** {@code (and a b ...)}, or the one conjunct, or "true". */

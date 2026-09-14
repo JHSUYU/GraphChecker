@@ -34,8 +34,8 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -44,18 +44,17 @@ import java.util.Map;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 /**
  * Exploration, checked on the five things a corpus can say to it.
  *
- * <p>Each case is a synthetic corpus in the contract's own file layout: a
- * nested guard chain that deepens one decision per wave; a handoff bound by
- * arms that deliver literals; a handoff no producer delivers; a root the case
- * declares no domain for; and a read whose writer has to be in the closure.
- * The queries are solved by the same z3 the campaign uses, so an assertion
- * about SAT or UNSAT is an assertion about the query, not about a stub.</p>
+ * <p>Each case is a synthetic corpus in the contract's own file layout, driven
+ * exactly as the campaign drives the stage: one planner invocation per wave
+ * ({@link ExploreMain}), one solver per obligation
+ * ({@link ObligationSolverMain}), verdicts appended to the results file the
+ * next wave reads.  The queries are solved by the same z3 the campaign uses,
+ * so an assertion about SAT or UNSAT is an assertion about the query.</p>
  */
 public class D3ExploreTest {
     private static final String TARGET =
@@ -86,17 +85,23 @@ public class D3ExploreTest {
         seed.flush();
 
         Path out = tree.newFolder("depth-out").toPath();
-        JsonObject first = explore(iteration, target, out, 4);
-        assertEquals("PENDING_RESULTS", first.get("state").getAsString());
-        List<Obligation> wave0 = obligations(out, 0);
-        assertEquals(1, wave0.size());
-        assertEquals("Guard#u8", wave0.get(0).siteId());
-        assertTrue(wave0.get(0).flippedOutcome());
-        assertEquals("true",
-                wave0.get(0).rootAssignments().get("CASE.MARKER"));
+        Path results = out.resolve("obligation_results.jsonl");
+        Files.write(results, new byte[0]);
 
-        // The runtime ran it: the flip took the first guard and recorded the
-        // second one, which had never executed before.
+        Path wave0 = out.resolve("obligations-0000");
+        JsonObject first = plan(iteration, target, null, results, wave0, 0);
+        assertEquals("OBLIGATIONS_PROPOSED", first.get("state").getAsString());
+        List<Obligation> proposed = obligations(wave0);
+        assertEquals(1, proposed.size());
+        assertEquals("Guard#u8", proposed.get(0).siteId());
+        assertTrue(proposed.get(0).flippedOutcome());
+        Worker worker = solve(iteration, wave0, proposed.get(0), out, "w0");
+        assertEquals(Verdict.SAT_MODEL_READY, worker.verdict);
+        assertEquals("true",
+                worker.obligation.rootAssignments().get("CASE.MARKER"));
+
+        // The campaign replayed it: the flip took the first guard and
+        // recorded the second one, which had never executed before.
         Session flipped = new Session(iteration, "s-flip");
         flipped.activation(target, true);
         flipped.root(target, "CASE.MARKER", "M_MARKER", RootKind.MARKER,
@@ -106,30 +111,31 @@ public class D3ExploreTest {
         flipped.decision(target, "Guard#u8", 1, true, "M_MARKER");
         flipped.decision(target, "Guard#u19", 1, false, "(> M_COUNT 5)");
         flipped.flush();
-        RowCodec.writeAll(out.resolve("wave-0000").resolve("results.jsonl"),
-                Collections.singletonList(ObligationResult.of(
-                        wave0.get(0).obligationId(), Verdict.VALIDATED,
-                        "s-flip", "the flip ran")),
-                ExploreCodec::writeResult);
+        record(results, ObligationResult.of(proposed.get(0).obligationId(),
+                Verdict.VALIDATED, "s-flip", "the flip ran"));
 
-        JsonObject second = explore(iteration, target, out, 4);
-        assertEquals("PENDING_RESULTS", second.get("state").getAsString());
-        List<Obligation> wave1 = obligations(out, 1);
+        Path wave1 = out.resolve("obligations-0001");
+        plan(iteration, target, null, results, wave1, 1);
+        List<Obligation> next = obligations(wave1);
         List<String> sites = new ArrayList<String>();
-        for (Obligation obligation : wave1) sites.add(obligation.siteId());
+        for (Obligation obligation : next) sites.add(obligation.siteId());
         assertTrue("the deeper guard is a first-class obligation: " + sites,
                 sites.contains("Guard#u19"));
-        for (Obligation obligation : wave1) {
-            assertFalse("a query is never asked twice",
+        for (Obligation obligation : next) {
+            assertFalse("a query answered by an earlier wave is never re-asked",
                     obligation.obligationId().equals(
-                            wave0.get(0).obligationId()));
+                            proposed.get(0).obligationId()));
         }
-        // The deeper obligation carries the previous wave's answer in its own
+        // The deeper obligation carries the earlier wave's answer in its own
         // prefix: it needs the marker true AND the count above five.
-        Obligation deeper = named(wave1, "Guard#u19");
-        assertEquals("true", deeper.rootAssignments().get("CASE.MARKER"));
+        Obligation deeper = named(next, "Guard#u19");
+        assertNotNull(deeper);
+        Worker second = solve(iteration, wave1, deeper, out, "w1");
+        assertEquals(Verdict.SAT_MODEL_READY, second.verdict);
+        assertEquals("true",
+                second.obligation.rootAssignments().get("CASE.MARKER"));
         assertTrue(Integer.parseInt(
-                deeper.rootAssignments().get("CASE.COUNT")) > 5);
+                second.obligation.rootAssignments().get("CASE.COUNT")) > 5);
     }
 
     // ---- (2) a handoff is answered only with what a producer delivers --
@@ -153,20 +159,39 @@ public class D3ExploreTest {
         seed.decision(target, "Lookup#u8", 1, false, "(= M_HOFF_KEY 119995)");
         seed.flush();
         // A second recording of the same interaction delivered another id.
+        // Its own prefix is cut at the export: the decision it took AFTER
+        // putting the value on the wire is no condition of that delivery, and
+        // asserting it would make the arm unsatisfiable.
         Session rotated = new Session(iteration, "s-rot");
-        rotated.activation(producer, false);
+        rotated.activation(producer, true);
+        rotated.root(producer, "CASE.SERIAL", "M_SERIAL", RootKind.INTEGRAL,
+                "119995", null, null, false);
+        rotated.decision(producer, "Rotate#u3", 1, true, "(> M_SERIAL 0)");
         rotated.constant("e.119995", "119995");
         rotated.export(exported, "e.119995", 12L, "119995");
+        rotated.decision(producer, "After#u9", 1, true,
+                "(> M_SERIAL 1000000)");
         rotated.flush();
 
         Path out = tree.newFolder("family-out").toPath();
-        explore(iteration, target, out, 2);
-        List<Obligation> wave0 = obligations(out, 0);
-        assertEquals(1, wave0.size());
-        Obligation obligation = wave0.get(0);
-        assertTrue("the control is producible", obligation.unproducible()
-                .isEmpty());
-        assertEquals("119995", obligation.answers().get(attached.id()));
+        Path results = out.resolve("obligation_results.jsonl");
+        Path wave0 = out.resolve("obligations-0000");
+        plan(iteration, target, null, results, wave0, 0);
+        List<Obligation> proposed = obligations(wave0);
+        // The producer ran symbolically in the rotated session, so it is a
+        // task of its own and its own decisions are flips too -- the NN
+        // rotation is explored as a worker, not as the consumer's companion.
+        List<String> sites = new ArrayList<String>();
+        for (Obligation obligation : proposed) sites.add(obligation.siteId());
+        assertTrue("the rotation's own decisions are obligations: " + sites,
+                sites.contains("Rotate#u3") && sites.contains("After#u9"));
+        Obligation consumerFlip = named(proposed, "Lookup#u8");
+        assertNotNull("the consumer's own flip is proposed", consumerFlip);
+        Worker worker = solve(iteration, wave0, consumerFlip, out, "w0");
+        assertEquals(Verdict.SAT_MODEL_READY, worker.verdict);
+        assertTrue("the control is producible",
+                worker.obligation.unproducible().isEmpty());
+        assertEquals("119995", worker.obligation.answers().get(attached.id()));
 
         // The negative control: a flip that needs a value no producer of this
         // corpus delivers is UNSAT, not answered out of the family.
@@ -180,10 +205,12 @@ public class D3ExploreTest {
         lone.decision(target, "Lookup#u8", 1, false, "(= M_HOFF_KEY 7)");
         lone.flush();
         Path unsatOut = tree.newFolder("family-unsat-out").toPath();
-        explore(other, target, unsatOut, 2);
-        assertTrue("no replay is spent on a value the system cannot make",
-                obligations(unsatOut, 0).isEmpty());
-        assertEquals(Verdict.UNSAT, closed(unsatOut, 0).get(0).verdict());
+        Path unsatWave = unsatOut.resolve("obligations-0000");
+        plan(other, target, null, unsatOut.resolve("results.jsonl"),
+                unsatWave, 0);
+        Worker refused = solve(other, unsatWave,
+                named(obligations(unsatWave), "Lookup#u8"), unsatOut, "w0");
+        assertEquals(Verdict.UNSAT, refused.verdict);
     }
 
     // ---- (3) a handoff no producer delivers is named ------------------
@@ -202,15 +229,18 @@ public class D3ExploreTest {
         seed.flush();
 
         Path out = tree.newFolder("unproducible-out").toPath();
-        explore(iteration, target, out, 2);
-        List<Obligation> wave0 = obligations(out, 0);
-        assertEquals(1, wave0.size());
+        Path wave0 = out.resolve("obligations-0000");
+        plan(iteration, target, null, out.resolve("results.jsonl"), wave0, 0);
+        List<Obligation> proposed = obligations(wave0);
+        assertEquals(1, proposed.size());
+        Worker worker = solve(iteration, wave0, proposed.get(0), out, "w0");
+        assertEquals(Verdict.SAT_MODEL_READY, worker.verdict);
         assertEquals(Collections.singletonList(attached.id()),
-                wave0.get(0).unproducible());
-        assertEquals("5", wave0.get(0).answers().get(attached.id()));
+                worker.obligation.unproducible());
+        assertEquals("5", worker.obligation.answers().get(attached.id()));
         boolean named = false;
-        for (GapRow gap : RowCodec.readAll(out.resolve("gaps.jsonl"),
-                RowCodec::readGap)) {
+        for (GapRow gap : RowCodec.readAll(worker.directory
+                .resolve("gaps.jsonl"), RowCodec::readGap)) {
             named |= gap.kind() == GapKind.UNPRODUCIBLE_ANSWER
                     && gap.subject().contains("XCH.req.key-id");
         }
@@ -231,12 +261,15 @@ public class D3ExploreTest {
         seed.decision(target, "Arrival#u8", 1, false, "(> M_SERIAL 10)");
         seed.flush();
         Path pinnedOut = tree.newFolder("pinned-out").toPath();
-        explore(pinned, target, pinnedOut, 2);
-        assertTrue(obligations(pinnedOut, 0).isEmpty());
-        assertEquals(Verdict.UNSAT, closed(pinnedOut, 0).get(0).verdict());
+        Path pinnedWave = pinnedOut.resolve("obligations-0000");
+        plan(pinned, target, null, pinnedOut.resolve("results.jsonl"),
+                pinnedWave, 0);
+        Worker refused = solve(pinned, pinnedWave,
+                obligations(pinnedWave).get(0), pinnedOut, "w0");
+        assertEquals(Verdict.UNSAT, refused.verdict);
 
-        // Declared, the same flip is satisfiable inside the declared
-        // domain, whose bounds the case states RELATIVE to the recording.
+        // Declared, the same flip is satisfiable inside the declared domain,
+        // whose bounds the case states RELATIVE to the recording.
         Path declared = tree.newFolder("declared").toPath();
         Session open = new Session(declared, "s-seed");
         open.activation(target, true);
@@ -249,14 +282,19 @@ public class D3ExploreTest {
                         "CASE.SERIAL", RootKind.INTEGRAL, "7", "+4", "+5")),
                 ExploreCodec::writeDomain);
         Path declaredOut = tree.newFolder("declared-out").toPath();
-        ExploreMain.run(declared, target, domains, declaredOut, 2,
-                Paths.get("z3"), 10_000L, ClosurePlanner.DEFAULT_MAX_TASKS,
-                ObligationFactory.DEFAULT_MAX_PER_TASK);
-        List<Obligation> wave0 = obligations(declaredOut, 0);
-        assertEquals(1, wave0.size());
-        String moved = wave0.get(0).rootAssignments().get("CASE.SERIAL");
-        assertTrue("free inside [11, 12], and nowhere else: " + moved,
-                "11".equals(moved) || "12".equals(moved));
+        Path declaredWave = declaredOut.resolve("obligations-0000");
+        plan(declared, target, domains, declaredOut.resolve("results.jsonl"),
+                declaredWave, 0);
+        // The planner wrote the domains beside the obligations, so the worker
+        // solves under the same declaration without being told twice.
+        assertTrue(Files.isRegularFile(
+                declaredWave.resolve("root-domains.jsonl")));
+        Worker moved = solve(declared, declaredWave,
+                obligations(declaredWave).get(0), declaredOut, "w0");
+        assertEquals(Verdict.SAT_MODEL_READY, moved.verdict);
+        String value = moved.obligation.rootAssignments().get("CASE.SERIAL");
+        assertTrue("free inside [11, 12], and nowhere else: " + value,
+                "11".equals(value) || "12".equals(value));
     }
 
     // ---- (5) the closure holds the writer of every version read -------
@@ -303,34 +341,74 @@ public class D3ExploreTest {
             assertFalse("a wire producer is never another task's factor",
                     task.factor().contains(producer));
         }
+        // A task is recovered from its id alone, which is how the worker that
+        // executes an obligation knows what to replay.
+        Task recovered = ClosurePlanner.taskOf(corpus, anchor.taskId());
+        assertNotNull(recovered);
+        assertEquals(anchor.focused(), recovered.focused());
     }
 
-    // ---- fixtures -----------------------------------------------------
+    // ---- driving the stage the way the campaign drives it -------------
 
-    private JsonObject explore(Path iteration, OccurrenceAddress anchor,
-                               Path out, int maxWaves) throws IOException {
-        return ExploreMain.run(iteration, anchor, null, out, maxWaves,
-                Paths.get("z3"), 10_000L, ClosurePlanner.DEFAULT_MAX_TASKS,
-                ObligationFactory.DEFAULT_MAX_PER_TASK);
+    private JsonObject plan(Path iteration, OccurrenceAddress anchor,
+                            Path domains, Path results, Path waveDir,
+                            int wave) throws IOException {
+        return ExploreMain.plan(iteration,
+                Collections.singletonList(anchor), domains, results, waveDir,
+                wave, "epoch0", ClosurePlanner.DEFAULT_MAX_TASKS,
+                ObligationFactory.Bounds.defaults());
     }
 
-    private static List<Obligation> obligations(Path out, int wave)
-            throws IOException {
-        return RowCodec.readAll(wave(out, wave).resolve("obligations.jsonl"),
-                ExploreCodec::readObligation);
+    /** One obligation worker: the verdict row and the completed obligation. */
+    private static final class Worker {
+        private final Verdict verdict;
+        private final Obligation obligation;
+        private final Path directory;
+
+        private Worker(Verdict verdict, Obligation obligation,
+                       Path directory) {
+            this.verdict = verdict;
+            this.obligation = obligation;
+            this.directory = directory;
+        }
     }
 
-    private static List<ObligationResult> closed(Path out, int wave)
-            throws IOException {
-        return RowCodec.readAll(wave(out, wave).resolve("closed.jsonl"),
+    private Worker solve(Path iteration, Path waveDir, Obligation proposal,
+                         Path out, String name) throws IOException {
+        Path worker = out.resolve(name);
+        ObligationSolverMain.solve(iteration,
+                waveDir.resolve("root-domains.jsonl"),
+                waveDir.resolve("obligations.jsonl"),
+                proposal.obligationId(), worker, Paths.get("z3"), 10_000L);
+        List<ObligationResult> rows = RowCodec.readAll(
+                worker.resolve("obligation_result.jsonl"),
                 ExploreCodec::readResult);
+        assertEquals(1, rows.size());
+        List<Obligation> solved = RowCodec.readAll(
+                worker.resolve("obligation.jsonl"),
+                ExploreCodec::readObligation);
+        assertEquals(1, solved.size());
+        assertTrue("the query is published whatever the verdict",
+                Files.size(worker.resolve("obligation_query.smt2")) > 0);
+        return new Worker(rows.get(0).verdict(), solved.get(0), worker);
     }
 
-    private static Path wave(Path out, int wave) {
-        return out.resolve(String.format("wave-%04d", wave));
+    private static void record(Path results, ObligationResult result)
+            throws IOException {
+        Files.write(results, (RowCodec.toLine(
+                        ExploreCodec.writeResult(result))
+                        + System.lineSeparator()).getBytes("UTF-8"),
+                StandardOpenOption.CREATE, StandardOpenOption.APPEND);
     }
 
-    private static Obligation named(List<Obligation> obligations, String site) {
+    private static List<Obligation> obligations(Path waveDir)
+            throws IOException {
+        return ExploreCodec.readObligations(
+                waveDir.resolve("obligations.jsonl"));
+    }
+
+    private static Obligation named(List<Obligation> obligations,
+                                    String site) {
         for (Obligation obligation : obligations) {
             if (obligation.siteId().equals(site)) return obligation;
         }
@@ -359,6 +437,8 @@ public class D3ExploreTest {
         private final List<RootMintRow> roots = new ArrayList<>();
         private final Map<String, JsonObject> expressions =
                 new LinkedHashMap<>();
+        /** The session's own event order: every row takes the next one. */
+        private long seq;
 
         private Session(Path iteration, String sessionId) {
             this.dir = SessionDir.of(iteration, sessionId);
@@ -373,8 +453,9 @@ public class D3ExploreTest {
 
         private void decision(OccurrenceAddress occurrence, String site,
                               int ordinal, boolean outcome, String term) {
-            decisions.add(DecisionRow.of(sessionId, occurrence, site, ordinal,
-                    outcome, term, Collections.<String, Long>emptyMap()));
+            decisions.add(DecisionRow.of(sessionId, ++seq, occurrence, site,
+                    ordinal, outcome, term,
+                    Collections.<String, Long>emptyMap()));
         }
 
         private void root(OccurrenceAddress occurrence, String rootId,
@@ -386,26 +467,27 @@ public class D3ExploreTest {
 
         private void export(Endpoint endpoint, String ref, long handle,
                             String recorded) {
-            exports.add(ExportRow.of(sessionId, endpoint, ref, handle,
-                    recorded));
+            exports.add(ExportRow.of(sessionId, ++seq, endpoint, ref, "I",
+                    handle, recorded));
         }
 
         private void attach(Endpoint endpoint, String symbol, String arrival,
                             Endpoint producer) {
-            attaches.add(AttachRow.of(sessionId, endpoint, symbol, arrival,
-                    false, null, producer, "corr-" + endpoint.ordinal()));
+            attaches.add(AttachRow.of(sessionId, ++seq, endpoint, symbol, "I",
+                    arrival, false, null, producer,
+                    "corr-" + endpoint.ordinal()));
         }
 
         private void write(Endpoint endpoint, LocationId location,
                            long version, String ref) {
-            writes.add(WriteRow.of(sessionId, endpoint, location, version,
-                    ref));
+            writes.add(WriteRow.of(sessionId, ++seq, endpoint, location,
+                    version, ref, "I"));
         }
 
         private void read(Endpoint endpoint, LocationId location,
                           long version, String symbol, String concrete) {
-            reads.add(ReadRow.of(sessionId, endpoint, location, version,
-                    symbol, concrete));
+            reads.add(ReadRow.of(sessionId, ++seq, endpoint, location, version,
+                    symbol, "I", concrete));
         }
 
         /** One literal the VM recorded as a delivered constant. */
