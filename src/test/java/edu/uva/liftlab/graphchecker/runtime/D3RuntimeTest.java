@@ -211,8 +211,8 @@ public class D3RuntimeTest {
                 expression, "J");
         D3Runtime.read(occurrence, 14L, "L#r#0:READ", location, 125L, "s",
                 "J", "9");
-        D3Runtime.rootMint(occurrence, "HDFS.BLOCK_KEY.SERIAL_NO", "M_I_1",
-                RootKind.INTEGRAL, "3", "3", "6", true);
+        D3Runtime.rootMint(occurrence, 11L, "HDFS.BLOCK_KEY.SERIAL_NO",
+                "M_I_1", RootKind.INTEGRAL, "3", "3", "6", true);
         D3Runtime.target(occurrence, 15L, "Klass.m()#u8", expression, true,
                 true, true);
         D3Runtime.gap(GapKind.UNSTATED_VALUE, GapClass.BLOCKING, "s", "d");
@@ -245,6 +245,7 @@ public class D3RuntimeTest {
         List<RootMintRow> roots = RowCodec.readAll(dir.roots(),
                 RowCodec::readRootMint);
         assertEquals(RootKind.INTEGRAL, roots.get(0).kind());
+        assertEquals(11L, roots.get(0).seq());
         assertFalse(roots.get(0).pinned());
         List<TargetRow> targets = RowCodec.readAll(dir.targets(),
                 RowCodec::readTarget);

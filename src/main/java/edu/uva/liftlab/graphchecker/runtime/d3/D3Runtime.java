@@ -50,6 +50,17 @@ public final class D3Runtime {
     /** This replay's clock readings so far, by root id. */
     private static final Map<String, Long> CLOCKS =
             new ConcurrentHashMap<String, Long>();
+    /**
+     * The highest VM event id this session has published.
+     *
+     * <p>{@code seq} is ONE counter for every row kind -- the VM's own
+     * session-global event id, which the decisions' {@code vmEventId} and
+     * the write log's {@code fieldVersionId} are both drawn from -- because
+     * the composer compares a decision's seq against an export's directly.
+     * Never a per-kind ordinal.</p>
+     */
+    private static final java.util.concurrent.atomic.AtomicLong LAST_SEQ =
+            new java.util.concurrent.atomic.AtomicLong();
     private static volatile SessionPublisher publisher;
     private static volatile String sessionId = "";
 
@@ -328,8 +339,8 @@ public final class D3Runtime {
     }
 
     /** One root minted, with its kind and the domain it resolved to. */
-    public static void rootMint(OccurrenceAddress occurrence, String rootId,
-                                String symbol, RootKind kind,
+    public static void rootMint(OccurrenceAddress occurrence, long seq,
+                                String rootId, String symbol, RootKind kind,
                                 String recordedValue, String domainMin,
                                 String domainMax, boolean declared) {
         if (kind == RootKind.CLOCK) {
@@ -338,7 +349,8 @@ public final class D3Runtime {
         }
         SessionPublisher session = publisher;
         if (session == null || occurrence == null) return;
-        session.rootMint(RootMintRow.of(sessionId(), occurrence,
+        session.rootMint(RootMintRow.of(sessionId(), sequence(seq),
+                occurrence,
                 Text.safe(rootId), Text.safe(symbol),
                 kind == null ? RootKind.INTEGRAL : kind,
                 Text.safe(recordedValue),
@@ -398,7 +410,20 @@ public final class D3Runtime {
      * pretends to an order it does not have.</p>
      */
     private static long sequence(long vmEventId) {
-        return Math.max(0L, vmEventId);
+        if (vmEventId > 0L) {
+            long seen = LAST_SEQ.get();
+            while (vmEventId > seen
+                    && !LAST_SEQ.compareAndSet(seen, vmEventId)) {
+                seen = LAST_SEQ.get();
+            }
+            return vmEventId;
+        }
+        // The VM gave this row no id of its own -- an ambient mint, an
+        // export the ledger did not number.  It is not earlier than
+        // anything already seen, and saying 0 would place it before the
+        // whole run.  A comparison against it is then "no earlier than",
+        // which is the strongest true statement available.
+        return LAST_SEQ.get();
     }
 
     /**
@@ -455,6 +480,7 @@ public final class D3Runtime {
             ACTIVATIONS.clear();
             ORDINALS.clear();
             CLOCKS.clear();
+            LAST_SEQ.set(0L);
             publisher = null;
             sessionId = "";
             OccurrenceMinterV2.resetForTests();

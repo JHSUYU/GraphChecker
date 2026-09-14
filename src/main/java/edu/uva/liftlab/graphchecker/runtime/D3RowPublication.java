@@ -105,7 +105,8 @@ final class D3RowPublication {
             if (symbol.isEmpty()) continue;
             String rootId = optionalString(row, "sourceId");
             if (rootId.isEmpty()) rootId = optionalString(row, "portId");
-            D3Runtime.rootMint(occurrence, rootId, symbol,
+            D3Runtime.rootMint(occurrence,
+                    optionalLongInteger(row, "eventSeq", 0L), rootId, symbol,
                     kindOf(row), optionalString(row, "recordedValue"),
                     optionalString(row, "domainMin"),
                     optionalString(row, "domainMax"),

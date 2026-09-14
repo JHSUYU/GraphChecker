@@ -57,6 +57,12 @@ public final class FocusedReplay {
     private static final Map<String, String> REFUSALS =
             new LinkedHashMap<String, String>();
     private static final Set<String> FLIPPED = new LinkedHashSet<String>();
+    /** The tasks this replay focuses, as the wave's plan rows name them. */
+    private static final Set<String> FOCUSED_TASKS =
+            new LinkedHashSet<String>();
+    /** The occurrences those tasks turned out to be. */
+    private static final Set<String> FOCUSED_OCCURRENCES =
+            new LinkedHashSet<String>();
 
     private FocusedReplay() {
     }
@@ -107,13 +113,46 @@ public final class FocusedReplay {
         // A replay nothing focused -- the seed -- focuses nothing: every
         // occurrence of it ran as the plan had it, and the composer reads
         // the session whose activations are unfocused as the seed.
-        if (task == null || occurrence == null) return false;
+        if (occurrence == null) return false;
+        synchronized (LOCK) {
+            if (FOCUSED_OCCURRENCES.contains(occurrence.render())) {
+                return true;
+            }
+        }
+        if (task == null || task.focused() == null) return false;
         if (occurrence.equals(task.focused())) return true;
         if (task.factor() == null) return false;
         for (OccurrenceAddress member : task.factor()) {
             if (occurrence.equals(member)) return true;
         }
         return false;
+    }
+
+    /**
+     * Whether this activation is the one the wave focused.
+     *
+     * <p>A wave's plan row names the TASK it focuses, not the address --
+     * the address is what the replay finds out by running it.  So the first
+     * activation of that task is the focused occurrence, and every later
+     * row about it is focused by address.</p>
+     */
+    public static boolean focused(String taskId, OccurrenceAddress occurrence) {
+        load();
+        if (occurrence == null) return false;
+        String id = Text.safe(taskId);
+        synchronized (LOCK) {
+            if (!id.isEmpty() && FOCUSED_TASKS.contains(id)) {
+                FOCUSED_OCCURRENCES.add(occurrence.render());
+                return true;
+            }
+        }
+        boolean declared = focused(occurrence);
+        if (declared) {
+            synchronized (LOCK) {
+                FOCUSED_OCCURRENCES.add(occurrence.render());
+            }
+        }
+        return declared;
     }
 
     /** The value the wave assigned this root, or {@code ""}. */
@@ -276,11 +315,64 @@ public final class FocusedReplay {
         return "";
     }
 
+    /** Where the campaign names this replay's execution task plan. */
+    public static final String PLAN_PROPERTY = "causynth.concolic.task.plan";
+
+    /**
+     * The wave's own plan rows: one {@code EXECUTION_TASK} per obligation.
+     *
+     * <p>{@code d3.explore.ObligationSolverMain} writes {@code
+     * execution_task_plan.jsonl} with {@code taskId}, {@code obligationId},
+     * {@code pathId}, {@code flip} = {siteId, ordinal, outcome}, {@code
+     * rootAssignments}, {@code answers} (attach endpoint id to value) and
+     * {@code unproducible}.  That file IS the focused task: the replay
+     * applies the assignments at the mints of the focused occurrence, the
+     * answers at its attaches, and enforces the flip at the named
+     * decision.</p>
+     */
+    private static void loadPlanRows() {
+        String path = Text.safe(System.getProperty(PLAN_PROPERTY));
+        if (path.isEmpty()) {
+            path = Text.safe(System.getenv("CAUSYNTH_CONCOLIC_TASK_PLAN"));
+        }
+        if (path.isEmpty() || !Files.isReadable(Paths.get(path))) return;
+        try {
+            for (JsonObject row : RowCodec.readJsonl(Paths.get(path))) {
+                if (!row.has("flip") || !row.has("taskId")) continue;
+                JsonObject flip = row.getAsJsonObject("flip");
+                String obligationId = string(row, "obligationId");
+                if (obligationId.isEmpty()) {
+                    obligationId = string(row, "taskId");
+                }
+                OBLIGATIONS.add(Obligation.of(obligationId,
+                        string(row, "taskId"), string(row, "pathId"),
+                        string(flip, "siteId"),
+                        flip.has("ordinal") ? flip.get("ordinal").getAsInt()
+                                : 1,
+                        flip.has("outcome")
+                                && flip.get("outcome").getAsBoolean(),
+                        strings(row, "rootAssignments"),
+                        strings(row, "answers"),
+                        list(row, "unproducible")));
+                FOCUSED_TASKS.add(string(row, "taskId"));
+            }
+        } catch (RuntimeException | IOException unreadable) {
+            System.err.println("Causynth could not read the focused task plan "
+                    + path + ": " + unreadable);
+        }
+        if (!OBLIGATIONS.isEmpty() && task == null) {
+            task = Task.of(OBLIGATIONS.get(0).taskId(), null,
+                    java.util.Collections.<OccurrenceAddress>emptyList(),
+                    Text.safe(System.getenv("CAUSYNTH_SEED_SESSION")));
+        }
+    }
+
     /** Reads the task file this replay was handed, once. */
     private static void load() {
         synchronized (LOCK) {
             if (loaded) return;
             loaded = true;
+            loadPlanRows();
             String path = System.getProperty(TASK_PROPERTY);
             if (path == null || path.trim().isEmpty()) return;
             try {
@@ -454,6 +546,8 @@ public final class FocusedReplay {
             MATCHED.clear();
             REFUSALS.clear();
             FLIPPED.clear();
+            FOCUSED_TASKS.clear();
+            FOCUSED_OCCURRENCES.clear();
         }
     }
 }

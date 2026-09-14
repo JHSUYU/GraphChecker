@@ -461,8 +461,10 @@ public class D3ExploreTest {
         private void root(OccurrenceAddress occurrence, String rootId,
                           String symbol, RootKind kind, String recorded,
                           String min, String max, boolean declared) {
-            roots.add(RootMintRow.of(sessionId, occurrence, rootId, symbol,
-                    kind, recorded, min, max, declared));
+            // contract v1.2: a mint's position is the same question as an
+            // export's, so the row carries the session's own clock.
+            roots.add(RootMintRow.of(sessionId, ++seq, occurrence, rootId,
+                    symbol, kind, recorded, min, max, declared));
         }
 
         private void export(Endpoint endpoint, String ref, long handle,
