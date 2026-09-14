@@ -264,38 +264,75 @@ public class OccurrenceAddressIsNotARequestTest {
     }
 
     /**
-     * A model for the second epoch's mint is not applied at the first's.
+     * Two epochs of one node: each run answers its own epoch's tasks.
      *
-     * <p>The mint site is reached once per node lifecycle, and the model
-     * names the site.  The site is not the address: the address is (node,
-     * epoch, region, k-th activation).  On hdfs-17960 the flip replay threw
-     * inside the workload before it restarted the NameNode, so the only
-     * activation it offered was epoch 0 -- and {@code root=false} was written
-     * at the mint the recording made before the restart, rewriting the
-     * recorded execution at a point the solver said nothing about.  The first
-     * epoch's mint must keep the value it recorded.</p>
+     * <p>The mint site is reached once per node lifecycle and the model names
+     * the site, so the epoch is what tells the two apart.  On hdfs-17960 the
+     * flip replay threw inside the workload before it restarted the NameNode:
+     * every activation it offered was epoch 0, and {@code root=false} was
+     * written at the mint the recording made before the restart, rewriting
+     * the recorded execution at a point the solver said nothing about.</p>
+     *
+     * <p>The refusal is on evidence, not on registration order.  Lane BD
+     * showed why that matters: an arm that refused "this run has not
+     * registered epoch 1 yet" turned a fact about a moment into a verdict
+     * about the run, and one seed replay both published five regions at
+     * epoch 1 and told eight tasks the run never reached it.  So an epoch-0
+     * activation is declined because it ran at epoch 0, an epoch-1
+     * activation is answered whenever it arrives, and an activation nothing
+     * attributed is still the occurrence.</p>
      */
     @Test
-    public void aModelForTheSecondEpochIsNotAppliedAtTheFirst() {
+    public void eachEpochAnswersItsOwnTasks() {
         RuntimeTraceContext.resetForTests();
-        Object first = new Object();
-        RuntimeTraceContext.registerSource(first,
+        RuntimeTraceContext.registerSource(new Object(),
                 new SourceRef("CLUSTER_NODE", "NAMENODE", "hdfs/nn0", 0L));
 
-        assertFalse("epoch 1 has not happened in this run yet",
-                ConcolicTaskPlan.lifecycleMismatch("hdfs/nn0#epoch1",
-                        Collections.<String>emptySet()).isEmpty());
+        // The epoch-0 run, before any restart: an activation of this node is
+        // declined, and the decline says which epoch it actually ran in.
+        String declined = ConcolicTaskPlan.lifecycleMismatch("hdfs/nn0#epoch1",
+                Collections.singleton("hdfs/nn0#epoch0"));
+        assertFalse("an epoch-0 activation is not the epoch-1 occurrence",
+                declined.isEmpty());
+        assertTrue(declined, declined.contains("hdfs/nn0#epoch0"));
+        assertTrue(declined, declined.contains("hdfs/nn0#epoch1"));
 
+        assertEquals("and a task of its own epoch is answered", "",
+                ConcolicTaskPlan.lifecycleMismatch("hdfs/nn0#epoch0",
+                        Collections.singleton("hdfs/nn0#epoch0")));
+
+        // The same run after the restart registers the next epoch.  The
+        // epoch-1 activations answer; nothing about the earlier refusals
+        // carries over, because the refusal was never about the run.
         RuntimeTraceContext.registerSource(new Object(),
                 new SourceRef("CLUSTER_NODE", "NAMENODE", "hdfs/nn0", 1L));
 
-        assertFalse("an epoch-0 activation is not the epoch-1 occurrence",
-                ConcolicTaskPlan.lifecycleMismatch("hdfs/nn0#epoch1",
-                        Collections.singleton("hdfs/nn0#epoch0")).isEmpty());
-        assertEquals("the epoch-1 activation is", "",
+        assertEquals("the epoch-1 activation answers", "",
                 ConcolicTaskPlan.lifecycleMismatch("hdfs/nn0#epoch1",
                         Collections.singleton("hdfs/nn0#epoch1")));
-        assertEquals("and an activation nothing attributed still is", "",
+        assertFalse("and the epoch-0 one still does not",
+                ConcolicTaskPlan.lifecycleMismatch("hdfs/nn0#epoch1",
+                        Collections.singleton("hdfs/nn0#epoch0")).isEmpty());
+        assertEquals("an activation nothing attributed is still it", "",
+                ConcolicTaskPlan.lifecycleMismatch("hdfs/nn0#epoch1",
+                        Collections.<String>emptySet()));
+    }
+
+    /**
+     * A task addressed to an epoch this run has not reached yet is not
+     * refused for that reason.
+     *
+     * <p>This is lane BD exactly: the activations that precede the restart
+     * are refused because they ran at epoch 0, and the address stays open for
+     * the activations that follow it.</p>
+     */
+    @Test
+    public void anEpochNotYetReachedIsNotARefusal() {
+        RuntimeTraceContext.resetForTests();
+        RuntimeTraceContext.registerSource(new Object(),
+                new SourceRef("CLUSTER_NODE", "NAMENODE", "hdfs/nn0", 0L));
+
+        assertEquals("nothing attributed, nothing to refuse", "",
                 ConcolicTaskPlan.lifecycleMismatch("hdfs/nn0#epoch1",
                         Collections.<String>emptySet()));
         assertEquals("another node's epochs say nothing", "",

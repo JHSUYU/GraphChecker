@@ -474,39 +474,6 @@ final class RuntimeTraceContext {
         }
     }
 
-    /**
-     * Whether this run registered exactly {@code sourceKey}, epoch included.
-     *
-     * <p>{@link #sourceIdentityRegistered} answers about the node and
-     * deliberately ignores the epoch, so that a region addressed at one epoch
-     * can be matched in a run that reached it.  For deciding whether an
-     * activation <em>is</em> a given epoch that is too weak: a workload
-     * declares its epochs literally ({@code registerSource(..., 0)} at start,
-     * {@code restartSource(..., 1)} across a restart), so the same label means
-     * the same lifecycle in every run of it, and a run that never registered
-     * {@code ...#epoch1} never had an epoch-1 activation to address.</p>
-     */
-    static boolean sourceKeyRegistered(String sourceKey) {
-        if (sourceKey == null || sourceKey.isEmpty()) return false;
-        synchronized (LOCK) {
-            return SOURCES_BY_KEY.containsKey(sourceKey);
-        }
-    }
-
-    /** The keys this run registered for {@code sourceKey}'s node. */
-    static String registeredEpochsOf(String sourceKey) {
-        List<String> keys = new ArrayList<>();
-        synchronized (LOCK) {
-            for (String registered : SOURCES_BY_KEY.keySet()) {
-                if (sameSourceIdentity(sourceKey, registered)) {
-                    keys.add(registered);
-                }
-            }
-        }
-        Collections.sort(keys);
-        return keys.toString();
-    }
-
     /** Whether {@code sourceKey} names an epoch of its node at all. */
     static boolean declaresEpoch(String sourceKey) {
         String value = sourceKey == null ? "" : sourceKey.trim();
