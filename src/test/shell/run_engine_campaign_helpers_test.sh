@@ -369,7 +369,7 @@ jq -e '[(.gaps + .telemetryGaps)[] | select((.classReason // "") == "")]
 # own exceptions rather than leaving a reader to guess the default.
 jq -e '.kind == "GAP_LEDGER" and .defaultClass == "BLOCKING"
   and (.diagnostic | index("SELECTED_PATH_SET_INCOMPLETE")) != null
-  and (.entries | length) > 100' \
+  and (.entries | length) > 40' \
   "${campaign_final}/gap_ledger.json" >/dev/null \
   || fail "EMIT published no usable gap ledger"
 

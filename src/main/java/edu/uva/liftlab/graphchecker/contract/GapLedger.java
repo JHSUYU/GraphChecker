@@ -190,9 +190,6 @@ public final class GapLedger {
                         + " recording took the healthy arm: a formula that"
                         + " answers yes to the execution that did not fail"
                         + " answers nothing about the one that would");
-        blocking(composer, "MissingTargetInstanceSymbolicContext",
-                "the target activation carries no symbolic context, so no"
-                        + " root reaches it");
         // The acceptance gate spells a refusal CODE[subject] or CODE:subject
         // and publishes it under one COMPOSITION_GAP kind; run_engine.sh
         // decodes that spelling before classing the row, so the ledger sees
@@ -201,9 +198,7 @@ public final class GapLedger {
         // written down rather than left to the default.
         for (String code : new String[]{
                 "WIRE_FLOW_VALUE_UNBOUND",
-                "MODEL_SEMANTICS_MISSING",
-                "UNRESOLVED_SHARED_READ",
-                "CASE_MERGE_IN_PATH"}) {
+                "MODEL_SEMANTICS_MISSING"}) {
             blocking(composer, code,
                     "a refusal the composer made: the step it refused is not in"
                             + " the formula the witness satisfies");
@@ -328,21 +323,6 @@ public final class GapLedger {
         blocking(solver, "SOLVER_TIMEOUT",
                 "a flip query the solver never answered leaves the root it"
                         + " was asked about unresolved");
-        for (String code : new String[]{
-                "COMPOSED_SMT_EMPTY",
-                "CONFIGURED_SOURCE_TERM_NOT_DECLARED_OR_SORT_MISMATCH",
-                "MANUAL_SYMBOLIC_ROOT_TERM_NOT_DECLARED_OR_SORT_MISMATCH",
-                "SYMBOLIC_ROOT_TERM_AUTHORITY_CONFLICT",
-                "MANUAL_SYMBOLIC_ROOT_MALFORMED",
-                "MANUAL_SYMBOLIC_ROOT_CONFLICT",
-                "CONFIGURED_SOURCE_MATERIALIZATION_MALFORMED",
-                "CONFIGURED_SOURCE_MATERIALIZATION_CONFLICT",
-                "UNDECIDED_SOLVER_VALUATIONS"}) {
-            blocking(solver, code,
-                    "the reach extractor could not read the model it was handed, so"
-                            + " its reachability answer is about the artifact rather than the"
-                            + " target");
-        }
 
         // ------------------------------------------------------------------
         // EXPLORE / PATH_WORKLIST.
@@ -367,12 +347,8 @@ public final class GapLedger {
         // no row left coverageState reading CLOSED, and then nothing
         // withheld the UNSAT conclusion either.
         for (String code : new String[]{
-                "BOUND_REACHED",
-                "UNSUPPORTED_PATH_FLIP",
-                "PATH_FLIP_MATERIALIZATION_GAP",
                 "PATH_FLIP_REPLAY_NOT_ADMITTED",
                 "PATH_FLIP_SOLVER_TIMEOUT",
-                "LINKED_REPLAY_LEFT_TOPOLOGY_EPOCH",
                 "REGION_PATH_WAVE_BUDGET_REACHED",
                 "REGION_PATH_CLOSURE_NO_PROGRESS"}) {
             diagnostic(explore, code,
@@ -442,40 +418,9 @@ public final class GapLedger {
                 "the replay published no observation of the target this"
                         + " task was addressed at");
         for (String code : new String[]{
-                "SKIPPED_RUNTIME_EVENT",
-                "REGION_NOT_STARTED",
-                "REGION_UNAPPLIED_MODEL_ASSIGNMENT",
-                "REGION_RESULT_PUBLICATION_FAILED",
-                "REGION_ANCHOR_EPOCH_NOT_REACHED",
-                "REGION_TERMINAL_NEVER_REACHED",
-                "UNKNOWN_EXECUTION_TASK",
-                "UNKNOWN_REGION",
-                "SHARED_STATE_CONTAINER_BASE_UNSTATED",
-                "DUPLICATE_ACTIVATION_ORDINAL",
-                "VM_SUMMARY_ACTIVATION_MISMATCH",
-                "SYMBOLIC_EXECUTION_ABORTED",
                 "REPLAY_LOOP_RESOURCE_CAP",
                 "LOOP_BOUND_PATH_CUT",
-                "BRANCH_REPLAY_MISMATCH",
-                "REGION_PATH_ADMISSION_REJECTED",
-                "PATH_REPLAY_ADMISSION_REJECTED",
-                "DUPLICATE_SUMMARY",
-                "INCOMPLETE_RELATION",
-                "CONCOLIC_RESULT_SCHEMA_UNSUPPORTED",
-                "CONCOLIC_RESULT_ACTIVATION_TUPLE_MALFORMED",
-                "CONCOLIC_RESULT_REPLAY_GROUP_MISSING",
-                "SYMBOLIZED_INPUT_ROW_MALFORMED",
-                "TARGET_REACH_EVENT_MISSING",
-                "TARGET_REACH_EVENT_MALFORMED",
-                "TARGET_REACH_EVENT_MISMATCH",
-                "AMBIENT_PATH_CONDITION_NOT_ADMITTED",
-                "AUXILIARY_PATH_CONDITION_MISSING",
-                "MALFORMED_BRANCH_MAPPING",
-                "OMITTED_PATH_CONDITION_AUTHORITY_MISSING",
-                "OMITTED_PATH_CONDITION_ENGINE_INACTIVE",
-                "OMITTED_PATH_CONDITION_NOT_EMPTY",
-                "SYMBOLIC_SOURCE_PHASE_RUNTIME_LEDGER_MALFORMED",
-                "SYMBOLIC_SOURCE_PHASE_RUNTIME_LEDGER_MISSING"}) {
+                "CONCOLIC_RESULT_REPLAY_GROUP_MISSING"}) {
             blocking(importer, code,
                     "a planned region, task or event the replay did not produce, or"
                             + " produced in a shape the importer could not read, contributes no"
