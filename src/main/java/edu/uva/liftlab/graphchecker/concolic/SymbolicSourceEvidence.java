@@ -209,9 +209,15 @@ public final class SymbolicSourceEvidence {
         row.addProperty("portId", required(portId, "portId"));
         row.addProperty("sourceOccurrenceId", required(occurrenceId,
                 "sourceOccurrenceId"));
-        if (fieldSignature != null && !fieldSignature.trim().isEmpty()) {
-            row.addProperty("fieldSignature", fieldSignature.trim());
-        }
+        // A manual input's identity IS what every reader calls its field:
+        // there is no Java field behind a hook's mint, and a row that left
+        // the member off was refused as a malformed materialization by the
+        // one reader that asks for it.  Stated here, once, rather than by a
+        // second builder that filled it in.
+        row.addProperty("fieldSignature",
+                fieldSignature == null || fieldSignature.trim().isEmpty()
+                        ? required(sourceIdentity, "sourceIdentity").trim()
+                        : fieldSignature.trim());
         row.addProperty("rawSymbol", rawSymbol);
         row.addProperty("javaType", javaType);
         row.add("expression", expression);
@@ -248,6 +254,48 @@ public final class SymbolicSourceEvidence {
     /** What this execution read at the mint, or "" when it states none. */
     public static String observedValueOf(JsonObject event) {
         return event == null ? "" : optionalString(event, OBSERVED_VALUE);
+    }
+
+    /**
+     * One manual mint row as every reader declares it.
+     *
+     * <p>The row IS the declaration -- it states the port, the callee the
+     * hook declared and both readings -- but a row written before those
+     * members existed states its identity only as {@code sourceIdentity}.
+     * Completing it here keeps that knowledge in the class that owns the
+     * row's shape: the composer used to rebuild a declaration instead, and
+     * the rebuilt row, installed over the evidence, lost the port and the
+     * callee, so no composition ever listed a clock read.</p>
+     */
+    public static JsonObject manualDeclaration(JsonObject row) {
+        if (row == null) return null;
+        // The VM's own observation spells the identity "symbol" and the
+        // address "occurrenceId"; a row this class minted spells them
+        // "sourceIdentity" and "sourceOccurrenceId".  Both are the same
+        // statement, and this is the one place that says so.
+        String identity = optionalString(row, "sourceIdentity");
+        if (identity.isEmpty()) identity = optionalString(row, SYMBOL);
+        if (identity.isEmpty()) return null;
+        JsonObject declaration = shallowCopy(row);
+        String occurrence = optionalString(row, "sourceOccurrenceId");
+        if (occurrence.isEmpty()) {
+            occurrence = optionalString(row, "occurrenceId");
+            stateIfAbsent(declaration, "sourceOccurrenceId", occurrence);
+        }
+        int region = occurrence.indexOf("/region/");
+        stateIfAbsent(declaration, "sourcePhaseId", identity);
+        stateIfAbsent(declaration, "sourceId", identity);
+        stateIfAbsent(declaration, "fieldSignature", identity);
+        stateIfAbsent(declaration, "sourceKey",
+                region > 0 ? occurrence.substring(0, region) : occurrence);
+        return declaration;
+    }
+
+    private static void stateIfAbsent(JsonObject row, String member,
+                                      String value) {
+        if (optionalString(row, member).isEmpty() && !value.isEmpty()) {
+            row.addProperty(member, value);
+        }
     }
 
     /** The call whose return this root was minted from, or "". */

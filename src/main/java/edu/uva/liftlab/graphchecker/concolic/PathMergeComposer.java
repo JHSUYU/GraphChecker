@@ -1363,17 +1363,18 @@ public final class PathMergeComposer {
                 if (!encoded.isJsonObject()) continue;
                 JsonObject event = encoded.getAsJsonObject();
                 String raw = optionalString(event, "rawSymbol");
-                if (raw.isEmpty()
-                        || optionalString(event, "sourceIdentity").isEmpty()) {
-                    continue;
-                }
+                if (raw.isEmpty()) continue;
                 VmTermLowering.Sort sort = JavaSmtSorts.sortOfJava(
                         optionalString(event, "javaType"));
                 if (sort == VmTermLowering.Sort.REF
                         || sort.containerState()) {
                     continue;
                 }
-                declarations.putIfAbsent(raw, event);
+                JsonObject declaration =
+                        SymbolicSourceEvidence.manualDeclaration(event);
+                if (declaration != null) {
+                    declarations.putIfAbsent(raw, declaration);
+                }
             }
         }
         return declarations;
