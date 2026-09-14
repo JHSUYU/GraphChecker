@@ -296,10 +296,9 @@ public class PathMergeComposerTest {
     /**
      * A path that contradicts its own execution is named, not composed.
      *
-     * <p>The invariant: a path must be satisfiable as the execution that
-     * made it -- that replay's roots as it read them, its clock cells in
-     * its own window, the values it READ at its handoffs.  One that is not
-     * says the composition mis-stated that execution.</p>
+     * <p>A path must be satisfiable as the execution that made it: that
+     * replay's roots as it read them, its clocks in its own window, the
+     * values it READ at its handoffs.</p>
      */
     @Test
     public void aPathIsSatisfiableAsTheExecutionThatMadeIt()

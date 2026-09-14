@@ -16,6 +16,7 @@ import java.util.Arrays;
 import java.util.Collections;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 /**
@@ -71,6 +72,18 @@ public class TargetOccurrenceElectionTest {
         assertTrue(row(ledger, 0).get("chosen").getAsBoolean());
         assertTrue(ledger.get("electionReason").getAsString()
                 .contains("one occurrence"));
+
+        // And which occurrence a campaign is about is the case's to
+        // declare: the whole address, or the request family and k.
+        String at = "hdfs-17897/dn0#epoch0/region/REGION.53092d3e"
+                + "@hdfs-17897/client#epoch0/striped-file-checksum#2";
+        assertTrue(RuntimeWorkflowDiscovery.declares(at, at));
+        assertTrue(RuntimeWorkflowDiscovery.declares(
+                "hdfs-17897/client#epoch0/striped-file-checksum#2", at));
+        assertFalse("another k of that family is another occurrence",
+                RuntimeWorkflowDiscovery.declares(
+                        "hdfs-17897/client#epoch0/striped-file-checksum#1",
+                        at));
     }
 
     private static JsonObject row(JsonObject ledger, int index) {

@@ -2255,6 +2255,18 @@ public final class ClaimPolicy {
             if (!element.isJsonObject()) continue;
             JsonObject row = element.getAsJsonObject();
             if (optionalBool(row, "composed", false)) continue;
+            if (row.has("declaredTarget")
+                    && !optionalBool(row, "declaredTarget", false)) {
+                // The case named which occurrence can fail, and this is not
+                // it: nothing was withheld about it because nothing was
+                // asked about it.
+                result.add(blocker(TARGET_OCCURRENCE_NOT_COMPOSED,
+                        optionalString(row, "occurrenceId"),
+                        "the case declares another occurrence of the"
+                                + " annotated target, so this one is"
+                                + " reported rather than composed"));
+                continue;
+            }
             result.add(blocker(TARGET_OCCURRENCE_NOT_COMPOSED,
                     optionalString(row, "occurrenceId"),
                     "the recording observed the annotated target at "

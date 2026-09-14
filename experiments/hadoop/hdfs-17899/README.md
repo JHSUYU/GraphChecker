@@ -31,6 +31,16 @@ to whichever regions cover them; the same file is shared by all three cases.
 The key ids observed on the wire are carriers, not roots of their own: they
 carry the NameNode's minted `serialNo`.
 
+One more declaration is per case rather than shared: `target_occurrence` in
+`case.sh` names the occurrence of the annotated site the campaign is about --
+an occurrence address, or the request family and k, as
+`hdfs-17899/sps#epoch0/satisfy-storage-policy#1` does for `bug2`. The campaign
+composes and judges that occurrence and reports the others; left empty it
+keeps every observed one, which is what a recording that never took the fatal
+arm needs. `bug1` leaves it empty: laneB1c observed four occurrences of the
+site and its recording took the healthy arm at all four, so which one can fail
+is not something that corpus states.
+
 | Case | Request flow | Hadoop worktree |
 | --- | --- | --- |
 | `bug1` | NameNode -> Balancer -> DataNode | `/opt/hadoop-hdfs-17899-bug1` |

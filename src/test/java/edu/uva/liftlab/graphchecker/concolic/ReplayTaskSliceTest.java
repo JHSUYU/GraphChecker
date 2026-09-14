@@ -28,12 +28,10 @@ import static org.junit.Assert.assertTrue;
 /**
  * Which planned occurrences still replay, and why the rest do not.
  *
- * <p>The plan is HDFS-17960 in miniature: one declared root, one carrier
- * the root's guarded case writes, and a heavy occurrence -- the fsimage
- * loader -- that reads and writes only what no root can move.  A campaign
- * must replay the target, every root site, every write the failing read
- * consumes and whatever a root reaches over a carrier flow or a wire, and
- * nothing else.</p>
+ * <p>One declared root, one carrier its guarded case writes, and a heavy
+ * occurrence that reads and writes only what no root can move.  A campaign
+ * replays the target, every root site, every write the failing read
+ * consumes and whatever a root reaches -- and nothing else.</p>
  */
 public class ReplayTaskSliceTest {
 

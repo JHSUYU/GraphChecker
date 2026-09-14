@@ -102,6 +102,13 @@ workflow_config_keys=(
   # target's paths is the only one; the key stays so a future composition
   # can be run against a recording beside it.
   "composer COMPOSER krp path-merge"
+  # The occurrence of the annotated site this campaign is about, as the case
+  # declares it: an occurrence address, or the request family and k.  A
+  # campaign is target-directed -- the case knows which instance can fail --
+  # and the declaration is what says so.  Empty means the run keeps every
+  # observed occurrence, which is the shape of a recording that never took
+  # the fatal arm.
+  "declared_target_occurrence CAUSYNTH_TARGET_OCCURRENCE krp -"
 )
 
 # Reads one row of workflow_config_keys into config_key/config_env/
@@ -512,6 +519,15 @@ do_analyze() {
     -o "${analysis_classes_dir}"
 }
 
+# The occurrence of the annotated site the case declares.  It is a config
+# key rather than a member of the target spec because the spec accepts one
+# entry and three cases share one file: hdfs-17899's per-bug selection lives
+# in case.sh, which exports it, and a single-case experiment states it in its
+# own workflow.properties.
+campaign_declared_target_occurrence() {
+  printf '%s\n' "${declared_target_occurrence}"
+}
+
 do_schedule() {
   local region_plan="${runtime_region_plan}"
   require_file "runtime region plan" "${region_plan}"
@@ -537,6 +553,8 @@ do_schedule() {
     args+=(--summaries "${schedule_summaries}")
   fi
   args+=(--closure-mode "${schedule_closure_mode}")
+  [[ -z "${declared_target_occurrence}" ]] \
+    || args+=(--target-occurrence "${declared_target_occurrence}")
   run_java_main edu.uva.liftlab.graphchecker.concolic.ConcolicScheduler \
     "${args[@]}"
 }
@@ -594,6 +612,10 @@ do_compose() {
   append_path_list_arguments --summaries "${compose_summary_inputs}"
   local -a selection
   selection=()
+  local declared
+  declared=$(campaign_declared_target_occurrence)
+  [[ -z "${declared}" ]] \
+    || selection+=(--target-occurrence "${declared}")
   [[ -z "${fatal_region}" ]] || selection+=(--fatal-region "${fatal_region}")
   [[ -z "${fatal_occurrence_id}" ]] \
     || selection+=(--occurrence-id "${fatal_occurrence_id}")

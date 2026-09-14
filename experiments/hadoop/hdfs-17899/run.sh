@@ -23,6 +23,7 @@ export CAUSYNTH_LOOP_BOUNDS=${loop_bounds}
 export CAUSYNTH_WORKLOAD_WORK_DIR=${repo}
 export CAUSYNTH_WORKLOAD_COMMAND="${here}/execute.sh ${case_id}"
 export CAUSYNTH_TRACE_TEST=${test_name}
+export CAUSYNTH_TARGET_OCCURRENCE=${target_occurrence}
 export CAUSYNTH_CAMPAIGN_SETUP_COMMAND="${here}/prepare-analysis.sh ${case_id}"
 export CAUSYNTH_CONCOLIC_REPLAY_COMMAND="${here}/execute.sh ${case_id}"
 exec "${here}/../../../run_engine.sh" --config "${here}/workflow.properties" \

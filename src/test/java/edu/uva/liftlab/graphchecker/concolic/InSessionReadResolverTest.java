@@ -74,8 +74,8 @@ public class InSessionReadResolverTest {
     /**
      * A value that arrived over a wire is answered by its handoff variable.
      *
-     * <p>It answers with the variable its {@code vmHandoffEvents} row mints
-     * and follows nothing; a row minting none is refused by name.</p>
+     * <p>It answers with the variable its row mints and follows nothing; a
+     * row minting none is refused by name.</p>
      */
     @Test
     public void aWireArrivalIsAnsweredByTheHandoffThatMintedIt() {
