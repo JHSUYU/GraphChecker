@@ -88,16 +88,31 @@ public final class TargetOccurrenceElection {
         Arguments arguments = Arguments.parse(argv);
         JsonObject ledger = elect(ArtifactIO.readJsonl(arguments.reports,
                 "Malformed target occurrence report %1$s:%2$d",
-                "Non-object target occurrence report %1$s:%2$d"));
+                "Non-object target occurrence report %1$s:%2$d"),
+                arguments.targetOccurrence);
         ArtifactIO.replaceJson(arguments.output, ledger, GSON);
         System.out.println(optionalString(ledger, "chosenOccurrenceId"));
+    }
+
+    /** The ledger of a run whose case declared no occurrence. */
+    static JsonObject elect(List<JsonObject> reports) throws IOException {
+        return elect(reports, "");
     }
 
     /**
      * One ledger over every reported target occurrence, in anchor-address
      * order, with the one the campaign's artifacts came from flagged.
+     *
+     * @param declared the occurrence address the case declares, or empty.
+     *                 A declaration is the answer, not a preference: the
+     *                 campaign is target-directed, it composed the occurrence
+     *                 the case named, and a claim published about some other
+     *                 execution of the site would not be about the case.
+     *                 Whether that occurrence composed, was refused, or was
+     *                 never scheduled is what its own row then says.
      */
-    static JsonObject elect(List<JsonObject> reports) throws IOException {
+    static JsonObject elect(List<JsonObject> reports, String declared)
+            throws IOException {
         if (reports.isEmpty()) {
             throw new IOException("no target occurrence was reported: a run"
                     + " composes at least the elected target");
@@ -131,10 +146,13 @@ public final class TargetOccurrenceElection {
         for (int index = 0; index < rows.size(); index++) {
             rows.get(index).addProperty("order", index);
         }
-        int elected = 0;
-        for (int index = 1; index < rows.size(); index++) {
-            if (outranks(rows.get(index), rows.get(elected))) {
-                elected = index;
+        int elected = declaredIndex(rows, declared);
+        if (elected < 0) {
+            elected = 0;
+            for (int index = 1; index < rows.size(); index++) {
+                if (outranks(rows.get(index), rows.get(elected))) {
+                    elected = index;
+                }
             }
         }
         JsonArray occurrences = new JsonArray();
@@ -149,6 +167,7 @@ public final class TargetOccurrenceElection {
         result.addProperty("kind", KIND);
         result.addProperty("occurrenceCount", rows.size());
         result.addProperty("composedCount", composed);
+        result.addProperty("declaredOccurrenceId", declared);
         result.addProperty("chosenOccurrenceId",
                 optionalString(chosen, "occurrenceId"));
         result.addProperty("chosenTaskId", optionalString(chosen, "taskId"));
@@ -156,7 +175,8 @@ public final class TargetOccurrenceElection {
         // Why this one and not another, in the terms the rows carry.  A
         // reader asking "the run says SAT, which execution of the site is
         // that about" gets the answer without re-deriving the order.
-        result.addProperty("electionReason", electionReason(rows, elected));
+        result.addProperty("electionReason",
+                electionReason(rows, elected, declared));
         result.add("occurrences", occurrences);
         return result;
     }
@@ -258,16 +278,39 @@ public final class TargetOccurrenceElection {
         return REFUSED;
     }
 
+    /** Where the declared occurrence sits in the ledger, or -1. */
+    private static int declaredIndex(List<JsonObject> rows, String declared)
+            throws IOException {
+        if (declared == null || declared.isEmpty()) return -1;
+        for (int index = 0; index < rows.size(); index++) {
+            if (declared.equals(optionalString(rows.get(index),
+                    "occurrenceId"))) {
+                return index;
+            }
+        }
+        // Fail closed, and say which: a run that reports no row at all for
+        // the occurrence its case names has not answered the case, and
+        // electing some other execution of the site would publish a claim
+        // about a question nobody asked.
+        throw new IOException("the declared target occurrence was not"
+                + " reported by this run: " + declared);
+    }
+
     /**
-     * An accepted answer displaces an unaccepted one, and nothing else does.
+     * An accepted answer displaces an unaccepted one, and artifacts displace
+     * none.
      *
-     * <p>Each occurrence is its own question with its own answer, so there
-     * are only two things to say about a pair of them: one of them was
-     * accepted and the other was not, or neither was.  Equal standing leaves
-     * the anchor-address order the rows are already in.</p>
+     * <p>Each occurrence is its own question with its own answer, so the
+     * first thing to say about a pair of them is that one was accepted and
+     * the other was not.  Where neither was, a composition -- a refusal
+     * included -- still states something about its occurrence and an
+     * occurrence that was never composed states nothing at all, so it can
+     * never be elected while any occurrence has artifacts.  Equal standing
+     * leaves the anchor-address order the rows are already in.</p>
      */
     private static boolean outranks(JsonObject candidate, JsonObject best) {
-        return accepted(candidate) && !accepted(best);
+        if (accepted(candidate) != accepted(best)) return accepted(candidate);
+        return composed(candidate) && !composed(best);
     }
 
     /**
@@ -294,6 +337,11 @@ public final class TargetOccurrenceElection {
         return padded.append(ordinal).toString();
     }
 
+    /** Whether this occurrence has artifacts a consumer can read at all. */
+    private static boolean composed(JsonObject row) {
+        return COMPOSED.equals(optionalString(row, "status"));
+    }
+
     /** Whether this occurrence's own artifacts carry an accepted claim. */
     private static boolean accepted(JsonObject row) {
         String support = optionalString(row, "support");
@@ -302,9 +350,18 @@ public final class TargetOccurrenceElection {
                 || UNSAT_CLOSED.equals(support);
     }
 
-    private static String electionReason(List<JsonObject> rows, int elected) {
+    private static String electionReason(List<JsonObject> rows, int elected,
+                                         String declared) {
         JsonObject chosen = rows.get(elected);
         String support = optionalString(chosen, "support");
+        if (declared != null && !declared.isEmpty()) {
+            return "the case declares " + declared
+                    + "; the campaign artifacts are that occurrence's"
+                    + " (status=" + optionalString(chosen, "status")
+                    + ", support=" + support + ") whatever the other "
+                    + (rows.size() - 1) + " observed occurrence(s)"
+                    + " concluded";
+        }
         if (rows.size() == 1) {
             return "the recording observed one occurrence of the annotated"
                     + " target; the campaign claim is its own (support="
@@ -345,6 +402,7 @@ public final class TargetOccurrenceElection {
     static final class Arguments {
         private Path reports;
         private Path output;
+        private String targetOccurrence = "";
 
         static Arguments parse(String[] argv) throws IOException {
             Arguments result = new Arguments();
@@ -362,13 +420,16 @@ public final class TargetOccurrenceElection {
                     result.reports = Paths.get(value);
                 } else if ("output".equals(key)) {
                     result.output = Paths.get(value);
+                } else if ("target-occurrence".equals(key)) {
+                    result.targetOccurrence = value.trim();
                 } else {
                     throw new IOException("unknown argument: " + argument);
                 }
             }
             if (result.reports == null || result.output == null) {
                 throw new IOException("usage: TargetOccurrenceElection"
-                        + " --reports FILE --output FILE");
+                        + " --reports FILE --output FILE"
+                        + " [--target-occurrence ADDRESS]");
             }
             return result;
         }

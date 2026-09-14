@@ -69,6 +69,19 @@ public class PathMergeComposerTest {
             PathMergeComposer.HANDOFF_SYMBOL_MARK + "PORT_KEY_1";
     private static final String HANDOFF_TERM =
             JavaSmtSorts.smtName("sym__" + HANDOFF_SYMBOL);
+    /** One declared port, and the two roots one replay minted at it. */
+    private static final String PORT_PHASE = "SOURCE_PHASE.port";
+    private static final String PORT_TERM = "REGION_example_in_port";
+    private static final String PORT_SIGNATURE =
+            "<com.example.Key: long expiryDate>";
+    private static final String PORT_CURRENT = "EXAMPLE.KEY.EXPIRY.CURRENT";
+    private static final String PORT_RETIRED = "EXAMPLE.KEY.EXPIRY.RETIRED";
+    private static final String RAW_CURRENT = "M_J_field_"
+            + SymbolicSourceEvidence.engineLabelForPhase(PORT_PHASE,
+            PORT_CURRENT) + "_com/example/Key";
+    private static final String RAW_RETIRED = "M_J_field_"
+            + SymbolicSourceEvidence.engineLabelForPhase(PORT_PHASE,
+            PORT_RETIRED) + "_com/example/Key";
     private static final String LOOP_OCCURRENCE =
             "app/nn0#epoch0/region/REGION.a#1";
     private static final String LOOP_SITE = "<C: void m()>#u7";
@@ -146,6 +159,42 @@ public class PathMergeComposerTest {
         assertTrue(paths(alone).get(0).getAsJsonObject()
                 .get("admitted").getAsBoolean());
         assertEquals("unsat", solve(alone.smtLib));
+
+        // phi_p is the required arm, whichever arm the replay observed.
+        // Two rows at one anchor of one recording: the first observed the
+        // arm the failure needs and states its own predicate, the second
+        // observed the other one and states the complement of what it saw.
+        // With the root pinned to what the recording read, the first
+        // disjunct must be satisfiable and the second must not -- a healthy
+        // observation contributes false to "can this fail", and a composer
+        // that negates an arm already stated in fatal polarity hands that
+        // path its own observation back and makes the recorded valuation
+        // reachable.
+        JsonObject arms = query();
+        arms.getAsJsonArray("paths").add(path("fatal", "GROUP.SEED", false,
+                rootIs(true), rootIs(true), new ArrayList<String>()));
+        arms.getAsJsonArray("paths").add(path("healthy", "GROUP.SEED", true,
+                rootIs(true), rootIs(false), new ArrayList<String>()));
+        PathMergeComposer.Result polarity = compose(
+                Files.createTempDirectory("path-merge-polarity"), arms);
+        String pinned = polarity.smtLib + "(assert (= " + ROOT_TERM
+                + " true))\n";
+        assertEquals(2, paths(polarity).size());
+        for (JsonElement element : paths(polarity)) {
+            JsonObject row = element.getAsJsonObject();
+            boolean tookTheFatalArm = !JsonFields.optionalBool(row,
+                    "observedTakenOutcome", false);
+            assertEquals("phi must be the required arm, not the observation",
+                    "(= " + ROOT_TERM + " " + tookTheFatalArm + ")",
+                    optionalString(row, "fatalPredicateTerm"));
+            assertEquals(tookTheFatalArm
+                            ? "the path that took the fatal arm carries it"
+                            : "a healthy observation contributes false",
+                    tookTheFatalArm ? "sat" : "unsat",
+                    solve(pinned + "(assert "
+                            + optionalString(row, "selector")
+                            + ")\n(check-sat)\n"));
+        }
     }
 
     /**
@@ -385,6 +434,35 @@ public class PathMergeComposerTest {
                 PathMergeComposer.PATH_NOT_SELF_CONSISTENT));
         assertTrue("the arrival it read is this path's own control",
                 carried.smtLib.contains("(= " + HANDOFF_TERM + " 9)"));
+
+        // One declared port, several roots.  A planned symbolization fires
+        // at a port and mints a fresh root at every value it fires on:
+        // hdfs-17899 bug1's nn0 heartbeat carried a BlockKey's CURRENT and
+        // RETIRED expiry dates under one port id, and naming both after
+        // the port made the replay that read them state two values of one
+        // term -- so its own path was refused as contradicting itself,
+        // naming one of the two readings as the closing conjunct.  Two
+        // replays reading the port differently is the same fact from the
+        // other side and is not a contradiction either: each path carries
+        // only its own execution's readings.
+        JsonObject ports = query();
+        ports.getAsJsonArray("paths").add(path("port", "GROUP.SEED",
+                rootIs(true), notEqual(constant(1), constant(0))));
+        ports.getAsJsonArray("paths").add(path("port", "GROUP.FLIP",
+                rootIs(false), notEqual(constant(1), constant(0))));
+        PathMergeComposer.Result minted = run(
+                Files.createTempDirectory("path-merge-port"), ports,
+                Arrays.asList(ranAt("GROUP.SEED", "true", "7", "8"),
+                        ranAt("GROUP.FLIP", "false", "17", "18")),
+                "--z3", "z3");
+        assertFalse("two roots of one port are two terms: " + gates(minted),
+                gates(minted).toString().contains(
+                        PathMergeComposer.PATH_NOT_SELF_CONSISTENT));
+        for (JsonElement row : paths(minted)) {
+            assertTrue("a replay that read both stays its own execution: "
+                            + row, JsonFields.optionalBool(
+                            row.getAsJsonObject(), "admitted", false));
+        }
     }
 
     /**
@@ -725,6 +803,31 @@ public class PathMergeComposerTest {
         return summary;
     }
 
+    /** The same replay, and the two roots one declared port minted in it. */
+    private static JsonObject ranAt(String group, String polarity,
+                                    String current, String retired) {
+        JsonObject summary = ranAt(group, polarity);
+        summary.addProperty("summaryId", group);
+        List<JsonObject> events = new ArrayList<>(
+                SymbolicSourceEvidence.eventsOf(summary));
+        events.add(SymbolicSourceEvidence.event(PORT_PHASE, PORT_CURRENT,
+                "node0/region/REGION.example#1#a1", PORT_SIGNATURE,
+                portSymbol(RAW_CURRENT), 1, false, PORT_TERM, current));
+        events.add(SymbolicSourceEvidence.event(PORT_PHASE, PORT_RETIRED,
+                "node0/region/REGION.example#1#a1", PORT_SIGNATURE,
+                portSymbol(RAW_RETIRED), 2, false, PORT_TERM, retired));
+        SymbolicSourceEvidence.writeTo(summary, events);
+        return summary;
+    }
+
+    private static JsonObject portSymbol(String raw) {
+        JsonObject symbol = new JsonObject();
+        symbol.addProperty("_type", "SymbolExpression");
+        symbol.addProperty("_java_type", "J");
+        symbol.addProperty("_exp", raw);
+        return symbol;
+    }
+
     /** One path against the standard pair of replay summaries. */
     private static PathMergeComposer.Result composed(String name,
                                                      JsonObject path)
@@ -815,6 +918,23 @@ public class PathMergeComposerTest {
                                    JsonObject pathCondition,
                                    JsonObject fatalPredicate,
                                    List<String> carriers) {
+        return path(caseId, group, false, pathCondition, fatalPredicate,
+                carriers);
+    }
+
+    /**
+     * The same row with the arm this replay observed stated.
+     *
+     * <p>{@code fatalPredicate} is phi_p as the query builder publishes it:
+     * the arm the failure needs whatever the replay saw -- its own
+     * predicate where it observed that arm, the complement of what it
+     * observed where it did not.</p>
+     */
+    private static JsonObject path(String caseId, String group,
+                                   boolean observedOutcome,
+                                   JsonObject pathCondition,
+                                   JsonObject fatalPredicate,
+                                   List<String> carriers) {
         JsonObject path = new JsonObject();
         path.addProperty(LocalCaseIdentity.FIELD, "LOCAL_CASE." + caseId);
         path.addProperty("replayGroupId", group);
@@ -829,7 +949,7 @@ public class PathMergeComposerTest {
         path.add(TargetAnchorEvidence.FIELD, TargetAnchorEvidence.build(
                 SITE, 1, "node0", "REGION.example",
                 "node0/region/REGION.example#1#a1", "iteration-0000",
-                false, false, constraints, new JsonObject(),
+                observedOutcome, false, constraints, new JsonObject(),
                 new ArrayList<JsonObject>(), carriers));
         return path;
     }
