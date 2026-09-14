@@ -549,9 +549,22 @@ public final class Composer {
     }
 
     private String bind(String symbol, String literal, AttachRow attach) {
-        lowering.declare(symbol, "true".equals(literal)
-                || "false".equals(literal) ? Sort.BOOL : Sort.INT);
+        lowering.declare(symbol, sortOfValue(literal));
         return "(= " + symbol + " " + literal + ")";
+    }
+
+    /**
+     * The sort a recorded value states.
+     *
+     * <p>A value's spelling is weak evidence about its Java type -- "0" is
+     * an int, a long, a char and a false all at once -- and it is all the
+     * rows state today.  When contract v1.1's {@code javaType} lands on
+     * AttachRow and ReadRow this reads it instead, through
+     * {@code SmtLowering.sortOf(javaType)}, and the guess disappears.</p>
+     */
+    private static Sort sortOfValue(String literal) {
+        return "true".equals(literal) || "false".equals(literal)
+                ? Sort.BOOL : Sort.INT;
     }
 
     /**
@@ -610,9 +623,7 @@ public final class Composer {
             }
             String literal = JsonText.smtLiteral(read.concreteValue());
             if (!literal.isEmpty()) {
-                lowering.declare(read.symbol(),
-                        "true".equals(literal) || "false".equals(literal)
-                                ? Sort.BOOL : Sort.INT);
+                lowering.declare(read.symbol(), sortOfValue(literal));
                 joins.add("(= " + read.symbol() + " " + literal + ")");
                 continue;
             }
@@ -678,11 +689,7 @@ public final class Composer {
                             producerSession,
                             interaction.producer().occurrence());
                     if (attested && producerPath != null) {
-                        for (DecisionRow decision
-                                : producerPath.decisions()) {
-                            if (unknown(decision.term(), null, "")) continue;
-                            conjuncts.add(decision.term());
-                        }
+                        conjuncts.addAll(prefix(producerPath, export));
                     }
                     Set<String> guardRoots = new LinkedHashSet<String>();
                     conjuncts.addAll(guard(producerSession, text,
@@ -733,6 +740,27 @@ public final class Composer {
                             + JsonText.digest(interactionId, 12),
                     "(=> " + selector + " " + VmTermLowering.or(arms) + ")");
         }
+    }
+
+    /**
+     * The producer path condition an arm is guarded by.
+     *
+     * <p>What the delivering replay had decided BY THE TIME it exported:
+     * a decision it took afterwards is not a reason the delivery happened.
+     * The rows carry no ordering between a decision and an export yet, so
+     * today the whole occurrence's path condition is the guard; when
+     * contract v1.1's session-monotonic {@code seq} lands on DecisionRow
+     * and ExportRow this becomes {@code decision.seq() < export.seq()} and
+     * nothing else changes.</p>
+     */
+    private List<String> prefix(CorpusIndex.PathRecord producerPath,
+                                ExportRow export) {
+        List<String> conjuncts = new ArrayList<String>();
+        for (DecisionRow decision : producerPath.decisions()) {
+            if (unknown(decision.term(), null, "")) continue;
+            conjuncts.add(decision.term());
+        }
+        return conjuncts;
     }
 
     /**
@@ -1066,23 +1094,8 @@ public final class Composer {
     // ------------------------------------------------------------------
 
     /** Whether one symbol occurs in a term as a symbol, not a substring. */
-    static boolean mentions(String term, String symbol) {
-        if (term == null || symbol == null || symbol.isEmpty()) return false;
-        int at = term.indexOf(symbol);
-        while (at >= 0) {
-            boolean before = at == 0 || !symbolCharacter(term.charAt(at - 1));
-            int end = at + symbol.length();
-            boolean after = end >= term.length()
-                    || !symbolCharacter(term.charAt(end));
-            if (before && after) return true;
-            at = term.indexOf(symbol, at + 1);
-        }
-        return false;
-    }
-
-    private static boolean symbolCharacter(char value) {
-        return Character.isLetterOrDigit(value) || value == '_'
-                || value == '.' || value == '$';
+    private static boolean mentions(String term, String symbol) {
+        return SmtLowering.mentions(term, symbol);
     }
 
     /** The declared roots one lowered expression mentions. */

@@ -13,6 +13,7 @@ import edu.uva.liftlab.graphchecker.concolic.VmLoweringCore;
 import edu.uva.liftlab.graphchecker.concolic.VmTermLowering;
 import edu.uva.liftlab.graphchecker.concolic.VmTermLowering.Sort;
 import edu.uva.liftlab.graphchecker.concolic.VmTermLowering.Term;
+import edu.uva.liftlab.graphchecker.d3.contract.ExpressionTable;
 import edu.uva.liftlab.graphchecker.d3.contract.LocationId;
 import edu.uva.liftlab.graphchecker.d3.contract.LocationKind;
 
@@ -102,16 +103,183 @@ public final class SmtLowering extends VmLoweringCore {
     private final Set<String> integralDomains = new LinkedHashSet<String>();
     private boolean usesJavaIntString;
 
+    /**
+     * Where a symbol's declaration comes from.
+     *
+     * <p>Two authorities, one algorithm.  A CORPUS lowering knows every
+     * symbol the runtime declared across the sessions, so a scalar leaf
+     * outside that set is the propagation cut and is refused by name.  A
+     * SESSION lowering is handed one expression and nothing else, so the
+     * mint's own {@code _java_type} on the leaf is what declares it.  The
+     * difference is which recording states the declaration, never how the
+     * expression is lowered.</p>
+     */
+    private final boolean symbolsDeclareThemselves;
+    /** The session's expression table, for {@link #lower(String)}. */
+    private final ExpressionTable table;
+
     /** Side conditions the conjunction now open raised, or null. */
     private List<String> openSideConditions;
     private List<String> openRefusals;
     private String scope = "";
     private SessionJoin join = NO_JOIN;
 
+    /** The lowering of one CORPUS: its rows declare every symbol. */
     public SmtLowering(Map<String, Sort> declaredSymbols) {
+        this(declaredSymbols, false, null);
+    }
+
+    private SmtLowering(Map<String, Sort> declaredSymbols,
+                        boolean symbolsDeclareThemselves,
+                        ExpressionTable table) {
         this.declaredSymbols = declaredSymbols == null
                 ? Collections.<String, Sort>emptyMap()
                 : new LinkedHashMap<String, Sort>(declaredSymbols);
+        this.symbolsDeclareThemselves = symbolsDeclareThemselves;
+        this.table = table == null ? ExpressionTable.empty() : table;
+    }
+
+    /**
+     * The lowering of ONE session's expressions, by reference.
+     *
+     * <p>What the flip solver needs: hand it a session's expression table,
+     * ask it for the SMT text of one {@code expressionRef}, and it answers
+     * with the text and the symbols the text names -- or with the refusal
+     * that stopped it.  It is the same lowering the composer runs, which is
+     * the point: a flip query and the composed query must not be able to
+     * disagree about a container relation or a field projection.</p>
+     */
+    public static SmtLowering of(ExpressionTable expressions) {
+        return new SmtLowering(Collections.<String, Sort>emptyMap(), true,
+                expressions);
+    }
+
+    /** The same, reading the table and the write log off one session. */
+    public static SmtLowering forSession(SessionReader session) {
+        SmtLowering lowering = of(session == null ? null
+                : session.expressions());
+        if (session != null) {
+            lowering.scope = session.sessionId();
+            lowering.join = joinOf(session);
+        }
+        return lowering;
+    }
+
+    /** One session's write log, as the state join reads it. */
+    private static SessionJoin joinOf(final SessionReader session) {
+        final Map<String, String> writes = new LinkedHashMap<String, String>();
+        for (edu.uva.liftlab.graphchecker.d3.contract.WriteRow write
+                : session.writes()) {
+            writes.put(locationKey(write.location()) + "#" + write.version(),
+                    write.expressionRef());
+        }
+        return new SessionJoin() {
+            @Override
+            public JsonElement writeExpression(String locationKey,
+                                               long version) {
+                String ref = writes.get(locationKey + "#" + version);
+                return ref == null ? null
+                        : session.expressions().expression(ref);
+            }
+        };
+    }
+
+    /**
+     * One expression of this session, lowered, or a named refusal.
+     *
+     * <p>The declarations it answers with are the symbols its own text
+     * names, at the sorts this lowering gave them: a caller that puts the
+     * text in a query of its own declares exactly those and no more.</p>
+     */
+    public Lowered lower(String expressionRef) {
+        JsonObject expression = expressionRef == null ? null
+                : table.expression(expressionRef);
+        if (expression == null) {
+            return Lowered.refused("ABSENT_EXPRESSION:" + expressionRef);
+        }
+        List<String> refusalsBefore =
+                new ArrayList<String>(unsupported);
+        Term value = dispatch(expression, null, "lower:" + expressionRef);
+        List<String> refused = new ArrayList<String>(unsupported);
+        refused.removeAll(refusalsBefore);
+        if (value == null || !refused.isEmpty()) {
+            return Lowered.refused(refused.isEmpty()
+                    ? "ABSENT_EXPRESSION:" + expressionRef : refused.get(0));
+        }
+        Map<String, String> named = new LinkedHashMap<String, String>();
+        for (Map.Entry<String, Sort> declaration : declarations.entrySet()) {
+            if (mentions(value.text, declaration.getKey())) {
+                named.put(declaration.getKey(), declaration.getValue().smt);
+            }
+        }
+        return new Lowered(value.text, "", named);
+    }
+
+    /** The SMT sort one recorded Java type denotes. */
+    public static String sortOf(String javaType) {
+        return JavaSmtSorts.sortOfJava(javaType).smt;
+    }
+
+    /** Whether one symbol occurs in a term as a symbol, not a substring. */
+    static boolean mentions(String term, String symbol) {
+        if (term == null || symbol == null || symbol.isEmpty()) return false;
+        int at = term.indexOf(symbol);
+        while (at >= 0) {
+            boolean before = at == 0
+                    || !symbolCharacter(term.charAt(at - 1));
+            int end = at + symbol.length();
+            boolean after = end >= term.length()
+                    || !symbolCharacter(term.charAt(end));
+            if (before && after) return true;
+            at = term.indexOf(symbol, at + 1);
+        }
+        return false;
+    }
+
+    private static boolean symbolCharacter(char value) {
+        return Character.isLetterOrDigit(value) || value == '_'
+                || value == '.' || value == '$';
+    }
+
+    /** One lowered expression: its text, the symbols it names, or why not. */
+    public static final class Lowered {
+        private final String text;
+        private final String refusal;
+        private final Map<String, String> declarations;
+
+        private Lowered(String text, String refusal,
+                        Map<String, String> declarations) {
+            this.text = text;
+            this.refusal = refusal;
+            this.declarations = Collections.unmodifiableMap(declarations);
+        }
+
+        private static Lowered refused(String reason) {
+            return new Lowered("", reason,
+                    new LinkedHashMap<String, String>());
+        }
+
+        public boolean ok() {
+            return refusal.isEmpty() && !text.isEmpty();
+        }
+
+        public String text() {
+            return text;
+        }
+
+        public String refusal() {
+            return refusal;
+        }
+
+        /** Every symbol the text names, with its SMT sort. */
+        public Map<String, String> declarations() {
+            return declarations;
+        }
+
+        @Override
+        public String toString() {
+            return ok() ? text : "refused:" + refusal;
+        }
     }
 
     // ------------------------------------------------------------------
@@ -314,6 +482,13 @@ public final class SmtLowering extends VmLoweringCore {
         if (sort == Sort.REF || sort == Sort.MAP
                 || sort == Sort.ARRAY_VALUE) {
             return Term.of(opaque(raw, sort), sort);
+        }
+        if (symbolsDeclareThemselves) {
+            declare(raw, sort);
+            usedSymbols.add(raw);
+            return Term.of(raw, sort,
+                    JavaPrimitiveSmtSemantics.widthOfJavaType(javaType),
+                    "", "", "true");
         }
         return cut("UndeclaredFreeSymbol:" + raw,
                 "no root mint, attach or decision of this corpus declares "

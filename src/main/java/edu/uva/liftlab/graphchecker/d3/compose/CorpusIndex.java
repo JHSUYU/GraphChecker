@@ -273,7 +273,14 @@ public final class CorpusIndex {
         held.add(value);
     }
 
-    /** The sort a recorded value states: a Boolean is one, else an Int. */
+    /**
+     * The sort a recorded value states: a Boolean is one, else an Int.
+     *
+     * <p>The spelling of a value is weak evidence about its Java type, and
+     * it is all an AttachRow states today.  Contract v1.1 puts
+     * {@code javaType} on the row; when it lands this reads it through
+     * {@code SmtLowering.sortOf(javaType)} and the guess disappears.</p>
+     */
     private static Sort sortOfValue(String value) {
         String text = value == null ? "" : value.trim();
         return "true".equals(text) || "false".equals(text)
