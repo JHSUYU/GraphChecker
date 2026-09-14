@@ -27,6 +27,10 @@ import java.util.function.Function;
  * and reads back as null; every other field is always written, because a row
  * that silently drops a false or a zero is a row whose absence means two
  * things.</p>
+ *
+ * <p>Contract v1.1 added {@code seq} (the session-monotonic event sequence
+ * number) to the six event rows and {@code javaType} (the JVM descriptor) to
+ * the four value-carrying ones; both are always written.</p>
  */
 public final class RowCodec {
     private static final Gson GSON = new Gson();
@@ -37,6 +41,8 @@ public final class RowCodec {
     private static final String LOCATION = "location";
     private static final String ADDRESS = "address";
     private static final String LINEAGE_LOST = "lineageLost";
+    private static final String SEQ = "seq";
+    private static final String JAVA_TYPE = "javaType";
 
     private RowCodec() {
     }
@@ -106,7 +112,7 @@ public final class RowCodec {
     }
 
     public static JsonObject writeDecision(DecisionRow row) {
-        JsonObject json = row(row.sessionId());
+        JsonObject json = row(row.sessionId(), row.seq());
         json.add(OCCURRENCE, writeOccurrence(row.occurrence()));
         json.addProperty("siteId", row.siteId());
         json.addProperty("ordinal", row.ordinal());
@@ -126,32 +132,34 @@ public final class RowCodec {
         for (Map.Entry<String, JsonElement> reading : readings.entrySet()) {
             clocks.put(reading.getKey(), reading.getValue().getAsLong());
         }
-        return DecisionRow.of(string(json, SESSION_ID),
+        return DecisionRow.of(string(json, SESSION_ID), number(json, SEQ),
                 readOccurrence(object(json, OCCURRENCE)),
                 string(json, "siteId"), integer(json, "ordinal"),
                 bool(json, "outcome"), string(json, "term"), clocks);
     }
 
     public static JsonObject writeExport(ExportRow row) {
-        JsonObject json = row(row.sessionId());
+        JsonObject json = row(row.sessionId(), row.seq());
         json.add(ENDPOINT, writeEndpoint(row.endpoint()));
         json.addProperty("expressionRef", row.expressionRef());
+        json.addProperty(JAVA_TYPE, row.javaType());
         json.addProperty("handle", row.handle());
         json.addProperty("recordedValue", row.recordedValue());
         return json;
     }
 
     public static ExportRow readExport(JsonObject json) {
-        return ExportRow.of(string(json, SESSION_ID),
+        return ExportRow.of(string(json, SESSION_ID), number(json, SEQ),
                 readEndpoint(object(json, ENDPOINT)),
-                string(json, "expressionRef"), number(json, "handle"),
-                string(json, "recordedValue"));
+                string(json, "expressionRef"), string(json, JAVA_TYPE),
+                number(json, "handle"), string(json, "recordedValue"));
     }
 
     public static JsonObject writeAttach(AttachRow row) {
-        JsonObject json = row(row.sessionId());
+        JsonObject json = row(row.sessionId(), row.seq());
         json.add(ENDPOINT, writeEndpoint(row.endpoint()));
         json.addProperty("symbol", row.symbol());
+        json.addProperty(JAVA_TYPE, row.javaType());
         json.addProperty("arrival", row.arrival());
         json.addProperty("answered", row.answered());
         if (row.answeredValue() != null) {
@@ -166,36 +174,39 @@ public final class RowCodec {
 
     public static AttachRow readAttach(JsonObject json) {
         JsonObject producer = optionalObject(json, "producer");
-        return AttachRow.of(string(json, SESSION_ID),
+        return AttachRow.of(string(json, SESSION_ID), number(json, SEQ),
                 readEndpoint(object(json, ENDPOINT)), string(json, "symbol"),
-                string(json, "arrival"), bool(json, "answered"),
+                string(json, JAVA_TYPE), string(json, "arrival"),
+                bool(json, "answered"),
                 optionalString(json, "answeredValue"),
                 producer == null ? null : readEndpoint(producer),
                 string(json, "correlationId"));
     }
 
     public static JsonObject writeWrite(WriteRow row) {
-        JsonObject json = row(row.sessionId());
+        JsonObject json = row(row.sessionId(), row.seq());
         json.add(ENDPOINT, writeEndpoint(row.endpoint()));
         json.add(LOCATION, writeLocation(row.location()));
         json.addProperty("version", row.version());
         json.addProperty("expressionRef", row.expressionRef());
+        json.addProperty(JAVA_TYPE, row.javaType());
         return json;
     }
 
     public static WriteRow readWrite(JsonObject json) {
-        return WriteRow.of(string(json, SESSION_ID),
+        return WriteRow.of(string(json, SESSION_ID), number(json, SEQ),
                 readEndpoint(object(json, ENDPOINT)),
                 readLocation(object(json, LOCATION)), number(json, "version"),
-                string(json, "expressionRef"));
+                string(json, "expressionRef"), string(json, JAVA_TYPE));
     }
 
     public static JsonObject writeRead(ReadRow row) {
-        JsonObject json = row(row.sessionId());
+        JsonObject json = row(row.sessionId(), row.seq());
         json.add(ENDPOINT, writeEndpoint(row.endpoint()));
         json.add(LOCATION, writeLocation(row.location()));
         json.addProperty("observedVersion", row.observedVersion());
         json.addProperty("symbol", row.symbol());
+        json.addProperty(JAVA_TYPE, row.javaType());
         if (row.concreteValue() != null) {
             json.addProperty("concreteValue", row.concreteValue());
         }
@@ -203,10 +214,11 @@ public final class RowCodec {
     }
 
     public static ReadRow readRead(JsonObject json) {
-        return ReadRow.of(string(json, SESSION_ID),
+        return ReadRow.of(string(json, SESSION_ID), number(json, SEQ),
                 readEndpoint(object(json, ENDPOINT)),
                 readLocation(object(json, LOCATION)),
                 number(json, "observedVersion"), string(json, "symbol"),
+                string(json, JAVA_TYPE),
                 optionalString(json, "concreteValue"));
     }
 
@@ -238,7 +250,7 @@ public final class RowCodec {
     }
 
     public static JsonObject writeTarget(TargetRow row) {
-        JsonObject json = row(row.sessionId());
+        JsonObject json = row(row.sessionId(), row.seq());
         json.add(OCCURRENCE, writeOccurrence(row.occurrence()));
         json.addProperty("anchorSiteId", row.anchorSiteId());
         json.addProperty("phiTerm", row.phiTerm());
@@ -248,7 +260,7 @@ public final class RowCodec {
     }
 
     public static TargetRow readTarget(JsonObject json) {
-        return TargetRow.of(string(json, SESSION_ID),
+        return TargetRow.of(string(json, SESSION_ID), number(json, SEQ),
                 readOccurrence(object(json, OCCURRENCE)),
                 string(json, "anchorSiteId"), string(json, "phiTerm"),
                 bool(json, "observedFatal"), bool(json, "reachedAnchor"));
@@ -366,6 +378,12 @@ public final class RowCodec {
     private static JsonObject row(String sessionId) {
         JsonObject json = new JsonObject();
         json.addProperty(SESSION_ID, sessionId);
+        return json;
+    }
+
+    private static JsonObject row(String sessionId, long seq) {
+        JsonObject json = row(sessionId);
+        json.addProperty(SEQ, seq);
         return json;
     }
 

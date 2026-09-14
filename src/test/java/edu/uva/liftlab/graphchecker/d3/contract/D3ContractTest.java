@@ -36,6 +36,10 @@ public class D3ContractTest {
             "hdfs-17899/dn0#epoch0/region/"
                     + "REGION.53092d3e-263d-3a18-b7a5-ae5b437d96de#1";
 
+    /** The descriptor of the value the target region stores and reads. */
+    private static final String BLOCK_KEY =
+            "Lorg/apache/hadoop/hdfs/security/token/block/BlockKey;";
+
     @Rule
     public TemporaryFolder iteration = new TemporaryFolder();
 
@@ -152,24 +156,26 @@ public class D3ContractTest {
 
         ActivationRow activation = ActivationRow.of("s-17897-1", anchor,
                 "task-1", true);
-        DecisionRow decision = DecisionRow.of("s-17897-1", anchor,
+        // The session's own event order: export, attach, write, decision,
+        // read, anchor -- the numbers a producer's condition is cut at.
+        DecisionRow decision = DecisionRow.of("s-17897-1", 12L, anchor,
                 "BlockTokenSecretManager#retrieve#61", 1, false,
                 "(= v_H_key_id 3)", clocks);
-        ExportRow exported = ExportRow.of("s-17897-1", export,
-                "EXPR.v1.9f2c", 41L, "3");
-        AttachRow attached = AttachRow.of("s-17897-1", attach, "v_H_key_id",
-                "3", true, "4", export, "xch-53092d3e");
-        WriteRow written = WriteRow.of("s-17897-1",
+        ExportRow exported = ExportRow.of("s-17897-1", 4L, export,
+                "EXPR.v1.9f2c", "I", 41L, "3");
+        AttachRow attached = AttachRow.of("s-17897-1", 9L, attach,
+                "v_H_key_id", "I", "3", true, "4", export, "xch-53092d3e");
+        WriteRow written = WriteRow.of("s-17897-1", 10L,
                 Endpoint.of(anchor, Endpoint.stateSite(
                         "BlockTokenSecretManager", "addKeys", 12, true), 1, 0),
-                keys, 7L, "EXPR.v1.7ab1");
-        ReadRow read = ReadRow.of("s-17897-1",
+                keys, 7L, "EXPR.v1.7ab1", BLOCK_KEY);
+        ReadRow read = ReadRow.of("s-17897-1", 14L,
                 Endpoint.of(anchor, Endpoint.stateSite(
                         "BlockTokenSecretManager", "retrieve", 61, false), 1,
-                        0), keys, 7L, "state_allKeys_7", null);
+                        0), keys, 7L, "state_allKeys_7", BLOCK_KEY, null);
         RootMintRow minted = RootMintRow.of("s-17897-1", producer, "SERIAL_NO",
                 "root_serial_no", RootKind.INTEGRAL, "3", "3", "6", true);
-        TargetRow target = TargetRow.of("s-17897-1", anchor,
+        TargetRow target = TargetRow.of("s-17897-1", 15L, anchor,
                 "BlockTokenSecretManager#retrieve#61", "(= key nil)", true,
                 true);
         GapRow gap = GapRow.of("s-17897-1", GapKind.LINEAGE_LOST,
@@ -193,6 +199,24 @@ public class D3ContractTest {
         assertEquals(target, RowCodec.readTarget(
                 reline(RowCodec.writeTarget(target))));
         assertEquals(gap, RowCodec.readGap(reline(RowCodec.writeGap(gap))));
+        // v1.1: the session's event order and the declared sorts survive the
+        // line form -- a solver reads the sort, it does not infer one.
+        assertEquals(4L,
+                RowCodec.readExport(reline(RowCodec.writeExport(exported)))
+                        .seq());
+        assertEquals("I",
+                RowCodec.readAttach(reline(RowCodec.writeAttach(attached)))
+                        .javaType());
+        assertEquals(BLOCK_KEY,
+                RowCodec.readWrite(reline(RowCodec.writeWrite(written)))
+                        .javaType());
+        assertEquals(15L,
+                RowCodec.readTarget(reline(RowCodec.writeTarget(target)))
+                        .seq());
+        assertEquals(GapKind.SOLVER_TIMEOUT, RowCodec.readGap(reline(
+                RowCodec.writeGap(GapRow.of("s-17897-1",
+                        GapKind.SOLVER_TIMEOUT, GapClass.BLOCKING,
+                        anchor.id(), "z3 gave no answer in 900s")))).kind());
         // A nullable field that was null comes back null, not "" or "null".
         assertNull(RowCodec.readRead(reline(RowCodec.writeRead(read)))
                 .concreteValue());
@@ -202,9 +226,9 @@ public class D3ContractTest {
                 .occurrence().lineageLost());
 
         RowCodec.writeAll(session.attaches(), Arrays.asList(attached,
-                AttachRow.of("s-17897-1", Endpoint.of(anchor,
-                        "XCH.53092d3e.resp.key-id", 3, 0), "v_H_key_id_2", "5",
-                        false, null, null, "xch-53092d3e")),
+                AttachRow.of("s-17897-1", 11L, Endpoint.of(anchor,
+                        "XCH.53092d3e.resp.key-id", 3, 0), "v_H_key_id_2", "I",
+                        "5", false, null, null, "xch-53092d3e")),
                 RowCodec::writeAttach);
         List<AttachRow> back = RowCodec.readAll(session.attaches(),
                 RowCodec::readAttach);

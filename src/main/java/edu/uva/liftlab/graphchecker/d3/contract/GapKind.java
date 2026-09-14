@@ -23,5 +23,7 @@ public enum GapKind {
     /** A root or a port the case never declared. */
     DECLARATION_MISSING,
     /** An address degraded because a lineage hop was unattributable. */
-    LINEAGE_LOST
+    LINEAGE_LOST,
+    /** The solver gave no answer in the time it was given. */
+    SOLVER_TIMEOUT
 }
