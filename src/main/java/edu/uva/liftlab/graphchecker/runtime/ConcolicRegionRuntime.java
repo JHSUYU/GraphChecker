@@ -747,6 +747,15 @@ public final class ConcolicRegionRuntime {
                 active.pathRecordingStarted = true;
             }
             active.activationOrdinal = admitted.nextActivationOrdinal();
+            LoopRootInvocationContext enclosingInvocation =
+                    enclosingLoopRoot(admitted);
+            if (enclosingInvocation != null) {
+                active.enclosingInvocationEvent = enclosingInvocation.token;
+                active.enclosingInvocationThread =
+                        enclosingInvocation.threadName;
+                active.enclosingInvocationOrdinal =
+                        enclosingInvocation.ordinalOf(admitted.taskId);
+            }
             ACTIVE.put(active.token, active);
             pushActiveRegion(active);
             javaRegionPushed = true;
@@ -861,9 +870,13 @@ public final class ConcolicRegionRuntime {
         for (LoopRootInvocationContext existing : contexts) {
             if (existing.claimsSiblingHook(group.key)) return 0L;
         }
+        // The entry event of this enclosing invocation, minted before the
+        // plan is asked, because it is what the plan binds a loop task to:
+        // the bodies of one occurrence are the bodies of ONE enclosing
+        // activation, and a second one is a second k.
         long token = TOKEN_COUNTER.incrementAndGet();
-        Set<String> admittedTasks = config.addressLoopRootInvocation(
-                group.key, rootMethod, receiver, rootArguments);
+        Map<String, Integer> admittedTasks = config.addressLoopRootInvocation(
+                group.key, rootMethod, receiver, rootArguments, token);
         contexts.push(new LoopRootInvocationContext(token, group.key,
                 Math.max(0, group.hookCount - 1), admittedTasks));
         return token;
@@ -892,15 +905,30 @@ public final class ConcolicRegionRuntime {
 
     /** Whether the nearest matching outer call owns this loop task. */
     static boolean enclosingLoopRootAdmits(RuntimeTask task) {
-        if (task == null || !task.loopBodyRoot) return false;
+        return enclosingLoopRoot(task) != null;
+    }
+
+    /**
+     * The enclosing invocation on this thread that owns {@code task}, or
+     * {@code null}.
+     *
+     * <p>One loop task's bodies belong to exactly one of these -- the
+     * invocation it was admitted for -- and the row it publishes names
+     * which, so "two enclosing invocations, one occurrence" is a statement
+     * the corpus can contradict rather than an inference from thread
+     * names.</p>
+     */
+    static LoopRootInvocationContext enclosingLoopRoot(RuntimeTask task) {
+        if (task == null || !task.loopBodyRoot) return null;
         for (LoopRootInvocationContext context
                 : LOOP_ROOT_INVOCATIONS.get()) {
             if (!context.groupKey.equals(task.loopRootHookGroupKey())) {
                 continue;
             }
-            return context.admittedTaskIds.contains(task.taskId);
+            return context.ordinalByTaskId.containsKey(task.taskId)
+                    ? context : null;
         }
-        return false;
+        return null;
     }
 
     /** Null-safe equality for either string naming one root hook. */
@@ -3031,18 +3059,28 @@ public final class ConcolicRegionRuntime {
     }
 
     /** One real enclosing method invocation for bounded body activations. */
-    private static final class LoopRootInvocationContext
+    static final class LoopRootInvocationContext
             extends SiblingHookGroupEntry {
-        private final long token;
-        private final Set<String> admittedTaskIds;
+        /** This invocation's entry event: what a loop task is bound to. */
+        final long token;
+        /** The thread that ran it, as the recording names threads. */
+        final String threadName = Thread.currentThread().getName();
+        /** Which k this entry was counted at, per task it was offered to. */
+        private final Map<String, Integer> ordinalByTaskId;
 
         private LoopRootInvocationContext(
                 long token, String groupKey, int remainingSiblingHooks,
-                Set<String> admittedTaskIds) {
+                Map<String, Integer> ordinalByTaskId) {
             super(groupKey, remainingSiblingHooks);
             this.token = token;
-            this.admittedTaskIds = Collections.unmodifiableSet(
-                    new LinkedHashSet<>(admittedTaskIds));
+            this.ordinalByTaskId = Collections.unmodifiableMap(
+                    new LinkedHashMap<>(ordinalByTaskId));
+        }
+
+        /** The observed activation ordinal this entry took for a task. */
+        int ordinalOf(String taskId) {
+            Integer ordinal = ordinalByTaskId.get(taskId);
+            return ordinal == null ? 0 : ordinal;
         }
     }
 
@@ -5821,6 +5859,19 @@ public final class ConcolicRegionRuntime {
          * the occurrence it belongs to rather than the planned address.
          */
         int activationOrdinal;
+        /**
+         * The enclosing invocation these loop bodies were charged to: its
+         * entry event, the thread that ran it, and the k it was counted at.
+         *
+         * <p>Zero and "" on a region that is not a loop body.  An
+         * occurrence is (node, epoch, region, k-th activation), and its loop
+         * bodies are its own; bodies of a different enclosing invocation --
+         * another thread, another entry event -- belong to a different k by
+         * definition, so the row says which one it was.</p>
+         */
+        long enclosingInvocationEvent;
+        String enclosingInvocationThread = "";
+        int enclosingInvocationOrdinal;
         /** VM context whose writes belong to this materialized activation. */
         long vmContextId;
         /** Exact event-ledger entry of this native region frame. */

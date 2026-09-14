@@ -279,9 +279,10 @@ final class ConcolicTaskPlan {
      * Counts one real enclosing method entry and freezes which loop task
      * owns all body iterations executed by that invocation.
      */
-    synchronized Set<String> addressLoopRootInvocation(
+    synchronized Map<String, Integer> addressLoopRootInvocation(
             String loopRootHookGroupKey, String rootMethod,
-            Object receiver, Object[] rootArguments) {
+            Object receiver, Object[] rootArguments,
+            long enclosingInvocationEvent) {
         String threadName = Thread.currentThread().getName();
         SourceRef registeredReceiverSource =
                 RuntimeTraceContext.sourceFor(receiver);
@@ -343,7 +344,7 @@ final class ConcolicTaskPlan {
                 continue;
             }
         }
-        Set<String> admitted = new LinkedHashSet<>();
+        Map<String, Integer> admitted = new LinkedHashMap<>();
         // An activation the recording never saw is not a candidate here
         // either.  The counting pass above skipped it, so looking its
         // ordinal up would answer null and the run would report "invocation
@@ -369,17 +370,45 @@ final class ConcolicTaskPlan {
             OccurrenceAddress observed = task.observedAddress(
                     countedLifecycle(task, activationSource),
                     actualOrdinalByScope);
-            boolean exactOutgoingAddress =
-                    mayDeferMissingContextToOutgoingAnchor(task,
-                            registeredReceiverSource, context);
-            if (!task.acceptsRootInvocation(observed,
-                    exactOutgoingAddress)) {
+            // The whole address, and nothing standing in for it.  A
+            // non-loop root publishes one occurrence and its unique OUT
+            // anchor confirms the node before that publication, so entry may
+            // defer a missing registration to it; an enclosing loop root
+            // decides which occurrence a whole SEQUENCE of bodies belongs
+            // to, and there the deferral was not deferring the node, it was
+            // replacing k.  Any invocation under the planned request was
+            // admitted to any address, which is how one occurrence came to
+            // own two enclosing invocations.
+            if (!task.acceptsRootInvocation(observed)) {
                 task.noteUnaddressedCandidate("matching enclosing root: "
                         + task.address.difference(observed)
                         + attribution(activationSource));
                 continue;
             }
-            admitted.add(task.taskId);
+            // One occurrence, one enclosing activation.  The bodies of
+            // occurrence k are the bodies of the invocation admitted for k;
+            // a later invocation of the same region on the same node is the
+            // next k and belongs to the task addressed there, never to this
+            // one.  Nothing said so, and on hdfs-11741 lane11741f
+            // REGION.2392e4b7...#5 published eight loop bodies -- #a1..#a6
+            // from an enclosing call on IPC Server handler 8 and #a7,#a8
+            // from another on handler 2 -- while the tasks addressed #1 and
+            // #4, the two other balancer-driven invocations, were never
+            // answered.  Same defect class as the provisional-admission
+            // bucket: bookkeeping that lets one occurrence absorb another
+            // activation.
+            if (!task.claimsEnclosingInvocation(enclosingInvocationEvent)) {
+                task.noteUnaddressedCandidate(
+                        "a second enclosing invocation of this region: "
+                                + "occurrence " + task.address.ordinal()
+                                + " already runs the bodies of entry event "
+                                + task.enclosingInvocationEvent()
+                                + ", so this entry is activation "
+                                + observed.ordinal()
+                                + attribution(activationSource));
+                continue;
+            }
+            admitted.put(task.taskId, observed.ordinal());
         }
         return admitted;
     }
@@ -1291,6 +1320,16 @@ final class ConcolicTaskPlan {
          * session.
          */
         final int loopOccurrenceBudget;
+        /**
+         * The one enclosing invocation whose loop bodies this occurrence is.
+         *
+         * <p>Its entry event, or {@code 0} before the first admission.  An
+         * occurrence is (node, epoch, region, k-th activation), and the
+         * activation is the enclosing call: its bodies are {@code #k#aN}.  A
+         * second enclosing invocation -- another thread, another entry event
+         * -- is the next k and belongs to the task addressed there.</p>
+         */
+        private long enclosingInvocationEvent;
         /** Whether the one bounded-cut marker for this region was written. */
         boolean loopBoundCutRecorded;
         /** Turns of the root loop examined for this bounded address. */
@@ -1976,6 +2015,30 @@ final class ConcolicTaskPlan {
             return false;
         }
 
+        /**
+         * Binds this occurrence to one enclosing invocation, and answers
+         * whether {@code entryEvent} is it.
+         *
+         * <p>The first enclosing invocation admitted for this address owns
+         * it for the whole replay.  There is no releasing: an occurrence
+         * that ended is still the k-th activation, and a later invocation of
+         * the same region is the (k+1)-th, which some other task addresses
+         * -- or which nothing does, and then the row says so by name.</p>
+         */
+        synchronized boolean claimsEnclosingInvocation(long entryEvent) {
+            if (entryEvent <= 0L) return false;
+            if (enclosingInvocationEvent == 0L) {
+                enclosingInvocationEvent = entryEvent;
+                return true;
+            }
+            return enclosingInvocationEvent == entryEvent;
+        }
+
+        /** The enclosing invocation this occurrence's bodies come from. */
+        synchronized long enclosingInvocationEvent() {
+            return enclosingInvocationEvent;
+        }
+
         /** Claims the one bounded-cut marker write for this region. */
         synchronized boolean claimLoopBoundCutMarker() {
             if (loopBoundCutRecorded) return false;
@@ -2084,6 +2147,10 @@ final class ConcolicTaskPlan {
          * Selects a communication consumer by the message that invoked it.
          * Tasks with no planner-authored IN edge retain ordinal addressing.
          */
+        boolean acceptsRootInvocation(OccurrenceAddress observed) {
+            return address.matches(observed);
+        }
+
         boolean acceptsRootInvocation(OccurrenceAddress observed,
                                               boolean exactOutgoingAddress) {
             // The whole address the occurrence id states -- node, epoch,
