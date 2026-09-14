@@ -2584,16 +2584,14 @@ public final class RootValuationSolver {
                     optionalString(row, "nullnessSolverTerm"));
             return result.sourceKey.isEmpty() || result.sourceId.isEmpty()
                     || result.sourcePhaseId.isEmpty()
-                    // A handoff assignment is a configured-source
-                    // assignment whose phase id is the handoff phase id --
-                    // one mechanism, answered by the same runtime path -- so
-                    // this stage admits both spellings.  Requiring only the
-                    // source prefix refused all 26 of laneVM14's handoff
-                    // materializations here, after COMPOSE had accepted
-                    // them, and left the formula with no controls at all.
-                    || !result.sourcePhaseId.startsWith("SOURCE_PHASE.")
-                    && !result.sourcePhaseId.startsWith(
-                            HandoffPhaseContract.PHASE_PREFIX)
+                    // Three spellings, one shape.  A configured source
+                    // names a SOURCE_PHASE., a wire value a HANDOFF_PHASE.,
+                    // and a manual input its own id REGION.<r>.in.<uuid> --
+                    // and all three are roots the campaign can vary through
+                    // one runtime mechanism.  Requiring a prefix refused
+                    // first every handoff materialization and then every
+                    // manual one, in both cases after COMPOSE had accepted
+                    // them.  What matters is that the identity is stated.
                     || result.sourceOccurrenceId.isEmpty()
                     || result.fieldSignature.isEmpty()
                     || result.descriptor.isEmpty()
