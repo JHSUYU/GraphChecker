@@ -1,0 +1,1 @@
+{"sourceId":"HDFS.BLOCK_KEY.SERIAL_NO","declaredDomainMin":"+0","declaredDomainMax":"+3","why":"the NameNode's block-key serial starts at a SecureRandom int and increments by one per rotation, so no absolute range states anything; the case assumes the consumer is at most three rotations behind the producer, which is what a key-set disagreement after a rotation is"}

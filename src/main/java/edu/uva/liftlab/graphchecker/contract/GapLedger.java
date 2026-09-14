@@ -277,11 +277,16 @@ public final class GapLedger {
         blocking(composer, "COMPOSITION_GAP",
                 "the emitter refused a term it could not lower, so the"
                         + " formula does not contain the step it refused");
-        blocking(composer, "ROOT_NOT_ON_ANY_PATH",
+        diagnostic(composer, "ROOT_NOT_ON_ANY_PATH",
                 "the recording minted a root and no admitted path's"
-                        + " condition or fatal predicate mentions it, so the"
-                        + " formula asks its question about constants and no"
-                        + " claim can rest on a root it never constrained");
+                        + " condition or fatal predicate mentions it.  That"
+                        + " weakens nothing: the formula is the same"
+                        + " disjunction with or without a variable no"
+                        + " disjunct reads, and what the row states is that"
+                        + " the declaration was unused -- the finding, if"
+                        + " there is one, is not about that root.  A claim"
+                        + " that needs the root says so through its own"
+                        + " mechanism, which names the root it moved");
         blocking(composer, "MissingTargetInstanceSymbolicContext",
                 "the target activation carries no symbolic context, so no"
                         + " root reaches it");

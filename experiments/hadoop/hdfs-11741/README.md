@@ -61,3 +61,19 @@ Run `./run.sh build`, then `./run.sh campaign` from this directory. Set
 `CAUSYNTH_OUTPUT_DIR` to a fresh directory for each campaign. The trace starts
 after all stable sources and aliases are registered and before the cache and
 key-map transitions, so cluster startup cannot create unregistered regions.
+
+## The block-key serial number's declared domain
+
+`root-domains.jsonl` states what `HDFS.BLOCK_KEY.SERIAL_NO` may be:
+`declaredDomainMin="+0"`, `declaredDomainMax="+3"` — the value this run
+recorded, and up to three rotations past it.
+
+The bound is relative because an absolute one would be a statement about one
+recording: the NameNode's serial starts at a `SecureRandom` int and increments
+by one per key roll, so "119994..119997" says nothing a second run would
+recognise. Three rotations is the physical assumption this case is about — the
+ad hoc coordination failure here is a key-set disagreement after a rotation,
+and a consumer that is more than a few rolls behind has a different problem.
+With the domain declared, a witness that moves the serial inside it is a
+MARKER_FLIPPED finding naming the rotation; with no domain the root is pinned
+to its recording and no key-set disagreement can be witnessed at all.

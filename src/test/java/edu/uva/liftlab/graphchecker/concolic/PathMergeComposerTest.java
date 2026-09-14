@@ -175,8 +175,16 @@ public class PathMergeComposerTest {
         assertTrue(refused.get(0).getAsJsonObject().get("detail")
                 .getAsString().contains(SOURCE));
         assertEquals(0, roots(minted).size());
-        assertEquals("FINAL_REFUSED", minted.manifest.get(
+        // The row states that the declaration was unused, and nothing more:
+        // a variable no disjunct reads leaves the disjunction what it was,
+        // so the composition is ready and the finding, if there is one, is
+        // simply not about that root.
+        assertEquals("FINAL_READY", minted.manifest.get(
                 ComposedManifest.FINAL_STATUS).getAsString());
+        assertEquals(0, minted.manifest
+                .getAsJsonArray("finalStatusRefusals").size());
+        assertEquals("CANDIDATE_READY",
+                minted.manifest.get("state").getAsString());
         // The same path, plus one decision the replay took in another region
         // of the same execution: a path condition is the replay's, not a
         // region's, and reading only the anchor region's conditions left
@@ -514,6 +522,18 @@ public class PathMergeComposerTest {
                 + "'declaredDomainMax':'86400000'}").getAsJsonObject();
         assertEquals("(and (>= iv 60000) (<= iv 86400000))",
                 PathMergeComposer.rootDomain(interval, null));
+        // A counter nobody chose the zero of is declared relative to what
+        // this run read: HDFS's block-key serial starts at a SecureRandom
+        // int and rolls by one, so "+0..+3" is the statement about the
+        // program that an absolute pair cannot make.
+        JsonObject rotations = JsonParser.parseString("{'solverTerm':'sn',"
+                + "'recordedValue':'119994','declaredDomainMin':'+0',"
+                + "'declaredDomainMax':'+3'}").getAsJsonObject();
+        assertEquals("(and (>= sn 119994) (<= sn 119997))",
+                PathMergeComposer.rootDomain(rotations, null));
+        assertEquals("119997", rotations.get(
+                PathMergeComposer.DECLARED_DOMAIN_MAX).getAsString());
+
         interval.remove(PathMergeComposer.DECLARED_DOMAIN_MIN);
         assertEquals("a root with no declared domain is the value it read",
                 "(= iv 600000)",

@@ -269,7 +269,7 @@ public final class RootValuationSolver {
                         JsonArray perturbations = existentialPerturbations(
                                 solver, query,
                                 discovery.existentialNonBooleanRootInputs,
-                                witness, clockWindows(manifest));
+                                witness, declaredWindows(manifest));
                         for (JsonElement perturbation : perturbations) {
                             existentialPerturbations.add(perturbation);
                             if ("unsat".equals(optionalString(
@@ -2197,15 +2197,34 @@ public final class RootValuationSolver {
     /** The published arms, with the model's choice marked on each. */
 
     /**
-     * The value range each clock root's own physics allows, by solver term.
+     * The value range each root's own declaration allows, by solver term.
      *
-     * <p>{@link ClockRootPhysics} already asserts this window in the formula,
-     * so a perturbation outside it is rejected by that assertion rather than
-     * by anything the target predicate says.  Reading the window here lets the
-     * probe stay inside it and stop mistaking its own boundary for evidence.
+     * <p>Two declarations, one meaning.  {@link ClockRootPhysics} states the
+     * window a wall clock may have returned, and the case states the domain
+     * any other declared root may take; the composition asserts both in the
+     * formula, so a perturbation outside either is rejected by that
+     * assertion rather than by anything the target predicate says.  Reading
+     * the range here lets the probe stay inside it and stop mistaking its
+     * own boundary for evidence -- bug3's serial number is declared
+     * {@code [recorded, recorded+3]} and the probe tried {@code recorded-1},
+     * which the domain refused, and reported the refusal as though the
+     * target had decided it.</p>
      */
-    static Map<String, BigInteger[]> clockWindows(JsonObject manifest) {
+    static Map<String, BigInteger[]> declaredWindows(JsonObject manifest) {
         Map<String, BigInteger[]> windows = new LinkedHashMap<>();
+        for (JsonElement element : array(object(manifest,
+                PathMergeComposer.MANIFEST_FIELD), "roots")) {
+            if (!element.isJsonObject()) continue;
+            JsonObject root = element.getAsJsonObject();
+            String term = optionalString(root, "solverTerm");
+            BigInteger low = integral(optionalString(root,
+                    PathMergeComposer.DECLARED_DOMAIN_MIN));
+            BigInteger high = integral(optionalString(root,
+                    PathMergeComposer.DECLARED_DOMAIN_MAX));
+            if (!term.isEmpty() && low != null && high != null) {
+                windows.put(term, new BigInteger[] {low, high});
+            }
+        }
         JsonObject physics = object(manifest, ClockRootPhysics.MANIFEST_FIELD);
         if (physics.size() == 0) {
             return windows;
@@ -2228,6 +2247,16 @@ public final class RootValuationSolver {
                     recorded.subtract(skew), recorded.add(skew) });
         }
         return windows;
+    }
+
+    /** One declared bound as an integer, or null when it states none. */
+    private static BigInteger integral(String stated) {
+        try {
+            return stated.trim().isEmpty() ? null
+                    : new BigInteger(stated.trim());
+        } catch (NumberFormatException notIntegral) {
+            return null;
+        }
     }
 
     /** Whether an SMT integer literal lies inside a declared window. */

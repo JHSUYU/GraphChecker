@@ -201,6 +201,8 @@ public final class PathMergeComposer {
                 new LinkedHashMap<>(roots.byRawSymbol);
         declaredVariables.putAll(handoffDeclarations(summaries));
         declaredVariables.putAll(manualDeclarations(summaries));
+        Map<String, JsonObject> declaredDomains =
+                declaredDomains(arguments.rootDomains);
         PathMergeLowering lowering =
                 new PathMergeLowering(declaredVariables);
         JsonArray pathRows = new JsonArray();
@@ -509,7 +511,10 @@ public final class PathMergeComposer {
                 }
             }
             rootRows.add(rootRow);
-            String domainTerm = rootDomain(rootRow, declared);
+            String domainTerm = rootDomain(rootRow,
+                    declaredDomains.isEmpty() ? declared
+                            : withDeclaredDomain(declared, declaredDomains,
+                            rootRow));
             if (!domainTerm.isEmpty()) {
                 lowering.assertNamed("root_domain__" + rootDomains++,
                         domainTerm);
@@ -1331,6 +1336,77 @@ public final class PathMergeComposer {
      * What one root may be, as the case declares it, or {@code ""} when the
      * case leaves it free.
      */
+    /**
+     * What the case says each of its declared roots may be, by source id.
+     *
+     * <p>The recording states the value a root had; only the case can state
+     * what else it could have been, because that is a claim about the
+     * program and not about the run.  One row per source id, carrying
+     * {@link #DECLARED_DOMAIN_MIN} and {@link #DECLARED_DOMAIN_MAX} in
+     * either spelling.</p>
+     */
+    private static Map<String, JsonObject> declaredDomains(Path file)
+            throws IOException {
+        Map<String, JsonObject> bySource = new LinkedHashMap<>();
+        if (file == null || !Files.isRegularFile(file)) return bySource;
+        for (JsonObject row : ArtifactIO.readJsonl(file,
+                "Malformed root domain %1$s:%2$d",
+                "Non-object root domain %1$s:%2$d")) {
+            String sourceId = optionalString(row, "sourceId");
+            if (!sourceId.isEmpty()) bySource.put(sourceId, row);
+        }
+        return bySource;
+    }
+
+    /**
+     * The runtime's declaration of this root with the case's domain on it.
+     *
+     * <p>The two are different authorities on one root -- the recording says
+     * what it read, the case says what it may be -- so they are joined here
+     * rather than either overwriting the other.</p>
+     */
+    private static JsonObject withDeclaredDomain(
+            JsonObject declared, Map<String, JsonObject> domains,
+            JsonObject rootRow) {
+        JsonObject stated = domains.get(firstNonBlank(
+                optionalString(rootRow, "sourceId"),
+                declared == null ? ""
+                        : optionalString(declared, "sourceId")));
+        if (stated == null) return declared;
+        JsonObject joined = declared == null
+                ? new JsonObject() : declared.deepCopy();
+        for (String member : new String[]{DECLARED_DOMAIN_MIN,
+                DECLARED_DOMAIN_MAX}) {
+            String bound = optionalString(stated, member);
+            if (!bound.isEmpty()) joined.addProperty(member, bound);
+        }
+        return joined;
+    }
+
+    /**
+     * Whether a gate states something about the formula without weakening it.
+     *
+     * <p>CLOSURE_INCOMPLETE says a root-dependent branch somewhere was left
+     * unflipped, which withholds a <em>closed UNSAT</em> conclusion --
+     * pathSetComplete carries it to exactly that reading.  A satisfying
+     * witness on the paths that were admitted is a finding whatever remains
+     * unexplored elsewhere, and treating it as a refusal withheld
+     * FINAL_READY from every laneVM12 anchor that had a witness.</p>
+     *
+     * <p>ROOT_NOT_ON_ANY_PATH says a declared root is in no admitted path's
+     * condition or fatal predicate.  A variable no disjunct reads changes
+     * nothing about the disjunction, so the formula is the same with or
+     * without it; what the row states is that the declaration was unused --
+     * the finding, if there is one, is not about that root.  A claim that
+     * rests on the root says so through its own mechanism, which names the
+     * root it moved, so the refusal was asking the composition to withhold
+     * what the claim already states.</p>
+     */
+    private static boolean diagnosticGate(String kind) {
+        return CLOSURE_INCOMPLETE.equals(kind)
+                || ROOT_NOT_ON_ANY_PATH.equals(kind);
+    }
+
     /** Where a case states the lowest value a declared root may take. */
     static final String DECLARED_DOMAIN_MIN = "declaredDomainMin";
     /** Where a case states the highest value a declared root may take. */
@@ -1355,8 +1431,10 @@ public final class PathMergeComposer {
         // the recorded value would answer the case's own question before
         // the solver is asked.  Both bounds or neither -- half a domain
         // states nothing.
-        String min = declaredBound(rootRow, declared, DECLARED_DOMAIN_MIN);
-        String max = declaredBound(rootRow, declared, DECLARED_DOMAIN_MAX);
+        String min = declaredBound(rootRow, declared, DECLARED_DOMAIN_MIN,
+                recorded);
+        String max = declaredBound(rootRow, declared, DECLARED_DOMAIN_MAX,
+                recorded);
         if (!min.isEmpty() && !max.isEmpty()) {
             rootRow.addProperty(DECLARED_DOMAIN_MIN, min);
             rootRow.addProperty(DECLARED_DOMAIN_MAX, max);
@@ -1373,14 +1451,37 @@ public final class PathMergeComposer {
         return "(= " + term + " " + literal + ")";
     }
 
-    /** One bound of a root's declared domain, as an integer, or "". */
+    /**
+     * One bound of a root's declared domain, as an integer, or {@code ""}.
+     *
+     * <p>Two spellings, one notion.  An absolute bound is the value itself.
+     * A bound written {@code +k} or {@code -k} is that many steps from the
+     * value the recording read, which is the only way a case can state the
+     * domain of a counter whose zero nobody chose: HDFS's block-key serial
+     * number starts at a {@code SecureRandom} int and increments by one per
+     * rotation, so "up to three rotations ahead of what this run recorded"
+     * is a statement about the program and "[119994, 119997]" is a statement
+     * about one recording.</p>
+     */
     private static String declaredBound(JsonObject rootRow,
-                                        JsonObject declared, String member) {
+                                        JsonObject declared, String member,
+                                        String recorded) {
         String stated = optionalString(rootRow, member);
         if (stated.isEmpty() && declared != null) {
             stated = optionalString(declared, member);
         }
-        return smtIntegerLiteral(stated).isEmpty() ? "" : stated.trim();
+        stated = stated.trim();
+        if (stated.startsWith("+") || stated.startsWith("-")) {
+            String offset = stated.startsWith("+")
+                    ? stated.substring(1) : stated;
+            if (smtIntegerLiteral(offset).isEmpty()
+                    || smtIntegerLiteral(recorded).isEmpty()) {
+                return "";
+            }
+            return new java.math.BigInteger(recorded.trim())
+                    .add(new java.math.BigInteger(offset.trim())).toString();
+        }
+        return smtIntegerLiteral(stated).isEmpty() ? "" : stated;
     }
 
     /**
@@ -2009,28 +2110,21 @@ public final class PathMergeComposer {
             gaps.add(gap);
         }
         manifest.add("gaps", gaps);
-        // CLOSURE_INCOMPLETE says a root-dependent branch somewhere was
-        // left unflipped, which is what withholds a *closed UNSAT*
-        // conclusion -- pathSetComplete below carries it to exactly that
-        // reading.  A satisfying witness on the paths that were admitted is
-        // a finding whatever remains unexplored elsewhere, so it is not a
-        // refusal of the composition: treating it as one withheld
-        // FINAL_READY from every laneVM12 anchor that had a witness.
-        int refusing = 0;
+        // Two gates state something about the composition without weakening
+        // it; the rest refuse it.  See diagnosticGate.
+        JsonArray refusals = new JsonArray();
         for (JsonElement row : gates) {
-            if (!CLOSURE_INCOMPLETE.equals(optionalString(
+            if (!diagnosticGate(optionalString(
                     row.getAsJsonObject(), "kind"))) {
-                refusing++;
+                refusals.add(row.deepCopy());
             }
         }
-        boolean ready = refusing == 0 && gaps.size() == 0
+        boolean ready = refusals.size() == 0 && gaps.size() == 0
                 && !selectors.isEmpty();
         manifest.addProperty("state",
                 ready ? "CANDIDATE_READY" : "CANDIDATE_WITH_GAPS");
         manifest.addProperty(ComposedManifest.FINAL_STATUS,
                 ready ? "FINAL_READY" : "FINAL_REFUSED");
-        JsonArray refusals = new JsonArray();
-        for (JsonElement row : gates) refusals.add(row.deepCopy());
         manifest.add("finalStatusRefusals", refusals);
         manifest.addProperty("pathSetComplete", pathSetComplete(fatal));
         boolean closed = ready && pathSetComplete(fatal);
@@ -2265,6 +2359,8 @@ public final class PathMergeComposer {
         String occurrenceId = "";
         /** The occurrence the case declares as its target, or "". */
         String declaredTargetOccurrence = "";
+        /** Where the case states what its declared roots may be, or null. */
+        Path rootDomains;
         Path z3;
         long clockSkewMillis = ClockRootPhysics.DEFAULT_SKEW_MILLIS;
 
@@ -2293,6 +2389,9 @@ public final class PathMergeComposer {
                     result.occurrenceId = value;
                 } else if ("--target-occurrence".equals(key)) {
                     result.declaredTargetOccurrence = value;
+                } else if ("--root-domains".equals(key)) {
+                    result.rootDomains = value.trim().isEmpty()
+                            ? null : Paths.get(value);
                 } else if ("--z3".equals(key)) {
                     result.z3 = value.trim().isEmpty()
                             ? null : Paths.get(value);
