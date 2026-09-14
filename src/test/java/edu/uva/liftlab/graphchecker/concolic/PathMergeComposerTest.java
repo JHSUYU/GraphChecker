@@ -44,6 +44,15 @@ public class PathMergeComposerTest {
             + SymbolicSourceEvidence.engineLabelForPhase(PHASE, SOURCE)
             + "_com/example/Service";
     private static final String ROOT_TERM = "sym__EXAMPLE_ROOT__1";
+    private static final String CLOCK_CALLEE =
+            "<org.apache.hadoop.util.Timer: long now()>";
+    private static final String CLOCK_PORT = "REGION.example.in.clock";
+    private static final String CLOCK_SITE =
+            "<com.example.Service: void serve()>#u4";
+    private static final String CLOCK_OCCURRENCE =
+            "node0/region/REGION.example#1#a1";
+    private static final String CLOCK_RAW = "M_J_clock_example";
+    private static final long CLOCK_READING = 1700000000000L;
 
     /**
      * Two replays of one site: the seed the root kept healthy and the flip
@@ -172,6 +181,102 @@ public class PathMergeComposerTest {
         assertEquals(0, merge.getAsJsonArray("roots").size());
         assertEquals("FINAL_REFUSED", result.manifest.get(
                 ComposedManifest.FINAL_STATUS).getAsString());
+    }
+
+    /**
+     * A clock read is windowed by the case's bound, and the ledger says so.
+     *
+     * <p>A cell minted through the clock hook is a wall-clock read by
+     * construction -- the hook's declaration names the callee -- so the
+     * mint row states it and the merge needs no site heuristic.  With the
+     * ledger empty every clock was pinned to the one reading some replay
+     * happened to take, which is exactly what a clock is not: bug3's nine
+     * wall-clock cells were pinned that way and eleven of its twelve paths
+     * came back unsatisfiable at every valuation, with the clock probe
+     * refusing to look at all ({@code NO_CLOCK_ROOT}).</p>
+     */
+    @Test
+    public void aTimerNowMintIsAClockReadWithTheCaseBound() throws Exception {
+        Path directory = Files.createTempDirectory("path-merge-clock");
+        JsonObject query = query();
+        query.getAsJsonArray("paths").add(path("seed", "GROUP.SEED",
+                rootIs(true), notEqual(clockSymbol(), longConstant(0L))));
+        PathMergeComposer.Result result = compose(directory, query,
+                clockSummary(), new String[]{"GROUP.SEED"},
+                "--clock-skew-ms", "900000");
+
+        JsonObject physics = result.manifest.getAsJsonObject(
+                ClockRootPhysics.MANIFEST_FIELD);
+        assertEquals(900000L,
+                physics.get("clockSkewMillis").getAsLong());
+        JsonArray reads = physics.getAsJsonArray("clockReads");
+        assertEquals(1, reads.size());
+        JsonObject read = reads.get(0).getAsJsonObject();
+        assertEquals(CLOCK_PORT, read.get("portId").getAsString());
+        assertEquals(CLOCK_OCCURRENCE,
+                read.get("occurrenceId").getAsString());
+        assertEquals(CLOCK_SITE, read.get("siteId").getAsString());
+        assertEquals(CLOCK_READING, read.get("recordedValue").getAsLong());
+        assertEquals("node0", read.get("sourceKey").getAsString());
+        String term = read.get("solverTerm").getAsString();
+        assertFalse(term.isEmpty());
+        assertEquals(ClockRootPhysics.window(term, CLOCK_READING, 900000L),
+                read.get("windowAssertion").getAsString());
+
+        // The formula lets it move within that window; the Boolean root
+        // beside it is still exactly what the recording read.
+        assertTrue(result.smtLib, result.smtLib.contains(
+                "(>= " + term + " " + (CLOCK_READING - 900000L) + ")"));
+        assertTrue(result.smtLib, result.smtLib.contains(
+                "(<= " + term + " " + (CLOCK_READING + 900000L) + ")"));
+
+        boolean sawClock = false;
+        for (com.google.gson.JsonElement element
+                : result.manifest.getAsJsonArray(
+                        ComposedManifest.RECORDED_ROOT_VALUES)) {
+            JsonObject row = element.getAsJsonObject();
+            if (!CLOCK_PORT.equals(row.get("portId").getAsString())) {
+                assertFalse("only a clock read is a wall clock",
+                        row.get("wallClock").getAsBoolean());
+                continue;
+            }
+            sawClock = true;
+            assertTrue("the clock read says it is one",
+                    row.get("wallClock").getAsBoolean());
+            assertEquals(Long.toString(CLOCK_READING),
+                    row.get("recordedValue").getAsString());
+        }
+        assertTrue("the clock root is published", sawClock);
+    }
+
+    /** One replay's summary naming a wall-clock read it minted. */
+    private static JsonObject clockSummary() {
+        JsonObject summary = new JsonObject();
+        summary.addProperty("replayGroupId", "GROUP.SEED");
+        summary.addProperty("sourceKey", "node0");
+        List<JsonObject> events = new ArrayList<>();
+        events.add(SymbolicSourceEvidence.manualEvent(CLOCK_PORT,
+                CLOCK_OCCURRENCE, "", "J", CLOCK_RAW,
+                "MANUAL.clock-example", CLOCK_CALLEE, CLOCK_SITE, 42L,
+                Long.toString(CLOCK_READING)));
+        SymbolicSourceEvidence.writeTo(summary, events);
+        return summary;
+    }
+
+    private static JsonObject clockSymbol() {
+        JsonObject symbol = new JsonObject();
+        symbol.addProperty("_type", "SymbolExpression");
+        symbol.addProperty("_java_type", "J");
+        symbol.addProperty("_exp", CLOCK_RAW);
+        return symbol;
+    }
+
+    private static JsonObject longConstant(long value) {
+        JsonObject node = new JsonObject();
+        node.addProperty("_type", "ConstExpr");
+        node.addProperty("_java_type", "J");
+        node.addProperty("_exp", "Y_J_" + value);
+        return node;
     }
 
     /** A root the path condition mentions is on a path, and nothing refuses. */
@@ -645,6 +750,15 @@ public class PathMergeComposerTest {
                                                     JsonObject extra,
                                                     String... groups)
             throws IOException {
+        return compose(directory, query, extra, groups, new String[0]);
+    }
+
+    private static PathMergeComposer.Result compose(Path directory,
+                                                    JsonObject query,
+                                                    JsonObject extra,
+                                                    String[] groups,
+                                                    String... extraArguments)
+            throws IOException {
         Path queryFile = directory.resolve("reach_query.jsonl");
         write(queryFile, JsonFields.WRITER.toJson(
                 SharedExpressionTable.compact(query)));
@@ -660,15 +774,14 @@ public class PathMergeComposerTest {
                     SharedExpressionTable.compact(extra))).append('\n');
         }
         write(summaries, rows.toString());
-        PathMergeComposer.Arguments arguments =
-                PathMergeComposer.Arguments.parse(new String[]{
-                        "--fatal-query", queryFile.toString(),
-                        "--summaries", summaries.toString(),
-                        "--output",
-                        directory.resolve("candidate.smt2").toString(),
-                        "--manifest",
-                        directory.resolve("manifest.json").toString()});
-        return PathMergeComposer.compose(arguments);
+        List<String> line = new ArrayList<>(Arrays.asList(
+                "--fatal-query", queryFile.toString(),
+                "--summaries", summaries.toString(),
+                "--output", directory.resolve("candidate.smt2").toString(),
+                "--manifest", directory.resolve("manifest.json").toString()));
+        line.addAll(Arrays.asList(extraArguments));
+        return PathMergeComposer.compose(PathMergeComposer.Arguments.parse(
+                line.toArray(new String[0])));
     }
 
     private static JsonObject query() {

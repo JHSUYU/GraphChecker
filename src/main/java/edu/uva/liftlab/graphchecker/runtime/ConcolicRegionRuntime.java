@@ -6580,6 +6580,22 @@ public final class ConcolicRegionRuntime {
             if (recordedValue != null && !recordedValue.isEmpty()) {
                 row.addProperty("recordedValue", recordedValue);
             }
+            // A cell minted through the clock hook is a wall-clock read by
+            // construction: the declaration names the callee, so the mint
+            // row states it and no reader downstream has to guess a clock
+            // from a site name.  The value it states is the one the
+            // RECORDING read, not this replay's: a clock is what every
+            // replay reads differently, and pinning the root to one
+            // replay's instant is what left eleven of bug3's twelve paths
+            // unsatisfiable at every valuation.  The recorded reading is
+            // the centre of the window the case's declared skew allows.
+            if (action.declaresWallClockRead()) {
+                row.addProperty("declaredCallee", action.declaredCallee);
+                row.addProperty("siteId", action.siteId);
+                row.addProperty("eventSeq", action.eventSeq);
+                row.addProperty("recordedValue",
+                        action.recordedPrimitiveValue);
+            }
             symbolizedRows.add(row);
         }
 
@@ -6969,6 +6985,10 @@ public final class ConcolicRegionRuntime {
         final String sourceKind;
         /** The external call whose return this action symbolizes, or "". */
         final String declaredCallee;
+        /** The static site the plan observed this read at, or "". */
+        final String siteId;
+        /** The recorded event this read was observed at, or -1. */
+        final long eventSeq;
         /** What this read returned in the recording, or "" when unobserved. */
         final String recordedPrimitiveValue;
         /** The selection file named this input by hand: mint, do not reuse. */
@@ -7042,6 +7062,8 @@ public final class ConcolicRegionRuntime {
             this.symbolicDemand = optionalString(json, "symbolicDemand");
             this.sourceKind = optionalString(json, "sourceKind");
             this.declaredCallee = optionalString(json, "declaredCallee");
+            this.siteId = optionalString(json, "siteId");
+            this.eventSeq = optionalLongInteger(json, "eventSeq", -1L);
             this.recordedPrimitiveValue = optionalBool(json, "observed", false)
                     ? optionalString(json, "primitiveValue") : "";
             this.declaredSymbolicRoot = optionalBool(json,
