@@ -2545,11 +2545,26 @@ public final class ConcolicRegionRuntime {
      */
     private static String declaredConsumerOccurrence(String portId,
                                                      ActiveRegion carrying) {
-        for (ConcolicTaskPlan.RuntimeTask task : configuration().tasks) {
-            if (task.communicationHandoff(portId, false) != null) {
-                return task.occurrenceId;
+        // The live activation that declares it, innermost first.  Several
+        // occurrences of one region declare the same port -- bug2's
+        // REGION.1f6914ec has five -- so "the first task in the plan that
+        // declares this port" names one of them for every attach: in lane
+        // B2e every handoff row came out with consumerOccurrenceId
+        // REGION.1f6914ec…#5 and ONE handoff phase id, which is one
+        // variable for what are several handoffs, and left the occurrence
+        // that did attach reported as not having reproduced its port.
+        for (Long token : CURRENT_TOKENS.get()) {
+            ActiveRegion candidate = ownerRegion(token);
+            if (candidate != null
+                    && candidate.activation.communicationHandoff(portId,
+                    false) != null) {
+                return candidate.activation.occurrenceId;
             }
         }
+        // None live declares it: the attach is where it is, and the row
+        // says so rather than borrowing another occurrence's address.  A
+        // CALL_RETURN attach whose callee has already closed and published
+        // lands here, and R5 then reports it against the carrier.
         return carrying.activation.occurrenceId;
     }
 
