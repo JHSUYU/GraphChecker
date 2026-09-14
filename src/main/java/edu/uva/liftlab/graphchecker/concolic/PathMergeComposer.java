@@ -532,10 +532,11 @@ public final class PathMergeComposer {
      * Which VM event each of this summary's decisions was recorded at.
      *
      * <p>A decision row names the path-condition entry it decided, and the
-     * runtime stamps the row with the VM event sequence it was recorded at.
-     * Reading a condition at its own event is what lets a projection over a
-     * field written several times name the write that was live when the
-     * decision read it.</p>
+     * runtime stamps the row with the session event sequence it was recorded
+     * at -- the counter that also numbers field versions.  Reading a
+     * condition at its own event is what lets a projection over a field
+     * written several times name the write that was live when the decision
+     * read it.</p>
      */
     private static Map<Integer, Long> decisionClocks(JsonObject summary) {
         Map<Integer, Long> clocks = new LinkedHashMap<>();
@@ -545,7 +546,7 @@ public final class PathMergeComposer {
             int index = JsonFields.exactInteger(mapping,
                     "summaryPcIndex", -1);
             long clock = JsonFields.optionalLongInteger(mapping,
-                    InSessionReadResolver.VM_EVENT_ID, 0L);
+                    InSessionReadResolver.SESSION_EVENT_ID, 0L);
             if (index >= 0 && clock > 0L) clocks.putIfAbsent(index, clock);
         }
         return clocks;

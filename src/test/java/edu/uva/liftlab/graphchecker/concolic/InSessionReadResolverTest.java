@@ -46,18 +46,6 @@ public class InSessionReadResolverTest {
                         InSessionReadResolver.INITIAL_TAG));
     }
 
-    /** The latest retained version is the one the program read. */
-    @Test
-    public void theLatestRetainedVersionIsTheOneRead() {
-        JsonArray candidates = new JsonArray();
-        candidates.add(candidate(39, "INITIAL", constant(1)));
-        candidates.add(candidate(44, "WRITE", constant(2)));
-        candidates.add(candidate(41, "WRITE", constant(3)));
-        assertEquals(44L, InSessionReadResolver.observedVersion(candidates));
-        assertEquals(-1L, InSessionReadResolver.observedVersion(
-                new JsonArray()));
-    }
-
     /**
      * A value that arrived over a wire resolves to the producer's own.
      *
@@ -175,6 +163,40 @@ public class InSessionReadResolverTest {
     }
 
     /**
+     * The changeover is over: the arm vocabulary is refused, not read.
+     *
+     * <p>While the VM was being changed this reader took either shape -- the
+     * stated {@code observedVersion}, or the {@code candidates} array with
+     * the newest of them taken as the one observed.  That second reading is
+     * exactly the inference the design deletes, and the VM does not publish
+     * the array any more, so a node carrying only it states no version and
+     * is refused by name.</p>
+     */
+    @Test
+    public void aReadCarryingOnlyTheOldCandidateArrayIsRefused() {
+        JsonObject node = new JsonObject();
+        node.addProperty("_type", "ReadFromExpression");
+        node.addProperty("readEventId", 46);
+        node.add("location", location("INSTANCE_FIELD", 9, 56));
+        JsonArray candidates = new JsonArray();
+        candidates.add(candidate(39, "INITIAL", constant(119981)));
+        candidates.add(candidate(44, "WRITE", symbol(ROOT)));
+        node.add("candidates", candidates);
+        JsonObject row = row(versions("INSTANCE_FIELD", 9, 56,
+                version(39, "INITIAL", constant(119981)),
+                version(44, "WRITE", symbol(ROOT))));
+
+        JsonElement resolved =
+                InSessionReadResolver.of(Arrays.asList(row)).resolve(node);
+
+        assertTrue(InSessionReadResolver.unresolved(resolved));
+        String reason = resolved.getAsJsonObject()
+                .get(InSessionReadResolver.UNRESOLVED_REASON).getAsString();
+        assertTrue(reason,
+                reason.contains(InSessionReadResolver.OBSERVED_VERSION));
+    }
+
+    /**
      * A key id crosses two objects and a wire, and lands on the root.
      *
      * <p>The shape hdfs-17899-bug3 records at the fatal read: the value the
@@ -229,22 +251,22 @@ public class InSessionReadResolverTest {
      *
      * <p>One execution has exactly one write of a location live at any
      * event, so the value this projection read is the write with the
-     * greatest event id below the access.  That is the in-session rule
-     * itself -- there is no choice between writers to make, only a clock to
-     * read -- and it is what makes a field a replay wrote three times
-     * resolvable at all.</p>
+     * greatest version id below the access.  Version ids and the decision's
+     * event id come off one session counter, which is what makes them
+     * comparable -- the branch marker's own per-thread sequence is not, and
+     * comparing the two would put every decision before every write.</p>
      */
     @Test
     public void aProjectionTakesTheWriteLiveAtItsOwnEvent() {
         JsonObject row = row(versions("INSTANCE_FIELD", 9, 56,
                 version(39, "INITIAL", constant(0)),
-                clocked(version(41, "WRITE", constant(119981)), 100),
-                clocked(version(44, "WRITE", constant(119982)), 200),
-                clocked(version(47, "WRITE", symbol(ROOT)), 300)));
+                version(41, "WRITE", constant(119981)),
+                version(44, "WRITE", constant(119982)),
+                version(47, "WRITE", symbol(ROOT))));
 
         JsonElement resolved = InSessionReadResolver.of(
                 Collections.singletonList(row))
-                .resolve(projection(9, 56), 250);
+                .resolve(projection(9, 56), 45);
 
         assertFalse(InSessionReadResolver.unresolved(resolved));
         assertEquals("119982",
@@ -256,12 +278,12 @@ public class InSessionReadResolverTest {
     public void aProjectionBeforeEveryWriteReadsTheInitialVersion() {
         JsonObject row = row(versions("INSTANCE_FIELD", 9, 56,
                 version(39, "INITIAL", constant(119980)),
-                clocked(version(41, "WRITE", constant(119981)), 100),
-                clocked(version(44, "WRITE", symbol(ROOT)), 200)));
+                version(41, "WRITE", constant(119981)),
+                version(44, "WRITE", symbol(ROOT))));
 
         JsonElement resolved = InSessionReadResolver.of(
                 Collections.singletonList(row))
-                .resolve(projection(9, 56), 50);
+                .resolve(projection(9, 56), 40);
 
         assertFalse(InSessionReadResolver.unresolved(resolved));
         assertEquals("119980",
@@ -270,37 +292,39 @@ public class InSessionReadResolverTest {
                 .get(InSessionReadResolver.INITIAL_TAG).getAsBoolean());
     }
 
-    /** No clock on the access: which write it saw is unstated, never guessed. */
+    /** A node that states the version it observed needs no ordering at all. */
     @Test
-    public void aProjectionWithNoClockOfItsOwnIsRefused() {
+    public void aProjectionStatingItsObservedVersionTakesIt() {
         JsonObject row = row(versions("INSTANCE_FIELD", 9, 56,
-                clocked(version(41, "WRITE", constant(119981)), 100),
-                clocked(version(44, "WRITE", symbol(ROOT)), 200)));
+                version(41, "WRITE", constant(119981)),
+                version(44, "WRITE", constant(119982)),
+                version(47, "WRITE", symbol(ROOT))));
+        JsonObject node = projection(9, 56);
+        node.addProperty(InSessionReadResolver.OBSERVED_VERSION, 41);
 
         JsonElement resolved = InSessionReadResolver.of(
-                Collections.singletonList(row)).resolve(projection(9, 56));
+                Collections.singletonList(row)).resolve(node);
 
-        assertTrue(InSessionReadResolver.unresolved(resolved));
-        assertTrue(resolved.getAsJsonObject()
-                .get(InSessionReadResolver.UNRESOLVED_REASON).getAsString()
-                .contains("carries no vmEventId"));
+        assertFalse(InSessionReadResolver.unresolved(resolved));
+        assertEquals("119981",
+                resolved.getAsJsonObject().get("_exp").getAsString());
     }
 
-    /** No clock on the writes: the same refusal, naming that side. */
+    /** Neither the node nor the decision says: unstated, never guessed. */
     @Test
-    public void aProjectionOverUnclockedWritesIsRefused() {
+    public void aProjectionWithNoVersionAndNoClockIsRefused() {
         JsonObject row = row(versions("INSTANCE_FIELD", 9, 56,
                 version(41, "WRITE", constant(119981)),
                 version(44, "WRITE", symbol(ROOT))));
 
         JsonElement resolved = InSessionReadResolver.of(
-                Collections.singletonList(row))
-                .resolve(projection(9, 56), 250);
+                Collections.singletonList(row)).resolve(projection(9, 56));
 
         assertTrue(InSessionReadResolver.unresolved(resolved));
-        assertTrue(resolved.getAsJsonObject()
-                .get(InSessionReadResolver.UNRESOLVED_REASON).getAsString()
-                .contains("vmEventId for 0 of them"));
+        String reason = resolved.getAsJsonObject()
+                .get(InSessionReadResolver.UNRESOLVED_REASON).getAsString();
+        assertTrue(reason, reason.contains("observedVersion"));
+        assertTrue(reason, reason.contains("eventId"));
     }
 
     /** A projection over something that is not an object stays a projection. */
@@ -425,15 +449,30 @@ public class InSessionReadResolverTest {
         return node;
     }
 
+    /**
+     * A read node: the location it read and the one version it observed.
+     *
+     * <p>It used to carry every version retained at the read and leave the
+     * choice to a reader.  The VM states the one it saw, so these fixtures
+     * state it too -- the last of the versions handed in, which is the one
+     * the old newest-wins rule would have picked.</p>
+     */
     private static JsonObject read(String kind, long rid, long slot,
-                                   long event, JsonObject... candidates) {
+                                   long event, JsonObject... observed) {
         JsonObject node = new JsonObject();
         node.addProperty("_type", "ReadFromExpression");
         node.addProperty("readEventId", event);
         node.add("location", location(kind, rid, slot));
-        JsonArray rows = new JsonArray();
-        for (JsonObject candidate : candidates) rows.add(candidate);
-        node.add("candidates", rows);
+        JsonObject newest = null;
+        for (JsonObject candidate : observed) {
+            if (newest == null || candidate.get("fieldVersionId").getAsLong()
+                    > newest.get("fieldVersionId").getAsLong()) {
+                newest = candidate;
+            }
+        }
+        if (newest != null) {
+            node.add(InSessionReadResolver.OBSERVED_VERSION, newest);
+        }
         return node;
     }
 
@@ -458,12 +497,6 @@ public class InSessionReadResolverTest {
         node.addProperty("versionKind", kind);
         node.add("expression", expression);
         return node;
-    }
-
-    /** One write log version, stamped with the event that wrote it. */
-    private static JsonObject clocked(JsonObject version, long vmEventId) {
-        version.addProperty(InSessionReadResolver.VM_EVENT_ID, vmEventId);
-        return version;
     }
 
     private static JsonArray versions(String kind, long rid, long slot,

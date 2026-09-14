@@ -241,51 +241,39 @@ public final class ContainerSmtCodec {
     }
 
     /**
-     * The versions a read node offers.
+     * The version a read node observed, as the one-element list the codec
+     * projects through.
      *
-     * <p>A read node published under the current schema names the one
-     * version it observed, and nothing about the versions it did not; the
-     * older schema named every version retained at the read and left the
-     * choice to a solver.  Either way what the codec projects through is a
-     * list of versions, and the current one has a single element.</p>
+     * <p>A read names the version it saw and nothing about the versions it
+     * did not.  It used to name every version retained at it and leave the
+     * choice to a solver; that candidate set was the stitcher's, and the
+     * list here is one long because a read inside one replay has one
+     * answer.</p>
      */
     private static JsonArray readVersions(JsonObject read) {
         JsonObject observed = JsonFields.object(read,
                 InSessionReadResolver.OBSERVED_VERSION);
-        if (observed.size() == 0) return array(read, "candidates");
-        JsonArray one = new JsonArray();
-        one.add(observed);
-        return one;
-    }
-
-    /** The member a read node keeps its versions under. */
-    private static String versionsMember(JsonObject read) {
-        return JsonFields.object(read,
-                InSessionReadResolver.OBSERVED_VERSION).size() == 0
-                ? "candidates" : InSessionReadResolver.OBSERVED_VERSION;
+        JsonArray versions = new JsonArray();
+        if (observed.size() > 0) versions.add(observed);
+        return versions;
     }
 
     /**
-     * Writes projected versions back in the shape the read node uses.
+     * Writes the projected version back onto the read node.
      *
-     * <p>A node that names the one version it observed keeps naming one;
-     * a node still carrying the older alternatives keeps the list.</p>
+     * <p>A read names the one version it observed, so there is one to write
+     * back.  The member used to be chosen -- {@code observedVersion} for a
+     * node on this schema, {@code candidates} for one still carrying the
+     * alternatives -- and during the changeover both shapes were read.  The
+     * VM does not publish the older shape any more, so there is one member
+     * and no choice to make.</p>
      */
-    private static void putVersions(JsonObject projected, JsonObject read,
+    private static void putVersions(JsonObject projected,
                                     JsonArray versions) {
-        String member = versionsMember(read);
-        if (InSessionReadResolver.OBSERVED_VERSION.equals(member)) {
-            projected.add(member, versions.get(0));
-        } else {
-            projected.add(member, versions);
-        }
+        projected.add(InSessionReadResolver.OBSERVED_VERSION,
+                versions.get(0));
     }
 
-    /** Whether one version of a read must name a selector to be projected. */
-    private static boolean needsSelector(JsonObject read) {
-        return JsonFields.object(read,
-                InSessionReadResolver.OBSERVED_VERSION).size() == 0;
-    }
 
     public static boolean handles(JsonElement expression) {
         return expression != null && expression.isJsonObject()
@@ -509,15 +497,13 @@ public final class ContainerSmtCodec {
         if (read) {
             JsonArray arms = readVersions(root);
             if (arms.size() == 0) return null;
-            JsonObject projected = copyWithout(root, versionsMember(root));
+            JsonObject projected = copyWithout(root, InSessionReadResolver.OBSERVED_VERSION);
             projected.addProperty("_java_type", selectedJavaType);
             JsonArray projectedArms = new JsonArray();
             for (JsonElement element : arms) {
                 if (!element.isJsonObject()) return null;
                 JsonObject arm = element.getAsJsonObject();
-                if (needsSelector(root)
-                        && optionalString(arm, "selector").isEmpty()
-                        || arm.get("expression") == null) {
+                if (arm.get("expression") == null) {
                     return null;
                 }
                 JsonElement selected = storedIndexedWrite(
@@ -528,7 +514,7 @@ public final class ContainerSmtCodec {
                 projectedArm.add("expression", selected);
                 projectedArms.add(projectedArm);
             }
-            putVersions(projected, root, projectedArms);
+            putVersions(projected, projectedArms);
             return projected;
         }
         JsonElement cursor = receiver;
@@ -1681,15 +1667,13 @@ public final class ContainerSmtCodec {
         if (read) {
             JsonArray arms = readVersions(root);
             if (arms.size() == 0) return null;
-            JsonObject projected = copyWithout(root, versionsMember(root));
+            JsonObject projected = copyWithout(root, InSessionReadResolver.OBSERVED_VERSION);
             projected.addProperty("_java_type", projectedJavaType);
             JsonArray projectedArms = new JsonArray();
             for (JsonElement element : arms) {
                 if (!element.isJsonObject()) return null;
                 JsonObject arm = element.getAsJsonObject();
-                if (needsSelector(root)
-                        && optionalString(arm, "selector").isEmpty()
-                        || arm.get("expression") == null) return null;
+                if (arm.get("expression") == null) return null;
                 JsonElement payload = projectChoice(
                         arm.get("expression"), index, viewKind,
                         selectedJavaType, projection, shape, memo);
@@ -1698,7 +1682,7 @@ public final class ContainerSmtCodec {
                 projectedArm.add("expression", payload);
                 projectedArms.add(projectedArm);
             }
-            putVersions(projected, root, projectedArms);
+            putVersions(projected, projectedArms);
             return projected;
         }
         if (!("INDEXED".equals(shape) ? scalarIndexedLeaf(root)
@@ -2084,13 +2068,10 @@ public final class ContainerSmtCodec {
         if (!"ReadFromExpression".equals(type)) return "";
         JsonArray arms = readVersions(object);
         if (arms.size() == 0) return "";
-        boolean selectorRequired = needsSelector(object);
         String selected = "";
         for (JsonElement element : arms) {
             if (!element.isJsonObject()) return "";
             JsonObject arm = element.getAsJsonObject();
-            if (selectorRequired
-                    && optionalString(arm, "selector").isEmpty()) return "";
             JsonElement armExpression = arm.get("expression");
             if (armExpression == null || !armExpression.isJsonObject()) {
                 return "";
@@ -2164,8 +2145,7 @@ public final class ContainerSmtCodec {
         for (JsonElement element : arms) {
             if (!element.isJsonObject()) return null;
             JsonObject arm = element.getAsJsonObject();
-            if (needsSelector(object)
-                    && optionalString(arm, "selector").isEmpty()) return null;
+            if (arm.get("expression") == null) return null;
             JsonElement projectedArm = selectedViewState(
                     arm.get("expression"), kind, memo);
             if (projectedArm == null) return null;
@@ -2173,7 +2153,7 @@ public final class ContainerSmtCodec {
             normalizedArm.add("expression", projectedArm);
             normalizedArms.add(normalizedArm);
         }
-        putVersions(normalized, object, normalizedArms);
+        putVersions(normalized, normalizedArms);
         memo.put(expression, normalized);
         return normalized;
     }

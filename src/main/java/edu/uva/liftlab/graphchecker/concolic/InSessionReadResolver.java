@@ -27,10 +27,9 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
  * had to keep every execution's answer available.  Inside <em>one</em>
  * replay the read is determined: the location had exactly one version when
  * the read happened, that version was written by exactly one event, and the
- * VM recorded that event's expression.  The candidates a read carries are
- * the versions retained at the read, and the one it observed is the latest
- * of them -- version ids are session-monotonic, so the largest id at or
- * before the read event is the value the program saw.</p>
+ * VM recorded that event's expression, and the node states which version
+ * that was.  Nothing here chooses between versions, and nothing infers one:
+ * a node that states none is refused.</p>
  *
  * <p>The same holds across nodes.  A value that arrived over a declared wire
  * carries a {@code ConsumerBoundaryExpression} of kind {@code RPC_ATTACH},
@@ -70,22 +69,28 @@ public final class InSessionReadResolver {
     /** Marks a leaf whose value predates the recording. */
     public static final String INITIAL_TAG = "inSessionInitial";
     /**
-     * The VM event sequence a decision or a write was recorded at.
+     * The session event sequence a branch decision was recorded at.
      *
-     * <p>One clock for the whole replay: the runtime publishes it on branch
-     * decisions and on the target anchor, and a write log carries it per
-     * version.  It is the only published order over the events of two
-     * activations, and the only way a projection over a field written more
-     * than once can name the write it read.</p>
+     * <p>The same counter that numbers field versions, reads and wire
+     * events, so this one <em>can</em> be compared with a
+     * {@code fieldVersionId}: the write live at a decision is the greatest
+     * version id strictly below the decision's event.  Scoped per session,
+     * like the ids it is compared against.</p>
      */
-    public static final String VM_EVENT_ID = "vmEventId";
+    public static final String SESSION_EVENT_ID = "eventId";
+    /**
+     * The version a read or a projection observed.
+     *
+     * <p>The VM states it on the node: a read inside one replay saw exactly
+     * one version, and which one is a fact of the recording rather than
+     * something to reconstruct from the versions it did not see.</p>
+     */
+    public static final String OBSERVED_VERSION = "observedVersion";
     /** Marks a leaf this replay could not determine. */
     public static final String UNRESOLVED_TAG = "inSessionUnresolved";
     /** Why an unresolved leaf could not be determined. */
     public static final String UNRESOLVED_REASON = "inSessionUnresolvedReason";
     private static final int MAX_DEPTH = 512;
-    /** The one version a read node says it observed. */
-    public static final String OBSERVED_VERSION = "observedVersion";
 
     /** Anchor -> definition, over every row of the replay. */
     private final Map<String, JsonElement> definitions;
@@ -110,30 +115,20 @@ public final class InSessionReadResolver {
             new IdentityHashMap<>();
     /** "kind/rid#slot" -> its versions in this replay, lowest id first. */
     private final Map<String, TreeMap<Long, String>> locationVersions;
-    /**
-     * Location -> VM event id of each write -> the version it produced.
-     *
-     * <p>One replay is one execution, so the value a projection read is the
-     * write with the greatest event id below the access.  That is not a
-     * choice between writers: it is what happened.</p>
-     */
-    private final Map<String, TreeMap<Long, Long>> locationWriteEvents;
-    /** The VM event the expression now being resolved was read at, or 0. */
-    private long atVmEventId;
+    /** The session event the expression now being resolved was read at. */
+    private long atSessionEventId;
 
     private InSessionReadResolver(
             Map<String, JsonElement> definitions,
             Map<Long, JsonElement> handoffs,
             Map<String, JsonElement> writes,
             Set<String> initialVersions,
-            Map<String, TreeMap<Long, String>> locationVersions,
-            Map<String, TreeMap<Long, Long>> locationWriteEvents) {
+            Map<String, TreeMap<Long, String>> locationVersions) {
         this.definitions = definitions;
         this.handoffs = handoffs;
         this.writes = writes;
         this.initialVersions = initialVersions;
         this.locationVersions = locationVersions;
-        this.locationWriteEvents = locationWriteEvents;
     }
 
     /**
@@ -152,10 +147,9 @@ public final class InSessionReadResolver {
         Map<String, JsonElement> writes = new LinkedHashMap<>();
         Set<String> initial = new LinkedHashSet<>();
         Map<String, TreeMap<Long, String>> byLocation = new LinkedHashMap<>();
-        Map<String, TreeMap<Long, Long>> writeEvents = new LinkedHashMap<>();
         if (replayRows == null) {
             return new InSessionReadResolver(definitions, handoffs, writes,
-                    initial, byLocation, writeEvents);
+                    initial, byLocation);
         }
         for (JsonObject row : replayRows) {
             if (row == null) continue;
@@ -206,19 +200,11 @@ public final class InSessionReadResolver {
                                 ignored -> new TreeMap<>()).putIfAbsent(id,
                                 kind);
                     }
-                    long event = optionalLongInteger(version,
-                            VM_EVENT_ID, 0L);
-                    if (id >= 0L && event > 0L
-                            && !"INITIAL".equals(kind)) {
-                        writeEvents.computeIfAbsent(location,
-                                ignored -> new TreeMap<>()).putIfAbsent(
-                                event, id);
-                    }
                 }
             }
         }
         return new InSessionReadResolver(definitions, handoffs, writes,
-                initial, byLocation, writeEvents);
+                initial, byLocation);
     }
 
     /** {@code kind/rid#slot}, the way a read node addresses a location. */
@@ -232,55 +218,24 @@ public final class InSessionReadResolver {
                 + optionalLongInteger(location, "slot", 0L);
     }
 
-    /**
-     * The version a read observed: the latest one retained at it.
-     *
-     * <p>Version ids are session-monotonic and a read's candidates are the
-     * versions live when it ran, so the largest id among them is the write
-     * the program read.  Returns -1 when the node carries no candidate.</p>
-     */
-    static long observedVersion(JsonArray candidates) {
-        long observed = -1L;
-        for (JsonElement encoded : candidates) {
-            if (!encoded.isJsonObject()) continue;
-            long version = optionalLongInteger(encoded.getAsJsonObject(),
-                    "fieldVersionId", -1L);
-            if (version > observed) observed = version;
-        }
-        return observed;
-    }
 
-    /** The candidate carrying {@code version}, or null. */
-    private static JsonObject candidateOf(JsonArray candidates,
-                                          long version) {
-        for (JsonElement encoded : candidates) {
-            if (!encoded.isJsonObject()) continue;
-            JsonObject candidate = encoded.getAsJsonObject();
-            if (optionalLongInteger(candidate, "fieldVersionId", -1L)
-                    == version) {
-                return candidate;
-            }
-        }
-        return null;
-    }
-
-    /** Rewrites {@code expression} to this replay's exact value. */
     /**
-     * Resolve one expression as it was read at {@code vmEventId}.
+     * Resolve one expression as it was read at {@code sessionEventId}.
      *
-     * <p>The clock is the VM event sequence the decision that read this
-     * expression was recorded at.  It is what lets a projection over a field
-     * written several times name the write it saw: the one with the greatest
-     * event id below it.  Zero means the caller has no clock, and a
-     * projection that needs one then says so rather than guessing.</p>
+     * <p>The clock is the <em>session</em> event sequence the decision that
+     * read this expression was recorded at -- the counter that also numbers
+     * field versions.  It lets a projection over a field written several
+     * times name the write it saw: the greatest version id below it.  Zero
+     * means the caller has no clock, and a projection that needs one then
+     * says so rather than guessing.</p>
      */
-    public JsonElement resolve(JsonElement expression, long vmEventId) {
-        long held = atVmEventId;
-        atVmEventId = vmEventId;
+    public JsonElement resolve(JsonElement expression, long sessionEventId) {
+        long held = atSessionEventId;
+        atSessionEventId = sessionEventId;
         try {
             return resolve(expression);
         } finally {
-            atVmEventId = held;
+            atSessionEventId = held;
         }
     }
 
@@ -373,24 +328,39 @@ public final class InSessionReadResolver {
         return rewritten;
     }
 
+    /** The version id a node states it observed, or -1. */
+    private static long observedVersionOf(JsonObject node) {
+        JsonElement stated = node.get(OBSERVED_VERSION);
+        if (stated == null || stated.isJsonNull()) return -1L;
+        if (stated.isJsonPrimitive()
+                && stated.getAsJsonPrimitive().isNumber()) {
+            return stated.getAsLong();
+        }
+        return stated.isJsonObject()
+                ? optionalLongInteger(stated.getAsJsonObject(),
+                "fieldVersionId", -1L) : -1L;
+    }
+
     private JsonElement rewriteRead(JsonObject node,
                                     Set<JsonElement> visiting, int depth) {
         // The version this read saw.  A node published under the current
-        // schema names it outright; one published under the older schema
-        // names every version retained at the read, of which the one it saw
-        // is the newest -- version ids are session-monotonic.
+        // schema names it outright.  It used to publish every version
+        // retained at the read instead, and this took the newest of them --
+        // the candidate set was the stitcher's, and reconstructing "which one
+        // did it see" from it is the arm this design deleted.  The VM states
+        // the version now, so a node that does not is unresolved.
         JsonObject observedVersion = object(node, OBSERVED_VERSION);
-        JsonArray candidates = array(node, "candidates");
         long observed = observedVersion.size() > 0
                 ? optionalLongInteger(observedVersion, "fieldVersionId", -1L)
-                : observedVersion(candidates);
+                : observedVersionOf(node);
         String location = sessionLocation(object(node, "location"));
         if (observed < 0L) {
-            return unresolved("read of " + location + " retained no version");
+            return unresolved("read of " + location + " states no "
+                    + OBSERVED_VERSION);
         }
         String key = location + "\n" + observed;
         JsonObject candidate = observedVersion.size() > 0
-                ? observedVersion : candidateOf(candidates, observed);
+                ? observedVersion : null;
         boolean initial = initialVersions.contains(key)
                 || (candidate != null && "INITIAL".equals(
                 optionalString(candidate, "versionKind")));
@@ -454,6 +424,14 @@ public final class InSessionReadResolver {
                 + optionalLongInteger(node, "fieldOffset", 0L);
         TreeMap<Long, String> versions = locationVersions.get(location);
         if (versions == null || versions.isEmpty()) return null;
+        // The node states the version it read, so nothing is inferred from
+        // it.  The VM emits this on a projection exactly as it does on a
+        // read; the ordering below is only for a node that carries none.
+        long stated = observedVersionOf(node);
+        if (stated >= 0L) {
+            return valueOf(location, stated,
+                    "INITIAL".equals(versions.get(stated)), visiting, depth);
+        }
         long written = -1L;
         int writeCount = 0;
         for (Map.Entry<Long, String> version : versions.entrySet()) {
@@ -463,37 +441,42 @@ public final class InSessionReadResolver {
         }
         boolean initial = writeCount == 0;
         if (writeCount > 1) {
-            // One execution wrote this field several times, and the value the
-            // projection read is the write that was live when it ran: the
-            // greatest event id strictly below the access.  That is the
-            // in-session rule itself, not a choice between writers -- a
-            // single execution has exactly one live write at any event.
-            TreeMap<Long, Long> events = locationWriteEvents.get(location);
-            if (atVmEventId <= 0L) {
+            // One execution wrote this field several times, and the value
+            // the projection read is the write that was live when it ran.
+            // The node says which, when the VM stated it; otherwise the
+            // decision's own session event does, because that counter is the
+            // one that numbers versions.  The branch marker's per-thread
+            // sequence is not, and is never compared here.
+            if (atSessionEventId <= 0L) {
                 return unresolved("field " + location + " was written "
-                        + writeCount + " times and the decision that read it"
-                        + " carries no vmEventId, so which write it saw is"
-                        + " unstated");
-            }
-            if (events == null || events.size() < writeCount) {
-                return unresolved("field " + location + " was written "
-                        + writeCount + " times and the write log carries a"
-                        + " vmEventId for " + (events == null ? 0
-                        : events.size()) + " of them, so which write the"
-                        + " access at event " + atVmEventId + " saw is"
-                        + " unstated");
-            }
-            Map.Entry<Long, Long> live = events.lowerEntry(atVmEventId);
-            if (live == null) {
-                // Every write happened after the access: what it read is
-                // whatever was there before this recording tracked the
-                // location, which is the INITIAL version.
-                initial = true;
+                        + writeCount + " times, the node states no "
+                        + OBSERVED_VERSION + " and the decision that read it"
+                        + " carries no " + SESSION_EVENT_ID + ", so which"
+                        + " write it saw is unstated");
             } else {
-                written = live.getValue();
+                Long live = null;
+                for (Map.Entry<Long, String> version : versions.entrySet()) {
+                    if ("INITIAL".equals(version.getValue())) continue;
+                    if (version.getKey() >= atSessionEventId) break;
+                    live = version.getKey();
+                }
+                if (live == null) {
+                    // Every write is after the access: what it read is what
+                    // was there before this recording tracked the location.
+                    initial = true;
+                } else {
+                    written = live;
+                }
             }
         }
-        long observed = initial ? versions.firstKey() : written;
+        return valueOf(location, initial ? versions.firstKey() : written,
+                initial, visiting, depth);
+    }
+
+    /** One location's value at one version, tagged when it predates tracking. */
+    private JsonElement valueOf(String location, long observed,
+                                boolean initial, Set<JsonElement> visiting,
+                                int depth) {
         String key = location + "\n" + observed;
         JsonElement value = writes.get(key);
         if (value == null) {
