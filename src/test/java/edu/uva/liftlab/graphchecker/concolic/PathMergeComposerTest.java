@@ -959,6 +959,77 @@ public class PathMergeComposerTest {
         }
     }
 
+    /**
+     * The mint row is the declaration, so the root row states what it says.
+     *
+     * <p>A clock cell's mint row carries the port it was read on, the callee
+     * the hook declared and the instant this execution read. The composer
+     * used to rebuild a declaration from a few of its members and install
+     * that over the row, which dropped the port and the callee -- so every
+     * clock root came out {@code wallClock false} and no composition listed
+     * a clock read at all.</p>
+     */
+    @Test
+    public void aClockMintRowDeclaresItsRootPortAndCallee() throws Exception {
+        Assume.assumeTrue(z3Available());
+        Path directory = Files.createTempDirectory("path-merge-decl");
+        JsonObject query = query();
+        JsonObject clock = new JsonObject();
+        clock.addProperty("_type", "SymbolExpression");
+        clock.addProperty("_java_type", "J");
+        clock.addProperty("_exp", RAW_CLOCK);
+        query.getAsJsonArray("paths").add(path("clock", "GROUP.FLIP",
+                notEqual(clock, constant(0)),
+                notEqual(constant(1), constant(0))));
+        Path queryFile = directory.resolve("reach_query.jsonl");
+        write(queryFile, JsonFields.WRITER.toJson(
+                SharedExpressionTable.compact(query)));
+
+        JsonObject seed = summary("GROUP.SEED");
+        JsonObject flip = summary("GROUP.FLIP");
+        JsonArray rows = new JsonArray();
+        rows.add(clockReading("1789361019285"));
+        flip.add("manualSymbolicInputObservations", rows);
+        Path summaryFile = directory.resolve("summaries.jsonl");
+        write(summaryFile, JsonFields.WRITER.toJson(
+                SharedExpressionTable.compact(seed)) + "\n"
+                + JsonFields.WRITER.toJson(
+                SharedExpressionTable.compact(flip)) + "\n");
+
+        PathMergeComposer.Result result = PathMergeComposer.compose(
+                PathMergeComposer.Arguments.parse(new String[]{
+                        "--fatal-query", queryFile.toString(),
+                        "--summaries", summaryFile.toString(),
+                        "--clock-skew-ms", "300000",
+                        "--output",
+                        directory.resolve("candidate.smt2").toString(),
+                        "--manifest",
+                        directory.resolve("manifest.json").toString()}));
+
+        JsonObject root = null;
+        for (com.google.gson.JsonElement row : result.manifest
+                .getAsJsonArray(ComposedManifest
+                        .CONFIGURED_SOURCE_MATERIALIZATION_FIELD)) {
+            if (RAW_CLOCK.equals(JsonFields.optionalString(
+                    row.getAsJsonObject(), "rawSymbol"))) {
+                root = row.getAsJsonObject();
+            }
+        }
+        assertTrue("the clock root is materialized", root != null);
+        assertEquals("PORT.now",
+                JsonFields.optionalString(root, "portId"));
+        assertEquals("<org.apache.hadoop.util.Timer: long now()>",
+                JsonFields.optionalString(root,
+                        SymbolicSourceEvidence.DECLARED_CALLEE));
+        JsonObject physics = result.manifest.getAsJsonObject(
+                ClockRootPhysics.MANIFEST_FIELD);
+        assertEquals("and the manifest lists it as a clock read", 1,
+                physics.getAsJsonArray("clockReads").size());
+        assertTrue("the formula windows it around this reading",
+                result.smtLib.contains("1789360719285")
+                        && result.smtLib.contains("1789361319285"));
+    }
+
     /** One replay's reading of a cell the clock hook minted. */
     private static JsonObject clockReading(String reading) {
         JsonObject row = SymbolicSourceEvidence.manualEvent("PORT.now",
