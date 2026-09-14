@@ -170,15 +170,10 @@ public class OccurrenceAddressIsNotARequestTest {
      * The k in "k-th activation" is counted inside one epoch and inside one
      * request family.
      *
-     * <p>One JVM runs both lifecycles of a node it restarts.  On hdfs-17960 the
-     * two {@code deleteSnapshot} activations before the NameNode restart took
-     * ordinals 1 and 2 of a bucket keyed on the <em>planned</em> epoch, so the
-     * two after it took 3 and 4 and matched nothing.  On hdfs-17899 bug2 the
-     * two activations of one region, recorded under {@code
-     * target-dn/heartbeat} and {@code sps/refresh-block-keys}, answered each
-     * other's addresses; under the family each is the first of its own.  The
-     * epoch refusal is on evidence, not on registration order: lane BD's arm
-     * turned a fact about a moment into a verdict about the run.</p>
+     * <p>One JVM runs both lifecycles of a node it restarts, and one region
+     * answers two request families; each activation is the k-th of its own
+     * epoch and family.  The epoch refusal is on evidence, not on
+     * registration order.</p>
      */
     @Test
     public void kIsCountedInsideOneEpochAndOneFamily() throws Exception {
@@ -253,16 +248,11 @@ public class OccurrenceAddressIsNotARequestTest {
     /**
      * An activation is counted, and addressed, where it RAN.
      *
-     * <p>Lane VM9's shape: hdfs-17899 bug3 runs nn0, source-dn and target-dn in
-     * one JVM, and the regions that fail there enter through a static protobuf
-     * decoder that belongs to no node, so the only thing saying where an
-     * activation ran is the execution context its thread carries.  The replay's
-     * bucket was the receiver's registration, else that context <em>only when
-     * it already named the planned node</em>, else the plan's own key, so every
-     * activation attributed elsewhere fell into the planned node's bucket and
-     * the address compared nothing but k.  The gate is evidence: another node
-     * refuses, the planned node decides, and an absence says nothing at all --
-     * a flip replay carries no inherited context.</p>
+     * <p>Three nodes in one JVM enter through a static decoder that belongs
+     * to no node, so what says where an activation ran is the execution
+     * context its thread carries.  The gate is evidence: another node
+     * refuses, the planned node decides, and an absence says nothing at
+     * all -- a flip replay carries no inherited context.</p>
      */
     @Test
     public void anActivationIsCountedWhereItRan() throws Exception {
@@ -349,14 +339,9 @@ public class OccurrenceAddressIsNotARequestTest {
     /**
      * The counting window opens when the workload starts recording.
      *
-     * <p>The plan counts what the recording saw; a replay that counts what the
-     * process did beforehand numbers a different population.  On hdfs-17960 the
-     * first saveNamespace runs 38 seconds before the workload begins -- the
-     * recording never saw it, but the replay counted it as activation 1 and the
-     * checkpoint activation the plan means became 2.  The admitting pass then
-     * looked that ordinal up in a table the counting pass never wrote and
-     * refused it as "invocation null instead of 1", a comparison against an
-     * ordinal nobody assigned.</p>
+     * <p>The plan counts what the recording saw; a replay that counts what
+     * the process did beforehand numbers a different population, and an
+     * activation before the window is compared against no ordinal.</p>
      */
     @Test
     public void theCountingWindowOpensWhenTheWorkloadRecords() {

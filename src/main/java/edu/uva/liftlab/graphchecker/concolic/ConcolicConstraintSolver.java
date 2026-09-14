@@ -65,7 +65,7 @@ public final class ConcolicConstraintSolver {
      * linked causal replay bundle. */
     static Result solve(JsonObject task, List<JsonObject> linkedActivations,
                         JsonObject primaryActivation, Path z3,
-                        long timeoutMillis)
+                        long timeoutMillis, long clockSkewMillis)
             throws IOException, InterruptedException {
         LinkedActivation linked = linkedActivation(linkedActivations,
                 primaryActivation);
@@ -104,13 +104,22 @@ public final class ConcolicConstraintSolver {
         // predicates, not of every semantic support expression they rest on.
         Set<String> replayFrontier = new LinkedHashSet<>();
         Set<String> targetSymbols = new LinkedHashSet<>();
+        List<String> targetAssertions = new ArrayList<>();
         for (int index = 0; index < branchConstraints.size(); index++) {
             boolean target = index + 1 == branchConstraints.size();
+            Set<String> before = target
+                    ? new LinkedHashSet<>(encoder.assertions)
+                    : Collections.<String>emptySet();
             Set<String> symbols = encoder.addConstraint(
                     branchConstraints.get(index), "q_branch_" + index);
             replayFrontier.addAll(symbols);
             if (target) {
                 targetSymbols.addAll(symbols);
+                for (String assertion : encoder.assertions) {
+                    if (!before.contains(assertion)) {
+                        targetAssertions.add(assertion);
+                    }
+                }
             }
         }
         ReplaySupport targetSupport = classifyReplaySupport(
@@ -123,6 +132,8 @@ public final class ConcolicConstraintSolver {
                 replaySupport.writableSymbols;
         preferObservedReplayControls(encoder,
                 writableReplayControlSymbols, actions);
+        stateClockWindows(encoder, replayFrontier, actions,
+                clockSkewMillis);
         String smt = encoder.finish();
         JsonObject record = baseRecord(query.queryKey);
         record.add("unsupported", strings(encoder.unsupported));
@@ -205,6 +216,17 @@ public final class ConcolicConstraintSolver {
                     targetSupport.writableSymbols, assignments);
             if (!unassigned.isEmpty()) {
                 record.add("unassignedFlipVariables", strings(unassigned));
+            }
+            Set<String> invented = modelRestsOnUnstatedField(
+                    encoder.unstatedProjections, encoder, values,
+                    targetAssertions, executable, timeoutMillis);
+            if (!invented.isEmpty()) {
+                record.addProperty("status", "MATERIALIZATION_GAP");
+                record.addProperty("reason",
+                        "FLIP_MODEL_RESTS_ON_UNSTATED_FIELD");
+                record.add("unstatedFieldProjections", strings(invented));
+                return new Result(record, smt, new JsonArray(),
+                        replayContract);
             }
             record.addProperty("status", "SAT_MODEL_READY");
         }
@@ -327,6 +349,17 @@ public final class ConcolicConstraintSolver {
         private final Set<String> softAssertions = new LinkedHashSet<>();
         private final Set<String> unsupported = new LinkedHashSet<>();
         private final Set<String> controlledSymbols = new LinkedHashSet<>();
+        /**
+         * Field projections the recording states no value for.  The VM
+         * writes {@code concreteOwner}/{@code concreteValue} beside a field
+         * read it observed, and a read that carries the pair is lowered to
+         * it; a read without one becomes an accessor nothing constrains,
+         * so the solver is free to choose what the field held.  Kept so a
+         * model that rests on such a choice can be named instead of
+         * published as a plan the replay cannot reproduce.
+         */
+        private final Set<String> unstatedProjections =
+                new LinkedHashSet<>();
         private final Set<String> javaIntRangeAssertions =
                 new LinkedHashSet<>();
         private boolean usesJavaIntString;
@@ -647,6 +680,9 @@ public final class ConcolicConstraintSolver {
                     }
                     String identity = ownerClass + "\u0000" + fieldOffset
                             + "\u0000" + javaType;
+                    String projection = ownerClass + "@" + fieldOffset
+                            + ":" + javaType;
+                    unstatedProjections.add(projection);
                     String accessor = smtSymbols.mint(
                             "container_field__", identity, 16);
                     functionDeclarations.put(accessor,
@@ -1116,7 +1152,23 @@ public final class ConcolicConstraintSolver {
         }
 
         private String finish() {
+            return finish(Collections.<String>emptyList(),
+                    Collections.<String>emptySet());
+        }
+
+        /**
+         * The same query with {@code extra} asserted before the check and
+         * the {@code omitted} assertions replaced by their negation.
+         *
+         * <p>An assertion is named by the text this encoder collected; the
+         * emission rewrites it against the shared-term DAG, so the two are
+         * matched by position -- the roots are emitted in the order the
+         * assertions were added.</p>
+         */
+        private String finish(List<String> extra, Set<String> omitted) {
             SharedTermEmission shared = sharedTermEmission();
+            List<String> collected = new ArrayList<>(assertions);
+            List<String> negated = new ArrayList<>();
             StringBuilder result = new StringBuilder();
             result.append("(set-option :produce-models true)\n");
             result.append("(set-logic ALL)\n");
@@ -1176,12 +1228,31 @@ public final class ConcolicConstraintSolver {
                 result.append("(assert (= ").append(definition.name)
                         .append(' ').append(definition.body).append("))\n");
             }
-            for (String assertion : shared.assertions) {
+            for (int index = 0; index < shared.assertions.size(); index++) {
+                String assertion = shared.assertions.get(index);
+                if (index < collected.size()
+                        && omitted.contains(collected.get(index))) {
+                    negated.add(assertion);
+                    continue;
+                }
                 result.append("(assert ").append(assertion).append(")\n");
+            }
+            if (!negated.isEmpty()) {
+                result.append("(assert (not ");
+                if (negated.size() > 1) result.append("(and ");
+                for (int index = 0; index < negated.size(); index++) {
+                    if (index > 0) result.append(' ');
+                    result.append(negated.get(index));
+                }
+                if (negated.size() > 1) result.append(')');
+                result.append("))\n");
             }
             for (String assertion : softAssertions) {
                 result.append("(assert-soft ").append(assertion)
                         .append(" :weight 1)\n");
+            }
+            for (String assertion : extra) {
+                result.append("(assert ").append(assertion).append(")\n");
             }
             result.append("(check-sat)\n");
             List<String> modelNames = new ArrayList<>();
@@ -1261,15 +1332,94 @@ public final class ConcolicConstraintSolver {
      * number of replay controls needed for the requested flip.
      */
     /** The flipped predicate's own variables that no assignment carries. */
+    /**
+     * The projections a model needs and the recording does not state.
+     *
+     * <p>A flip model is a plan: the replay sets the controls it names and
+     * the fatal arm must then hold.  Pin every control the model chose and
+     * ask whether the arm can still fail -- if it can, what makes it hold
+     * is not a control at all but a field the VM published no value for,
+     * and the accessor standing in for that field is a value this solve
+     * invented.  On laneVM23 that is {@code BlockKey@24:J}, the expiry the
+     * key map's {@code REMOVE_IF} guard compares against the clock: the
+     * model kept every recorded value and let the accessor expire the key,
+     * which no replay reproduces.</p>
+     *
+     * <p>Empty when the query states every projection it reads, or when
+     * the arm holds however those projections fall.</p>
+     */
+    private static Set<String> modelRestsOnUnstatedField(
+            Set<String> unstated, Encoder encoder,
+            Map<String, String> values,
+            List<String> targetAssertions, Path executable,
+            long timeoutMillis) throws IOException,
+            InterruptedException {
+        if (unstated.isEmpty()
+                || targetAssertions.isEmpty() || values.isEmpty()) {
+            return Collections.emptySet();
+        }
+        List<String> pinned = new ArrayList<>();
+        for (Map.Entry<String, String> entry : values.entrySet()) {
+            pinned.add("(= " + entry.getKey() + " " + entry.getValue() + ")");
+        }
+        SolverOutput output = run(executable, encoder.finish(pinned,
+                new LinkedHashSet<>(targetAssertions)),
+                Math.max(1L, timeoutMillis));
+        return "sat".equals(output.status())
+                ? new LinkedHashSet<>(unstated)
+                : Collections.<String>emptySet();
+    }
+
     private static Set<String> coversTarget(Set<String> targetSymbols,
                                             JsonArray assignments) {
         Set<String> missing = new LinkedHashSet<>(targetSymbols);
         for (JsonElement element : assignments) {
             if (!element.isJsonObject()) continue;
+            // The engine symbol is the one the query declared.  A row's
+            // inputSymbol is the identity the RUNTIME answers -- a phase for
+            // a handoff, a port for a mint -- so comparing against it named
+            // every covered variable as uncovered: all six of laneVM23's.
             missing.remove(optionalString(element.getAsJsonObject(),
-                    "inputSymbol"));
+                    "engineSymbol"));
         }
         return missing;
+    }
+
+    /**
+     * A clock read may move within the case's skew, and no further.
+     *
+     * <p>The composer already bounds a wall-clock root this way; the flip
+     * query left it a free long, so a model could ask the replay for an
+     * instant no run of this case reaches -- on laneVM23 the key map's
+     * {@code REMOVE_IF} needs the clock two hours past the reading, which
+     * the declared 300000 ms cannot reach.  The window is stated here so
+     * the solver spends its freedom on controls the replay can set.</p>
+     */
+    private static void stateClockWindows(Encoder encoder,
+                                          Set<String> symbols,
+                                          List<JsonObject> actions,
+                                          long clockSkewMillis) {
+        for (String raw : new ArrayList<>(symbols)) {
+            SymbolNames names = encoder.names(raw);
+            if (names == null || names.sort != Sort.INT) continue;
+            ActionMatch match = bestAction(raw, actions, names.sort);
+            JsonObject action = match == null ? null : match.action;
+            if (action == null || !ClockRootPhysics.clockCallee(
+                    optionalString(action, "declaredCallee"))
+                    || !optionalBool(action, "observed", false)) {
+                continue;
+            }
+            String observed = optionalString(action, "primitiveValue").trim();
+            if (observed.isEmpty()) continue;
+            try {
+                encoder.assertions.add(ClockRootPhysics.window(names.solver,
+                        Long.parseLong(observed), clockSkewMillis));
+            } catch (NumberFormatException notAnInstant) {
+                // A clock read the recording states no instant for is not
+                // windowed here; the composer names it.
+                continue;
+            }
+        }
     }
 
     private static void preferObservedReplayControls(
