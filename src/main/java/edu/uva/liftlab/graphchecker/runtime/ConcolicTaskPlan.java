@@ -288,6 +288,10 @@ final class ConcolicTaskPlan {
         String threadName = Thread.currentThread().getName();
         SourceRef registeredReceiverSource =
                 RuntimeTraceContext.sourceFor(receiver);
+        // Where this activation ran, by the one function the recorder
+        // stamped it with and the planner counted it by.
+        SourceRef activationSource =
+                RuntimeTraceContext.activationSource(receiver);
         RuntimeTraceContext.View context = RuntimeTraceContext.current();
         Map<String, Integer> actualOrdinalByScope =
                 new LinkedHashMap<>();
@@ -317,7 +321,7 @@ final class ConcolicTaskPlan {
             // occupies the ordinal the recording gave it.  Filtering first
             // would renumber the activations after it.
             String scope = task.invocationCounterKey(countedLifecycle(
-                    task, registeredReceiverSource, context));
+                    task, activationSource));
             if (!actualOrdinalByScope.containsKey(scope)) {
                 int ordinal = invocationOrdinals.getOrDefault(scope, 0) + 1;
                 invocationOrdinals.put(scope, ordinal);
@@ -369,20 +373,18 @@ final class ConcolicTaskPlan {
                     context).isEmpty()) {
                 continue;
             }
-            Integer ordinal = actualOrdinalByScope.get(
-                    task.invocationCounterKey(countedLifecycle(task,
-                            registeredReceiverSource, context)));
+            OccurrenceAddress observed = task.observedAddress(
+                    countedLifecycle(task, activationSource),
+                    actualOrdinalByScope);
             boolean exactOutgoingAddress =
                     mayDeferMissingContextToOutgoingAnchor(task,
                             registeredReceiverSource, context);
-            if (!task.acceptsRootInvocation(ordinal,
+            if (!task.acceptsRootInvocation(observed,
                     exactOutgoingAddress)) {
                 if (task.attachProducerOccurrenceByPort.isEmpty()) {
                     task.noteUnaddressedCandidate(
-                            "matching enclosing root was invocation "
-                                    + ordinal + " instead of "
-                                    + task.rootContextSelector
-                                    .invocationOrdinal);
+                            "matching enclosing root: "
+                                    + task.address.describe(observed));
                 } else {
                     task.noteUnaddressedCandidate(
                             "matching enclosing root carried no selected "
@@ -406,6 +408,10 @@ final class ConcolicTaskPlan {
         // attribute its entry.
         SourceRef registeredReceiverSource =
                 RuntimeTraceContext.sourceFor(receiver);
+        // Where this activation ran, by the one function the recorder
+        // stamped it with and the planner counted it by.
+        SourceRef activationSource =
+                RuntimeTraceContext.activationSource(receiver);
         RuntimeTraceContext.View context = RuntimeTraceContext.current();
         Map<String, Integer> actualOrdinalByScope =
                 new LinkedHashMap<>();
@@ -439,7 +445,7 @@ final class ConcolicTaskPlan {
             // occupies the ordinal the recording gave it.  Filtering first
             // would renumber the activations after it.
             String scope = task.invocationCounterKey(countedLifecycle(
-                    task, registeredReceiverSource, context));
+                    task, activationSource));
             if (!actualOrdinalByScope.containsKey(scope)) {
                 int ordinal = invocationOrdinals.getOrDefault(scope, 0) + 1;
                 invocationOrdinals.put(scope, ordinal);
@@ -492,13 +498,13 @@ final class ConcolicTaskPlan {
             }
             if (!sourceAdmissionMismatch(task, registeredReceiverSource,
                     context).isEmpty()) continue;
-            Integer actualOrdinal = actualOrdinalByScope.get(
-                    task.invocationCounterKey(countedLifecycle(task,
-                            registeredReceiverSource, context)));
+            OccurrenceAddress observed = task.observedAddress(
+                    countedLifecycle(task, activationSource),
+                    actualOrdinalByScope);
             boolean exactOutgoingAddress =
                     mayDeferMissingContextToOutgoingAnchor(task,
                             registeredReceiverSource, context);
-            if (!task.acceptsRootInvocation(actualOrdinal,
+            if (!task.acceptsRootInvocation(observed,
                     exactOutgoingAddress)) {
                 continue;
             }
@@ -606,41 +612,35 @@ final class ConcolicTaskPlan {
     /**
      * The node and epoch this activation is counted in.
      *
-     * <p>The epoch the registry places the activation in, when it places it
-     * in one of the planned node's lifecycles at all; otherwise the planned
-     * one.  Falling back to the plan keeps an unattributed activation
-     * counting exactly where it counted before -- absence of evidence moves
-     * nothing -- while an activation the workload did attribute counts in
-     * its own epoch, which is the one the address means.</p>
+     * <p>The one the run attributed to it -- {@link
+     * RuntimeTraceContext#activationSource}, the same function that stamped
+     * the recording's {@code METHOD_ENTER} and that the planner counted the
+     * recorded population by -- and the planned one only when the run
+     * attributed it nowhere.  Falling back to the plan then keeps an
+     * unattributed activation counting exactly where it counted before:
+     * absence of evidence moves nothing, and a replay that reconstructs a
+     * receiver without repeating its alias registration still answers.</p>
+     *
+     * <p>The fallback used to be wider: it also swallowed every activation
+     * the run attributed to <em>another node</em>, because an ambient
+     * context that did not already name the planned node was read as
+     * provenance.  One JVM running nn0, source-dn and target-dn then counted
+     * all three nodes' activations of one region in each planned node's
+     * bucket.  On hdfs-17899 bug3 that is REGION.16ba41cf's planned first
+     * activation on target-dn answered by "invocation 2 instead of 1", and
+     * REGION.763d087e's one target-dn activation published as source-dn's
+     * because it was ordinal 1 in source-dn's bucket too.</p>
      *
      * <p>Read at the moment the activation starts, from the same registry
      * {@link #lifecycleMismatch} and the configured-source mint read, so the
      * three cannot disagree about which lifecycle an activation belongs
      * to.</p>
      */
-    static String countedLifecycle(
-            RuntimeTask task, SourceRef registeredReceiverSource,
-            RuntimeTraceContext.View context) {
+    static String countedLifecycle(RuntimeTask task,
+                                   SourceRef activationSource) {
         String planned = safe(task.sourceKey);
         if (!RuntimeTraceContext.declaresEpoch(planned)) return planned;
-        // The node that DECIDED this activation is the receiver's own
-        // registration: an activation is addressed by where it ran, and the
-        // registered receiver is where it ran.  Counting by anything else
-        // puts several nodes' activations of one region in one counter -- on
-        // bug3, one JVM runs nn0, source-dn and target-dn, and a planned
-        // ordinal of 1 was answered by "invocation 4".
-        if (registeredReceiverSource != null) {
-            return registeredReceiverSource.key();
-        }
-        // No registration: the thread's inherited context is provenance, not
-        // scope, so it does not move the bucket either.  An epoch of the
-        // planned node the run did attribute still does.
-        if (context != null && context.source != null
-                && RuntimeTraceContext.sameSourceIdentity(planned,
-                context.source.key())) {
-            return context.source.key();
-        }
-        return planned;
+        return activationSource == null ? planned : activationSource.key();
     }
 
     /** The source keys this run attributed to one live root entry. */
@@ -2044,16 +2044,34 @@ final class ConcolicTaskPlan {
         }
 
         /**
+         * The address this activation ran at: the lifecycle the run
+         * attributed to it and the k it took in that lifecycle's bucket.
+         *
+         * <p>Unnamed when the bucket handed out no ordinal, which is an
+         * activation outside the recording window; an unnamed address
+         * matches nothing rather than half-matching on the node.</p>
+         */
+        OccurrenceAddress observedAddress(
+                String lifecycle, Map<String, Integer> ordinalByScope) {
+            Integer ordinal = ordinalByScope.get(
+                    invocationCounterKey(lifecycle));
+            return OccurrenceAddress.of(safe(lifecycle).isEmpty()
+                            ? sourceKey : lifecycle, regionId,
+                    ordinal == null ? 0 : ordinal.intValue());
+        }
+
+        /**
          * Selects a communication consumer by the message that invoked it.
          * Tasks with no planner-authored IN edge retain ordinal addressing.
          */
-        boolean acceptsRootInvocation(Integer actualOrdinal,
+        boolean acceptsRootInvocation(OccurrenceAddress observed,
                                               boolean exactOutgoingAddress) {
-            // The k the address states, not a second copy of it kept beside
-            // the selector: one number, read from the occurrence id every
-            // other stage reads it from.
-            return rootInvocationAddressMatches(actualOrdinal,
-                    address.ordinal(),
+            // The whole address the occurrence id states -- node, epoch,
+            // region and k -- against the whole address this activation ran
+            // at, read from the occurrence id every other stage reads it
+            // from.  Comparing the k alone let a task planned for one node
+            // answer another node's first activation of the same region.
+            return rootInvocationAddressMatches(address, observed,
                     attachProducerOccurrenceByPort, occurrenceId,
                     exactOutgoingAddress);
         }

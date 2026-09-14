@@ -3,6 +3,7 @@ package edu.uva.liftlab.graphchecker.runtime;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import edu.uva.liftlab.graphchecker.contract.ExecutionTask;
+import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import org.junit.Test;
 
 import java.io.InputStream;
@@ -157,9 +158,15 @@ public class OccurrenceAddressIsNotARequestTest {
     public void aPlannedSecondOccurrenceIsNotTheFirstActivation() {
         ConcolicTaskPlan.RuntimeTask task = task();
         assertTrue("activation 1 answers the planned ordinal",
-                task.acceptsRootInvocation(1, false));
+                task.acceptsRootInvocation(OccurrenceAddress.of(
+                        task.sourceKey, task.regionId, 1), false));
         assertFalse("activation 2 does not",
-                task.acceptsRootInvocation(2, false));
+                task.acceptsRootInvocation(OccurrenceAddress.of(
+                        task.sourceKey, task.regionId, 2), false));
+        assertFalse("and another node's first activation does not",
+                task.acceptsRootInvocation(OccurrenceAddress.of(
+                        "hdfs-17899/source-dn#epoch0", task.regionId, 1),
+                        false));
     }
 
     /**

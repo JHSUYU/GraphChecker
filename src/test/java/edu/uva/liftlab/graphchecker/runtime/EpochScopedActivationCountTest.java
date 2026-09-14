@@ -111,8 +111,8 @@ public class EpochScopedActivationCountTest {
         RuntimeTraceContext.resetForTests();
         ConcolicTaskPlan.RuntimeTask task = task(NODE + "#epoch1", 1);
 
-        assertEquals(NODE + "#epoch1", ConcolicTaskPlan.countedLifecycle(
-                task, null, RuntimeTraceContext.current()));
+        assertEquals(NODE + "#epoch1",
+                ConcolicTaskPlan.countedLifecycle(task, null));
     }
 
     /**
@@ -152,8 +152,7 @@ public class EpochScopedActivationCountTest {
         assertEquals("the bucket is the node that decided",
                 "hdfs-17899/source-dn#epoch0",
                 ConcolicTaskPlan.countedLifecycle(task,
-                        RuntimeTraceContext.sourceFor(sourceDn),
-                        RuntimeTraceContext.current()));
+                        RuntimeTraceContext.activationSource(sourceDn)));
         assertNotNull("source-dn's first activation is its occurrence 1",
                 plan.select(task.rootHookGroupKey(), ROOT, sourceDn,
                         new Object[0]));
@@ -172,13 +171,11 @@ public class EpochScopedActivationCountTest {
 
         assertEquals("nothing registered, nothing observed: the plan's own",
                 "hdfs-17899/source-dn#epoch0",
-                ConcolicTaskPlan.countedLifecycle(task, null,
-                        RuntimeTraceContext.current()));
+                ConcolicTaskPlan.countedLifecycle(task, null));
         assertEquals("a registration decides over the plan's own",
                 "hdfs-17899/source-dn#epoch0",
                 ConcolicTaskPlan.countedLifecycle(task,
-                        RuntimeTraceContext.sourceFor(node),
-                        RuntimeTraceContext.current()));
+                        RuntimeTraceContext.activationSource(node)));
     }
 
     /** An inherited context that names another node records, never refuses. */
