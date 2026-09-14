@@ -433,6 +433,24 @@ public class BranchDecisionRecordingTest {
         assertFalse(row(4, 1, 0L).has("vmEventId"));
     }
 
+    /**
+     * The publication does not read the clock's scale.
+     *
+     * <p>The branch id was a per-ThreadContext counter -- small, dense, one
+     * per context -- and the VM now draws it from the session-global event
+     * counter shared with fieldVersionId and readEventId, so the values stop
+     * starting at 1 and start interleaving with the write log's.  A published
+     * row states whatever the VM handed over, on either scale.</p>
+     */
+    @Test
+    public void theClockIsPublishedWhateverItsScale() throws Exception {
+        assertEquals(3L, eventId(row(4, 1, 3L)));
+        assertEquals(2305843009213693976L,
+                eventId(row(4, 1, 2305843009213693976L)));
+        assertTrue("ordering is by value, not by magnitude",
+                eventId(row(4, 1, 3L)) < eventId(row(4, 1, 461L)));
+    }
+
 
     /**
      * The write log keeps the version clock, and nothing beside it.
