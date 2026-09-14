@@ -627,10 +627,11 @@ done
 # `composer` left with the Design 3 stage reduction; `reach_max_inputs` and
 # `reach_max_valuations` left with the separate solver process, because the
 # composer runs z3 per valuation while it composes and SOLVE reads the verdict
-# it wrote.  `composer` left it with the Design 3
+# it wrote.  `compose_max_valuations` joined it in their place: the enumeration
+# is still the campaign's to bound, it is just the composer that runs it.  `composer` left it with the Design 3
 # stage reduction: there is one composition of the anchored target's paths,
 # and a key naming which one selected nothing.
-[[ "$(print_normalized_config | wc -l)" -eq 40 ]] \
+[[ "$(print_normalized_config | wc -l)" -eq 41 ]] \
   || fail "config prints a different number of keys than it used to: \
 $(print_normalized_config | wc -l)"
 
