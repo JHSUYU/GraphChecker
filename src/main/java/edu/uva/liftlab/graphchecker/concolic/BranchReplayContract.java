@@ -286,11 +286,32 @@ public final class BranchReplayContract {
      * is the value address. Physical iteration ordinals are not stable for
      * unordered containers, and several elements may legitimately carry the
      * same propagated expression.
+     *
+     * <p>The prefix only, never the flipped decision.  A prefix event must
+     * be reproduced as recorded -- same element, same outcome -- so the
+     * element's own expression is the right address for it.  The source
+     * event is the one event the replay must decide <em>differently</em>,
+     * and it was being addressed by the support digest the SEED recorded at
+     * it, so admission demanded the recorded value's digest and the flipped
+     * outcome at once.  A support digest is a content hash over a fresh
+     * JVM's own symbols and is not stable between two runs: in lane VM10 two
+     * flip replays of the same planned occurrence published
+     * BRANCH_SUPPORT.v1.ce0d0b14... and BRANCH_SUPPORT.v1.ba9e60ac... at the
+     * same {@code removeExpiredKeys()#u15#1}, so the source event of every
+     * primary matched nothing and six obligations were refused as "prefix
+     * not yet complete: observed 2 of 3, still waiting for ... (the flipped
+     * source decision)" while the site had executed all along.</p>
+     *
+     * <p>So the flipped decision is addressed the way every other occurrence
+     * is -- its site, its loop invocation and its k -- and honoured by its
+     * outcome: the flipped token admits, the recorded token is refused by
+     * name as the wrong decision at that site.</p>
      */
     private static void enableBoundedLoopSupport(
             List<RuntimeDecision> decisions) {
         for (RuntimeDecision decision : decisions) {
-            decision.supportAddressed = !decision.loopIdentity.isEmpty()
+            decision.supportAddressed = !decision.source
+                    && !decision.loopIdentity.isEmpty()
                     && !decision.loopBoundary
                     && !decision.symbolicSupportDigest.isEmpty();
         }

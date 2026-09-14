@@ -3191,13 +3191,53 @@ campaign_kept_slice_json() {
     || return 1
 }
 
+# The flip wave this iteration ran, as one document:
+#
+#   {applied, pathByTask: {taskId: path}}
+#
+# A linked replay is a hypothetical execution: the primary flips one decision
+# and its companions re-run the regions that path needs.  Every admission row
+# the seed wave raises can arrive again from such a replay, and there it says
+# the flipped execution did not have that occurrence -- a statement about the
+# path, not about the corpus.  The ledger names the codes; this names the
+# subjects, and the path each belongs to, so the row can say which one.
+#
+# Fail-closed: a subject this cannot name is classed as the ledger's own
+# entry says, which is the seed-wave answer.
+campaign_replay_wave_json() {
+  local iteration_dir=$1
+  local linked="${iteration_dir}/linked_observed_execution_tasks.jsonl"
+  if [[ ! -s "${linked}" ]]; then
+    echo '{"applied": false, "pathByTask": {}}'
+    return 0
+  fi
+  jq -s '
+    map(select(.taskId? != null and (.linkedReplayGroupId // "") != ""))
+    as $tasks
+    | ($tasks | map(select((.pathQueryKey // "") != ""))
+       | map({key: .linkedReplayGroupId, value: .pathQueryKey})
+       | from_entries) as $pathByGroup
+    | {applied: (($tasks | length) > 0),
+       pathByTask:
+         ($tasks | map(. as $task
+                       | {key: $task.taskId,
+                          value: (if ($task.pathQueryKey // "") != ""
+                                  then $task.pathQueryKey
+                                  else ($pathByGroup[
+                                          $task.linkedReplayGroupId]
+                                        // $task.linkedReplayGroupId)
+                                  end)})
+          | from_entries)}' "${linked}" || return 1
+}
+
 campaign_write_coverage_gaps() {
   local composition=$1 diagnostics=$2 delta=$3
   local path_closures=$4 ledger=$5 iteration_dir=$6 output=$7
-  local static_gaps plan_gaps kept_slice
+  local static_gaps plan_gaps kept_slice replay_wave
   static_gaps=$(campaign_static_gaps_json) || return 1
   plan_gaps=$(campaign_plan_gaps_json) || return 1
   kept_slice=$(campaign_kept_slice_json "${iteration_dir}") || return 1
+  replay_wave=$(campaign_replay_wave_json "${iteration_dir}") || return 1
   jq -n \
     --slurpfile composedDocuments "${composition}" \
     --slurpfile diagnostics "${diagnostics}" \
@@ -3206,7 +3246,8 @@ campaign_write_coverage_gaps() {
     --slurpfile ledgerDocuments "${ledger}" \
     --argjson staticGaps "${static_gaps}" \
     --argjson planGaps "${plan_gaps}" \
-    --argjson keptSlice "${kept_slice}" '
+    --argjson keptSlice "${kept_slice}" \
+    --argjson replayWave "${replay_wave}" '
     $composedDocuments[0] as $composed |
     ($composed.solver // {}) as $reach |
     $pathClosureDocuments[0] as $pathClosures |
@@ -3215,6 +3256,9 @@ campaign_write_coverage_gaps() {
     # the same default GapLedger.classOf applies in Java.
     ($ledger.diagnostic // []) as $diagnosticCodes |
     ($ledger.sliceConditional // []) as $sliceCodes |
+    ($ledger.flipWaveDiagnostic // []) as $flipWaveCodes |
+    ($ledger.flipWaveReasonByCode // {}) as $flipWaveReasonByCode |
+    ($replayWave.pathByTask // {}) as $flipPathByTask |
     ($ledger.reasonByCode // {}) as $reasonByCode |
     ($keptSlice.applied // false) as $sliceApplied |
     (($keptSlice.keptOccurrences // []) | map({key: ., value: true})
@@ -3282,8 +3326,13 @@ campaign_write_coverage_gaps() {
               detail: ([(.reason // ""), (.detail // "")]
                        | map(select(. != "")) | join(": "))}]
        + [$diagnostics[]?
+           # A region skip names its task in taskId; the rows the
+           # publication contract raises name it in subject, and dropping
+           # that left three rows no wave-aware or slice-aware class could
+           # place.
            | {stage: "IMPORT", source: "IMPORTER", code: (.code // ""),
-              subject: (.taskId // ""), detail: (.detail // "")}]
+              subject: (.taskId // .subject // ""),
+              detail: (.detail // "")}]
        + [$delta[]? | select(.deltaKind == "COVERAGE_GAP")
            | {stage: "CAMPAIGN", source: (.source // "CAMPAIGN"),
               code: (.code // .deltaKind), subject: (.taskId // ""),
@@ -3300,7 +3349,17 @@ campaign_write_coverage_gaps() {
               code: (.code // .kind // ""),
               subject: (.subject // ""), detail: (.detail // "")}]
        | map(select(.code != ""))
-       | map(. + (if (.code | IN($sliceCodes[]))
+       # The flip wave first: a row whose subject is a linked-replay task of
+       # a named path is a statement about that path, and the ledger names
+       # which codes say so.  A subject this cannot name as one falls
+       # through to the seed-wave answer below.
+       | map(. as $row
+             | . + (if ($row.code | IN($flipWaveCodes[]))
+                       and ($flipPathByTask[$row.subject] != null)
+                  then {class: "DIAGNOSTIC",
+                        flipPath: $flipPathByTask[$row.subject],
+                        classReason: ($flipWaveReasonByCode[$row.code] // "")}
+                  elif (.code | IN($sliceCodes[]))
                   then (sliceVerdict(.subject) as $v
                         | {class: (if $v.onSlice
                                    then "BLOCKING" else "DIAGNOSTIC" end),
@@ -3308,7 +3367,7 @@ campaign_write_coverage_gaps() {
                   elif (.code | IN($diagnosticCodes[]))
                   then {class: "DIAGNOSTIC"}
                   else {class: "BLOCKING"} end))
-       | map(. + {classReason: ($reasonByCode[.code]
+       | map(. + {classReason: (.classReason // $reasonByCode[.code]
                                 // "no ledger entry: blocking by default")})
        | unique_by([.stage, .source, .code, .subject, .detail]))
        as $rows |
@@ -3319,7 +3378,9 @@ campaign_write_coverage_gaps() {
                  defaultClass: ($ledger.defaultClass // "BLOCKING"),
                  diagnosticCodes: $diagnosticCodes,
                  sliceConditionalCodes: $sliceCodes,
+                 flipWaveDiagnosticCodes: $flipWaveCodes,
                  replayTaskSliceApplied: $sliceApplied,
+                 flipWaveTaskCount: ($flipPathByTask | length),
                  keptOccurrenceCount:
                    (($keptSlice.keptOccurrences // []) | length)},
      gaps: [$rows[] | select(.class == "BLOCKING")],

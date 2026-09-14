@@ -564,8 +564,6 @@ final class ConcolicResultPublisher {
                                           RuntimeTask task) {
         result.addProperty("replayGroupId", task.replayGroupId);
         result.addProperty("linkedReplayRole", task.linkedReplayRole);
-        result.addProperty("familySnapshotDigest",
-                task.familySnapshotDigest);
         result.addProperty("topologyEpoch", task.topologyEpoch);
     }
 
