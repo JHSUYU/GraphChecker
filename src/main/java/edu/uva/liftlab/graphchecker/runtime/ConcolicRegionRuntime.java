@@ -5841,6 +5841,8 @@ public final class ConcolicRegionRuntime {
          * depends on them.</p>
          */
         final long startedAtMillis = System.currentTimeMillis();
+        /** The thread this activation ran on, as the recording names it. */
+        final String threadName = Thread.currentThread().getName();
         private final long startedAtNanos = System.nanoTime();
 
         long elapsedMillis() {

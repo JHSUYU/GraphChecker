@@ -100,6 +100,87 @@ public class RequestScopeIsHonouredTest {
         }
     }
 
+    /**
+     * Work carries its own scope to the thread that performs it.
+     *
+     * <p>The point of the capture: Hadoop's {@code Client} builds a
+     * {@code Call} on the caller's thread, inside the workload's request,
+     * and writes it from a sender thread its connection pool created once,
+     * before that request existed. The scope travels with the call, so the
+     * send names the node and request the work belongs to however old the
+     * thread is.</p>
+     */
+    @Test
+    public void workCarriesItsScopeToThePoolThreadThatWritesIt()
+            throws Exception {
+        RuntimeTraceContext.resetForTests();
+        Object nnc = new Object();
+        RuntimeTraceContext.registerSource(nnc,
+                new SourceRef("EXTERNAL_APP", "SPS", SPS, 0L));
+
+        // A pool thread that existed before any request, as a connection's
+        // sender threads do.
+        final java.util.concurrent.CountDownLatch made =
+                new java.util.concurrent.CountDownLatch(1);
+        final java.util.concurrent.CountDownLatch wrote =
+                new java.util.concurrent.CountDownLatch(1);
+        final Object[] carried = new Object[1];
+        final String[] header = new String[1];
+        final String[] withoutScope = new String[1];
+        final String[] filedUnder = new String[1];
+        final String[] filedWithoutScope = new String[1];
+        Thread sender = new Thread(() -> {
+            try {
+                made.await();
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+            try {
+                RuntimeTraceContext.outboundHeader(nnc);
+                withoutScope[0] = "ACTIVE";
+            } catch (IllegalStateException noFlow) {
+                withoutScope[0] = "REFUSED";
+            }
+            header[0] = RuntimeTraceContext.outboundHeader(nnc, carried[0]);
+            // The row the recorder writes for this send is attributed from
+            // the same token, so the trace and the wire agree on the node.
+            RuntimeTraceContext.View scoped =
+                    RuntimeTraceContext.exchange(nnc, carried[0]);
+            filedUnder[0] = (scoped.source == null ? ""
+                    : scoped.source.key()) + " " + scoped.requestKey;
+            RuntimeTraceContext.View unscoped =
+                    RuntimeTraceContext.exchange(nnc, null);
+            filedWithoutScope[0] = (unscoped.source == null ? ""
+                    : unscoped.source.key()) + " " + unscoped.requestKey;
+            wrote.countDown();
+        }, "IPC Parameter Sending Thread #0");
+        sender.start();
+
+        long request = RuntimeTraceContext.beginRequest(nnc,
+                "refresh-block-keys");
+        carried[0] = RuntimeTraceContext.captureScope();
+        made.countDown();
+        wrote.await();
+        RuntimeTraceContext.endRequest(request);
+
+        assertEquals("the pool thread's own state names no request",
+                "REFUSED", withoutScope[0]);
+        assertTrue(header[0], header[0].startsWith("1|"));
+        assertEquals("and the carried scope names all eight fields",
+                8, header[0].split("[|]", -1).length);
+        assertTrue("the source is the work's, not the thread's",
+                header[0].contains(java.util.Base64.getUrlEncoder()
+                        .withoutPadding().encodeToString(
+                        SPS.getBytes("UTF-8"))));
+        assertEquals("and the recorded row names the same node and request",
+                SPS + "#epoch0 " + SPS
+                        + "#epoch0/request/refresh-block-keys#1",
+                filedUnder[0]);
+        assertEquals("which the thread alone cannot name: no request at all",
+                SPS + "#epoch0 ", filedWithoutScope[0]);
+    }
+
     /** A thread that existed before the scope carries nothing. */
     @Test
     public void aThreadOlderThanTheScopeCarriesNothing() throws Exception {
