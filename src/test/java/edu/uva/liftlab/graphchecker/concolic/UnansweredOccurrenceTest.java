@@ -56,7 +56,7 @@ public class UnansweredOccurrenceTest {
     @Test
     public void aRegionThatDidNotRunIsNotAnUnansweredTask() {
         JsonObject observed = new JsonObject();
-        observed.addProperty("code", "REGION_CAUSAL_ANCHOR_NOT_OBSERVED");
+        observed.addProperty("code", "REGION_ROOT_NEVER_EXECUTED");
         observed.addProperty("taskId", "TASK.a");
 
         assertTrue(PublicationContract.check(tasks(task("TASK.a")),

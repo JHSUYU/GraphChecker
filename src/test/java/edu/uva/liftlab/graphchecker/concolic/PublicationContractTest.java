@@ -45,7 +45,7 @@ public class PublicationContractTest {
     @Test
     public void aSkipTheImporterAlreadyNamedIsNotASilentTask() {
         JsonObject named = new JsonObject();
-        named.addProperty("code", "REGION_CAUSAL_ANCHOR_NOT_OBSERVED");
+        named.addProperty("code", "REGION_ROOT_NEVER_EXECUTED");
         named.addProperty("taskId", "TASK.a");
 
         assertTrue(PublicationContract.check(tasks(target("TASK.a")),

@@ -255,8 +255,7 @@ final class ConcolicResultPublisher {
         // the task instead of rolling this reservation back underneath a
         // later activation that may already depend on it.
         active.activation.reserveCompletedOccurrence(
-                active.configuredSourcePhaseOrdinals,
-                active.retainedSemanticAnchorIds);
+                active.configuredSourcePhaseOrdinals);
         active.activation.reserveCompletedEvidence(
                 targetReachedByActivation(active));
         configuration().releaseCandidate(active.activation);

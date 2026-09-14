@@ -151,8 +151,6 @@ public final class ConcolicRegionRuntime {
      */
     static final String SKIP_ROOT_NEVER_EXECUTED =
             "ROOT_NEVER_EXECUTED";
-    static final String SKIP_CAUSAL_ANCHOR_NOT_OBSERVED =
-            "CAUSAL_ANCHOR_NOT_OBSERVED";
     /**
      * The region root was still running when the workload ended, so this
      * occurrence never reached {@code NORMAL}, {@code THROW} or a bounded
@@ -164,6 +162,8 @@ public final class ConcolicRegionRuntime {
      * failure: the occurrence set is bounded, not silently truncated, and the
      * composer reads this marker to know so.
      */
+    static final String SKIP_LOOP_OCCURRENCE_BEYOND_BOUND =
+            "LOOP_OCCURRENCE_BEYOND_BOUND";
     static final String SKIP_LOOP_OCCURRENCES_BOUNDED =
             "LOOP_OCCURRENCES_BOUNDED";
     static final String SKIP_TERMINAL_NEVER_REACHED =
@@ -710,6 +710,25 @@ public final class ConcolicRegionRuntime {
      */
     private static boolean boundedLoopOccurrenceCut(RuntimeTask admitted) {
         if (!admitted.cutsBoundedLoopOccurrence()) return false;
+        // The bound records turns; the plan addresses one of them by k.  A k
+        // past the bound names an activation no replay can reach, which is a
+        // gap rather than a turn quietly missed.
+        if (admitted.addressesOccurrenceBeyondBound()
+                && admitted.claimLoopBoundGapMarker()) {
+            JsonObject beyond = new JsonObject();
+            beyond.addProperty("plannedOccurrenceId", admitted.occurrenceId);
+            beyond.addProperty("regionId", admitted.regionId);
+            beyond.addProperty("addressedOccurrence",
+                    admitted.address.ordinal());
+            beyond.addProperty("boundedAt", admitted.loopOccurrenceBudget);
+            writeSkipped(admitted, SKIP_LOOP_OCCURRENCE_BEYOND_BOUND,
+                    "this task addresses activation "
+                            + admitted.address.ordinal() + " of a loop the "
+                            + "instrumentation records "
+                            + admitted.loopOccurrenceBudget + " turns of, so "
+                            + "the activation it names cannot be reached",
+                    beyond);
+        }
         if (admitted.claimLoopBoundCutMarker()) {
             int bound = admitted.loopOccurrenceBudget;
             JsonObject evidence = new JsonObject();
@@ -719,29 +738,6 @@ public final class ConcolicRegionRuntime {
             String reason = "loop-body region occurrence set bounded at K_L="
                     + bound + "; further iterations run concretely without "
                     + "capture";
-            if (admitted.addressesOccurrencesByCausalAnchor()
-                    || admitted.unanchoredTurnsReleased > 0) {
-                JsonArray ports = new JsonArray();
-                for (String portId : admitted.causalAnchorPorts()) {
-                    ports.add(new JsonPrimitive(portId));
-                }
-                evidence.add("causalAnchorPorts", ports);
-                JsonArray phases = new JsonArray();
-                for (String phaseId
-                        : admitted.configuredSourceAnchorPhases()) {
-                    phases.add(new JsonPrimitive(phaseId));
-                }
-                evidence.add("configuredSourceAnchorPhases", phases);
-                evidence.addProperty("anchoredOccurrences",
-                        admitted.anchoredOccurrences);
-                reason = reason + "; occurrences were addressed by the "
-                        + "region's semantic anchors (ports="
-                        + admitted.causalAnchorPorts() + ", sourcePhases="
-                        + admitted.configuredSourceAnchorPhases() + "; "
-                        + admitted.anchoredOccurrences + " anchored, "
-                        + admitted.unanchoredTurnsReleased
-                        + " unanchored turns released)";
-            }
             writeSkipped(admitted, SKIP_LOOP_OCCURRENCES_BOUNDED, reason,
                     evidence);
         }
@@ -3447,7 +3443,6 @@ public final class ConcolicRegionRuntime {
                 active.exceptionType = safe(exceptionType);
                 active.exitThrowable = throwable;
                 judgeFinishedOccurrence(active);
-                releaseUnanchoredLoopTurn(active);
             } finally {
                 publicationDeferred = closeOccurrence(active);
             }
@@ -3455,34 +3450,6 @@ public final class ConcolicRegionRuntime {
             endBookkeeping();
             if (!publicationDeferred) endSelectedResultPublication();
         }
-    }
-
-    /**
-     * Gives back a bounded loop-body turn that carried none of its region's
-     * selected causal anchors once the prefix quota is spent.
-     *
-     * <p>The turn ran -- Hadoop's own iteration is untouched -- and it
-     * published nothing, so its ordinal returns to the address and the
-     * reserved slots stay open for the turns the plan selected this region
-     * for.  An address with no anchor never reaches here.</p>
-     */
-    private static void releaseUnanchoredLoopTurn(ActiveRegion active) {
-        if (active.abandoned) return;
-        if (!active.activation.addressesOccurrencesByCausalAnchor()) return;
-        Set<String> newlyCarried = active.activation.newSemanticAnchorIds(
-                active.carriedSemanticAnchorIds());
-        if (!active.activation.releasesUnanchoredLoopTurn(
-                !newlyCarried.isEmpty())) {
-            active.retainedSemanticAnchorIds.addAll(newlyCarried);
-            return;
-        }
-        diag("LOOP_TURN_UNANCHORED", "task="
-                + safe(active.activation.taskId) + " ordinal="
-                + active.activationOrdinal + " anchors="
-                + active.activation.causalAnchorPorts());
-        active.releaseActivationOrdinal();
-        active.abandoned = true;
-        endLiveSelectedRegion();
     }
 
     /**
@@ -5590,8 +5557,6 @@ public final class ConcolicRegionRuntime {
         private final Set<String> configuredSourcePhaseGapIdentities =
                 new LinkedHashSet<>();
         /** Exact semantic anchors this activation will commit if published. */
-        final Set<String> retainedSemanticAnchorIds =
-                new LinkedHashSet<>();
         final Set<String> unresolved = new LinkedHashSet<>();
         final List<JsonObject> branchMappings = new ArrayList<>();
         /**
@@ -5608,36 +5573,6 @@ public final class ConcolicRegionRuntime {
          */
         final List<JsonObject> rpcHandoffGaps = new ArrayList<>();
 
-        /**
-         * Whether this turn carried one of its region's selected causal
-         * anchors: the VM answered the declared attach of an exchange the
-         * plan selected this region for.
-         *
-         * <p>The witness is the VM's own answer at the declared attach.
-         * Nothing here consults the plan for
-         * what "should" have arrived; a turn the exchange did not reach is
-         * simply not anchored.  This evidence exists only once the exchange
-         * has landed, which is inside the turn, not at its entry.</p>
-         */
-        private synchronized Set<String> carriedSemanticAnchorIds() {
-            Set<String> carried = new LinkedHashSet<>();
-            for (JsonObject observation
-                    : configuredSourcePhaseObservations) {
-                String phaseId = optionalString(observation, "matchedPhaseId");
-                if (!phaseId.isEmpty()) {
-                    carried.add(activation.sourcePhaseAnchorId(phaseId));
-                }
-            }
-            Set<String> anchors = activation.causalAnchorPorts();
-            for (JsonObject handoff : vmHandoffEvents) {
-                String portId = optionalString(handoff, "portId");
-                if (anchors.contains(portId)) {
-                    carried.add(activation.attachAnchorId(portId));
-                }
-            }
-            carried.remove("");
-            return carried;
-        }
         /** The write log this activation read out, and its gaps. */
         final Map<String, JsonObject> sharedStateRecords =
                 new LinkedHashMap<>();

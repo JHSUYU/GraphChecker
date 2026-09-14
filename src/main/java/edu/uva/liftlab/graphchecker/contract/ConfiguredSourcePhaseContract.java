@@ -226,7 +226,7 @@ public final class ConfiguredSourcePhaseContract {
      * root again and published {@code targetReach.outcome:false}.  The same
      * splitting made ten <em>other</em> tasks wait on an anchor identity that
      * never appeared, which is the fifteen
-     * {@code REGION_CAUSAL_ANCHOR_NOT_OBSERVED} rows.</p>
+     * anchor-not-observed rows, a gate since retired.</p>
      */
     public static String phaseId(String sourceId, String siteId,
                                  Phase phase) {

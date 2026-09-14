@@ -51,7 +51,6 @@ import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.DEFAULT
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.DEFAULT_OBJECT_IDENTITY_THREAD_NAME;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.ROOT_ARGUMENT_PREDICATE_KIND;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.SKIP_ANCHOR_SOURCE_NEVER_EXISTED;
-import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.SKIP_CAUSAL_ANCHOR_NOT_OBSERVED;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.SKIP_OCCURRENCE_ANCHOR_UNMATCHED;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.enclosingLoopRootAdmits;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.inboundMessageAddressMatches;
@@ -178,16 +177,6 @@ final class ConcolicTaskPlan {
         unansweredAddressesPublished = true;
         for (int index = 0; index < tasks.size(); index++) {
             RuntimeTask task = tasks.get(index);
-            if (task.missedCausalAnchor()) {
-                writeSkipped(task, SKIP_CAUSAL_ANCHOR_NOT_OBSERVED,
-                        "selected semantic anchor identities "
-                                + task.missingSemanticAnchorIds()
-                                + " were not observed before workload "
-                                + "termination; K_L bounded published "
-                                + "cases, not polling turns",
-                        task.missedCausalAnchorEvidence());
-                continue;
-            }
             // An address that published at least one occurrence has been
             // answered for end-of-run diagnostics. Goal completion owns
             // the separate decision to admit another activation.
@@ -1261,13 +1250,12 @@ final class ConcolicTaskPlan {
         boolean loopBoundCutRecorded;
         /** Turns of the root loop examined for this bounded address. */
         int admittedTurns;
+        private boolean loopBoundGapClaimed;
         /** Kept occurrences that carried the selected causal anchor. */
-        int anchoredOccurrences;
         /** Exact phase/exchange identities committed by published turns. */
         final Set<String> observedSemanticAnchorIds =
                 new LinkedHashSet<>();
         /** Turns run and given back for carrying no selected anchor. */
-        int unanchoredTurnsReleased;
         /** Stable identity shared by every task in one linked replay. */
         final String replayGroupId;
         final String linkedReplayRole;
@@ -1372,6 +1360,20 @@ final class ConcolicTaskPlan {
             this.loopBound = task.loopBound();
             this.loopBodyRoot = LoopBoundPolicy.LOOP_BODY_ROOT.equals(
                     task.rootAuthority());
+            // A bounded loop publishes the activations some task addresses,
+            // so a loop-body task must say WHICH activation it is: k, in its
+            // occurrence id, like every other task.  Without it the replay
+            // would have to default to the first turn or to any turn, and
+            // neither is something the recording said.  Refused here, at the
+            // plan, because a plan that cannot be executed should not reach
+            // a replay.
+            if (this.loopBodyRoot && !this.address.isNamed()) {
+                throw new IllegalArgumentException(
+                        "ROOT_LOOP_OCCURRENCE_UNADDRESSED: loop-body task "
+                                + this.taskId + " plans occurrence "
+                                + this.occurrenceId + ", which names no "
+                                + "k-th activation");
+            }
             this.rootLoopMethod = task.rootLoopMethod();
             this.rootLoopHeaderUnitIndex = task.rootLoopHeaderUnitIndex();
             // The root loop's declared K_L (its loopSiteId is the key its
@@ -1866,10 +1868,8 @@ final class ConcolicTaskPlan {
          * publication failure is consequently terminal and never rolled back.
          */
         synchronized void reserveCompletedOccurrence(
-                Map<String, Integer> sourceOrdinals,
-                Set<String> semanticAnchorIds) {
+                Map<String, Integer> sourceOrdinals) {
             reserveConfiguredSourcePhaseOrdinals(sourceOrdinals);
-            if (loopBodyRoot) commitSemanticAnchorIds(semanticAnchorIds);
         }
 
         /**
@@ -1897,89 +1897,6 @@ final class ConcolicTaskPlan {
             return phases;
         }
 
-        String sourcePhaseAnchorId(String phaseId) {
-            String phase = safe(phaseId);
-            return phase.isEmpty() ? "" : "SOURCE_PHASE\n" + phase;
-        }
-
-        /** Exact selected response exchange, not merely a reusable port name. */
-        String attachAnchorId(String portId) {
-            String port = safe(portId);
-            String producer = attachProducerOccurrenceByPort.get(port);
-            return port.isEmpty() || safe(producer).isEmpty() ? ""
-                    : "COMMUNICATION_EXCHANGE\n" + producer + "\n"
-                    + occurrenceId + "\n" + port;
-        }
-
-        Set<String> plannedSemanticAnchorIds() {
-            Set<String> planned = new LinkedHashSet<>();
-            for (String phaseId : configuredSourceAnchorPhases()) {
-                planned.add(sourcePhaseAnchorId(phaseId));
-            }
-            for (String portId : causalAnchorPorts()) {
-                planned.add(attachAnchorId(portId));
-            }
-            planned.remove("");
-            return planned;
-        }
-
-        synchronized Set<String> newSemanticAnchorIds(
-                Set<String> carried) {
-            Set<String> fresh = new LinkedHashSet<>();
-            Set<String> planned = plannedSemanticAnchorIds();
-            for (String identity : carried) {
-                if (planned.contains(identity)
-                        && !observedSemanticAnchorIds.contains(identity)) {
-                    fresh.add(identity);
-                }
-            }
-            return fresh;
-        }
-
-        synchronized Set<String> missingSemanticAnchorIds() {
-            Set<String> missing = plannedSemanticAnchorIds();
-            missing.removeAll(observedSemanticAnchorIds);
-            return missing;
-        }
-
-        /** Reserves identities of one retained loop turn before decode. */
-        synchronized void commitSemanticAnchorIds(Set<String> ids) {
-            boolean anchored = false;
-            Set<String> planned = plannedSemanticAnchorIds();
-            for (String identity : ids) {
-                if (planned.contains(identity)
-                        && observedSemanticAnchorIds.add(identity)) {
-                    anchored = true;
-                }
-            }
-            if (anchored) anchoredOccurrences++;
-        }
-
-        /**
-         * Occurrence slots this bounded set reserves for turns that carry the
-         * selected causal anchor.
-         *
-         * <p>A raw polling ordinal is not replay identity: an occurrence is
-         * addressed by its selected causal anchor, never by "the 48th turn".
-         * The declared budget K_L is unchanged -- these slots are carved out
-         * of it, so the kept set is still at most K_L rows; what changes is
-         * <em>which</em> K_L turns fill them.  Zero here means the address
-         * has no anchor to be addressed by and keeps the plain prefix.</p>
-         */
-        synchronized int anchoredOccurrenceSlots() {
-            // A replay must reproduce the recorded prefix exactly; re-keying
-            // its occurrence set on an anchor would answer a different one.
-            if (replayContract != null) return 0;
-            int anchors = plannedSemanticAnchorIds().size();
-            if (anchors <= 0) return 0;
-            return Math.min(anchors, loopOccurrenceBudget);
-        }
-
-        /** Whether this address addresses its occurrences by an anchor. */
-        synchronized boolean addressesOccurrencesByCausalAnchor() {
-            return loopBodyRoot && anchoredOccurrenceSlots() > 0;
-        }
-
         /**
          * Whether this loop-body region has already published its bounded
          * occurrence set (K_L rows), so a further iteration is a bounded cut.
@@ -2002,102 +1919,41 @@ final class ConcolicTaskPlan {
          * the exchange never occurs, shutdown publishes a named coverage gap
          * instead of silently substituting an unrelated prefix turn.</p>
          */
+        /**
+         * Whether this task names an activation the bound cannot record.
+         *
+         * <p>A bounded loop publishes the activations some task addresses,
+         * and K_L is what the instrumentation records.  A k past it is an
+         * activation no replay reaches, and saying so is the difference
+         * between a stated gap and a silently missing occurrence.</p>
+         */
+        synchronized boolean addressesOccurrenceBeyondBound() {
+            return loopBodyRoot && address.isNamed()
+                    && loopOccurrenceBudget > 0
+                    && address.ordinal() > loopOccurrenceBudget;
+        }
+
+        /** One bound gap per task, however many turns follow it. */
+        synchronized boolean claimLoopBoundGapMarker() {
+            if (loopBoundGapClaimed) return false;
+            loopBoundGapClaimed = true;
+            return true;
+        }
+
         synchronized boolean cutsBoundedLoopOccurrence() {
             if (!loopBodyRoot) return false;
-            int reserved = anchoredOccurrenceSlots();
-            if (reserved > 0 && !missingSemanticAnchorIds().isEmpty()
-                    && anchoredOccurrences < loopOccurrenceBudget) {
-                admittedTurns++;
-                return false;
-            }
+            // A bounded-loop region publishes the activations whose k a task
+            // on it addresses, and every task names k.  The addressed k is
+            // therefore the whole rule: the turn that is the k-th publishes,
+            // and the rest of the loop runs unrecorded.
+            //
+            // No slots are reserved for anything.  They used to be, for
+            // turns carrying a "semantic anchor" -- which was a second
+            // admission condition deciding which activation mattered outside
+            // the address, and is gone with it.
             if (publishedActivations >= loopOccurrenceBudget) return true;
             admittedTurns++;
             return false;
-        }
-
-        /** Whether a live bounded address ended without its selected anchor. */
-        synchronized boolean missedCausalAnchor() {
-            return admittedTurns > 0 && anchoredOccurrenceSlots() > 0
-                    && !missingSemanticAnchorIds().isEmpty();
-        }
-
-        /** Evidence for the fail-closed missing-anchor shutdown row. */
-        synchronized JsonObject missedCausalAnchorEvidence() {
-            JsonObject evidence = new JsonObject();
-            evidence.addProperty("plannedOccurrenceId", occurrenceId);
-            evidence.addProperty("regionId", regionId);
-            JsonArray ports = new JsonArray();
-            for (String portId : causalAnchorPorts()) {
-                ports.add(new JsonPrimitive(portId));
-            }
-            evidence.add("causalAnchorPorts", ports);
-            JsonArray phases = new JsonArray();
-            for (String phaseId : configuredSourceAnchorPhases()) {
-                phases.add(new JsonPrimitive(phaseId));
-            }
-            evidence.add("configuredSourceAnchorPhases", phases);
-            JsonArray missingPhases = new JsonArray();
-            for (String phaseId : configuredSourceAnchorPhases()) {
-                if (missingSemanticAnchorIds().contains(
-                        sourcePhaseAnchorId(phaseId))) {
-                    missingPhases.add(new JsonPrimitive(phaseId));
-                }
-            }
-            evidence.add("missingConfiguredSourcePhaseIds", missingPhases);
-            JsonArray missingResponses = new JsonArray();
-            for (String portId : causalAnchorPorts()) {
-                if (!missingSemanticAnchorIds().contains(
-                        attachAnchorId(portId))) {
-                    continue;
-                }
-                JsonObject exchange = new JsonObject();
-                exchange.addProperty("portId", portId);
-                exchange.addProperty("producerOccurrenceId",
-                        attachProducerOccurrenceByPort.get(portId));
-                exchange.addProperty("consumerOccurrenceId", occurrenceId);
-                missingResponses.add(exchange);
-            }
-            evidence.add("missingResponseExchanges", missingResponses);
-            evidence.addProperty("occurrenceBudget", loopOccurrenceBudget);
-            evidence.addProperty("anchoredOccurrences",
-                    anchoredOccurrences);
-            return evidence;
-        }
-
-        /**
-         * Settles one finished turn of a bounded loop body against the
-         * region's selected causal anchor.
-         *
-         * <p>A turn that carried the anchor takes a reserved slot.  A turn
-         * that carried none takes an ordinary slot while the prefix quota
-         * lasts -- which is what every turn does today -- and past that it
-         * gives its ordinal back, spending nothing, so the reserved slots
-         * stay open for the turns the plan actually selected this region
-         * for.  Nothing is fabricated: the anchor is the VM's own answer at
-         * the declared attach.</p>
-         *
-         * @return {@code true} when this turn published no occurrence
-         */
-        synchronized boolean releasesUnanchoredLoopTurn(
-                boolean carriedNewSemanticAnchor) {
-            if (!loopBodyRoot) return false;
-            int reserved = anchoredOccurrenceSlots();
-            if (reserved <= 0) return false;
-            if (carriedNewSemanticAnchor
-                    && anchoredOccurrences < loopOccurrenceBudget) {
-                return false;
-            }
-            int remainingAnchorSlots = Math.min(
-                    missingSemanticAnchorIds().size(),
-                    loopOccurrenceBudget - anchoredOccurrences);
-            int ordinaryActivations = publishedActivations
-                    - anchoredOccurrences;
-            if (ordinaryActivations <= loopOccurrenceBudget
-                    - anchoredOccurrences - remainingAnchorSlots) {
-                return false;
-            }
-            unanchoredTurnsReleased++;
-            return true;
         }
 
         /** Claims the one bounded-cut marker write for this region. */
