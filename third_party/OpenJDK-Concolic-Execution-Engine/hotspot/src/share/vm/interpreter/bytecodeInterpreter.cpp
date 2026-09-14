@@ -3088,6 +3088,20 @@ run:
                         observed_version, observed_kind));
                 sym_exp = sym_inst->get(field_offset);
               }
+              // Reading a symbolic value out of the heap is what makes this
+              // thread's branches relevant, so it is also what opens its
+              // path-condition gate -- whether or not the location has a
+              // version log.  plan_read() opens it for a logged location, but
+              // a field can carry a symbolic shadow with no log of its own:
+              // laneBK's REGION.f0132fca reads exactly such a field (its 41
+              // tracked locations hold no slot-40 field and no rid 3, where
+              // the mint published rid 3 slot 40), and published all ten
+              // decisions as EXACT_CONCRETE_BINARY_BRANCH_OBSERVATION with
+              // rawPathConditionSize 0.  By value, the expression is the
+              // evidence: if the read yields one, the reader is relevant.
+              if (sym_exp != NULL) {
+                ConcolicMngr::ctx->set_pc_admitted(true);
+              }
               // Reference-valued fields are branch inputs too.  Propagating
               // their shadow through getfield/getstatic lets ifnull,
               // ifnonnull and if_acmp* consume the same expression as scalar
