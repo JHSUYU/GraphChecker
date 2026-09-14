@@ -227,6 +227,31 @@ public class HandoffMintTest {
         claiming.addProperty(VmHandoffEvidence.PRODUCER_TASK_ID, "TASK.X");
         assertFalse("a row with no element may not name a producer",
                 VmHandoffEvidence.isEvent(claiming));
+
+        // And it reaches the result row.  Admission is not publication:
+        // writeTo anchored every row's expression by content, and a row
+        // with none threw "content anchor requires one expression object"
+        // out of that loop -- which dropped the whole vmHandoffEvents array
+        // AND the rpcHandoffGaps written after it.  On hdfs-17899 bug3
+        // laneVM21 the flip replay minted v_H at all four consumer
+        // activations (their sharedExpressionTable carries the HOFF
+        // symbols) and published neither a handoff row nor a gap, so an
+        // answer that had been applied looked unapplied.
+        JsonObject published = new JsonObject();
+        VmHandoffEvidence.writeTo(published,
+                java.util.Collections.singletonList(row));
+        assertEquals("the row a delivery with no element mints is published",
+                1, published.getAsJsonArray(
+                        VmHandoffEvidence.FIELD).size());
+        assertFalse("and it carries no content anchor to a value it has not",
+                published.getAsJsonArray(VmHandoffEvidence.FIELD).get(0)
+                        .getAsJsonObject().has(VmHandoffEvidence.EXPRESSION));
+
+        JsonObject both = new JsonObject();
+        VmHandoffEvidence.writeTo(both,
+                java.util.Arrays.asList(row, row("")));
+        assertEquals("beside a delivery that did carry one", 2,
+                both.getAsJsonArray(VmHandoffEvidence.FIELD).size());
     }
 
     /**

@@ -3,6 +3,7 @@ package edu.uva.liftlab.graphchecker.concolic;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.contract.ExecutionTask;
+import edu.uva.liftlab.graphchecker.contract.GapLedger;
 import edu.uva.liftlab.graphchecker.contract.PathObservation;
 
 import java.util.ArrayList;
@@ -213,17 +214,20 @@ final class PublicationContract {
     static List<String> table(List<JsonObject> rows) {
         Map<String, int[]> counts = new LinkedHashMap<>();
         Map<String, String> first = new LinkedHashMap<>();
+        Map<String, String> classes = new LinkedHashMap<>();
         for (JsonObject row : rows) {
             String code = optionalString(row, "code");
             counts.computeIfAbsent(code, ignored -> new int[1])[0]++;
             first.putIfAbsent(code, optionalString(row, "subject"));
+            classes.putIfAbsent(code, optionalString(row, CLASS));
         }
         List<String> lines = new ArrayList<>();
-        lines.add(String.format("%-44s %5s  %s",
-                "code", "count", "first subject"));
+        lines.add(String.format("%-44s %-10s %5s  %s",
+                "code", "class", "count", "first subject"));
         for (Map.Entry<String, int[]> entry : counts.entrySet()) {
-            lines.add(String.format("%-44s %5d  %s", entry.getKey(),
-                    entry.getValue()[0], first.get(entry.getKey())));
+            lines.add(String.format("%-44s %-10s %5d  %s", entry.getKey(),
+                    classes.get(entry.getKey()), entry.getValue()[0],
+                    first.get(entry.getKey())));
         }
         return lines;
     }
@@ -323,6 +327,17 @@ final class PublicationContract {
                         + expected);
     }
 
+    /**
+     * One row, carrying the class the ledger gives its code.
+     *
+     * <p>There is one classification path.  These rows used to carry no
+     * class at all and the campaign stopped on every one of them, so
+     * {@code GapLedger}'s answer for {@code ACTIVATION_REQUEST_DIVERGED} --
+     * DIAGNOSTIC, registered with its reason -- was written down and never
+     * read: on hdfs-17897 lane17897f four such rows stopped the campaign at
+     * IMPORT under the words "4 blocking row(s)".  The ledger decides, the
+     * row says what it decided, and the reader stops on BLOCKING.</p>
+     */
     private static JsonObject row(String code, String subject,
                                   String detail) {
         JsonObject row = new JsonObject();
@@ -333,7 +348,29 @@ final class PublicationContract {
         row.addProperty("code", code);
         row.addProperty("subject", subject);
         row.addProperty("detail", detail);
+        row.addProperty(CLASS, GapLedger.classOf(code).name());
+        row.addProperty(CLASS_REASON, GapLedger.reasonOf(code));
         return row;
+    }
+
+    /** The ledger class this row carries: BLOCKING or DIAGNOSTIC. */
+    static final String CLASS = "class";
+    /** Why the ledger classes it that way, in the ledger's own words. */
+    static final String CLASS_REASON = "classReason";
+
+    /** Whether this row is one the campaign stops on. */
+    static boolean stops(JsonObject row) {
+        return GapLedger.GapClass.BLOCKING.name().equals(
+                optionalString(row, CLASS));
+    }
+
+    /** The rows of {@code rows} the campaign stops on, in order. */
+    static List<JsonObject> blocking(List<JsonObject> rows) {
+        List<JsonObject> stopping = new ArrayList<>();
+        for (JsonObject row : rows) {
+            if (stops(row)) stopping.add(row);
+        }
+        return stopping;
     }
 
     private static String firstNonEmpty(String value, String fallback) {
