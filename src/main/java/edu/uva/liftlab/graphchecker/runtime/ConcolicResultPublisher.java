@@ -462,10 +462,6 @@ final class ConcolicResultPublisher {
                     sharedRows(active.configuredSourcePhaseGaps));
         }
         result.add("branchMappings", sharedRows(active.branchMappings));
-        if (!active.branchCoverageGaps.isEmpty()) {
-            result.add("branchCoverageGaps",
-                    sharedRows(active.branchCoverageGaps));
-        }
         // Every evidence row this activation publishes names the run, the
         // session, the activation, and the read-out batch it came from.
         VmHandoffEvidence.writeTo(result, active.vmHandoffEvents);

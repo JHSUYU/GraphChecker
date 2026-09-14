@@ -14,7 +14,6 @@ import edu.uva.liftlab.graphchecker.concolic.BranchReplayContract;
 import edu.uva.liftlab.graphchecker.concolic.BranchWitness;
 import edu.uva.liftlab.graphchecker.concolic.CanonicalJson;
 import edu.uva.liftlab.graphchecker.concolic.ClockRootPhysics;
-import edu.uva.liftlab.graphchecker.concolic.CoverageDivergence;
 import edu.uva.liftlab.graphchecker.concolic.ExactConcreteBranchObservation;
 import edu.uva.liftlab.graphchecker.concolic.RecordedEvidenceIdentity;
 import edu.uva.liftlab.graphchecker.concolic.RpcExpressionHandoff;
@@ -3161,16 +3160,6 @@ public final class ConcolicRegionRuntime {
                 active.branchMappings.add(predicate);
             }
         }
-        if (!conditionIndices.isEmpty()
-                && "EXPLORE".equals(active.activation.policy(siteId))) {
-            active.addBranchCoverageGap(CoverageDivergence.of(
-                    CoverageDivergence.Kind.FLOW,
-                    "MULTIWAY_SWITCH_SUCCESSOR_ENUMERATION_UNSUPPORTED",
-                    siteId + '#' + occurrence,
-                    "observed successor "
-                            + expected.observedSuccessorIndex
-                            + " is retained as a path assumption"));
-        }
         active.lastPathConditionSize = Math.max(
                 active.lastPathConditionSize, mappingLimit);
         return attestation.valid;
@@ -5648,9 +5637,6 @@ public final class ConcolicRegionRuntime {
                 new LinkedHashSet<>();
         final Set<String> unresolved = new LinkedHashSet<>();
         final List<JsonObject> branchMappings = new ArrayList<>();
-        final List<JsonObject> branchCoverageGaps = new ArrayList<>();
-        private final Set<String> branchCoverageGapKeys =
-                new LinkedHashSet<>();
         /**
          * Case-local references into the VM's own handoff ledger: the
          * declared port an attach landed on and the export event the
@@ -6121,14 +6107,6 @@ public final class ConcolicRegionRuntime {
                 addUnresolvedOnce(FAULT_IDLE_UNANSWERED + ": " + subject
                         + "; this plan controls the marker, so an unanswered "
                         + "firing may not read back as its idle polarity");
-            }
-        }
-
-        private void addBranchCoverageGap(JsonObject gap) {
-            if (gap == null) return;
-            String key = CanonicalJson.render(gap);
-            if (branchCoverageGapKeys.add(key)) {
-                branchCoverageGaps.add(gap);
             }
         }
 
