@@ -39,6 +39,7 @@ import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalInteger;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.shallowCopy;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.exactText;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalLongInteger;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
 
 /** Converts one VM execution row into one semantic path row. */
@@ -2070,13 +2071,30 @@ public final class ConcolicSummaryImporter {
                                 + summaryPcIndex);
                         continue;
                     }
+                    // The session clock the decision was taken at.  The
+                    // runtime stamps it on the raw mapping; dropping it here
+                    // left every imported decision unclocked, and everything
+                    // that orders decisions against another event -- the
+                    // producer prefix of a handoff family, above all -- then
+                    // selected nothing at all and the family became an
+                    // unguarded disjunction over every delivered value.
+                    // The runtime publishes the session clock as
+                    // "vmEventId" on the raw mapping; this stage is where
+                    // its vocabulary meets the summary's, which states it
+                    // under SESSION_EVENT_ID.  Reading the summary's name
+                    // off a raw row found nothing and every decision came
+                    // through unclocked.
+                    long clock = optionalLongInteger(row, "vmEventId", 0L);
                     result.add(SummaryBranchMapping.witnessed(
                             direct.atPcIndex(summaryPcIndex,
                                     originalPredicate),
-                            summaryPcIndex, policy).toImmutableJsonView());
+                            summaryPcIndex, policy)
+                            .at(clock).toImmutableJsonView());
                 } else if (concrete != null) {
                     result.add(SummaryBranchMapping.concrete(concrete,
-                            policy).toJson());
+                            policy).at(optionalLongInteger(row,
+                            InSessionReadResolver.SESSION_EVENT_ID, 0L))
+                            .toJson());
                 }
             } catch (IllegalArgumentException malformed) {
                 issues.add("MALFORMED_BRANCH_MAPPING:" + site + ":"
