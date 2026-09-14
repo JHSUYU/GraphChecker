@@ -861,17 +861,11 @@ public final class RuntimeSelectedRegionFinalizer {
             String semanticSourceKey = semanticSourceKey(
                     targetPoliciesByRegion.get(regionId), instance,
                     observations, rootSourceKey);
-            // The request family this activation ran inside, as the
-            // recording stamped it on the activation itself.
-            String requestFamily = OccurrenceAddress.familyOf(
-                    text(instance.get("requestKey")));
-            int ordinal = minter.reserveOrdinal(semanticSourceKey, regionId,
-                    requestFamily);
+            int ordinal = minter.reserveOrdinal(semanticSourceKey, regionId);
             String occurrenceId;
             try {
                 occurrenceId = minter.mint(regionId, rootCallId,
-                        semanticSourceKey, requestFamily,
-                        ordinal);
+                        semanticSourceKey, ordinal);
             } catch (IllegalArgumentException duplicate) {
                 throw new IOException("duplicate runtime region activation: "
                         + regionId + "\n" + rootCallId);

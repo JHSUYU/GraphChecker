@@ -104,12 +104,15 @@ public final class TargetOccurrenceElection {
      * order, with the one the campaign's artifacts came from flagged.
      *
      * @param declared the occurrence address the case declares, or empty.
-     *                 A declaration is the answer, not a preference: the
+     *                 A declaration is the answer, and the only one: the
      *                 campaign is target-directed, it composed the occurrence
      *                 the case named, and a claim published about some other
      *                 execution of the site would not be about the case.
      *                 Whether that occurrence composed, was refused, or was
-     *                 never scheduled is what its own row then says.
+     *                 never scheduled is what its own row then says.  With no
+     *                 declaration the single reported occurrence is the
+     *                 answer and several are a refusal: there is no ranking
+     *                 that makes one of them the campaign's.
      */
     static JsonObject elect(List<JsonObject> reports, String declared)
             throws IOException {
@@ -148,12 +151,26 @@ public final class TargetOccurrenceElection {
         }
         int elected = declaredIndex(rows, declared);
         if (elected < 0) {
-            elected = 0;
-            for (int index = 1; index < rows.size(); index++) {
-                if (outranks(rows.get(index), rows.get(elected))) {
-                    elected = index;
+            if (rows.size() != 1) {
+                // Fail closed.  Ranking the rows -- accepted over
+                // unaccepted, composed over never-composed -- picked an
+                // occurrence nobody asked about whenever the case declared
+                // none, and published its verdict as the campaign's.  Each
+                // occurrence is its own question; which one the campaign is
+                // about is the case's to state, and a run that composed
+                // several while its case named none has not been asked one
+                // question yet.
+                StringBuilder observed = new StringBuilder();
+                for (int index = 0; index < rows.size(); index++) {
+                    if (index > 0) observed.append(", ");
+                    observed.append(optionalString(rows.get(index),
+                            "occurrenceId"));
                 }
+                throw new IOException("the case declares no target"
+                        + " occurrence and this run reported " + rows.size()
+                        + ": " + observed);
             }
+            elected = 0;
         }
         JsonArray occurrences = new JsonArray();
         for (int index = 0; index < rows.size(); index++) {
@@ -297,57 +314,24 @@ public final class TargetOccurrenceElection {
     }
 
     /**
-     * An accepted answer displaces an unaccepted one, and artifacts displace
-     * none.
-     *
-     * <p>Each occurrence is its own question with its own answer, so the
-     * first thing to say about a pair of them is that one was accepted and
-     * the other was not.  Where neither was, a composition -- a refusal
-     * included -- still states something about its occurrence and an
-     * occurrence that was never composed states nothing at all, so it can
-     * never be elected while any occurrence has artifacts.  Equal standing
-     * leaves the anchor-address order the rows are already in.</p>
-     */
-    private static boolean outranks(JsonObject candidate, JsonObject best) {
-        if (accepted(candidate) != accepted(best)) return accepted(candidate);
-        return composed(candidate) && !composed(best);
-    }
-
-    /**
      * One occurrence's sort key: node and epoch, region, request family,
      * then k.
      *
      * <p>Read through {@link OccurrenceAddress} rather than off the id's
-     * text: the family the request grammar added sits between the region and
-     * the ordinal, and an order that parsed around it would sort by the
-     * family's spelling.  The ordinal is zero-padded so #10 follows #9
-     * instead of #1, and an id the address grammar does not name sorts by
-     * itself, which keeps the order total without inventing a position for
-     * it.</p>
+     * text, so a spelling change in the grammar cannot reorder the anchors.
+     * The ordinal is zero-padded so #10 follows #9 instead of #1, and an id
+     * the address grammar does not name sorts by itself, which keeps the
+     * order total without inventing a position for it.</p>
      */
     private static String anchorAddress(JsonObject row) {
         String occurrence = optionalString(row, "occurrenceId");
         OccurrenceAddress address = OccurrenceAddress.parse(occurrence);
         if (!address.isNamed()) return occurrence;
         StringBuilder padded = new StringBuilder(address.sourceKey())
-                .append('\n').append(address.regionId())
-                .append('\n').append(address.family()).append('\n');
+                .append('\n').append(address.regionId()).append('\n');
         String ordinal = Integer.toString(address.ordinal());
         for (int pad = ordinal.length(); pad < 12; pad++) padded.append('0');
         return padded.append(ordinal).toString();
-    }
-
-    /** Whether this occurrence has artifacts a consumer can read at all. */
-    private static boolean composed(JsonObject row) {
-        return COMPOSED.equals(optionalString(row, "status"));
-    }
-
-    /** Whether this occurrence's own artifacts carry an accepted claim. */
-    private static boolean accepted(JsonObject row) {
-        String support = optionalString(row, "support");
-        return SAT_CANDIDATE_EXPLAINED_WITNESS.equals(support)
-                || SAT_CANDIDATE.equals(support)
-                || UNSAT_CLOSED.equals(support);
     }
 
     private static String electionReason(List<JsonObject> rows, int elected,
@@ -362,25 +346,9 @@ public final class TargetOccurrenceElection {
                     + (rows.size() - 1) + " observed occurrence(s)"
                     + " concluded";
         }
-        if (rows.size() == 1) {
-            return "the recording observed one occurrence of the annotated"
-                    + " target; the campaign claim is its own (support="
-                    + support + ")";
-        }
-        List<String> others = new ArrayList<>();
-        for (int index = 0; index < rows.size(); index++) {
-            if (index == elected) {
-                continue;
-            }
-            others.add(optionalString(rows.get(index), "occurrenceId") + "="
-                    + optionalString(rows.get(index), "support"));
-        }
-        return "the campaign artifacts are "
-                + optionalString(chosen, "occurrenceId") + "'s (support="
-                + support + "), the first of " + rows.size()
-                + " observed target occurrence(s) in anchor order to carry an"
-                + " accepted claim, or the first of them outright when none"
-                + " did; the others are " + String.join(", ", others);
+        return "the recording observed one occurrence of the annotated"
+                + " target; the campaign claim is its own (support="
+                + support + ")";
     }
 
     private static JsonObject readRequired(JsonObject report, String field,
