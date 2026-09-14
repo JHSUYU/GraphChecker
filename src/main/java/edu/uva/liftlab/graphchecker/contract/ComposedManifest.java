@@ -68,7 +68,6 @@ public final class ComposedManifest {
     /** Ledgers the witness legitimacy gates read. */
     public static final String BOUNDARY_DISPATCH_TOTALITY =
             "boundaryDispatchTotality";
-    public static final String ABSENT_KEY_DEFAULTS = "absentKeyDefaults";
     public static final String WIRE_FLOW_BINDINGS = "wireFlowBindings";
     public static final String FAULT_CONTROL_GAPS_FIELD = "faultControlGaps";
 

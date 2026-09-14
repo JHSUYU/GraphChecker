@@ -1007,6 +1007,70 @@ public class PathMergeComposerTest {
                         .contains("CONTAINER_BASE_UNSTATED"));
     }
 
+    /**
+     * A symbolic PUT key makes the key it equals present.
+     *
+     * <p>Membership is the assoc model's answer over the whole chain, not a
+     * list of the chain's constant keys.  bug3's block-key map is put with
+     * the received key's own id -- a symbolic key -- so a syntactic list
+     * declared 119982 absent while the chain, under any model where that id
+     * is 119982, holds it, and every execution that read it there became
+     * unstatable.</p>
+     */
+    @Test
+    public void aSymbolicPutKeyMakesTheKeyItEqualsPresent()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+        Path directory = Files.createTempDirectory("path-merge-symkey");
+        JsonObject query = query();
+        // The map's only entry is put under the value that arrived, and the
+        // read asks for that same value.
+        JsonObject base = containerRelation("SNAPSHOT_BASE", mapState());
+        JsonObject put = containerRelation("PUT", base);
+        put.getAsJsonArray("arguments").add(handoff());
+        put.getAsJsonArray("arguments").add(constant(5));
+        query.getAsJsonArray("paths").add(path("symkey", "GROUP.FLIP",
+                notEqual(handoff(), constant(0)),
+                notEqual(mapReadAtHandoff(put), constant(5))));
+        Path queryFile = directory.resolve("reach_query.jsonl");
+        write(queryFile, JsonFields.WRITER.toJson(
+                SharedExpressionTable.compact(query)));
+        JsonObject seed = ranAt("GROUP.SEED", "true");
+        seed.add("vmHandoffEvents", handoffEvents(constant(9), 11L, 12L));
+        JsonObject flip = ranAt("GROUP.FLIP", "false");
+        flip.add("vmHandoffEvents", handoffEvents(constant(7), 21L, 22L));
+        Path summaryFile = directory.resolve("summaries.jsonl");
+        write(summaryFile, JsonFields.WRITER.toJson(
+                SharedExpressionTable.compact(seed)) + "\n"
+                + JsonFields.WRITER.toJson(
+                SharedExpressionTable.compact(flip)) + "\n");
+        PathMergeComposer.Result result = PathMergeComposer.compose(
+                PathMergeComposer.Arguments.parse(new String[]{
+                        "--fatal-query", queryFile.toString(),
+                        "--summaries", summaryFile.toString(),
+                        "--output",
+                        directory.resolve("candidate.smt2").toString(),
+                        "--manifest",
+                        directory.resolve("manifest.json").toString()}));
+
+        assertFalse("no absent-key default survives",
+                result.smtLib.contains("absent_key_default"));
+        // The read asks the map for the very value the PUT stored under, so
+        // it answers 5 and the fatal predicate -- "it is not 5" -- cannot
+        // hold.  A syntactic key list would have called the key absent, the
+        // read null, and this satisfiable.
+        assertEquals("the symbolic key is present, so the read is not null",
+                "unsat", solve(result.smtLib));
+    }
+
+    /** A read of {@code chain} at the value that arrived over the wire. */
+    private static JsonObject mapReadAtHandoff(JsonObject chain) {
+        JsonObject read = containerRelation("READ", chain);
+        read.addProperty("_java_type", "I");
+        read.getAsJsonArray("arguments").add(handoff());
+        return read;
+    }
+
     /** The map as the VM's INITIAL publishes it: a base and its entries. */
     private static JsonObject reconstructedMap() {
         JsonObject base = containerRelation("SNAPSHOT_BASE", mapState());

@@ -222,15 +222,11 @@ public final class RootValuationSolver {
             base = lifted.toString();
         }
         report.addProperty("failClosedMarkersLifted", failClosed);
-        // The one shape a witness can rest on that no root move names: an
-        // associative read whose key nothing ever put.  The other used to be
-        // a merged wire boundary none of whose arms the model satisfied --
-        // there are no arms and no merge node now, and a wire value is the
-        // producer's own expression.
-        Set<String> fatalAbsentKeyTerms = fatalAbsentKeyTerms(manifest);
-        List<String> witnessFreedomSymbols =
-                new ArrayList<>(fatalAbsentKeyTerms);
-        List<String> modelSymbols = new ArrayList<>(witnessFreedomSymbols);
+        // Nothing is asked of the model beyond the roots.  Membership in a
+        // container is decided by the assoc model over the whole mutation
+        // chain, so there is no separate "did this read take a default"
+        // symbol to fetch and no freedom to report about one.
+        List<String> modelSymbols = new ArrayList<>();
         List<boolean[]> satisfyingValuations = new ArrayList<>();
         JsonArray valuationRows = new JsonArray();
         JsonArray existentialPerturbations = new JsonArray();
@@ -266,11 +262,6 @@ public final class RootValuationSolver {
                         values, witness);
                 if (mechanisms.size() > 0) {
                     row.add("witnessMechanisms", mechanisms);
-                }
-                JsonArray witnessFreedoms = witnessFreedoms(manifest, model,
-                        fatalAbsentKeyTerms);
-                if (witnessFreedoms.size() > 0) {
-                    row.add(WITNESS_FREEDOMS, witnessFreedoms);
                 }
                 if (witness.size() > 0) {
                     if (!existentialProbeAttempted) {
@@ -1454,80 +1445,6 @@ public final class RootValuationSolver {
      * by itself -- "these nodes' clocks disagreed" is the mechanism -- so
      * pinning them one at a time would ask about a skew nobody claimed.</p>
      */
-    /** Where the model-decided freedom of one valuation is published. */
-    public static final String WITNESS_FREEDOMS = "witnessFreedoms";
-
-    /**
-     * What this model was free to choose that no mechanism accounts for.
-     *
-     * <p>Neither shape is visible in the root witness, because neither moves
-     * a root.  A merged consumer boundary whose dispatch no partition makes
-     * total takes its unbound fall-through whenever the model satisfies none
-     * of its arms: the value the wire carried is then whatever the solver
-     * liked.  An associative read whose key matched no {@code PUT} of its
-     * mutation chain, over a state reconstructed from a snapshot, answers
-     * null because the map never held that key -- a statement about the
-     * query, not about the program.</p>
-     */
-    private static JsonArray witnessFreedoms(
-            JsonObject manifest, Map<String, String> model,
-            Set<String> fatalAbsentKeyTerms) {
-        JsonArray rows = new JsonArray();
-        for (JsonElement element
-                : array(manifest, ComposedManifest.ABSENT_KEY_DEFAULTS)) {
-            if (!element.isJsonObject()) continue;
-            JsonObject absent = element.getAsJsonObject();
-            String term = optionalString(absent, "solverTerm");
-            // Only the reads whose value the target predicate tests were
-            // asked for above; anything else has no value in this model.
-            if (!fatalAbsentKeyTerms.contains(term)
-                    || !"true".equals(model.get(term))) {
-                continue;
-            }
-            JsonObject row = new JsonObject();
-            row.addProperty("code", WitnessLegitimacy.ABSENT_KEY_DEFAULT);
-            row.addProperty("subject", term);
-            row.addProperty("detail",
-                    "an associative read the target predicate tests answered"
-                            + " out of the absent-key default: its key "
-                            + optionalString(absent, "keyTerm")
-                            + " matched no PUT of the chain and the"
-                            + " reconstructed initial state does not hold"
-                            + " it, so the null is the empty map's answer"
-                            + " rather than anything the program did");
-            rows.add(row);
-        }
-        return rows;
-    }
-
-    /**
-     * Every absent-key default the composition published.
-     *
-     * <p>These used to be filtered down to the fatal read's own: a row
-     * counted when it named that read's identity, or when the guard it was
-     * lowered under carried one of the read's arm selectors.  There are no
-     * arms and no read identity in the merge -- the composer records a row
-     * for a key the recording never saw written, wherever it lowered one --
-     * and with the filter's two inputs gone it kept nothing, which reported
-     * every model as resting on no default at all.
-     *
-     * <p>An absent key is a value the program never wrote and the model is
-     * free to pick, so a witness that turns on one is a freedom whichever
-     * read took it.  Keeping the whole published set is the answer that
-     * cannot be wrong in the direction that matters.</p>
-     */
-    private static Set<String> fatalAbsentKeyTerms(JsonObject manifest) {
-        Set<String> terms = new LinkedHashSet<>();
-        for (JsonElement element
-                : array(manifest, ComposedManifest.ABSENT_KEY_DEFAULTS)) {
-            if (!element.isJsonObject()) continue;
-            String term = optionalString(element.getAsJsonObject(),
-                    "solverTerm");
-            if (!term.isEmpty()) terms.add(term);
-        }
-        return terms;
-    }
-
 
     private static boolean boundedSymbolAt(String line, int at, int length) {
         int end = at + length;
