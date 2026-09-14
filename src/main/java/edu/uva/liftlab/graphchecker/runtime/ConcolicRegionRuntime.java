@@ -601,7 +601,7 @@ public final class ConcolicRegionRuntime {
      *
      * <p>Called from outside this class: a launcher that owns no workload
      * session drives the durability barrier directly, the way the workload
-     * checkouts call the phase hook.  The work
+     * checkouts call {@link #symbolizeConfiguredSourceField}.  The work
      * itself belongs to {@code ConcolicResultPublisher}; this is the driver
      * entry point that names it.</p>
      */
@@ -1617,6 +1617,158 @@ public final class ConcolicRegionRuntime {
         }
     }
 
+    /**
+     * Mints one symbol for one entry of a declared mint site.
+     *
+     * <p>Every occurrence of a declared field is its own symbolic variable.
+     * The VM is the authority on the value: a field that already carries a
+     * propagated expression keeps it - {@code SymInstance::has_sym_exp} makes
+     * the mint a no-op - and the published row says {@code reused}.  Manual
+     * input is only WHICH FIELDS, never which occurrence of one.</p>
+     *
+     * <p>Called from outside this repository: the workload checkouts invoke it
+     * directly from {@code org.apache.hadoop.ipc.CausynthSymbolicSource}, and
+     * it is the only symbolic root of HDFS-17960.</p>
+     */
+    public static boolean symbolizeConfiguredSourceField(
+            String sourceId, Object owner, String fieldSignature) {
+        ActiveRegion active = activeRegion();
+        // Nothing to mint on is not a gap: the site simply was not carrying a
+        // declared owner on this entry.
+        if (active == null || owner == null) return false;
+        SourceSiteEntry entry = active.observeConfiguredSourceEntry(
+                safe(sourceId), safe(fieldSignature));
+        if (entry == null) return false;
+        beginBookkeeping();
+        try {
+            Field field = declaredInstanceField(owner, safe(fieldSignature));
+            if (field == null || !field.getType().isPrimitive()) {
+                active.addUnresolvedOnce(entry.key()
+                        + ": configured source is not an exact primitive "
+                        + "field");
+                return false;
+            }
+            ConcolicVmBroker api = engine();
+            String declaringClass = field.getDeclaringClass().getName();
+            String descriptor = javaTypeDescriptor(
+                    field.getType().getTypeName());
+            // The authority question, asked before anything is written: did
+            // this value arrive carrying an expression of its own?  A VM that
+            // has no answer for an unsymbolized field is answering "no", so
+            // the read-out never decides the mint by throwing.
+            JsonElement carried;
+            try {
+                carried = engineExpression(api.fieldExpression(owner,
+                        declaringClass, field.getName(), descriptor,
+                        field.get(owner)));
+            } catch (PropagatedExpressionImportFailure unreadable) {
+                // A declared source whose carried expression could not be
+                // read must not be answered by minting a second root over
+                // the top of the one already in the field.
+                refuseImportedExpression(active, entry.key(),
+                        safe(fieldSignature), unreadable);
+                return false;
+            } catch (Throwable unsymbolized) {
+                carried = null;
+            }
+            // A hook site is a declared primitive root by construction: the
+            // entry above refuses anything else.  So it asks the strict
+            // question, the same one a declared plan action asks in
+            // carriesInputAuthority.  The loose rule would answer "already
+            // propagated" for any field a shared-state carrier has wrapped in
+            // a ReadFrom -- which every field the hook stands on eventually
+            // is -- and the mint would never fire, leaving the declared
+            // source concrete.  Only a tree that actually names a VM symbol
+            // root inside those wrappers is an expression of its own.
+            boolean reused = configuredSourceCarriesAuthority(carried);
+            // The application's Map re-key reads the modeled value back
+            // through this same path, so the model is written first.
+            ModelAssignment assignment = reused ? null
+                    : active.configuredSourceAssignment(entry.phaseId(),
+                    safe(sourceId), safe(fieldSignature), owner);
+            if (assignment != null) {
+                if (!writeModeledField(owner, safe(fieldSignature),
+                        assignment)) {
+                    throw new IllegalStateException(
+                            "configured source model could not be written");
+                }
+            }
+            String symbol = "";
+            if (!reused) {
+                // The phase is the stable semantic source site.  Exact
+                // activation identity is recorded separately in the evidence
+                // row; changing the VM label per occurrence only duplicates
+                // equivalent symbolic roots and complicates composition.
+                String sourceOccurrence = active.occurrenceId();
+                symbol = "sym__" + safe(sourceId) + "__"
+                        + safe(sourceOccurrence) + "__"
+                        + entry.ordinal;
+                String label = SymbolicSourceEvidence.engineLabelForPhase(
+                        entry.phaseId(), safe(sourceId));
+                api.symbolizeExactField(owner, exactFieldSignature(field),
+                        entry.ordinal <= 1 ? label
+                                : label + "__" + entry.ordinal);
+            }
+            // The mint is a symbolic write, so the VM has started this
+            // field's version log by itself; the declaration that used to be
+            // filed here bought nothing that the write did not already do.
+            ensurePathRecordingStarted(active);
+            Object value = field.get(owner);
+            JsonElement expression = engineExpression(api.fieldExpression(
+                    owner, declaringClass, field.getName(), descriptor,
+                    value));
+            // Only the occurrence that minted the VM leaf owns source
+            // evidence and its model assignment.  A propagated bare or
+            // compound expression remains the consumer's exact input and is
+            // recorded below as reuse without acquiring a second identity.
+            JsonObject evidence = null;
+            if (!reused) {
+                // Fail closed: a concrete write is not a materialized
+                // symbolic input until the VM has accepted the exact field
+                // and returned one exact root for it.  The evidence row is
+                // built before the mint row so that a read-back the VM did
+                // not replace -- the shape this catch names -- leaves no row
+                // claiming a symbol it never published.
+                try {
+                    evidence = SymbolicSourceEvidence.event(entry.phaseId(),
+                            safe(sourceId), active.occurrenceId(),
+                            safe(fieldSignature), expression,
+                            entry.ordinal, reused, symbol,
+                            // Only an activation that read the field as the
+                            // program left it observed a recorded value.  A
+                            // replay that wrote a model assignment into the
+                            // field above read the model back, and publishing
+                            // that as "recorded" is how a counterfactual
+                            // becomes the recording.
+                            assignment == null
+                                    ? recordedScalar(value) : null);
+                } catch (IllegalArgumentException refused) {
+                    throw new IllegalStateException(refused.getMessage()
+                            + " (VM read-back after symbolizeExactField: "
+                            + describeReadBack(expression) + ")", refused);
+                }
+            }
+            active.recordConfiguredSourceMint(entry, safe(sourceId),
+                    safe(fieldSignature), symbol, expression, reused);
+            if (evidence != null) {
+                active.recordSymbolicSource(entry.key(), evidence);
+            }
+            if (assignment != null) {
+                // A concrete write is not a materialized symbolic input until
+                // the VM has accepted the exact field and returned its
+                // expression.
+                active.recordModelAssignment(assignment);
+            }
+            return true;
+        } catch (Throwable failure) {
+            active.addUnresolvedOnce(entry.key()
+                    + ": exact symbolic source materialization failed: "
+                    + rootCause(failure));
+            return false;
+        } finally {
+            endBookkeeping();
+        }
+    }
 
 
     /**
@@ -4768,7 +4920,7 @@ public final class ConcolicRegionRuntime {
     /**
      * The same question for the {@code CausynthSymbolicSource} hook path.
      *
-     * <p>The phase hook accepts only a declared
+     * <p>{@link #symbolizeConfiguredSourceField} accepts only a declared
      * primitive field, so it is exactly the case
      * {@link #carriesInputAuthority} narrows: the strict rule, with no
      * action row to consult.  Keeping it a named seam is what the
