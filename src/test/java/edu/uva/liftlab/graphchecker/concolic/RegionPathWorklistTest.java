@@ -10,6 +10,7 @@ import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.contract.PathObservation;
 import org.junit.Test;
 
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -284,6 +285,128 @@ public class RegionPathWorklistTest {
                 LinkedReplayBundle.sourceTasks(bundle, taskById),
                 assignments, guardedReads, contract);
     }
+
+    /**
+     * A decision over a value that arrived on a wire is flippable, and the
+     * obligation carries the row that flips it.
+     *
+     * <p>Nothing about the arrived value is a root, so the walk that looks
+     * for root support finds none and the decision reads as closed by the
+     * recording.  What makes it varyable is the replay's own handoff row at
+     * that attach: it names the variable the VM minted there, and an
+     * assignment to that variable is the whole replay control -- no root
+     * assignment, no producer replay.  Without it bug3's
+     * {@code allKeys.get(keyId)} produced no obligation at all.</p>
+     */
+    @Test
+    public void aDecisionOverAnArrivedValueIsFlippableThroughItsHandoff() {
+        JsonObject task = task("W", "REGION.W", "REGION.W/occurrence-1");
+        JsonObject observed = arrivedValueSummary(task, true);
+
+        RegionPathWorklist.Result closed = RegionPathWorklist.plan(
+                Collections.singletonList(observed),
+                Collections.singletonList(task),
+                Collections.<JsonObject>emptyList(),
+                RegionPathWorklist.Bounds.defaults(),
+                SymbolicRootInventory.of(
+                        Collections.singletonList(observed),
+                        Collections.singletonList(task)));
+        assertTrue("with no handoff row the arrival is not varyable",
+                closed.tasks.isEmpty());
+
+        JsonObject withHandoff = arrivedValueSummary(task, true);
+        JsonObject attach = new JsonObject();
+        attach.addProperty("kind", "VM_HANDOFF_EVENT");
+        attach.addProperty("attachEventId", 42L);
+        attach.addProperty("exportEventId", 41L);
+        attach.addProperty(InSessionReadResolver.HANDOFF_SYMBOL,
+                "HOFF.abcdef");
+        attach.addProperty(InSessionReadResolver.HANDOFF_PHASE_ID,
+                "HANDOFF_PHASE.wire");
+        attach.addProperty("javaType", "I");
+        attach.addProperty("recordedValue", "7");
+        JsonArray attaches = new JsonArray();
+        attaches.add(attach);
+        withHandoff.add("vmHandoffEvents", attaches);
+        refreshLocalCaseId(withHandoff);
+
+        RegionPathWorklist.Result planned = RegionPathWorklist.plan(
+                Collections.singletonList(withHandoff),
+                Collections.singletonList(task),
+                Collections.<JsonObject>emptyList(),
+                RegionPathWorklist.Bounds.defaults(),
+                SymbolicRootInventory.of(
+                        Collections.singletonList(withHandoff),
+                        Collections.singletonList(task)));
+        assertEquals("the arrival is the control, so the flip is planned",
+                1, planned.tasks.size());
+        JsonArray controls = planned.tasks.get(0).getAsJsonArray(
+                RegionPathWorklist.HANDOFF_CONTROLS);
+        assertEquals("and the obligation carries the row that flips it",
+                1, controls.size());
+        assertEquals("HOFF.abcdef", controls.get(0).getAsJsonObject()
+                .get("rawSymbol").getAsString());
+        assertEquals("HANDOFF_PHASE.wire", controls.get(0).getAsJsonObject()
+                .get(InSessionReadResolver.HANDOFF_PHASE_ID).getAsString());
+    }
+
+    /** One replay whose only decision is over a value that arrived. */
+    private static JsonObject arrivedValueSummary(JsonObject task,
+                                                  boolean outcome) {
+        JsonObject summary = summary(task, 1, outcome);
+        JsonObject arrived = new JsonObject();
+        arrived.addProperty("_type", "ConsumerBoundaryExpression");
+        arrived.addProperty("boundaryKind", "RPC_ATTACH");
+        arrived.addProperty("eventId", 42L);
+        arrived.addProperty("_java_type", "I");
+        JsonObject carried = new JsonObject();
+        carried.addProperty("_type", "SymbolExpression");
+        carried.addProperty("_java_type", "I");
+        carried.addProperty("_exp", "M_I_field_WIRE_in");
+        arrived.add("expression", carried);
+        JsonObject right = new JsonObject();
+        right.addProperty("_type", "ConstExpr");
+        right.addProperty("_java_type", "I");
+        right.addProperty("_exp", "Y_I_0");
+        JsonObject condition = new JsonObject();
+        condition.addProperty("_type", "BinaryExpression");
+        condition.add("_left", arrived);
+        condition.addProperty("_op", outcome ? ">" : "<=");
+        condition.add("_right", right);
+        JsonArray conditions = new JsonArray();
+        conditions.add(condition);
+        summary.add("pathCondition", conditions);
+        JsonObject vmEvent = new JsonObject();
+        vmEvent.addProperty("eventId", 1L);
+        vmEvent.addProperty("contextId", 1L);
+        vmEvent.addProperty("predicateNormalization", "IDENTITY");
+        BranchWitness witness = BranchWitness.vmPcImmutable("SITE.W",
+                "<fixture.Wire: void run()>", 0, 1, outcome,
+                condition, 0, vmEvent);
+        JsonArray mappings = new JsonArray();
+        mappings.add(SummaryBranchMapping.witnessed(witness, 0,
+                SummaryBranchMapping.Policy.EXPLORE).toJson());
+        summary.add("branchMappings", mappings);
+        // One declared root somewhere in the wave, so the inventory is
+        // usable and the walk actually judges this decision.  It is not the
+        // one this decision rests on.
+        List<JsonObject> events = new ArrayList<>();
+        JsonObject rootSymbol = new JsonObject();
+        rootSymbol.addProperty("_type", "SymbolExpression");
+        rootSymbol.addProperty("_java_type", "Z");
+        rootSymbol.addProperty("_exp", RAW_WIRE_ROOT);
+        events.add(SymbolicSourceEvidence.event("SOURCE_PHASE.wire",
+                "EXAMPLE.WIRE", "node0/region/REGION.W#1#a1",
+                "<fixture.Wire: boolean enabled>", rootSymbol, 1, false,
+                "sym__EXAMPLE_WIRE__1", "true"));
+        SymbolicSourceEvidence.writeTo(summary, events);
+        refreshLocalCaseId(summary);
+        return summary;
+    }
+
+    private static final String RAW_WIRE_ROOT = "M_Z_field_"
+            + SymbolicSourceEvidence.engineLabelForPhase("SOURCE_PHASE.wire",
+            "EXAMPLE.WIRE") + "_fixture/Wire";
 
     private static JsonObject task(String id, String region,
                                    String occurrence) {

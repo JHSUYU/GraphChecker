@@ -294,10 +294,17 @@ final class PathReplayTaskFactory {
         return "";
     }
 
-    /** Whether this obligation flips a value that arrived over a wire. */
+    /**
+     * Whether this obligation flips a value that arrived over a wire.
+     *
+     * <p>The obligation says so: the worklist writes the handoff row it
+     * would flip through onto the query.  This used to render the whole
+     * query to text and look for the symbol's label, which asked the
+     * spelling of a name a question only the row can answer.</p>
+     */
     private static boolean crossesAHandoff(JsonObject query) {
-        return CanonicalJson.render(query).contains(
-                PathMergeComposer.HANDOFF_SYMBOL_MARK);
+        return JsonFields.array(query,
+                RegionPathWorklist.HANDOFF_CONTROLS).size() > 0;
     }
 
     private static java.util.List<String> actionOwners(
