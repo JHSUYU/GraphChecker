@@ -298,36 +298,37 @@ public final class InSessionReadResolver {
         }
         if ("ConsumerBoundaryExpression".equals(type)) {
             long event = optionalLongInteger(node, "eventId", -1L);
-            // The boundary's own inner expression already names the
-            // producer's location, in the producer's numbering: the VM
-            // substituted the sender's term here when the value arrived.
-            // The matching vmHandoffEvents row points at this same node --
-            // it records that the hop happened and who produced it, not a
-            // second expression -- so following it instead re-enters this
-            // node and the cycle guard refuses a value that was determined.
-            // The value that crossed the wire is a free variable of this
-            // replay's formula, not the producer's term inlined here.  The
-            // runtime mints one handoff symbol v_H per handoff occurrence
-            // and states it on the row; the producer's own path and the
-            // expression it delivered are joined to v_H once, at compose
-            // time, as the family constraint over that H -- so a producer
-            // flip and a consumer flip are explored independently and meet
-            // only at the recorded handoff.
-            JsonObject row = handoffRows.get(event);
-            JsonElement minted = handoffSymbol(row);
-            if (minted != null) return minted;
-            // Not every boundary has a row that mints one.  laneBN records
-            // boundaries whose attach publishes no VM_HANDOFF_EVENT at all,
-            // so "every published row carries handoffSymbol" is true there
-            // only vacuously.  Such a boundary is a family with exactly one
-            // pair -- the value this replay received, and the producer term
-            // the VM already substituted into the node -- and reading it is
-            // that family, not the arm vocabulary.  It goes when a corpus
-            // shows every boundary minting a variable, not before.
+            String boundaryKind = optionalString(node,
+                    VmExpressionIr.BOUNDARY_KIND);
+            // Two boundaries, two rules, and they do not overlap.
+            //
+            // RPC_ATTACH is a value that crossed a wire.  It is a free
+            // variable of this replay's formula -- the handoff variable the
+            // runtime minted at that attach -- and the producer's own path
+            // and the expression it delivered are joined to it once, at
+            // compose time, as the family constraint over that handoff.
+            // Reading the producer's term out of the node instead would
+            // inline one producer path into the consumer's formula, which is
+            // what made a consumer flip need a producer replay, so there is
+            // no such reading here: a row that mints no variable is refused.
+            if (VmExpressionIr.RPC_ATTACH.equals(boundaryKind)) {
+                JsonElement minted = handoffSymbol(handoffRows.get(event));
+                if (minted == null) {
+                    return unresolved("wire arrival at boundary " + event
+                            + " mints no " + HANDOFF_SYMBOL);
+                }
+                return minted;
+            }
+            // FIELD_READ is a guarded read of shared state whose producer
+            // the write log already names.  It is resolved as any read is --
+            // by the version the node observed -- and the boundary is only
+            // the shell the VM wrapped it in.  laneBN's every boundary is
+            // this kind, and 17960 has no wire at all.
             JsonElement source = node.get(VmExpressionIr.EXPRESSION);
             if (source == null) {
-                return unresolved("boundary " + event + " carries neither a "
-                        + HANDOFF_SYMBOL + " nor a value");
+                return unresolved("boundary " + event + " of kind "
+                        + (boundaryKind.isEmpty() ? "<unstated>"
+                        : boundaryKind) + " carries no value");
             }
             return rewrite(source, visiting, depth + 1);
         }

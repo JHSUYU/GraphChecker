@@ -56,6 +56,30 @@ public final class ConcolicSummaryImporter {
                             "occurrenceId", "symbol", "fieldPath",
                             "fieldSignature", "expression", "rawSymbol",
                             "javaType", "minted", "reused")));
+    /**
+     * Members a mint row may add, and what they mean.
+     *
+     * <p>The publication of a mint is one shape.  A manual mint now states
+     * the value it read, exactly as a configured source does -- the runtime
+     * suppresses it only for a modelled mint, where the replay was handed
+     * the value instead of reading one -- so the member is expected and may
+     * be absent.  The reader required an <em>exact</em> member set, so the
+     * addition read as an unsupported schema and refused six of laneVM13's
+     * seed paths.  Required members are still required and an unknown member
+     * is still a refusal; what changed is that a stated value is not an
+     * unknown member.</p>
+     */
+    private static final Set<String> MANUAL_INPUT_OBSERVATION_OPTIONAL =
+            Collections.unmodifiableSet(new LinkedHashSet<>(java.util.Arrays
+                    .asList("recordedValue")));
+
+    /** The members one observation carries beyond the required set. */
+    private static Set<String> extraMembers(JsonObject observation) {
+        Set<String> extra = new LinkedHashSet<>(observation.keySet());
+        extra.removeAll(MANUAL_INPUT_OBSERVATION_MEMBERS);
+        return extra;
+    }
+
     private static final String AUXILIARY_PATH_CONDITION_FIELD =
             "auxiliaryPathCondition";
     private static final String SELECTED_BRANCH_AND_AUXILIARY_AUTHORITY =
@@ -1328,7 +1352,10 @@ public final class ConcolicSummaryImporter {
     private static String manualObservationProblem(
             ResultRow row, ExecutionTask task, JsonObject observation,
             JsonObject action) {
-        if (!observation.keySet().equals(MANUAL_INPUT_OBSERVATION_MEMBERS)
+        if (!observation.keySet().containsAll(
+                MANUAL_INPUT_OBSERVATION_MEMBERS)
+                || !MANUAL_INPUT_OBSERVATION_OPTIONAL.containsAll(
+                        extraMembers(observation))
                 || exactInteger(observation, "schemaVersion", -1) != 1
                 || !MANUAL_INPUT_OBSERVATION_AUTHORITY.equals(
                 optionalString(observation, "authority"))) {
