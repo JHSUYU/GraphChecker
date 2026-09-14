@@ -112,10 +112,10 @@ public class D3ComposerTest {
         Session session = new Session(iteration, "s0", false);
         session.marker("false");
         session.expression("EXPR.v1.marker", symbol(MARKER, "Z"));
-        session.export(first, "EXPR.v1.marker", 1L, "false");
-        session.export(second, "EXPR.v1.marker", 2L, "false");
         session.decision(PRODUCER, "nn#u1", "(or " + MARKER + " (not "
                 + MARKER + "))");
+        session.export(first, "EXPR.v1.marker", 1L, "false");
+        session.export(second, "EXPR.v1.marker", 2L, "false");
         session.attach(Endpoint.of(ANCHOR, "PORT.key", 1, 0), "vh1",
                 "false", first);
         session.attach(Endpoint.of(ANCHOR, "PORT.key", 2, 0), "vh2",
@@ -178,13 +178,13 @@ public class D3ComposerTest {
         session.expression("EXPR.v1.marker", symbol(MARKER, "Z"));
         // What the middle node exports is what it was itself handed.
         session.expression("EXPR.v1.forward", symbol("vh_up", "Z"));
-        session.export(upstream, "EXPR.v1.marker", 1L, "false");
-        session.attach(forwarded, "vh_up", "false", upstream);
-        session.export(producer, "EXPR.v1.forward", 2L, "false");
-        session.attach(consumer, "vh", "false", producer);
         session.decision(UPSTREAM, "up#u1", "(or " + MARKER + " (not "
                 + MARKER + "))");
+        session.export(upstream, "EXPR.v1.marker", 1L, "false");
+        session.attach(forwarded, "vh_up", "false", upstream);
         session.decision(PRODUCER, "nn#u1", "(or vh_up (not vh_up))");
+        session.export(producer, "EXPR.v1.forward", 2L, "false");
+        session.attach(consumer, "vh", "false", producer);
         session.target("vh", false, true);
         session.write();
 
@@ -214,7 +214,7 @@ public class D3ComposerTest {
             // No producer path is attested and no arm is published, so the
             // arrival is all this session states -- and the two sessions
             // recorded two different arrivals at the one attach.
-            session.attach(consumer, "vh", each[1], producer);
+            session.attach(consumer, "vh", "I", each[1], producer);
             session.target("true", false, true);
             session.write();
         }
@@ -299,6 +299,8 @@ public class D3ComposerTest {
         private final String id;
         private final boolean explored;
         private OccurrenceAddress occurrence = ANCHOR;
+        /** The session's own monotonic event order. */
+        private long seq;
         private final List<ActivationRow> activations =
                 new ArrayList<ActivationRow>();
         private final List<DecisionRow> decisions =
@@ -317,6 +319,7 @@ public class D3ComposerTest {
             this.explored = explored;
             activations.add(ActivationRow.of(id, ANCHOR,
                     explored ? "task-flip" : "task-seed", explored));
+            this.seq = 0L;
         }
 
         void marker(String recorded) {
@@ -330,23 +333,29 @@ public class D3ComposerTest {
 
         void export(Endpoint endpoint, String ref, long handle,
                     String recorded) {
-            exports.add(ExportRow.of(id, endpoint, ref, handle, recorded));
+            exports.add(ExportRow.of(id, ++seq, endpoint, ref, "Z", handle,
+                    recorded));
         }
 
         void attach(Endpoint endpoint, String symbol, String arrival,
                     Endpoint producer) {
-            attaches.add(AttachRow.of(id, endpoint, symbol, arrival, false,
-                    null, producer, "corr-" + symbol));
+            attach(endpoint, symbol, "Z", arrival, producer);
+        }
+
+        void attach(Endpoint endpoint, String symbol, String javaType,
+                    String arrival, Endpoint producer) {
+            attaches.add(AttachRow.of(id, ++seq, endpoint, symbol, javaType,
+                    arrival, false, null, producer, "corr-" + symbol));
         }
 
         void decision(OccurrenceAddress at, String site, String term) {
-            decisions.add(DecisionRow.of(id, at, site,
+            decisions.add(DecisionRow.of(id, ++seq, at, site,
                     decisions.size() + 1, true, term,
                     Collections.<String, Long>emptyMap()));
         }
 
         void target(String phi, boolean observedFatal, boolean reached) {
-            targets.add(TargetRow.of(id, occurrence, ANCHOR_SITE, phi,
+            targets.add(TargetRow.of(id, ++seq, occurrence, ANCHOR_SITE, phi,
                     observedFatal, reached));
         }
 
@@ -378,12 +387,14 @@ public class D3ComposerTest {
         Session session = new Session(iteration, id, explored);
         session.marker(marker);
         session.expression(ref, symbol(MARKER, "Z"));
-        session.export(producer, ref, 1L, marker);
-        session.attach(consumer, symbol, arrival, producer);
+        // The producer decides, then exports: a family arm is guarded by
+        // the prefix its own session had taken by then.
         if (attestProducer) {
             session.decision(PRODUCER, "nn#u1", "(or " + MARKER + " (not "
                     + MARKER + "))");
         }
+        session.export(producer, ref, 1L, marker);
+        session.attach(consumer, symbol, arrival, producer);
         // phi is published in the FATAL polarity by the runtime, healthy
         // sessions included; the composer never re-derives it.
         session.target(symbol, observedFatal, true);

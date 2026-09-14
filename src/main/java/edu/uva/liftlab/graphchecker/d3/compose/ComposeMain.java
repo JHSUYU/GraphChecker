@@ -5,7 +5,10 @@ import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 
+import edu.uva.liftlab.graphchecker.d3.contract.Claim;
+import edu.uva.liftlab.graphchecker.d3.contract.ClaimKind;
 import edu.uva.liftlab.graphchecker.d3.contract.CompositionManifest;
+import edu.uva.liftlab.graphchecker.d3.contract.GapClass;
 import edu.uva.liftlab.graphchecker.d3.contract.GapRow;
 import edu.uva.liftlab.graphchecker.d3.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.d3.contract.RootDomain;
@@ -18,27 +21,39 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.LinkedHashMap;
-import java.util.List;
 import java.util.Map;
 
 /**
- * COMPOSE and DECIDE for one declared occurrence.
+ * COMPOSE, SOLVE and DECIDE for one declared occurrence.
+ *
+ * <p>One anchor, one query, one claim.  There is no election to make and no
+ * ranking to publish: which execution of the annotated site a campaign is
+ * about is the case's declaration, and the claim about it is whatever its
+ * own formula decided.  There is no VALIDATE stage behind it either (owner
+ * ruling): the composed {@code .smt2} and z3's verdicts on it ARE the
+ * deliverable, which is why the solving happens here rather than in a
+ * separate pass over the artifact.</p>
  *
  * <pre>
- *   --iteration &lt;dir&gt;            the corpus: &lt;dir&gt;/sessions/&lt;id&gt;/...
- *   --target-occurrence &lt;addr&gt;   the anchor, v2 or v1 spelling
- *   --root-domains &lt;file&gt;        what the CASE says each root may be
- *   --max-valuations &lt;n&gt;         how many questions to ask
- *   --out &lt;dir&gt;                  candidate.smt2, manifest.json, claim.json
- *   --z3 &lt;path&gt;                  default "z3"
- *   --timeout-ms &lt;n&gt;             per solver run, default 20000
+ *   --sessions &lt;dir&gt;      the corpus (also: --iteration &lt;dir&gt;, its parent)
+ *   --anchor &lt;addr&gt;       the declared occurrence (also: --target-occurrence)
+ *   --output &lt;file&gt;       the composed query   (also: --out &lt;dir&gt;)
+ *   --manifest &lt;file&gt;     the composition manifest
+ *   --root-domains &lt;file&gt; what the CASE says each root may be
+ *   --z3 &lt;path&gt;           default "z3"
+ *   --max-valuations &lt;n&gt;  how many questions to ask, default 64
+ *   --timeout-ms &lt;n&gt;      per solver run, default 20000
+ *   --runtime-plan &lt;file&gt; accepted, not read (see the manifest note)
+ *   --clock-skew-ms &lt;n&gt;   accepted, not read: a clock has a floor, no window
  * </pre>
  *
  * <p>Every outcome is an artifact.  A declared occurrence no session
  * reached, a corpus with no sessions, a root the case declares nothing
  * about -- each is written out as a claim with the gaps that explain it,
  * because a campaign that loses its answer to an exception has told the
- * reader nothing.</p>
+ * reader nothing.  The exit code is 0 whenever the artifacts were written;
+ * whether the claim is acceptable is the campaign's question, and it reads
+ * it out of them.</p>
  */
 public final class ComposeMain {
 
@@ -75,7 +90,7 @@ public final class ComposeMain {
     public static Result run(Arguments arguments) throws IOException {
         CorpusIndex corpus = CorpusIndex.of(arguments.iteration);
         OccurrenceAddress anchor =
-                OccurrenceAddress.parse(arguments.targetOccurrence);
+                OccurrenceAddress.parse(arguments.anchor);
         Composer.Composition composition = Composer.compose(corpus, anchor,
                 declaredDomains(arguments.rootDomains),
                 arguments.maxValuations);
@@ -83,18 +98,17 @@ public final class ComposeMain {
         ClaimPolicy.Decision decision = ClaimPolicy.decide(composition,
                 solver);
 
-        Files.createDirectories(arguments.out);
-        Path smt2 = arguments.out.resolve("candidate.smt2");
-        Solver.save(smt2, candidate(composition));
-        CompositionManifest manifest = CompositionManifest.of(anchor,
+        Solver.save(arguments.output, candidate(composition));
+        CompositionManifest composed = CompositionManifest.of(anchor,
                 composition.paths(), composition.families(),
                 composition.roots(), composition.valuations().size(),
-                decision.claim(), smt2.toString());
-        Path manifestPath = arguments.out.resolve("manifest.json");
-        write(manifestPath, GSON.toJsonTree(manifest).getAsJsonObject());
-        Path claimPath = arguments.out.resolve("claim.json");
-        write(claimPath, claimRows(composition, decision, solver));
-        return new Result(smt2, manifestPath, claimPath, manifest, decision,
+                decision.claim(), arguments.output.toString());
+        write(arguments.manifest,
+                manifest(composed, composition, decision, solver));
+        Path claimPath = arguments.manifest.resolveSibling("claim.json");
+        write(claimPath, claim(composition, decision, solver));
+        return new Result(arguments.output, arguments.manifest, claimPath,
+                composed, decision,
                 summary(anchor, composition, decision, solver));
     }
 
@@ -104,7 +118,7 @@ public final class ComposeMain {
      * <p>One file, one named conjunct per assertion, so an unsat core reads
      * as the list of the things that closed it.  The other valuations
      * differ from this file by their {@code valuation__*} assertions alone,
-     * and the manifest lists them.</p>
+     * and the manifest lists every one of them beside the verdict it got.</p>
      */
     private static String candidate(Composer.Composition composition) {
         StringBuilder query = new StringBuilder(composition.body());
@@ -118,27 +132,204 @@ public final class ComposeMain {
         return query.append("(check-sat)\n").toString();
     }
 
-    private static JsonObject claimRows(Composer.Composition composition,
-                                        ClaimPolicy.Decision decision,
-                                        Solver solver) {
-        JsonObject row = new JsonObject();
+    // ------------------------------------------------------------------
+    // The manifest the campaign reads.
+    // ------------------------------------------------------------------
+
+    /**
+     * The composition, its claim, and the verdicts the claim was read off.
+     *
+     * <p>The solver's answers live under {@code solver} in the one manifest
+     * rather than in a second artifact: there is one anchor, so there is one
+     * document, and a reader asking "why this claim" never has to join two
+     * files to find out.</p>
+     */
+    private static JsonObject manifest(CompositionManifest composed,
+                                       Composer.Composition composition,
+                                       ClaimPolicy.Decision decision,
+                                       Solver solver) {
+        JsonObject row = GSON.toJsonTree(composed).getAsJsonObject();
+        row.addProperty("schemaVersion", 1);
+        row.addProperty("kind", "D3_COMPOSITION_MANIFEST");
         row.addProperty("anchor", composition.anchor().render());
-        row.add("claim", GSON.toJsonTree(decision.claim()));
-        row.addProperty("solverRuns", solver.runs());
         row.addProperty("seedSessionId",
                 composition.seedSessionId() == null ? ""
                         : composition.seedSessionId());
+        // Every value in the formula was propagated inside some replay and
+        // published as that replay's expression; a cut is named, and a path
+        // that rests on one is not in the disjunction.
+        row.addProperty("symbolicPropagationComplete",
+                blocking(decision.claim()) == 0);
+        row.addProperty("finalStatus", blocking(decision.claim()) == 0
+                ? "FINAL_READY" : "FINAL_REFUSED");
+        row.add("finalStatusRefusals", refusals(decision.claim()));
+        row.add("gaps", gaps(composition.gaps()));
+        row.add("solver", solverRows(composition, decision, solver));
+        return row;
+    }
+
+    private static JsonObject solverRows(Composer.Composition composition,
+                                         ClaimPolicy.Decision decision,
+                                         Solver solver) {
+        boolean decided = true;
+        boolean anySat = false;
+        String state = "unknown";
+        for (ClaimPolicy.Outcome outcome : decision.outcomes()) {
+            if (!outcome.answer().decided()) decided = false;
+            if (outcome.answer().sat()) anySat = true;
+        }
+        if (anySat) state = "sat";
+        else if (decided && !decision.outcomes().isEmpty()) state = "unsat";
+        JsonObject row = new JsonObject();
+        row.addProperty("state", state);
+        row.addProperty("reachability", anySat ? "EXACT_REACHABLE"
+                : decided && !decision.outcomes().isEmpty()
+                ? "NO_EXACT_REACHABILITY" : "UNKNOWN");
+        row.addProperty("unsatClosureComplete",
+                decided && !anySat && !decision.outcomes().isEmpty());
+        row.addProperty("solverRuns", solver.runs());
+        // A model of the declared roots, published without SMT terms.  The
+        // valuation IS the model here: the composer asks one question per
+        // valuation, so a satisfying answer names the values it was asked
+        // about rather than values the solver chose.
+        row.add("symbolicVariableModels",
+                symbolicVariableModels(composition, decision));
+        row.add("valuations", valuations(decision));
+        row.add("campaignClaim", campaignClaim(decision, anySat, decided));
+        return row;
+    }
+
+    /**
+     * The claim, in the vocabulary acceptance is decided in.
+     *
+     * <p>Two questions, not one.  WHICH MECHANISM the formula supports is
+     * the {@link ClaimKind}; WHETHER the run produced an accepted candidate
+     * is this, and a blocking gap withholds it whatever the mechanism
+     * was.</p>
+     */
+    private static JsonObject campaignClaim(ClaimPolicy.Decision decision,
+                                            boolean anySat, boolean decided) {
+        Claim claim = decision.claim();
+        int blockers = blocking(claim);
+        String kind;
+        String reason;
+        if (blockers > 0) {
+            kind = "INCONCLUSIVE_PARTIAL";
+            reason = "the composition named " + blockers
+                    + " blocking gap(s); the claim it reached is "
+                    + claim.kind();
+        } else if (claim.kind() != ClaimKind.NO_SUPPORTED_WITNESS) {
+            kind = "SAT_CANDIDATE";
+            reason = "valuation " + claim.valuationOrdinal() + " reaches the"
+                    + " fatal arm: " + claim.kind()
+                    + (claim.movedRoots().isEmpty() ? ""
+                    : " " + claim.movedRoots())
+                    + (claim.polarityDecides()
+                    ? ", and the recorded valuation refutes the recording"
+                    : "");
+        } else if (decided && !anySat && !decision.outcomes().isEmpty()) {
+            kind = "UNSAT_CLOSED";
+            reason = "every enumerated valuation is decided and unsat: the"
+                    + " declared roots do not reach the fatal arm on the"
+                    + " paths this corpus admits";
+        } else {
+            kind = "INCONCLUSIVE_PARTIAL";
+            reason = decision.outcomes().isEmpty()
+                    ? "no path of this corpus reached the declared"
+                    + " occurrence"
+                    : "the solver left a valuation undecided, so neither a"
+                    + " witness nor a refutation is closed";
+        }
+        JsonObject row = new JsonObject();
+        row.addProperty("claim", kind);
+        row.addProperty("claimReason", reason);
+        row.addProperty("findingKind", claim.kind().name());
+        row.addProperty("valuationOrdinal", claim.valuationOrdinal());
+        row.addProperty("polarityDecides", claim.polarityDecides());
+        row.add("movedRoots", GSON.toJsonTree(claim.movedRoots()));
+        row.add("blockers", refusals(claim));
+        row.addProperty("blockerCount", blockers);
+        row.addProperty("whyNotAccepted",
+                "SAT_CANDIDATE".equals(kind) || "UNSAT_CLOSED".equals(kind)
+                        ? "" : reason);
+        JsonArray findings = new JsonArray();
+        if (claim.kind() != ClaimKind.NO_SUPPORTED_WITNESS) {
+            JsonObject finding = new JsonObject();
+            finding.addProperty("findingKind", claim.kind().name());
+            finding.addProperty("valuationOrdinal",
+                    claim.valuationOrdinal());
+            finding.add("movedRoots", GSON.toJsonTree(claim.movedRoots()));
+            finding.addProperty("polarityDecides", claim.polarityDecides());
+            findings.add(finding);
+        }
+        row.add("witnessFindings", findings);
+        JsonObject rootSpace = new JsonObject();
+        rootSpace.addProperty("acceptedFindingKind",
+                claim.kind() == ClaimKind.NO_SUPPORTED_WITNESS ? ""
+                        : claim.kind().name());
+        rootSpace.add("reportedFindings", findings);
+        row.add("rootSpace", rootSpace);
+        return row;
+    }
+
+    private static JsonArray symbolicVariableModels(
+            Composer.Composition composition,
+            ClaimPolicy.Decision decision) {
+        JsonArray models = new JsonArray();
+        Claim claim = decision.claim();
+        if (claim.kind() == ClaimKind.NO_SUPPORTED_WITNESS) return models;
+        for (ClaimPolicy.Outcome outcome : decision.outcomes()) {
+            if (outcome.valuation().ordinal() != claim.valuationOrdinal()
+                    || !outcome.answer().sat()) {
+                continue;
+            }
+            JsonObject model = new JsonObject();
+            model.addProperty("schemaVersion", 1);
+            model.addProperty("kind", "SYMBOLIC_VARIABLE_MODEL");
+            model.addProperty("valuationOrdinal",
+                    outcome.valuation().ordinal());
+            JsonArray variables = new JsonArray();
+            for (Map.Entry<String, String> value
+                    : outcome.valuation().assignment().entrySet()) {
+                RootDomain domain = null;
+                for (RootDomain candidate : composition.roots()) {
+                    if (candidate.rootId().equals(value.getKey())) {
+                        domain = candidate;
+                        break;
+                    }
+                }
+                JsonObject variable = new JsonObject();
+                variable.addProperty("inputKind", "CONFIGURED_SOURCE_FIELD");
+                variable.addProperty("sourceKey", value.getKey());
+                variable.addProperty("sourceId", value.getKey());
+                variable.addProperty("sourcePhaseId",
+                        composition.anchor().render());
+                variable.addProperty("fieldSignature", domain == null
+                        ? value.getKey() : domain.kind().name());
+                variable.addProperty("value", value.getValue());
+                variables.add(variable);
+            }
+            model.add("variables", variables);
+            models.add(model);
+        }
+        return models;
+    }
+
+    private static JsonArray valuations(ClaimPolicy.Decision decision) {
         JsonArray valuations = new JsonArray();
         for (ClaimPolicy.Outcome outcome : decision.outcomes()) {
             JsonObject answer = new JsonObject();
             answer.addProperty("ordinal", outcome.valuation().ordinal());
             answer.addProperty("status", outcome.answer().status());
+            answer.add("assignment",
+                    GSON.toJsonTree(outcome.valuation().assignment()));
             answer.add("moved",
                     GSON.toJsonTree(outcome.valuation().moved()));
             answer.addProperty("selectedPathId", outcome.selected() == null
                     ? "" : outcome.selected().path().pathId());
-            answer.addProperty("selectedSessionId", outcome.selected() == null
-                    ? "" : outcome.selected().path().sessionId());
+            answer.addProperty("selectedSessionId",
+                    outcome.selected() == null ? ""
+                            : outcome.selected().path().sessionId());
             answer.addProperty("fatalObserved", outcome.selected() != null
                     && outcome.selected().fatalObserved());
             JsonArray core = new JsonArray();
@@ -146,13 +337,52 @@ public final class ComposeMain {
             answer.add("unsatCore", core);
             valuations.add(answer);
         }
-        row.add("valuations", valuations);
-        JsonArray gaps = new JsonArray();
-        for (GapRow gap : decision.claim().gaps()) {
-            gaps.add(RowCodec.writeGap(gap));
-        }
-        row.add("gaps", gaps);
+        return valuations;
+    }
+
+    private static JsonObject claim(Composer.Composition composition,
+                                    ClaimPolicy.Decision decision,
+                                    Solver solver) {
+        JsonObject row = new JsonObject();
+        row.addProperty("schemaVersion", 1);
+        row.addProperty("kind", "D3_CLAIM");
+        row.addProperty("anchor", composition.anchor().render());
+        row.add("claim", GSON.toJsonTree(decision.claim()));
+        row.addProperty("solverRuns", solver.runs());
+        row.addProperty("seedSessionId",
+                composition.seedSessionId() == null ? ""
+                        : composition.seedSessionId());
+        row.add("valuations", valuations(decision));
+        row.add("gaps", gaps(decision.claim().gaps()));
         return row;
+    }
+
+    private static int blocking(Claim claim) {
+        int blockers = 0;
+        for (GapRow gap : claim.gaps()) {
+            if (gap.cls() == GapClass.BLOCKING) blockers++;
+        }
+        return blockers;
+    }
+
+    private static JsonArray refusals(Claim claim) {
+        JsonArray rows = new JsonArray();
+        for (GapRow gap : claim.gaps()) {
+            if (gap.cls() != GapClass.BLOCKING) continue;
+            JsonObject row = new JsonObject();
+            row.addProperty("kind", gap.kind().name());
+            row.addProperty("subject", gap.subject());
+            row.addProperty("detail", gap.detail());
+            row.addProperty("sessionId", gap.sessionId());
+            rows.add(row);
+        }
+        return rows;
+    }
+
+    private static JsonArray gaps(java.util.List<GapRow> gaps) {
+        JsonArray rows = new JsonArray();
+        for (GapRow gap : gaps) rows.add(RowCodec.writeGap(gap));
+        return rows;
     }
 
     private static String summary(OccurrenceAddress anchor,
@@ -171,6 +401,9 @@ public final class ComposeMain {
     }
 
     private static void write(Path file, JsonObject row) throws IOException {
+        if (file.getParent() != null) {
+            Files.createDirectories(file.getParent());
+        }
         Files.write(file, (GSON.toJson(row) + "\n")
                 .getBytes(StandardCharsets.UTF_8));
     }
@@ -209,13 +442,15 @@ public final class ComposeMain {
         return domains;
     }
 
-    /** The CLI. */
+    /** The CLI, in both the campaign's spelling and the brief's. */
     public static final class Arguments {
+        /** The iteration directory; {@code --sessions} names its child. */
         public Path iteration;
-        public String targetOccurrence = "";
+        public String anchor = "";
         public Path rootDomains;
         public int maxValuations = 64;
-        public Path out;
+        public Path output;
+        public Path manifest;
         public Path z3 = Paths.get("z3");
         public long timeoutMillis = 20000L;
 
@@ -231,12 +466,16 @@ public final class ComposeMain {
                 values.put(name, value);
             }
             Arguments arguments = new Arguments();
-            arguments.iteration = path(values.get("iteration"));
-            arguments.targetOccurrence = values.containsKey(
-                    "target-occurrence")
-                    ? values.get("target-occurrence") : "";
+            // --sessions names <iteration>/sessions; --iteration names the
+            // directory that holds it.  Both spellings, one corpus.
+            Path sessions = path(values.get("sessions"));
+            arguments.iteration = sessions != null
+                    ? sessions.getParent() == null ? sessions
+                    : sessions.getParent()
+                    : path(values.get("iteration"));
+            arguments.anchor = text(values, "anchor",
+                    text(values, "target-occurrence", ""));
             arguments.rootDomains = path(values.get("root-domains"));
-            arguments.out = path(values.get("out"));
             arguments.z3 = values.containsKey("z3")
                     && !values.get("z3").isEmpty()
                     ? Paths.get(values.get("z3")) : Paths.get("z3");
@@ -244,17 +483,37 @@ public final class ComposeMain {
                     64);
             arguments.timeoutMillis = integer(values.get("timeout-ms"),
                     20000);
+            Path out = path(values.get("out"));
+            arguments.output = path(values.get("output"));
+            arguments.manifest = path(values.get("manifest"));
+            if (out != null) {
+                if (arguments.output == null) {
+                    arguments.output = out.resolve("candidate.smt2");
+                }
+                if (arguments.manifest == null) {
+                    arguments.manifest = out.resolve("manifest.json");
+                }
+            }
             if (arguments.iteration == null) {
-                throw new IllegalArgumentException("--iteration is required");
-            }
-            if (arguments.targetOccurrence.isEmpty()) {
                 throw new IllegalArgumentException(
-                        "--target-occurrence is required");
+                        "--sessions (or --iteration) is required");
             }
-            if (arguments.out == null) {
-                throw new IllegalArgumentException("--out is required");
+            if (arguments.anchor.isEmpty()) {
+                throw new IllegalArgumentException(
+                        "--anchor (or --target-occurrence) is required: the"
+                                + " declared occurrence is the anchor");
+            }
+            if (arguments.output == null || arguments.manifest == null) {
+                throw new IllegalArgumentException(
+                        "--output and --manifest (or --out) are required");
             }
             return arguments;
+        }
+
+        private static String text(Map<String, String> values, String key,
+                                   String absent) {
+            String value = values.get(key);
+            return value == null || value.isEmpty() ? absent : value;
         }
 
         private static Path path(String value) {
