@@ -22,6 +22,42 @@ import static org.junit.Assert.assertTrue;
 /** Core contracts for the linked region-path worklist. */
 public class RegionPathWorklistTest {
 
+    /**
+     * The laneBK shape: the target task published no summary at all.
+     *
+     * <p>Its replay ran, but the region's own decisions came back with the
+     * symbolic gate closed and the runtime published no target reach, so the
+     * importer wrote no summary for it and this planner is handed a task
+     * with no observed path.  There is nothing to explore and nothing to
+     * seed from, which is exactly what NO_OBSERVED_PATH_SEED says.  The
+     * worklist states it and is GAPPED; it is not a campaign failure, and
+     * the wave publishes it as that member's closure so the named gap
+     * reaches the gap report and withholds the claim there.</p>
+     */
+    @Test
+    public void aTaskWithNoObservedSummaryIsGappedAndNamesTheMissingSeed() {
+        JsonObject task = task("T", "REGION.T", "REGION.T/occurrence-1");
+
+        RegionPathWorklist.Result result = RegionPathWorklist.plan(
+                Collections.<JsonObject>emptyList(),
+                Collections.singletonList(task),
+                Collections.<JsonObject>emptyList(),
+                RegionPathWorklist.Bounds.defaults(),
+                CanonicalJson.sha256("laneBK-family-snapshot"));
+
+        assertTrue(result.tasks.isEmpty());
+        assertEquals(RegionPathWorklist.State.GAPPED.name(),
+                result.manifest.get("state").getAsString());
+        assertEquals("SEED_ONLY",
+                result.manifest.get("coverageState").getAsString());
+        JsonArray gaps = result.manifest.getAsJsonArray("gaps");
+        assertEquals(1, gaps.size());
+        assertEquals("NO_OBSERVED_PATH_SEED",
+                gaps.get(0).getAsJsonObject().get("kind").getAsString());
+        assertEquals("REGION_PATH_SEED_REQUIRED",
+                gaps.get(0).getAsJsonObject().get("reason").getAsString());
+    }
+
     @Test
     public void observedOppositeOutcomesCloseTheSemanticFlip() {
         JsonObject task = task("B", "REGION.B",
