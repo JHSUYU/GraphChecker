@@ -129,6 +129,14 @@ public final class ConcolicPathFlipPlanner {
         private final SymbolicRootInventory roots;
         /** One in-session resolver per replay of this wave's corpus. */
         private final java.util.Map<String, InSessionReadResolver> resolvers;
+        /**
+         * The wave's handoff families: what each wire delivery of this
+         * corpus may be.  An obligation answers a handoff, and the replay
+         * applies that answer at the attach, so an unconstrained v_H let
+         * the solver hypothesise values no producer makes.  The arms are
+         * the corpus's own, selected here where every replay's rows are.
+         */
+        private final HandoffFamilyRows.Corpus families;
         /** One verification of the wave's table, shared by every member. */
         private final SharedExpressionTable.Compactor compactor =
                 new SharedExpressionTable.Compactor();
@@ -138,7 +146,9 @@ public final class ConcolicPathFlipPlanner {
                      List<JsonObject> allRecords,
                      String topologyEpoch,
                      RegionPathWorklist.Bounds bounds,
-                     SymbolicRootInventory roots) {
+                     SymbolicRootInventory roots,
+                     HandoffFamilyRows.Corpus families) {
+            this.families = families;
             this.allExecutionTasks = allExecutionTasks;
             this.allSummaries = allSummaries;
             this.deliveredHandoffPorts =
@@ -175,6 +185,14 @@ public final class ConcolicPathFlipPlanner {
             // plan that declares them.
             SymbolicRootInventory roots = SymbolicRootInventory.of(
                     observedSummaries, allExecutionTasks);
+            // What the case declares its roots may be.  A family arm is
+            // only as constraining as the roots inside it -- "v_H is the
+            // serial number" says nothing while the serial number is free
+            // -- and the case file is the one authority on that, exactly
+            // as it is for the composition.  Absent, every root is pinned
+            // to what the recording read, which is the composition's
+            // default too.
+            String domains = optional(options, "root-domains");
             return new Wave(allExecutionTasks, observedSummaries,
                     rows(options, "records"),
                     optional(options, "topology-epoch"),
@@ -184,7 +202,9 @@ public final class ConcolicPathFlipPlanner {
                             count(options, "max-flips-per-path",
                                     defaults.maxFlipsPerPath),
                             count(options, "max-tasks", defaults.maxTasks)),
-                    roots);
+                    roots,
+                    HandoffFamilyRows.Corpus.of(observedSummaries,
+                            domains.isEmpty() ? null : Paths.get(domains)));
         }
 
         /** Publishes one member's worklist and manifest; returns the manifest. */
@@ -244,6 +264,15 @@ public final class ConcolicPathFlipPlanner {
                 // the group; no boundary, no write log, no inference.
                 controlBySymbol(task, replay, allSummaries,
                         result.manifest);
+                // And what each of those handoffs may be answered with.
+                // The obligation's model is applied at the attach by the
+                // next replay, so a control with no family is a control the
+                // solver may answer with a value the system never produces:
+                // 17897's five block-key handoffs were answered 1,1,1,1,0
+                // beside recordings of 119992..119995, the replay threw,
+                // and every composition then refused the path.  The arms
+                // are the same rows the composition merges.
+                HandoffFamilyRows.attach(task, families);
                 JsonObject bundle = LinkedReplayBundle.create(
                         optionalString(task, "sourceTaskId"),
                         allExecutionTasks, allSummaries,

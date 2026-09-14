@@ -134,8 +134,17 @@ public final class ConcolicConstraintSolver {
                 writableReplayControlSymbols, actions);
         stateClockWindows(encoder, replayFrontier, actions,
                 clockSkewMillis);
+        // What the handoffs this obligation flips through may be answered
+        // with.  The model's assignment to a v_H is applied at the attach by
+        // the next replay, so a control with nothing constraining it is one
+        // the solver may answer with a value the system never produces.
+        JsonArray handoffFamilies = stateHandoffFamilies(encoder, task,
+                clockSkewMillis);
         String smt = encoder.finish();
         JsonObject record = baseRecord(query.queryKey);
+        if (handoffFamilies.size() > 0) {
+            record.add("handoffFamilies", handoffFamilies);
+        }
         record.add("unsupported", strings(encoder.unsupported));
         if (!encoder.unsupported.isEmpty()) {
             record.addProperty("status", "UNSUPPORTED");
@@ -462,6 +471,51 @@ public final class ConcolicConstraintSolver {
         }
 
         private Encoder() {
+        }
+
+        /**
+         * One expression as a Boolean term, without asserting it.
+         *
+         * <p>A family arm is a conjunction the query may only take as a
+         * whole, and one of several: it has to be built before anything is
+         * asserted.  Returns {@code ""} when the expression does not lower
+         * to a Boolean, which is the caller's signal to drop that arm
+         * rather than to refuse the obligation.</p>
+         */
+        private String booleanTerm(JsonElement expression, String origin) {
+            if (expression == null || !expression.isJsonObject()) return "";
+            JsonObject object = expression.getAsJsonObject();
+            if ("MethodExpression".equals(optionalString(object, "_type"))) {
+                return methodConstraint(object, origin);
+            }
+            Term term = term(expression, null, origin);
+            return term != null && term.sort == Sort.BOOL ? term.text : "";
+        }
+
+        /**
+         * {@code v_H = e_q}, against the symbol as this query declared it.
+         *
+         * <p>The control row's own {@code javaType} is not imposed on the
+         * bind: a row stating {@code I} beside a predicate that read the
+         * same wire value as a {@code J} is an integral-width conflict, and
+         * what would then be dropped is the arm rather than the
+         * disagreement.  The symbol is declared from the control only when
+         * the query has not already read it.</p>
+         */
+        private String bindTerm(String raw, String javaType,
+                                JsonElement delivered, String origin) {
+            if (names.get(raw) == null) {
+                term(symbolExpression(raw, javaType), null, origin + ":v_H");
+            }
+            SymbolNames declared = names.get(raw);
+            if (declared == null || declared.sort == null
+                    || declared.sort.floating()
+                    || declared.sort.containerState()) {
+                return "";
+            }
+            Term value = term(delivered, declared.sort, origin);
+            if (value == null || value.sort != declared.sort) return "";
+            return "(= " + declared.solver + " " + value.text + ")";
         }
 
         private Set<String> addConstraint(
@@ -1347,6 +1401,273 @@ public final class ConcolicConstraintSolver {
             controls.putIfAbsent(raw, row);
         }
         return controls;
+    }
+
+    /**
+     * Constrains every handoff control by its family in the corpus.
+     *
+     * <p>An exploration obligation is a flip query: the path as one replay
+     * ran it, plus one flipped decision.  Its model assigns the consumer's
+     * {@code v_H} at every handoff the flipped predicate reads, and the next
+     * replay applies that value at the attach.  Left free, those controls
+     * are "any value at all": on hdfs-17897 the solver answered five
+     * block-key handoffs with {@code 1, 1, 1, 1, 0} beside recordings of
+     * 119992..119995, no producer of that corpus can deliver a 0 or a 1, the
+     * replay threw at the consumer, and the composition then refused every
+     * path so answered.  The search spent its waves on values the system
+     * does not produce.</p>
+     *
+     * <p>The rule, and it is the composition's own: {@code v_H} equals the
+     * expression some producer path of that handoff phase delivered, under
+     * that replay's prefix and the valuation it ran under --
+     * {@code OR_q (pi_q AND val_q AND v_H = e_q)} -- with the rows selected
+     * by {@link HandoffFamilyRows} so the two hosts cannot drift.  The
+     * answered value the replay applies is still the model's; what changes
+     * is that the model may only choose one some producer can make.</p>
+     *
+     * <p>Where the corpus has no arm -- {@code elementAbsent} rows, a
+     * producer outside the slice, a phase nothing exported -- the control
+     * stays free and the row says {@code unproducible}, so a later
+     * composition refusing that path is an expected outcome rather than a
+     * surprise.  An arm that does not lower is dropped and counted, never
+     * silently treated as satisfied and never allowed to refuse the whole
+     * obligation.</p>
+     */
+    private static JsonArray stateHandoffFamilies(Encoder encoder,
+                                                  JsonObject task,
+                                                  long clockSkewMillis) {
+        JsonArray published = new JsonArray();
+        Map<String, JsonObject> controls = handoffControls(task);
+        if (controls.isEmpty()) return published;
+        boolean constrained = false;
+        for (Map.Entry<String, JsonObject> entry : controls.entrySet()) {
+            String raw = entry.getKey();
+            JsonObject control = entry.getValue();
+            JsonObject row = new JsonObject();
+            row.addProperty("handoffSymbol", raw);
+            row.addProperty(InSessionReadResolver.HANDOFF_PHASE_ID,
+                    optionalString(control,
+                            InSessionReadResolver.HANDOFF_PHASE_ID));
+            JsonArray arms = array(control, HandoffFamilyRows.ARMS);
+            List<String> disjuncts = new ArrayList<>();
+            Set<String> notLowered = new LinkedHashSet<>();
+            int dropped = 0;
+            for (JsonElement encoded : arms) {
+                if (!encoded.isJsonObject()) continue;
+                String term = armTerm(encoder, raw,
+                        optionalString(control, "javaType"),
+                        encoded.getAsJsonObject(),
+                        "handoff_family:" + raw + ":" + disjuncts.size(),
+                        clockSkewMillis, notLowered);
+                if (term.isEmpty()) {
+                    dropped++;
+                } else if (!disjuncts.contains(term)) {
+                    disjuncts.add(term);
+                }
+            }
+            row.addProperty("arms", disjuncts.size());
+            if (dropped > 0) {
+                row.addProperty("armsNotLowered", dropped);
+                // Why, by name: an arm the encoder cannot express is one the
+                // family silently loses, and a family that loses every arm
+                // reads exactly like a phase no producer delivered.
+                row.add("armsNotLoweredBecause", strings(notLowered));
+            }
+            if (disjuncts.isEmpty()) {
+                // A control the corpus says nothing about stays free, and
+                // the row states that rather than the query pretending to.
+                row.addProperty(HandoffFamilyRows.UNPRODUCIBLE, true);
+                JsonArray refusals = array(control,
+                        HandoffFamilyRows.REFUSALS);
+                if (refusals.size() > 0) {
+                    row.add(HandoffFamilyRows.REFUSALS, refusals.deepCopy());
+                }
+            } else {
+                encoder.assertions.add(disjunction(disjuncts));
+                constrained = true;
+            }
+            published.add(row);
+        }
+        // A family arm is only as constraining as the roots inside it: "the
+        // arriving key id is the NameNode's serial number" says nothing at
+        // all while that serial number is free.  A root the case declares a
+        // domain for is free INSIDE it, which is what makes the answer a
+        // rotation the producer could have made; a root the case declares
+        // nothing about keeps the freedom exploration already gave it,
+        // because pinning it here would be this stage refusing to vary what
+        // it exists to vary.
+        if (constrained) {
+            for (JsonElement encoded : array(task,
+                    HandoffFamilyRows.ROOTS)) {
+                if (!encoded.isJsonObject()) continue;
+                JsonObject root = encoded.getAsJsonObject();
+                if (optionalBool(root, HandoffFamilyRows.WALL_CLOCK, false)) {
+                    continue;
+                }
+                String min = optionalString(root,
+                        PathMergeComposer.DECLARED_DOMAIN_MIN);
+                String max = optionalString(root,
+                        PathMergeComposer.DECLARED_DOMAIN_MAX);
+                if (min.isEmpty() || max.isEmpty()) continue;
+                String symbol = optionalString(root, "rawSymbol");
+                String javaType = optionalString(root, "javaType");
+                encoder.addConstraint(comparison(">=", symbol, min,
+                        javaType), "handoff_family_root_min:" + symbol);
+                encoder.addConstraint(comparison("<=", symbol, max,
+                        javaType), "handoff_family_root_max:" + symbol);
+            }
+        }
+        return published;
+    }
+
+    /** One family arm as a single term, or {@code ""} when it does not
+     *  lower. */
+    private static String armTerm(Encoder encoder, String handoffSymbol,
+                                  String javaType, JsonObject arm,
+                                  String origin, long clockSkewMillis,
+                                  Set<String> notLowered) {
+        // An arm that does not lower must leave nothing behind: the
+        // obligation is refused UNSUPPORTED on the union of what the encoder
+        // could not express, and a dropped arm is not the obligation's
+        // fault.  Everything else the lowering added -- definedness, range
+        // side conditions -- is a true statement about the encoding and
+        // stays.
+        Set<String> before = new LinkedHashSet<>(encoder.unsupported);
+        List<String> terms = new ArrayList<>();
+        boolean lowered = true;
+        for (JsonElement decision : array(arm, HandoffFamilyRows.PREFIX)) {
+            String term = encoder.booleanTerm(decision, origin + ":pi");
+            if (term.isEmpty()) {
+                lowered = false;
+                break;
+            }
+            terms.add(term);
+        }
+        if (lowered) {
+            for (JsonElement encoded
+                    : array(arm, HandoffFamilyRows.VALUATION)) {
+                if (!encoded.isJsonObject()) continue;
+                JsonObject stated = encoded.getAsJsonObject();
+                String symbol = optionalString(stated, "rawSymbol");
+                String rootType = optionalString(stated, "javaType");
+                String value = optionalString(stated, "value");
+                // A clock is not an assignment a replay ran under: every
+                // execution reads it fresh.  Under an unbounded skew the
+                // case states no window at all, so the arm states none.
+                if (optionalBool(stated, HandoffFamilyRows.WALL_CLOCK, false)) {
+                    if (ClockRootPhysics.unbounded(clockSkewMillis)) continue;
+                    String low = shifted(value, -clockSkewMillis);
+                    String high = shifted(value, clockSkewMillis);
+                    if (low.isEmpty() || high.isEmpty()) continue;
+                    String lower = encoder.booleanTerm(comparison(">=",
+                            symbol, low, rootType), origin + ":clock");
+                    String upper = encoder.booleanTerm(comparison("<=",
+                            symbol, high, rootType), origin + ":clock");
+                    if (lower.isEmpty() || upper.isEmpty()) {
+                        lowered = false;
+                        break;
+                    }
+                    terms.add(lower);
+                    terms.add(upper);
+                    continue;
+                }
+                String term = encoder.booleanTerm(comparison("==", symbol,
+                        value, rootType), origin + ":valuation");
+                if (term.isEmpty()) {
+                    lowered = false;
+                    break;
+                }
+                terms.add(term);
+            }
+        }
+        if (lowered) {
+            String term = encoder.bindTerm(handoffSymbol, javaType,
+                    arm.get(HandoffFamilyRows.DELIVERED), origin + ":bind");
+            if (term.isEmpty()) {
+                lowered = false;
+            } else {
+                terms.add(term);
+            }
+        }
+        if (!lowered || terms.isEmpty()) {
+            for (String reason : encoder.unsupported) {
+                if (!before.contains(reason)) {
+                    notLowered.add(reason.startsWith(origin)
+                            ? reason.substring(origin.length()) : reason);
+                }
+            }
+            if (terms.isEmpty() && lowered) notLowered.add(":EMPTY_ARM");
+            encoder.unsupported.retainAll(before);
+            return "";
+        }
+        return conjunction(terms);
+    }
+
+    /**
+     * One symbol leaf in the VM's own expression IR.
+     *
+     * <p>The Java type is carried, not left to the raw name: this encoder
+     * sorts a symbol from {@code _java_type} alone and refuses one without
+     * it, which is what silently dropped every family arm the first time --
+     * every bind read {@code UNSUPPORTED_SYMBOL_TYPE:MISSING} and each
+     * family then looked exactly like a phase no producer delivered.</p>
+     */
+    private static JsonObject symbolExpression(String raw, String javaType) {
+        JsonObject node = new JsonObject();
+        node.addProperty("_type", "SymbolExpression");
+        if (!javaType.isEmpty()) node.addProperty("_java_type", javaType);
+        node.addProperty("_exp", raw);
+        return node;
+    }
+
+    /**
+     * One root against one literal, in the VM's own expression IR.
+     *
+     * <p>A Boolean is spelled the way the VM spells one -- a declared fault
+     * marker's reading is the word {@code true}, and handing that to the
+     * codec as a constant payload is {@code INVALID_JAVA_BOOLEAN_LITERAL},
+     * which dropped every arm of bug3's five handoffs on the first run.</p>
+     */
+    private static JsonObject comparison(String operator, String symbol,
+                                         String value, String javaType) {
+        JsonObject literal = new JsonObject();
+        literal.addProperty("_type", "ConstExpr");
+        boolean truth = "true".equals(value) || "false".equals(value);
+        literal.addProperty("_java_type", truth ? "Z"
+                : javaType.isEmpty() ? "J" : javaType);
+        literal.addProperty("_exp", truth
+                ? "true".equals(value) ? "Y_Z_1" : "Y_Z_0" : value);
+        JsonObject node = new JsonObject();
+        node.addProperty("_type", "BinaryExpression");
+        node.addProperty("_op", operator);
+        node.add("_left", symbolExpression(symbol,
+                truth ? "Z" : javaType));
+        node.add("_right", literal);
+        return node;
+    }
+
+    /** One reading moved by a skew, or "" when it is not an integer. */
+    private static String shifted(String value, long delta) {
+        try {
+            return new BigInteger(value.trim())
+                    .add(BigInteger.valueOf(delta)).toString();
+        } catch (NumberFormatException notAnInteger) {
+            return "";
+        }
+    }
+
+    private static String conjunction(List<String> terms) {
+        if (terms.size() == 1) return terms.get(0);
+        StringBuilder text = new StringBuilder("(and");
+        for (String term : terms) text.append(' ').append(term);
+        return text.append(')').toString();
+    }
+
+    private static String disjunction(List<String> terms) {
+        if (terms.size() == 1) return terms.get(0);
+        StringBuilder text = new StringBuilder("(or");
+        for (String term : terms) text.append(' ').append(term);
+        return text.append(')').toString();
     }
 
     private static ModelProjection modelAssignments(
