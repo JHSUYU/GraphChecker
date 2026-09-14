@@ -6,7 +6,6 @@ import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.concolic.CanonicalJson;
 import edu.uva.liftlab.graphchecker.concolic.LocalCaseIdentity;
 import edu.uva.liftlab.graphchecker.concolic.SummaryBranchMapping;
-import edu.uva.liftlab.graphchecker.concolic.VmHandoffEvidence;
 
 import java.math.BigDecimal;
 import java.util.ArrayList;
@@ -268,12 +267,6 @@ public final class PathObservation {
             event.addProperty("outcome", outcome);
             return event;
         }
-    }
-
-    /** VM handoffs attached by this path, keyed by stable expression
-     *  handles and case-local source anchors. */
-    public java.util.List<JsonObject> vmHandoffEvents() {
-        return VmHandoffEvidence.eventsOf(raw);
     }
 
     public String flipKey(SummaryBranchMapping mapping,

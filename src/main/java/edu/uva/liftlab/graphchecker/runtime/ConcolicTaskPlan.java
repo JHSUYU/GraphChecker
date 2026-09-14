@@ -12,7 +12,6 @@ import edu.uva.liftlab.graphchecker.contract.ConfiguredSourcePhaseContract;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.ExecutionTask;
 import edu.uva.liftlab.graphchecker.contract.FieldPathSpec;
-import edu.uva.liftlab.graphchecker.contract.HandoffPhaseContract;
 import edu.uva.liftlab.graphchecker.contract.FieldPathSpec.DeclaredField;
 import edu.uva.liftlab.graphchecker.contract.InputActionCatalog;
 import edu.uva.liftlab.graphchecker.contract.JavaContainerTypes;
@@ -1534,7 +1533,7 @@ final class ConcolicTaskPlan {
          */
         private boolean answersHandoffPhase(ModelAssignment assignment) {
             String phaseId = assignment.configuredSourcePhaseId;
-            if (!HandoffPhaseContract.isPhaseId(phaseId)
+            if (!ConcolicRegionRuntime.isHandoffMintKey(phaseId)
                     || assignment.hasContainerTarget()
                     || !assignment.matchesConfiguredSource(phaseId, phaseId,
                     "")) {
@@ -1544,7 +1543,7 @@ final class ConcolicTaskPlan {
                     : communicationHandoffs.values()) {
                 if (site.outgoing()) continue;
                 if (assignment.engineSymbol.contains(
-                        HandoffPhaseContract.engineLabelForPhase(phaseId,
+                        ConcolicRegionRuntime.handoffMintLabelFor(phaseId,
                                 site.portId()))) {
                     return true;
                 }
