@@ -12,14 +12,11 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.Arrays;
 import java.util.Collections;
 
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
 
 /**
  * The campaign claim rests on one occurrence of the annotated target, and it
@@ -50,12 +47,7 @@ public class TargetOccurrenceElectionTest {
      * elected and the skip keeps its stated reason.
      */
     @Test
-    public void targetOccurrenceElectionRules() throws Exception {
-        anUnobservedOccurrenceIsReportedAndNeverElected();
-        oneOccurrenceIsItsOwnClaim();
-    }
-
-    private void anUnobservedOccurrenceIsReportedAndNeverElected()
+    public void anUnobservedOccurrenceIsReportedAndNeverElected()
             throws IOException {
         JsonObject skipped = new JsonObject();
         skipped.addProperty("occurrenceId", DATANODE_HANDSHAKE);
@@ -64,9 +56,7 @@ public class TargetOccurrenceElectionTest {
                 TargetOccurrenceElection.SKIPPED_UNOBSERVED);
         skipped.addProperty("detail", "no linked summary carried its read");
         JsonObject ledger = TargetOccurrenceElection.elect(Arrays.asList(
-                composed(CLIENT_HANDSHAKE, "FINAL_READY", 0,
-                        ClaimPolicy.SAT_CANDIDATE, 0, 0),
-                skipped));
+                composed(CLIENT_HANDSHAKE), skipped));
         assertEquals(CLIENT_HANDSHAKE,
                 ledger.get("chosenOccurrenceId").getAsString());
         assertEquals(1, ledger.get("composedCount").getAsInt());
@@ -79,12 +69,12 @@ public class TargetOccurrenceElectionTest {
     }
 
     /** One occurrence is the ordinary case and says so without a comparison. */
-    private void oneOccurrenceIsItsOwnClaim() throws IOException {
+    @Test
+    public void oneOccurrenceIsItsOwnClaim() throws IOException {
         JsonObject ledger = TargetOccurrenceElection.elect(
-                Collections.singletonList(composed(CLIENT_HANDSHAKE,
-                        "FINAL_READY", 0, ClaimPolicy.SAT_CANDIDATE, 0, 0)));
+                Collections.singletonList(composed(CLIENT_HANDSHAKE)));
         assertEquals(1, ledger.get("occurrenceCount").getAsInt());
-        assertTrue(chosen(ledger, 0));
+        assertTrue(row(ledger, 0).get("chosen").getAsBoolean());
         assertTrue(ledger.get("electionReason").getAsString()
                 .contains("one occurrence"));
     }
@@ -94,50 +84,34 @@ public class TargetOccurrenceElectionTest {
                 .getAsJsonObject();
     }
 
-    private static boolean chosen(JsonObject ledger, int index) {
-        return row(ledger, index).get("chosen").getAsBoolean();
-    }
-
     /**
      * One occurrence's report, with the composition manifest and the solver
      * report it names actually written: the election reads its verdicts from
      * those artifacts and never from the report row.
      */
-    private JsonObject composed(String occurrence, String finalStatus,
-                                int refusals, String claim, int blockers,
-                                int acceptedValuationOrdinal) {
+    private JsonObject composed(String occurrence) {
         try {
             Path dir = folder.newFolder().toPath();
             JsonObject manifest = new JsonObject();
             manifest.addProperty("schemaVersion", 2);
             manifest.addProperty("kind", "CONCOLIC_COMPOSED_SMT");
-            manifest.addProperty("finalStatus", finalStatus);
-            JsonArray refusalRows = new JsonArray();
-            for (int index = 0; index < refusals; index++) {
-                JsonObject refusal = new JsonObject();
-                refusal.addProperty("reason", "TARGET_REACH_QUERY_ABSENT");
-                refusalRows.add(refusal);
-            }
-            manifest.add("finalStatusRefusals", refusalRows);
+            manifest.addProperty("finalStatus", "FINAL_READY");
+            manifest.add("finalStatusRefusals", new JsonArray());
 
             JsonObject rootSpace = new JsonObject();
-            rootSpace.addProperty("acceptedValuationOrdinal",
-                    acceptedValuationOrdinal);
+            rootSpace.addProperty("acceptedValuationOrdinal", 0);
             rootSpace.addProperty("acceptedWitnessKind",
-                    acceptedValuationOrdinal < 0 ? ""
-                            : "FLIPPED_PLANTED_MARKER");
+                    "FLIPPED_PLANTED_MARKER");
             JsonObject campaignClaim = new JsonObject();
-            campaignClaim.addProperty("claim", claim);
-            campaignClaim.addProperty("claimReason", claim + " on "
-                    + occurrence);
-            campaignClaim.addProperty("blockerCount", blockers);
+            campaignClaim.addProperty("claim", ClaimPolicy.SAT_CANDIDATE);
+            campaignClaim.addProperty("claimReason",
+                    ClaimPolicy.SAT_CANDIDATE + " on " + occurrence);
+            campaignClaim.addProperty("blockerCount", 0);
             campaignClaim.add("blockers", new JsonArray());
             campaignClaim.add("rootSpace", rootSpace);
             JsonObject reach = new JsonObject();
             reach.addProperty("state", "sat");
-            reach.addProperty("reachability",
-                    ClaimPolicy.SAT_CANDIDATE.equals(claim)
-                            ? "REACHABLE" : "UNREACHABLE");
+            reach.addProperty("reachability", "REACHABLE");
             reach.add("campaignClaim", campaignClaim);
             // SOLVE publishes into the manifest it solved: one occurrence,
             // one artifact.
@@ -145,7 +119,8 @@ public class TargetOccurrenceElectionTest {
 
             Path manifestPath = dir.resolve(
                     "candidate_composition_manifest.json");
-            write(manifestPath, manifest);
+            Files.write(manifestPath, JsonFields.WRITER.toJson(manifest)
+                    .getBytes(StandardCharsets.UTF_8));
 
             JsonObject report = new JsonObject();
             report.addProperty("occurrenceId", occurrence);
@@ -160,11 +135,5 @@ public class TargetOccurrenceElectionTest {
         } catch (IOException failure) {
             throw new IllegalStateException(failure);
         }
-    }
-
-    private static void write(Path path, JsonObject value)
-            throws IOException {
-        Files.write(path, JsonFields.WRITER.toJson(value)
-                .getBytes(StandardCharsets.UTF_8));
     }
 }

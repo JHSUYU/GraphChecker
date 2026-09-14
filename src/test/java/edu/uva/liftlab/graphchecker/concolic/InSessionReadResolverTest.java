@@ -3,10 +3,12 @@ package edu.uva.liftlab.graphchecker.concolic;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import org.junit.Test;
 
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.List;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -15,600 +17,234 @@ import static org.junit.Assert.assertTrue;
 /**
  * Inside one replay a read has a value, not a choice.
  *
- * <p>Each test states one way the value is found: the write this session
- * made, the producer expression that arrived over a wire, the literal a
- * write before tracking left behind, and the refusal that keeps a cyclic
- * expression from being followed forever.</p>
+ * <p>Each rule states one way that value is found -- the write this
+ * session made, the expression that arrived over a wire, the literal a write
+ * before tracking left behind -- and, where the replay published none of
+ * them, a refusal under its own name instead of a guess.</p>
  */
 public class InSessionReadResolverTest {
     private static final String ROOT = "M_I_field_SRC.serialNo";
+    private static final String HANDOFF = "M_I_HOFF.key_java/lang/Integer";
 
-    /** A read of a location this session wrote takes that write's value. */
+    /**
+     * A read takes the value this replay published for the location it read.
+     *
+     * <p>The write this session made; the literal a write before tracking
+     * left behind, tagged because the recording did not watch it being
+     * produced; the write live at the reading event; and the projection chain
+     * that walks symbolic object references back to the root.</p>
+     */
     @Test
-    public void inSessionReadResolverRules() throws Exception {
-        aReadTakesTheWriteThisSessionMade();
-        aWireArrivalResolvesToTheHandoffVariable();
-        aHandoffPointingAtItsOwnBoundaryIsNotACycle();
-        aValueOlderThanTheRecordingStaysALiteralAndSaysSo();
-        aCycleIsRefusedRatherThanFollowed();
-        aReadWithNoPublishedWriteIsRefused();
-        aReadCarryingOnlyTheOldCandidateArrayIsRefused();
-        aProjectionThroughObjectReferencesReachesTheRoot();
-        aProjectionOfATwiceWrittenFieldIsRefused();
-        aProjectionTakesTheWriteLiveAtItsOwnEvent();
-        aProjectionBeforeEveryWriteReadsTheInitialVersion();
-        aProjectionStatingItsObservedVersionTakesIt();
-        aProjectionWithNoVersionAndNoClockIsRefused();
-        aProjectionOverANonReferenceIsLeftAlone();
-        aFieldReadBoundaryResolvesThroughTheWriteLog();
-        anRpcAttachBoundaryWithoutAMintIsRefusedNotInlined();
-        aReadNamesTheVersionItObservedAndNothingElse();
-        anObservedInitialVersionIsStillMarked();
-    }
+    public void aReadTakesTheValueThisReplayPublished() {
+        check(ROOT, false, -1, read("INSTANCE_FIELD", 9, 56, 46,
+                version(44, "WRITE", symbol(ROOT))),
+                row("INSTANCE_FIELD", 9, 56,
+                        version(39, "INITIAL", constant(119981)),
+                        version(44, "WRITE", symbol(ROOT))));
 
-    private void aReadTakesTheWriteThisSessionMade() {
-        JsonObject row = row(versions("INSTANCE_FIELD", 9, 56,
-                version(39, "INITIAL", constant(119981)),
-                version(44, "WRITE", symbol(ROOT))));
-        InSessionReadResolver resolver = InSessionReadResolver.of(
-                Collections.singletonList(row));
+        // A value older than the recording stays a literal, and says so.
+        check("119980", true, -1, read("INSTANCE_FIELD", 4, 32, 15,
+                version(14, "INITIAL", constant(119980))),
+                row("INSTANCE_FIELD", 4, 32,
+                        version(14, "INITIAL", constant(119980))));
 
-        JsonElement resolved = resolver.resolve(read("INSTANCE_FIELD", 9, 56,
-                46, candidate(39, "INITIAL", constant(119981)),
-                candidate(44, "WRITE", symbol(ROOT))));
+        // hdfs-17899-bug3's fatal read: the value the DataNode received
+        // projects the sender's key, whose field projects the imported one,
+        // whose own field is the serial number the NameNode minted.
+        check(ROOT, false, -1, projection(178, 32),
+                row("INSTANCE_FIELD", 17, 32,
+                        version(48, "WRITE", symbol(ROOT))),
+                row("INSTANCE_FIELD", 159, 32,
+                        version(300, "WRITE", projection(17, 32))),
+                row("INSTANCE_FIELD", 178, 32,
+                        version(343, "WRITE", projection(159, 32))));
 
-        assertEquals("SymbolExpression",
-                resolved.getAsJsonObject().get("_type").getAsString());
-        assertEquals(ROOT, resolved.getAsJsonObject().get("_exp")
-                .getAsString());
-        assertFalse(InSessionReadResolver.unresolved(resolved));
-        assertFalse("a write this session made is not an INITIAL leaf",
-                resolved.getAsJsonObject().has(
-                        InSessionReadResolver.INITIAL_TAG));
-    }
-
-    /**
-     * A value that arrived over a wire resolves to the producer's own.
-     *
-     * <p>The VM substituted the sender's term into the boundary when the
-     * value arrived, so the boundary's inner expression already names the
-     * <em>producer's</em> location in the producer's numbering -- here the
-     * NameNode's key field, whose write this replay also published.  The
-     * matching {@code vmHandoffEvents} row records that the hop happened
-     * and who produced it; it points back at this same boundary rather than
-     * carrying a second expression, which is why following it instead would
-     * re-enter the node and refuse a determined value.</p>
-     */
-    private void aWireArrivalResolvesToTheHandoffVariable() {
-        // The producer's side of the wire: the NameNode wrote the key id.
-        JsonObject producer = row(versions("INSTANCE_FIELD", 24, 32,
-                version(81, "WRITE", symbol(ROOT))));
-        JsonObject consumer = row(versions("INSTANCE_FIELD", 91, 32,
-                version(195, "INITIAL", constant(0))));
-        consumer.add("vmHandoffEvents", handoffs(handoff(193,
-                boundary("RPC_ATTACH", 193, null))));
-        InSessionReadResolver resolver = InSessionReadResolver.of(
-                Arrays.asList(producer, consumer));
-
-        JsonElement resolved = resolver.resolve(boundary("RPC_ATTACH", 193,
-                read("INSTANCE_FIELD", 24, 32, 192,
-                        candidate(81, "WRITE", symbol(ROOT)))));
-
-        // The value that arrived is free in this replay's formula.  Which
-        // producer path delivered it, and under what conditions, is joined
-        // to it once at the handoff, by the composer -- not inlined here,
-        // where it would make a consumer flip need a producer replay.
-        assertEquals(HANDOFF, resolved.getAsJsonObject().get("_exp")
-                .getAsString());
-        assertFalse("a hop is not a cycle",
-                InSessionReadResolver.unresolved(resolved));
-    }
-
-    /**
-     * A handoff row that points back at its own boundary is not a cycle.
-     *
-     * <p>It cannot be one any more: the boundary answers with the variable
-     * its row mints and follows nothing.  The shape is kept because bug3
-     * records it, and a reader that started following the row again would
-     * re-enter this node.</p>
-     */
-    private void aHandoffPointingAtItsOwnBoundaryIsNotACycle() {
-        JsonObject producer = row(versions("INSTANCE_FIELD", 24, 32,
-                version(81, "WRITE", symbol(ROOT))));
-        JsonObject consumer = new JsonObject();
-        // Exactly the shape hdfs-17899-bug3 records: the event's expression
-        // is a reference to the anchor that defines the boundary itself.
-        JsonObject inner = read("INSTANCE_FIELD", 24, 32, 192,
-                candidate(81, "WRITE", symbol(ROOT)));
-        JsonObject self = boundary("RPC_ATTACH", 193, inner);
-        JsonObject definition = new JsonObject();
-        definition.addProperty("expressionAnchor", "EXPR.attach");
-        definition.add("expression", self);
-        JsonArray definitions = new JsonArray();
-        definitions.add(definition);
-        JsonObject table = new JsonObject();
-        table.add("definitions", definitions);
-        consumer.add("sharedExpressionTable", table);
-        consumer.add("vmHandoffEvents", handoffs(handoff(193,
-                reference("EXPR.attach"))));
-
-        JsonElement resolved = InSessionReadResolver.of(
-                Arrays.asList(producer, consumer)).resolve(
-                reference("EXPR.attach"));
-
-        assertFalse(InSessionReadResolver.unresolved(resolved));
-        assertEquals(HANDOFF, resolved.getAsJsonObject().get("_exp")
-                .getAsString());
-    }
-
-    /** A literal written before tracking stays a literal, and says so. */
-    private void aValueOlderThanTheRecordingStaysALiteralAndSaysSo() {
-        JsonObject row = row(versions("INSTANCE_FIELD", 4, 32,
-                version(14, "INITIAL", constant(119980))));
-        InSessionReadResolver resolver = InSessionReadResolver.of(
-                Collections.singletonList(row));
-
-        JsonElement resolved = resolver.resolve(read("INSTANCE_FIELD", 4, 32,
-                15, candidate(14, "INITIAL", constant(119980))));
-
-        JsonObject leaf = resolved.getAsJsonObject();
-        assertEquals("119980", leaf.get("_exp").getAsString());
-        assertTrue("the recording did not watch this value being produced",
-                leaf.get(InSessionReadResolver.INITIAL_TAG).getAsBoolean());
-        assertFalse(InSessionReadResolver.unresolved(resolved));
-    }
-
-    /** A self-referential definition is refused, not followed. */
-    private void aCycleIsRefusedRatherThanFollowed() {
-        JsonObject definition = new JsonObject();
-        definition.addProperty("expressionAnchor", "EXPR.loop");
-        definition.add("expression", reference("EXPR.loop"));
-        JsonArray definitions = new JsonArray();
-        definitions.add(definition);
-        JsonObject table = new JsonObject();
-        table.add("definitions", definitions);
-        JsonObject row = new JsonObject();
-        row.add("sharedExpressionTable", table);
-
-        JsonElement resolved = InSessionReadResolver.of(
-                Collections.singletonList(row)).resolve(
-                reference("EXPR.loop"));
-
-        assertTrue(InSessionReadResolver.unresolved(resolved));
-        assertTrue(resolved.getAsJsonObject()
-                .get(InSessionReadResolver.UNRESOLVED_REASON).getAsString()
-                .startsWith("cycle through"));
-    }
-
-    /** A read of a version nothing published is refused, not guessed. */
-    private void aReadWithNoPublishedWriteIsRefused() {
-        JsonElement resolved = InSessionReadResolver.of(
-                Collections.<JsonObject>emptyList()).resolve(
-                read("INSTANCE_FIELD", 9, 56, 46, bareCandidate(44)));
-
-        assertTrue(InSessionReadResolver.unresolved(resolved));
-    }
-
-    /**
-     * The changeover is over: the arm vocabulary is refused, not read.
-     *
-     * <p>While the VM was being changed this reader took either shape -- the
-     * stated {@code observedVersion}, or the {@code candidates} array with
-     * the newest of them taken as the one observed.  That second reading is
-     * exactly the inference the design deletes, and the VM does not publish
-     * the array any more, so a node carrying only it states no version and
-     * is refused by name.</p>
-     */
-    private void aReadCarryingOnlyTheOldCandidateArrayIsRefused() {
-        JsonObject node = new JsonObject();
-        node.addProperty("_type", "ReadFromExpression");
-        node.addProperty("readEventId", 46);
-        node.add("location", location("INSTANCE_FIELD", 9, 56));
-        JsonArray candidates = new JsonArray();
-        candidates.add(candidate(39, "INITIAL", constant(119981)));
-        candidates.add(candidate(44, "WRITE", symbol(ROOT)));
-        node.add("candidates", candidates);
-        JsonObject row = row(versions("INSTANCE_FIELD", 9, 56,
-                version(39, "INITIAL", constant(119981)),
-                version(44, "WRITE", symbol(ROOT))));
-
-        JsonElement resolved =
-                InSessionReadResolver.of(Arrays.asList(row)).resolve(node);
-
-        assertTrue(InSessionReadResolver.unresolved(resolved));
-        String reason = resolved.getAsJsonObject()
-                .get(InSessionReadResolver.UNRESOLVED_REASON).getAsString();
-        assertTrue(reason,
-                reason.contains(InSessionReadResolver.OBSERVED_VERSION));
-    }
-
-    /**
-     * A key id crosses two objects and a wire, and lands on the root.
-     *
-     * <p>The shape hdfs-17899-bug3 records at the fatal read: the value the
-     * DataNode received projects the sender's {@code DataEncryptionKey},
-     * whose own field projects the imported {@code BlockKey}, whose own field
-     * is the serial number the NameNode minted.  Three projections, one
-     * replay, no arms -- each owner is a symbolic object reference, and each
-     * reference plus offset names a location this replay published.</p>
-     */
-    private void aProjectionThroughObjectReferencesReachesTheRoot() {
-        JsonObject minted = row(versions("INSTANCE_FIELD", 17, 32,
-                version(47, "INITIAL", constant(0)),
-                version(48, "WRITE", symbol(ROOT))));
-        JsonObject imported = row(versions("INSTANCE_FIELD", 159, 32,
-                version(299, "INITIAL", constant(0)),
-                version(300, "WRITE", projection(17, 32))));
-        JsonObject sent = row(versions("INSTANCE_FIELD", 178, 32,
-                version(342, "INITIAL", constant(0)),
-                version(343, "WRITE", projection(159, 32))));
-        InSessionReadResolver resolver = InSessionReadResolver.of(
-                Arrays.asList(minted, imported, sent));
-
-        JsonElement resolved = resolver.resolve(projection(178, 32));
-
-        assertFalse(InSessionReadResolver.unresolved(resolved));
-        assertEquals("SymbolExpression",
-                resolved.getAsJsonObject().get("_type").getAsString());
-        assertEquals(ROOT, resolved.getAsJsonObject().get("_exp")
-                .getAsString());
-    }
-
-    /** A field this replay wrote twice does not say which write was seen. */
-    private void aProjectionOfATwiceWrittenFieldIsRefused() {
-        JsonObject row = row(versions("INSTANCE_FIELD", 9, 56,
-                version(39, "INITIAL", constant(0)),
-                version(41, "WRITE", constant(119982)),
-                version(44, "WRITE", symbol(ROOT))));
-
-        JsonElement resolved = InSessionReadResolver.of(
-                Collections.singletonList(row)).resolve(projection(9, 56));
-
-        assertTrue(InSessionReadResolver.unresolved(resolved));
-        assertTrue(resolved.getAsJsonObject()
-                .get(InSessionReadResolver.UNRESOLVED_REASON).getAsString()
-                .contains("written 2 times"));
-    }
-
-    /**
-     * Three writes, and the access between the second and the third.
-     *
-     * <p>One execution has exactly one write of a location live at any
-     * event, so the value this projection read is the write with the
-     * greatest version id below the access.  Version ids and the decision's
-     * event id come off one session counter, which is what makes them
-     * comparable -- the branch marker's own per-thread sequence is not, and
-     * comparing the two would put every decision before every write.</p>
-     */
-    private void aProjectionTakesTheWriteLiveAtItsOwnEvent() {
-        JsonObject row = row(versions("INSTANCE_FIELD", 9, 56,
-                version(39, "INITIAL", constant(0)),
-                version(41, "WRITE", constant(119981)),
-                version(44, "WRITE", constant(119982)),
-                version(47, "WRITE", symbol(ROOT))));
-
-        JsonElement resolved = InSessionReadResolver.of(
-                Collections.singletonList(row))
-                .resolve(projection(9, 56), 45);
-
-        assertFalse(InSessionReadResolver.unresolved(resolved));
-        assertEquals("119982",
-                resolved.getAsJsonObject().get("_exp").getAsString());
-    }
-
-    /** Every write is after the access, so what it read predates tracking. */
-    private void aProjectionBeforeEveryWriteReadsTheInitialVersion() {
-        JsonObject row = row(versions("INSTANCE_FIELD", 9, 56,
+        // The value a projection read is the write with the greatest
+        // version id below the access -- both come off one session counter,
+        // which is what makes them comparable.
+        JsonObject thrice = row("INSTANCE_FIELD", 9, 56,
                 version(39, "INITIAL", constant(119980)),
                 version(41, "WRITE", constant(119981)),
-                version(44, "WRITE", symbol(ROOT))));
-
-        JsonElement resolved = InSessionReadResolver.of(
-                Collections.singletonList(row))
-                .resolve(projection(9, 56), 40);
-
-        assertFalse(InSessionReadResolver.unresolved(resolved));
-        assertEquals("119980",
-                resolved.getAsJsonObject().get("_exp").getAsString());
-        assertTrue(resolved.getAsJsonObject()
-                .get(InSessionReadResolver.INITIAL_TAG).getAsBoolean());
-    }
-
-    /** A node that states the version it observed needs no ordering at all. */
-    private void aProjectionStatingItsObservedVersionTakesIt() {
-        JsonObject row = row(versions("INSTANCE_FIELD", 9, 56,
-                version(41, "WRITE", constant(119981)),
                 version(44, "WRITE", constant(119982)),
-                version(47, "WRITE", symbol(ROOT))));
-        JsonObject node = projection(9, 56);
-        node.addProperty(InSessionReadResolver.OBSERVED_VERSION, 41);
+                version(47, "WRITE", symbol(ROOT)));
+        check("119982", false, 45, projection(9, 56), thrice);
+        check("119980", true, 40, projection(9, 56), thrice);
+    }
 
-        JsonElement resolved = InSessionReadResolver.of(
-                Collections.singletonList(row)).resolve(node);
+    /**
+     * A value that arrived over a wire is answered by its handoff variable.
+     *
+     * <p>The boundary answers with the variable its {@code vmHandoffEvents}
+     * row mints and follows nothing: the value that arrived is free in this
+     * replay's formula, and which producer path delivered it is joined to it
+     * once at the handoff, by the composer.  Reading the inner expression
+     * instead would inline one producer path into the consumer's formula --
+     * what made a consumer flip need a producer replay -- so a row minting
+     * no variable is refused, naming what is missing.</p>
+     */
+    @Test
+    public void aWireArrivalIsAnsweredByTheHandoffThatMintedIt() {
+        // The producer's side of the wire: the NameNode wrote the key id.
+        JsonObject producer = row("INSTANCE_FIELD", 24, 32,
+                version(81, "WRITE", symbol(ROOT)));
+        JsonObject consumer = row("INSTANCE_FIELD", 91, 32,
+                version(195, "INITIAL", constant(0)));
+        JsonArray minted = new JsonArray();
+        minted.add(handoff(193, boundary("RPC_ATTACH", 193, null)));
+        consumer.add("vmHandoffEvents", minted);
 
+        // The variable that row mints answers the read: a hop is not a cycle.
+        check(HANDOFF, false, -1, arrival(), producer, consumer);
+
+        JsonArray mintless = new JsonArray();
+        mintless.add(json("{\"attachEventId\":193}"));
+        consumer.add("vmHandoffEvents", mintless);
+
+        refuses(Arrays.asList(producer, consumer), arrival(),
+                InSessionReadResolver.HANDOFF_SYMBOL);
+    }
+
+    /**
+     * What the replay did not publish is refused by name, never inferred.
+     *
+     * <p>A cycle is refused rather than followed; a version nothing
+     * published is refused rather than guessed; a location this replay wrote
+     * twice does not say which write the access saw; and a node stating no
+     * {@link InSessionReadResolver#OBSERVED_VERSION} and no event to order
+     * it by states no version at all.</p>
+     */
+    @Test
+    public void anUnpublishedOrAmbiguousReadIsRefusedByName() {
+        JsonObject cyclic = json("{\"sharedExpressionTable\":{\"definitions\""
+                + ":[{\"expressionAnchor\":\"EXPR.loop\",\"expression\":"
+                + "{\"_type\":\"SharedExpressionReference\","
+                + "\"expressionAnchor\":\"EXPR.loop\"}}]}}");
+        refuses(Collections.singletonList(cyclic),
+                json("{\"_type\":\"SharedExpressionReference\","
+                        + "\"expressionAnchor\":\"EXPR.loop\"}"),
+                "cycle through");
+
+        refuses(Collections.<JsonObject>emptyList(),
+                read("INSTANCE_FIELD", 9, 56, 46,
+                        json("{\"fieldVersionId\":44}")), "");
+
+        refuses(Collections.singletonList(row("INSTANCE_FIELD", 9, 56,
+                version(39, "INITIAL", constant(0)),
+                version(41, "WRITE", constant(119982)),
+                version(44, "WRITE", symbol(ROOT)))),
+                projection(9, 56), "written 2 times");
+
+        String unstated = refuses(Collections.singletonList(
+                row("INSTANCE_FIELD", 9, 56,
+                        version(41, "WRITE", constant(119981)),
+                        version(44, "WRITE", symbol(ROOT)))),
+                projection(9, 56), InSessionReadResolver.OBSERVED_VERSION);
+        assertTrue(unstated, unstated.contains("eventId"));
+    }
+
+    private static void check(String expected, boolean initial, long clock,
+                              JsonObject node, JsonObject... published) {
+        List<JsonObject> rows = Arrays.asList(published);
+        JsonElement resolved = clock < 0
+                ? InSessionReadResolver.of(rows).resolve(node)
+                : InSessionReadResolver.of(rows).resolve(node, clock);
         assertFalse(InSessionReadResolver.unresolved(resolved));
-        assertEquals("119981",
-                resolved.getAsJsonObject().get("_exp").getAsString());
+        JsonObject leaf = resolved.getAsJsonObject();
+        assertEquals(expected, leaf.get("_exp").getAsString());
+        assertEquals(initial, leaf.has(InSessionReadResolver.INITIAL_TAG));
     }
 
-    /** Neither the node nor the decision says: unstated, never guessed. */
-    private void aProjectionWithNoVersionAndNoClockIsRefused() {
-        JsonObject row = row(versions("INSTANCE_FIELD", 9, 56,
-                version(41, "WRITE", constant(119981)),
-                version(44, "WRITE", symbol(ROOT))));
-
-        JsonElement resolved = InSessionReadResolver.of(
-                Collections.singletonList(row)).resolve(projection(9, 56));
-
-        assertTrue(InSessionReadResolver.unresolved(resolved));
-        String reason = resolved.getAsJsonObject()
-                .get(InSessionReadResolver.UNRESOLVED_REASON).getAsString();
-        assertTrue(reason, reason.contains("observedVersion"));
-        assertTrue(reason, reason.contains("eventId"));
+    private static String refuses(List<JsonObject> rows, JsonObject node,
+                                  String named) {
+        JsonElement resolved = InSessionReadResolver.of(rows).resolve(node);
+        assertTrue("the resolver must not guess a value",
+                InSessionReadResolver.unresolved(resolved));
+        JsonObject refusal = resolved.getAsJsonObject();
+        String reason = refusal.has(InSessionReadResolver.UNRESOLVED_REASON)
+                ? refusal.get(InSessionReadResolver.UNRESOLVED_REASON)
+                        .getAsString() : "";
+        assertTrue(reason, reason.contains(named));
+        return reason;
     }
 
-    /** A projection over something that is not an object stays a projection. */
-    private void aProjectionOverANonReferenceIsLeftAlone() {
-        assertEquals(-1L, InSessionReadResolver.referencedObject(
-                symbol("M_I_field_SRC.serialNo")));
-        assertEquals(-1L, InSessionReadResolver.referencedObject(
-                constant(3)));
-        assertEquals(159L, InSessionReadResolver.referencedObject(
-                symbol("M_L'org/apache/hadoop/A'_159")));
-
-        JsonObject over = new JsonObject();
-        over.addProperty("_type", "FieldAccessExpression");
-        over.addProperty("fieldOffset", 32);
-        over.add("owner", constant(7));
-        JsonElement resolved = InSessionReadResolver.of(
-                Collections.<JsonObject>emptyList()).resolve(over);
-
-        assertFalse(InSessionReadResolver.unresolved(resolved));
-        assertEquals("FieldAccessExpression",
-                resolved.getAsJsonObject().get("_type").getAsString());
+    private static JsonObject arrival() {
+        return boundary("RPC_ATTACH", 193, read("INSTANCE_FIELD", 24, 32,
+                192, version(81, "WRITE", symbol(ROOT))));
     }
 
-    // ---- fixtures -------------------------------------------------------
+    private static JsonObject json(String json) {
+        return JsonParser.parseString(json).getAsJsonObject();
+    }
+
+    private static JsonObject symbol(String name) {
+        return json("{\"_type\":\"SymbolExpression\",\"_exp\":\""
+                + name + "\"}");
+    }
+
+    private static JsonObject constant(int value) {
+        return json("{\"_type\":\"ConstExpr\",\"_exp\":\"" + value + "\"}");
+    }
 
     private static JsonObject projection(long ownerRid, long offset) {
-        JsonObject node = new JsonObject();
-        node.addProperty("_type", "FieldAccessExpression");
-        node.addProperty("ownerClass", "org/apache/hadoop/A");
-        node.addProperty("fieldOffset", offset);
+        JsonObject node = json("{\"_type\":\"FieldAccessExpression\","
+                + "\"ownerClass\":\"org/apache/hadoop/A\","
+                + "\"fieldOffset\":" + offset + "}");
         node.add("owner", symbol("M_L'org/apache/hadoop/A'_" + ownerRid));
         return node;
     }
 
-    private static JsonObject symbol(String name) {
-        JsonObject node = new JsonObject();
-        node.addProperty("_type", "SymbolExpression");
-        node.addProperty("_exp", name);
-        return node;
-    }
-
-    private static JsonObject constant(int value) {
-        JsonObject node = new JsonObject();
-        node.addProperty("_type", "ConstExpr");
-        node.addProperty("_exp", String.valueOf(value));
-        return node;
-    }
-
-    private static JsonObject reference(String anchor) {
-        JsonObject node = new JsonObject();
-        node.addProperty("_type", "SharedExpressionReference");
-        node.addProperty("expressionAnchor", anchor);
-        return node;
-    }
-
-    /**
-     * A FIELD_READ boundary is a read, and resolves through the write log.
-     *
-     * <p>Its producer is already named by the versions of the location it
-     * read, so the boundary is only the shell the VM wrapped the read in.
-     * laneBN's every boundary is this kind, and 17960 has no wire at all --
-     * so this is the ordinary by-value path, not a degenerate family.</p>
-     */
-    private void aFieldReadBoundaryResolvesThroughTheWriteLog() {
-        JsonObject row = row(versions("INSTANCE_FIELD", 24, 32,
-                version(81, "WRITE", symbol(ROOT))));
-
-        JsonElement resolved = InSessionReadResolver.of(
-                Collections.singletonList(row)).resolve(
-                boundary("FIELD_READ", 135,
-                        read("INSTANCE_FIELD", 24, 32, 136,
-                                candidate(81, "WRITE", symbol(ROOT)))));
-
-        assertFalse(InSessionReadResolver.unresolved(resolved));
-        assertEquals(ROOT, resolved.getAsJsonObject().get("_exp")
-                .getAsString());
-    }
-
-    /**
-     * An RPC_ATTACH boundary resolves only through its own handoff variable.
-     *
-     * <p>There is no reading of its inner expression: that would inline one
-     * producer path into the consumer's formula, which is exactly what made
-     * a consumer flip need a producer replay.  A row that mints no variable
-     * is refused, and the refusal names what is missing.</p>
-     */
-    private void anRpcAttachBoundaryWithoutAMintIsRefusedNotInlined() {
-        JsonObject producer = row(versions("INSTANCE_FIELD", 24, 32,
-                version(81, "WRITE", symbol(ROOT))));
-        JsonObject consumer = row(versions("INSTANCE_FIELD", 91, 32,
-                version(195, "INITIAL", constant(0))));
-        JsonObject bare = new JsonObject();
-        bare.addProperty("attachEventId", 193);
-        JsonArray events = new JsonArray();
-        events.add(bare);
-        consumer.add("vmHandoffEvents", events);
-
-        JsonElement resolved = InSessionReadResolver.of(
-                Arrays.asList(producer, consumer)).resolve(
-                boundary("RPC_ATTACH", 193,
-                        read("INSTANCE_FIELD", 24, 32, 192,
-                                candidate(81, "WRITE", symbol(ROOT)))));
-
-        assertTrue("an attach must not inline the producer's term",
-                InSessionReadResolver.unresolved(resolved));
-        String reason = resolved.getAsJsonObject()
-                .get(InSessionReadResolver.UNRESOLVED_REASON).getAsString();
-        assertTrue(reason,
-                reason.contains(InSessionReadResolver.HANDOFF_SYMBOL));
-    }
-
     private static JsonObject boundary(String kind, long event,
                                        JsonObject inner) {
-        JsonObject node = new JsonObject();
-        node.addProperty("_type", "ConsumerBoundaryExpression");
-        node.addProperty("boundaryKind", kind);
-        node.addProperty("eventId", event);
+        JsonObject node = json("{\"_type\":\"ConsumerBoundaryExpression\","
+                + "\"boundaryKind\":\"" + kind + "\",\"eventId\":" + event
+                + "}");
         node.add("expression", inner);
         return node;
     }
 
     private static JsonObject location(String kind, long rid, long slot) {
-        JsonObject node = new JsonObject();
-        node.addProperty("locationKind", kind);
-        node.addProperty("ownerSymRid", rid);
-        node.addProperty("slot", slot);
-        return node;
+        return json("{\"locationKind\":\"" + kind + "\",\"ownerSymRid\":"
+                + rid + ",\"slot\":" + slot + "}");
     }
 
-    /**
-     * A read node that names the one version it observed.
-     *
-     * <p>The alternatives it did not take are not published any more, and
-     * nothing here needs them: the read has a value, not a choice.</p>
-     */
-    private void aReadNamesTheVersionItObservedAndNothingElse() {
-        JsonObject row = row(versions("INSTANCE_FIELD", 9, 56,
-                version(39, "INITIAL", constant(119981)),
-                version(44, "WRITE", symbol(ROOT))));
-        InSessionReadResolver resolver = InSessionReadResolver.of(
-                Collections.singletonList(row));
-
-        JsonElement resolved = resolver.resolve(
-                observedRead("INSTANCE_FIELD", 9, 56, 46,
-                        version(44, "WRITE", symbol(ROOT))));
-
-        assertEquals(ROOT, resolved.getAsJsonObject().get("_exp")
-                .getAsString());
-        assertFalse(InSessionReadResolver.unresolved(resolved));
-    }
-
-    /** The observed version still says when nothing watched it produced. */
-    private void anObservedInitialVersionIsStillMarked() {
-        JsonObject row = row(versions("INSTANCE_FIELD", 4, 32,
-                version(14, "INITIAL", constant(119980))));
-        InSessionReadResolver resolver = InSessionReadResolver.of(
-                Collections.singletonList(row));
-
-        JsonElement resolved = resolver.resolve(
-                observedRead("INSTANCE_FIELD", 4, 32, 15,
-                        version(14, "INITIAL", constant(119980))));
-
-        assertTrue(resolved.getAsJsonObject()
-                .get(InSessionReadResolver.INITIAL_TAG).getAsBoolean());
-    }
-
-    /** A read node carrying only the version it observed. */
-    private static JsonObject observedRead(String kind, long rid, long slot,
-                                           long event, JsonObject observed) {
-        JsonObject node = new JsonObject();
-        node.addProperty("_type", "ReadFromExpression");
-        node.addProperty("readEventId", event);
+    /** A read node: the location it read, and the version it observed. */
+    private static JsonObject read(String kind, long rid, long slot,
+                                   long event, JsonObject observed) {
+        JsonObject node = json("{\"_type\":\"ReadFromExpression\","
+                + "\"readEventId\":" + event + "}");
         node.add("location", location(kind, rid, slot));
         node.add(InSessionReadResolver.OBSERVED_VERSION, observed);
         return node;
     }
 
-    /**
-     * A read node: the location it read and the one version it observed.
-     *
-     * <p>It used to carry every version retained at the read and leave the
-     * choice to a reader.  The VM states the one it saw, so these fixtures
-     * state it too -- the last of the versions handed in, which is the one
-     * the old newest-wins rule would have picked.</p>
-     */
-    private static JsonObject read(String kind, long rid, long slot,
-                                   long event, JsonObject... observed) {
-        JsonObject node = new JsonObject();
-        node.addProperty("_type", "ReadFromExpression");
-        node.addProperty("readEventId", event);
-        node.add("location", location(kind, rid, slot));
-        JsonObject newest = null;
-        for (JsonObject candidate : observed) {
-            if (newest == null || candidate.get("fieldVersionId").getAsLong()
-                    > newest.get("fieldVersionId").getAsLong()) {
-                newest = candidate;
-            }
-        }
-        if (newest != null) {
-            node.add(InSessionReadResolver.OBSERVED_VERSION, newest);
-        }
-        return node;
-    }
-
-    private static JsonObject candidate(long version, String kind,
-                                        JsonObject expression) {
-        JsonObject node = bareCandidate(version);
-        node.addProperty("versionKind", kind);
-        node.add("expression", expression);
-        return node;
-    }
-
-    private static JsonObject bareCandidate(long version) {
-        JsonObject node = new JsonObject();
-        node.addProperty("fieldVersionId", version);
-        return node;
-    }
-
     private static JsonObject version(long id, String kind,
                                       JsonObject expression) {
-        JsonObject node = new JsonObject();
-        node.addProperty("fieldVersionId", id);
-        node.addProperty("versionKind", kind);
+        JsonObject node = json("{\"fieldVersionId\":" + id
+                + ",\"versionKind\":\"" + kind + "\"}");
         node.add("expression", expression);
         return node;
     }
 
-    private static JsonArray versions(String kind, long rid, long slot,
-                                      JsonObject... rows) {
-        JsonArray versions = new JsonArray();
-        for (JsonObject row : rows) versions.add(row);
-        JsonObject envelope = new JsonObject();
+    private static JsonObject row(String kind, long rid, long slot,
+                                  JsonObject... rows) {
+        JsonObject published = json("{\"sharedFieldVersions\":"
+                + "[{\"envelope\":{\"versions\":[]}}]}");
+        JsonObject envelope = published.getAsJsonArray("sharedFieldVersions")
+                .get(0).getAsJsonObject().getAsJsonObject("envelope");
         envelope.add("location", location(kind, rid, slot));
-        envelope.add("versions", versions);
-        JsonObject record = new JsonObject();
-        record.add("envelope", envelope);
-        JsonArray records = new JsonArray();
-        records.add(record);
-        return records;
+        for (JsonObject version : rows) {
+            envelope.getAsJsonArray("versions").add(version);
+        }
+        return published;
     }
 
-    private static final String HANDOFF = "M_I_HOFF.key_java/lang/Integer";
-
-    private static JsonObject handoff(long attachEvent,
-                                      JsonObject expression) {
-        JsonObject node = new JsonObject();
-        node.addProperty("attachEventId", attachEvent);
-        node.addProperty(InSessionReadResolver.HANDOFF_PHASE_ID,
-                "HANDOFF_PHASE.key");
-        node.addProperty(InSessionReadResolver.HANDOFF_SYMBOL, HANDOFF);
-        node.addProperty("javaType", "I");
-        node.add("expression", expression);
-        return node;
-    }
-
-    private static JsonArray handoffs(JsonObject... rows) {
-        JsonArray events = new JsonArray();
-        for (JsonObject row : rows) events.add(row);
-        return events;
-    }
-
-    private static JsonObject row(JsonArray sharedFieldVersions) {
-        JsonObject node = new JsonObject();
-        node.add("sharedFieldVersions", sharedFieldVersions);
+    private static JsonObject handoff(long attachEvent, JsonObject inner) {
+        JsonObject node = json("{\"attachEventId\":" + attachEvent
+                + ",\"" + InSessionReadResolver.HANDOFF_PHASE_ID
+                + "\":\"HANDOFF_PHASE.key\",\""
+                + InSessionReadResolver.HANDOFF_SYMBOL + "\":\"" + HANDOFF
+                + "\",\"javaType\":\"I\"}");
+        node.add("expression", inner);
         return node;
     }
 }

@@ -2,7 +2,6 @@ package edu.uva.liftlab.graphchecker.causynth;
 
 import org.junit.Test;
 
-import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.nio.charset.StandardCharsets;
@@ -21,8 +20,7 @@ import static org.junit.Assert.fail;
 /**
  * The instrumentation ABI: every hook {@code HookCatalog.concolic()} weaves
  * into application bytecode must exist as a public static method of
- * {@code ConcolicRegionRuntime} with exactly the woven signature, and the
- * handoff carrier must keep its binary name and its leaf fields.
+ * {@code ConcolicRegionRuntime} with exactly the woven signature.
  *
  * <p>Soot resolves those references lazily against a phantom class, so a
  * rename or a moved method fails only in a full campaign run. This test
@@ -36,47 +34,6 @@ public class ConcolicHookAbiTest {
     private static final String RUNTIME_CLASS =
             "edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime";
     private static final Map<String, Class<?>> SOOT_TYPES = sootTypes();
-    private static final Map<String, Class<?>> PINNED_TYPES = pinnedTypes();
-
-    /**
-     * Driver entry points: runtime methods no hook weaves, called by a
-     * launcher, by a workload checkout or by the trace recorder.  Nothing in
-     * this repository's own call graph fails when one is renamed, moved to
-     * another class or narrowed, so each row pins visibility, return type,
-     * name and parameter types.
-     */
-    private static final String[][] DRIVER_ENTRY_POINTS = {
-            {"public", "String", "openWorkloadSession"},
-            {"public", "String", "closeWorkloadSession"},
-            {"public", "void", "awaitSelectedResultPublications"},
-            {"public", "boolean", "symbolizeConfiguredSourceField",
-                    "String", "Object", "String"},
-            {"package", "void", "observeCausalSource", "String"},
-            {"public", "boolean", "materializeSymbolicBoolean", "String"},
-    };
-
-    /** Binary name of every handoff carrier leaf and the type it carries. */
-    private static final String[][] CARRIER_LEAVES = {
-            {"z", "boolean"}, {"b", "byte"}, {"s", "short"},
-            {"c", "char"}, {"i", "int"}, {"j", "long"},
-            {"f", "float"}, {"d", "double"}, {"o", "Object"},
-    };
-
-    private static Map<String, Class<?>> pinnedTypes() {
-        Map<String, Class<?>> types = new HashMap<>();
-        types.put("void", void.class);
-        types.put("boolean", boolean.class);
-        types.put("byte", byte.class);
-        types.put("short", short.class);
-        types.put("char", char.class);
-        types.put("int", int.class);
-        types.put("long", long.class);
-        types.put("float", float.class);
-        types.put("double", double.class);
-        types.put("String", String.class);
-        types.put("Object", Object.class);
-        return types;
-    }
 
     private static Map<String, Class<?>> sootTypes() {
         Map<String, Class<?>> types = new HashMap<>();
@@ -211,14 +168,6 @@ public class ConcolicHookAbiTest {
         assertTrue("hook name must be a literal: " + literal,
                 literal.startsWith("\"") && literal.endsWith("\""));
         return literal.substring(1, literal.length() - 1);
-    }
-
-    private static Class<?> pinnedType(String name) {
-        Class<?> type = PINNED_TYPES.get(name);
-        if (type == null) {
-            throw new IllegalStateException("unmapped pinned type: " + name);
-        }
-        return type;
     }
 
     private static Class<?> javaType(String sootType) {

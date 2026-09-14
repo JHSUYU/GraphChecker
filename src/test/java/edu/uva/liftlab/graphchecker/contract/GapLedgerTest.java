@@ -17,15 +17,14 @@ import static org.junit.Assert.assertTrue;
  * Java claim cannot see, so the two readers cannot disagree.</p>
  */
 public class GapLedgerTest {
-    /** A code nobody registered withholds the claim. */
-    @Test
-    public void gapLedgerRules() throws Exception {
-        anUnregisteredCodeBlocks();
-        everyNonBlockingCodeStatesItsReason();
-        aSliceConditionalCodeIsDecidedAgainstTheKeptSlice();
-    }
 
-    private void anUnregisteredCodeBlocks() {
+    /**
+     * A gap is classed fail-closed: a code nobody registered blocks, and a
+     * code decided against the replay slice blocks for a reader that cannot
+     * see the slice.
+     */
+    @Test
+    public void aGapIsClassedFailClosed() {
         assertEquals(GapLedger.GapClass.BLOCKING,
                 GapLedger.classOf("A_CODE_NOBODY_REGISTERED"));
         assertTrue(GapLedger.blocking("A_CODE_NOBODY_REGISTERED"));
@@ -37,26 +36,9 @@ public class GapLedgerTest {
         // not knowing a code is not knowing whether it breaks a chain.
         assertEquals(GapLedger.GapClass.BLOCKING,
                 GapLedger.classOf("A_CODE_NOBODY_REGISTERED", false));
-    }
 
-    /** Every exception to the default states why it cannot break a chain. */
-    private void everyNonBlockingCodeStatesItsReason() {
-        for (GapLedger.Entry entry : GapLedger.entries()) {
-            if (entry.gapClass == GapLedger.GapClass.BLOCKING
-                    && entry.scope == GapLedger.Scope.ALWAYS) {
-                continue;
-            }
-            assertTrue("a code that is anything but blocking-always must say"
-                            + " why: " + entry.code,
-                    entry.reason != null && !entry.reason.trim().isEmpty());
-        }
-    }
-
-    /**
-     * A region code is decided against the replay slice, not by a blanket
-     * rule: blocking on a task the slice kept, diagnostic on one it pruned.
-     */
-    private void aSliceConditionalCodeIsDecidedAgainstTheKeptSlice() {
+        // A region code is decided against the replay slice, not by a blanket
+        // rule: blocking on a task the slice kept, diagnostic on one it pruned.
         String code = null;
         for (GapLedger.Entry entry : GapLedger.entries()) {
             if (entry.scope == GapLedger.Scope.KEPT_SLICE) {
@@ -73,5 +55,19 @@ public class GapLedgerTest {
                 GapLedger.classOf(code, false));
         // A reader that cannot see the slice keeps withholding.
         assertEquals(GapLedger.GapClass.BLOCKING, GapLedger.classOf(code));
+    }
+
+    /** Every exception to the default states why it cannot break a chain. */
+    @Test
+    public void everyNonBlockingCodeStatesItsReason() {
+        for (GapLedger.Entry entry : GapLedger.entries()) {
+            if (entry.gapClass == GapLedger.GapClass.BLOCKING
+                    && entry.scope == GapLedger.Scope.ALWAYS) {
+                continue;
+            }
+            assertTrue("a code that is anything but blocking-always must say"
+                            + " why: " + entry.code,
+                    entry.reason != null && !entry.reason.trim().isEmpty());
+        }
     }
 }
