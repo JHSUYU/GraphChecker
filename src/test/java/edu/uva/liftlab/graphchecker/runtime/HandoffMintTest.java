@@ -24,11 +24,10 @@ import static org.junit.Assert.fail;
  * The handoff mint: one variable at one occurrence, answered like a source.
  *
  * <p>At a wire attach the consumer's element stops denoting the producer's
- * whole expression and starts denoting a fresh variable v_H, whose family the
- * producer's expression joins on the row, so the two sides can be explored
- * independently and joined offline at H.  Three things have to hold: H is the
- * same string in every replay, the row states v_H and what it delivered, and
- * an assignment for H answers the mint as a configured source would.</p>
+ * expression and starts denoting a fresh variable v_H, joined to the
+ * producer's family offline.  H is the same string in every replay, the row
+ * states v_H and what it delivered, and an assignment answers the mint as a
+ * configured source would.</p>
  */
 public class HandoffMintTest {
     private static final String PORT =

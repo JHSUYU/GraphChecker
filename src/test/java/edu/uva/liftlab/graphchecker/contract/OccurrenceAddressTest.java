@@ -9,7 +9,6 @@ import static org.junit.Assert.assertTrue;
 /**
  * The one address: node, epoch, region, k-th activation, and nothing else.
  *
- * <p>Each rule here is a job the replay's separate predicates once split.</p>
  */
 public class OccurrenceAddressTest {
     private static final String PLANNED =

@@ -52,8 +52,8 @@ public class HandoffBelongsToItsConsumerTest {
      * A planned port is reproduced by the attach that minted it, wherever
      * the evidence rode.
      *
-     * <p>The mint is the consumer's, so it happens whether or not the
-     * message carried the producer's expression.</p>
+     * <p>The mint is the consumer's, whether or not the message carried the
+     * producer's expression.</p>
      */
     @Test
     public void aPlannedPortIsReproducedByTheAttachThatMintedIt() {

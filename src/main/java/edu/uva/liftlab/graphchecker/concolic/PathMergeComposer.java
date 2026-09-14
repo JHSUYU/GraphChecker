@@ -1968,7 +1968,8 @@ public final class PathMergeComposer {
         manifest.add(ComposedManifest.FAULT_CONTROL_GAPS_FIELD,
                 new JsonArray());
         manifest.add(ComposedManifest.TARGET_REACH_OCCURRENCES,
-                targetReachOccurrences(regionPlans, fatal));
+                targetReachOccurrences(regionPlans, fatal,
+                        arguments.declaredTargetOccurrence));
 
         JsonObject merge = new JsonObject();
         merge.addProperty("schemaVersion", 1);
@@ -2056,7 +2057,8 @@ public final class PathMergeComposer {
      * report per occurrence.</p>
      */
     static JsonArray targetReachOccurrences(
-            List<RegionInstancePlan> regionPlans, JsonObject fatal) {
+            List<RegionInstancePlan> regionPlans, JsonObject fatal,
+            String declaredTargetOccurrence) {
         String composedOccurrence = OccurrenceId.parse(
                 optionalString(fatal, "occurrenceId")).planned();
         String composedGoal = optionalString(fatal, "goalId");
@@ -2076,6 +2078,17 @@ public final class PathMergeComposer {
                 row.addProperty("composed", composedGoal.isEmpty()
                         ? occurrence.equals(composedOccurrence)
                         : composedGoal.equals(goal.goalId()));
+                // Whether the case declared THIS occurrence as its target.
+                // A campaign is target-directed: where the case says which
+                // instance can fail, an occurrence it did not name is not a
+                // hole in the verdict but an occurrence nobody asked about.
+                if (declaredTargetOccurrence != null
+                        && !declaredTargetOccurrence.trim().isEmpty()) {
+                    row.addProperty("declaredTarget",
+                            RuntimeWorkflowDiscovery.declares(
+                                    declaredTargetOccurrence.trim(),
+                                    occurrence));
+                }
                 result.add(row);
             }
         }
@@ -2245,6 +2258,8 @@ public final class PathMergeComposer {
         Path manifest;
         String fatalRegion = "";
         String occurrenceId = "";
+        /** The occurrence the case declares as its target, or "". */
+        String declaredTargetOccurrence = "";
         Path z3;
         long clockSkewMillis = ClockRootPhysics.DEFAULT_SKEW_MILLIS;
 
@@ -2271,6 +2286,8 @@ public final class PathMergeComposer {
                     result.fatalRegion = value;
                 } else if ("--occurrence-id".equals(key)) {
                     result.occurrenceId = value;
+                } else if ("--target-occurrence".equals(key)) {
+                    result.declaredTargetOccurrence = value;
                 } else if ("--z3".equals(key)) {
                     result.z3 = value.trim().isEmpty()
                             ? null : Paths.get(value);

@@ -46,6 +46,15 @@ are carriers, not roots of their own: they carry the NameNode's minted
 expressions, and the file narrows which inputs may *mint*, never which are
 symbolized.
 
+## Target occurrence
+
+`declared_target_occurrence` in `workflow.properties` names the occurrence of
+the annotated site the campaign is about -- an occurrence address, or the
+request family and k. The campaign composes and judges that one and reports
+the others. It is commented out: lane17897g observed two occurrences
+(`striped-file-checksum#1` and `#2`) and its recording took the healthy arm at
+both, so which one can fail is the case's knowledge rather than the corpus's.
+
 ## Clock window
 
 `clock_skew_ms=900000` (15 min), against the engine default of 300 000 ms.

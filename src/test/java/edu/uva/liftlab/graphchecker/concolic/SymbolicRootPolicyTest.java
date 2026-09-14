@@ -24,12 +24,10 @@ import static org.junit.Assert.fail;
 /**
  * What an experiment's {@code symbolic-inputs.jsonl} governs.
  *
- * <p>TRACK -- symbolize the read so the VM publishes its {@code ReadFrom}
- * candidates and container versions -- is the default for every carrier.  MINT
- * -- permission to become a fresh root the solver may move -- belongs to three
- * authorities only: a fault marker in the workload's own source, a field a
- * {@code CausynthSymbolicSource} hook owns, and a name this file declares for
- * the action's region.  The file narrows mint, and never tracking.</p>
+ * <p>TRACK -- symbolize the read so the VM publishes its candidates -- is
+ * the default for every carrier.  MINT belongs to three authorities only: a
+ * fault marker in the workload's source, a field a hook owns, and a name
+ * this file declares.  The file narrows mint, never tracking.</p>
  */
 public class SymbolicRootPolicyTest {
 

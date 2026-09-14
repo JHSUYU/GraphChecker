@@ -17,9 +17,8 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
 /**
- * What the replay wave owes the stages after it, asked once at IMPORT.
- * Each of these reached COMPOSE or EXPLORE as something else, hours later;
- * the contract says it here, in the words of the thing that is missing.
+ * What the replay wave owes the stages after it, asked once at IMPORT, in
+ * the words of the thing that is missing.
  */
 public class PublicationContractTest {
 

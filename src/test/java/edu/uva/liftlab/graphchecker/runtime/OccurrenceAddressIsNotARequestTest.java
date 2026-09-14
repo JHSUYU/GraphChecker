@@ -378,11 +378,10 @@ public class OccurrenceAddressIsNotARequestTest {
     /**
      * A value arriving over the wire does not say where the receiver ran.
      *
-     * <p>Execution context is set by execution-scope events only -- a node
-     * registering its instances, an async seed from a registered source --
-     * never the SENDER's source out of the message header; the scope the
-     * workload opens is what the send hangs off, and a refusal names which
-     * of source, request key and request api was absent.</p>
+     * <p>Execution context is set by execution-scope events only, never by
+     * the SENDER's source out of the message header; the scope the workload
+     * opens is what the send hangs off, and a refusal names which of
+     * source, request key and request api was absent.</p>
      */
     @Test
     public void executionContextIsNotProvenance() throws Exception {

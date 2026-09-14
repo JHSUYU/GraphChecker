@@ -23,10 +23,9 @@ public class ClaimPolicyTest {
             "<org.apache.hadoop.Base: boolean enabled>";
 
     /**
-     * A published gap withholds the claim, under the gap's own name: a
-     * witness that names no mechanism, a reachability answer that is not
-     * exact, freedom the recording does not cover, a value nobody stated, a
-     * reproduction whose other polarity is satisfiable too.
+     * A published gap withholds the claim under its own name: no mechanism,
+     * an inexact reachability answer, freedom the recording does not cover,
+     * an unstated value, a reproduction whose other polarity is sat too.
      */
     @Test
     public void aPublishedGapWithholdsTheClaim() {

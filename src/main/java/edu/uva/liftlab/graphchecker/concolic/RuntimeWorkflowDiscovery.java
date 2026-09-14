@@ -4,6 +4,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.contract.ExecutionTask;
+import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceId;
 import edu.uva.liftlab.graphchecker.contract.RegionInstancePlan;
 import edu.uva.liftlab.graphchecker.contract.RegionInstancePlan.Goal;
@@ -39,14 +40,14 @@ public final class RuntimeWorkflowDiscovery {
     static RankedWorkflow rankedWorkflow(List<RegionInstancePlan> plans)
             throws IOException {
         return rankedWorkflow(plans, Collections.<JsonObject>emptyList(),
-                Scope.CANDIDATE);
+                Scope.CANDIDATE, "");
     }
 
     /** The first replay activates the target's complete dynamic ancestry. */
     static RankedWorkflow seedReplayWorkflow(List<RegionInstancePlan> plans)
             throws IOException {
         return rankedWorkflow(plans, Collections.<JsonObject>emptyList(),
-                Scope.SEED_VALUE);
+                Scope.SEED_VALUE, "");
     }
 
     /**
@@ -63,15 +64,24 @@ public final class RuntimeWorkflowDiscovery {
     static RankedWorkflow rankedWorkflow(
             List<RegionInstancePlan> plans,
             Collection<JsonObject> observedSummaries) throws IOException {
+        return rankedWorkflow(plans, observedSummaries, "");
+    }
+
+    /** The same, with the occurrence the case declares as its target. */
+    static RankedWorkflow rankedWorkflow(
+            List<RegionInstancePlan> plans,
+            Collection<JsonObject> observedSummaries,
+            String declaredOccurrence) throws IOException {
         return rankedWorkflow(plans, observedSummaries,
                 observedSummaries == null || observedSummaries.isEmpty()
-                        ? Scope.CANDIDATE : Scope.OBSERVED);
+                        ? Scope.CANDIDATE : Scope.OBSERVED,
+                declaredOccurrence);
     }
 
     private static RankedWorkflow rankedWorkflow(
             List<RegionInstancePlan> plans,
             Collection<JsonObject> observedSummaries,
-            Scope scope) throws IOException {
+            Scope scope, String declaredOccurrence) throws IOException {
         if (plans == null || plans.isEmpty()) {
             throw new IOException("runtime region plan is empty");
         }
@@ -111,7 +121,20 @@ public final class RuntimeWorkflowDiscovery {
                     + "target occurrences: " + targets.get(0).context()
                     + "; " + targets.get(1).context());
         }
+        // The occurrence(s) this campaign is about, decided before the
+        // election so a declared target is the one elected: a case that
+        // names which instance can fail has said which occurrence carries
+        // the replay closure, and ranking is how the answer is found when
+        // it did not.
+        Set<String> anchors = anchorGoals(targets, observedSummaries,
+                declaredOccurrence);
         Target target = targets.get(0);
+        for (Target candidate : targets) {
+            if (anchors.contains(candidate.goal.goalId())) {
+                target = candidate;
+                break;
+            }
+        }
         // A linked replay contains only the observed dynamic ancestry of the
         // target. Static demand still guides instrumentation and later
         // topology discovery; making an unrelated observed occurrence a
@@ -149,23 +172,22 @@ public final class RuntimeWorkflowDiscovery {
                 closure.add(occurrence);
             }
         }
-        // Every occurrence of the annotated target the recording observed,
-        // by the goal that captures its reach.  One of them is elected to
-        // carry the replay closure; the rest are scheduled as dependencies
-        // and stay named, because a run that composes only the elected one
-        // states a verdict about one execution of the site and not about the
-        // site.  Downstream stages read this flag to compose and judge each
-        // of them.
-        Set<String> targetReachGoals = new LinkedHashSet<>();
-        for (Target candidate : targets) {
-            targetReachGoals.add(candidate.goal.goalId());
-        }
+        // The occurrence(s) of the annotated site this campaign is about.
+        // A campaign is target-directed: the anchor is the occurrence at
+        // which the RECORDING took the fatal arm -- the annotated
+        // exception's own occurrence -- or the one the case declares.
+        // Every other occurrence reached the site healthily and carries no
+        // verdict to state, so it is scheduled as a dependency and named
+        // rather than composed and judged.  Downstream stages read this
+        // flag for the reach query, the obligation wave and the claim.
+        Set<String> targetReachGoals = anchors;
         List<Selection> selections = new ArrayList<>();
         // Preserve the seed task's symbolic frontier and therefore its stable
         // task identity.  The exact replay closure narrows which occurrences
         // need path summaries; it does not rewrite the already executed
         // target task or the candidate edges retained for instrumentation.
-        selections.add(Selection.target(target));
+        selections.add(Selection.target(target,
+                targetReachGoals.contains(target.goal.goalId())));
 
         List<RegionInstancePlan> dependencies = new ArrayList<>();
         for (String occurrence : closure) {
@@ -185,6 +207,125 @@ public final class RuntimeWorkflowDiscovery {
             }
         }
         return new RankedWorkflow(selections);
+    }
+
+    /**
+     * The goals of the occurrence(s) this campaign is about.
+     *
+     * <p>Three answers, in this order. The case's own declaration, when it
+     * states one -- "we know which target instance can fail" -- read as an
+     * occurrence address, or as the request family and k when it names no
+     * region. Otherwise the occurrence(s) at which the RECORDING took the
+     * fatal arm: the annotated exception happened at one execution of the
+     * site, and the others reached it healthily. Otherwise every observed
+     * occurrence, which is the shape of a case whose recording is healthy
+     * and whose failure has to be flipped into (HDFS-17960): there is no
+     * recorded-fatal occurrence to prefer, so none is privileged.</p>
+     */
+    private static Set<String> anchorGoals(
+            List<Target> targets, Collection<JsonObject> observedSummaries,
+            String declaredOccurrence) {
+        Set<String> everyGoal = new LinkedHashSet<>();
+        for (Target candidate : targets) {
+            everyGoal.add(candidate.goal.goalId());
+        }
+        String declared = declaredOccurrence == null ? ""
+                : declaredOccurrence.trim();
+        if (!declared.isEmpty()) {
+            Set<String> byDeclaration = new LinkedHashSet<>();
+            for (Target candidate : targets) {
+                if (declares(declared, candidate.occurrenceId)) {
+                    byDeclaration.add(candidate.goal.goalId());
+                }
+            }
+            // A declaration naming no observed occurrence is not a silent
+            // fall-back to every occurrence: the recorded rule below still
+            // answers, and the composition names what the case declared
+            // beside what the recording did.
+            if (!byDeclaration.isEmpty()) return byDeclaration;
+        }
+        Set<String> recordedFatal = new LinkedHashSet<>();
+        for (Target candidate : targets) {
+            if (recordedTheFatalArm(candidate, observedSummaries)) {
+                recordedFatal.add(candidate.goal.goalId());
+            }
+        }
+        return recordedFatal.isEmpty() ? everyGoal : recordedFatal;
+    }
+
+    /**
+     * Whether a declaration names this occurrence: the whole address, or
+     * the request family and k when the declaration states no region.
+     */
+    static boolean declares(String declared, String occurrenceId) {
+        OccurrenceAddress address = OccurrenceAddress.parse(occurrenceId);
+        if (!address.isNamed()) return false;
+        OccurrenceAddress stated = OccurrenceAddress.parse(declared);
+        if (stated.isNamed()) return stated.equals(address);
+        // family + k: "<source>#<epoch>/<api>#<k>" states the population
+        // and the k inside it, which is what a case knows without having
+        // run -- the region is a hash of what the recording selected, and
+        // a case file that spells one is re-derived by hand every time.
+        int hash = declared.lastIndexOf('#');
+        if (hash <= 0) return false;
+        String family = declared.substring(0, hash).trim();
+        String ordinal = declared.substring(hash + 1).trim();
+        try {
+            return address.ordinal() == Integer.parseInt(ordinal)
+                    && !address.family().isEmpty()
+                    && family.equals(address.family());
+        } catch (NumberFormatException notAnOrdinal) {
+            return false;
+        }
+    }
+
+    /**
+     * Whether the recording took the fatal arm at this occurrence.
+     *
+     * <p>The plan states, per failure site, the outcome that reaches the
+     * annotated exception; the summaries state what that execution decided
+     * there. An occurrence that decided the required outcome is where the
+     * failure happened; one that decided the other reached the site and
+     * returned normally.</p>
+     */
+    private static boolean recordedTheFatalArm(
+            Target target, Collection<JsonObject> observedSummaries) {
+        Map<String, Boolean> required = new LinkedHashMap<>();
+        for (JsonElement element : target.goal.branches()) {
+            if (!element.isJsonObject()) continue;
+            JsonObject branch = element.getAsJsonObject();
+            if (!optionalBool(branch, "failureTarget", false)
+                    || !branch.has("requiredOutcome")
+                    || branch.get("requiredOutcome").isJsonNull()) {
+                continue;
+            }
+            String site = optionalString(branch, "siteId");
+            if (!site.isEmpty()) {
+                required.put(site, branch.get("requiredOutcome")
+                        .getAsBoolean());
+            }
+        }
+        if (required.isEmpty()) return false;
+        for (JsonObject summary : observedSummaries == null
+                ? Collections.<JsonObject>emptyList() : observedSummaries) {
+            if (!target.occurrenceId.equals(OccurrenceId.parse(
+                    optionalString(summary, "occurrenceId")).planned())) {
+                continue;
+            }
+            for (JsonElement element : array(summary, "branchMappings")) {
+                if (!element.isJsonObject()) continue;
+                JsonObject witness = object(element.getAsJsonObject(),
+                        "witness");
+                Boolean arm = required.get(optionalString(
+                        object(witness, "site"), "siteId"));
+                if (arm != null && witness.has("sourceTakenOutcome")
+                        && arm == witness.get("sourceTakenOutcome")
+                        .getAsBoolean()) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     /** All graph-connected occurrences of every execution of the same
@@ -474,9 +615,9 @@ public final class RuntimeWorkflowDiscovery {
             this.targetReach = targetReach;
         }
 
-        static Selection target(Target target) {
+        static Selection target(Target target, boolean targetReach) {
             return new Selection(target.campaignId, target.plan, target.goal,
-                    true, true);
+                    true, targetReach);
         }
 
         static Selection dependency(String campaignId,

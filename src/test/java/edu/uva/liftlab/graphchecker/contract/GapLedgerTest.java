@@ -9,12 +9,10 @@ import static org.junit.Assert.assertTrue;
 /**
  * The one register that decides which published gap withholds a claim.
  *
- * <p>Design point 6 is fail-closed: a missing chain link is a reported gap
- * and the claim stays withheld while it is open.  That only holds if the
- * default answer for a code nobody thought about is "blocking", so a gap
- * added to some stage and never classed here cannot quietly pass as
- * telemetry.  {@code run_engine.sh} reads the same table over the stages the
- * Java claim cannot see, so the two readers cannot disagree.</p>
+ * <p>Design point 6 is fail-closed, which holds only if the default answer
+ * for a code nobody classed is "blocking": a gap added to some stage and
+ * never classed here cannot pass as telemetry.  {@code run_engine.sh} reads
+ * the same table, so the two readers cannot disagree.</p>
  */
 public class GapLedgerTest {
 
