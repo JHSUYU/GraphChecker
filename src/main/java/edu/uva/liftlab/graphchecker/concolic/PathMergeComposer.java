@@ -185,7 +185,19 @@ public final class PathMergeComposer {
         int occurrence = optionalInteger(fatal, "targetOccurrence", 1);
         boolean required = optionalBool(fatal, "requiredTakenOutcome", false);
 
-        PathMergeLowering lowering = new PathMergeLowering(roots.byRawSymbol);
+        // A handoff row declares a variable of this formula exactly as a
+        // symbolization event declares a root: the runtime minted it, named
+        // it, and stated its Java type and the value it received.  Without
+        // the declaration the lowering meets a scalar it cannot explain and
+        // cuts it (UndeclaredFreeSymbol), which refused every path on
+        // laneVM12 that carried a wire value -- and it is the row's own
+        // javaType that says how to lower it, not the shape of the node the
+        // symbol turned up in.
+        Map<String, JsonObject> declaredVariables =
+                new LinkedHashMap<>(roots.byRawSymbol);
+        declaredVariables.putAll(handoffDeclarations(summaries));
+        PathMergeLowering lowering =
+                new PathMergeLowering(declaredVariables);
         JsonArray pathRows = new JsonArray();
         JsonArray gates = new JsonArray();
         List<String> selectors = new ArrayList<>();
@@ -355,7 +367,12 @@ public final class PathMergeComposer {
         JsonArray rootRows = new JsonArray();
         for (Map.Entry<String, String> used
                 : lowering.rootTerms().entrySet()) {
-            JsonObject declared = roots.byRawSymbol.get(used.getValue());
+            // The same map the lowering declared from: a handoff variable
+            // is declared by its own row, and reading only the configured
+            // roots here left it with no rawSymbol, no javaType and no
+            // recorded value -- which is both the malformed materialization
+            // row and the unstated recorded value laneVM12 reported.
+            JsonObject declared = declaredVariables.get(used.getValue());
             JsonObject rootRow = roots.materialization(declared,
                     used.getKey());
             if (optionalString(rootRow,
@@ -374,6 +391,17 @@ public final class PathMergeComposer {
                 }
             }
             rootRows.add(rootRow);
+            // A handoff variable is not a root whose movement is a
+            // mechanism: it is the value that arrived over a wire, free in
+            // this replay's formula and tied back by its family.  Each
+            // replay received its own value there, so "the recorded value"
+            // is not one thing and nothing reads it as one -- the gate that
+            // asks whether a root moved off what the recording read does not
+            // apply to it.
+            if (!optionalString(declared,
+                    InSessionReadResolver.HANDOFF_PHASE_ID).isEmpty()) {
+                continue;
+            }
             if (optionalString(rootRow,
                     ComposedManifest.RECORDED_SOURCE_VALUE).isEmpty()) {
                 gate(gates, RECORDED_ROOT_VALUE_UNSTATED,
@@ -784,6 +812,32 @@ public final class PathMergeComposer {
         return published;
     }
 
+    /** Every handoff variable the replays minted, as declarations. */
+    private static Map<String, JsonObject> handoffDeclarations(
+            List<JsonObject> summaries) {
+        Map<String, JsonObject> declarations = new LinkedHashMap<>();
+        for (JsonObject summary : summaries) {
+            for (JsonElement encoded : array(summary, "vmHandoffEvents")) {
+                if (!encoded.isJsonObject()) continue;
+                JsonObject event = encoded.getAsJsonObject();
+                String raw = optionalString(event,
+                        InSessionReadResolver.HANDOFF_SYMBOL);
+                if (raw.isEmpty()) continue;
+                JsonObject declaration = new JsonObject();
+                declaration.addProperty("rawSymbol", raw);
+                declaration.addProperty("javaType",
+                        optionalString(event, "javaType"));
+                declaration.addProperty(ComposedManifest.RECORDED_SOURCE_VALUE,
+                        optionalString(event, "recordedValue"));
+                declaration.addProperty(InSessionReadResolver
+                        .HANDOFF_PHASE_ID, optionalString(event,
+                        InSessionReadResolver.HANDOFF_PHASE_ID));
+                declarations.putIfAbsent(raw, declaration);
+            }
+        }
+        return declarations;
+    }
+
     /** {@code v_H = e_p}, as an expression the lowering already knows. */
     private static JsonObject equals(String symbol, JsonElement delivered) {
         JsonObject left = new JsonObject();
@@ -1106,7 +1160,21 @@ public final class PathMergeComposer {
             gaps.add(gap);
         }
         manifest.add("gaps", gaps);
-        boolean ready = gates.size() == 0 && gaps.size() == 0
+        // CLOSURE_INCOMPLETE says a root-dependent branch somewhere was
+        // left unflipped, which is what withholds a *closed UNSAT*
+        // conclusion -- pathSetComplete below carries it to exactly that
+        // reading.  A satisfying witness on the paths that were admitted is
+        // a finding whatever remains unexplored elsewhere, so it is not a
+        // refusal of the composition: treating it as one withheld
+        // FINAL_READY from every laneVM12 anchor that had a witness.
+        int refusing = 0;
+        for (JsonElement row : gates) {
+            if (!CLOSURE_INCOMPLETE.equals(optionalString(
+                    row.getAsJsonObject(), "kind"))) {
+                refusing++;
+            }
+        }
+        boolean ready = refusing == 0 && gaps.size() == 0
                 && !selectors.isEmpty();
         manifest.addProperty("state",
                 ready ? "CANDIDATE_READY" : "CANDIDATE_WITH_GAPS");
