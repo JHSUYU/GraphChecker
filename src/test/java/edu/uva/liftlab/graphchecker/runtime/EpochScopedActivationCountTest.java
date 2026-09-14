@@ -99,10 +99,17 @@ public class EpochScopedActivationCountTest {
 
         assertEquals("the planned bucket is the default",
                 task.invocationCounterKey(),
-                task.invocationCounterKey(NODE + "#epoch1"));
+                task.invocationCounterKey(NODE + "#epoch1", ""));
         org.junit.Assert.assertNotEquals("epoch 0 is another bucket",
-                task.invocationCounterKey(NODE + "#epoch1"),
-                task.invocationCounterKey(NODE + "#epoch0"));
+                task.invocationCounterKey(NODE + "#epoch1", ""),
+                task.invocationCounterKey(NODE + "#epoch0", ""));
+        // And the request family partitions it the same way the epoch does:
+        // two requests running against one node are two populations, so an
+        // activation inside one takes no k from the other.
+        org.junit.Assert.assertNotEquals("a family is another bucket",
+                task.invocationCounterKey(NODE + "#epoch1", ""),
+                task.invocationCounterKey(NODE + "#epoch1",
+                        "hdfs-17960/client#epoch0/checkpoint-namespace"));
     }
 
     /**

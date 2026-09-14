@@ -1,6 +1,7 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
 import edu.uva.liftlab.graphchecker.causynth.MapFields;
+import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -37,9 +38,11 @@ public final class OccurrenceMinter {
      * {@link #occurrenceId} names - because a narrower scope would restart the
      * count inside one source and mint one identity twice.
      */
-    public int reserveOrdinal(String semanticSourceKey, String regionId) {
+    public int reserveOrdinal(String semanticSourceKey, String regionId,
+                              String requestFamily) {
         return ordinals.merge(MapFields.safe(semanticSourceKey) + "\n"
-                        + MapFields.safe(regionId), 1,
+                        + MapFields.safe(regionId) + "\n"
+                        + MapFields.safe(requestFamily), 1,
                 Integer::sum);
     }
 
@@ -50,9 +53,10 @@ public final class OccurrenceMinter {
      * closed here.
      */
     public String mint(String regionId, long rootCallId,
-                       String semanticSourceKey, int ordinal) {
+                       String semanticSourceKey, String requestFamily,
+                       int ordinal) {
         String occurrenceId = occurrenceId(semanticSourceKey, regionId,
-                ordinal);
+                requestFamily, ordinal);
         if (!mintedActivations.add(MapFields.safe(regionId) + "\n" + rootCallId)
                 || !mintedOccurrences.add(occurrenceId)) {
             throw new IllegalArgumentException("duplicate runtime activation: "
@@ -61,11 +65,19 @@ public final class OccurrenceMinter {
         return occurrenceId;
     }
 
-    /** The identity string, with no reservation or duplicate bookkeeping. */
+    /**
+     * The identity string, with no reservation or duplicate bookkeeping.
+     *
+     * <p>Rendered by {@link OccurrenceAddress} itself rather than
+     * concatenated here, so the one place that knows the grammar -- including
+     * whether a request family is written at all -- is the address.</p>
+     */
     public static String occurrenceId(String semanticSourceKey,
-                                      String regionId, int ordinal) {
-        return MapFields.safe(semanticSourceKey) + "/region/" + MapFields.safe(regionId)
-                + "#" + ordinal;
+                                      String regionId, String requestFamily,
+                                      int ordinal) {
+        return OccurrenceAddress.of(MapFields.safe(semanticSourceKey),
+                MapFields.safe(regionId), MapFields.safe(requestFamily),
+                ordinal).render();
     }
 
     /**

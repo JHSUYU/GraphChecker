@@ -137,26 +137,57 @@ public class OccurrenceAddressIsNotARequestTest {
     }
 
     /**
-     * Two activations under two requests are the first and the second.
+     * Two activations under two request families are each the first of
+     * their own.
      *
-     * <p>Counting and matching use one scope.  Partitioning the count by the
-     * exchange while matching ignored it handed out ordinal 1 in several
-     * buckets, and any of them satisfied a planned ordinal of 1 -- on
-     * hdfs-17960 that matched the checkpoint region's planned occurrence to
-     * the process's first saveNamespace, which serialized no snapshots and
-     * decided none of the branches the goal needs.</p>
+     * <p>Counting and matching use one scope, and the family is now in
+     * both.  It was in neither: partitioning the count by the exchange while
+     * matching ignored it handed out ordinal 1 in several buckets and any of
+     * them satisfied a planned ordinal of 1 -- on hdfs-17960 that matched
+     * the checkpoint region's planned occurrence to the process's first
+     * saveNamespace.  Removing it from the count left the other defect: on
+     * hdfs-17899 bug2 the two activations of {@code nn0 REGION.2392e4b7},
+     * recorded under {@code target-dn/heartbeat} and {@code
+     * sps/refresh-block-keys}, arrived in the other order and answered each
+     * other's addresses.  Under the family each is the first of its own and
+     * neither can take the other's.</p>
      */
     @Test
-    public void activationsAreCountedAcrossEveryRequest() {
+    public void eachRequestFamilyCountsItsOwnActivations() {
         ConcolicTaskPlan.RuntimeTask task = task();
+        String heartbeat = "hdfs-17899/target-dn#epoch0/heartbeat";
+        String refresh = "hdfs-17899/sps#epoch0/refresh-block-keys";
 
-        assertEquals("one region on one node is one bucket",
-                task.invocationCounterKey(), task.invocationCounterKey());
-        assertFalse("the request is not in the bucket",
-                task.invocationCounterKey().contains("request"));
+        assertEquals("one region, one node, one family is one bucket",
+                task.invocationCounterKey(task.sourceKey, heartbeat),
+                task.invocationCounterKey(task.sourceKey, heartbeat));
+        assertFalse("another family is another bucket",
+                task.invocationCounterKey(task.sourceKey, heartbeat).equals(
+                        task.invocationCounterKey(task.sourceKey, refresh)));
+        assertFalse("the request key itself is not in the bucket",
+                task.invocationCounterKey().contains("/request/"));
+
+        // k=1 in each, and the two are different occurrences.
+        Map<String, Integer> first = new java.util.LinkedHashMap<>();
+        first.put(task.invocationCounterKey(task.sourceKey, heartbeat), 1);
+        Map<String, Integer> second = new java.util.LinkedHashMap<>();
+        second.put(task.invocationCounterKey(task.sourceKey, refresh), 1);
+        OccurrenceAddress one = task.observedAddress(task.sourceKey,
+                heartbeat, first);
+        OccurrenceAddress other = task.observedAddress(task.sourceKey,
+                refresh, second);
+
+        assertEquals(1, one.ordinal());
+        assertEquals(1, other.ordinal());
+        assertFalse("two families, two occurrences", one.matches(other));
+        assertTrue(one.difference(other),
+                one.difference(other).contains("request family"));
     }
 
-    /** The bucket is the node, the region and the root, and nothing else. */
+    /**
+     * The bucket is the node, the region, the request family and the root,
+     * and nothing else.
+     */
     @Test
     public void theBucketIsNodeRegionAndRoot() {
         ConcolicTaskPlan.RuntimeTask task = task();
@@ -165,8 +196,21 @@ public class OccurrenceAddressIsNotARequestTest {
         assertTrue(bucket.startsWith(task.sourceKey));
         assertTrue(bucket.contains(task.regionId));
         assertTrue(bucket.contains(task.rootMethod));
-        assertEquals("node, region, root -- three parts", 3,
+        assertEquals("node, region, family, root -- four parts", 4,
                 bucket.split("\n", -1).length);
+        // The family, not the request: the plan row this task is decoded
+        // from names the request its recording had, and what partitions the
+        // count is that request's (source, api) with no ordinal.
+        assertFalse("the request key is not the bucket",
+                bucket.contains("/request/"));
+        assertEquals("an activation of the same region under another family"
+                        + " is another bucket's", 2,
+                new java.util.LinkedHashSet<>(java.util.Arrays.asList(
+                        task.invocationCounterKey(task.sourceKey,
+                                "hdfs-17899/dn0#epoch0/heartbeat"),
+                        task.invocationCounterKey(task.sourceKey,
+                                "hdfs-17899/balancer#epoch0/balance-block")))
+                        .size());
     }
 
     /**
@@ -467,7 +511,7 @@ public class OccurrenceAddressIsNotARequestTest {
                 ConcolicTaskPlan.sourceMismatch(task, null,
                         RuntimeTraceContext.current()));
         assertFalse("the bucket carries no circumstance",
-                task.invocationCounterKey().contains("request"));
+                task.invocationCounterKey().contains("/request/"));
     }
 
     /** The transcript ends here; the helpers follow. */

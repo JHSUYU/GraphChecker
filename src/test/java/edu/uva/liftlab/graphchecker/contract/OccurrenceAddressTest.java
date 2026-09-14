@@ -29,6 +29,22 @@ public class OccurrenceAddressTest {
         assertEquals("the activation suffix is not part of the address",
                 PLANNED, address(PLANNED + "#a2").render());
         assertEquals(PLANNED + "#a2", address(PLANNED).render(2));
+        assertEquals("an address under no request writes no family, so every"
+                        + " id minted before the family existed is its own",
+                PLANNED, OccurrenceAddress.of("hdfs-17960/nn0#epoch1",
+                        "REGION.9492ec77-0f65-34ba-a3af-14753ac7347d", "", 1)
+                        .render());
+        assertEquals("", address(PLANNED).family());
+
+        String withFamily = PLANNED.substring(0, PLANNED.length() - 2)
+                + "@hdfs-17960/client#epoch0/checkpoint-namespace#1";
+        assertEquals(withFamily, address(withFamily).render());
+        assertEquals("hdfs-17960/client#epoch0/checkpoint-namespace",
+                address(withFamily).family());
+        assertEquals("and the region is still read whole",
+                "REGION.9492ec77-0f65-34ba-a3af-14753ac7347d",
+                address(withFamily).regionId());
+        assertEquals(withFamily + "#a2", address(withFamily).render(2));
     }
 
     /** Node, epoch, region and ordinal are read out structurally. */
@@ -98,7 +114,18 @@ public class OccurrenceAddressTest {
         assertFalse(OccurrenceAddress.NONE.matches(address(PLANNED)));
     }
 
-    /** The counting bucket is the address without its ordinal. */
+    /**
+     * The counting bucket is the address without its ordinal.
+     *
+     * <p>Including the request family, and excluding that request's own
+     * ordinal.  Two requests running concurrently against one node are two
+     * populations -- numbering them together makes k depend on which
+     * arrived first, which is how hdfs-17899 bug2's two {@code
+     * nn0 REGION.2392e4b7} activations answered each other's addresses --
+     * while two rounds of ONE family are one population, because a replay
+     * whose heartbeat counter ran further than the recording's is still at
+     * the same occurrence.</p>
+     */
     @Test
     public void theCounterScopeIsTheAddressWithoutItsOrdinal() {
         String root = "<a.B: void run()>";
@@ -109,13 +136,34 @@ public class OccurrenceAddressTest {
 
         assertEquals("two activations of one region are one bucket",
                 first, second);
-        assertEquals("node, region, root -- three parts", 3,
+        assertEquals("node, region, family, root -- four parts", 4,
                 first.split("\n", -1).length);
-        assertFalse("the request is not in the bucket",
-                first.contains("request"));
+        assertFalse("the request key is not in the bucket",
+                first.contains("/request/"));
         assertFalse("two epochs are two buckets", first.equals(address(
                 "hdfs-17960/nn0#epoch0/region/REGION.9492ec77-0f65-34ba-"
                         + "a3af-14753ac7347d#1").counterScope(root)));
+
+        // The family partitions the count, and the request ordinal does not.
+        String region = "hdfs-17899/nn0#epoch0/region/REGION.2392e4b7";
+        String heartbeat = region
+                + "@hdfs-17899/target-dn#epoch0/heartbeat#1";
+        String refresh = region + "@hdfs-17899/sps#epoch0/refresh#1";
+        assertFalse("two families are two buckets",
+                address(heartbeat).counterScope(root)
+                        .equals(address(refresh).counterScope(root)));
+        assertEquals("a second round of one family is one bucket",
+                address(heartbeat).counterScope(root),
+                address(region + "@hdfs-17899/target-dn#epoch0/heartbeat#2")
+                        .counterScope(root));
+        assertEquals("and the family survives the address round-trip",
+                heartbeat, address(heartbeat).render());
+        assertEquals("which the request key it came from spells",
+                "hdfs-17899/target-dn#epoch0/heartbeat",
+                OccurrenceAddress.familyOf(
+                        "hdfs-17899/target-dn#epoch0/request/heartbeat#4"));
+        assertFalse("an activation under a family is not one under none",
+                address(heartbeat).matches(address(region + "#1")));
     }
 
     /** A source that names no epoch is still a node. */

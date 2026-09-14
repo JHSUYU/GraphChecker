@@ -208,8 +208,8 @@ public class ActivationIsCountedWhereItRanTest {
                 RuntimeTraceContext.UNREGISTERED_SOURCE.key(),
                 ConcolicTaskPlan.countedLifecycle(targetTask, null));
         assertNotEquals("and those are two buckets, not one",
-                targetTask.invocationCounterKey(NN),
-                targetTask.invocationCounterKey(TARGET_DN));
+                targetTask.invocationCounterKey(NN, ""),
+                targetTask.invocationCounterKey(TARGET_DN, ""));
     }
 
     /** One static-root activation, run under {@code node}'s request. */
@@ -257,8 +257,12 @@ public class ActivationIsCountedWhereItRanTest {
         encoded.addProperty("regionId", REGION);
         encoded.addProperty("relationKey", "REL.1");
         encoded.addProperty("sourceKey", sourceKey);
+        // As the planner mints it: the address carries the request family
+        // the recording stamped on the activation, (source, api) and no
+        // request ordinal.
         encoded.addProperty("occurrenceId",
-                sourceKey + "/region/" + REGION + "#1");
+                sourceKey + "/region/" + REGION + "@" + sourceKey
+                        + "/heartbeat#1");
         encoded.addProperty("rootMethod", rootMethod);
         encoded.addProperty("instrumentationSelector", "sel");
         JsonObject admission = new JsonObject();
