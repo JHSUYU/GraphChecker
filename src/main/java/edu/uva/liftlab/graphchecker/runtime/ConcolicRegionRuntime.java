@@ -2166,10 +2166,10 @@ public final class ConcolicRegionRuntime {
         }
         if (!stageMessageExpression(site.portId(),
                 result.ok() ? result.handle() : 0L)) {
-            recordHandoffGap(RpcExpressionHandoff.gap(
+            recordHandoffGap(RpcExpressionHandoff.portGap(
                     RpcExpressionHandoff.STAGE_EXPORT,
                     RpcExpressionHandoff.MISSING_METADATA,
-                    result.ok() ? result.handle() : 0L,
+                    result.ok() ? result.handle() : 0L, site.portId(),
                     "communication leaf could not enter the message: "
                             + site.portId()));
         }
@@ -2206,17 +2206,24 @@ public final class ConcolicRegionRuntime {
             // an attach that files nothing and an attach nobody planned
             // read identically from the corpus, and only one of them is a
             // coverage question.
-            recordHandoffGap(RpcExpressionHandoff.gap(
+            recordHandoffGap(RpcExpressionHandoff.portGap(
                     RpcExpressionHandoff.STAGE_ATTACH,
-                    RpcExpressionHandoff.MISSING_METADATA, 0L,
-                    "no task of this campaign declares this capture's port: "
-                            + safe(portId)));
+                    RpcExpressionHandoff.MISSING_METADATA, 0L, safe(portId),
+                    // The set actually tested is the task slice handed to
+                    // THIS replay, which is narrower than the campaign's
+                    // plan: on lane17897h the plan declared the port on a
+                    // cache-encryption-key occurrence the slice did not
+                    // carry, and the old wording sent a reader looking for
+                    // a planning bug that was not there.
+                    "no task of this replay's slice declares this capture's"
+                            + " port: " + safe(portId)));
             return;
         }
         if (carrier == null) {
-            recordHandoffGap(RpcExpressionHandoff.gap(
+            recordHandoffGap(RpcExpressionHandoff.portGap(
                     RpcExpressionHandoff.STAGE_ATTACH,
                     RpcExpressionHandoff.MISSING_METADATA, handle,
+                    site.portId(),
                     "required communication port has no carrier: "
                             + site.portId()));
             return;
@@ -2383,9 +2390,10 @@ public final class ConcolicRegionRuntime {
                 // "the capture ran outside every selected occurrence" is a
                 // statement about coverage, and it is the only remaining
                 // way this path can publish nothing.
-                recordHandoffGap(RpcExpressionHandoff.gap(
+                recordHandoffGap(RpcExpressionHandoff.portGap(
                         RpcExpressionHandoff.STAGE_ATTACH,
                         RpcExpressionHandoff.NO_ACTIVE_REGION, 0L,
+                        site.portId(),
                         "capture ran outside every selected occurrence: "
                                 + site.portId()));
                 return;
@@ -2459,10 +2467,10 @@ public final class ConcolicRegionRuntime {
                     == null) {
                 continue;
             }
-            candidate.rpcHandoffGaps.add(RpcExpressionHandoff.gap(
+            candidate.rpcHandoffGaps.add(RpcExpressionHandoff.portGap(
                     RpcExpressionHandoff.LEAF_ATTACHED_ELSEWHERE,
                     RpcExpressionHandoff.STAGE_ATTACH,
-                    RpcExpressionHandoff.MISSING_METADATA, 0L,
+                    RpcExpressionHandoff.MISSING_METADATA, 0L, portId,
                     "port declared here was attached on "
                             + named.occurrenceId() + ": " + portId));
         }
@@ -2501,9 +2509,9 @@ public final class ConcolicRegionRuntime {
             // primitive leaf the VM can mint on has no v_H, and a row
             // without one names no occurrence two replays could be joined
             // at, so the loss is named.
-            recordHandoffGap(RpcExpressionHandoff.gap(
+            recordHandoffGap(RpcExpressionHandoff.portGap(
                     RpcExpressionHandoff.STAGE_ATTACH,
-                    RpcExpressionHandoff.MISSING_METADATA, 0L,
+                    RpcExpressionHandoff.MISSING_METADATA, 0L, portId,
                     "handoff element exposes no primitive leaf: " + portId));
             return;
         }
@@ -2590,9 +2598,9 @@ public final class ConcolicRegionRuntime {
                     api.fieldExpression(owner, declaringClass, fieldName,
                             descriptor, element.get(owner))));
             if (minted == null) {
-                recordHandoffGap(RpcExpressionHandoff.gap(
+                recordHandoffGap(RpcExpressionHandoff.portGap(
                         RpcExpressionHandoff.STAGE_ATTACH,
-                        RpcExpressionHandoff.MALFORMED_RESULT, 0L,
+                        RpcExpressionHandoff.MALFORMED_RESULT, 0L, portId,
                         "handoff mint returned no exact variable at "
                                 + portId));
                 return;
@@ -2607,9 +2615,9 @@ public final class ConcolicRegionRuntime {
                     assignment == null ? "" : safe(assignment.value),
                     elementAbsent));
         } catch (Throwable failure) {
-            recordHandoffGap(RpcExpressionHandoff.gap(
+            recordHandoffGap(RpcExpressionHandoff.portGap(
                     RpcExpressionHandoff.STAGE_ATTACH,
-                    RpcExpressionHandoff.INVOCATION_FAILED, 0L,
+                    RpcExpressionHandoff.INVOCATION_FAILED, 0L, portId,
                     "handoff mint failed at " + portId + ": "
                             + rootCause(failure)));
         }
@@ -2795,10 +2803,10 @@ public final class ConcolicRegionRuntime {
      */
     static void reportUnattachedMessageLeaf(String portId, int ordinal,
                                             String producerOccurrenceId) {
-        recordHandoffGap(RpcExpressionHandoff.gap(
+        recordHandoffGap(RpcExpressionHandoff.portGap(
                 RpcExpressionHandoff.LEAVES_UNATTACHED,
                 RpcExpressionHandoff.STAGE_ATTACH,
-                RpcExpressionHandoff.MISSING_METADATA, 0L,
+                RpcExpressionHandoff.MISSING_METADATA, 0L, safe(portId),
                 "message element nothing decoded: " + safe(portId)
                         + " element " + ordinal + " from "
                         + safe(producerOccurrenceId)));

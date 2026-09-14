@@ -106,7 +106,27 @@ public final class GapLedger {
          * slice is unknown, withheld, or the subject maps to no planned
          * occurrence, the answer is BLOCKING.
          */
-        KEPT_SLICE
+        KEPT_SLICE,
+        /**
+         * BLOCKING when the composed formula names a handoff phase of the
+         * row's port that no replay of this campaign attached, and
+         * DIAGNOSTIC when every phase of that port the formula names has an
+         * attach behind it.
+         *
+         * <p>The question the design asks of a gap is whether it undermines
+         * the formula that was composed.  A capture that ran where no
+         * occurrence was selected has not removed anything from that
+         * formula: the delivery the formula uses is the one that attached
+         * inside the occurrence the slice did select, and the row is a
+         * re-execution of the same capture in a session scoped elsewhere.
+         * What would undermine it is a phase the formula names and nothing
+         * delivered -- which is exactly this test.</p>
+         *
+         * <p>Fail-closed like the slice: only the campaign fold can see the
+         * composed manifest and the attaches together, so every reader that
+         * cannot answers with the entry's own BLOCKING class.</p>
+         */
+        COMPOSED_PORT
     }
 
     /** One registered code. */
@@ -208,6 +228,20 @@ public final class GapLedger {
      * <p>The entry's own class is BLOCKING, which is what every reader that
      * cannot see the slice answers.</p>
      */
+    /**
+     * Blocking when the composed formula names an unbacked phase of the
+     * row's port, diagnostic when every phase it names attached.
+     *
+     * <p>The entry's own class is BLOCKING, which is what every reader that
+     * cannot see the composed manifest answers.</p>
+     */
+    private static void onComposedPort(String source, String code,
+                                       String reason) {
+        requireReason(code, reason);
+        register(new Entry(code, source, GapClass.BLOCKING,
+                Scope.COMPOSED_PORT, reason, ""));
+    }
+
     private static void onKeptSlice(String source, String code,
                                     String reason) {
         requireReason(code, reason);
@@ -462,15 +496,23 @@ public final class GapLedger {
         // a changed topology is something the campaign learned, not an
         // alignment gap on a path.  Both registrations are retired; git grep
         // finds no reader of the code outside this table.
-        for (String code : new String[]{
-                "RPC_HANDOFF_GAP",
-                "REPLAY_DIVERGENCE"}) {
-            blocking(explore, code,
-                    "an alignment gap on a path the replay actually walked:"
-                            + " the recorded evidence for a step of that"
-                            + " path is missing or disagrees with the model"
-                            + " the plan was built on");
-        }
+        blocking(explore, "REPLAY_DIVERGENCE",
+                "an alignment gap on a path the replay actually walked:"
+                        + " the recorded evidence for a step of that"
+                        + " path is missing or disagrees with the model"
+                        + " the plan was built on");
+        // RPC_HANDOFF_GAP was in that pair and did not belong there.  Its
+        // two live reasons -- NO_ACTIVE_REGION and MISSING_METADATA -- are
+        // raised when a declared capture runs in a replay session whose
+        // slice does not select its consumer, which on lane17897h happened
+        // 228 times for ports whose every composed phase had an attach.  A
+        // re-delivery the formula does not read is not a missing step.
+        onComposedPort(explore, "RPC_HANDOFF_GAP",
+                "a capture of this port ran where no selected occurrence"
+                        + " could take it; every handoff phase of the port"
+                        + " the composed formula names was delivered by a"
+                        + " replay that did select its consumer, so the"
+                        + " formula rests on nothing this row withheld");
         // The sibling-path family.  Every one of these says some path other
         // than the one the witness walks was not explored, and every one of
         // them lands in a summary's coverageGaps, which run_engine.sh reads
@@ -809,6 +851,18 @@ public final class GapLedger {
         return onKeptSlice ? GapClass.BLOCKING : GapClass.DIAGNOSTIC;
     }
 
+    /**
+     * Whether {@code code} is decided against the composed formula's ports.
+     *
+     * <p>Like the slice, a question only the campaign fold can answer, so
+     * {@link #classOf(String)} and {@link #blocking(String)} stay
+     * fail-closed and never consult it.</p>
+     */
+    public static boolean composedPortConditional(String code) {
+        Entry entry = code == null ? null : REGISTRY.get(code.trim());
+        return entry != null && entry.scope == Scope.COMPOSED_PORT;
+    }
+
     /** Whether {@code code} is decided against the replay slice. */
     public static boolean sliceConditional(String code) {
         Entry entry = code == null ? null : REGISTRY.get(code.trim());
@@ -899,6 +953,14 @@ public final class GapLedger {
             conditional.add(entry.code);
         }
         ledger.add("sliceConditional", conditional);
+        // Read by run_engine.sh, the reader that can see the composed
+        // manifest and the campaign's attaches at the same time.
+        JsonArray composedPort = new JsonArray();
+        for (Entry entry : REGISTRY.values()) {
+            if (entry.scope != Scope.COMPOSED_PORT) continue;
+            composedPort.add(entry.code);
+        }
+        ledger.add("composedPortConditional", composedPort);
         // Also read by run_engine.sh, which is the reader that can name a
         // subject as a linked-replay task of a known path.
         JsonArray flipWave = new JsonArray();

@@ -101,6 +101,21 @@ public final class RegionPathWorklist {
         private final Set<String> gapKeys = new LinkedHashSet<>();
         private final List<JsonObject> coverageGaps = new ArrayList<>();
         private final Set<String> coverageGapKeys = new LinkedHashSet<>();
+        /**
+         * Communication ports some replay of this exploration attached.
+         *
+         * <p>The join GapLedger's COMPOSED_PORT scope names, evaluated with
+         * the evidence this layer has.  The campaign fold asks whether the
+         * composed formula names a phase of a port that nothing delivered;
+         * here the phases the formula can name are exactly the ones a
+         * {@code vmHandoffEvent} published, so a port with an attach has no
+         * unbacked phase to find and a port with none has nothing but
+         * unbacked ones.  The case the two readers could still differ on --
+         * a phase the formula names and no attach backs -- is already
+         * blocking by its own name, HANDOFF_CONTROL_ROW_ABSENT.</p>
+         */
+        private final Set<String> attachedHandoffPorts =
+                new LinkedHashSet<>();
         private final Set<String> emitted = new LinkedHashSet<>();
         private final Set<String> observedFlipKeys = new LinkedHashSet<>();
         /** Activation-exact local paths already explored. */
@@ -132,6 +147,12 @@ public final class RegionPathWorklist {
             for (JsonObject record : explorationRecords) {
                 String key = optionalString(record, "queryKey");
                 if (!key.isEmpty()) this.records.put(key, record);
+            }
+            // Two passes, because the first gap read would otherwise ask a
+            // question the later summaries answer: a port attached by the
+            // third replay is attached for the first one's rows too.
+            for (JsonObject summary : summaries) {
+                indexAttachedHandoffPorts(summary);
             }
             for (JsonObject summary : summaries) {
                 PathObservation path = PathObservation.decode(summary,
@@ -982,6 +1003,36 @@ public final class RegionPathWorklist {
                     pathKey, site, occurrence);
         }
 
+        /** Records every port a replay of this exploration attached. */
+        private void indexAttachedHandoffPorts(JsonObject summary) {
+            for (JsonElement encoded
+                    : array(summary, "vmHandoffEvents")) {
+                if (!encoded.isJsonObject()) continue;
+                String port = optionalString(encoded.getAsJsonObject(),
+                        RpcExpressionHandoff.PORT_FIELD);
+                if (!port.isEmpty()) attachedHandoffPorts.add(port);
+            }
+        }
+
+        /**
+         * Whether one imported handoff gap withholds this region's closure.
+         *
+         * <p>It does not when the port it names was delivered: the capture
+         * ran in a session whose slice selected a different occurrence, and
+         * the delivery the paths carry is the one that attached where the
+         * consumer was selected.  A row that names no port cannot be shown
+         * backed, so it withholds -- fail-closed, like every other unknown
+         * in this ledger.</p>
+         */
+        private boolean withholdsClosure(JsonObject gap) {
+            if (!RpcExpressionHandoff.GAP_KIND.equals(
+                    optionalString(gap, "kind"))) {
+                return true;
+            }
+            String port = RpcExpressionHandoff.portOf(gap);
+            return port.isEmpty() || !attachedHandoffPorts.contains(port);
+        }
+
         /** Forwards an imported summary's alignment gaps into the coverage
          * gaps. */
         private void collectAlignmentGaps(JsonObject source) {
@@ -994,6 +1045,7 @@ public final class RegionPathWorklist {
                         && !CoverageDivergence.isDivergence(imported)) {
                     continue;
                 }
+                if (!withholdsClosure(imported)) continue;
                 String key = CanonicalJson.render(imported);
                 if (coverageGapKeys.add(key)) {
                     coverageGaps.add(imported);
