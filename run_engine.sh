@@ -3312,27 +3312,57 @@ campaign_attached_handoff_phases_json() {
                 | from_entries)}' "${results[@]}" || return 1
 }
 
+# One generated JSON document, as a file jq can read.
+#
+# A command-line argument is capped at 128 KiB on Linux -- MAX_ARG_STRLEN,
+# 32 pages, a per-argument limit that no ARG_MAX headroom relaxes -- and the
+# documents below are proportional to the corpus.  lane11741j died at EMIT
+# with "Argument list too long" on a keptSlice of 134,436 bytes after
+# reaching DECIDE with SAT_CANDIDATE and 0 blockers: a whole campaign's
+# verdict lost to an argv limit.  Every generated document is written to a
+# file and slurped; none is passed with --argjson.
+campaign_json_file() {
+  local destination=$1 content=$2
+  printf '%s\n' "${content}" >"${destination}" || return 1
+  printf '%s' "${destination}"
+}
+
 campaign_write_coverage_gaps() {
   local composition=$1 diagnostics=$2 delta=$3
   local path_closures=$4 ledger=$5 iteration_dir=$6 output=$7
-  local static_gaps plan_gaps kept_slice replay_wave attached_phases
-  static_gaps=$(campaign_static_gaps_json) || return 1
-  plan_gaps=$(campaign_plan_gaps_json) || return 1
-  kept_slice=$(campaign_kept_slice_json "${iteration_dir}") || return 1
-  replay_wave=$(campaign_replay_wave_json "${iteration_dir}") || return 1
-  attached_phases=$(campaign_attached_handoff_phases_json \
-    "${iteration_dir}") || return 1
+  local scratch status=0
+  scratch=$(mktemp -d "${TMPDIR:-/tmp}/graphchecker-gapargs.XXXXXX") \
+    || return 1
+  campaign_json_file "${scratch}/static-gaps.json" \
+    "$(campaign_static_gaps_json)" >/dev/null || { rm -rf -- "${scratch}"; return 1; }
+  campaign_json_file "${scratch}/plan-gaps.json" \
+    "$(campaign_plan_gaps_json)" >/dev/null || { rm -rf -- "${scratch}"; return 1; }
+  campaign_json_file "${scratch}/kept-slice.json" \
+    "$(campaign_kept_slice_json "${iteration_dir}")" >/dev/null \
+    || { rm -rf -- "${scratch}"; return 1; }
+  campaign_json_file "${scratch}/replay-wave.json" \
+    "$(campaign_replay_wave_json "${iteration_dir}")" >/dev/null \
+    || { rm -rf -- "${scratch}"; return 1; }
+  campaign_json_file "${scratch}/attached-handoffs.json" \
+    "$(campaign_attached_handoff_phases_json "${iteration_dir}")" >/dev/null \
+    || { rm -rf -- "${scratch}"; return 1; }
   jq -n \
     --slurpfile composedDocuments "${composition}" \
     --slurpfile diagnostics "${diagnostics}" \
     --slurpfile delta "${delta}" \
     --slurpfile pathClosureDocuments "${path_closures}" \
     --slurpfile ledgerDocuments "${ledger}" \
-    --argjson staticGaps "${static_gaps}" \
-    --argjson planGaps "${plan_gaps}" \
-    --argjson keptSlice "${kept_slice}" \
-    --argjson replayWave "${replay_wave}" \
-    --argjson attachedHandoffs "${attached_phases}" '
+    --slurpfile staticGapDocuments "${scratch}/static-gaps.json" \
+    --slurpfile planGapDocuments "${scratch}/plan-gaps.json" \
+    --slurpfile keptSliceDocuments "${scratch}/kept-slice.json" \
+    --slurpfile replayWaveDocuments "${scratch}/replay-wave.json" \
+    --slurpfile attachedHandoffDocuments \
+      "${scratch}/attached-handoffs.json" '
+    ($staticGapDocuments[0] // []) as $staticGaps |
+    ($planGapDocuments[0] // []) as $planGaps |
+    ($keptSliceDocuments[0] // {}) as $keptSlice |
+    ($replayWaveDocuments[0] // {}) as $replayWave |
+    ($attachedHandoffDocuments[0] // {}) as $attachedHandoffs |
     $composedDocuments[0] as $composed |
     ($composed.solver // {}) as $reach |
     $pathClosureDocuments[0] as $pathClosures |
@@ -3516,7 +3546,9 @@ campaign_write_coverage_gaps() {
         | map({key: .[0].code, value: length}) | from_entries)
     | .telemetryByStage = (.telemetryGaps | group_by(.stage)
         | map({key: .[0].stage, value: length}) | from_entries)
-  ' >"${output}"
+  ' >"${output}" || status=$?
+  rm -rf -- "${scratch}"
+  return "${status}"
 }
 
 # The named outputs. Nothing here recomputes a verdict: every field is copied
@@ -3675,15 +3707,32 @@ campaign_emit() {
     campaign_fail EMIT CAMPAIGN "${campaign_root}" \
       "iteration manifests are absent or malformed"
   fi
+  # Same rule as campaign_write_coverage_gaps: these three grow with the
+  # corpus -- one iteration manifest is already 72 KB on hdfs-11741, and the
+  # campaign concatenates one per epoch -- so they travel as files.  The
+  # provenance and the two counts are bounded and stay arguments.
+  local manifest_scratch manifest_status=0
+  manifest_scratch=$(mktemp -d \
+    "${TMPDIR:-/tmp}/graphchecker-manifestargs.XXXXXX") || campaign_fail \
+      EMIT CAMPAIGN "${campaign_final}" "no scratch for the run manifest"
+  campaign_json_file "${manifest_scratch}/artifacts.json" \
+    "${artifacts_json}" >/dev/null
+  campaign_json_file "${manifest_scratch}/stages.json" \
+    "${stages_json}" >/dev/null
+  campaign_json_file "${manifest_scratch}/iterations.json" \
+    "${iterations_json}" >/dev/null
   jq -n \
     --argjson provenance "${campaign_provenance}" \
     --arg root "${campaign_root}" \
     --arg final "${campaign_final}" \
-    --argjson artifacts "${artifacts_json}" \
+    --slurpfile artifactDocuments "${manifest_scratch}/artifacts.json" \
     --argjson replayRows "${replay_rows}" \
     --argjson replayBytes "${replay_bytes}" \
-    --argjson stages "${stages_json}" \
-    --argjson iterations "${iterations_json}" '
+    --slurpfile stageDocuments "${manifest_scratch}/stages.json" \
+    --slurpfile iterationDocuments "${manifest_scratch}/iterations.json" '
+    ($artifactDocuments[0] // []) as $artifacts |
+    ($stageDocuments[0] // []) as $stages |
+    ($iterationDocuments[0] // []) as $iterations |
     {schemaVersion: 1,
      kind: "CAMPAIGN_RUN_MANIFEST",
      campaignRoot: $root,
@@ -3695,7 +3744,10 @@ campaign_emit() {
                totalStageWallMillis: ([$stages[] | .wallMillis] | add // 0),
                replayResultRows: $replayRows,
                replayResultBytes: $replayBytes}}
-  ' >"${campaign_final}/run-manifest.json"
+  ' >"${campaign_final}/run-manifest.json" || manifest_status=$?
+  rm -rf -- "${manifest_scratch}"
+  [[ "${manifest_status}" -eq 0 ]] || campaign_fail EMIT CAMPAIGN \
+    "${campaign_final}" "the run manifest could not be composed"
   require_nonempty "campaign run manifest" \
     "${campaign_final}/run-manifest.json"
 
