@@ -20,10 +20,20 @@ import java.util.TreeSet;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalBool;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalInteger;
+import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalLongInteger;
 import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
 
 /** Builds bounded branch-flip work for one region closure. */
 public final class RegionPathWorklist {
+    /**
+     * The handoff rows an obligation flips through, on its query.
+     *
+     * <p>Empty for a flip over roots alone.  A reader asks this member
+     * whether the obligation crosses a wire; nothing reads a symbol's
+     * spelling for that.</p>
+     */
+    public static final String HANDOFF_CONTROLS = "handoffControls";
+
     private static final Gson GSON = new GsonBuilder()
             .disableHtmlEscaping().create();
 
@@ -337,8 +347,84 @@ public final class RegionPathWorklist {
                 rootDependentSites.add(mapping.siteId());
                 return false;
             }
+            // A decision over a value that arrived on a wire is flippable
+            // for the same reason a decision over a root is: the campaign
+            // can vary it.  The predicate names the arrival as a consumer
+            // boundary, and the replay's own handoff row for that attach
+            // names the variable it minted there -- so the support this
+            // walk sees is the boundary, and what makes it varyable is one
+            // lookup on the row, not an inference.  Without this every
+            // consumer decision read as closed by the recording, and bug3's
+            // `allKeys.get(keyId)` -- the decision the whole case turns on
+            // -- produced no obligation at all.
+            if (!handoffControls(path, predicate).isEmpty()) {
+                rootDependentSites.add(mapping.siteId());
+                return false;
+            }
             recordClosedByConstant(path, mapping);
             return true;
+        }
+
+        /**
+         * The handoff variables one predicate rests on, by raw symbol.
+         *
+         * <p>Each entry is the replay's own row at that attach: the variable
+         * it minted, the Java type it minted it at, the value it received,
+         * and the handoff occurrence an assignment to it is answered by.
+         * That row is the whole control -- flipping it needs no root
+         * assignment and no producer replay.</p>
+         */
+        private Map<String, JsonObject> handoffControls(
+                PathObservation path, JsonElement predicate) {
+            Set<Long> attaches = new LinkedHashSet<>();
+            collectBoundaryEvents(predicate, attaches);
+            Map<String, JsonObject> controls = new LinkedHashMap<>();
+            if (attaches.isEmpty()) return controls;
+            for (JsonElement encoded
+                    : array(path.replayPayload(), "vmHandoffEvents")) {
+                if (!encoded.isJsonObject()) continue;
+                JsonObject event = encoded.getAsJsonObject();
+                if (!attaches.contains(optionalLongInteger(event,
+                        "attachEventId", -1L))) {
+                    continue;
+                }
+                String symbol = optionalString(event,
+                        InSessionReadResolver.HANDOFF_SYMBOL);
+                String phase = optionalString(event,
+                        InSessionReadResolver.HANDOFF_PHASE_ID);
+                if (symbol.isEmpty() || phase.isEmpty()) continue;
+                JsonObject control = new JsonObject();
+                control.addProperty("rawSymbol", symbol);
+                control.addProperty(InSessionReadResolver.HANDOFF_PHASE_ID,
+                        phase);
+                control.addProperty("javaType",
+                        optionalString(event, "javaType"));
+                control.addProperty("recordedValue",
+                        optionalString(event, "recordedValue"));
+                controls.putIfAbsent(symbol, control);
+            }
+            return controls;
+        }
+
+        private static void collectBoundaryEvents(JsonElement value,
+                                                  Set<Long> into) {
+            if (value == null || value.isJsonNull()) return;
+            if (value.isJsonArray()) {
+                for (JsonElement child : value.getAsJsonArray()) {
+                    collectBoundaryEvents(child, into);
+                }
+                return;
+            }
+            if (!value.isJsonObject()) return;
+            JsonObject node = value.getAsJsonObject();
+            if ("ConsumerBoundaryExpression".equals(
+                    optionalString(node, "_type"))) {
+                long event = optionalLongInteger(node, "eventId", -1L);
+                if (event > 0L) into.add(event);
+            }
+            for (Map.Entry<String, JsonElement> field : node.entrySet()) {
+                collectBoundaryEvents(field.getValue(), into);
+            }
         }
 
         private void recordClosedByConstant(PathObservation path,
@@ -623,6 +709,21 @@ public final class RegionPathWorklist {
             task.addProperty("queryKey", key);
             task.addProperty("regionId", path.regionId());
             task.addProperty("goalId", path.scope().goalId());
+            // The controls this obligation flips through.  A decision over a
+            // value that arrived on a wire is answered at the handoff, not
+            // at a root: the assignment names the handoff phase and the
+            // runtime applies it at that attach exactly as it applies a
+            // configured source.  Carrying the row here is what lets the
+            // solver materialize it without a producer replay.
+            Map<String, JsonObject> controls = handoffControls(path,
+                    mapping.isWitnessed()
+                            ? mapping.witness().sourceSatisfiedPredicateView()
+                            : null);
+            if (!controls.isEmpty()) {
+                JsonArray rows = new JsonArray();
+                for (JsonObject control : controls.values()) rows.add(control);
+                task.add(HANDOFF_CONTROLS, rows);
+            }
             path.scope().loopBound().writeTo(task);
             path.scope().goalKind().writeToTask(task);
             task.addProperty("sourceTaskId", path.sourceTaskId());
