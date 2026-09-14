@@ -9,19 +9,24 @@ import java.util.Objects;
  * composer never re-derives it -- two places deciding a polarity is how a
  * composed formula ends up asserting the healthy arm and reporting the bug
  * as unsat.</p>
+ *
+ * <p>{@code seq} is where the anchor falls in its session's event order: the
+ * decisions and reads that precede the fatal read are the ones below it.</p>
  */
 public final class TargetRow {
     private final String sessionId;
+    private final long seq;
     private final OccurrenceAddress occurrence;
     private final String anchorSiteId;
     private final String phiTerm;
     private final boolean observedFatal;
     private final boolean reachedAnchor;
 
-    private TargetRow(String sessionId, OccurrenceAddress occurrence,
+    private TargetRow(String sessionId, long seq, OccurrenceAddress occurrence,
                       String anchorSiteId, String phiTerm,
                       boolean observedFatal, boolean reachedAnchor) {
         this.sessionId = sessionId;
+        this.seq = seq;
         this.occurrence = occurrence;
         this.anchorSiteId = anchorSiteId;
         this.phiTerm = phiTerm;
@@ -29,10 +34,12 @@ public final class TargetRow {
         this.reachedAnchor = reachedAnchor;
     }
 
-    public static TargetRow of(String sessionId, OccurrenceAddress occurrence,
+    public static TargetRow of(String sessionId, long seq,
+                               OccurrenceAddress occurrence,
                                String anchorSiteId, String phiTerm,
                                boolean observedFatal, boolean reachedAnchor) {
         return new TargetRow(Fields.text(sessionId, "sessionId"),
+                Fields.sequence(seq, "seq"),
                 Fields.required(occurrence, "occurrence"),
                 Fields.text(anchorSiteId, "anchorSiteId"),
                 Fields.stated(phiTerm, "phiTerm"), observedFatal,
@@ -41,6 +48,11 @@ public final class TargetRow {
 
     public String sessionId() {
         return sessionId;
+    }
+
+    /** Where the anchor falls in its session's event order. */
+    public long seq() {
+        return seq;
     }
 
     public OccurrenceAddress occurrence() {
@@ -72,7 +84,7 @@ public final class TargetRow {
         if (this == value) return true;
         if (!(value instanceof TargetRow)) return false;
         TargetRow other = (TargetRow) value;
-        return observedFatal == other.observedFatal
+        return seq == other.seq && observedFatal == other.observedFatal
                 && reachedAnchor == other.reachedAnchor
                 && sessionId.equals(other.sessionId)
                 && occurrence.equals(other.occurrence)
@@ -82,13 +94,13 @@ public final class TargetRow {
 
     @Override
     public int hashCode() {
-        return Objects.hash(sessionId, occurrence, anchorSiteId, phiTerm,
+        return Objects.hash(sessionId, seq, occurrence, anchorSiteId, phiTerm,
                 observedFatal, reachedAnchor);
     }
 
     @Override
     public String toString() {
-        return "TargetRow{" + sessionId + " " + occurrence + " "
+        return "TargetRow{" + sessionId + "#" + seq + " " + occurrence + " "
                 + anchorSiteId + (observedFatal ? " fatal}" : "}");
     }
 }

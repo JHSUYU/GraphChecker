@@ -10,9 +10,15 @@ import java.util.Objects;
  * declared, {@code outcome} the arm the run took, and {@code clockReadings} the
  * clock values read while deciding it -- stated inside the path's own
  * conjunction, never as a global assertion about a per-session fact.</p>
+ *
+ * <p>{@code seq} is the session-monotonic event sequence number.  It is what
+ * lets a producer's path condition be cut at its export -- the decisions with
+ * {@code seq} below the export's -- so a consumer never conditions on a branch
+ * the producer took after it had already sent the value.</p>
  */
 public final class DecisionRow {
     private final String sessionId;
+    private final long seq;
     private final OccurrenceAddress occurrence;
     private final String siteId;
     private final int ordinal;
@@ -20,10 +26,12 @@ public final class DecisionRow {
     private final String term;
     private final Map<String, Long> clockReadings;
 
-    private DecisionRow(String sessionId, OccurrenceAddress occurrence,
-                        String siteId, int ordinal, boolean outcome,
-                        String term, Map<String, Long> clockReadings) {
+    private DecisionRow(String sessionId, long seq,
+                        OccurrenceAddress occurrence, String siteId,
+                        int ordinal, boolean outcome, String term,
+                        Map<String, Long> clockReadings) {
         this.sessionId = sessionId;
+        this.seq = seq;
         this.occurrence = occurrence;
         this.siteId = siteId;
         this.ordinal = ordinal;
@@ -32,19 +40,25 @@ public final class DecisionRow {
         this.clockReadings = clockReadings;
     }
 
-    public static DecisionRow of(String sessionId, OccurrenceAddress occurrence,
-                                 String siteId, int ordinal, boolean outcome,
-                                 String term,
+    public static DecisionRow of(String sessionId, long seq,
+                                 OccurrenceAddress occurrence, String siteId,
+                                 int ordinal, boolean outcome, String term,
                                  Map<String, Long> clockReadings) {
         return new DecisionRow(Fields.text(sessionId, "sessionId"),
+                Fields.sequence(seq, "seq"),
                 Fields.required(occurrence, "occurrence"),
-                Fields.text(siteId, "siteId"), Fields.ordinal(ordinal, "ordinal"),
-                outcome, Fields.stated(term, "term"),
-                Fields.copy(clockReadings));
+                Fields.text(siteId, "siteId"),
+                Fields.ordinal(ordinal, "ordinal"), outcome,
+                Fields.stated(term, "term"), Fields.copy(clockReadings));
     }
 
     public String sessionId() {
         return sessionId;
+    }
+
+    /** Where this decision falls in its session's event order. */
+    public long seq() {
+        return seq;
     }
 
     public OccurrenceAddress occurrence() {
@@ -81,7 +95,8 @@ public final class DecisionRow {
         if (this == value) return true;
         if (!(value instanceof DecisionRow)) return false;
         DecisionRow other = (DecisionRow) value;
-        return ordinal == other.ordinal && outcome == other.outcome
+        return seq == other.seq && ordinal == other.ordinal
+                && outcome == other.outcome
                 && sessionId.equals(other.sessionId)
                 && occurrence.equals(other.occurrence)
                 && siteId.equals(other.siteId) && term.equals(other.term)
@@ -90,13 +105,13 @@ public final class DecisionRow {
 
     @Override
     public int hashCode() {
-        return Objects.hash(sessionId, occurrence, siteId, ordinal, outcome,
-                term, clockReadings);
+        return Objects.hash(sessionId, seq, occurrence, siteId, ordinal,
+                outcome, term, clockReadings);
     }
 
     @Override
     public String toString() {
-        return "DecisionRow{" + sessionId + " " + occurrence + " " + siteId
-                + "#" + ordinal + "=" + outcome + "}";
+        return "DecisionRow{" + sessionId + "#" + seq + " " + occurrence + " "
+                + siteId + "#" + ordinal + "=" + outcome + "}";
     }
 }
