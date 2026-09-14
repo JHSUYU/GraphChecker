@@ -37,9 +37,8 @@ public class TargetOccurrenceElectionTest {
             "hdfs-17897/dn0#epoch0/region/REGION.53092d3e#2";
 
     /**
-     * The recording observed the site twice and the closure composed one of
-     * them: the composed occurrence is elected and the other is reported,
-     * keeping its stated reason.
+     * The recording observed the site twice and the closure composed one:
+     * that occurrence is elected and the other reported with its reason.
      */
     @Test
     public void anUnobservedOccurrenceIsReportedAndNeverElected()

@@ -372,21 +372,23 @@ public class PathMergeComposerTest {
                 "sat", solve(armed.smtLib + "(assert (= " + ROOT_TERM
                         + " false))\n(check-sat)\n"));
 
-        // A replay whose obligation answered the mint read the answer, not
-        // the wire, so its arm binds v_H to the answer.
+        // An arm is a delivery some producer path made; a value an
+        // obligation answered is that path's own control and never an arm,
+        // so the bind stays the wire and the answer is stated beside it.
         JsonArray answered = handoffEvents(constant(7), 21L, 22L);
         answered.get(0).getAsJsonObject().addProperty(
                 VmHandoffEvidence.ANSWERED_VALUE, "0");
         JsonObject answeredFlip = ranAt("GROUP.FLIP", "false");
         answeredFlip.add("vmHandoffEvents", answered);
         JsonArray arms = run(directory, query,
-                Arrays.asList(seed, answeredFlip)).manifest
-                .getAsJsonObject(PathMergeComposer.MANIFEST_FIELD)
+                Arrays.asList(seed, answeredFlip)).manifest.getAsJsonObject(
+                PathMergeComposer.MANIFEST_FIELD)
                 .getAsJsonArray("handoffFamilies").get(0).getAsJsonObject()
                 .getAsJsonArray("arms");
         JsonObject arm = arms.get(arms.size() - 1).getAsJsonObject();
-        assertEquals("0", arm.get("deliveredValue").getAsString());
-        assertEquals("9", arm.get("wireValue").getAsString());
+        assertEquals("9", arm.get("deliveredValue").getAsString());
+        assertEquals("0", arm.get(VmHandoffEvidence.ANSWERED_VALUE)
+                .getAsString());
     }
 
     /**

@@ -955,28 +955,17 @@ public final class PathMergeComposer {
                     terms.add(lowering.condition(decision,
                             "handoff:" + phase + ":pi"));
                 }
-                // What the CONSUMER read in this replay.  A replay whose
-                // obligation answered the mint did not take the producer's
-                // expression at all -- the model was written into the leaf
-                // at the attach -- so binding the arm to e_p states of that
-                // replay something it did not do, and the path that ran it
-                // carries v_H = the answer in its own condition.  The two
-                // then contradict, which is what refused lane17897g's
-                // paths 4 and 9 as not self-consistent.
-                String answered = optionalString(event,
-                        VmHandoffEvidence.ANSWERED_VALUE);
-                JsonElement read = delivered;
-                if (!answered.isEmpty()) {
-                    read = literalOf(answered, optionalString(
-                            declaredVariables.get(symbol), "javaType"));
-                    if (read == null) {
-                        gate(gates, PROPAGATION_CUT, "handoff " + symbol
-                                + " was answered with a value this"
-                                + " composition cannot state: " + answered);
-                        continue;
-                    }
-                }
-                terms.add(lowering.condition(equals(symbol, read),
+                // The arm is the WIRE delivery: what a producer path
+                // actually made at this handoff, under that replay's
+                // prefix and valuation.  A value an obligation answered is
+                // that path's own control, a conjunct of its condition --
+                // never an arm.  An answer is legitimate only where some
+                // real delivery allows it, and a path whose answer no
+                // producer ever made is unsatisfiable in the composition:
+                // the search hypothesized a value the system does not
+                // produce, which is the truthful result and not a
+                // self-consistency failure.
+                terms.add(lowering.condition(equals(symbol, delivered),
                         "handoff:" + phase + ":bind"));
                 armsBySymbol.computeIfAbsent(symbol,
                         ignored -> new ArrayList<String>()).add(and(terms));
@@ -992,14 +981,16 @@ public final class PathMergeComposer {
                 JsonObject arm = new JsonObject();
                 arm.addProperty("replayGroupId", optionalString(summary,
                         "replayGroupId"));
-                String wire = optionalString(event,
-                        ComposedManifest.RECORDED_SOURCE_VALUE);
-                arm.addProperty("deliveredValue",
-                        answered.isEmpty() ? wire : answered);
+                arm.addProperty("deliveredValue", optionalString(event,
+                        ComposedManifest.RECORDED_SOURCE_VALUE));
+                // What that replay's consumer read, where an obligation
+                // answered the mint: the arm binds the wire, and this says
+                // beside it which paths took a value of their own.
+                String answered = optionalString(event,
+                        VmHandoffEvidence.ANSWERED_VALUE);
                 if (!answered.isEmpty()) {
-                    // What the wire carried, beside what the consumer read:
-                    // the two differ exactly where an obligation answered.
-                    arm.addProperty("wireValue", wire);
+                    arm.addProperty(VmHandoffEvidence.ANSWERED_VALUE,
+                            answered);
                 }
                 arm.add("valuation", armValuation(summary,
                         declaredVariables, roots));
