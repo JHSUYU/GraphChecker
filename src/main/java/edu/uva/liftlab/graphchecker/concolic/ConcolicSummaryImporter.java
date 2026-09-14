@@ -2188,8 +2188,16 @@ public final class ConcolicSummaryImporter {
                                                List<JsonObject> diagnostics) {
         boolean divergent = false;
         Set<String> planned = new LinkedHashSet<>();
+        Set<String> attached = new LinkedHashSet<>();
         for (CommunicationHandoffSpec site : task.communicationHandoffs()) {
             planned.add(site.portId());
+            // Only an IN site is reproduced by a handoff row: a row is
+            // published when the VM ATTACHES, so an export can never appear
+            // among them.  Asking an exporter to produce one refused every
+            // producer occurrence by construction -- on hdfs-17899 bug3 the
+            // NameNode task for REGION.2392e4b7 declares this port OUT and
+            // was told twenty-nine times that it did not reproduce it.
+            if ("IN".equals(site.side())) attached.add(site.portId());
         }
         Set<String> ran = new LinkedHashSet<>();
         for (JsonElement encoded : row.vmHandoffs == null
@@ -2207,7 +2215,7 @@ public final class ConcolicSummaryImporter {
                 divergent = true;
             }
         }
-        for (String port : planned) {
+        for (String port : attached) {
             if (!ran.contains(port)) {
                 // Not a new topology: a selected binding this replay did
                 // not reproduce is an admission gap of this epoch, and the

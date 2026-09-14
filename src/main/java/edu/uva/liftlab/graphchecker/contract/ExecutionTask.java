@@ -245,7 +245,7 @@ public final class ExecutionTask extends PlanRow {
      * expression session; the selected edge and closure are already the
      * task's complete interaction frontier.
      */
-    private static void retainSelectedCommunicationHandoffs(
+    static void retainSelectedCommunicationHandoffs(
             JsonObject task, JsonArray edgeBindings) {
         JsonArray declared = array(task, CommunicationHandoffSpec.FIELD);
         if (declared.size() == 0) return;
@@ -263,7 +263,18 @@ public final class ExecutionTask extends PlanRow {
             JsonObject handoff = element.getAsJsonObject();
             String portId = optionalString(handoff,
                     CommunicationCatalogContract.PORT_ID);
-            if (selectedPorts.contains(portId)) {
+            // An IN site is where this occurrence ATTACHES a value, which is
+            // its own act and its own frontier whether or not a field-flow
+            // edge happens to name the port.  The filter intersected
+            // communication ports with edgeBindings' fromOutputPort /
+            // toInputPort, which are field-flow ports, so a consumer's
+            // attach sites were dropped: on hdfs-17899 bug3 the DataNode
+            // task for REGION.16ba41cf declared resp.block-key-id with
+            // side IN in its region plan and carried zero handoffs in its
+            // execution task, so the attach it performed was read as an
+            // UNPLANNED_HANDOFF fifteen times.
+            if (selectedPorts.contains(portId)
+                    || "IN".equals(optionalString(handoff, "side"))) {
                 retained.add(handoff.deepCopy());
             }
         }
