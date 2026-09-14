@@ -42,6 +42,46 @@ public class RootValuationSolverTest {
     }
 
     /**
+     * The laneBG shape: a refusal stated once, by the stage that refused.
+     *
+     * <p>A composition the Composer refused publishes a stub -- no source
+     * ledger, no manual-root ledger, and a state that is not
+     * CANDIDATE_READY.  This stage used to read each of those absences as a
+     * gap of its own and publish three more codes beside the one refusal
+     * the composition had already named.  They said nothing the refusal did
+     * not: the ledgers were never written because the composition refused.
+     * The refusal is read once, as {@code evidenceOnly}, and the report
+     * carries no gaps of its own.</p>
+     */
+    @Test
+    public void aRefusedCompositionRaisesNoGapsOfItsOwn() throws Exception {
+        Assume.assumeTrue(z3Available());
+        JsonObject refused = new JsonObject();
+        refused.addProperty("schemaVersion", 2);
+        refused.addProperty("kind", "CONCOLIC_COMPOSED_SMT");
+        refused.addProperty("state", "CANDIDATE_WITH_GAPS");
+        refused.addProperty(ComposedManifest.FINAL_STATUS, "FINAL_REFUSED");
+        JsonArray refusals = new JsonArray();
+        JsonObject refusal = new JsonObject();
+        refusal.addProperty("kind", PathMergeComposer.TARGET_NOT_REACHED);
+        refusal.addProperty("detail", "no exact reach query");
+        refusals.add(refusal);
+        refused.add("finalStatusRefusals", refusals);
+        refused.add("gaps", new JsonArray());
+
+        JsonObject report = RootValuationSolver.extract(
+                "(set-logic ALL)\n(assert false)\n(check-sat)\n",
+                refused, new RootValuationSolver.Z3Solver(
+                        "z3", 20_000L, new JsonArray(), 1), 8, 64);
+
+        assertEquals(0, report.getAsJsonArray("gaps").size());
+        assertTrue(report.get(RootValuationSolver.EVIDENCE_ONLY)
+                .getAsBoolean());
+        assertEquals("CANDIDATE_WITH_GAPS",
+                report.get("state").getAsString());
+    }
+
+    /**
      * A clock the target cannot reach without is the finding it names.
      *
      * <p>Nothing is flipped here -- the marker sits at what it recorded --

@@ -200,12 +200,8 @@ public final class InitialContainerObservation {
             // retained at it.
             JsonObject observed = JsonFields.object(expression,
                     InSessionReadResolver.OBSERVED_VERSION);
-            if (observed.size() > 0) {
-                arms = new JsonArray();
-                arms.add(observed);
-            } else {
-                arms = JsonFields.array(expression, "candidates");
-            }
+            arms = new JsonArray();
+            if (observed.size() > 0) arms.add(observed);
         } else {
             return null;
         }

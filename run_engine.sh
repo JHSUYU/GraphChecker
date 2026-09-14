@@ -2366,8 +2366,13 @@ occurrence: its fatal read was not observed in any summary this run linked" \
     >"${member}/reach_query.log" 2>&1
   if [[ "${status}" -ne 0 || ! -s "${member}/reach_query.jsonl" ]]; then
     rm -f "${member}/reach_query.jsonl"
+    # The last line of a Java stack trace is a frame, not a reason.  Take
+    # the last line that is not one, which is the exception the builder
+    # threw, so the skip beside the absent query names the refusal instead
+    # of the file it was thrown in.
     printf '%s\n' "TargetReachPathQueryBuilder published no exact reach \
-query (exit ${status}): $(tail -n 1 "${member}/reach_query.log")" \
+query (exit ${status}): $(grep -v -E '^[[:space:]]+at ' \
+      "${member}/reach_query.log" | tail -n 1)" \
       >"${skipped}"
     campaign_log "target occurrence skipped (no query): ${occurrence}"
     return 1
@@ -2778,6 +2783,7 @@ campaign_compose() {
   [[ ! -e "${campaign_final}" ]] || die \
     "the final directory already exists: ${campaign_final}"
   mkdir -p "${campaign_final}/targets"
+  iteration_workers="${iteration_dir}/workers"
   observed="${iteration_dir}/closure_observed_summaries.jsonl"
   campaign_json combine summaryId "${observed}" "${observed_inputs[@]}"
   require_nonempty "closure-wide observed summaries" "${observed}"
@@ -2897,21 +2903,47 @@ campaign_occurrence_key() {
   printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '_'
 }
 
+# One row per anchored occurrence, and the row says what became of it.
+#
+# `status` is this stage's own outcome -- whether a composition artifact was
+# published at all -- and it used to be the only thing the row said, so a row
+# reading COMPOSED sat beside a result reading REFUSED with nothing in between
+# to reconcile them.  The outcome of the composition is the composition's to
+# state, so it is read back out of the manifest that was just written and
+# published here: what its final status is, which refusals it named, how many
+# of its paths were admitted, and whether this occurrence had an exact reach
+# query to compose from at all.  One artifact states it; this row quotes it.
 campaign_report_target_occurrence() {
   local occurrence=$1 region=$2 task=$3 target_dir=$4 status=$5
   local detail=$6 millis=$7
-  local manifest="" smt=""
+  local manifest="" smt="" reach_query=false outcome="{}"
   if [[ "${status}" == "COMPOSED" ]]; then
     manifest="${target_dir}/candidate_composition_manifest.json"
     smt="${target_dir}/candidate.smt2"
   fi
+  [[ ! -s "${iteration_workers:-}/${task}/reach_query.jsonl" ]] \
+    || reach_query=true
+  if [[ -s "${manifest}" ]]; then
+    outcome=$(jq -c '{finalStatus: (.finalStatus // ""),
+      refusals: ([.finalStatusRefusals[]?.kind] | unique),
+      pathsTotal: ((.pathMerge.paths // []) | length),
+      pathsAdmitted: ([(.pathMerge.paths // [])[]
+                       | select(.admitted == true)] | length)}' \
+      "${manifest}") || campaign_fail COMPOSE ConcolicSmtComposer \
+      "${manifest}" "the composition manifest for ${occurrence} is invalid"
+  fi
   jq -n -c --arg occurrence "${occurrence}" --arg region "${region}" \
     --arg task "${task}" --arg dir "${target_dir}" --arg status "${status}" \
     --arg detail "${detail}" --arg manifest "${manifest}" --arg smt "${smt}" \
+    --argjson reachQuery "${reach_query}" --argjson outcome "${outcome}" \
     --argjson millis "${millis}" \
     '{occurrenceId: $occurrence, regionId: $region, taskId: $task,
       artifactDir: $dir, status: $status, detail: $detail,
-      manifest: $manifest, smt: $smt,
+      manifest: $manifest, smt: $smt, reachQuery: $reachQuery,
+      finalStatus: ($outcome.finalStatus // ""),
+      refusals: ($outcome.refusals // []),
+      pathsTotal: ($outcome.pathsTotal // 0),
+      pathsAdmitted: ($outcome.pathsAdmitted // 0),
       composeWallMillis: $millis, solveWallMillis: -1}' \
     >>"${campaign_target_reports}" || campaign_fail COMPOSE CAMPAIGN \
     "${campaign_target_reports}" \

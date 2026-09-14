@@ -624,4 +624,52 @@ jq -e '.state == "PENDING" and (.coverageGaps | length) == 1' \
   "${stop_member}/path_closure.json" >/dev/null \
   || fail "the forced stop published no pending closure for the member"
 
+# One row per anchored occurrence, and the row quotes the outcome of the
+# composition it names.  A row that said only "the Composer ran" sat beside a
+# result that said REFUSED with nothing to reconcile them, so the row carries
+# the manifest's own final status, the refusals it named, how many of its
+# paths were admitted, and whether this occurrence had an exact reach query
+# to compose from.
+row_dir="${test_tmp}/rows"
+row_target="${row_dir}/targets/occ1"
+iteration_workers="${row_dir}/workers"
+mkdir -p "${row_target}" "${iteration_workers}/task-refused"
+campaign_target_reports="${row_dir}/target_occurrence_reports.jsonl"
+: >"${campaign_target_reports}"
+# The laneBG shape: an anchor with no reach query, refused TARGET_NOT_REACHED.
+jq -n '{schemaVersion: 2, kind: "CONCOLIC_COMPOSED_SMT",
+  state: "CANDIDATE_WITH_GAPS", finalStatus: "FINAL_REFUSED",
+  finalStatusRefusals: [{kind: "TARGET_NOT_REACHED", detail: "no query"}],
+  pathMerge: {paths: [], roots: []}, gaps: []}' \
+  >"${row_target}/candidate_composition_manifest.json"
+campaign_report_target_occurrence "REGION.T#1" "REGION.T" task-refused \
+  "${row_target}" COMPOSED "no exact reach query" 42
+jq -e '.finalStatus == "FINAL_REFUSED"
+  and .refusals == ["TARGET_NOT_REACHED"]
+  and .pathsTotal == 0 and .pathsAdmitted == 0
+  and .reachQuery == false' "${campaign_target_reports}" >/dev/null \
+  || fail "a refused occurrence row does not carry its refusal: \
+$(cat "${campaign_target_reports}")"
+
+# And the other half: a composition that stated a formula, from a member that
+# did publish a reach query, says how many of its paths were admitted.
+row_target2="${row_dir}/targets/occ2"
+mkdir -p "${row_target2}" "${iteration_workers}/task-ready"
+printf '%s\n' '{"kind":"TARGET_REACH_PATH_SET_QUERY"}' \
+  >"${iteration_workers}/task-ready/reach_query.jsonl"
+jq -n '{schemaVersion: 2, kind: "CONCOLIC_COMPOSED_SMT",
+  state: "CANDIDATE_READY", finalStatus: "FINAL_READY",
+  finalStatusRefusals: [],
+  pathMerge: {paths: [{admitted: true}, {admitted: false},
+                      {admitted: true}], roots: []}, gaps: []}' \
+  >"${row_target2}/candidate_composition_manifest.json"
+: >"${campaign_target_reports}"
+campaign_report_target_occurrence "REGION.T#2" "REGION.T" task-ready \
+  "${row_target2}" COMPOSED "" 51
+jq -e '.finalStatus == "FINAL_READY" and .refusals == []
+  and .pathsTotal == 3 and .pathsAdmitted == 2
+  and .reachQuery == true' "${campaign_target_reports}" >/dev/null \
+  || fail "a composed occurrence row does not carry its admitted paths: \
+$(cat "${campaign_target_reports}")"
+
 echo "run_engine campaign helper tests passed"

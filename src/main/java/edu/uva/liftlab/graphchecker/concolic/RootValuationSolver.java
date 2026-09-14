@@ -72,8 +72,6 @@ public final class RootValuationSolver {
     static final String EVIDENCE_ONLY = "evidenceOnly";
     /** How the Composer spells "this formula must not be satisfiable". */
     private static final String FAIL_CLOSED_MARKER = "; fail closed";
-    private static final String COMPOSITION_NOT_ELIGIBLE =
-            "COMPOSITION_MANIFEST_NOT_CANDIDATE_MODEL_ELIGIBLE";
     static final String SYMBOLIC_VARIABLE_MODELS =
             "symbolicVariableModels";
     private static final String SYMBOLIC_VARIABLE_MODEL_KIND =
@@ -160,7 +158,7 @@ public final class RootValuationSolver {
         }
 
         List<String> gaps = new ArrayList<>();
-        validateCompositionAuthority(composedSmt, manifest, gaps);
+        boolean composerRefused = composerRefused(manifest);
         if (firstNonBlank(composedSmt).isEmpty()) {
             gaps.add("COMPOSED_SMT_EMPTY");
         }
@@ -196,8 +194,8 @@ public final class RootValuationSolver {
         // refusal becomes a dead end. What must not happen is the answer
         // being mistaken for a verdict, so it is solved, marked, and can
         // never reach candidate authority.
-        boolean evidenceOnly = onlyRefusedCompositionGap(gaps);
-        if (!gaps.isEmpty() && !evidenceOnly) {
+        boolean evidenceOnly = composerRefused;
+        if (!gaps.isEmpty()) {
             return incomplete(report, gaps);
         }
         report.addProperty(EVIDENCE_ONLY, evidenceOnly);
@@ -361,26 +359,6 @@ public final class RootValuationSolver {
         return report;
     }
 
-    /**
-     * Whether the only thing wrong is that the Composer refused.
-     *
-     * <p>Every other gap says this stage cannot answer -- an empty formula, a
-     * root catalog it could not read, a valuation space too large to
-     * enumerate. That one says the answer may not be believed, which is a
-     * different thing and leaves the answer worth having.</p>
-     */
-    private static boolean onlyRefusedCompositionGap(List<String> gaps) {
-        if (gaps.isEmpty()) {
-            return false;
-        }
-        for (String gap : gaps) {
-            if (!COMPOSITION_NOT_ELIGIBLE.equals(gap)) {
-                return false;
-            }
-        }
-        return true;
-    }
-
     /** Stamps one published row as read-only evidence. */
     private static JsonObject asEvidence(JsonObject row,
                                          boolean evidenceOnly) {
@@ -391,18 +369,25 @@ public final class RootValuationSolver {
     }
 
 
-    private static void validateCompositionAuthority(
-            String composedSmt, JsonObject manifest, List<String> gaps) {
-        // This stage needs a composition that already declared itself
-        // candidate-ready; re-deriving that verdict from its members would
-        // be the second gate README forbids.
+    /**
+     * Whether the composition this stage was handed refused itself.
+     *
+     * <p>This stage needs a composition that already declared itself
+     * candidate-ready; re-deriving that verdict from its members would be the
+     * second gate README forbids, so the manifest's own {@code state} is
+     * read and nothing else is.  A refusal is not a gap of this stage's own:
+     * the composition published its refusal, with the code that names it,
+     * and repeating "so the solver's answer is not about a candidate model"
+     * as a second row is that one refusal counted twice.  It is a fact about
+     * this report -- the answer may be read and may not be believed -- and it
+     * is published as {@code evidenceOnly}.</p>
+     */
+    private static boolean composerRefused(JsonObject manifest) {
         boolean commonManifest = manifest != null
                 && optionalInteger(manifest, "schemaVersion", -1) == 2
                 && "CONCOLIC_COMPOSED_SMT".equals(optionalString(manifest, "kind"));
-        if (!commonManifest
-                || !"CANDIDATE_READY".equals(optionalString(manifest, "state"))) {
-            gaps.add(COMPOSITION_NOT_ELIGIBLE);
-        }
+        return !commonManifest
+                || !"CANDIDATE_READY".equals(optionalString(manifest, "state"));
     }
 
 
@@ -2281,8 +2266,11 @@ public final class RootValuationSolver {
             ManualSymbolicRootCatalog result = new ManualSymbolicRootCatalog();
             JsonElement encoded = manifest == null ? null : manifest.get(
                     ComposedManifest.MANUAL_SOURCE_MATERIALIZATION_FIELD);
+            // A composition that refused publishes no ledgers at all.  An
+            // absent ledger is that refusal restated, not a second finding:
+            // no manual root was materialized, which is what an empty
+            // catalog says.
             if (encoded == null || !encoded.isJsonArray()) {
-                gaps.add("MANUAL_SYMBOLIC_ROOT_LEDGER_MISSING");
                 return result;
             }
             Map<String, ManualSymbolicRootGroup> byTerm =
@@ -2488,8 +2476,10 @@ public final class RootValuationSolver {
             JsonElement encoded = manifest == null ? null : manifest.get(
                     ComposedManifest
                             .CONFIGURED_SOURCE_MATERIALIZATION_FIELD);
+            // As above: a refused composition materialized no source, and an
+            // empty catalog says so without raising a gap the refusal
+            // already raised.
             if (encoded == null || !encoded.isJsonArray()) {
-                gaps.add("CONFIGURED_SOURCE_MATERIALIZATIONS_MISSING");
                 return result;
             }
             // One mint site may materialize several roots for the same source

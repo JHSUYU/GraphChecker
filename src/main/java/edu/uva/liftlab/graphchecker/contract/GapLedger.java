@@ -434,10 +434,6 @@ public final class GapLedger {
         // SOLVE / SOLVER.
         // ------------------------------------------------------------------
         String solver = "SOLVE/SOLVER";
-        blocking(solver, "COMPOSITION_MANIFEST_NOT_CANDIDATE_MODEL_ELIGIBLE",
-                "the manifest the solver was handed is not a candidate"
-                        + " model, so its answer is about something other"
-                        + " than an accepted composition");
         blocking(solver, "SOLVER_TIMEOUT",
                 "a flip query the solver never answered leaves the root it"
                         + " was asked about unresolved");
@@ -472,10 +468,8 @@ public final class GapLedger {
                 "CONFIGURED_SOURCE_TERM_NOT_DECLARED_OR_SORT_MISMATCH",
                 "MANUAL_SYMBOLIC_ROOT_TERM_NOT_DECLARED_OR_SORT_MISMATCH",
                 "SYMBOLIC_ROOT_TERM_AUTHORITY_CONFLICT",
-                "MANUAL_SYMBOLIC_ROOT_LEDGER_MISSING",
                 "MANUAL_SYMBOLIC_ROOT_MALFORMED",
                 "MANUAL_SYMBOLIC_ROOT_CONFLICT",
-                "CONFIGURED_SOURCE_MATERIALIZATIONS_MISSING",
                 "CONFIGURED_SOURCE_MATERIALIZATION_MALFORMED",
                 "CONFIGURED_SOURCE_MATERIALIZATION_CONFLICT",
                 "UNDECIDED_SOLVER_VALUATIONS",
