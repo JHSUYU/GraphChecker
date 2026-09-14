@@ -67,6 +67,15 @@ final class Fields {
         return value;
     }
 
+    /** {@code value}, refusing anything below 0, naming {@code field}. */
+    static long sequence(long value, String field) {
+        if (value < 0) {
+            throw new IllegalArgumentException(
+                    field + " cannot be negative; got " + value);
+        }
+        return value;
+    }
+
     /** An unmodifiable copy; a null list is the empty one. */
     static <T> List<T> copy(List<T> values) {
         if (values == null || values.isEmpty()) {

@@ -12,23 +12,32 @@ import java.util.Objects;
  * when the arrival could not be paired at all, and carries
  * {@code lineageLost} when the exporter had no scope to name (INTERACTION-ID
  * R-I1).</p>
+ *
+ * <p>{@code seq} places the attach in its session's event order;{@code
+ * javaType} is the JVM descriptor {@code v_H} is declared with, which must be
+ * the descriptor of every arm's {@code e_q} in this interaction's family.</p>
  */
 public final class AttachRow {
     private final String sessionId;
+    private final long seq;
     private final Endpoint endpoint;
     private final String symbol;
+    private final String javaType;
     private final String arrival;
     private final boolean answered;
     private final String answeredValue;
     private final Endpoint producer;
     private final String correlationId;
 
-    private AttachRow(String sessionId, Endpoint endpoint, String symbol,
-                      String arrival, boolean answered, String answeredValue,
-                      Endpoint producer, String correlationId) {
+    private AttachRow(String sessionId, long seq, Endpoint endpoint,
+                      String symbol, String javaType, String arrival,
+                      boolean answered, String answeredValue, Endpoint producer,
+                      String correlationId) {
         this.sessionId = sessionId;
+        this.seq = seq;
         this.endpoint = endpoint;
         this.symbol = symbol;
+        this.javaType = javaType;
         this.arrival = arrival;
         this.answered = answered;
         this.answeredValue = answeredValue;
@@ -36,13 +45,15 @@ public final class AttachRow {
         this.correlationId = correlationId;
     }
 
-    public static AttachRow of(String sessionId, Endpoint endpoint,
-                               String symbol, String arrival, boolean answered,
-                               String answeredValue, Endpoint producer,
-                               String correlationId) {
+    public static AttachRow of(String sessionId, long seq, Endpoint endpoint,
+                               String symbol, String javaType, String arrival,
+                               boolean answered, String answeredValue,
+                               Endpoint producer, String correlationId) {
         return new AttachRow(Fields.text(sessionId, "sessionId"),
+                Fields.sequence(seq, "seq"),
                 Fields.required(endpoint, "endpoint"),
                 Fields.text(symbol, "symbol"),
+                Fields.text(javaType, "javaType"),
                 Fields.stated(arrival, "arrival"), answered,
                 Fields.optional(answeredValue), producer,
                 Fields.stated(correlationId, "correlationId"));
@@ -52,6 +63,11 @@ public final class AttachRow {
         return sessionId;
     }
 
+    /** Where this attach falls in its session's event order. */
+    public long seq() {
+        return seq;
+    }
+
     public Endpoint endpoint() {
         return endpoint;
     }
@@ -59,6 +75,11 @@ public final class AttachRow {
     /** The handoff control {@code v_H} minted at this attach. */
     public String symbol() {
         return symbol;
+    }
+
+    /** The JVM descriptor {@code v_H} is declared with. */
+    public String javaType() {
+        return javaType;
     }
 
     /** What arrived in this session. */
@@ -97,9 +118,12 @@ public final class AttachRow {
         if (this == value) return true;
         if (!(value instanceof AttachRow)) return false;
         AttachRow other = (AttachRow) value;
-        return answered == other.answered && sessionId.equals(other.sessionId)
+        return seq == other.seq && answered == other.answered
+                && sessionId.equals(other.sessionId)
                 && endpoint.equals(other.endpoint)
-                && symbol.equals(other.symbol) && arrival.equals(other.arrival)
+                && symbol.equals(other.symbol)
+                && javaType.equals(other.javaType)
+                && arrival.equals(other.arrival)
                 && Objects.equals(answeredValue, other.answeredValue)
                 && Objects.equals(producer, other.producer)
                 && correlationId.equals(other.correlationId);
@@ -107,13 +131,14 @@ public final class AttachRow {
 
     @Override
     public int hashCode() {
-        return Objects.hash(sessionId, endpoint, symbol, arrival, answered,
-                answeredValue, producer, correlationId);
+        return Objects.hash(sessionId, seq, endpoint, symbol, javaType, arrival,
+                answered, answeredValue, producer, correlationId);
     }
 
     @Override
     public String toString() {
-        return "AttachRow{" + sessionId + " " + endpoint + " " + symbol
+        return "AttachRow{" + sessionId + "#" + seq + " " + endpoint + " "
+                + symbol + ":" + javaType
                 + (producer == null ? " unpaired}" : " <- " + producer + "}");
     }
 }
