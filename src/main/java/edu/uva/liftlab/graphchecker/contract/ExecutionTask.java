@@ -432,6 +432,21 @@ public final class ExecutionTask extends PlanRow {
         return Collections.unmodifiableSet(result);
     }
 
+    /**
+     * The request the recording entered this occurrence under, or {@code ""}.
+     *
+     * <p>Circumstance, not identity: it never decides which activation this
+     * is.  It is here so IMPORT can say when the activation that answered
+     * the address ran under a different request than the recording had --
+     * on hdfs-17899 bug2 the SPS key-updater daemon answers an occurrence
+     * the recording took inside {@code refresh-block-keys#1} while carrying
+     * no request at all.</p>
+     */
+    public String causalAnchorRequestKey() {
+        return optionalString(object(object(encoded, "rootSelector"),
+                "causalAnchor"), "requestKey");
+    }
+
     public JsonObject rootSelector() {
         return object(encoded, "rootSelector").deepCopy();
     }

@@ -567,6 +567,10 @@ final class ConcolicResultPublisher {
         // ever have reached -- an IPC sender thread is created once, at
         // connection setup, and an InheritableThreadLocal never reaches it.
         result.addProperty("threadName", active.threadName);
+        // And under which request it entered, or "" for none.  The task's
+        // causal anchor names the request the recording had; IMPORT compares
+        // the two and refuses a silent divergence.
+        result.addProperty("requestKey", active.entryRequestKey);
         if (task.capturesTargetReach) {
             // Only a target-reach address selects on this.
             result.addProperty("targetReached",

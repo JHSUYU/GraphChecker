@@ -185,6 +185,10 @@ public final class ConcolicSummaryImporter {
         final String plannedOccurrenceId;
         /** OCC-1: this activation's own occurrence identity. */
         final String rowOccurrenceId;
+        /** The thread the activation ran on, as the row states it. */
+        final String threadName;
+        /** The request in force when it was entered, or "". */
+        final String entryRequestKey;
         /** OCC-1: whether this activation exited through the target throw;
          *  null on a non-target goal. */
         final Boolean targetReachedFlag;
@@ -199,6 +203,8 @@ public final class ConcolicSummaryImporter {
             this.plannedOccurrenceId = exactText(raw,
                     PathObservation.PLANNED_OCCURRENCE_ID);
             this.rowOccurrenceId = exactText(raw, "occurrenceId");
+            this.threadName = optionalString(raw, "threadName");
+            this.entryRequestKey = optionalString(raw, "requestKey");
             this.targetReachedFlag =
                     raw.has(PathObservation.TARGET_REACHED)
                     ? Boolean.valueOf(optionalBool(raw,
@@ -766,6 +772,10 @@ public final class ConcolicSummaryImporter {
         // Current result rows always carry the exact activation tuple. The
         // importer copies it; it does not reconstruct old coarse occurrences.
         summary.addProperty("occurrenceId", row.rowOccurrenceId);
+        // Circumstance, carried so the contract can compare it with the
+        // task's causal anchor: which thread ran it, and under which request.
+        summary.addProperty("threadName", row.threadName);
+        summary.addProperty("requestKey", row.entryRequestKey);
         summary.addProperty(PathObservation.ACTIVATION_ORDINAL,
                 row.activationOrdinal);
         summary.addProperty(PathObservation.PLANNED_OCCURRENCE_ID,

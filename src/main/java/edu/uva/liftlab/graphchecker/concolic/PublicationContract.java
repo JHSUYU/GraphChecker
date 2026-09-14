@@ -68,6 +68,22 @@ final class PublicationContract {
     /** A write log the in-session reader cannot read a version out of. */
     static final String WRITE_LOG_INCOMPLETE =
             "PUBLICATION_WRITE_LOG_INCOMPLETE";
+    /**
+     * The activation that answered an address ran under another request.
+     *
+     * <p>A request is a circumstance and never decides which activation an
+     * occurrence is -- that is the address.  But a task whose causal anchor
+     * names a request, answered by an activation that ran under a different
+     * one or under none, is a divergence between the recording and the
+     * replay, and it must not be silent: on hdfs-17899 bug2 the SPS's
+     * BlockKeyUpdater daemon answers the {@code addKeys} occurrence the
+     * recording took on {@code main} inside
+     * {@code refresh-block-keys#1}, carrying no request at all, and the
+     * send it then makes has no request to name -- which is why the
+     * workload's own fault marker never mints.</p>
+     */
+    static final String ACTIVATION_REQUEST_DIVERGED =
+            "ACTIVATION_REQUEST_DIVERGED";
 
     /**
      * Row-level codes the importer already raises that are contract
@@ -124,6 +140,13 @@ final class PublicationContract {
                                 + " replayed; its anchor names "
                                 + task.occurrenceId()));
                 continue;
+            }
+            for (JsonObject activation : published == null
+                    ? java.util.Collections.<JsonObject>emptyList()
+                    : published) {
+                JsonObject diverged = requestDivergence(taskId, task,
+                        activation);
+                if (diverged != null) rows.add(diverged);
             }
             // A region the replay skipped published a row and named itself
             // through that row's own diagnostic.  Its goal's prefix is
@@ -272,6 +295,32 @@ final class PublicationContract {
             if (!taskId.isEmpty()) named.add(taskId);
         }
         return named;
+    }
+
+    /**
+     * The row for an activation that answered under another request, or
+     * {@code null}.
+     *
+     * <p>Only when the plan states one: a task whose anchor names no
+     * request is answered under whatever request the replay had, and that
+     * is not a divergence from anything.</p>
+     */
+    private static JsonObject requestDivergence(String taskId,
+                                                ExecutionTask task,
+                                                JsonObject activation) {
+        String expected = task.causalAnchorRequestKey();
+        if (expected.isEmpty()) return null;
+        String observed = optionalString(activation, "requestKey");
+        if (expected.equals(observed)) return null;
+        return row(ACTIVATION_REQUEST_DIVERGED, taskId,
+                "the activation that answered "
+                        + optionalString(activation, "occurrenceId")
+                        + " on thread "
+                        + optionalString(activation, "threadName")
+                        + " ran under "
+                        + (observed.isEmpty() ? "no request" : observed)
+                        + ", and this task's causal anchor names "
+                        + expected);
     }
 
     private static JsonObject row(String code, String subject,
