@@ -292,8 +292,25 @@ public final class PathMergeComposer {
                 terms.add(lowering.condition(resolved.get(index),
                         "path" + pathOrdinal + ":pi" + index));
             }
-            String fatalTerm = lowering.condition(phi,
+            // phi_p is the FATAL arm, not this path's own observation.
+            //
+            // The anchor states its target decision as the constraint the
+            // replay observed -- predicate == observedTakenOutcome -- which
+            // is that path's consistency with itself and is true on every
+            // path by construction.  Asserting it made a path that decided
+            // the target the healthy way satisfiable whenever its own pi
+            // was, so the recorded root polarity came back sat and the
+            // marker read as not determining.  Fatal_T asks whether the
+            // target takes the arm the failure needs: predicate ==
+            // requiredTakenOutcome.  Where the path observed that arm the
+            // two agree; where it observed the other one the fatal arm is
+            // the negation of what it observed, and the path contributes
+            // false -- which is exactly what a healthy execution should
+            // contribute to "can this fail".
+            String observedTerm = lowering.condition(phi,
                     "path" + pathOrdinal + ":phi");
+            String fatalTerm = required == anchor.observedTakenOutcome()
+                    ? observedTerm : "(not " + observedTerm + ")";
             terms.add(fatalTerm);
             // The definedness facts this path's own lowering raised belong
             // to this path: globally they would constrain its alternatives.

@@ -2268,7 +2268,10 @@ public final class ClaimPolicy {
                             + ": nothing here states whether the target is"
                             + " reachable at "
                             + optionalString(row, "occurrenceId")
-                            + " " + row.getAsJsonArray("failureSites")));
+                            + " " + row.getAsJsonArray("failureSites")
+                            + "; that occurrence composes and is decided in"
+                            + " its own artifacts, which the target"
+                            + " occurrence ledger names"));
         }
         return result;
     }
