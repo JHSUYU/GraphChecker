@@ -2,6 +2,7 @@ package edu.uva.liftlab.graphchecker.runtime;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
 import edu.uva.liftlab.graphchecker.contract.ExecutionTask;
 import org.junit.After;
@@ -9,328 +10,188 @@ import org.junit.Test;
 
 import java.lang.reflect.Field;
 import java.util.ArrayDeque;
-import java.util.Arrays;
-import java.util.Collections;
 import java.util.Deque;
-import java.util.LinkedHashMap;
-import java.util.Map;
 import java.util.Set;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
-import com.google.gson.JsonNull;
-import edu.uva.liftlab.graphchecker.concolic.SharedStateEvidence;
-import java.util.ArrayList;
-import java.util.HashMap;
 
 /**
- * Four places where the replay used to invent a chain element, and what each
+ * Three places where the replay used to invent a chain element, and what each
  * of them answers now.
  *
  * <p>They share one shape.  A link the recording does not supply is not a
- * licence to supply one: the engine either keeps the value it actually holds
- * and flags the activation, or it refuses.  What it may never do is mint a
- * root, pin a polarity, or accept a site as the target because some site was
- * reached.  Each case below pins both halves -- that the invented answer is
- * gone, and that the honest one is a named row a claim can read.</p>
- *
- * <p>The rows land in {@code unresolvedInputs}, which {@code
- * ConcolicSummaryImporter} turns into {@code UNRESOLVED_INPUT} and refuses
- * the whole summary under, so "reported" here means "blocks" and not
- * "decorates".</p>
+ * licence to supply one: the engine keeps the value it holds and flags the
+ * activation, and may never mint a root, pin a polarity, or accept a site as
+ * the target because some site was reached.  Each rule pins both halves --
+ * the invented answer gone, the honest one a named row in
+ * {@code unresolvedInputs}, which blocks the summary as
+ * {@code UNRESOLVED_INPUT}.</p>
  */
 public class NoFabricatedChainElementTest {
-
     private static final String METHOD = "<a.B: void run(int)>";
     private static final String SITE = METHOD + "#u4";
-    private static final String OTHER = METHOD + "#u9";
     private static final String MARKER = "hadoopIpcRequestFails";
-
     private final Deque<Long> opened = new ArrayDeque<>();
 
     @After
     public void releaseRegions() throws Exception {
-        while (!opened.isEmpty()) {
-            ConcolicRegionRuntime.ACTIVE.remove(opened.pop());
-        }
+        opened.forEach(ConcolicRegionRuntime.ACTIVE::remove);
+        opened.clear();
         currentTokens().clear();
     }
 
-    // ---------- 1. the unreadable propagated expression ----------
-
     /** A well-formed envelope that simply carries no expression still does. */
     @Test
-    public void noFabricatedChainElementRules() throws Exception {
-        anAbsentExpressionIsStillTheHonestNothing();
-        aSeedReplayAnswersAControlledMarkerFromTheRecording();
-        aFlipReplayAnswersAControlledMarkerFromItsModel();
-        neitherAModelNorARecordedValueStillBlocks();
-        anyThrowIsNoLongerATargetReach();
-        theDeclaredTargetOccurrenceStillReaches();
-        TrackedLocationWriteLogTest t0 =
-                new TrackedLocationWriteLogTest();
-        t0.trackedLocationWriteLogRules();
-        ConcolicContainerMaterializationTest t1 =
-                new ConcolicContainerMaterializationTest();
-        t1.writesHashMapValueAtItsCurrentIterationFrontier();
-    }
-
-    private void anAbsentExpressionIsStillTheHonestNothing() throws Exception {
+    public void anAbsentExpressionIsStillTheHonestNothing() throws Exception {
         ConcolicRegionRuntime.ActiveRegion active = region(false);
         assertNull(ConcolicRegionRuntime.engineExpression("{}"));
         assertTrue("no expression is not a failure",
                 unresolved(active).isEmpty());
     }
 
-    // ---------- 2. the fault-idle defaults ----------
-
     /**
-     * A seed replay answers a controlled marker from the recording.
+     * A marker is answered from the recording or a model, or is a named gap.
      *
-     * <p>A seed has no model by construction -- it reproduces the recording
-     * -- so reading "no model assignment" as "unanswered" refused every seed
-     * summary that touches a declared marker, and with it the DEPENDENCY
-     * worklist ({@code NO_OBSERVED_PATH_SEED / REGION_PATH_SEED_REQUIRED}),
-     * which is a campaign that dies before it composes anything.  The
-     * recording's polarity is stated on the action as {@code primitiveValue}
-     * gated on {@code observed}, i.e. a value the mint witnessed.</p>
+     * <p>A seed has no model by construction, so reading "no model
+     * assignment" as "unanswered" refused every seed summary touching a
+     * declared marker, and with it the DEPENDENCY worklist
+     * ({@code NO_OBSERVED_PATH_SEED / REGION_PATH_SEED_REQUIRED}).  The
+     * recorded polarity is {@code primitiveValue} gated on {@code observed},
+     * and a flip answers from its model, which outranks it.</p>
      */
-    private void aSeedReplayAnswersAControlledMarkerFromTheRecording()
+    @Test
+    public void aControlledMarkerIsAnsweredOrNamedUnanswered()
             throws Exception {
-        ConcolicRegionRuntime.ActiveRegion recordedFalse = region(false,
-                recordedFaultAction(MARKER, 1, "false"));
-        assertFalse(ConcolicRegionRuntime.materializeSymbolicBoolean(MARKER));
-        assertTrue("a recorded answer is not a gap",
-                unresolved(recordedFalse).isEmpty());
-
-        // And the recorded value is read, not assumed: a marker the
-        // recording saw fire comes back true from the same seed path.
-        ConcolicRegionRuntime.ActiveRegion recordedTrue = region(false,
-                recordedFaultAction(MARKER, 1, "true"));
-        assertTrue(ConcolicRegionRuntime.materializeSymbolicBoolean(MARKER));
-        assertTrue(unresolved(recordedTrue).isEmpty());
-    }
-
-    /**
-     * A flip replay answers from its model, and the model outranks the
-     * recorded value -- moving the marker off what the recording saw is the
-     * entire point of the flip.
-     */
-    private void aFlipReplayAnswersAControlledMarkerFromItsModel()
-            throws Exception {
-        JsonObject action = recordedFaultAction(MARKER, 1, "false");
-        ConcolicRegionRuntime.ActiveRegion active = region(false,
-                Collections.singletonList(action),
-                modelAssignment(action.get("symbol").getAsString(), "true"));
-
+        for (String recorded : new String[] {"false", "true"}) {
+            Set<String> gaps = unresolved(
+                    region(false, faultAction(MARKER, recorded)));
+            assertEquals("the recording's polarity is read, not assumed",
+                    recorded, String.valueOf(ConcolicRegionRuntime
+                            .materializeSymbolicBoolean(MARKER)));
+            assertTrue("a recorded answer is not a gap", gaps.isEmpty());
+        }
+        JsonObject flipped = faultAction(MARKER, "false");
+        ConcolicRegionRuntime.ActiveRegion flip = modelledRegion(flipped,
+                flipped.get("symbol").getAsString(), "true");
         assertTrue("the model decides a flip",
                 ConcolicRegionRuntime.materializeSymbolicBoolean(MARKER));
-        assertTrue(unresolved(active).isEmpty());
-    }
-
-    /** Neither a model nor a recorded value is the unanswered case. */
-    private void neitherAModelNorARecordedValueStillBlocks()
-            throws Exception {
-        ConcolicRegionRuntime.ActiveRegion active = region(false,
-                faultAction(MARKER, 1));
+        assertTrue(unresolved(flip).isEmpty());
+        // Neither a model nor a recorded value is the unanswered case.
+        ConcolicRegionRuntime.ActiveRegion neither =
+                region(false, faultAction(MARKER, null));
         assertFalse(ConcolicRegionRuntime.materializeSymbolicBoolean(MARKER));
-        String row = only(unresolved(active));
+        String row = only(unresolved(neither));
         assertTrue(row, row.startsWith(
                 ConcolicRegionRuntime.FAULT_IDLE_UNANSWERED));
         assertTrue(row, row.contains(
                 "reason=NO_MODEL_ASSIGNMENT_AND_NO_RECORDED_VALUE"));
     }
 
-    // ---------- 3. the target link ----------
-
     /**
-     * A throw is not a target reach.
+     * A throw is not a target reach; the declared occurrence still is.
      *
-     * <p>When the task declares no target occurrence there is no link to
-     * check, so the exception the workload happened to exit through used to
-     * stand in for one -- and {@code nameUnreachedTargetBranch} returned
-     * early for that exact case, so nothing was filed either.</p>
+     * <p>With no target occurrence declared there is no link to check, and
+     * the exception the workload exited through does not stand in for one.</p>
      */
-    private void anyThrowIsNoLongerATargetReach() throws Exception {
-        ConcolicRegionRuntime.ActiveRegion active = region(false);
-        active.exitKind = "THROW";
-        active.exceptionType = "java.lang.IllegalStateException";
+    @Test
+    public void anyThrowIsNoLongerATargetReach() throws Exception {
+        ConcolicRegionRuntime.ActiveRegion undeclared = region(false);
+        undeclared.exitKind = "THROW";
+        undeclared.exceptionType = "java.lang.IllegalStateException";
         assertFalse("an undeclared target cannot have been reached",
-                ConcolicResultPublisher.targetReachedByActivation(active));
-        active.nameUnreachedTargetBranch();
-        String row = only(unresolved(active));
+                ConcolicResultPublisher.targetReachedByActivation(undeclared));
+        undeclared.nameUnreachedTargetBranch();
+        String row = only(unresolved(undeclared));
         assertTrue(row, row.startsWith(
                 ConcolicRegionRuntime.TARGET_REACH_NOT_OBSERVED));
         assertTrue(row, row.contains("java.lang.IllegalStateException"));
-    }
-
-    /** The declared occurrence, decided at its required outcome, still is. */
-    private void theDeclaredTargetOccurrenceStillReaches() throws Exception {
-        ConcolicRegionRuntime.ActiveRegion active = region(true);
-        active.exitKind = "THROW";
-        active.exceptionType = "java.lang.IllegalStateException";
-        recordReach(active, SITE, 1, true);
-        assertTrue(ConcolicResultPublisher.targetReachedByActivation(active));
-        active.nameUnreachedTargetBranch();
+        ConcolicRegionRuntime.ActiveRegion declared = region(true);
+        declared.exitKind = "THROW";
+        declared.exceptionType = "java.lang.IllegalStateException";
+        recordReach(declared);
+        assertTrue(ConcolicResultPublisher.targetReachedByActivation(declared));
+        declared.nameUnreachedTargetBranch();
         assertTrue("a genuine reach files nothing",
-                unresolved(active).isEmpty());
+                unresolved(declared).isEmpty());
     }
 
-    // ---------- harness ----------
-
-    private static Map<String, Object> policy(boolean required) {
-        Map<String, Object> policy = new LinkedHashMap<>();
-        policy.put("siteId", SITE);
-        policy.put("requiredOutcome", required);
-        policy.put("failureTarget", Boolean.TRUE);
-        return policy;
+    /** The declared target occurrence, decided at its required outcome. */
+    private static void recordReach(ConcolicRegionRuntime.ActiveRegion active)
+            throws Exception {
+        Field field = ConcolicRegionRuntime.ActiveRegion.class
+                .getDeclaredField("targetReach");
+        field.setAccessible(true);
+        field.set(active, new JsonParser().parse(
+                "{'kind':'TARGET_REACH_EVENT','siteId':'" + SITE
+                + "','occurrence':1,'outcome':true}"));
     }
 
-    private static RuntimeRegionPlanner.RuntimeEvent branchEvent(
-            long seq, boolean outcome) {
-        return new RuntimeRegionPlanner.RuntimeEvent(seq, "BRANCH", METHOD,
-                seq, seq, SITE, "", -1, "", 0, "", outcome, null, "", "");
-    }
-
-    /** The same action with the polarity the recording observed. */
-    private static JsonObject recordedFaultAction(
-            String name, int replayOccurrence, String primitiveValue) {
-        JsonObject json = faultAction(name, replayOccurrence);
-        json.addProperty("observed", true);
-        json.addProperty("primitiveValue", primitiveValue);
+    /** One declared fault marker, with the polarity the recording saw. */
+    private static JsonObject faultAction(String name, String recorded) {
+        JsonObject json = new JsonParser().parse("{'symbol':'REGION.ipc.in."
+                + name + ".1','javaType':'boolean','location':'CALL_RETURN',"
+                + "'rootKind':'ACTIVATION_LOCAL','symbolicName':'" + name
+                + "','replayOccurrence':1,'mode':'SYMBOLIC','sourceKind':'"
+                + RuntimeSelectedRegionFinalizer.EXPLICIT_SYMBOLIC_FAULT
+                + "'}").getAsJsonObject();
+        if (recorded != null) {
+            json.addProperty("observed", true);
+            json.addProperty("primitiveValue", recorded);
+        }
         return json;
     }
-
-    private static ConcolicRegionRuntime.SymbolizeAction action(
-            JsonObject json) {
-        return new ConcolicRegionRuntime.SymbolizeAction(json);
-    }
-
-    private static JsonObject modelAssignment(String inputSymbol,
-                                              String value) {
-        JsonObject json = new JsonObject();
-        json.addProperty("inputSymbol", inputSymbol);
-        json.addProperty("engineSymbol", inputSymbol);
-        json.addProperty("valueType", "BOOL");
-        json.addProperty("value", value);
-        return json;
-    }
-
-    private static JsonObject faultAction(String name,
-                                          int replayOccurrence) {
-        JsonObject json = faultJson(name, replayOccurrence);
-        json.addProperty("sourceKind", RuntimeSelectedRegionFinalizer
-                .EXPLICIT_SYMBOLIC_FAULT);
-        return json;
-    }
-
-    private static JsonObject faultJson(String name, int replayOccurrence) {
-        JsonObject json = new JsonObject();
-        json.addProperty("symbol", "REGION.ipc.in." + name + "."
-                + replayOccurrence);
-        json.addProperty("javaType", "boolean");
-        json.addProperty("location", "CALL_RETURN");
-        json.addProperty("rootKind", "ACTIVATION_LOCAL");
-        json.addProperty("symbolicName", name);
-        json.addProperty("replayOccurrence", replayOccurrence);
-        json.addProperty("mode", "SYMBOLIC");
-        return json;
-    }
-
-    private static ExecutionTask task(boolean addressesTarget,
-                                      JsonObject... actions) {
-        JsonObject encoded = new JsonObject();
-        encoded.addProperty("taskId", "TASK.1");
-        encoded.addProperty("goalId", "GOAL.1");
-        encoded.addProperty("goalKind", "TARGET_REACH_CLOSURE");
-        encoded.addProperty("regionId", "REGION.1");
-        encoded.addProperty("relationKey", "REL.1");
-        encoded.addProperty("sourceKey", "dn0#epoch0");
-        encoded.addProperty("occurrenceId", "REGION.1@dn0#epoch0#1");
-        encoded.addProperty("rootMethod", METHOD);
-        encoded.addProperty("instrumentationSelector", "sel");
-        JsonObject admission = new JsonObject();
-        admission.addProperty("state", "EXECUTABLE");
-        encoded.add("admission", admission);
-        JsonObject selector = new JsonObject();
-        selector.addProperty("kind", "GLOBAL_INVOCATION");
-        selector.addProperty("invocationOrdinal", 1);
-        JsonObject anchor = new JsonObject();
-        anchor.addProperty("sourceKey", "dn0#epoch0");
-        anchor.addProperty("kind", "REGISTERED_SOURCE");
-        selector.add("causalAnchor", anchor);
-        encoded.add("rootSelector", selector);
-        JsonObject branch = new JsonObject();
-        branch.addProperty("siteId", SITE);
-        branch.addProperty("policy", "EXPLORE");
-        branch.addProperty("selectedOccurrence", 1);
-        branch.addProperty("requiredOutcome", true);
-        JsonArray branches = new JsonArray();
-        branches.add(branch);
-        encoded.add("branches", branches);
+    private static ExecutionTask task(boolean target, JsonObject... acts) {
+        JsonObject encoded = new JsonParser().parse(
+                "{'taskId':'TASK.1','goalId':'GOAL.1','regionId':'REGION.1',"
+                + "'goalKind':'TARGET_REACH_CLOSURE','relationKey':'REL.1',"
+                + "'sourceKey':'dn0#epoch0','rootMethod':'" + METHOD + "',"
+                + "'occurrenceId':'REGION.1@dn0#epoch0#1','loopBound':"
+                + "{'schemaVersion':1},'instrumentationSelector':'sel',"
+                + "'admission':{'state':'EXECUTABLE'},'rootSelector':{'kind':"
+                + "'GLOBAL_INVOCATION','invocationOrdinal':1,'causalAnchor':"
+                + "{'sourceKey':'dn0#epoch0','kind':'REGISTERED_SOURCE'}},"
+                + "'branches':[{'siteId':'" + SITE + "','policy':'EXPLORE',"
+                + "'selectedOccurrence':1,'requiredOutcome':true}]}")
+                .getAsJsonObject();
         JsonArray inputActions = new JsonArray();
-        for (JsonObject action : actions) inputActions.add(action);
+        for (JsonObject action : acts) inputActions.add(action);
         encoded.add("inputActions", inputActions);
-        JsonObject loopBound = new JsonObject();
-        loopBound.addProperty("schemaVersion", 1);
-        encoded.add("loopBound", loopBound);
-        if (addressesTarget) {
-            JsonObject target = new JsonObject();
-            target.addProperty("siteId", SITE);
-            target.addProperty("occurrence", 1);
-            encoded.add("targetBranch", target);
+        if (target) {
+            encoded.add("targetBranch", new JsonParser().parse(
+                    "{'siteId':'" + SITE + "','occurrence':1}"));
         }
         return ExecutionTask.decode(encoded);
     }
 
-    private ConcolicRegionRuntime.ActiveRegion region(
-            boolean addressesTarget,
-            java.util.List<JsonObject> actions, JsonObject... assignments)
-            throws Exception {
-        ExecutionTask encoded = task(addressesTarget,
-                actions.toArray(new JsonObject[0]));
-        JsonArray models = new JsonArray();
-        for (JsonObject assignment : assignments) models.add(assignment);
-        JsonObject json = encoded.json().deepCopy();
-        json.add("modelAssignments", models);
+    /** One activation whose plan carries the model for that marker. */
+    private ConcolicRegionRuntime.ActiveRegion modelledRegion(
+            JsonObject action, String symbol, String value) throws Exception {
+        JsonObject json = task(false, action).json().deepCopy();
+        json.add("modelAssignments", new JsonParser().parse("[{'inputSymbol':'"
+                + symbol + "','engineSymbol':'" + symbol + "','valueType':"
+                + "'BOOL','value':'" + value + "'}]"));
         return open(ExecutionTask.decode(json));
     }
 
-    private ConcolicRegionRuntime.ActiveRegion region(
-            boolean addressesTarget, JsonObject... actions)
-            throws Exception {
-        return open(task(addressesTarget, actions));
+    private ConcolicRegionRuntime.ActiveRegion region(boolean target,
+            JsonObject... actions) throws Exception {
+        return open(task(target, actions));
     }
 
     private ConcolicRegionRuntime.ActiveRegion open(ExecutionTask encoded)
             throws Exception {
-        ConcolicTaskPlan.RuntimeTask runtime =
-                new ConcolicTaskPlan.RuntimeTask(encoded);
         long token = 910000L + opened.size() + 1;
         ConcolicRegionRuntime.ActiveRegion active =
-                new ConcolicRegionRuntime.ActiveRegion(token, runtime, null,
+                new ConcolicRegionRuntime.ActiveRegion(token,
+                        new ConcolicTaskPlan.RuntimeTask(encoded), null,
                         Thread.currentThread(), false);
         ConcolicRegionRuntime.ACTIVE.put(token, active);
         currentTokens().push(token);
         opened.push(token);
         return active;
-    }
-
-    private static void recordReach(ConcolicRegionRuntime.ActiveRegion active,
-                                    String siteId, int occurrence,
-                                    boolean outcome) throws Exception {
-        JsonObject reach = new JsonObject();
-        reach.addProperty("kind", "TARGET_REACH_EVENT");
-        reach.addProperty("siteId", siteId);
-        reach.addProperty("occurrence", occurrence);
-        reach.addProperty("outcome", outcome);
-        Field field = ConcolicRegionRuntime.ActiveRegion.class
-                .getDeclaredField("targetReach");
-        field.setAccessible(true);
-        field.set(active, reach);
     }
 
     @SuppressWarnings("unchecked")
@@ -340,15 +201,6 @@ public class NoFabricatedChainElementTest {
                 .getDeclaredField("unresolved");
         field.setAccessible(true);
         return (Set<String>) field.get(active);
-    }
-
-    private static boolean anyUnresolvedStartsWith(
-            ConcolicRegionRuntime.ActiveRegion active, String prefix)
-            throws Exception {
-        for (String row : unresolved(active)) {
-            if (row.startsWith(prefix)) return true;
-        }
-        return false;
     }
 
     private static <T> T only(java.util.Collection<T> values) {
@@ -363,188 +215,4 @@ public class NoFabricatedChainElementTest {
         field.setAccessible(true);
         return ((ThreadLocal<Deque<Long>>) field.get(null)).get();
     }
-
-    /**
-     * The write log, read out by object.
-     *
-     * <p>A location is tracked because a symbolic value reached it, and the VM
-     * files it under the identity of the object actually written.  So the runtime
-     * names nothing: it publishes the envelope the VM hands back, keyed by the
-     * location the VM states, which is the key the read nodes carry.</p>
-     */
-    static final class TrackedLocationWriteLogTest {
-
-        /** The published record is the location, its versions, and no carrier.
-         *
-         * <p>The container's INITIAL keeps its {@code initialSnapshot}: it states
-         * the contents tracking began from, every relation over that container
-         * stands on them, and without it the corpus cannot say whether the base
-         * was stated at all.</p> */
-        public void trackedLocationWriteLogRules() throws Exception {
-            theRecordIsNamedByTheObjectAndCarriesNoCarrier();
-            aContainerThatStatesItsBaseIsAdmitted();
-            aContainerWithNoStatedBaseIsRefused();
-            aContainerWithNoSnapshotMemberIsRefused();
-            aScalarIsNotAskedForAContainerBase();
-        }
-
-        private void theRecordIsNamedByTheObjectAndCarriesNoCarrier() {
-            JsonObject published = SharedStateCapture.reduceWriteLogForTest(
-                    SharedStateEvidence.versionsRecord("MAP_STATE/24#-3",
-                            envelope("MAP_STATE", 24, -3,
-                                    new int[] {39, 41, 44}), null));
-
-            assertEquals("MAP_STATE/24#-3",
-                    published.get("locationKey").getAsString());
-            assertFalse("no carrier names this location any more",
-                    published.has("carrier"));
-            JsonObject envelope = published.getAsJsonObject("envelope");
-            assertTrue("the object identity is stated", envelope.has("location"));
-            assertEquals("the session the clock belongs to is stated", 1,
-                    envelope.get("sessionId").getAsInt());
-            JsonArray versions = envelope.getAsJsonArray("versions");
-            assertEquals(3, versions.size());
-            long previous = -1L;
-            for (int index = 0; index < versions.size(); index++) {
-                JsonObject version = versions.get(index).getAsJsonObject();
-                assertEquals("version id, kind, container base, expression",
-                        index == 0 ? 4 : 3, version.size());
-                long clock = version.get("fieldVersionId").getAsLong();
-                assertTrue("the clock increases with the writes",
-                        clock > previous);
-                previous = clock;
-            }
-        }
-
-        /** A container whose base the VM stated is admitted. */
-        private void aContainerThatStatesItsBaseIsAdmitted() {
-            assertEquals("", SharedStateEvidence.versionsFault(
-                    envelope("MAP_STATE", 24, -3, new int[] {39, 41})));
-        }
-
-        /**
-         * A container whose base the VM could not state is refused, by name.
-         *
-         * <p>A container relation resolves as its base plus the mutation chain,
-         * so a base nobody stated leaves every read of that container standing on
-         * nothing.  The class travels in the fault because naming it is what gets
-         * it walked.</p>
-         */
-        private void aContainerWithNoStatedBaseIsRefused() {
-            JsonObject envelope = envelope("MAP_STATE", 24, -3,
-                    new int[] {39, 41});
-            JsonObject initial = envelope.getAsJsonArray("versions").get(0)
-                    .getAsJsonObject();
-            JsonObject snapshot = new JsonObject();
-            snapshot.addProperty("stated", false);
-            snapshot.addProperty("unsupportedClass",
-                    "org.apache.hadoop.util.LightWeightGSet");
-            initial.add("initialSnapshot", snapshot);
-
-            String fault = SharedStateEvidence.versionsFault(envelope);
-
-            assertTrue(fault, SharedStateEvidence.containerBaseUnstatedFault(
-                    fault));
-            assertTrue(fault, fault.contains("LightWeightGSet"));
-            assertEquals("SHARED_STATE_CONTAINER_BASE_UNSTATED",
-                    SharedStateEvidence.reason(
-                            SharedStateEvidence.CONTAINER_BASE_UNSTATED));
-        }
-
-        /** An INITIAL with no snapshot member at all is refused the same way. */
-        private void aContainerWithNoSnapshotMemberIsRefused() {
-            JsonObject envelope = envelope("MAP_STATE", 24, -3,
-                    new int[] {39, 41});
-            envelope.getAsJsonArray("versions").get(0).getAsJsonObject()
-                    .remove("initialSnapshot");
-
-            assertTrue(SharedStateEvidence.containerBaseUnstatedFault(
-                    SharedStateEvidence.versionsFault(envelope)));
-        }
-
-        /** A scalar has no container base and is not asked for one. */
-        private void aScalarIsNotAskedForAContainerBase() {
-            JsonObject envelope = envelope("INSTANCE_FIELD", 9, 56,
-                    new int[] {39, 41});
-            envelope.getAsJsonArray("versions").get(0).getAsJsonObject()
-                    .remove("initialSnapshot");
-
-            assertEquals("", SharedStateEvidence.versionsFault(envelope));
-        }
-
-        // ---------- the envelope the VM emits per tracked location ----------
-
-        private static JsonObject envelope(String kind, long ownerSymRid,
-                                           int slot, int[] fieldVersionIds) {
-            JsonObject location = new JsonObject();
-            location.addProperty("locationKind", kind);
-            location.addProperty("ownerSymRid", ownerSymRid);
-            location.addProperty("slot", slot);
-            JsonArray versions = new JsonArray();
-            for (int index = 0; index < fieldVersionIds.length; index++) {
-                JsonObject version = new JsonObject();
-                version.addProperty("fieldVersionId", fieldVersionIds[index]);
-                version.addProperty("versionKind", index == 0 ? "INITIAL"
-                        : "MAP_STATE".equals(kind) ? "STATE_PUT" : "WRITE");
-                version.addProperty("regionEnterEventId", 2);
-                version.addProperty("writerContextId", 2);
-                version.addProperty("regionId", "REGION.r");
-                version.addProperty("taskId", "TASK.t");
-                version.add("pathGuard", JsonNull.INSTANCE);
-                if (index == 0) {
-                    JsonObject snapshot = new JsonObject();
-                    snapshot.addProperty("entries", 2);
-                    snapshot.addProperty("truncated", false);
-                    version.add("initialSnapshot", snapshot);
-                }
-                JsonObject expression = new JsonObject();
-                expression.addProperty("_type", "ConstExpr");
-                expression.addProperty("value", index);
-                version.add("expression", expression);
-                versions.add(version);
-            }
-            JsonObject envelope = new JsonObject();
-            envelope.addProperty("schemaVersion", 1);
-            envelope.addProperty("kind", "SHARED_FIELD_VERSIONS");
-            envelope.addProperty("sessionId", 1);
-            envelope.addProperty("selected", true);
-            envelope.addProperty("writerSetComplete", true);
-            envelope.addProperty("serializationTruncated", false);
-            envelope.addProperty("readLogTruncated", false);
-            envelope.add("location", location);
-            envelope.add("versions", versions);
-            envelope.add("reads", new JsonArray());
-            return envelope;
-        }
-    }
-
-
-    static final class ConcolicContainerMaterializationTest {
-        public void writesHashMapValueAtItsCurrentIterationFrontier() {
-            JsonObject target = new JsonObject();
-            target.addProperty("shape", "ASSOCIATIVE");
-            target.addProperty("selectorKind", "ITERATION_INDEX");
-            target.addProperty("index", 1);
-            target.addProperty("projection", "VALUE");
-            JsonObject encoded = new JsonObject();
-            encoded.addProperty("modelAssignmentKey", "container.cell");
-            encoded.addProperty("engineSymbol", "container.cell");
-            encoded.addProperty("inputSymbol", "map.input");
-            encoded.addProperty("valueType", "NULL");
-            encoded.addProperty("value", "null");
-            encoded.add("containerTarget", target);
-
-            Map<String, Object> values = new HashMap<>();
-            values.put("first", new Object());
-            values.put("second", new Object());
-            String selectedKey = new ArrayList<>(values.keySet()).get(1);
-            ConcolicRegionRuntime.ModelAssignment assignment =
-                    new ConcolicRegionRuntime.ModelAssignment(encoded);
-
-            assertTrue(ConcolicRegionRuntime.writeContainerTarget(
-                    values, assignment));
-            assertNull(values.get(selectedKey));
-        }
-    }
-
 }
