@@ -634,11 +634,22 @@ final class ConcolicTaskPlan {
             RuntimeTraceContext.View context) {
         String planned = safe(task.sourceKey);
         if (!RuntimeTraceContext.declaresEpoch(planned)) return planned;
-        for (String observed : attributedSourceKeys(
-                registeredReceiverSource, context)) {
-            if (RuntimeTraceContext.sameSourceIdentity(planned, observed)) {
-                return observed;
-            }
+        // The node that DECIDED this activation is the receiver's own
+        // registration: an activation is addressed by where it ran, and the
+        // registered receiver is where it ran.  Counting by anything else
+        // puts several nodes' activations of one region in one counter -- on
+        // bug3, one JVM runs nn0, source-dn and target-dn, and a planned
+        // ordinal of 1 was answered by "invocation 4".
+        if (registeredReceiverSource != null) {
+            return registeredReceiverSource.key();
+        }
+        // No registration: the thread's inherited context is provenance, not
+        // scope, so it does not move the bucket either.  An epoch of the
+        // planned node the run did attribute still does.
+        if (context != null && context.source != null
+                && RuntimeTraceContext.sameSourceIdentity(planned,
+                context.source.key())) {
+            return context.source.key();
         }
         return planned;
     }
@@ -717,9 +728,23 @@ final class ConcolicTaskPlan {
                     + registeredReceiverSource.key() + " instead of "
                     + task.sourceKey;
         }
+        // An inherited context is not where the activation ran.  It is the
+        // node the thread was carrying -- on an RPC service that is the
+        // CALLER, and on a workload whose values cross nodes it is the node
+        // of the mint the value came from, which is value provenance.  An
+        // activation with no registration of its own has no evidence of
+        // where it ran, and absence of evidence is not evidence of another
+        // node, exactly as it is not for an absent inherited source.
+        //
+        // It refused, and on hdfs-17899 bug3 -- one JVM with nn0, source-dn
+        // and target-dn all registered -- that is five tasks refused with
+        // "matching root inherited hdfs-17899/nn0#epoch0 instead of
+        // hdfs-17899/source-dn#epoch0" and five
+        // PUBLICATION_TASK_ANSWERED_BY_NO_RUN behind them.  The difference
+        // is still worth saying, so it is recorded rather than dropped.
         if (inherited != null && !inheritedMatches) {
-            return "matching root inherited " + inherited.key()
-                    + " instead of " + task.sourceKey;
+            task.noteRequestContext("matching root inherited "
+                    + inherited.key() + " instead of " + task.sourceKey);
         }
         return "";
     }
