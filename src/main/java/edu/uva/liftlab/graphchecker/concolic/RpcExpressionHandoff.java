@@ -35,6 +35,15 @@ public final class RpcExpressionHandoff {
 
     /** Gap family recorded for every failed handoff call. */
     public static final String GAP_KIND = "RPC_HANDOFF_GAP";
+    /**
+     * The communication port a gap row is about.
+     *
+     * <p>Carried as a field rather than left inside {@code detail}: the
+     * campaign fold decides this row's class by joining the port against
+     * the composed formula's handoff phases, and a join that has to parse a
+     * sentence is a join that breaks when the sentence is reworded.</p>
+     */
+    public static final String PORT_FIELD = "portId";
     /** Authority stamped on a gap row. */
     public static final String GAP_AUTHORITY =
             "VM_RPC_EXPRESSION_HANDOFF_GAP_V1";
@@ -126,10 +135,34 @@ public final class RpcExpressionHandoff {
         return gap;
     }
 
+    /** Builds one named coverage gap about one communication port. */
+    public static JsonObject portGap(String stage, int status, long handle,
+                                     String portId, String detail) {
+        JsonObject gap = gap(stage, status, handle, detail);
+        gap.addProperty(PORT_FIELD, nonNull(portId));
+        return gap;
+    }
+
+    /** The port a gap row is about, or {@code ""}. */
+    public static String portOf(JsonObject row) {
+        return row == null || !row.has(PORT_FIELD)
+                || !row.get(PORT_FIELD).isJsonPrimitive()
+                ? "" : row.get(PORT_FIELD).getAsString();
+    }
+
     /** Builds one named coverage gap under an explicit code. */
     public static JsonObject gap(String code, String stage, int status,
                                  long handle, String detail) {
         JsonObject gap = gap(stage, status, handle, detail);
+        gap.addProperty("code", nonNull(code));
+        return gap;
+    }
+
+    /** One named coverage gap about one port, under an explicit code. */
+    public static JsonObject portGap(String code, String stage, int status,
+                                     long handle, String portId,
+                                     String detail) {
+        JsonObject gap = portGap(stage, status, handle, portId, detail);
         gap.addProperty("code", nonNull(code));
         return gap;
     }

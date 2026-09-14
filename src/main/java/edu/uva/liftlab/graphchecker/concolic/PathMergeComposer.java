@@ -437,7 +437,8 @@ public final class PathMergeComposer {
                 // its model assigned handoff variables -- and the gate
                 // reported only that something, somewhere, was unflipped.
                 gate(gates, CLOSURE_INCOMPLETE, "path " + pathOrdinal
-                        + " left a root-dependent branch unflipped: "
+                        + " left a root-dependent branch unflipped; the"
+                        + " path set's open coverage is: "
                         + closureCause(fatal));
             }
         }
@@ -1876,6 +1877,21 @@ public final class PathMergeComposer {
      * close.  A query that states none says so in as many words, which is a
      * reader's cue that the closure withheld a verdict without a reason.</p>
      */
+    /**
+     * Why the path set is not closed, as the rows that say so.
+     *
+     * <p>Not "why THIS path is not closed", and the message no longer
+     * implies it: a coverage gap names a region, a pathKey or a flip
+     * queryKey, and a composed path names a caseId, a taskId and a
+     * replayGroupId.  On laneVM25 the two key sets do not intersect at all
+     * -- ten gap queryKeys, zero matches against any path's or document's
+     * key -- so attributing one row to one path is not derivable here, and
+     * a filter that tried would have dropped every pathKey-bearing row from
+     * every path instead of narrowing anything.  Naming the set is what the
+     * corpus supports; narrowing it needs a key the rows do not carry, and
+     * that is a change to what the worklist publishes, not to this
+     * sentence.</p>
+     */
     private static String closureCause(JsonObject fatal) {
         List<String> causes = new ArrayList<>();
         for (JsonElement element : array(fatal, "coverageGaps")) {
@@ -1889,7 +1905,8 @@ public final class PathMergeComposer {
                     + (detail.isEmpty() ? "" : " (" + detail + ")"));
         }
         return causes.isEmpty()
-                ? "the path set states no cause for withholding closure"
+                ? "nothing -- the path set states no cause for withholding"
+                        + " closure"
                 : String.join("; ", causes);
     }
 

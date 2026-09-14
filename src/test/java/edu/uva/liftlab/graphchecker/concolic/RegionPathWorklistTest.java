@@ -234,6 +234,76 @@ public class RegionPathWorklistTest {
         assertEquals("REGION.PLAIN", optionalString(row, "regionId"));
         // The constant: the outcome the recording took.
         assertTrue(row.get("recordedOutcome").getAsBoolean());
+
+        // The same closure, now with a handoff gap the replay raised.  A
+        // capture of a port some replay of this exploration DID attach ran
+        // where no occurrence was selected; the delivery the paths carry is
+        // the one that attached, so the row states a re-execution and not a
+        // missing step, and the region still closes.
+        JsonObject attached = summary(plain, 1, true);
+        attached.add("alignmentGaps", handoffGaps("XCH.P.resp.leaf"));
+        attached.add("vmHandoffEvents", attachedLeaf("XCH.P.resp.leaf"));
+        RegionPathWorklist.Result delivered = planWith(attached, plain,
+                SymbolicRootInventory.of(
+                        Arrays.asList(rootedSummary, attached),
+                        Arrays.asList(rooted, plain)));
+        assertEquals(0,
+                delivered.manifest.getAsJsonArray("coverageGaps").size());
+        assertEquals("CLOSED",
+                delivered.manifest.get("coverageState").getAsString());
+
+        // And a port nothing ever attached keeps withholding: fail-closed,
+        // because a delivery no replay made is a step of the path that is
+        // genuinely missing.  A row naming no port at all does too.
+        JsonObject unbacked = summary(plain, 1, true);
+        unbacked.add("alignmentGaps", handoffGaps("XCH.Q.resp.leaf"));
+        unbacked.add("vmHandoffEvents", attachedLeaf("XCH.P.resp.leaf"));
+        RegionPathWorklist.Result withheld = planWith(unbacked, plain,
+                SymbolicRootInventory.of(
+                        Arrays.asList(rootedSummary, unbacked),
+                        Arrays.asList(rooted, plain)));
+        assertEquals(1,
+                withheld.manifest.getAsJsonArray("coverageGaps").size());
+        assertEquals("XCH.Q.resp.leaf", optionalString(
+                withheld.manifest.getAsJsonArray("coverageGaps").get(0)
+                        .getAsJsonObject(), RpcExpressionHandoff.PORT_FIELD));
+        assertTrue(!"CLOSED".equals(
+                withheld.manifest.get("coverageState").getAsString()));
+
+        JsonObject anonymous = summary(plain, 1, true);
+        JsonArray nameless = handoffGaps("XCH.P.resp.leaf");
+        nameless.get(0).getAsJsonObject().remove(
+                RpcExpressionHandoff.PORT_FIELD);
+        anonymous.add("alignmentGaps", nameless);
+        anonymous.add("vmHandoffEvents", attachedLeaf("XCH.P.resp.leaf"));
+        RegionPathWorklist.Result unnamed = planWith(anonymous, plain,
+                SymbolicRootInventory.of(
+                        Arrays.asList(rootedSummary, anonymous),
+                        Arrays.asList(rooted, plain)));
+        assertEquals(1,
+                unnamed.manifest.getAsJsonArray("coverageGaps").size());
+    }
+
+    /** One imported handoff gap, as the replay raised it for {@code port}. */
+    private static JsonArray handoffGaps(String port) {
+        JsonArray rows = new JsonArray();
+        rows.add(RpcExpressionHandoff.portGap(
+                RpcExpressionHandoff.STAGE_ATTACH,
+                RpcExpressionHandoff.NO_ACTIVE_REGION, 0L, port,
+                "capture ran outside every selected occurrence: " + port));
+        return rows;
+    }
+
+    /** One attach of {@code port}, as some replay of this wave published it. */
+    private static JsonArray attachedLeaf(String port) {
+        JsonObject event = new JsonObject();
+        event.addProperty("kind", "VM_RPC_EXPRESSION_HANDOFF");
+        event.addProperty(RpcExpressionHandoff.PORT_FIELD, port);
+        event.addProperty(InSessionReadResolver.HANDOFF_PHASE_ID,
+                "HANDOFF_PHASE.FIXTURE");
+        JsonArray rows = new JsonArray();
+        rows.add(event);
+        return rows;
     }
 
     /**

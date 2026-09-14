@@ -36,7 +36,11 @@ emit_fixture() {
   emit_bounds="${emit_root}/loop-bounds.jsonl"
   emit_classes="${emit_root}/classes"
   campaign_root="${emit_root}"
-  campaign_final="${emit_root}/final"
+  # The production layout: each epoch composes into its own final/ and the
+  # campaign publishes the last one at ${campaign_root}/final.  The fixture
+  # used to point campaign_final straight at the published directory, which
+  # made the publish a no-op and hid the bug the checks below now pin.
+  campaign_final="${emit_iteration}/final"
   campaign_stage_metrics="${emit_root}/stage_metrics.tsv"
   composition_manifest="${campaign_final}/candidate_composition_manifest.json"
 
@@ -187,6 +191,12 @@ jq -e '.evidence.symbolicPropagationComplete == false
   and .telemetryCount >= 2' \
   "${campaign_final}/result.json" >/dev/null \
   || fail "the result lost its propagation provenance"
+# EMIT-1: the epoch's artifacts are published at ${campaign_root}/final, which
+# is the one path every later reader and the harness open.
+[[ -s "${campaign_root}/final/result.json" ]] \
+  || fail "an accepted epoch published no ${campaign_root}/final"
+cmp -s "${campaign_final}/result.json" "${campaign_root}/final/result.json" \
+  || fail "the published final is not this epoch's final"
 
 # DECIDE-1: a verdict that rests on one of several observed executions of the
 # annotated target says which one, in the result itself, with every other
@@ -257,6 +267,17 @@ $(jq -c '.gaps' "${campaign_final}/gaps.json")"
 jq -e '.accepted == false and .gapCount == 1' \
   "${campaign_final}/result.json" >/dev/null \
   || fail "result.json did not state that acceptance was withheld"
+# EMIT-2: and a WITHHELD epoch publishes too.  campaign_emit leaves this shell
+# with exit 3 on a blocking gap, so the epoch loop's own publish call never
+# ran: lane17897h composed, solved and decided, then published nothing at
+# ${campaign_root}/final and the harness read claim=MISSING for it.
+[[ -s "${campaign_root}/final/result.json" ]] \
+  || fail "a withheld epoch published no ${campaign_root}/final"
+[[ $(jq -r '.claim' "${campaign_root}/final/result.json") \
+    == $(jq -r '.claim' "${campaign_final}/result.json") ]] \
+  || fail "the published final does not carry the withheld epoch's claim"
+[[ -s "${campaign_root}/final/gaps.json" ]] \
+  || fail "the published final lost the gaps that withheld it"
 
 # GAP-3: a code nobody registered is blocking.  This fixture used to publish
 # two invented composition gap reasons as accepted telemetry; under one
@@ -570,11 +591,13 @@ for config_row in "${workflow_config_keys[@]}"; do
       || fail "internal key ${config_key} is loadable from a config file"
   fi
 done
-# 41: `replay_task_budget` joined the table in bef2db898 without this count
+# 42: `replay_task_budget` joined the table in bef2db898 without this count
 # being raised and has since been deleted -- it capped nothing, no experiment
 # set it, and its own test asserted it dropped no task.  `composer` joined it
-# when the composition became selectable.
-[[ "$(print_normalized_config | wc -l)" -eq 41 ]] \
+# when the composition became selectable, and `declared_target_occurrence`
+# joined it in 05d413cae -- again without this count being raised, which left
+# the whole helper test red on staging until REPORT-GAPJOIN found it.
+[[ "$(print_normalized_config | wc -l)" -eq 42 ]] \
   || fail "config prints a different number of keys than it used to: \
 $(print_normalized_config | wc -l)"
 

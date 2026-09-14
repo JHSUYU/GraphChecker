@@ -3270,14 +3270,45 @@ campaign_replay_wave_json() {
           | from_entries)}' "${linked}" || return 1
 }
 
+# Every (port, handoff phase) some replay of this epoch actually attached.
+#
+# The other half of GapLedger's COMPOSED_PORT join: a handoff gap says a
+# capture of some port could not be taken, and the question the design asks
+# is whether the composed formula rests on a delivery of that port that
+# nothing made.  This is the "something made it" side, read from the raw
+# replay results rather than from any stage's summary of them.
+campaign_attached_handoff_phases_json() {
+  local iteration_dir=$1
+  local -a results=()
+  local listing
+  listing=$(find "${iteration_dir}" -type f \
+    -name 'concolic_region_results.jsonl' -print | LC_ALL=C sort) || return 1
+  [[ -z "${listing}" ]] || mapfile -t results <<<"${listing}"
+  if [[ ${#results[@]} -eq 0 ]]; then
+    echo '{"ports": {}, "phases": {}}'
+    return 0
+  fi
+  jq -s '
+    [.[] | .vmHandoffEvents[]? | select((.portId // "") != "")]
+    as $events
+    | {ports: ($events | map({key: .portId, value: true}) | from_entries),
+       phases: ($events
+                | map(select((.handoffPhaseId // "") != "")
+                      | {key: (.portId + "\n" + .handoffPhaseId),
+                         value: true})
+                | from_entries)}' "${results[@]}" || return 1
+}
+
 campaign_write_coverage_gaps() {
   local composition=$1 diagnostics=$2 delta=$3
   local path_closures=$4 ledger=$5 iteration_dir=$6 output=$7
-  local static_gaps plan_gaps kept_slice replay_wave
+  local static_gaps plan_gaps kept_slice replay_wave attached_phases
   static_gaps=$(campaign_static_gaps_json) || return 1
   plan_gaps=$(campaign_plan_gaps_json) || return 1
   kept_slice=$(campaign_kept_slice_json "${iteration_dir}") || return 1
   replay_wave=$(campaign_replay_wave_json "${iteration_dir}") || return 1
+  attached_phases=$(campaign_attached_handoff_phases_json \
+    "${iteration_dir}") || return 1
   jq -n \
     --slurpfile composedDocuments "${composition}" \
     --slurpfile diagnostics "${diagnostics}" \
@@ -3287,7 +3318,8 @@ campaign_write_coverage_gaps() {
     --argjson staticGaps "${static_gaps}" \
     --argjson planGaps "${plan_gaps}" \
     --argjson keptSlice "${kept_slice}" \
-    --argjson replayWave "${replay_wave}" '
+    --argjson replayWave "${replay_wave}" \
+    --argjson attachedHandoffs "${attached_phases}" '
     $composedDocuments[0] as $composed |
     ($composed.solver // {}) as $reach |
     $pathClosureDocuments[0] as $pathClosures |
@@ -3296,6 +3328,7 @@ campaign_write_coverage_gaps() {
     # the same default GapLedger.classOf applies in Java.
     ($ledger.diagnostic // []) as $diagnosticCodes |
     ($ledger.sliceConditional // []) as $sliceCodes |
+    ($ledger.composedPortConditional // []) as $portCodes |
     ($ledger.flipWaveDiagnostic // []) as $flipWaveCodes |
     ($ledger.flipWaveReasonByCode // {}) as $flipWaveReasonByCode |
     ($replayWave.pathByTask // {}) as $flipPathByTask |
@@ -3317,6 +3350,36 @@ campaign_write_coverage_gaps() {
           elif ($keptOccurrence[$occurrence] // false)
             then {onSlice: true, why: ("ON_KEPT_SLICE:" + $occurrence)}
           else {onSlice: false, why: ("SLICE_PRUNED:" + $occurrence)}
+          end
+      end;
+    ($attachedHandoffs.ports // {}) as $attachedPort |
+    ($attachedHandoffs.phases // {}) as $attachedPhase |
+    ($composed.configuredSourceMaterializations // []
+     | map(select((.sourceId // "") != ""))) as $materialized |
+    # A composed-port row is blocking when the formula names a handoff phase
+    # of its port that no replay delivered, and diagnostic when every phase
+    # of that port the formula names has an attach behind it.  A row naming
+    # no port cannot be shown backed and stays blocking, which is the same
+    # fail-closed answer every other unknown gets here.
+    def portVerdict($port):
+      if $port == "" then {unbacked: true, why: "ROW_NAMES_NO_PORT"}
+      else ($materialized
+            | map(select(.sourceId == $port))) as $rows
+        | ($rows | map(select(($attachedPhase[$port + "\n"
+                               + (.sourcePhaseId // "")] // false) | not))
+           | map(.sourcePhaseId // "")) as $missing
+        | if ($rows | length) == 0
+            then (if ($attachedPort[$port] // false)
+                    then {unbacked: false,
+                          why: ("PORT_NOT_COMPOSED_AND_ATTACHED:" + $port)}
+                  else {unbacked: true,
+                        why: ("PORT_NEVER_ATTACHED:" + $port)} end)
+          elif ($missing | length) > 0
+            then {unbacked: true,
+                  why: ("COMPOSED_PHASE_NEVER_ATTACHED:"
+                        + ($missing | join(",")))}
+          else {unbacked: false,
+                why: ("EVERY_COMPOSED_PHASE_ATTACHED:" + $port)}
           end
       end;
     # The acceptance gate publishes every emitter refusal under one
@@ -3363,6 +3426,7 @@ campaign_write_coverage_gaps() {
               code: (.kind // ""),
               subject: (.queryKey // .regionId
                         // .evidenceIdentity.taskId // ""),
+              portId: (.portId // ""),
               detail: ([(.reason // ""), (.detail // "")]
                        | map(select(. != "")) | join(": "))}]
        + [$diagnostics[]?
@@ -3399,6 +3463,11 @@ campaign_write_coverage_gaps() {
                   then {class: "DIAGNOSTIC",
                         flipPath: $flipPathByTask[$row.subject],
                         classReason: ($flipWaveReasonByCode[$row.code] // "")}
+                  elif (.code | IN($portCodes[]))
+                  then (portVerdict(.portId // "") as $v
+                        | {class: (if $v.unbacked
+                                   then "BLOCKING" else "DIAGNOSTIC" end),
+                           portVerdict: $v.why})
                   elif (.code | IN($sliceCodes[]))
                   then (sliceVerdict(.subject) as $v
                         | {class: (if $v.onSlice
@@ -3418,6 +3487,7 @@ campaign_write_coverage_gaps() {
                  defaultClass: ($ledger.defaultClass // "BLOCKING"),
                  diagnosticCodes: $diagnosticCodes,
                  sliceConditionalCodes: $sliceCodes,
+                 composedPortConditionalCodes: $portCodes,
                  flipWaveDiagnosticCodes: $flipWaveCodes,
                  replayTaskSliceApplied: $sliceApplied,
                  flipWaveTaskCount: ($flipPathByTask | length),
@@ -3615,6 +3685,15 @@ campaign_emit() {
   ' >"${campaign_final}/run-manifest.json"
   require_nonempty "campaign run manifest" \
     "${campaign_final}/run-manifest.json"
+
+  # Published here, not after the stage: the claim gates below leave this
+  # shell with exit 2 or exit 3, so the epoch loop's own call to this helper
+  # was unreachable on exactly the runs whose verdict a reader most needs --
+  # lane17897h withheld on six gaps, and ${campaign_root}/final never
+  # existed, so the harness read claim=MISSING for a run that had composed,
+  # solved and decided.  Every completed epoch publishes, whatever the
+  # claim.  The loop's call stays and is idempotent.
+  campaign_publish_epoch_final "${iteration_dir}"
 
   gapCount=$(jq -r '.gapCount' "${campaign_final}/gaps.json")
   campaign_log "artifacts in ${campaign_final}"

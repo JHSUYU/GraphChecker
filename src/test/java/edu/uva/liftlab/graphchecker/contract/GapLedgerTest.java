@@ -53,6 +53,29 @@ public class GapLedgerTest {
                 GapLedger.classOf(code, false));
         // A reader that cannot see the slice keeps withholding.
         assertEquals(GapLedger.GapClass.BLOCKING, GapLedger.classOf(code));
+
+        // The same shape for the composed-port scope: the handoff gap is
+        // decided by joining its port against the composed formula's phases
+        // and the campaign's attaches, a question only the campaign fold can
+        // ask, so every reader here answers BLOCKING and the fold is told
+        // which codes to ask it about.
+        assertTrue(GapLedger.composedPortConditional("RPC_HANDOFF_GAP"));
+        assertEquals(GapLedger.GapClass.BLOCKING,
+                GapLedger.classOf("RPC_HANDOFF_GAP"));
+        assertEquals(GapLedger.GapClass.BLOCKING,
+                GapLedger.classOf("RPC_HANDOFF_GAP", false));
+        assertFalse("a composed-port code is not an unconditional exception",
+                GapLedger.diagnosticCodes().contains("RPC_HANDOFF_GAP"));
+        assertFalse("the two conditional scopes are different questions",
+                GapLedger.sliceConditional("RPC_HANDOFF_GAP"));
+        assertFalse(GapLedger.composedPortConditional(code));
+        assertFalse(GapLedger.composedPortConditional(
+                "A_CODE_NOBODY_REGISTERED"));
+        // And the shell reads the list from the same table it reads the
+        // slice-conditional one from.
+        assertTrue("the published ledger must name the composed-port codes",
+                GapLedger.toJson().getAsJsonArray("composedPortConditional")
+                        .toString().contains("RPC_HANDOFF_GAP"));
     }
 
     /** Every exception to the default states why it cannot break a chain. */
