@@ -610,20 +610,6 @@ public final class FocusedReplay {
         }
     }
 
-    /** Test hook: one task per fixture, read from {@code file}. */
-    public static void loadForTests(Path file) {
-        synchronized (LOCK) {
-            resetForTests();
-            loaded = true;
-            try {
-                read(file);
-            } catch (RuntimeException | IOException unreadable) {
-                throw new IllegalArgumentException(
-                        "focused task is unreadable: " + unreadable, unreadable);
-            }
-        }
-    }
-
     public static void resetForTests() {
         synchronized (LOCK) {
             loaded = false;
