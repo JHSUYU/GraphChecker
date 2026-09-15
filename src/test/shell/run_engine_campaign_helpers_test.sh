@@ -741,9 +741,40 @@ printf '%s\n' \
 [[ "$(campaign_seeding_replay "${seed_dir}")" == "SESSION.diverged" ]] \
   || fail "the seeding session is not read off the divergent row: \
 $(campaign_seeding_replay "${seed_dir}")"
-[[ "$(campaign_seeding_results "${seed_dir}")" \
-    == "${seed_dir}/sessions/SESSION.diverged" ]] \
-  || fail "the next epoch is not planned from that session's own rows: \
-$(campaign_seeding_results "${seed_dir}")"
+
+# EPOCH-2: the second epoch's PLAN reaches the scheduler.
+#
+# It used to die before it started.  campaign_seeding_results handed
+# do_schedule a session DIRECTORY as --summaries, do_schedule ran require_file
+# on it, and [[ -f <dir> ]] is false -- so every epoch after the first exited
+# at that line.  The option it fed is gone with it: the scheduler's --summaries
+# rows are keyed on summaryId, which has exactly one occurrence in src/main
+# (the reader), and its only other consumer needs ClosureMode.ACTIVE_OBSERVED,
+# which this script never sets.  What a second epoch actually varies is the
+# retained set, through --retain-regions.
+epoch2_dir="${test_tmp}/epoch2"
+mkdir -p "${epoch2_dir}/out"
+: >"${epoch2_dir}/region_plan.jsonl"
+: >"${epoch2_dir}/refined.jsonl.gz"
+scheduler_args=""
+run_java_main() { scheduler_args="$*"; }
+runtime_region_plan="${epoch2_dir}/region_plan.jsonl"
+refined_graph="${epoch2_dir}/refined.jsonl.gz"
+schedule_output_dir="${epoch2_dir}/out"
+schedule_max_jobs=8
+schedule_closure_mode=candidate
+causynth_symbolic_inputs=""
+declared_target_occurrence=""
+schedule_retain_regions="REGION.grown"
+do_schedule
+unset -f run_java_main
+[[ "${scheduler_args}" == *"--retain-regions REGION.grown"* ]] \
+  || fail "the second epoch did not carry its grown retained set: \
+${scheduler_args}"
+[[ "${scheduler_args}" != *"--summaries"* ]] \
+  || fail "PLAN still passes --summaries, which no stage in this pipeline \
+writes: ${scheduler_args}"
+[[ "$(type -t campaign_seeding_results)" != function ]] \
+  || fail "campaign_seeding_results survived the option it fed"
 
 echo "run_engine campaign helper tests passed"

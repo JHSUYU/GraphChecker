@@ -89,7 +89,6 @@ workflow_config_keys=(
   "schedule_output_dir CAUSYNTH_SCHEDULE_OUTPUT_DIR krp -"
   # Internal campaign state, derived from the immutable iteration: neither a
   # workflow key nor a CLI override point.
-  "schedule_summaries - r -"
   "schedule_closure_mode - r candidate"
   # Regions a previous epoch's TOPOLOGY_DIVERGENCE said the retained set must
   # grow to include.  Internal campaign state: it is derived from the epoch
@@ -563,10 +562,6 @@ do_schedule() {
     require_file "symbolic input selection" "${causynth_symbolic_inputs}"
     args+=(--symbolic-inputs "${causynth_symbolic_inputs}")
   fi
-  if [[ -n "${schedule_summaries}" ]]; then
-    require_file "scheduler summaries" "${schedule_summaries}"
-    args+=(--summaries "${schedule_summaries}")
-  fi
   args+=(--closure-mode "${schedule_closure_mode}")
   # The regions a previous epoch's divergence said this plan must name, so
   # that INSTRUMENT -- which instruments the regions the plan names --
@@ -1032,125 +1027,6 @@ campaign_stage() {
     >>"${campaign_stage_metrics}"
 }
 
-# One JSONL helper for byte-preserving membership selection, deduplication and
-# topology-delta ordering. It moves rows that production owners already wrote
-# and never decides whether a row is admissible.
-campaign_json() {
-  python3 - "$@" <<'CAMPAIGN_JSON'
-import json, os, sys
-
-mode = sys.argv[1]
-args = sys.argv[2:]
-
-DELTA_KINDS = ("NEW_LOCAL_CASE", "NEW_EFFECT", "NEW_OCCURRENCE",
-               "NEW_CAUSAL_BINDING", "TOPOLOGY_DIVERGENCE", "COVERAGE_GAP")
-
-
-def rows(path):
-    out = []
-    with open(path) as handle:
-        for line in handle:
-            line = line.strip()
-            if line:
-                out.append(json.loads(line))
-    return out
-
-
-def dump(row):
-    return json.dumps(row, separators=(",", ":"))
-
-
-if mode == "select-summary":
-    # Membership, not admission: whatever the importer wrote for this task.
-    # Whether a task ended with a usable summary is the importer's finding and
-    # travels as its own diagnostic/delta row, not as a shell verdict here.
-    for row in rows(args[0]):
-        if row.get("taskId") == args[1]:
-            print(dump(row))
-
-elif mode == "select-tasks":
-    # Post-seed membership is computed by the scheduler from exact VM
-    # propagation evidence.  Keep only rows owned by that active task plan;
-    # this is a byte-preserving membership projection, not readmission.
-    selected = {row.get("taskId") for row in rows(args[1])
-                if isinstance(row.get("taskId"), str)
-                and row.get("taskId")}
-    if not selected:
-        sys.exit("active task plan names no task")
-    for row in rows(args[0]):
-        if row.get("taskId") in selected:
-            print(dump(row))
-
-elif mode == "combine":
-    identity, output = args[0], args[1]
-    order, table = [], {}
-
-    def comparable(row):
-        if identity != "summaryId":
-            return row
-        trimmed = dict(row)
-        trimmed.pop("taskId", None)
-        return trimmed
-
-    for path in args[2:]:
-        for row in rows(path):
-            key = row.get(identity) if isinstance(row, dict) else None
-            if not isinstance(key, str) or not key:
-                sys.exit("missing JSONL identity " + identity + " in " + path)
-            if key in table:
-                if comparable(table[key]) != comparable(row):
-                    sys.exit("conflicting duplicate " + identity + ":" + key)
-                continue
-            order.append(key)
-            table[key] = row
-    with open(output + ".tmp", "w") as handle:
-        for key in order:
-            handle.write(dump(table[key]) + "\n")
-    os.replace(output + ".tmp", output)
-
-elif mode == "delta":
-    # The importer owns classification; this only keeps the rows it declared in
-    # the delta vocabulary and sorts them in the stable order README states.
-    # Importer rows already carry the immutable iteration. Shell-owned gap
-    # rows have none and receive this call's explicit identity; a blank or
-    # different declared identity is a provenance error, never repaired here.
-    iteration, output = args[0], args[1]
-    if not iteration.strip():
-        sys.exit("topology delta iteration id is required")
-    collected = []
-    for path in args[2:]:
-        if not os.path.exists(path):
-            continue
-        for row in rows(path):
-            kind = (row.get("deltaKind") or row.get("kind")
-                    or row.get("code") or "")
-            if kind not in DELTA_KINDS:
-                continue
-            row = dict(row)
-            row["deltaKind"] = kind
-            row.setdefault("kind", "TOPOLOGY_DELTA")
-            declared = row.get("iterationId")
-            if declared is None:
-                row["iterationId"] = iteration
-            elif not isinstance(declared, str) or declared != iteration:
-                sys.exit("topology delta iteration mismatch in " + path)
-            collected.append(row)
-    collected.sort(key=lambda row: tuple(
-        str(row.get(field, "")) for field in
-        ("iterationId", "taskId", "sourceKey", "occurrenceId", "caseDigest",
-         "deltaKind")))
-    with open(output, "w") as handle:
-        for row in collected:
-            handle.write(dump(row) + "\n")
-    divergences = sum(1 for row in collected
-                      if row["deltaKind"] == "TOPOLOGY_DIVERGENCE")
-    print("%d %d" % (len(collected), divergences))
-
-else:
-    sys.exit("unknown campaign_json mode " + mode)
-CAMPAIGN_JSON
-}
-
 # The scheduler index is the only campaign membership authority.  Decode the
 # complete schema in one checked jq operation.  The seven fields are emitted
 # as TSV only after their types, non-blank identities, and task-set
@@ -1247,12 +1123,11 @@ campaign_wait_workers() {
   return "${status}"
 }
 
-campaign_validate() {
+campaign_preflight() {
   validate_config >/dev/null
   [[ -n "${concolic_replay_command}" ]] || die \
     "campaign requires concolic_replay_command: the workload adapter that replays one immutable task plan under the concolic VM"
   require_command_available jq
-  require_command_available python3
   require_command_available sha256sum
   campaign_log "workers=${concolic_worker_count} maxIterations=${campaign_max_iterations} maxJobs=${schedule_max_jobs}"
 }
@@ -1613,7 +1488,7 @@ campaign_seed() {
 # share one workload JVM so VM expressions cross their real RPC/field
 # boundaries.
 campaign_plan() {
-  local iteration_dir=$1 carry=$2 retain=${3:-}
+  local iteration_dir=$1 retain=${2:-}
   local plan="${iteration_dir}/execution_task_plan.jsonl"
   local index="${iteration_dir}/runtime_workflow_schedule_index.json"
   local seed_dir="${iteration_dir}/seed-replay"
@@ -1628,7 +1503,6 @@ campaign_plan() {
   cp -f "${runtime_region_plan}" "${frozen}"
   schedule_output_dir="${iteration_dir}"
   schedule_retain_regions="${retain}"
-  schedule_summaries="${carry}"
   do_schedule
   # Every later consumer reads this iteration's frozen copy, never the mutable
   # discovery output.
@@ -2106,34 +1980,31 @@ $(wc -l <"${results}") obligation verdict(s)"
 }
 
 
-# Every gap row this iteration's stages wrote outside a session, in one file.
+# Gap rows this iteration's stages wrote outside a session live in one file,
+# ${iteration_dir}/campaign_gaps.jsonl, appended by whoever raises them and
+# read once by EMIT.  There is no collector any more and nothing truncates it.
+#
+# There was one, and it discarded every row it was supposed to gather: its
+# find excluded the only path that could match its own -name, so the merge
+# list was always empty and the function's whole effect was a truncation of
+# the very file it was named for.  It ran one line after EXPLORE -- deleting
+# the wave-budget and no-progress GAP_ROWs campaign_explore had just appended
+# -- and again at the end of campaign_publish_pending_refinement, deleting
+# that function's own TOPOLOGY_DIVERGENCE row.  EMIT then read an empty file
+# into gaps.json, so both kinds were silently absent from every gap report.
 #
 # Session gap rows stay where the replay wrote them: EMIT reads them straight
 # out of the session directories, because a GapRow states its own class and
 # nothing between the runtime and the report is in a position to change it.
-campaign_collect_diagnostics() {
-  local iteration_dir=$1
-  local gaps="${iteration_dir}/campaign_gaps.jsonl"
-  local gap_list
-  local -a gap_files=()
-  if ! gap_list=$(find "${iteration_dir}" -type f \
-      -name 'campaign_gaps.jsonl' -not -path "${gaps}" \
-      | LC_ALL=C sort); then
-    campaign_fail EMIT CAMPAIGN "${iteration_dir}" \
-      "failed to enumerate campaign gap rows"
-  fi
-  [[ -z "${gap_list}" ]] || mapfile -t gap_files <<<"${gap_list}"
-  : >"${gaps}"
-  [[ ${#gap_files[@]} -eq 0 ]] || cat "${gap_files[@]}" >>"${gaps}"
-}
-
 campaign_publish_iteration_manifest() {
   local iteration_dir=$1 iteration=$2 parent=$3
   local index="${iteration_dir}/seed-replay/runtime_workflow_schedule_index.json"
   local plan="${iteration_dir}/seed-replay/execution_task_plan.jsonl"
   local members="${iteration_dir}/.members.jsonl"
   local role campaign_id region occurrence goal task worker
-  local obligations plan_sha index_sha summaries_sha
+  local obligations plan_sha index_sha census_sha obligations_sha
+  local census="${iteration_dir}/session_census.jsonl"
+  local obligation_results="${iteration_dir}/obligation_results.jsonl"
   : >"${members}"
   while IFS=$'\t' read -r role campaign_id region occurrence goal task \
       target_reach; do
@@ -2162,11 +2033,21 @@ campaign_publish_iteration_manifest() {
     campaign_fail EMIT CAMPAIGN "${index}" \
       "failed to digest the frozen schedule index"
   fi
-  if ! summaries_sha=$(campaign_digest \
-      "${iteration_dir}/concolic_region_summaries.jsonl"); then
-    campaign_fail EMIT CAMPAIGN \
-      "${iteration_dir}/concolic_region_summaries.jsonl" \
-      "failed to digest the imported summaries"
+  # What this epoch imported and explored, digested from the two artifacts
+  # its own stages wrote before this point.  It used to digest
+  # concolic_region_summaries.jsonl, which no stage has written since the
+  # Design 3 reduction: campaign_digest dies on a missing file, so the
+  # campaign_fail below fired on every run that reached PLAN.  The manifest is
+  # published after EXPLORE and before COMPOSE, so the composition manifest
+  # and result.json do not exist yet and cannot be what it commits to; the
+  # census IMPORT required and the verdicts EXPLORE appended do.
+  if ! census_sha=$(campaign_digest "${census}"); then
+    campaign_fail EMIT CAMPAIGN "${census}" \
+      "failed to digest the replay session census"
+  fi
+  if ! obligations_sha=$(campaign_digest "${obligation_results}"); then
+    campaign_fail EMIT CAMPAIGN "${obligation_results}" \
+      "failed to digest the obligation verdicts"
   fi
   jq -n \
     --argjson provenance "${campaign_provenance}" \
@@ -2175,8 +2056,9 @@ campaign_publish_iteration_manifest() {
     --arg plan "${plan}" \
     --arg planSha "${plan_sha}" \
     --arg index "${index}" --arg indexSha "${index_sha}" \
-    --arg summaries "${iteration_dir}/concolic_region_summaries.jsonl" \
-    --arg summariesSha "${summaries_sha}" \
+    --arg census "${census}" --arg censusSha "${census_sha}" \
+    --arg obligations "${obligation_results}" \
+    --arg obligationsSha "${obligations_sha}" \
     --arg classes "${iteration_dir}/instrumented-classes" \
     --argjson workers "${concolic_worker_count}" \
     --slurpfile members "${members}" '
@@ -2187,7 +2069,8 @@ campaign_publish_iteration_manifest() {
      provenance: $provenance,
      executionTaskPlan: {path: $plan, sha256: $planSha},
      scheduleIndex: {path: $index, sha256: $indexSha},
-     importedSummaries: {path: $summaries, sha256: $summariesSha},
+     sessionCensus: {path: $census, sha256: $censusSha},
+     obligationResults: {path: $obligations, sha256: $obligationsSha},
      instrumentedClasses: $classes,
      externalWorkerCount: $workers,
      members: $members}
@@ -2701,30 +2584,6 @@ campaign_emit() {
   }
 }
 
-# A declared bound was reached with obligations still open. Publish the named
-# gap and stop: an unsolved campaign never becomes an accepted candidate.
-campaign_publish_bound_gap() {
-  local iterations=$1
-  mkdir -p "${campaign_final}"
-  jq -n --argjson iterations "${iterations}" \
-    --argjson provenance "${campaign_provenance}" \
-    '{schemaVersion: 1,
-      kind: "CAMPAIGN_COVERAGE_GAPS",
-      gapCount: 1,
-      byStage: {CLASSIFY: 1},
-      byCode: {ITERATION_BOUND_REACHED: 1},
-      telemetryGaps: [],
-      telemetryCount: 0,
-      provenance: $provenance,
-      gaps: [{stage: "CLASSIFY", source: "CAMPAIGN",
-              code: "ITERATION_BOUND_REACHED", class: "BLOCKING",
-              subject: ("campaign_max_iterations=" + ($iterations | tostring)),
-              detail: "the topology still diverged at the declared iteration bound; no candidate was composed"}]}' \
-    >"${campaign_final}/gaps.json"
-  die "the campaign reached campaign_max_iterations=${iterations} with a diverging topology; named gap in ${campaign_final}/gaps.json"
-}
-
-
 # A refinement this run owes and did not take, as a row the gap report classes
 # like any other.  Stating it is the whole point: the divergent sessions are
 # held for an epoch the campaign has not planned, so a reader of this run's
@@ -2738,7 +2597,6 @@ campaign_publish_pending_refinement() {
       detail: ("\($rows) topology divergence row(s) hold sessions for the "
                + "epoch after \($epoch), which this run did not plan")}' \
     >>"${iteration_dir}/campaign_gaps.jsonl" || true
-  campaign_collect_diagnostics "${iteration_dir}"
 }
 
 
@@ -2796,16 +2654,6 @@ campaign_seeding_replay() {
 }
 
 
-# The session directory epoch e+1 is planned from: that replay's own rows.
-# PLAN forwards its `carry` argument to `do_schedule --summaries`.
-campaign_seeding_results() {
-  local iteration_dir=$1
-  local session
-  session=$(campaign_seeding_replay "${iteration_dir}")
-  [[ -n "${session}" ]] || { printf ''; return 0; }
-  printf '%s' "${iteration_dir}/sessions/${session}"
-}
-
 # The campaign publishes the LAST epoch at ${campaign_root}/final, so every
 # reader keeps reading one path while each epoch keeps its own artifacts under
 # its iteration directory.  A copy rather than a symlink: the published
@@ -2828,7 +2676,7 @@ campaign_publish_epoch_final() {
 campaign_max_epochs=3
 
 do_campaign() {
-  local iteration=0 iteration_id="" parent="" carry="" retain=""
+  local iteration=0 iteration_id="" parent="" retain="" previous_retain=""
   local iteration_dir
   local divergences=0 seeding_replay="" seeding_results=""
   campaign_root="${schedule_output_dir}"
@@ -2850,7 +2698,7 @@ do_campaign() {
     "the campaign root is already reserved by another run"
   : >"${campaign_stage_metrics}"
 
-  campaign_stage VALIDATE campaign_validate
+  campaign_stage PREFLIGHT campaign_preflight
   campaign_stage FREEZE_TOOL campaign_freeze_graphchecker_jar
   if [[ -n "${campaign_setup_command}" ]]; then
     campaign_stage SETUP campaign_setup
@@ -2868,24 +2716,15 @@ do_campaign() {
     # from the previous one, so a stage can never read a stale member set.
     campaign_member_rows=""
     campaign_stage "PLAN[${iteration}]" campaign_plan "${iteration_dir}" \
-      "${carry}" "${retain}"
+      "${retain}"
     campaign_stage "INSTRUMENT[${iteration}]" campaign_instrument \
       "${iteration_dir}"
     campaign_stage "REPLAY[${iteration}]" campaign_session_replay \
       "${iteration_dir}"
     campaign_stage "IMPORT[${iteration}]" campaign_import_session \
       "${iteration_dir}" "${iteration_id}"
-    # A measurement run stops where its measurement is complete.  The seed
-    # session and its census are what a runtime change is gated on, and
-    # running EXPLORE..EMIT to reach them costs hours and answers a
-    # different question.
-    if [[ "${CAUSYNTH_CAMPAIGN_STOP_AFTER:-}" == "IMPORT" ]]; then
-      campaign_log "stopping after IMPORT: CAUSYNTH_CAMPAIGN_STOP_AFTER"
-      return 0
-    fi
     campaign_stage "EXPLORE[${iteration}]" campaign_explore \
       "${iteration_dir}" "${iteration_id}"
-    campaign_collect_diagnostics "${iteration_dir}"
     campaign_publish_iteration_manifest "${iteration_dir}" "${iteration_id}" \
       "${parent}"
     # A flip that changed the topology found a new one.  The iteration loop
@@ -2941,17 +2780,13 @@ ${iteration_id} composes its own paths and the refinement is pending"
       campaign_log "topology closed at ${iteration_id}"
       return 0
     fi
-    seeding_results=$(campaign_seeding_results "${iteration_dir}")
-    if [[ -z "${seeding_results}" || ! -s "${seeding_results}" ]]; then
-      campaign_log "topology divergence names replay ${seeding_replay} but \
-no result file to seed epoch e+1 from; publishing this epoch"
-      return 0
-    fi
-    if [[ "${seeding_results}" == "${carry}" ]]; then
-      # The same seed twice is the guard EPOCH2 named: a re-plan that read the
-      # old topology would propose the same epoch for ever.
-      campaign_log "epoch e+1 would be seeded from the same replay results \
-as this epoch; the topology is not refining, publishing ${iteration_id}"
+    if [[ "${retain}" == "${previous_retain}" ]]; then
+      # The same retained set twice is the guard EPOCH2 named, now stated on
+      # the quantity the next epoch actually varies: PLAN re-plans an epoch
+      # through --retain-regions, so an epoch whose retained set did not grow
+      # would instrument, replay and diverge identically, for ever.
+      campaign_log "epoch e+1 would plan the same retained set as this epoch \
+(${retain:-none}); the topology is not refining, publishing ${iteration_id}"
       return 0
     fi
     if [[ $((iteration + 1)) -ge "${campaign_max_epochs}" ]]; then
@@ -2960,12 +2795,20 @@ epoch: the campaign's bound of ${campaign_max_epochs} epoch(s) is reached"
       return 0
     fi
     campaign_log "topology divergence: epoch $((iteration + 1)) is seeded \
-from replay ${seeding_replay} (${seeding_results})"
-    carry="${seeding_results}"
+from replay ${seeding_replay}, retaining ${retain}"
+    previous_retain="${retain}"
     parent="${iteration_id}"
     iteration=$((iteration + 1))
   done
-  campaign_publish_bound_gap "${campaign_max_iterations}"
+  # The loop leaves only by one of the returns above or by exhausting
+  # campaign_max_iterations, and an exhausted bound is not a verdict.  It used
+  # to publish a CAMPAIGN_COVERAGE_GAPS document naming the deleted CLASSIFY
+  # stage, over the top of the gaps.json EMIT had already written for the last
+  # epoch it completed.  Nothing overwrites a published epoch now: the bound is
+  # named and the run stops.
+  die "the campaign reached campaign_max_iterations=${campaign_max_iterations} \
+with a diverging topology; the last epoch it completed is published under \
+${campaign_root}"
 }
 
 # Shell-level contract tests source the helpers without dispatching a workflow.
