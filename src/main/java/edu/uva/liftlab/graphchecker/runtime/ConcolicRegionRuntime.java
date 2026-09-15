@@ -891,28 +891,98 @@ public final class ConcolicRegionRuntime {
      * address, and no row -- an activation row belongs to the planned
      * occurrences alone.</p>
      */
-    public static void enterLiteRegionFrame(String regionId,
-                                            String rootMethod,
-                                            Object receiver) {
+    public static long enterRegionEntry(String regionId, String rootMethod,
+                                        Object receiver) {
         RowRuntime.claimStart(receiver);
+        long entry = TOKEN_COUNTER.incrementAndGet();
+        int depth = edu.uva.liftlab.graphchecker.runtime.Identity.depth();
         RowRuntime.enterFrame(safe(rootMethod));
         edu.uva.liftlab.graphchecker.runtime.Identity.occurrence(
                 RuntimeTraceContext.activationSource(receiver).key(),
                 safe(regionId), true);
+        REGION_ENTRIES.get().push(new RegionEntry(entry, depth,
+                safe(rootMethod)));
+        return entry;
     }
 
-    /** Closes the region {@link #enterLiteRegionFrame} opened. */
-    public static void exitLiteRegionFrame(String regionId,
-                                           String rootMethod) {
-        RowRuntime.exitRegionIndex();
-        RowRuntime.exitFrame();
+    /** Closes the entry {@code entry} opened, and only that entry. */
+    public static void exitRegionEntry(long entry) {
+        closeRegionEntry(entry);
     }
 
-    /** The exceptional edge of {@link #enterLiteRegionFrame}. */
-    public static void throwLiteRegionFrame(String regionId,
-                                            String rootMethod,
-                                            Throwable throwable) {
-        exitLiteRegionFrame(regionId, rootMethod);
+    /** The exceptional edge of {@link #enterRegionEntry}. */
+    public static void throwRegionEntry(long entry, Throwable throwable) {
+        closeRegionEntry(entry);
+    }
+
+    /**
+     * One open region entry: the token the workload frame holds, the index
+     * depth it opened at, and the root it is the entry of.
+     */
+    private static final class RegionEntry {
+        private final long token;
+        private final int depthAtOpen;
+        private final String rootMethod;
+
+        private RegionEntry(long token, int depthAtOpen, String rootMethod) {
+            this.token = token;
+            this.depthAtOpen = depthAtOpen;
+            this.rootMethod = rootMethod;
+        }
+    }
+
+    private static final ThreadLocal<Deque<RegionEntry>> REGION_ENTRIES =
+            new ThreadLocal<Deque<RegionEntry>>() {
+                @Override
+                protected Deque<RegionEntry> initialValue() {
+                    return new ArrayDeque<RegionEntry>();
+                }
+            };
+
+    /**
+     * Closes the entry the token owns: its region, its index frame, and
+     * every entry that a missing exit left above it.
+     *
+     * <p>The token is a local of the workload frame the entry hook ran in,
+     * so recursion holds a different one at every depth and several hooks
+     * at ONE entry hold the same one -- which is what makes the push and
+     * the pop pair without guessing at ownership.  An entry still open
+     * above this one is an exit that did not run: its frames are dropped
+     * here (the stack cannot stay deeper than the entry that is closing)
+     * and the depth check below states it, fail-closed, because every row
+     * published after a leaked frame is addressed by the wrong
+     * occurrence.</p>
+     */
+    private static void closeRegionEntry(long entry) {
+        if (entry <= 0L) return;
+        Deque<RegionEntry> open = REGION_ENTRIES.get();
+        RegionEntry mine = null;
+        for (RegionEntry candidate : open) {
+            if (candidate.token == entry) {
+                mine = candidate;
+                break;
+            }
+        }
+        if (mine == null) return;
+        while (!open.isEmpty()) {
+            RegionEntry top = open.pop();
+            RowRuntime.exitRegionIndex();
+            RowRuntime.exitFrame();
+            if (top.token == entry) break;
+        }
+        if (open.isEmpty()) REGION_ENTRIES.remove();
+        int depth = edu.uva.liftlab.graphchecker.runtime.Identity.depth();
+        if (depth != mine.depthAtOpen) {
+            RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind
+                            .FRAME_UNBALANCED,
+                    edu.uva.liftlab.graphchecker.contract.GapClass.BLOCKING,
+                    mine.rootMethod,
+                    "this activation closed at execution-index depth "
+                            + depth + " and opened at " + mine.depthAtOpen
+                            + "; the innermost frame left standing is "
+                            + edu.uva.liftlab.graphchecker.runtime.Identity
+                                    .innermostFrame());
+        }
     }
 
     /** Instrumentation-facing root entry. */
@@ -942,15 +1012,12 @@ public final class ConcolicRegionRuntime {
         }
         RootInvocationFrame frame = new RootInvocationFrame(
                 instrumentationSelector, rootMethod, group.key,
-                Math.max(0, group.hookCount - 1), 0L, true);
+                Math.max(0, group.hookCount - 1), 0L, false);
         frames.push(frame);
-        // The execution index's frame stack: ONE frame per region
-        // activation, which is the frame the recording's own hook pushes at
-        // this same entry (CausynthTraceRecorder.enterMethod).  After the
-        // sibling check, because a second hook at one entry is not a second
-        // activation and a frame it pushed would sit under every index
-        // computed inside.
-        RowRuntime.enterFrame(safe(rootMethod));
+        // No index frame here.  The ENTRY owns it -- one per Java frame,
+        // keyed by the token that frame holds (#enterRegionEntry) -- so a
+        // second plan row at one entry cannot push a second frame and a
+        // recursive entry cannot be mistaken for one.
         ActiveRegion active = admitRegion(config, group.key, rootMethod,
                 receiver, rootArguments);
         long token = active == null ? 0L : active.token;

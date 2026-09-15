@@ -161,11 +161,12 @@ public final class RowRuntime {
                                                     String nodeKey,
                                                     String regionId,
                                                     String taskId) {
-        // One computation, opening the region here: Identity.occurrence is
-        // the same function the recorder ran on the stock JDK, so this
-        // address and the one the SEED trace carries cannot disagree.
-        OccurrenceAddress address = Identity.occurrence(nodeKey, regionId,
-                true);
+        // The occurrence this ENTRY already opened
+        // (ConcolicRegionRuntime.enterRegionEntry, the one hook every
+        // skeleton root carries), not a second opening of the same
+        // activation: one entry, one region, one address -- the same one
+        // the recorder computed on the stock JDK.
+        OccurrenceAddress address = Identity.currentOccurrence(nodeKey);
         SessionPublisher session = publisher;
         if (address == null) {
             if (session != null) {

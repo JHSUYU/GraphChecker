@@ -622,17 +622,15 @@ public final class CausynthPipeline {
         envelope.boundSelectedLoops();
         instrumentConcolicCommunicationHandoffs(campaign, refs);
         envelope.freezeRootLoops();
-        // The methods that ACTUALLY received a region frame hook, filled by
-        // the weave that inserts them.  Not re-derived from the plan's
-        // rootMethod / replayEntry / rootLoopMethod spellings: those three
-        // strings missed five methods the campaign had framed, both hooks
-        // fired at one entry, and the replay's index carried five repeated
-        // frames the recording never stood on.
-        Set<SootMethod> framed = new LinkedHashSet<>();
         for (InstrumentationPlan plan : campaign) {
-            instrumentConcolicRegion(plan, refs, envelope, framed);
+            instrumentConcolicRegion(plan, refs, envelope);
         }
-        instrumentSkeletonRegions(framed, refs);
+        // Every skeleton root, campaign roots included: ONE entry hook per
+        // root method, which owns that activation's index frame and the
+        // region it opens.  The plan rows' own hooks push nothing, so a
+        // second row at one entry cannot add a frame and a recursive entry
+        // cannot be mistaken for a second row.
+        instrumentSkeletonRegions(refs);
         instrumentWorkStarts(envelope.methods, refs);
         instrumentConcolicConfiguredSourceCallContexts(
                 envelope.configuredSourcePhaseSites.values(), refs);
@@ -658,55 +656,52 @@ public final class CausynthPipeline {
      * one-region-per-activation: the campaign's own roots keep their rich
      * hooks and are excluded here, so a root that is both opens once.</p>
      */
-    private void instrumentSkeletonRegions(Set<SootMethod> framed,
-                                           HookCatalog refs) {
+    private void instrumentSkeletonRegions(HookCatalog refs) {
         Map<String, String> roots = RegionSkeletonInstrumentationSelection
                 .regionRootsFromEnvironment();
-        List<String> lite = new ArrayList<>();
-        int campaignFramed = 0;
-        for (Map.Entry<String, String> root : roots.entrySet()) {
-            SootMethod method = CausynthStaticFacts.method(root.getKey());
-            if (method != null && framed.contains(method)) {
-                campaignFramed++;
-                continue;
-            }
-            lite.add(root.getKey());
-        }
-        // Fail closed: one entry, one region frame.  Two hooks at one entry
-        // push two frames, and an index with a frame the recording does not
-        // have addresses a different occurrence -- silently, which is how
-        // 33 of 90 planned tasks came to be refused.
-        for (String signature : lite) {
-            SootMethod method = CausynthStaticFacts.method(signature);
-            if (method != null && framed.contains(method)) {
-                throw new IllegalStateException(
-                        "one method would receive both a campaign region "
-                                + "hook and a skeleton region hook: "
-                                + signature);
-            }
-        }
-        Set<String> rewritten = instrumentMethods(lite, "",
-                (body, method, units, entry, lowerBound, receiver) ->
-                        instrumentLiteRegion(body, method, units, entry,
-                                lowerBound, receiver, refs,
-                                roots.get(method.getSignature())));
+        Set<SootMethod> entered = new LinkedHashSet<>();
+        Set<String> rewritten = instrumentMethods(
+                new ArrayList<>(roots.keySet()), "",
+                (body, method, units, entry, lowerBound, receiver) -> {
+                    // Fail closed: one entry hook per root method.  Two of
+                    // them push two frames at one entry, and an index with
+                    // a frame the recording does not have addresses a
+                    // different occurrence -- silently, which is how 33 of
+                    // 81 planned tasks came to be refused.
+                    if (!entered.add(method)) {
+                        throw new IllegalStateException(
+                                "one method would receive two region entry "
+                                        + "hooks: " + method.getSignature());
+                    }
+                    instrumentRegionEntry(body, method, units, entry,
+                            lowerBound, receiver, refs,
+                            roots.get(method.getSignature()));
+                });
         LOG.info("Opened {} of {} skeleton region root(s) for the execution "
-                + "index; {} already carry a campaign region hook; the "
-                + "one-frame-per-entry check passed",
-                rewritten.size(), roots.size(), campaignFramed);
+                + "index, one entry hook each; the one-entry-one-frame check "
+                + "passed", rewritten.size(), roots.size());
     }
 
-    /** The frame and the occurrence of one unselected region activation. */
-    private void instrumentLiteRegion(Body body, SootMethod method,
-                                      List<Unit> originalUnits,
-                                      Unit insertionPoint, Unit lowerBound,
-                                      Value receiver, HookCatalog refs,
-                                      String regionId) {
+    /**
+     * The index frame and the occurrence of ONE region activation, owned by
+     * the token the workload frame holds.
+     *
+     * <p>The token is a local of this method, so every ENTRY has its own --
+     * recursion included -- and the exit hooks close the entry that token
+     * owns rather than whatever the runtime finds innermost.</p>
+     */
+    private void instrumentRegionEntry(Body body, SootMethod method,
+                                       List<Unit> originalUnits,
+                                       Unit insertionPoint, Unit lowerBound,
+                                       Value receiver, HookCatalog refs,
+                                       String regionId) {
+        Local entryToken = newTraceLocal(body, LongType.v(),
+                "$causynthRegionEntry");
         List<Unit> entry = new ArrayList<>();
-        Value region = StringConstant.v(regionId);
-        Value signature = StringConstant.v(method.getSignature());
-        refs.bracket(entry, Hook.ENTER_LITE_REGION_FRAME, region, signature,
-                receiver);
+        entry.add(Jimple.v().newAssignStmt(entryToken, LongConstant.v(0L)));
+        refs.bracket(entry, entryToken, Hook.ENTER_REGION_ENTRY,
+                StringConstant.v(regionId),
+                StringConstant.v(method.getSignature()), receiver);
         insertBeforeOrAppendNoRedirect(body, insertionPoint, entry);
         Unit regionStart = entry.isEmpty() ? insertionPoint : entry.get(0);
         for (int index = instrumentableFrom(originalUnits, lowerBound);
@@ -717,13 +712,11 @@ public final class CausynthPipeline {
                 continue;
             }
             List<Unit> exit = new ArrayList<>();
-            refs.bracket(exit, Hook.EXIT_LITE_REGION_FRAME, region,
-                    signature);
+            refs.bracket(exit, Hook.EXIT_REGION_ENTRY, entryToken);
             insertBeforeSequence(body, unit, exit);
         }
-        addThrowHandler(body, regionStart, refs,
-                Hook.THROW_LITE_REGION_FRAME, "$causynthLiteRegionThrown",
-                region, signature);
+        addThrowHandler(body, regionStart, refs, Hook.THROW_REGION_ENTRY,
+                "$causynthRegionEntryThrown", entryToken);
     }
 
     /**
@@ -732,8 +725,7 @@ public final class CausynthPipeline {
      */
     private void instrumentConcolicRegion(InstrumentationPlan plan,
                                           HookCatalog refs,
-                                          CampaignEnvelope envelope,
-                                          Set<SootMethod> framed) {
+                                          CampaignEnvelope envelope) {
         String signature = plan.rootMethod();
         SootMethod replayEntry = envelope.replayEntry(plan);
         String replayEntrySignature = replayEntry.getSignature();
@@ -752,9 +744,6 @@ public final class CausynthPipeline {
                                 : replayEntrySignature));
             }
             Body body = method.retrieveActiveBody();
-            // This entry now carries a region frame; the skeleton weave
-            // below must not add a second one.
-            framed.add(method);
             List<Unit> originalUnits = snapshotUnits(body);
             tagOriginalUnits(originalUnits);
             CfgLoopControl.NaturalLoop rootLoop = plan.loopBodyRoot()
@@ -3590,9 +3579,9 @@ public final class CausynthPipeline {
         EXIT_LOOP_ROOT_INVOCATION_FRAME,
         THROW_LOOP_ROOT_INVOCATION_FRAME,
         ENTER_REGION_FRAME,
-        ENTER_LITE_REGION_FRAME,
-        EXIT_LITE_REGION_FRAME,
-        THROW_LITE_REGION_FRAME,
+        ENTER_REGION_ENTRY,
+        EXIT_REGION_ENTRY,
+        THROW_REGION_ENTRY,
         START_WORK,
         ENTER_CONFIGURED_SOURCE_PHASE_SITE,
         EXIT_CONFIGURED_SOURCE_PHASE_SITE,
@@ -3728,15 +3717,14 @@ public final class CausynthPipeline {
                     .add(Hook.ENTER_REGION_FRAME, runtime, "enterRegionFrame",
                             LongType.v(), string, string, object,
                             ArrayType.v(object, 1))
-                    .add(Hook.ENTER_LITE_REGION_FRAME, runtime,
-                            "enterLiteRegionFrame", VoidType.v(), string,
+                    .add(Hook.ENTER_REGION_ENTRY, runtime,
+                            "enterRegionEntry", LongType.v(), string,
                             string, object)
-                    .add(Hook.EXIT_LITE_REGION_FRAME, runtime,
-                            "exitLiteRegionFrame", VoidType.v(), string,
-                            string)
-                    .add(Hook.THROW_LITE_REGION_FRAME, runtime,
-                            "throwLiteRegionFrame", VoidType.v(), string,
-                            string, RefType.v("java.lang.Throwable"))
+                    .add(Hook.EXIT_REGION_ENTRY, runtime,
+                            "exitRegionEntry", VoidType.v(), LongType.v())
+                    .add(Hook.THROW_REGION_ENTRY, runtime,
+                            "throwRegionEntry", VoidType.v(), LongType.v(),
+                            RefType.v("java.lang.Throwable"))
                     .add(Hook.START_WORK, runtime, "startWork",
                             VoidType.v(), string, object)
                     .add(Hook.ENTER_CONFIGURED_SOURCE_PHASE_SITE, runtime,

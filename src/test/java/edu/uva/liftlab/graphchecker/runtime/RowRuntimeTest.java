@@ -823,6 +823,20 @@ public class RowRuntimeTest {
         assertEquals("Pool.submitAll()#u9@0/Task.run()#u1@0", ran.get(0));
         assertEquals("Pool.submitAll()#u9@1/Task.run()#u1@0", ran.get(1));
 
+        // An activation's push and its pop are paired, recursion included:
+        // the frames an occurrence stands on ARE its identity, so a frame
+        // left standing moves the address of everything after it.  Every
+        // entry of one method has its own depth, and an unbalanced one is
+        // visible as a depth that did not come back.
+        int depthAtOpen = Identity.depth();
+        Identity.enterCall("Recursive.m()#u1");
+        Identity.enterCall("Recursive.m()#u1");
+        assertEquals(depthAtOpen + 2, Identity.depth());
+        assertEquals("Recursive.m()#u1", Identity.innermostFrame());
+        Identity.exitCall();
+        Identity.exitCall();
+        assertEquals(depthAtOpen, Identity.depth());
+
         Identity.resetForTests();
         Identity.scopeStart();
         Identity.enterCall("Caller.run()#u3");

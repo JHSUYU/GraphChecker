@@ -463,6 +463,18 @@ public final class Identity {
         return state.from(state.regionBase());
     }
 
+    /** How many index frames this thread stands on. */
+    public static int depth() {
+        return state().frames.size();
+    }
+
+    /** The innermost frame's call site, for a report, or {@code ""}. */
+    public static String innermostFrame() {
+        State state = state();
+        return state.frames.isEmpty() ? ""
+                : state.frames.get(state.frames.size() - 1).callSite();
+    }
+
     /** The whole path this thread is at, for a degraded address. */
     public static ExecutionIndex here() {
         State state = state();
