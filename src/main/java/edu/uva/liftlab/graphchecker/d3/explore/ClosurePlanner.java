@@ -1,6 +1,7 @@
 package edu.uva.liftlab.graphchecker.d3.explore;
 
 import edu.uva.liftlab.graphchecker.d3.compose.SmtLowering;
+import edu.uva.liftlab.graphchecker.d3.smt.Arms;
 import edu.uva.liftlab.graphchecker.d3.contract.AttachRow;
 import edu.uva.liftlab.graphchecker.d3.contract.CausalContext;
 import edu.uva.liftlab.graphchecker.d3.contract.DecisionRow;
@@ -157,9 +158,8 @@ public final class ClosurePlanner {
                             "state read");
                     continue;
                 }
-                for (StateEligibility.Alternative alternative
-                        : StateEligibility.alternatives(corpus, row)) {
-                    next.add(alternative.writer());
+                for (WriteRow write : eligibleWrites(corpus, row)) {
+                    next.add(write.endpoint().occurrence());
                 }
             }
         }
@@ -206,17 +206,37 @@ public final class ClosurePlanner {
                 if (!settled.add(symbol)) continue;
                 for (ReadRow row : reads) {
                     if (!symbol.equals(row.symbol())) continue;
-                    for (StateEligibility.Alternative alternative
-                            : StateEligibility.alternatives(corpus, row)) {
-                        SmtLowering.Lowered lowered = corpus.lowering(
-                                        alternative.write.sessionId())
-                                .lower(alternative.write.expressionRef());
+                    for (WriteRow write : eligibleWrites(corpus, row)) {
+                        SmtLowering.Lowered lowered =
+                                corpus.lowering(write.sessionId())
+                                        .lower(write.expressionRef());
                         grew |= named.addAll(lowered.declarations().keySet());
                     }
                 }
             }
         }
         return named;
+    }
+
+    /**
+     * The writes one read could have taken its value from.
+     *
+     * <p>The observed one, and every write by an occurrence HB-CONCURRENT
+     * with the reader (R-I7.1).  The concurrency rule is
+     * {@code d3.smt.Arms}', so the closure grows by exactly the writers the
+     * composition will offer the solver as alternatives.</p>
+     */
+    private static List<WriteRow> eligibleWrites(Corpus corpus, ReadRow row) {
+        List<WriteRow> eligible = new ArrayList<WriteRow>();
+        for (WriteRow write : corpus.writesOf(row.sessionId(),
+                SmtLowering.locationKey(row.location()))) {
+            if (write.version() == row.observedVersion()
+                    || corpus.arms().concurrent(row.endpoint().occurrence(),
+                            write.endpoint().occurrence(), row.sessionId())) {
+                eligible.add(write);
+            }
+        }
+        return eligible;
     }
 
     /** A delivery this anchor's paths never read: recorded, not planned. */

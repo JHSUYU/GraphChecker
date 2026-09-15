@@ -5,13 +5,18 @@ import edu.uva.liftlab.graphchecker.d3.contract.AttachRow;
 import edu.uva.liftlab.graphchecker.d3.contract.DecisionRow;
 import edu.uva.liftlab.graphchecker.d3.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.d3.contract.ExportRow;
+import edu.uva.liftlab.graphchecker.d3.contract.Interaction;
+import edu.uva.liftlab.graphchecker.d3.contract.InteractionKind;
 import edu.uva.liftlab.graphchecker.d3.contract.LocationId;
 import edu.uva.liftlab.graphchecker.d3.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.d3.contract.ReadRow;
 import edu.uva.liftlab.graphchecker.d3.contract.RootDomain;
 import edu.uva.liftlab.graphchecker.d3.contract.RootKind;
 import edu.uva.liftlab.graphchecker.d3.contract.RootMintRow;
+import com.google.gson.JsonObject;
+
 import edu.uva.liftlab.graphchecker.d3.compose.SmtLowering;
+import edu.uva.liftlab.graphchecker.d3.smt.Arms;
 import edu.uva.liftlab.graphchecker.d3.contract.RowCodec;
 import edu.uva.liftlab.graphchecker.d3.contract.SessionReader;
 import edu.uva.liftlab.graphchecker.d3.contract.TargetRow;
@@ -41,7 +46,7 @@ import java.util.Set;
  * because a raw symbol, a version id and an expression ref are all
  * session-local names.</p>
  */
-public final class Corpus {
+public final class Corpus implements Arms.Rows {
     /** One occurrence's decisions in one session: a path, as it ran. */
     public static final class RecordedPath {
         public final String pathId;
@@ -97,9 +102,12 @@ public final class Corpus {
     /** session|location|version -> the write that produced it. */
     private final Map<String, WriteRow> writeByVersion =
             new LinkedHashMap<String, WriteRow>();
-    /** location -> every write of it, in any session. */
+    /** session|locationKey -> every write of it, in that session. */
     private final Map<String, List<WriteRow>> writesByLocation =
             new LinkedHashMap<String, List<WriteRow>>();
+    /** interaction id -> the attaches whose own pairing names it. */
+    private final Map<String, List<AttachRow>> attachesByInteraction =
+            new LinkedHashMap<String, List<AttachRow>>();
     /** endpoint id -> the endpoint, so an anchor's producer can be found. */
     private final Map<String, Endpoint> endpointById =
             new LinkedHashMap<String, Endpoint>();
@@ -115,9 +123,12 @@ public final class Corpus {
     private final Map<String, RootDomain> declaredDomains =
             new LinkedHashMap<String, RootDomain>();
 
+    private final Arms arms;
+
     private Corpus(List<SessionReader> sessions) {
         this.sessions = Collections.unmodifiableList(sessions);
         for (SessionReader session : sessions) index(session);
+        this.arms = new Arms(this);
     }
 
     /** Reads an iteration and its case-declared root domains. */
@@ -164,6 +175,11 @@ public final class Corpus {
                 remember(occurrenceById, row.producer().occurrence());
             }
             attachBySymbol.put(session.sessionId() + "|" + row.symbol(), row);
+            if (row.producer() != null) {
+                add(attachesByInteraction, Interaction.of(
+                        InteractionKind.WIRE, row.producer(),
+                        row.endpoint()).id(), row);
+            }
             add(attachesOn, row.endpoint().occurrence().id(), row);
         }
         for (RootMintRow row : session.roots()) {
@@ -181,7 +197,8 @@ public final class Corpus {
             writeByVersion.put(versionKey(session.sessionId(), row.location(),
                     row.version()), row);
             add(writesOn, row.endpoint().occurrence().id(), row);
-            add(writesByLocation, row.location().toString(), row);
+            add(writesByLocation, session.sessionId() + "|"
+                    + SmtLowering.locationKey(row.location()), row);
             endpointById.put(row.endpoint().id(), row.endpoint());
             touch(row.endpoint().occurrence(), row.location());
         }
@@ -351,10 +368,81 @@ public final class Corpus {
         return rows == null ? Collections.<WriteRow>emptyList() : rows;
     }
 
-    /** Every write of one location, across every session of the corpus. */
-    public List<WriteRow> writesOf(LocationId location) {
-        List<WriteRow> writes = writesByLocation.get(location.toString());
+    // ---- Arms.Rows: what the shared arm builder asks of a corpus -------
+
+    @Override
+    public List<String> sessionIds() {
+        List<String> ids = new ArrayList<String>();
+        for (SessionReader session : sessions) ids.add(session.sessionId());
+        return ids;
+    }
+
+    @Override
+    public JsonObject expression(String sessionId, String expressionRef) {
+        SessionReader session = sessionById.get(sessionId);
+        return session == null || expressionRef == null ? null
+                : session.expressions().expression(expressionRef);
+    }
+
+    @Override
+    public List<AttachRow> attachesOf(Interaction interaction) {
+        List<AttachRow> rows = attachesByInteraction.get(interaction.id());
+        return rows == null ? Collections.<AttachRow>emptyList() : rows;
+    }
+
+    @Override
+    public List<ExportRow> exportsOf(Endpoint producer) {
+        return exportsAt(producer);
+    }
+
+    @Override
+    public List<WriteRow> writesOf(String sessionId, String locationKey) {
+        List<WriteRow> writes = writesByLocation.get(
+                sessionId + "|" + locationKey);
         return writes == null ? Collections.<WriteRow>emptyList() : writes;
+    }
+
+    @Override
+    public String pathIdOf(String sessionId, OccurrenceAddress occurrence) {
+        return pathId(sessionId, occurrence);
+    }
+
+    @Override
+    public RootMintRow root(String rootId, String sessionId) {
+        return rootOf(sessionId, rootId);
+    }
+
+    @Override
+    public Map<String, List<RootMintRow>> roots() {
+        Map<String, List<RootMintRow>> byRoot =
+                new LinkedHashMap<String, List<RootMintRow>>();
+        for (Map.Entry<String, Map<String, RootMintRow>> entry
+                : rootsById.entrySet()) {
+            byRoot.put(entry.getKey(),
+                    new ArrayList<RootMintRow>(entry.getValue().values()));
+        }
+        return byRoot;
+    }
+
+    @Override
+    public AttachRow attachOfSymbol(String symbol, String sessionId) {
+        return attach(sessionId, symbol);
+    }
+
+    @Override
+    public OccurrenceAddress occurrenceOf(String endpointId) {
+        Endpoint endpoint = endpointById.get(endpointId);
+        return endpoint == null ? null : endpoint.occurrence();
+    }
+
+    /** The arm builder both stages construct their families with. */
+    public Arms arms() {
+        return arms;
+    }
+
+    /** Every write of one location, in one session. */
+    public List<WriteRow> writesOf(LocationId location, String sessionId) {
+        return writesOf(sessionId, SmtLowering.locationKey(location));
     }
 
     /** One endpoint of this corpus by its id: the anchor chain's join. */
@@ -381,7 +469,8 @@ public final class Corpus {
         return attachBySymbol.get(sessionId + "|" + symbol);
     }
 
-    public RootMintRow root(String sessionId, String symbol) {
+    /** The root one session minted under one symbol, or null. */
+    public RootMintRow rootBySymbol(String sessionId, String symbol) {
         return rootBySymbol.get(sessionId + "|" + symbol);
     }
 
@@ -410,6 +499,7 @@ public final class Corpus {
         return bySession == null ? null : bySession.get(sessionId);
     }
 
+    /** One root's mint row in one session, as {@link Arms.Rows} asks it. */
     /** Any mint row of one root, for its kind and its published domain. */
     public RootMintRow anyRoot(String rootId) {
         Map<String, RootMintRow> bySession = rootsById.get(rootId);

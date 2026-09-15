@@ -1,6 +1,7 @@
 package edu.uva.liftlab.graphchecker.d3.explore;
 
 import edu.uva.liftlab.graphchecker.d3.compose.SmtLowering;
+import edu.uva.liftlab.graphchecker.d3.smt.Arms;
 import edu.uva.liftlab.graphchecker.d3.contract.AttachRow;
 import edu.uva.liftlab.graphchecker.d3.contract.DecisionRow;
 import edu.uva.liftlab.graphchecker.d3.contract.ExportRow;
@@ -147,10 +148,9 @@ final class FlipQuery {
     /** One eligible writer occurrence, and the selector that picks it. */
     private static final class Choice {
         private final String selector;
-        private final StateEligibility.Alternative alternative;
+        private final Arms.Arm alternative;
 
-        private Choice(String selector,
-                       StateEligibility.Alternative alternative) {
+        private Choice(String selector, Arms.Arm alternative) {
             this.selector = selector;
             this.alternative = alternative;
         }
@@ -235,7 +235,7 @@ final class FlipQuery {
                 Ref ref = pending.remove();
                 switch (corpus.symbolKind(ref.sessionId, ref.symbol)) {
                     case ROOT:
-                        root(corpus.root(ref.sessionId, ref.symbol));
+                        root(corpus.rootBySymbol(ref.sessionId, ref.symbol));
                         break;
                     case HANDOFF:
                         handoff(corpus.attach(ref.sessionId, ref.symbol));
@@ -293,19 +293,34 @@ final class FlipQuery {
                 if (control) registerControl(attach, variable, false);
                 return;
             }
-            List<String> arms = new ArrayList<String>();
-            List<String> refusals = new ArrayList<String>();
+            List<String> disjuncts = new ArrayList<String>();
             Set<String> seen = new LinkedHashSet<String>();
+            Map<String, List<String>> bySlot =
+                    new LinkedHashMap<String, List<String>>();
             if (attach.producer() != null) {
-                for (ExportRow export : corpus.exportsAt(attach.producer())) {
-                    String arm = arm(export, variable, refusals);
-                    if (!arm.isEmpty() && seen.add(arm)) arms.add(arm);
+                Interaction slot = Interaction.of(InteractionKind.WIRE,
+                        attach.producer(), attach.endpoint());
+                for (Arms.Arm arm : corpus.arms().wireArms(slot,
+                        attach.symbol())) {
+                    String term = arm(arm, variable, attach.symbol());
+                    if (term.isEmpty() || !seen.add(arm.slotId() + "|" + term)) {
+                        continue;
+                    }
+                    List<String> held = bySlot.get(arm.slotId());
+                    if (held == null) {
+                        held = new ArrayList<String>();
+                        bySlot.put(arm.slotId(), held);
+                    }
+                    held.add(term);
                 }
-            } else {
-                refusals.add("the attach is unpaired: no producer endpoint");
             }
-            if (!arms.isEmpty()) {
-                assertions.add(SmtText.disjoin(arms));
+            for (Map.Entry<String, List<String>> family : bySlot.entrySet()) {
+                assertions.add(SmtText.disjoin(family.getValue()));
+                if (family.getKey().equals(slotIdOf(attach))) {
+                    disjuncts.addAll(family.getValue());
+                }
+            }
+            if (!disjuncts.isEmpty()) {
                 if (control) registerControl(attach, variable, false);
                 return;
             }
@@ -314,7 +329,7 @@ final class FlipQuery {
                 gaps.add(GapRow.of(attach.sessionId(),
                         GapKind.UNPRODUCIBLE_ANSWER, GapClass.DIAGNOSTIC,
                         attach.endpoint().toString(),
-                        "no producer arm in this corpus: " + reasons(refusals)));
+                        "no producer arm in this corpus for this slot"));
                 return;
             }
             String arrival = SmtText.literal(attach.arrival(),
@@ -323,22 +338,82 @@ final class FlipQuery {
                 gaps.add(GapRow.of(attach.sessionId(),
                         GapKind.UNPRODUCIBLE_ANSWER, GapClass.DIAGNOSTIC,
                         attach.endpoint().toString(),
-                        "nested handoff with neither an arm nor an arrival: "
-                                + reasons(refusals)));
+                        "nested handoff with neither an arm nor an arrival"));
                 return;
             }
             assertions.add("(= " + variable + " " + arrival + ")");
         }
 
+        private String slotIdOf(AttachRow attach) {
+            return attach.producer() == null ? "" : Interaction.of(
+                    InteractionKind.WIRE, attach.producer(),
+                    attach.endpoint()).id();
+        }
+
+        /**
+         * One arm of one slot, in this query's variables.
+         *
+         * <p>What an arm IS -- the delivered expression, the producer path's
+         * prefix cut at the delivery, the valuation its roots ran under, and
+         * whether the producer was explored -- is {@link Arms}, shared with
+         * the composer so one corpus states one family. What is left here is
+         * the renaming: a root is one quantity across the corpus, a clock is
+         * per path, and a handoff is per INTERACTION, because this query
+         * conjoins several sessions' conjunctions at once where a composed
+         * one selects a single path.</p>
+         */
+        private String arm(Arms.Arm arm, String variable, String own) {
+            Set<String> unknown = new LinkedHashSet<String>();
+            SmtLowering.Lowered lowered = corpus.lowering(arm.sessionId())
+                    .lower(arm.expressionRef());
+            if (!lowered.ok()) return "";
+            String delivered = rename(lowered.text(), arm.sessionId(),
+                    new LinkedHashSet<String>(), unknown);
+            if (!unknown.isEmpty()) return "";
+            List<String> conjuncts = new ArrayList<String>();
+            for (String term : arm.pi()) {
+                String renamed = rename(term, arm.sessionId(),
+                        new LinkedHashSet<String>(), unknown);
+                if (!unknown.isEmpty()) return "";
+                conjuncts.add(renamed);
+            }
+            for (Map.Entry<String, String> valued : arm.guard().entrySet()) {
+                RootMintRow root = corpus.rootBySymbol(arm.sessionId(),
+                        valued.getKey());
+                if (root == null || !corpus.varied(root.rootId())) continue;
+                String rootVariable = variable(arm.sessionId(),
+                        valued.getKey());
+                String literal = SmtText.literal(valued.getValue(),
+                        sorts.get(rootVariable));
+                if (literal.isEmpty()) continue;
+                conjuncts.add("(= " + rootVariable + " " + literal + ")");
+            }
+            // The family's own slot binds the CONSUMER's variable; a nested
+            // slot binds the variable of the symbol the producer forwarded,
+            // which its own session minted.
+            String target = arm.symbol().isEmpty()
+                    || arm.symbol().equals(own) ? variable
+                    : variable(arm.sessionId(), arm.symbol());
+            conjuncts.add("(= " + target + " " + delivered + ")");
+            if (!arm.attested()) {
+                gaps.add(GapRow.of(arm.sessionId(), GapKind.UNATTESTED_ARM,
+                        GapClass.DIAGNOSTIC, arm.slotId(),
+                        "the producer ran concretely: this arm states what "
+                                + "it delivered, not why"));
+            }
+            return SmtText.conjoin(conjuncts);
+        }
+
         private void read(ReadRow row) {
             String variable = variable(row.sessionId(), row.symbol());
             if (!explained.add(variable)) return;
-            List<StateEligibility.Alternative> eligible =
-                    StateEligibility.alternatives(corpus, row);
+            List<Arms.Arm> eligible = corpus.arms().stateArms(row.endpoint(),
+                    row.sessionId(), SmtLowering.locationKey(row.location()),
+                    row.observedVersion());
             gaps.add(GapRow.of(row.sessionId(), GapKind.UNSTATED_VALUE,
                     GapClass.DIAGNOSTIC, row.endpoint().toString(),
                     "eligible writers of " + row.location() + ": "
-                            + StateEligibility.render(eligible)));
+                            + eligible.size()));
             if (eligible.isEmpty()) {
                 stated(row, variable);
                 return;
@@ -348,19 +423,19 @@ final class FlipQuery {
             // occurrence takes the same choice.  One selector per writer
             // occurrence, shared by those reads, is what says so.
             String choiceKey = row.endpoint().occurrence().id() + "|"
-                    + row.location();
+                    + SmtLowering.locationKey(row.location());
             List<Choice> choices = choicesByReader.get(choiceKey);
             if (choices == null) {
                 choices = new ArrayList<Choice>();
-                for (StateEligibility.Alternative alternative : eligible) {
+                int ordinal = 0;
+                for (Arms.Arm alternative : eligible) {
                     String selector = names.name("choice|" + choiceKey + "|"
-                                    + alternative.writer().id(),
+                                    + alternative.slotId(),
                             "wchoice_" + row.location().slot() + "_"
-                                    + alternative.writer().regionId());
+                                    + ordinal++);
                     declare(selector, "Bool", "this read takes "
-                            + row.location() + " from "
-                            + alternative.writer().render()
-                            + (alternative.observed ? " (observed)" : ""));
+                            + row.location() + " from slot "
+                            + alternative.slotId());
                     choices.add(new Choice(selector, alternative));
                 }
                 choicesByReader.put(choiceKey, choices);
@@ -368,14 +443,14 @@ final class FlipQuery {
             }
             List<String> bindings = new ArrayList<String>();
             for (Choice choice : choices) {
-                String value = delivered(choice.alternative, variable);
+                String value = delivered(choice.alternative);
                 if (value.isEmpty()) continue;
                 bindings.add("(=> " + choice.selector + " (= " + variable
                         + " " + value + "))");
-                if (!choice.alternative.attested) {
-                    gaps.add(GapRow.of(choice.alternative.write.sessionId(),
+                if (!choice.alternative.attested()) {
+                    gaps.add(GapRow.of(choice.alternative.sessionId(),
                             GapKind.UNATTESTED_ARM, GapClass.DIAGNOSTIC,
-                            choice.alternative.write.endpoint().toString(),
+                            choice.alternative.slotId(),
                             "the writer ran concretely: this arm states what "
                                     + "it wrote, not why"));
                 }
@@ -388,15 +463,13 @@ final class FlipQuery {
         }
 
         /** What one eligible writer delivers, as this query spells it. */
-        private String delivered(StateEligibility.Alternative alternative,
-                                 String variable) {
+        private String delivered(Arms.Arm alternative) {
             SmtLowering.Lowered lowered =
-                    corpus.lowering(alternative.write.sessionId())
-                            .lower(alternative.write.expressionRef());
+                    corpus.lowering(alternative.sessionId())
+                            .lower(alternative.expressionRef());
             if (!lowered.ok()) return "";
             Set<String> unknown = new LinkedHashSet<String>();
-            String value = rename(lowered.text(),
-                    alternative.write.sessionId(),
+            String value = rename(lowered.text(), alternative.sessionId(),
                     new LinkedHashSet<String>(), unknown);
             return unknown.isEmpty() ? value : "";
         }
@@ -528,7 +601,7 @@ final class FlipQuery {
                 if (kind == Corpus.SymbolKind.UNKNOWN) continue;
                 rename.put(token, variable(sessionId, token));
                 if (kind == Corpus.SymbolKind.ROOT) {
-                    RootMintRow root = corpus.root(sessionId, token);
+                    RootMintRow root = corpus.rootBySymbol(sessionId, token);
                     if (root.kind() != RootKind.CLOCK) {
                         rootsTouched.add(root.rootId());
                     }
@@ -551,7 +624,7 @@ final class FlipQuery {
         private String variable(String sessionId, String symbol) {
             switch (corpus.symbolKind(sessionId, symbol)) {
                 case ROOT: {
-                    RootMintRow row = corpus.root(sessionId, symbol);
+                    RootMintRow row = corpus.rootBySymbol(sessionId, symbol);
                     boolean clock = row.kind() == RootKind.CLOCK;
                     String key = clock
                             ? "clock|" + row.rootId() + "|" + sessionId
