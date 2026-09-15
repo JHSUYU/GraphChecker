@@ -489,6 +489,34 @@ public class D3ExploreTest {
         }
         assertTrue("and it is BLOCKING: the campaign opens an epoch",
                 blocking);
+
+        // A region the workload never RETAINED: its activation is all there
+        // is of it, no endpoint of it exists, so no slot can ever name it.
+        // The epoch has to be re-cut with it instrumented (SS8 case 2).
+        Path unseen = tree.newFolder("closure-unretained").toPath();
+        OccurrenceAddress lightweight = occurrence("hdfs-case/dn0",
+                "REGION.notretained", CausalContext.of(Role.DATA_XCEIVER, 2),
+                "o.a.h.h.s.d.DataXceiver#run#44");
+        Session partial = new Session(unseen, "s-seed");
+        partial.activation(target, false);
+        partial.activation(lightweight, false);
+        partial.read(at(target, Endpoint.stateSite("BlockTokenSecretManager",
+                        "get", 3, false), "BlockTokenSecretManager#get#3"),
+                allKeys, 5L, "M_READ_KEY", "119992");
+        partial.flush();
+        SlotTable.Reconciliation grown = new SlotTable().reconcile(
+                Corpus.read(unseen, null),
+                Collections.singleton(target.id()), 3);
+        assertTrue("a region with no detailed row forks the epoch",
+                grown.replaced);
+        boolean asked = false;
+        for (GapRow gap : grown.gaps) {
+            asked |= gap.kind() == GapKind.TOPOLOGY_DIVERGENCE
+                    && gap.cls() == GapClass.BLOCKING
+                    && gap.detail().equals(
+                            "retained set must grow: REGION.notretained");
+        }
+        assertTrue("and it names the region INSTRUMENT must retain", asked);
     }
 
     // ---- driving the stage the way the campaign drives it -------------
