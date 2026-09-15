@@ -506,8 +506,8 @@ public final class Composer {
         String selector = "path_selector__" + ordinal + "__"
                 + JsonText.digest(path.pathId(), 10);
         lowering.declare(selector, Sort.BOOL);
-        lowering.begin(session, corpus.joinOf(session),
-                corpus.expressions(session));
+        SmtLowering.SessionJoin rows = corpus.joinOf(session);
+        lowering.begin(session, rows, corpus.expressions(session));
 
         List<String> terms = new ArrayList<String>();
         List<GapRow> refusals = new ArrayList<GapRow>();
@@ -523,7 +523,8 @@ public final class Composer {
         //     -- must be this path's binding for it wherever it appears.
         //     Declared as each row was met instead, it resolved only for
         //     the leaves that happened to come after its own row.
-        statedReads(session, refusals, joins);
+        Set<String> answered = new LinkedHashSet<String>();
+        statedReads(session, refusals, joins, answered);
 
         // (1) The valuation this replay ran under, for every VARIED root.
         //     A replay's assignments are not all visible as decisions -- a
@@ -544,7 +545,8 @@ public final class Composer {
         //     read with ALTERNATIVES takes its value from the family and
         //     not from a conjunct of the path -- asserting both would make
         //     the family redundant and the alternatives unreachable.
-        stateJoins(session, refusals, joined, observed, joins);
+        stateJoins(session, rows, refusals, joined, observed, joins,
+                answered);
 
         // (4) pi_p, through the one routine that applies each decision's
         //     polarity: a published term is the site's PREDICATE, and which
@@ -838,26 +840,57 @@ public final class Composer {
      *
      * <p>Only the reads the JOIN half does not own: a read the write log
      * covers takes its value from the write's expression, which is the
-     * chain, and is bound there.  A read this half leaves unbound -- no
-     * stated value, or a Java type that names no scalar -- is named by the
-     * JOIN half exactly as before, so nothing is refused twice and
-     * nothing is refused here that was not refused before.</p>
+     * chain, and is bound there.  A read whose row states NO value is left
+     * to the JOIN half, which asks the version's own row for it and names
+     * the refusal if nothing states that either; a row whose stated value
+     * this lowering places nowhere is named here.  Either way one refusal
+     * per row: {@code answered} is what the two halves say it by.</p>
      */
     private void statedReads(String session, List<GapRow> refusals,
-                             Map<String, String> joins) {
+                             Map<String, String> joins,
+                             Set<String> answered) {
         for (ReadRow read : corpus.readsAt(session, anchor)) {
             if (read.symbol() == null || read.symbol().isEmpty()) continue;
             if (joins.containsKey(read.symbol())) continue;
             if (joinable(session, read)) continue;
-            String literal = JsonText.smtLiteral(read.concreteValue());
-            if (literal.isEmpty()) continue;
-            Sort sort = scalarSort(read.javaType(), session, read.symbol(),
-                    refusals);
-            if (sort == null) continue;
-            lowering.declareStated(read.symbol(), sort);
-            joins.put(read.symbol(), "(= " + read.symbol() + " "
-                    + literal + ")");
+            pin(session, read, refusals, joins, answered);
         }
+    }
+
+    /**
+     * Read := the value its own row states, through the one lowering.
+     *
+     * <p>Answers whether the row states a value this places: a scalar is
+     * its literal, and a REFERENCE is the identity the VM spelled -- the
+     * same {@code identity__} name every other leaf of that object gets,
+     * or null for {@code "N"} -- because a row and a
+     * {@code FieldAccess concreteValue} state a recorded reference the
+     * same way and there is one place that reads that spelling.  A row
+     * whose stated value this places nowhere is named by the caller, never
+     * skipped in silence.</p>
+     */
+    private boolean pin(String session, ReadRow read,
+                        List<GapRow> refusals, Map<String, String> joins,
+                        Set<String> answered) {
+        String text = read.concreteValue() == null ? ""
+                : read.concreteValue().trim();
+        if (text.isEmpty()) return false;
+        answered.add(read.symbol());
+        Term value = lowering.statedValue(text, read.javaType(),
+                "read-pin:" + read.symbol());
+        if (value == null) {
+            refusals.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
+                    GapClass.DIAGNOSTIC, read.symbol(),
+                    "the row states the value \"" + text + "\" at Java "
+                            + "type \"" + (read.javaType() == null ? ""
+                            : read.javaType()) + "\", which this lowering "
+                            + "places nowhere"));
+            return true;
+        }
+        lowering.declareStated(read.symbol(), value.sort);
+        joins.put(read.symbol(), "(= " + read.symbol() + " " + value.text
+                + ")");
+        return true;
     }
 
     /** Whether this session's write log covers the version this read saw. */
@@ -868,9 +901,11 @@ public final class Composer {
                 read.observedVersion()) != null;
     }
 
-    private void stateJoins(String session, List<GapRow> refusals,
+    private void stateJoins(String session, SmtLowering.SessionJoin join,
+                            List<GapRow> refusals,
                             List<ReadRow> joined, List<String> observed,
-                            Map<String, String> joins) {
+                            Map<String, String> joins,
+                            Set<String> answered) {
         for (ReadRow read : corpus.readsAt(session, anchor)) {
             if (read.symbol() == null || read.symbol().isEmpty()) continue;
             String key = SmtLowering.locationKey(read.location());
@@ -902,14 +937,49 @@ public final class Composer {
                 }
             }
             if (joins.containsKey(read.symbol())) continue;
-            String literal = JsonText.smtLiteral(read.concreteValue());
-            if (!literal.isEmpty()) {
-                Sort sort = scalarSort(read.javaType(), session,
-                        read.symbol(), refusals);
-                if (sort == null) continue;
+            // The row's own stated value.  Every row that is not joinable
+            // was already asked this at step 0; a joinable one whose write
+            // expression lowered to nothing is asked here.
+            if (!answered.contains(read.symbol())
+                    && pin(session, read, refusals, joins, answered)) {
+                continue;
+            }
+            if (answered.contains(read.symbol())) continue;
+            // The version this read observed, as the ROWS state it: no
+            // write made it, and a read row of this session does.  The
+            // reader's symbol is then that symbol -- same location, same
+            // version, same session -- which is the mint the VM performed
+            // at a declared region input, and not a value chosen here.
+            String minted = SmtLowering.statedReadSymbol(join, key,
+                    read.observedVersion());
+            if (minted == null) {
+                refusals.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
+                        GapClass.DIAGNOSTIC, key + "@"
+                                + read.observedVersion(),
+                        "two read rows of this session state different "
+                                + "symbols for this location at this "
+                                + "version: " + join.statedReadSymbols(key,
+                                read.observedVersion())));
+                continue;
+            }
+            if (minted.equals(read.symbol())) {
+                // This row IS the one that states the version: its own
+                // pin bound it at step 0, and there is nothing to add.
+                continue;
+            }
+            if (!minted.isEmpty()) {
+                Sort sort = lowering.declarations().get(minted);
+                if (!lowering.stated(minted) || sort == null) {
+                    refusals.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
+                            GapClass.DIAGNOSTIC, minted,
+                            "the read row that states this version's "
+                                    + "symbol states no value for it, so "
+                                    + "nothing binds it"));
+                    continue;
+                }
                 lowering.declareStated(read.symbol(), sort);
                 joins.put(read.symbol(), "(= " + read.symbol() + " "
-                        + literal + ")");
+                        + minted + ")");
                 continue;
             }
             refusals.add(GapRow.of(session, GapKind.UNSTATED_VALUE,

@@ -88,6 +88,13 @@ public class D3ComposerTest {
     private static final String PLACEHOLDER =
             "M_I_field_REGION.target.in.count";
     private static final String NO_ROW = "M_I_field_REGION.target.in.absent";
+    /**
+     * The same, at a VERSION: the VM's mint primitive gives the field a
+     * new version whose value IS this symbol, so a read of that version
+     * has a read row and no write row at all.
+     */
+    private static final String MINTED =
+            "M_I_field_REGION.target.in.counter";
 
     // ------------------------------------------------------------------
     // 1. Polarity: the recording is refuted, the flip reaches the failure.
@@ -579,6 +586,29 @@ public class D3ComposerTest {
                     symbol(NO_ROW, "I"), integer("I", 4L)));
             session.decision(ANCHOR, "anchor#u11", true,
                     "EXPR.00000000000000b4");
+            // A version no write log entry covers, and TWO read rows of
+            // this session state a value for it under DIFFERENT symbols.
+            // What the version holds then has no answer: taking either one
+            // would put one read's value on the other read's version, so
+            // the ReadFrom naming it is refused by name -- and so is the
+            // reader whose own row states nothing.
+            session.read(Endpoint.of(ANCHOR, "Counter#a#1:READ",
+                            at("two#1", 0), 0),
+                    LocationId.of(LocationKind.INSTANCE, "9", "16"), 7L,
+                    "two_a", "I", "1");
+            session.read(Endpoint.of(ANCHOR, "Counter#b#1:READ",
+                            at("two#2", 0), 0),
+                    LocationId.of(LocationKind.INSTANCE, "9", "16"), 7L,
+                    "two_b", "I", "2");
+            session.read(Endpoint.of(ANCHOR, "Counter#r#1:READ",
+                            at("two#3", 0), 0),
+                    LocationId.of(LocationKind.INSTANCE, "9", "16"), 7L,
+                    "INSTANCE/9#16@v7", "I", null);
+            session.expression("EXPR.00000000000000b5", binary("==",
+                    read("INSTANCE_FIELD", 9L, 16L, 7L, "I"),
+                    integer("I", 1L)));
+            session.decision(ANCHOR, "anchor#u12", true,
+                    "EXPR.00000000000000b5");
             session.write(Endpoint.of(ANCHOR, "Keys#put#9:WRITE",
                             at("put#1", 0), 0),
                     LocationId.of(LocationKind.MAP, "4", "-3"), 1L,
@@ -614,6 +644,16 @@ public class D3ComposerTest {
                         + "refused by name, naming the class and offset",
                 named(gaps, "UNSTATED_FIELD_PROJECTION:"
                         + "org/apache/Store@48:L"));
+        assertTrue("two read rows stating different symbols for one "
+                        + "version state nothing about it, and the "
+                        + "ReadFrom naming it is refused by name",
+                named(gaps, "UNSTATED_VALUE:ReadVersion:INSTANCE/9#16@7:"
+                        + "[two_a, two_b]"));
+        assertTrue("and so is the reader whose own row states no value",
+                says(gaps, GapKind.UNSTATED_VALUE,
+                        "two read rows of this session state different "
+                                + "symbols for this location at this "
+                                + "version: [two_a, two_b]"));
         assertFalse("the unplaceable symbol is not in the formula",
                 composition.body().contains("vh_ref"));
     }
@@ -929,6 +969,45 @@ public class D3ComposerTest {
                         at("count#1", 0), 0),
                 LocationId.of(LocationKind.INSTANCE, "Manager", "held"),
                 -1L, PLACEHOLDER, "I", "2");
+        // The same placeholder AT A VERSION, which is what the VM's mint
+        // primitive actually leaves behind: symbolizing a field replaces
+        // its shadow, so the tracked-location log gets a new version whose
+        // value is the minted symbol.  Nobody wrote it, so the row
+        // contract publishes no write -- and a ReadFrom naming that
+        // version is then valued by the READ row of the same location and
+        // version, bound by that row's own pin.  Taken from the copy of
+        // the version's expression the node carries, the binding would
+        // rest on no row at all.
+        session.read(Endpoint.of(ANCHOR,
+                        "INSTANCE_FIELD/22#24#PLACEHOLDER#0:READ",
+                        at("count#2", 0), 0),
+                LocationId.of(LocationKind.INSTANCE, "22", "24"),
+                174L, MINTED, "I", "2");
+        // And the reader of that version, as the runtime publishes it: its
+        // own row states no value, and the version's does.
+        session.read(Endpoint.of(ANCHOR,
+                        "INSTANCE_FIELD/22#24#READ_FROM#0:READ",
+                        at("count#3", 0), 0),
+                LocationId.of(LocationKind.INSTANCE, "22", "24"),
+                174L, "INSTANCE/22#24@v174", "I", null);
+        // Two reference-typed reads whose value the ROW states, the way a
+        // reference read states one: the VM's rid spelling, and "N" for
+        // null.  A row and a FieldAccess concreteValue mean the same thing
+        // by the same spelling, so the identity here is the SAME name the
+        // rid-9 leaf above gets, and the null one is nullRef -- not an
+        // identity of its own, which would answer "is it null" with "it is
+        // some other object".
+        session.read(Endpoint.of(ANCHOR,
+                        "INSTANCE_FIELD/Snapshot#32#FIELD#32:READ",
+                        at("held#1", 0), 0),
+                LocationId.of(LocationKind.INSTANCE, "Snapshot", "32"),
+                -1L, "INSTANCE/Snapshot#32@e-1", "L",
+                "M_L'org/apache/Held'_9");
+        session.read(Endpoint.of(ANCHOR,
+                        "INSTANCE_FIELD/Snapshot#40#FIELD#40:READ",
+                        at("held#2", 0), 0),
+                LocationId.of(LocationKind.INSTANCE, "Snapshot", "40"),
+                -1L, "INSTANCE/Snapshot#40@e-1", "L", "N");
         // And phi: a null test, which is what every key case's fatal
         // predicate is, and -- phi is published SMT TEXT over the
         // session's expression references -- a second leaf of the
@@ -939,7 +1018,14 @@ public class D3ComposerTest {
                 vmNull()));
         session.expression("EXPR.00000000000000f2", binary("!=",
                 symbol(PLACEHOLDER, "I"), integer("I", 3L)));
-        session.target("(and EXPR.00000000000000f1 EXPR.00000000000000f2)",
+        // phi also reads the minted version, as a ReadFrom naming it: no
+        // write of that location at that version exists anywhere in the
+        // session.
+        session.expression("EXPR.00000000000000f3", binary("!=",
+                read("INSTANCE_FIELD", 22L, 24L, 174L, "I"),
+                integer("I", 5L)));
+        session.target("(and EXPR.00000000000000f1 EXPR.00000000000000f2 "
+                        + "EXPR.00000000000000f3)",
                 false, true);
         session.write();
 
@@ -1002,6 +1088,35 @@ public class D3ComposerTest {
                 fatalArm(composition).matches(
                         ".*\\(not \\(= identity__[0-9a-f]+ "
                                 + "nullRef\\)\\).*"));
+        // A ReadFrom over a version only a READ row states: the mint the
+        // VM performed at a declared region input, which no write log
+        // entry covers.
+        assertTrue("the row that states the minted version is pinned to "
+                        + "the value it returned: " + fatalArm(composition),
+                fatalArm(composition).contains(SmtLowering.legalSymbols(
+                        "(= " + MINTED + " 2)")));
+        assertTrue("and phi's ReadFrom over that version IS that row's "
+                        + "symbol: " + fatalArm(composition),
+                fatalArm(composition).contains(SmtLowering.legalSymbols(
+                        "(not (= " + MINTED + " 5))")));
+        assertTrue("so is the reader row of the same version, whose own "
+                        + "row states no value",
+                fatalArm(composition).contains(SmtLowering.legalSymbols(
+                        "(= INSTANCE/22#24@v174 " + MINTED + ")")));
+        // A row whose stated value is a REFERENCE, through the one
+        // lowering a FieldAccess concreteValue goes through.
+        assertTrue("a row that states an identity pins its symbol to the "
+                        + "SAME identity name the rid's own leaf gets: "
+                        + fatalArm(composition),
+                fatalArm(composition).matches(".*\\(= \\|INSTANCE/"
+                        + "Snapshot#32@e-1\\| (identity__[0-9a-f]+)\\)"
+                        + ".*|.*\\(= (identity__[0-9a-f]+) nullRef\\)"
+                        + ".*\\(= \\|INSTANCE/Snapshot#32@e-1\\| "
+                        + "\\1\\).*"));
+        assertTrue("and one that states \"N\" pins it to nullRef, not to "
+                        + "an identity of its own",
+                fatalArm(composition).contains(
+                        "(= |INSTANCE/Snapshot#40@e-1| nullRef)"));
 
         // And the one routine says the same of either row.
         List<DecisionRow> rows = CorpusIndex.of(iteration)

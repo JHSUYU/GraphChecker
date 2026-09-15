@@ -417,10 +417,12 @@ public final class CorpusIndex implements Arms.Rows {
         return attachesBySymbol.keySet();
     }
 
-    /** The write log of one session, as the state join reads it. */
+    /** The rows of one session, as the state join reads them. */
     public SmtLowering.SessionJoin joinOf(final String sessionId) {
         final Map<String, WriteRow> writes = writesBySession.get(sessionId);
         final SessionReader session = bySessionId.get(sessionId);
+        final Map<String, Set<String>> stated = SmtLowering.statedReadIndex(
+                readsBySession.get(sessionId));
         return new SmtLowering.SessionJoin() {
             @Override
             public JsonElement writeExpression(String locationKey,
@@ -431,6 +433,15 @@ public final class CorpusIndex implements Arms.Rows {
                 JsonObject expression = session.expressions()
                         .expression(write.expressionRef());
                 return expression;
+            }
+
+            @Override
+            public Set<String> statedReadSymbols(String locationKey,
+                                                 long version) {
+                Set<String> symbols =
+                        stated.get(locationKey + "#" + version);
+                return symbols == null
+                        ? Collections.<String>emptySet() : symbols;
             }
         };
     }
