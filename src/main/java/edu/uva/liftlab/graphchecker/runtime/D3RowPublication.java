@@ -206,12 +206,17 @@ final class D3RowPublication {
         String[] installedAt = installed.get(symbol);
         String locationKey = installedAt == null ? "" : installedAt[0];
         LocationId location = location(locationKey);
-        // The version the VM observed for this read.  It is NOT a write --
-        // no WriteRow states it (see #mintedVersion) -- but it is the
-        // version the anchor's own ReadFrom names, so a reader that meets
-        // `INSTANCE/22#24@174` in a term finds this row's symbol there.
+        // The version this read OBSERVED.  The mint's own version is not a
+        // write -- nobody stored it, and no WriteRow states it (see
+        // #mintedVersion) -- so the version the read observed is the last
+        // REAL write of the location before it, which the VM's version log
+        // already holds.  That is what makes this row a JOIN to the writer
+        // occurrence: on hdfs-17960 the two deletion occurrences write the
+        // counter and the anchor reads what they left.  When no write
+        // precedes the mint the row states -1 and pins the plain decimal,
+        // which is the never-neither rule and not an invented version.
         long observed = location == null ? ReadRow.UNKNOWN_VERSION
-                : Long.parseLong(installedAt[1]);
+                : Long.parseLong(installedAt[2]);
         if (location == null) {
             JsonObject read = nestedRead(row.get("expression"), 0);
             locationKey = read == null ? ""
@@ -253,7 +258,7 @@ final class D3RowPublication {
                 Endpoint.stateSite(locationKey, "PLACEHOLDER", 0, false),
                 location, observed, symbol,
                 javaDescriptor(optionalString(row, "javaType")),
-                literal(value));
+                literal(value), optionalString(row, "siteIndex"));
     }
 
     /**
@@ -337,9 +342,28 @@ final class D3RowPublication {
                 }
                 String symbol = optionalString(node, "_exp");
                 if (symbol.isEmpty()) continue;
+                // Only a write EARLIER than the mint is the one the read
+                // observed; a later store is a value this read never saw.
+                long observed = -1L;
+                for (JsonElement candidate
+                        : array(object(record, "envelope"), "versions")) {
+                    if (!candidate.isJsonObject()) continue;
+                    JsonObject other = candidate.getAsJsonObject();
+                    long otherId = optionalLongInteger(other,
+                            "fieldVersionId", -1L);
+                    JsonElement value = other.get("expression");
+                    boolean symbolLeaf = value != null
+                            && value.isJsonObject()
+                            && optionalString(value.getAsJsonObject(),
+                            "_type").contains("Symbol");
+                    if (!symbolLeaf && otherId >= 0L && otherId < id
+                            && otherId > observed) {
+                        observed = otherId;
+                    }
+                }
                 if (!bySymbol.containsKey(symbol)) {
                     bySymbol.put(symbol, new String[]{locationKey,
-                            Long.toString(id)});
+                            Long.toString(id), Long.toString(observed)});
                 }
             }
         }
@@ -507,6 +531,8 @@ final class D3RowPublication {
         Set<String> published = new LinkedHashSet<String>();
         Map<JsonElement, Boolean> seen =
                 new IdentityHashMap<JsonElement, Boolean>();
+        // Locations whose read events no woven site could be stated for.
+        Set<String> unstamped = new LinkedHashSet<String>();
         Set<String> mints = placeholderSymbols(active);
         for (JsonObject record : active.sharedStateRecords.values()) {
             String locationKey = optionalString(record, "locationKey");
@@ -521,29 +547,54 @@ final class D3RowPublication {
                 if (!D3Runtime.claimEvent("write", locationKey + "#" + id)) {
                     continue;
                 }
-                namedSiteMissing = true;
                 JsonElement expression = version.get("expression");
                 JsonObject written =
                         expression != null && expression.isJsonObject()
                                 ? expression.getAsJsonObject() : null;
+                // The site the write stood on, when a declared write site
+                // stamped it at the store (D3Runtime.writeSite); otherwise
+                // the location, and the gap below says why.
+                String[] stamped = D3Runtime.writeSiteOf(locationKey, id);
+                if (stamped == null) namedSiteMissing = true;
                 D3Runtime.write(occurrence, id,
-                        Endpoint.stateSite(locationKey,
+                        stamped != null ? stamped[0]
+                                : Endpoint.stateSite(locationKey,
                                 optionalString(version, "versionKind"), 0,
                                 true),
                         location, id, written,
                         written == null ? "" : optionalString(written,
-                                "_java_type"));
-                collect(expression, occurrence, published, seen, 0);
+                                "_java_type"),
+                        stamped != null ? stamped[1] : "");
+                collect(expression, occurrence, published, seen, unstamped);
             }
         }
         for (JsonObject mapping : active.branchMappings) {
-            collect(mapping.get("witness"), occurrence, published, seen, 0);
+            collect(mapping.get("witness"), occurrence, published, seen,
+                    unstamped);
         }
         if (namedSiteMissing) {
             D3Runtime.gap(GapKind.DECLARATION_MISSING, GapClass.DIAGNOSTIC,
                     occurrence.render(),
-                    "the VM write log states no bytecode site for a version,"
-                            + " so a write endpoint's site is its location");
+                    "the VM write log states no bytecode site for a version"
+                            + " and no declared write site stamped it, so a"
+                            + " write endpoint's site is its location and"
+                            + " its site index is empty");
+        }
+        // The same absence on the read side, named rather than left silent:
+        // a ReadFromExpression carries the version it observed and its own
+        // read event id, and no bytecode site (readFromExpression.hpp), so
+        // the runtime has nothing to index these endpoints by and two reads
+        // of one location inside one occurrence share an endpoint id.  The
+        // VM item is that a read record states no site.
+        if (!unstamped.isEmpty()) {
+            D3Runtime.gap(GapKind.DECLARATION_MISSING, GapClass.DIAGNOSTIC,
+                    occurrence.render(),
+                    "the VM read log states no bytecode site for a read and"
+                            + " no woven call site of this run contained it,"
+                            + " so these endpoints carry the empty site"
+                            + " index and reads of one location in one"
+                            + " occurrence share an endpoint id: "
+                            + unstamped);
         }
     }
 
@@ -558,7 +609,8 @@ final class D3RowPublication {
      */
     private static void collect(JsonElement root, OccurrenceAddress occurrence,
                                 Set<String> published,
-                                Map<JsonElement, Boolean> seen, int unused) {
+                                Map<JsonElement, Boolean> seen,
+                                Set<String> unstamped) {
         if (root == null) return;
         java.util.Deque<JsonElement> pending =
                 new java.util.ArrayDeque<JsonElement>();
@@ -579,9 +631,9 @@ final class D3RowPublication {
             JsonObject object = node.getAsJsonObject();
             String type = optionalString(object, "_type");
             if ("ReadFromExpression".equals(type)) {
-                readFrom(object, occurrence, published);
+                readFrom(object, occurrence, published, unstamped);
             } else if ("FieldAccessExpression".equals(type)) {
-                fieldAccess(object, occurrence, published);
+                fieldAccess(object, occurrence, published, unstamped);
             }
             for (Map.Entry<String, JsonElement> member : object.entrySet()) {
                 pending.push(member.getValue());
@@ -592,7 +644,8 @@ final class D3RowPublication {
     /** A read the write log covers: the location, and the version it saw. */
     private static void readFrom(JsonObject node,
                                  OccurrenceAddress occurrence,
-                                 Set<String> published) {
+                                 Set<String> published,
+                                 Set<String> unstamped) {
         JsonObject where = object(node, "location");
         String locationKey = locationKey(where);
         LocationId location = location(locationKey);
@@ -617,10 +670,15 @@ final class D3RowPublication {
             return;
         }
         if (!D3Runtime.claimRead(identity)) return;
+        String[] stamped = D3Runtime.readSiteOf(locationKey, event);
+        if (stamped == null) unstamped.add(locationKey);
         D3Runtime.read(occurrence, event >= 0L ? event : Math.max(0L, observed),
-                Endpoint.stateSite(locationKey, "READ_FROM", 0, false),
+                stamped != null ? stamped[0]
+                        : Endpoint.stateSite(locationKey, "READ_FROM", 0,
+                        false),
                 location, observed, symbol,
-                optionalString(node, "_java_type"), value);
+                optionalString(node, "_java_type"), value,
+                stamped != null ? stamped[1] : "");
     }
 
     /**
@@ -637,7 +695,8 @@ final class D3RowPublication {
      */
     private static void fieldAccess(JsonObject node,
                                     OccurrenceAddress occurrence,
-                                    Set<String> published) {
+                                    Set<String> published,
+                                    Set<String> unstamped) {
         JsonElement value = node.get("concreteValue");
         if (value == null || value.isJsonNull()) return;
         String ownerClass = optionalString(node, "ownerClass");
@@ -675,11 +734,15 @@ final class D3RowPublication {
                     : "@e" + event);
         }
         if (!D3Runtime.claimRead(identity)) return;
+        String[] stamped = D3Runtime.readSiteOf(locationKey, event);
+        if (stamped == null) unstamped.add(locationKey);
         D3Runtime.read(occurrence, event >= 0L ? event : Math.max(0L, observed),
-                Endpoint.stateSite(locationKey, "FIELD",
+                stamped != null ? stamped[0]
+                        : Endpoint.stateSite(locationKey, "FIELD",
                         Math.max(0, offset), false),
                 location, observed, projected,
-                optionalString(node, "_java_type"), stated);
+                optionalString(node, "_java_type"), stated,
+                stamped != null ? stamped[1] : "");
     }
 
     /**

@@ -420,10 +420,29 @@ public final class D3Runtime {
     public static void write(OccurrenceAddress occurrence, long seq,
                              String site, LocationId location, long version,
                              JsonObject expression, String javaType) {
+        write(occurrence, seq, site, location, version, expression, javaType,
+                null);
+    }
+
+    /**
+     * One write, at the site index the event itself stood on.
+     *
+     * <p>{@code siteIndex} is the rendered execution index captured WHERE
+     * the write happened, not where the row is published: the write log is
+     * read out at the end of the activation, by which point the thread has
+     * returned to the region entry and {@code Identity.siteIndex()} would
+     * answer "no frames" for every event in the region.  A null index means
+     * no site stamped this event and the endpoint says so by carrying the
+     * empty index -- never a fabricated one.</p>
+     */
+    public static void write(OccurrenceAddress occurrence, long seq,
+                             String site, LocationId location, long version,
+                             JsonObject expression, String javaType,
+                             String siteIndex) {
         SessionPublisher session = publisher;
         if (session == null || occurrence == null || location == null) return;
         session.write(WriteRow.of(sessionId(), sequence(seq),
-                endpoint(occurrence, site, 0), location, version,
+                endpoint(occurrence, site, 0, siteIndex), location, version,
                 expressionRef(expression), javaType(javaType, expression)));
     }
 
@@ -431,11 +450,21 @@ public final class D3Runtime {
                             String site, LocationId location,
                             long observedVersion, String symbol,
                             String javaType, String concreteValue) {
+        read(occurrence, seq, site, location, observedVersion, symbol,
+                javaType, concreteValue, null);
+    }
+
+    /** One read, at the site index the event itself stood on. */
+    public static void read(OccurrenceAddress occurrence, long seq,
+                            String site, LocationId location,
+                            long observedVersion, String symbol,
+                            String javaType, String concreteValue,
+                            String siteIndex) {
         SessionPublisher session = publisher;
         if (session == null || occurrence == null || location == null) return;
         session.read(ReadRow.of(sessionId(), sequence(seq),
-                endpoint(occurrence, site, 0), location, observedVersion,
-                Text.safe(symbol), javaType(javaType, null),
+                endpoint(occurrence, site, 0, siteIndex), location,
+                observedVersion, Text.safe(symbol), javaType(javaType, null),
                 Text.safe(concreteValue).isEmpty() ? null
                         : Text.safe(concreteValue)));
     }
@@ -688,6 +717,85 @@ public final class D3Runtime {
         return Endpoint.of(occurrence, Text.safe(site), Identity.siteIndex(),
                 attempt);
     }
+
+    /**
+     * The endpoint of an event whose site index was captured earlier.
+     *
+     * <p>Every endpoint the runtime mints AT its site takes the live index;
+     * an event the VM logged and the runtime publishes afterwards takes the
+     * index that was stamped for it when it ran, and the empty index when
+     * nothing stamped it.</p>
+     */
+    private static Endpoint endpoint(OccurrenceAddress occurrence,
+                                     String site, int attempt,
+                                     String siteIndex) {
+        if (siteIndex == null) {
+            return Endpoint.of(occurrence, Text.safe(site),
+                    Identity.siteIndex(), attempt);
+        }
+        return Endpoint.of(occurrence, Text.safe(site),
+                ExecutionIndex.parse(siteIndex), attempt);
+    }
+
+    /** The frames from the region entry to the site running right now. */
+    public static String siteIndexHere() {
+        return Identity.siteIndex().render();
+    }
+
+    /**
+     * Where one version of one tracked location was written.
+     *
+     * <p>A version the VM publishes carries no bytecode site of its own
+     * (the write log states the location and the value, not the store), so
+     * the site and its execution index come from the hook that stood at the
+     * write.  Session-wide, because the location is shared and the
+     * publishing activation is not always the one whose frames were
+     * captured -- the row's endpoint must say where the WRITE ran.</p>
+     */
+    public static void writeSite(String locationKey, long version,
+                                 String siteId, String siteIndex) {
+        if (Text.safe(locationKey).isEmpty() || version < 0L) return;
+        WRITE_SITES.put(Text.safe(locationKey) + "#" + version,
+                new String[]{Text.safe(siteId), Text.safe(siteIndex)});
+    }
+
+    /** {@code {siteId, siteIndex}} for one version, or null. */
+    public static String[] writeSiteOf(String locationKey, long version) {
+        return WRITE_SITES.get(Text.safe(locationKey) + "#" + version);
+    }
+
+    /** The site of every version a declared write site stamped. */
+    private static final Map<String, String[]> WRITE_SITES =
+            new ConcurrentHashMap<String, String[]>();
+
+    /**
+     * Where one read event of one tracked location happened.
+     *
+     * <p>Same absence as a version's: a {@code ReadFromExpression} carries
+     * the version it observed and its own read event id, and no bytecode
+     * site (readFromExpression.hpp).  What the runtime CAN state is the
+     * woven call site the read ran inside -- the accessor call context is a
+     * frame of the execution index (IDENTITY-IMPL sec B), and a read with no
+     * woven frame of its own belongs to the deepest woven frame that
+     * contains it, which is exactly what an execution index means for
+     * unwoven code.  The VM's read log names which read events happened
+     * inside that call, so this is a fact of the run and not an ordinal.</p>
+     */
+    public static void readSite(String locationKey, long event,
+                                String siteId, String siteIndex) {
+        if (Text.safe(locationKey).isEmpty() || event < 0L) return;
+        READ_SITES.putIfAbsent(Text.safe(locationKey) + "#" + event,
+                new String[]{Text.safe(siteId), Text.safe(siteIndex)});
+    }
+
+    /** {@code {siteId, siteIndex}} for one read event, or null. */
+    public static String[] readSiteOf(String locationKey, long event) {
+        return READ_SITES.get(Text.safe(locationKey) + "#" + event);
+    }
+
+    /** The site of every read event an accessor call window stamped. */
+    private static final Map<String, String[]> READ_SITES =
+            new ConcurrentHashMap<String, String[]>();
 
     /**
      * Publishes what only the end of a replay can state, and closes.

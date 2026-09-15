@@ -1,5 +1,6 @@
 package edu.uva.liftlab.graphchecker.causynth;
 
+import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.ObservedWriteTarget;
 import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.AccessorCallTarget;
 import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.ConcolicBranchSelection;
 import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.ConcolicMaterializationSelection;
@@ -626,6 +627,8 @@ public final class CausynthPipeline {
         instrumentConcolicConfiguredSourceCallContexts(
                 envelope.configuredSourcePhaseSites.values(), refs);
         instrumentConcolicAccessorCallContexts(envelope.materializations,
+                refs);
+        instrumentConcolicObservedWriteSites(envelope.materializations,
                 refs);
         instrumentConcolicMethodArguments(envelope.materializations, refs);
         instrumentConcolicMaterializations(envelope, refs);
@@ -1815,6 +1818,82 @@ public final class CausynthPipeline {
                     "java.lang.Throwable");
             body.getTraps().addFirst(Jimple.v().newTrap(throwable, selected,
                     normalPause, handler));
+        }
+    }
+
+    /**
+     * Observes the stores of a declared input's cell that the plan selected.
+     *
+     * <p>Two hooks around one call: BEFORE it the cell is observed, which is
+     * what starts the location's version log (the VM retains a location by
+     * value, so an unobserved cell's stores publish nothing); AFTER a normal
+     * return the version the store produced is asked for and stamped with
+     * the execution index the store stood on -- the write log names the
+     * location and the value, never the bytecode, and the row is published
+     * when the activation ends, by which point those frames are gone.</p>
+     *
+     * <p>An atomic RMW runs inside the JDK and has no application
+     * {@code putfield} for the ordinary carrier hook to stand at, which is
+     * why the receiver has to be selected at the invocation.  An
+     * exceptional return stamps nothing: a store that threw published no
+     * version to name.</p>
+     */
+    private void instrumentConcolicObservedWriteSites(
+            ConcolicMaterializationSelection selection, HookCatalog refs) {
+        for (ObservedWriteTarget target : selection.observedWrites()) {
+            SootMethod method;
+            Body body;
+            try {
+                method = Scene.v().getMethod(target.method);
+                if (method == null || !method.isConcrete()) {
+                    throw new IllegalStateException(
+                            "OBSERVED_WRITE_SITE_METHOD_NOT_CONCRETE: "
+                                    + target.siteId);
+                }
+                body = method.retrieveActiveBody();
+            } catch (RuntimeException failure) {
+                throw new IllegalStateException(
+                        "OBSERVED_WRITE_SITE_METHOD_UNAVAILABLE: "
+                                + target.siteId, failure);
+            }
+            tagOriginalUnits(snapshotUnits(body));
+            Stmt selected = uniqueOriginalStmt(body, target.unitIndex,
+                    "OBSERVED_WRITE_SITE_NOT_UNIQUE: " + target.siteId);
+            if (selected == null || !selected.containsInvokeExpr()) {
+                throw new IllegalStateException(
+                        "OBSERVED_WRITE_SITE_INVOKE_NOT_FOUND: "
+                                + target.siteId);
+            }
+            InvokeExpr invocation = selected.getInvokeExpr();
+            if (!target.declaredCallee.equals(
+                    invocation.getMethodRef().getSignature())) {
+                throw new IllegalStateException(
+                        "OBSERVED_WRITE_SITE_DECLARED_CALLEE_MISMATCH: "
+                                + target.siteId + " expected "
+                                + target.declaredCallee + " but found "
+                                + invocation.getMethodRef().getSignature());
+            }
+            if (!(invocation instanceof InstanceInvokeExpr)) {
+                throw new IllegalStateException(
+                        "OBSERVED_WRITE_SITE_REQUIRES_INSTANCE_RECEIVER: "
+                                + target.siteId);
+            }
+            List<Unit> before = new ArrayList<>();
+            Value receiver = objectArg(body,
+                    ((InstanceInvokeExpr) invocation).getBase(), before);
+            refs.bracket(before, Hook.OBSERVE_DECLARED_WRITE_SITE,
+                    StringConstant.v(target.siteId),
+                    StringConstant.v(target.cell), receiver);
+            insertBeforeSequence(body, selected, before);
+
+            List<Unit> after = new ArrayList<>();
+            Value written = objectArg(body,
+                    ((InstanceInvokeExpr) invocation).getBase(), after);
+            refs.bracket(after, Hook.RECORD_DECLARED_WRITE_SITE,
+                    StringConstant.v(target.siteId),
+                    StringConstant.v(target.cell), written);
+            // insertAfter: only a normal return published a version.
+            insertAfterSequence(body, selected, after);
         }
     }
 
@@ -3328,6 +3407,8 @@ public final class CausynthPipeline {
         THROW_CONFIGURED_SOURCE_PHASE_SITE,
         ENTER_ACCESSOR_CALL_CONTEXT,
         EXIT_ACCESSOR_CALL_CONTEXT,
+        OBSERVE_DECLARED_WRITE_SITE,
+        RECORD_DECLARED_WRITE_SITE,
         MATERIALIZE_ARGUMENT,
         SYMBOLIZE_ARGUMENT,
         MATERIALIZE_METHOD_ARGUMENT,
@@ -3468,6 +3549,12 @@ public final class CausynthPipeline {
                             IntType.v(), string, string, object)
                     .add(Hook.EXIT_ACCESSOR_CALL_CONTEXT, runtime,
                             "exitAccessorCallContext", VoidType.v(), LongType.v())
+                    .add(Hook.OBSERVE_DECLARED_WRITE_SITE, runtime,
+                            "observeDeclaredWriteSite", VoidType.v(), string,
+                            string, object)
+                    .add(Hook.RECORD_DECLARED_WRITE_SITE, runtime,
+                            "recordDeclaredWriteSite", VoidType.v(), string,
+                            string, object)
                     .add(Hook.MATERIALIZE_ARGUMENT, runtime,
                             "materializeArgument", object, LongType.v(),
                             IntType.v(), object, string)

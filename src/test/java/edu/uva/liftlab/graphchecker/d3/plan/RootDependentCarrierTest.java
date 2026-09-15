@@ -36,6 +36,14 @@ public class RootDependentCarrierTest {
             + ".security.token.block.BlockKey";
     /** bug3's own location: the reference whose writers a root decides. */
     private static final String CURRENT_KEY = "<S: " + BLOCK_KEY + " currentKey>";
+    /** hdfs-17960's counter: the declared cell, its carrier and its store. */
+    private static final String ATOMIC_VALUE =
+            "<java.util.concurrent.atomic.AtomicInteger: int value>";
+    private static final String NUM_SNAPSHOTS =
+            "<S: java.util.concurrent.atomic.AtomicInteger numSnapshots>";
+    private static final String DECREMENT = "<java.util.concurrent.atomic"
+            + ".AtomicInteger: int getAndDecrement()>";
+    private static final String DELETE = "<S: void deleteSnapshot()>";
 
     @Rule
     public final TemporaryFolder folder = new TemporaryFolder();
@@ -66,6 +74,30 @@ public class RootDependentCarrierTest {
                 member(selected, 1, "symbolicDemand"));
         assertTrue("the location is on the slice for every later stage",
                 selection.carrierSlice().reachesLocation("S#snapshotsByNames", null));
+
+        // And the write side of a DECLARED cell: the VM retains a location
+        // by value, so the stores of the snapshot counter publish nothing
+        // until the location is observed, and the graph already names those
+        // stores as field_mutation edges carrying the callee that performed
+        // them.  Selection only -- which sites the replay observes.
+        JsonObject mutation = json("{\"kind\":\"field_mutation\","
+                + "\"transferKind\":\"HEAP_WRITE\",\"fromCell\":\""
+                + DELETE + "#u35\",\"toCell\":\"" + NUM_SNAPSHOTS
+                + "\",\"method\":\"" + DELETE + "\",\"siteId\":\""
+                + DELETE + "#u35\",\"unitIndex\":35,\"invoke\":\""
+                + DECREMENT + "\"}");
+        JsonArray sites = ConcolicScheduler.observedWriteSites(
+                Collections.singletonList(mutation),
+                Collections.singleton(ATOMIC_VALUE));
+        assertEquals("one write site of the declared cell", 1, sites.size());
+        assertEquals(DELETE + "#u35", member(sites, 0, "siteId"));
+        assertEquals(ATOMIC_VALUE, member(sites, 0, "cell"));
+        assertEquals("no declared cell, no observation", 0,
+                ConcolicScheduler.observedWriteSites(
+                        Collections.singletonList(mutation),
+                        Collections.singleton(COUNTER)).size());
+        assertTrue("the declared cell is read off the declared action alone",
+                ConcolicScheduler.declaredInputCells(null).isEmpty());
     }
 
     /**
