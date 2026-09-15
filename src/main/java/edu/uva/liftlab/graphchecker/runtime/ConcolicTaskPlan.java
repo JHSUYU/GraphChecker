@@ -49,14 +49,11 @@ import edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.SymbolizeActio
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.DEFAULT_EXECUTOR_THREAD_NAME;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.DEFAULT_OBJECT_IDENTITY_THREAD_NAME;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.ROOT_ARGUMENT_PREDICATE_KIND;
-import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.SKIP_ANCHOR_SOURCE_NEVER_EXISTED;
-import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.SKIP_OCCURRENCE_ANCHOR_UNMATCHED;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.enclosingLoopRootAdmits;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicResultPublisher.registerRunTotalsHook;
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.safe;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.sameHookIdentity;
-import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.SKIP_ROOT_NEVER_EXECUTED;
-import static edu.uva.liftlab.graphchecker.runtime.ConcolicResultPublisher.writeSkipped;
+import static edu.uva.liftlab.graphchecker.runtime.ConcolicResultPublisher.taskUnanswered;
 
 /** The bounded campaign this JVM executes. */
 final class ConcolicTaskPlan {
@@ -139,17 +136,17 @@ final class ConcolicTaskPlan {
                 // different statement from "several ran and none matched",
                 // and it used to be no statement: the task published neither
                 // an activation nor a skip, and the importer met silence.
-                writeSkipped(task, SKIP_ROOT_NEVER_EXECUTED,
-                        "the planned root did not execute in this replay: no"
-                                + " compatible activation was offered for "
-                                + task.occurrenceId, null);
+                taskUnanswered(task, "ROOT_NEVER_EXECUTED: the planned root"
+                        + " did not execute in this replay: no compatible"
+                        + " activation was offered for "
+                        + task.occurrenceId);
                 continue;
             }
-            writeSkipped(task, task.rootContextSelector
+            taskUnanswered(task, (task.rootContextSelector
                             .anchorSourceNeverExisted()
-                            ? SKIP_ANCHOR_SOURCE_NEVER_EXISTED
-                            : SKIP_OCCURRENCE_ANCHOR_UNMATCHED,
-                    task.unansweredAddress(), null);
+                            ? "ANCHOR_EPOCH_NOT_REACHED: "
+                            : "OCCURRENCE_ANCHOR_UNMATCHED: ")
+                    + task.unansweredAddress());
         }
     }
 
@@ -1637,9 +1634,16 @@ final class ConcolicTaskPlan {
             return replayLoopExitSites.contains(safe(siteId));
         }
 
-        /** The next activation ordinal of this address. */
-        synchronized int nextActivationOrdinal() {
-            return ++publishedActivations;
+        /**
+         * Counts one activation of this address against its published set.
+         *
+         * <p>Not an identity: the occurrence an activation is IS its
+         * execution index (IDENTITY-V3).  This is the count a bounded
+         * loop-body region's occurrence budget is spent against, and
+         * nothing else reads it.</p>
+         */
+        synchronized void claimActivation() {
+            publishedActivations++;
         }
 
         /**
@@ -1724,16 +1728,9 @@ final class ConcolicTaskPlan {
             return true;
         }
 
-        /**
-         * Gives back an ordinal whose activation published nothing, so the
-         * ordinals of one address stay dense and gapless.  Only one
-         * activation of an address runs at a time, so the ordinal being
-         * returned is always the last one taken.
-         */
-        synchronized void releaseActivationOrdinal(int ordinal) {
-            if (ordinal > 0 && ordinal == publishedActivations) {
-                publishedActivations--;
-            }
+        /** Gives back the count of an activation that published nothing. */
+        synchronized void releaseActivation() {
+            if (publishedActivations > 0) publishedActivations--;
         }
 
         boolean declaresTargetBranch() {

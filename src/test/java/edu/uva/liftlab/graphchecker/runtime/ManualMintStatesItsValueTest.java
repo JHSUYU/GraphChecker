@@ -149,8 +149,6 @@ public class ManualMintStatesItsValueTest {
         String detail = gap(orphan, "detail");
         assertTrue(detail, detail.contains("attributes this mint to no node"));
         assertTrue(detail, detail.contains("recorded value stands"));
-        assertTrue(unresolved(orphan), unresolved(orphan).contains(
-                "CONFIGURED_SOURCE_PHASE_MINT_UNATTRIBUTED"));
 
         ConcolicRegionRuntime.ActiveRegion epochless =
                 phaseRegion("workload/unregistered",
@@ -307,14 +305,6 @@ public class ManualMintStatesItsValueTest {
         JsonObject last = gaps.isEmpty() ? new JsonObject()
                 : gaps.get(gaps.size() - 1);
         return last.has(member) ? last.get(member).getAsString() : "";
-    }
-
-    /** What this activation published as unresolved. */
-    private static String unresolved(
-            ConcolicRegionRuntime.ActiveRegion active) throws Exception {
-        Field field = active.getClass().getDeclaredField("unresolved");
-        field.setAccessible(true);
-        return String.valueOf(field.get(active));
     }
 
     private static String phaseId(String occurrenceId) {

@@ -376,14 +376,6 @@ public final class GapLedger {
                         + " addresses, so an unaddressed one would have to be"
                         + " defaulted to the first or to any, and neither is"
                         + " something the recording said");
-        // Spelled as the importer publishes it.  A region skip reaches the
-        // ledger as "REGION_" + the runtime's skipKind
-        // (the importer's skip kind), and an entry under the
-        // bare skipKind matches no row at all.
-        blocking(importer, "REGION_ROOT_NEVER_EXECUTED",
-                "the planned root did not execute in this replay: no"
-                        + " compatible activation was offered at all, so the"
-                        + " region the chain names never ran");
         // ------------------------------------------------------------------
         // IMPORT / PUBLICATION_CONTRACT -- one pass at the end of IMPORT over
         // what the replay wave actually published.  Each code names a link
@@ -396,8 +388,6 @@ public final class GapLedger {
                 "every run this task was offered to declined it for being"
                         + " addressed elsewhere and none answered it, so its"
                         + " region was not replayed at all");
-        blocking(importer, "REGION_REPLAY_PREFIX_UNMATCHED",
-                "the replay did not follow the prefix the plan addressed");
         diagnostic(importer, "PLANNED_HANDOFF_NOT_REPRODUCED",
                 "a selected communication binding this replay did not"
                         + " reproduce is an admission gap of this epoch, not"
@@ -436,6 +426,19 @@ public final class GapLedger {
                         + " demanded is not in the recording");
 
         // ------------------------------------------------------------------
+        // REPLAY / TASK_ADMISSION -- the one row a replay publishes about a
+        // planned task no activation of it answered.
+        // ------------------------------------------------------------------
+        diagnostic("REPLAY/TASK_ADMISSION", "TASK_UNANSWERED",
+                "a task nothing answered published no activation, no"
+                        + " decision and no term, so no path of the composed"
+                        + " formula cites it and this row cannot remove a"
+                        + " link from a chain that was built -- the one"
+                        + " absence that can, the declared target"
+                        + " occurrence, is refused at REPLAY's own target"
+                        + " coverage gate, which reads the target row");
+
+        // ------------------------------------------------------------------
         // REPLAY / COMMUNICATION -- the message envelope's own findings.  A
 
         // ------------------------------------------------------------------
@@ -469,26 +472,6 @@ public final class GapLedger {
                         + " retained selection moves -- the root itself is in"
                         + " the plan, so no chain link is missing and the"
                         + " site form is the thing to rewrite");
-
-        // ------------------------------------------------------------------
-        // The flip wave.  Three admission codes above are written for the
-        // seed wave, where they mean the corpus is missing a link: the plan
-        // named a region of the recorded execution and the replay of that
-        // execution did not publish it.  The same three arrive again from
-        // the linked replays, and there they are saying something else --
-        // the flipped execution did not have that occurrence.  Lane VM10 is
-        // all three shapes at once, and every one of them is the flip
-        // working:
-        //
-        //   * REGION_REPLAY_PREFIX_UNMATCHED "observed 2 of 3, still
-        //     waiting for BlockTokenSecretManager.removeExpiredKeys()#u15#1
-        //     (the flipped source decision)" -- the flipped decision itself
-        //     never executed, so the path the query asked for was not
-        //     walked;
-        //   * REGION_ROOT_NEVER_EXECUTED on a COMPANION of that group --
-        //     the downstream region (BPOfferService.processCommandFromActive
-        //     and the addKeys turns behind it) is reached only when the
-        //     rotation the flip removed happens;
 
         // ------------------------------------------------------------------
         // CAMPAIGN.

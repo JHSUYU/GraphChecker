@@ -17,7 +17,6 @@ import edu.uva.liftlab.graphchecker.plan.BranchPredicateAlgebra;
 import edu.uva.liftlab.graphchecker.plan.BranchWitness;
 import edu.uva.liftlab.graphchecker.smt.CanonicalJson;
 import edu.uva.liftlab.graphchecker.plan.ClockRootPhysics;
-import edu.uva.liftlab.graphchecker.plan.RecordedEvidenceIdentity;
 import edu.uva.liftlab.graphchecker.plan.SharedStateEvidence;
 import edu.uva.liftlab.graphchecker.plan.SymbolicSourceEvidence;
 import edu.uva.liftlab.graphchecker.smt.VmExpressionIr;
@@ -77,14 +76,11 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicTaskPlan.configuration;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicResultPublisher.beginLiveSelectedRegion;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicResultPublisher.beginSelectedResultPublication;
-import static edu.uva.liftlab.graphchecker.runtime.ConcolicResultPublisher.addResultIdentity;
-import static edu.uva.liftlab.graphchecker.runtime.ConcolicResultPublisher.buildCompletedResult;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicResultPublisher.haltWhenCampaignSettled;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicResultPublisher.endSelectedResultPublication;
-import static edu.uva.liftlab.graphchecker.runtime.ConcolicResultPublisher.jsonObjectEnvelope;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicResultPublisher.endLiveSelectedRegion;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicResultPublisher.submitCompletedResultPublication;
-import static edu.uva.liftlab.graphchecker.runtime.ConcolicResultPublisher.writeSkipped;
+import static edu.uva.liftlab.graphchecker.runtime.ConcolicResultPublisher.taskUnanswered;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicVmBroker.engine;
 import static edu.uva.liftlab.graphchecker.runtime.SharedStateCapture.captureRecordedSharedStateRaw;
 import static edu.uva.liftlab.graphchecker.runtime.SharedStateCapture.evidenceIdentity;
@@ -122,52 +118,6 @@ public final class ConcolicRegionRuntime {
     private static final AtomicLong EVIDENCE_SNAPSHOTS = new AtomicLong();
     static final String HALT_AFTER_SELECTED_RESULT_PROPERTY =
             "causynth.concolic.halt.after.selected.result";
-    /** Why an activation never published a region result. */
-    static final String SKIP_NOT_STARTED = "NOT_STARTED";
-    static final String SKIP_REPLAY_PREFIX_UNMATCHED =
-            "REPLAY_PREFIX_UNMATCHED";
-    static final String SKIP_UNAPPLIED_MODEL_ASSIGNMENT =
-            "UNAPPLIED_MODEL_ASSIGNMENT";
-    static final String SKIP_RESULT_PUBLICATION_FAILED =
-            "RESULT_PUBLICATION_FAILED";
-    /**
-     * A candidate ran to its terminal and was not the occurrence its plan row
-     * addressed: it ran on another source, or inside another request scope.
-     */
-    static final String SKIP_OCCURRENCE_ANCHOR_UNMATCHED =
-            "OCCURRENCE_ANCHOR_UNMATCHED";
-    /** The source this occurrence is anchored on never existed in this run. */
-    static final String SKIP_ANCHOR_SOURCE_NEVER_EXISTED =
-            "ANCHOR_EPOCH_NOT_REACHED";
-    /**
-     * A bounded loop address ran, but the response exchange selected as its
-     * causal identity never occurred before the workload ended.
-     */
-    /**
-     * The planned root never executed in this replay.
-     *
-     * <p>Not the same as an address several activations failed to answer:
-     * there was no activation at all, compatible or otherwise.  Saying so is
-     * what keeps a planned task that simply did not run from reaching the
-     * importer as silence.</p>
-     */
-    static final String SKIP_ROOT_NEVER_EXECUTED =
-            "ROOT_NEVER_EXECUTED";
-    /**
-     * The region root was still running when the workload ended, so this
-     * occurrence never reached {@code NORMAL}, {@code THROW} or a bounded
-     * {@code CUT}.
-     */
-    /**
-     * A loop-body region reached its bounded occurrence set (K_L rows) and
-     * this and later iterations run concretely without capture.  Not a
-     * failure: the occurrence set is bounded, not silently truncated, and the
-     * composer reads this marker to know so.
-     */
-    static final String SKIP_LOOP_OCCURRENCES_BOUNDED =
-            "LOOP_OCCURRENCES_BOUNDED";
-    static final String SKIP_TERMINAL_NEVER_REACHED =
-            "TERMINAL_NEVER_REACHED";
     /** Emits one line per replay milestone to stderr. */
     static final String DIAGNOSTICS_PROPERTY =
             "causynth.concolic.diagnostics";
@@ -388,16 +338,11 @@ public final class ConcolicRegionRuntime {
                 // The class was instrumented under a different policy, so its
                 // loop identities cannot be trusted to account for anything.
                 cut = new ReplayLoopResourceCut(loop, 0, 0L);
-                active.replayResourceCut = cut.toJson();
-                active.addUnresolvedOnce(
-                        ReplayLoopResourceCut.REASON
-                                + ":INSTRUMENTATION_POLICY_MISMATCH:" + loop);
+                active.replayResourceCut = true;
             } else {
                 cut = active.chargeLoopBody(loop);
             }
         } catch (Throwable failure) {
-            active.addUnresolvedOnce("replay loop resource hook failed: "
-                    + rootCause(failure));
         } finally {
             resumeLoopAccounting(active, api, paused);
         }
@@ -443,8 +388,6 @@ public final class ConcolicRegionRuntime {
             api.resumePathCondition();
             return false;
         } catch (Throwable failure) {
-            active.addUnresolvedOnce("loop-bound path-condition resume "
-                    + "failed: " + rootCause(failure));
             return true;
         }
     }
@@ -702,16 +645,12 @@ public final class ConcolicRegionRuntime {
         // whether that index is reachable inside K_L is not a comparison of
         // two numbers.  The bound itself still cuts, below.
         if (admitted.claimLoopBoundCutMarker()) {
-            int bound = admitted.loopOccurrenceBudget;
-            JsonObject evidence = new JsonObject();
-            evidence.addProperty("plannedOccurrenceId", admitted.occurrenceId);
-            evidence.addProperty("regionId", admitted.regionId);
-            evidence.addProperty("boundedAt", bound);
-            String reason = "loop-body region occurrence set bounded at K_L="
-                    + bound + "; further iterations run concretely without "
-                    + "capture";
-            writeSkipped(admitted, SKIP_LOOP_OCCURRENCES_BOUNDED, reason,
-                    evidence);
+            taskUnanswered(admitted, "LOOP_OCCURRENCES_BOUNDED: the"
+                    + " occurrence set of loop-body region "
+                    + admitted.regionId + " is bounded at K_L="
+                    + admitted.loopOccurrenceBudget + "; further iterations"
+                    + " of " + admitted.occurrenceId + " run concretely"
+                    + " without capture");
         }
         return true;
     }
@@ -743,7 +682,7 @@ public final class ConcolicRegionRuntime {
             if (enclosing != null && enclosing.pathRecordingStarted) {
                 active.pathRecordingStarted = true;
             }
-            active.activationOrdinal = admitted.nextActivationOrdinal();
+            active.claimActivation();
             // Identity v2, minted from the lineage this activation entered
             // under.  The session it publishes into is this replay's own.
             edu.uva.liftlab.graphchecker.runtime.RowRuntime.configure(
@@ -819,7 +758,7 @@ public final class ConcolicRegionRuntime {
                     edu.uva.liftlab.graphchecker.runtime.RowRuntime
                             .exitRegionIndex();
                 }
-                active.releaseActivationOrdinal();
+                active.releaseActivation();
             }
             if (engineStarted) {
                 if (pathConditionPaused) {
@@ -833,8 +772,8 @@ public final class ConcolicRegionRuntime {
                 }
                 api.cleanupAfterFailure();
             }
-            writeSkipped(admitted, SKIP_NOT_STARTED,
-                    "engine start failed: " + rootCause(throwable), null);
+            taskUnanswered(admitted, "NOT_STARTED: engine start failed: "
+                    + rootCause(throwable));
             configuration().releaseCandidate(admitted);
             endLiveSelectedRegion();
             return null;
@@ -1013,16 +952,11 @@ public final class ConcolicRegionRuntime {
                         Collections.<String>emptyList())) {
                     symbolize(active, action, null, engine());
                 } else {
-                    active.unresolved.add(action.symbol
-                            + ": primitive argument requires a stack-value model (concrete="
-                            + safe(primitiveValue) + ")");
                 }
                 continue;
             }
             if ("ARGUMENT_FIELD_PATH".equals(action.location)) {
                 if (action.fieldPaths.isEmpty()) {
-                    active.unresolved.add(action.symbol
-                            + ": selective argument has no field paths");
                     continue;
                 }
                 for (List<String> path : action.fieldPaths) {
@@ -1051,8 +985,6 @@ public final class ConcolicRegionRuntime {
             }
             if (value == null && !action.declaresArrayInput(
                     Collections.<String>emptyList())) {
-                active.unresolved.add(action.symbol
-                        + ": null method argument cannot be symbolized");
                 continue;
             }
             symbolize(active, action, value, engine());
@@ -1163,9 +1095,6 @@ public final class ConcolicRegionRuntime {
                         return materializePrimitiveValue(active, action,
                                 value, null);
                     }
-                    active.unresolved.add(action.symbol
-                            + ": unsupported local reference model "
-                            + assignment.valueType + "=" + assignment.value);
                 } else {
                     materialized = modeled;
                     active.recordModelAssignment(assignment);
@@ -1279,17 +1208,6 @@ public final class ConcolicRegionRuntime {
     static final String RECORDED_FAULT_ANSWER = "RECORDED_FAULT_ANSWER";
 
     /**
-     * The name one unwitnessed target link answers to.
-     *
-     * <p>Used on both sides of the link: by the replay, when a target-reach
-     * task names no fatal occurrence for its reach to be checked against, and
-     * by {@code RuntimeRegionPlanner}, when a declared required outcome was
-     * taken by no recorded occurrence of its site.</p>
-     */
-    static final String TARGET_REACH_NOT_OBSERVED =
-            "TARGET_REACH_NOT_OBSERVED";
-
-    /**
      * The polarity the recording gave one fault marker, or null.
      *
      * <p>{@code recordedPrimitiveValue} is already gated on the action's
@@ -1335,8 +1253,6 @@ public final class ConcolicRegionRuntime {
         List<SymbolizeAction> candidates = explicitFaultCandidates(
                 active.activation.symbolize, name, occurrence);
         if (candidates.size() > 1) {
-            active.addUnresolvedOnce("ambiguous explicit fault: " + name
-                    + "#" + occurrence);
             return false;
         }
         boolean controlled = declaresExplicitFault(
@@ -1368,8 +1284,6 @@ public final class ConcolicRegionRuntime {
         Object value = coerceModelValue(assignment.valueType,
                 assignment.value, Boolean.class);
         if (!(value instanceof Boolean)) {
-            active.addUnresolvedOnce("unsupported explicit fault model: "
-                    + assignment.valueType + "=" + assignment.value);
             return false;
         }
         active.recordModelAssignment(assignment);
@@ -1394,8 +1308,6 @@ public final class ConcolicRegionRuntime {
                 continue;
             }
             if (selected != null && selected != action) {
-                active.addUnresolvedOnce(SiteId.render(method, unitIndex)
-                        + ": AMBIGUOUS_STATIC_FIELD_MATERIALIZATION");
                 return boxedValue;
             }
             selected = action;
@@ -1407,8 +1319,6 @@ public final class ConcolicRegionRuntime {
         List<String> logicalPath = selected.exactStaticFieldPath(
                 fieldSignature, fieldName);
         if (logicalPath == null) {
-            active.addUnresolvedOnce(SiteId.render(method, unitIndex)
-                    + ": STATIC_FIELD_LOGICAL_PATH_OR_DECLARATION_MISMATCH");
             return boxedValue;
         }
         return materializePrimitiveValue(active, selected, boxedValue,
@@ -1437,9 +1347,6 @@ public final class ConcolicRegionRuntime {
             }
             Object leafOwner = action.leafOwner(owner);
             if (leafOwner == null || leafOwner == MissingValue.INSTANCE) {
-                active.addUnresolvedOnce(action.symbol
-                        + ": field owner is unavailable for "
-                        + action.fieldPath);
                 continue;
             }
             if (!active.materialized.add(action.symbol)) continue;
@@ -1448,8 +1355,6 @@ public final class ConcolicRegionRuntime {
                 Field exactField = declaredInstanceField(leafOwner,
                         action.exactLeafFieldSignature());
                 if (exactField == null) {
-                    active.addUnresolvedOnce(action.symbol
-                            + ": exact field declaration is unavailable");
                     continue;
                 }
                 String leafFieldSignature = exactFieldSignature(exactField);
@@ -1463,11 +1368,6 @@ public final class ConcolicRegionRuntime {
                             exactField.getName(), javaTypeDescriptor(
                             exactField.getType().getTypeName()), value));
                 } catch (PropagatedExpressionImportFailure unreadable) {
-                    // Not "nothing propagated": the producer's expression is
-                    // there and could not be read.  Minting would answer that
-                    // with a root nothing constrains.
-                    refuseImportedExpression(active, action.symbol,
-                            leafFieldSignature, unreadable);
                     continue;
                 } catch (Throwable unsymbolized) {
                     carried = null;
@@ -1483,11 +1383,7 @@ public final class ConcolicRegionRuntime {
                         && containerValue(value)) {
                     // A container is symbolic only once a root-derived
                     // value is put into it, which the VM states inside the
-                    // expression it then carries; there is no container
-                    // state to mint at a read.
-                    active.addUnresolvedOnce(action.symbol
-                            + ": " + CONTAINER_INPUT_NOT_MODELLED);
-                    continue;
+                    // expression it then carries;                     continue;
                 }
                 JsonElement expression = mintExactFieldLeaf(active, action,
                         api, leafOwner, leafFieldSignature, action.symbol,
@@ -1497,10 +1393,6 @@ public final class ConcolicRegionRuntime {
                         action.fieldPath, leafFieldSignature, expression,
                         true, false, recordedScalar(value));
             } catch (Throwable throwable) {
-                active.addUnresolvedOnce(action.symbol
-                        + ": field materialization "
-                        + SiteId.render(method, unitIndex) + " failed: "
-                        + rootCause(throwable));
             }
         }
         armGuardedRead(active, owner, guardedRead);
@@ -1542,9 +1434,6 @@ public final class ConcolicRegionRuntime {
             diag("DECLARED_WRITE_OBSERVED", safe(siteId) + " "
                     + safe(fieldSignature));
         } catch (Throwable failure) {
-            active.addUnresolvedOnce(safe(siteId)
-                    + ": declared write site could not be observed on "
-                    + safe(fieldSignature) + ": " + rootCause(failure));
         }
     }
 
@@ -1562,14 +1451,8 @@ public final class ConcolicRegionRuntime {
             if (token > 0L) {
                 active.armedGuardedReads.put(assignment.readIdentity, token);
             } else {
-                active.addUnresolvedOnce(assignment.readIdentity
-                        + ": VM rejected guarded read materialization: "
-                        + token);
             }
         } catch (Throwable failure) {
-            active.addUnresolvedOnce(assignment.readIdentity
-                    + ": guarded read materialization failed: "
-                    + rootCause(failure));
         }
     }
 
@@ -1686,9 +1569,6 @@ public final class ConcolicRegionRuntime {
         try {
             Field field = declaredInstanceField(owner, safe(fieldSignature));
             if (field == null || !field.getType().isPrimitive()) {
-                active.addUnresolvedOnce(entry.key()
-                        + ": configured source is not an exact primitive "
-                        + "field");
                 return false;
             }
             ConcolicVmBroker api = engine();
@@ -1705,11 +1585,6 @@ public final class ConcolicRegionRuntime {
                         declaringClass, field.getName(), descriptor,
                         field.get(owner)));
             } catch (PropagatedExpressionImportFailure unreadable) {
-                // A declared source whose carried expression could not be
-                // read must not be answered by minting a second root over
-                // the top of the one already in the field.
-                refuseImportedExpression(active, entry.key(),
-                        safe(fieldSignature), unreadable);
                 return false;
             } catch (Throwable unsymbolized) {
                 carried = null;
@@ -1808,9 +1683,6 @@ public final class ConcolicRegionRuntime {
             }
             return true;
         } catch (Throwable failure) {
-            active.addUnresolvedOnce(entry.key()
-                    + ": exact symbolic source materialization failed: "
-                    + rootCause(failure));
             return false;
         } finally {
             endBookkeeping();
@@ -1892,32 +1764,8 @@ public final class ConcolicRegionRuntime {
                     + " occurrence=" + (active == null ? "<none>"
                     : safe(active.activation.occurrenceId))
                     + ": " + rootCause(malformed);
-            // Recorded here as well as at the consumer, because a call site
-            // that lets the failure propagate to its own handler names the
-            // consumer but loses which import failed.
-            if (active != null) active.addUnresolvedOnce(detail);
             throw new PropagatedExpressionImportFailure(detail, malformed);
         }
-    }
-
-    /**
-     * Files one unreadable producer expression against the consumer that
-     * asked for it, and leaves that consumer's value concrete.
-     *
-     * <p>The row names the consumer port, the field it read and the
-     * activation, beside the producer detail the import carried.  There is no
-     * value to state and no freedom to grant, so the only honest answer is a
-     * gap that blocks.</p>
-     */
-    static void refuseImportedExpression(
-            ActiveRegion active, String consumerSymbol, String fieldSignature,
-            PropagatedExpressionImportFailure unreadable) {
-        if (active == null) return;
-        active.addUnresolvedOnce(PROPAGATED_EXPRESSION_IMPORT_FAILED
-                + ": consumer=" + safe(consumerSymbol)
-                + " field=" + safe(fieldSignature)
-                + " occurrence=" + safe(active.activation.occurrenceId)
-                + ": " + safe(unreadable.getMessage()));
     }
 
     /** The outermost shape of a VM payload an import refused, for the row. */
@@ -3333,8 +3181,6 @@ public final class ConcolicRegionRuntime {
                     expression);
             return prepared == null ? 0L : prepared.handle;
         } catch (Throwable throwable) {
-            active.addUnresolvedOnce("branch event preparation failed: "
-                    + rootCause(throwable));
             return 0L;
         }
     }
@@ -3364,9 +3210,6 @@ public final class ConcolicRegionRuntime {
         } catch (IllegalArgumentException malformed) {
             ActiveRegion active = activeRegion();
             if (active != null) {
-                active.addUnresolvedOnce(SiteId.render(method, unitIndex)
-                        + ": invalid static switch contract: "
-                        + rootCause(malformed));
             }
             return observedSuccessorIndex;
         }
@@ -3404,9 +3247,6 @@ public final class ConcolicRegionRuntime {
                     unitIndex, expression)) {
                 occurrence = prepared.occurrence;
             } else {
-                active.addUnresolvedOnce("missing or mismatched "
-                        + decision.boundaryNoun() + " " + preparedHandle
-                        + " for " + branchSite);
                 return;
             }
             if (active.recordReplayBoundary(method, unitIndex,
@@ -3435,9 +3275,6 @@ public final class ConcolicRegionRuntime {
         PreparedBranch prepared = active.takePreparedBranch(preparedHandle);
         if (prepared == null || !prepared.matches(method, unitIndex,
                 expression)) {
-            active.addUnresolvedOnce("missing or mismatched "
-                    + decision.preparedNoun() + " " + preparedHandle
-                    + " for " + branchSite);
             // No unverified VM event may be rebound heuristically on a JDK
             // that advertised the exact API.
             return;
@@ -3506,9 +3343,6 @@ public final class ConcolicRegionRuntime {
                         decision.outcome(), vmEventId);
             }
         } catch (Throwable throwable) {
-            active.addUnresolvedOnce(decision.observationNoun()
-                    + " exact-event observation failed: "
-                    + rootCause(throwable));
         } finally {
             if (paused) resumePathCondition(active, api);
             if (replayContradicted) {
@@ -3618,15 +3452,6 @@ public final class ConcolicRegionRuntime {
                 if (written != null && written.isJsonObject()) {
                     mapping.add("siteCondition", written);
                 } else if (!observedOutcome) {
-                    // The run cannot spell the jump condition of an arm it
-                    // did not take, so it states no term rather than the
-                    // satisfied form with the wrong arm beside it.  An empty
-                    // term reads as a concrete branch, which is skipped and
-                    // never refused.
-                    active.addUnresolvedOnce(siteId
-                            + ": the VM's satisfied constraint has no"
-                            + " relational operator to negate, so this"
-                            + " fall-through states no site predicate");
                 }
             }
         }
@@ -3701,9 +3526,6 @@ public final class ConcolicRegionRuntime {
         mapping.addProperty("rawPathConditionSize", mappingLimit);
         mapping.addProperty("rawPathConditionBaseline", mappingBaseline);
         if (!attestation.valid) {
-            active.addUnresolvedOnce(siteId
-                    + ": exact switch event attestation failed: "
-                    + attestation.error);
         }
         active.branchMappings.add(mapping);
         if (attestation.valid) {
@@ -4023,13 +3845,12 @@ public final class ConcolicRegionRuntime {
     }
 
     /** Marks one selected occurrence unusable before its VM close. */
-    private static void abandonOccurrence(
-            ActiveRegion active, String skipKind, String reason) {
-        active.releaseActivationOrdinal();
+    private static void abandonOccurrence(ActiveRegion active, String detail) {
+        active.releaseActivation();
         active.abandoned = true;
         active.terminalGap = true;
         endLiveSelectedRegion();
-        writeSkipped(active.activation, skipKind, reason, null);
+        taskUnanswered(active.activation, detail);
     }
 
     /** Ends whichever selected occurrence owns {@code token}. */
@@ -4091,7 +3912,7 @@ public final class ConcolicRegionRuntime {
             // candidate loop working, not a finding, so it is released without
             // a durable row.
             active.activation.noteUnaddressedCandidate(unaddressed);
-            active.releaseActivationOrdinal();
+            active.releaseActivation();
             active.abandoned = true;
             endLiveSelectedRegion();
             return;
@@ -4113,21 +3934,21 @@ public final class ConcolicRegionRuntime {
         // importer never selects it as THE target case.
 
         if (active.replayPrefixContradicted()) {
-            abandonOccurrence(active, SKIP_REPLAY_PREFIX_UNMATCHED,
-                    "activation contradicts its obligation's prefix: "
-                            + edu.uva.liftlab.graphchecker.runtime
-                                    .FocusedReplay.refusal(active.d3Address));
+            abandonOccurrence(active, "REPLAY_PREFIX_UNMATCHED: the"
+                    + " activation contradicts its obligation's prefix: "
+                    + edu.uva.liftlab.graphchecker.runtime.FocusedReplay
+                            .refusal(active.d3Address));
             return;
         }
         // The obligation is answered at this terminal, by the one matcher.
         if (active.d3Address != null
                 && !edu.uva.liftlab.graphchecker.runtime.FocusedReplay
                         .complete(active.d3Address)) {
-            abandonOccurrence(active, SKIP_REPLAY_PREFIX_UNMATCHED,
-                    "the focused occurrence did not take the decision its "
-                            + "obligation flips: "
-                            + edu.uva.liftlab.graphchecker.runtime
-                                    .FocusedReplay.refusal(active.d3Address));
+            abandonOccurrence(active, "REPLAY_PREFIX_UNMATCHED: the"
+                    + " focused occurrence did not take the decision its"
+                    + " obligation flips: "
+                    + edu.uva.liftlab.graphchecker.runtime.FocusedReplay
+                            .refusal(active.d3Address));
             return;
         }
         List<String> unapplied = new ArrayList<>();
@@ -4158,9 +3979,9 @@ public final class ConcolicRegionRuntime {
             // companion has no branch replay contract, but allowing it to
             // publish before applying these rows would silently leave an
             // upstream root concrete.
-            abandonOccurrence(active, SKIP_UNAPPLIED_MODEL_ASSIGNMENT,
-                    "terminal reached with unapplied model assignment keys "
-                            + unapplied);
+            abandonOccurrence(active, "UNAPPLIED_MODEL_ASSIGNMENT: the"
+                    + " terminal was reached with unapplied model assignment"
+                    + " keys " + unapplied);
             return;
         }
         List<String> unappliedReads = new ArrayList<>();
@@ -4191,9 +4012,9 @@ public final class ConcolicRegionRuntime {
             }
         }
         if (!unappliedReads.isEmpty()) {
-            abandonOccurrence(active, SKIP_UNAPPLIED_MODEL_ASSIGNMENT,
-                    "terminal reached with unapplied guarded read "
-                            + "assignments " + unappliedReads);
+            abandonOccurrence(active, "UNAPPLIED_MODEL_ASSIGNMENT: the"
+                    + " terminal was reached with unapplied guarded read"
+                    + " assignments " + unappliedReads);
             return;
         }
     }
@@ -4213,40 +4034,28 @@ public final class ConcolicRegionRuntime {
         ConcolicVmBroker api = engine();
         boolean engineFinished = false;
         boolean pathConditionPaused = false;
-        String rawEngineSummary = null;
         RawSharedStateReadOut rawSharedState = null;
-        JsonObject result = null;
+        boolean publishRows = false;
         try {
             // Everything below is observational bookkeeping.
             api.pausePathCondition();
             pathConditionPaused = true;
-            try {
-                if (!active.abandoned) {
-                    result = new JsonObject();
-                    // One ordinal names every row assembled for this close.
-                    active.evidenceSnapshot =
-                            EVIDENCE_SNAPSHOTS.incrementAndGet();
-                    RecordedEvidenceIdentity identity =
-                            evidenceIdentity(active);
-                    try {
-                        buildCompletedResult(result, active, identity);
-                    } catch (Throwable throwable) {
-                        result.addProperty("engineSummaryError",
-                                rootCause(throwable));
-                    }
-                    try {
-                        rawSharedState = captureRecordedSharedStateRaw(active,
-                                api, identity);
-                    } catch (Throwable throwable) {
-                        active.sharedStateGaps.add(SharedStateEvidence.gap(
-                                SharedStateEvidence.STAGE_VERSIONS,
-                                SharedStateEvidence.INVOCATION_FAILED, "",
-                                rootCause(throwable)));
-                    }
+            if (!active.abandoned) {
+                publishRows = true;
+                // One ordinal names every row assembled for this close.
+                active.evidenceSnapshot =
+                        EVIDENCE_SNAPSHOTS.incrementAndGet();
+                try {
+                    rawSharedState = captureRecordedSharedStateRaw(active,
+                            api, evidenceIdentity(active));
+                } catch (Throwable throwable) {
+                    active.sharedStateGaps.add(SharedStateEvidence.gap(
+                            SharedStateEvidence.STAGE_VERSIONS,
+                            SharedStateEvidence.INVOCATION_FAILED, "",
+                            rootCause(throwable)));
                 }
-            } finally {
             }
-            String summary = api.finish();
+            api.finish();
             engineFinished = true;
             // Symbolic state created or attached in a nested region remains
             // on the VM values returned to its caller.  The native thread PC
@@ -4264,17 +4073,10 @@ public final class ConcolicRegionRuntime {
                 api.resumePathCondition();
                 pathConditionPaused = false;
             }
-            if (jsonObjectEnvelope(summary)) {
-                // The VM already serialized this large object.
-                rawEngineSummary = summary;
-            } else if (result != null) {
-                result.addProperty("engineSummaryError",
-                        "VM summary is not a JSON object");
-            }
-        } catch (Throwable throwable) {
-            if (result != null) {
-                result.addProperty("engineSummaryError", rootCause(throwable));
-            }
+        } catch (Throwable ignored) {
+            // A read-out that threw is named by the gap the stage that threw
+            // filed; the rows this activation can still state are published
+            // below, and the native region is popped in the finally.
         } finally {
             if (pathConditionPaused && hasEnclosingRegion) {
                 try {
@@ -4303,7 +4105,7 @@ public final class ConcolicRegionRuntime {
             popActiveRegion(active);
             if (!active.abandoned) endLiveSelectedRegion();
         }
-        if (result == null) {
+        if (!publishRows) {
             configuration().releaseCandidate(active.activation);
             if (active.terminalGap && !active.activation.loopBodyRoot) {
                 active.activation.reserveCompletedEvidence(false);
@@ -4311,12 +4113,7 @@ public final class ConcolicRegionRuntime {
             }
             return false;
         }
-        if (!result.has("event")) {
-            addResultIdentity(result, active, active.exitKind,
-                    active.exceptionType);
-        }
-        return submitCompletedResultPublication(active, result,
-                rawEngineSummary, rawSharedState);
+        return submitCompletedResultPublication(active, rawSharedState);
     }
 
 
@@ -4337,8 +4134,6 @@ public final class ConcolicRegionRuntime {
             DeclaredField declared = FieldPathSpec.declaredField(
                     firstNonBlank(action.accessFieldSignature, action.cell));
             if (declared == null) {
-                active.unresolved.add(action.symbol
-                        + ": exact receiver field is unavailable");
                 continue;
             }
             symbolizeField(active, action, active.receiver,
@@ -4360,8 +4155,6 @@ public final class ConcolicRegionRuntime {
             DeclaredField field = FieldPathSpec.declaredField(
                     leafFieldSignature);
             if (field == null) {
-                active.unresolved.add(symbol
-                        + ": exact field declaration is unavailable");
                 return;
             }
             JsonElement carried = containerValue(value)
@@ -4375,8 +4168,6 @@ public final class ConcolicRegionRuntime {
             }
             if (value != null && value != MissingValue.INSTANCE
                     && containerValue(value)) {
-                active.addUnresolvedOnce(symbol + ": "
-                        + CONTAINER_INPUT_NOT_MODELLED);
                 return;
             }
             JsonElement expression = mintExactFieldLeaf(active, action, api,
@@ -4386,8 +4177,6 @@ public final class ConcolicRegionRuntime {
                     leafFieldSignature, expression, true, false,
                     recordedScalar(value));
         } catch (Throwable throwable) {
-            active.unresolved.add(symbol + ": shallow field symbolize failed: "
-                    + rootCause(throwable));
         }
     }
 
@@ -4413,8 +4202,6 @@ public final class ConcolicRegionRuntime {
             String symbol, Object value) throws Exception {
         DeclaredField field = FieldPathSpec.declaredField(leafFieldSignature);
         if (field == null) {
-            active.addUnresolvedOnce(safe(symbol)
-                    + ": exact field declaration is unavailable");
             return null;
         }
         api.symbolizeExactField(owner, leafFieldSignature,
@@ -4432,19 +4219,13 @@ public final class ConcolicRegionRuntime {
                                            ConcolicVmBroker api) {
         String label = FieldPathSpec.join(path);
         if (path == null || path.isEmpty() || label.isEmpty()) {
-            active.unresolved.add(action.symbol
-                    + ": selective argument contains an empty field path");
             return;
         }
         Object leafOwner = resolveFieldPathLeafOwner(root, path);
         if (leafOwner == MissingValue.INSTANCE) {
-            active.unresolved.add(action.symbol + "." + label
-                    + ": projected field owner is missing");
             return;
         }
         if (leafOwner == null) {
-            active.unresolved.add(action.symbol + "." + label
-                    + ": projected field owner is null");
             return;
         }
         symbolizeField(active, action, leafOwner, label, path, api);
@@ -4460,8 +4241,6 @@ public final class ConcolicRegionRuntime {
         }
         Object owner = resolveFieldPathLeafOwner(root, path);
         if (owner == null || owner == MissingValue.INSTANCE) {
-            active.unresolved.add(action.symbol + "." + FieldPathSpec.join(path)
-                    + ": solver-model field owner is unavailable");
             return;
         }
         applyFieldModel(active, action, owner, path);
@@ -4474,8 +4253,6 @@ public final class ConcolicRegionRuntime {
         if (assignment == null) return;
         if (!writeModeledField(owner, action.exactLeafFieldSignature(path),
                 assignment)) {
-            active.unresolved.add(action.symbol + "." + FieldPathSpec.join(path)
-                    + ": solver model could not be written to real field");
             return;
         }
         active.recordModelAssignment(assignment);
@@ -4494,9 +4271,6 @@ public final class ConcolicRegionRuntime {
         if (assignment == null) return MissingValue.INSTANCE;
         Object modeled = assignment.referenceValue(concrete);
         if (modeled == UnsupportedReplayValue.INSTANCE) {
-            active.unresolved.add(action.symbol + ": unsupported " + label
-                    + " model " + assignment.valueType + "="
-                    + assignment.value);
             return UnsupportedReplayValue.INSTANCE;
         }
         active.recordModelAssignment(assignment);
@@ -4617,10 +4391,6 @@ public final class ConcolicRegionRuntime {
         try {
             carried = primitiveBoxExpression(api, concrete);
         } catch (PropagatedExpressionImportFailure unreadable) {
-            // Keep the value the replay actually holds, flagged, rather than
-            // replacing an unreadable propagated box with a free root.
-            refuseImportedExpression(active, action.symbol, fieldSignature,
-                    unreadable);
             return concrete;
         } catch (Throwable unsymbolized) {
             carried = null;
@@ -4637,9 +4407,6 @@ public final class ConcolicRegionRuntime {
             modeled = coerceModelValue(assignment.valueType, literal,
                     concrete == null ? null : concrete.getClass());
             if (modeled == UnsupportedReplayValue.INSTANCE) {
-                active.unresolved.add(action.symbol
-                        + ": unsupported primitive model "
-                        + assignment.valueType + "=" + literal);
                 modeled = concrete;
             } else {
                 applied = assignment;
@@ -4661,9 +4428,6 @@ public final class ConcolicRegionRuntime {
             }
             return fresh;
         } catch (Throwable throwable) {
-            active.unresolved.add(action.symbol
-                    + ": primitive materialization failed: "
-                    + rootCause(throwable));
             return concrete;
         }
     }
@@ -4906,8 +4670,6 @@ public final class ConcolicRegionRuntime {
                 return;
             }
             if (containerValue(value)) {
-                active.addUnresolvedOnce(action.symbol + ": "
-                        + CONTAINER_INPUT_NOT_MODELLED);
                 return;
             }
             api.symbolize(value, manualMintLabel(action.symbol,
@@ -4920,8 +4682,6 @@ public final class ConcolicRegionRuntime {
                     Collections.<String>emptyList(), "", expression,
                     true, false);
         } catch (Throwable throwable) {
-            active.unresolved.add(action.symbol + ": symbolize failed: "
-                    + rootCause(throwable));
         }
     }
 
@@ -5495,8 +5255,6 @@ public final class ConcolicRegionRuntime {
         try {
             api.resumePathCondition();
         } catch (Throwable throwable) {
-            active.unresolved.add("path-condition recording resume failed: "
-                    + rootCause(throwable));
         }
     }
 
@@ -5928,18 +5686,6 @@ public final class ConcolicRegionRuntime {
     }
 
     static final class ActiveRegion {
-        /**
-         * When this activation started, and how long it ran.
-         *
-         * <p>A campaign's only per-unit timings used to be the stage totals
-         * and the final solver's own attempt rows, so a replay that took
-         * three minutes and a replay that took three seconds were
-         * indistinguishable after the fact.  These two are published on the
-         * activation's result row; they are telemetry the importer does not
-         * read, so no summary identity, local case id or replay match
-         * depends on them.</p>
-         */
-        final long startedAtMillis = System.currentTimeMillis();
         /** The thread this activation ran on, as the recording names it. */
         final String threadName = Thread.currentThread().getName();
         /**
@@ -5953,13 +5699,6 @@ public final class ConcolicRegionRuntime {
          */
         final String entryRequestKey =
                 RuntimeTraceContext.current().requestKey;
-        private final long startedAtNanos = System.nanoTime();
-
-        long elapsedMillis() {
-            return Math.max(0L,
-                    (System.nanoTime() - startedAtNanos) / 1_000_000L);
-        }
-
         final long token;
         /** The one task whose region-local path this activation records. */
         final RuntimeTask activation;
@@ -5974,12 +5713,8 @@ public final class ConcolicRegionRuntime {
          * other.</p>
          */
         edu.uva.liftlab.graphchecker.contract.OccurrenceAddress d3Address;
-        /**
-         * This activation's ordinal within its address, taken at admission so
-         * every symbol, mint row and handoff lineage it publishes can name
-         * the occurrence it belongs to rather than the planned address.
-         */
-        int activationOrdinal;
+        /** Whether this activation counts against its address's set. */
+        private boolean activationClaimed;
         /**
          * The enclosing invocation these loop bodies were charged to: its
          * entry event, the thread that ran it, and the k it was counted at.
@@ -6073,8 +5808,6 @@ public final class ConcolicRegionRuntime {
                 new ArrayList<>();
         private final Set<String> configuredSourcePhaseGapIdentities =
                 new LinkedHashSet<>();
-        /** Exact semantic anchors this activation will commit if published. */
-        final Set<String> unresolved = new LinkedHashSet<>();
         final List<JsonObject> branchMappings = new ArrayList<>();
         /**
          * Case-local references into the VM's own handoff ledger: the
@@ -6117,17 +5850,16 @@ public final class ConcolicRegionRuntime {
                 new LinkedHashMap<>();
         /** Exact N for every dynamic fixed-count invocation in this path. */
         final List<JsonObject> loopCardinalities = new ArrayList<>();
-        /** Ambiguous/malformed cardinality observations remain coverage. */
-        final List<JsonObject> loopCardinalityGaps =
-                new ArrayList<>();
         private final Map<Long, PreparedBranch> preparedBranches =
                 new LinkedHashMap<>();
         /** One shared expression DAG for all read-outs in this VM session. */
         final VmExpressionTable.Store expressionStore;
         private long preparedBranchSequence;
         private int lastPathConditionSize;
-        JsonObject loopBoundCut;
-        JsonObject replayResourceCut;
+        /** Whether this activation's bounded local path has been cut. */
+        boolean loopBoundCut;
+        /** Whether this activation has spent its replay loop resource cap. */
+        boolean replayResourceCut;
         boolean pathRecordingStarted;
 
         ActiveRegion(long token, RuntimeTask activation,
@@ -6142,11 +5874,21 @@ public final class ConcolicRegionRuntime {
         }
 
 
-        /** Gives back this activation's ordinal; it published nothing. */
-        void releaseActivationOrdinal() {
-            if (activationOrdinal <= 0) return;
-            activation.releaseActivationOrdinal(activationOrdinal);
-            activationOrdinal = 0;
+        /**
+         * Counts this activation against the published set of its address,
+         * which is what bounds a loop-body region's occurrences.
+         */
+        void claimActivation() {
+            if (activationClaimed) return;
+            activationClaimed = true;
+            activation.claimActivation();
+        }
+
+        /** Gives the slot back; this activation published nothing. */
+        void releaseActivation() {
+            if (!activationClaimed) return;
+            activationClaimed = false;
+            activation.releaseActivation();
         }
 
         /**
@@ -6184,24 +5926,13 @@ public final class ConcolicRegionRuntime {
                     loopId, invocation.occurrence);
             long entered = loopBackedges.recordBody(budgetKey);
             if (entered <= maxBodies) return null;
-            ReplayLoopResourceCut cut = new ReplayLoopResourceCut(
-                    loopId, maxBodies, entered);
-            if (replayResourceCut == null) {
-                replayResourceCut = cut.toJson();
-            }
-            return cut;
+            replayResourceCut = true;
+            return new ReplayLoopResourceCut(loopId, maxBodies, entered);
         }
 
         private synchronized void recordLoopCardinality(
                 String loopId, int cardinality) {
-            if (loopId.isEmpty() || cardinality < 0) {
-                loopCardinalityGap(
-                        LoopBoundPolicy.PATH_LOOP_COUNT_AMBIGUOUS,
-                        loopId, 0,
-                        "fixed-count array observation has no valid loop id "
-                                + "or non-negative cardinality");
-                return;
-            }
+            if (loopId.isEmpty() || cardinality < 0) return;
             DynamicLoopCardinality current =
                     activeLoopCardinalities.get(loopId);
             if (current == null) {
@@ -6222,44 +5953,17 @@ public final class ConcolicRegionRuntime {
                 loopCardinalities.add(row);
                 return;
             }
-            if (current.cardinality != cardinality) {
-                loopCardinalityGap(
-                        LoopBoundPolicy.PATH_LOOP_COUNT_AMBIGUOUS,
-                        loopId, current.occurrence,
-                        "one dynamic fixed-count occurrence observed N="
-                                + current.cardinality + " and N="
-                                + cardinality);
-            }
         }
 
         private synchronized void completeLoopCardinality(String loopId) {
             if (!loopId.isEmpty()) activeLoopCardinalities.remove(loopId);
         }
 
-        private void loopCardinalityGap(String reason, String loopId,
-                                        int occurrence, String detail) {
-            JsonObject row = new JsonObject();
-            row.addProperty("reason", reason);
-            row.addProperty(LoopBoundPolicy.RUNTIME_LOOP_ID, loopId);
-            if (occurrence > 0) {
-                row.addProperty(LoopBoundPolicy.DYNAMIC_OCCURRENCE,
-                        occurrence);
-            }
-            row.addProperty("detail", detail);
-            loopCardinalityGaps.add(row);
-        }
-
         /** Records the terminal of this activation's bounded local path. */
         LoopBoundCut loopBoundCut(
                 String backedgeId, int maxTraversals, String reason) {
-            LoopBoundCut cut = new LoopBoundCut(backedgeId, maxTraversals,
-                    reason);
-            if (loopBoundCut == null) {
-                loopBoundCut = cut.toJson();
-                addUnresolvedOnce("LOOP_BOUND_PATH_CUT:"
-                        + cut.backedgeId + ':' + cut.reason);
-            }
-            return cut;
+            loopBoundCut = true;
+            return new LoopBoundCut(backedgeId, maxTraversals, reason);
         }
 
         /** k for the next attach of one element in this activation. */
@@ -6355,9 +6059,6 @@ public final class ConcolicRegionRuntime {
                     + decision.replayTrace(!contradicted)
                     + " contradicted=" + contradicted);
             if (contradicted) {
-                addUnresolvedOnce("REPLAY_PREFIX_MISMATCH:"
-                        + edu.uva.liftlab.graphchecker.runtime
-                                .FocusedReplay.refusal(d3Address));
             }
             return !contradicted;
         }
@@ -6385,8 +6086,6 @@ public final class ConcolicRegionRuntime {
             int occurrence = nextBranchOccurrence(site);
             long sequence = ++preparedBranchSequence;
             if (sequence > Integer.MAX_VALUE) {
-                addUnresolvedOnce(site + "#" + occurrence
-                        + ": prepared branch sequence overflow");
                 return null;
             }
             long handle = (sequence << 32)
@@ -6399,35 +6098,6 @@ public final class ConcolicRegionRuntime {
 
         private PreparedBranch takePreparedBranch(long handle) {
             return handle <= 0L ? null : preparedBranches.remove(handle);
-        }
-
-        /**
-         * Names a declared target branch event this occurrence never decided,
-         * and the target task that declared no such event at all.
-         *
-         * <p>The second case used to return here in silence, which is what
-         * let {@code targetReachedByActivation} read any throw as the reach:
-         * no declaration to check it against, and no row saying the check was
-         * impossible.  A target-reach task with no named fatal occurrence has
-         * no target link to state, and that is a gap like any other.</p>
-         */
-        void nameUnreachedTargetBranch() {
-            if (!activation.declaresTargetBranch()) {
-                if (activation.capturesTargetReach) {
-                    addUnresolvedOnce(TARGET_REACH_NOT_OBSERVED
-                            + ": this target-reach task names no target read "
-                            + "or throw occurrence, so no site this replay "
-                            + "decided can be shown to be the one it claims "
-                            + "to reach (exit " + safe(exitKind) + " "
-                            + safe(exceptionType) + ")");
-                }
-                return;
-            }
-            if (targetReach != null) return;
-            addUnresolvedOnce("TARGET_BRANCH_NOT_REACHED: "
-                    + activation.targetBranchLabel()
-                    + " was not decided before this occurrence ended at "
-                    + safe(exitKind));
         }
 
         /**
@@ -6447,11 +6117,6 @@ public final class ConcolicRegionRuntime {
             targetReach = reach;
             diag("TARGET_REACHED", "token=" + token + " site=" + safe(siteId)
                     + "#" + occurrence);
-        }
-
-        void addUnresolvedOnce(String detail) {
-            String value = safe(detail);
-            if (!value.isEmpty()) unresolved.add(value);
         }
 
         /**
@@ -6487,9 +6152,6 @@ public final class ConcolicRegionRuntime {
             diag(FAULT_IDLE_UNANSWERED, subject + " controlled=" + controlled
                     + " occurrence=" + safe(activation.occurrenceId));
             if (controlled) {
-                addUnresolvedOnce(FAULT_IDLE_UNANSWERED + ": " + subject
-                        + "; this plan controls the marker, so an unanswered "
-                        + "firing may not read back as its idle polarity");
             }
         }
 
@@ -6767,9 +6429,6 @@ public final class ConcolicRegionRuntime {
                     phase == null ? "" : phase.sourceId());
             gap.addProperty("detail", safe(detail));
             configuredSourcePhaseGaps.add(gap);
-            addUnresolvedOnce("CONFIGURED_SOURCE_PHASE_" + safe(gapKind)
-                    + ": " + (phaseId.isEmpty() ? safe(detail)
-                    : phaseId + ": " + safe(detail)));
         }
 
         private synchronized void recordSymbolicSource(
@@ -6777,9 +6436,6 @@ public final class ConcolicRegionRuntime {
             JsonObject prior = symbolicSources.putIfAbsent(sourcePhaseId,
                     shallowCopy(evidence));
             if (prior != null && !prior.equals(evidence)) {
-                addUnresolvedOnce(sourcePhaseId
-                        + ": configured source phase produced conflicting "
-                        + "expressions");
             }
         }
 
@@ -6809,7 +6465,6 @@ public final class ConcolicRegionRuntime {
                     continue;
                 }
                 if (selected != null) {
-                    addUnresolvedOnce(subject + ambiguity);
                     return null;
                 }
                 selected = candidate;
@@ -6994,35 +6649,6 @@ public final class ConcolicRegionRuntime {
             return entered;
         }
 
-        JsonObject toJson() {
-            JsonObject encoded = new JsonObject();
-            for (Map.Entry<String, Integer> entry : traversals.entrySet()) {
-                String scoped = safe(entry.getKey());
-                int separator = scoped.indexOf(SCOPE_SEPARATOR);
-                String loopId = separator < 0 ? scoped
-                        : scoped.substring(0, separator);
-                int previous = optionalInteger(encoded, loopId, 0);
-                if (entry.getValue() > previous) {
-                    encoded.addProperty(loopId, entry.getValue());
-                }
-            }
-            return encoded;
-        }
-
-        JsonObject bodiesToJson() {
-            JsonObject encoded = new JsonObject();
-            for (Map.Entry<String, Integer> entry : bodies.entrySet()) {
-                String scoped = safe(entry.getKey());
-                int separator = scoped.indexOf(SCOPE_SEPARATOR);
-                String loopId = separator < 0 ? scoped
-                        : scoped.substring(0, separator);
-                long total = (long) optionalInteger(encoded, loopId, 0)
-                        + entry.getValue();
-                encoded.addProperty(loopId,
-                        (int) Math.min(total, Integer.MAX_VALUE));
-            }
-            return encoded;
-        }
     }
 
     /**
@@ -7045,16 +6671,6 @@ public final class ConcolicRegionRuntime {
             this.attemptedBody = attemptedBody;
         }
 
-        JsonObject toJson() {
-            JsonObject encoded = new JsonObject();
-            encoded.addProperty("kind", REASON);
-            encoded.addProperty("loopId", loopId);
-            encoded.addProperty("maxLoopBodies", maxBodies);
-            encoded.addProperty("attemptedBody", attemptedBody);
-            encoded.addProperty("reason", REASON);
-            return encoded;
-        }
-
     }
 
     /** Non-workload control signal used solely to abort a bounded path. */
@@ -7073,14 +6689,6 @@ public final class ConcolicRegionRuntime {
             this.reason = safe(reason);
         }
 
-        JsonObject toJson() {
-            JsonObject encoded = new JsonObject();
-            encoded.addProperty("kind", "LOOP_BOUND");
-            encoded.addProperty("backedgeId", backedgeId);
-            encoded.addProperty("maxBackedgeTraversals", maxTraversals);
-            encoded.addProperty("reason", reason);
-            return encoded;
-        }
     }
 
     static final class SymbolizeAction {

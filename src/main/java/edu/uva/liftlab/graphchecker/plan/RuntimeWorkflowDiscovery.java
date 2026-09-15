@@ -40,46 +40,31 @@ public final class RuntimeWorkflowDiscovery {
     private RuntimeWorkflowDiscovery() {
     }
 
+    /**
+     * Selects the target and the candidate closure that replays with it.
+     *
+     * <p>The candidate graph is the instrumentation frontier and the replay
+     * scope both.  There used to be a third scope that narrowed it to the
+     * occurrences a previous iteration's result envelope reported as
+     * activated; the envelope is gone, and the narrowing was wrong anyway --
+     * see the comment at the closure below.</p>
+     */
     static RankedWorkflow candidateWorkflow(List<RegionInstancePlan> plans,
                                             String declaredOccurrence)
             throws IOException {
-        return rankedWorkflow(plans, Collections.<JsonObject>emptyList(),
-                Scope.CANDIDATE, declaredOccurrence);
+        return rankedWorkflow(plans, declaredOccurrence);
     }
 
     /** The first replay activates the target's complete dynamic ancestry. */
     static RankedWorkflow seedReplayWorkflow(List<RegionInstancePlan> plans,
                                              String declaredOccurrence)
             throws IOException {
-        return rankedWorkflow(plans, Collections.<JsonObject>emptyList(),
-                Scope.SEED_VALUE, declaredOccurrence);
-    }
-
-    /**
-     * Selects the seed candidate scope, or its observed sub-closure
-     * after the linked seed replay has published summaries.
-     *
-     * <p>The candidate graph remains the instrumentation frontier.  Once a
-     * replay exists, only VM value evidence may turn one of those candidates
-     * into a path-exploration member: an admitted RPC attach names its exact
-     * producer task. A guarded field read names every retained writer case,
-     * because each candidate keeps its own expression and PC. This does not
-     * promote unrelated writers from the static candidate graph.</p>
-     */
-    static RankedWorkflow rankedWorkflow(
-            List<RegionInstancePlan> plans,
-            Collection<JsonObject> observedSummaries,
-            String declaredOccurrence) throws IOException {
-        return rankedWorkflow(plans, observedSummaries,
-                observedSummaries == null || observedSummaries.isEmpty()
-                        ? Scope.CANDIDATE : Scope.OBSERVED,
-                declaredOccurrence);
+        return rankedWorkflow(plans, declaredOccurrence);
     }
 
     private static RankedWorkflow rankedWorkflow(
             List<RegionInstancePlan> plans,
-            Collection<JsonObject> observedSummaries,
-            Scope scope, String declaredOccurrence) throws IOException {
+            String declaredOccurrence) throws IOException {
         if (plans == null || plans.isEmpty()) {
             throw new IOException("runtime region plan is empty");
         }
@@ -138,23 +123,23 @@ public final class RuntimeWorkflowDiscovery {
         // executing at all.
         Set<String> candidateClosure = equivalentTargetTopologyScope(target,
                 targets, byOccurrence, edges);
-        Set<String> closure;
-        if (scope == Scope.CANDIDATE) {
-            closure = candidateClosure;
-        } else if (scope == Scope.SEED_VALUE) {
-            // A concrete object or container is still a carrier: its fields or
-            // elements can hold expressions propagated by an upstream region.
-            // DependencyRole classifies what this region computes; it cannot
-            // safely prune the producer which populated that structure.  Use
-            // the same confirmed dynamic ancestry as candidate ranking, while
-            // leaving the graph's role limited to linked-replay scheduling.
-            closure = candidateClosure;
-        } else {
-            closure = observedActivationScope(target, candidateClosure,
-                    observedSummaries == null
-                            ? Collections.<JsonObject>emptyList()
-                            : observedSummaries);
-        }
+        // Which occurrences are in scope is one decision, made once over the
+        // region graph by root dependence: an occurrence is in the slice
+        // because it reads a root, carries a root-dependent value, or is the
+        // target.  A concrete object or container is still a carrier -- its
+        // fields or elements can hold expressions propagated by an upstream
+        // region -- so nothing prunes the producer that populated it.
+        //
+        // What is deliberately not re-derived is the scope, from observed
+        // data flow.  A walk backwards from the target over the writes this
+        // run happened to make keeps only the producers that produced
+        // something -- and on a healthy recording the occurrence whose root
+        // flip is the whole question is exactly the one that produced
+        // nothing.  A counterfactual writer is invisible to a walk over what
+        // was written, and narrowing the slice by that one occurrence is how
+        // a campaign comes to explore nothing at all.  That narrowing was
+        // the result envelope's last reader, and it is gone with it.
+        Set<String> closure = candidateClosure;
         // An explicit fault occurrence controls whether an interaction takes
         // place; it need not produce the interaction's payload.  Keep such a
         // control root when (and only when) the selected target's runtime
@@ -303,69 +288,6 @@ public final class RuntimeWorkflowDiscovery {
         return EXPLICIT_FAULT_ENTRY.equals(optionalString(plan.json(),
                 "rootAuthority"));
     }
-
-    private enum Scope {
-        CANDIDATE,
-        SEED_VALUE,
-        OBSERVED
-    }
-
-    /**
-     * The slice, restricted to the occurrences this recording actually ran.
-     *
-     * <p>Which occurrences are in scope is one decision, made once over the
-     * region graph by root dependence: an occurrence is in the slice because
-     * it reads a root, carries a root-dependent value, or is the target.
-     * The only thing a recording adds is whether that occurrence
-     * <em>activated</em> at all, which is why a planned occurrence with no
-     * summary row is dropped here.</p>
-     *
-     * <p>What is deliberately not done is re-deriving the scope from
-     * observed data flow.  A walk backwards from the target over the writes
-     * this run happened to make keeps only the producers that produced
-     * something -- and on a healthy recording the occurrence whose root flip
-     * is the whole question is exactly the one that produced nothing.  A
-     * counterfactual writer is invisible to a walk over what was written,
-     * and narrowing the slice by that one occurrence is how a campaign comes
-     * to explore nothing at all.</p>
-     */
-    private static Set<String> observedActivationScope(
-            Target target, Set<String> candidateClosure,
-            Collection<JsonObject> summaries) {
-        Set<String> activated = new LinkedHashSet<>();
-        for (JsonObject summary : summaries) {
-            if (summary == null) continue;
-            String occurrence = plannedOccurrence(summary);
-            if (!occurrence.isEmpty()) activated.add(occurrence);
-        }
-        Set<String> selected = new LinkedHashSet<>();
-        selected.add(target.occurrenceId);
-        for (String occurrence : candidateClosure) {
-            if (activated.contains(occurrence)) selected.add(occurrence);
-        }
-        return selected;
-    }
-
-
-
-
-
-    private static String plannedOccurrence(JsonObject row) {
-        String planned = optionalString(row, "plannedOccurrenceId");
-        return planned.isEmpty() ? optionalString(row, "occurrenceId") : planned;
-    }
-
-
-
-
-
-
-
-
-
-
-
-
 
     private static void indexEdges(Map<String, JsonObject> indexed,
                                    JsonArray candidates) throws IOException {

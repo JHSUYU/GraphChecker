@@ -11,7 +11,6 @@ import org.junit.Test;
 import java.lang.reflect.Field;
 import java.util.ArrayDeque;
 import java.util.Deque;
-import java.util.Set;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -22,10 +21,8 @@ import static org.junit.Assert.assertTrue;
  * The replay invents no chain element.
  *
  * <p>A link the recording does not supply is not a licence to supply one:
- * the engine keeps the value it holds and flags the activation, and may
- * never mint a root, pin a polarity, or accept a site as the target because
- * some site was reached.  Each rule pins both halves -- the invented answer
- * gone, the honest one a named row in {@code unresolvedInputs}.</p>
+ * the engine keeps the value it holds, and may never mint a root, pin a
+ * polarity, or accept a site as the target because some site was reached.</p>
  */
 public class NoFabricatedChainElementTest {
     private static final String METHOD = "<a.B: void run(int)>";
@@ -43,10 +40,8 @@ public class NoFabricatedChainElementTest {
     /** A well-formed envelope that simply carries no expression still does. */
     @Test
     public void anAbsentExpressionIsStillTheHonestNothing() throws Exception {
-        ConcolicRegionRuntime.ActiveRegion active = region(false);
+        region(false);
         assertNull(ConcolicRegionRuntime.engineExpression("{}"));
-        assertTrue("no expression is not a failure",
-                unresolved(active).isEmpty());
     }
 
     /**
@@ -60,28 +55,19 @@ public class NoFabricatedChainElementTest {
     public void aControlledMarkerIsAnsweredOrNamedUnanswered()
             throws Exception {
         for (String recorded : new String[] {"false", "true"}) {
-            Set<String> gaps = unresolved(
-                    region(false, faultAction(MARKER, recorded)));
+            region(false, faultAction(MARKER, recorded));
             assertEquals("the recording's polarity is read, not assumed",
                     recorded, String.valueOf(ConcolicRegionRuntime
                             .materializeSymbolicBoolean(MARKER)));
-            assertTrue("a recorded answer is not a gap", gaps.isEmpty());
         }
         JsonObject flipped = faultAction(MARKER, "false");
-        ConcolicRegionRuntime.ActiveRegion flip = modelledRegion(flipped,
-                flipped.get("symbol").getAsString(), "true");
+        modelledRegion(flipped, flipped.get("symbol").getAsString(), "true");
         assertTrue("the model decides a flip",
                 ConcolicRegionRuntime.materializeSymbolicBoolean(MARKER));
-        assertTrue(unresolved(flip).isEmpty());
-        // Neither a model nor a recorded value is the unanswered case.
-        ConcolicRegionRuntime.ActiveRegion neither =
-                region(false, faultAction(MARKER, null));
+        // Neither a model nor a recorded value reads back as the idle
+        // polarity of a marker this plan controls.
+        region(false, faultAction(MARKER, null));
         assertFalse(ConcolicRegionRuntime.materializeSymbolicBoolean(MARKER));
-        String row = only(unresolved(neither));
-        assertTrue(row, row.startsWith(
-                ConcolicRegionRuntime.FAULT_IDLE_UNANSWERED));
-        assertTrue(row, row.contains(
-                "reason=NO_MODEL_ASSIGNMENT_AND_NO_RECORDED_VALUE"));
     }
 
     /**
@@ -96,19 +82,11 @@ public class NoFabricatedChainElementTest {
         undeclared.exceptionType = "java.lang.IllegalStateException";
         assertFalse("an undeclared target cannot have been reached",
                 ConcolicResultPublisher.targetReachedByActivation(undeclared));
-        undeclared.nameUnreachedTargetBranch();
-        String row = only(unresolved(undeclared));
-        assertTrue(row, row.startsWith(
-                ConcolicRegionRuntime.TARGET_REACH_NOT_OBSERVED));
-        assertTrue(row, row.contains("java.lang.IllegalStateException"));
         ConcolicRegionRuntime.ActiveRegion declared = region(true);
         declared.exitKind = "THROW";
         declared.exceptionType = "java.lang.IllegalStateException";
         recordReach(declared);
         assertTrue(ConcolicResultPublisher.targetReachedByActivation(declared));
-        declared.nameUnreachedTargetBranch();
-        assertTrue("a genuine reach files nothing",
-                unresolved(declared).isEmpty());
     }
 
     /** The declared target occurrence, decided at its required outcome. */
@@ -185,20 +163,6 @@ public class NoFabricatedChainElementTest {
         currentTokens().push(token);
         opened.push(token);
         return active;
-    }
-
-    @SuppressWarnings("unchecked")
-    private static Set<String> unresolved(
-            ConcolicRegionRuntime.ActiveRegion active) throws Exception {
-        Field field = ConcolicRegionRuntime.ActiveRegion.class
-                .getDeclaredField("unresolved");
-        field.setAccessible(true);
-        return (Set<String>) field.get(active);
-    }
-
-    private static <T> T only(java.util.Collection<T> values) {
-        assertEquals(String.valueOf(values), 1, values.size());
-        return values.iterator().next();
     }
 
     @SuppressWarnings("unchecked")

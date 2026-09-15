@@ -21,7 +21,7 @@ import static org.junit.Assert.assertFalse;
 
 /**
  * Characterization of the branch-observation machinery a region runs for one
- * decision: every row, unresolved note, target reach and diagnostic line it
+ * decision: every row, target reach and diagnostic line it
  * writes down, for a binary branch and for the multiway switch answering the
  * same questions.  One implementation serves both, so these transcripts are
  * what "the same, parameterised by the decision" means.
@@ -35,9 +35,8 @@ public class BranchDecisionRecordingTest {
     private static final String TARGET = SNAPSHOTS + "#u61";
     private static final String ELSEWHERE = SNAPSHOTS + "#u44";
 
-    /** The note, the reach and the announcement, unchanged by the kind. */
-    private static final String REACH = "unresolved=[]\n"
-            + "targetReach={\"kind\":\"TARGET_REACH_EVENT\","
+    /** The reach and the announcement, unchanged by the kind. */
+    private static final String REACH = "targetReach={\"kind\":\"TARGET_REACH_EVENT\","
             + "\"occurrence\":1,\"outcome\":true,\"siteId\":\""
             + DECLARED + "\"}\n"
             + "returned=observation\n"
@@ -205,7 +204,6 @@ public class BranchDecisionRecordingTest {
         Object reach = rawField(active, "targetReach");
         StringBuilder text = new StringBuilder("rows=")
                 .append(CanonicalJson.render(rows))
-                .append("\nunresolved=").append(rawField(active, "unresolved"))
                 .append("\ntargetReach=").append(reach == null ? "none"
                         : CanonicalJson.render((JsonObject) reach))
                 .append("\nreturned=").append(returned == null ? "null"
