@@ -677,6 +677,27 @@ public final class Arms {
         return outcome ? term : "(not " + term + ")";
     }
 
+    /**
+     * Exactly one of these alternatives is the one that happened.
+     *
+     * <p>Beside {@link #conjunct} for the same reason it is: a consumer of
+     * the arms of one slot -- or of the disjuncts of one anchor -- asks
+     * which ONE of them holds, and that was two encodings of one
+     * constraint.  The composer summed the indicators and the flip query
+     * wrote a disjunction plus a {@code (not (and a b))} for every pair,
+     * which is quadratic in the alternatives and states the same thing;
+     * the sum survives.  A single alternative is its own selector: "exactly
+     * one of {a}" is a, and wrapping it says nothing more.</p>
+     */
+    public static String exactlyOne(List<String> selectors) {
+        if (selectors.size() == 1) return selectors.get(0);
+        StringBuilder sum = new StringBuilder("(= (+");
+        for (String selector : selectors) {
+            sum.append(" (ite ").append(selector).append(" 1 0)");
+        }
+        return sum.append(") 1)").toString();
+    }
+
     /** Every symbol a recorded expression names, whatever its depth. */
     static void symbolsIn(JsonElement expression, Set<String> into,
                           int depth) {

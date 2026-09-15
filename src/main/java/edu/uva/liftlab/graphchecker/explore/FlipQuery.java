@@ -625,16 +625,7 @@ final class FlipQuery {
         private static String exactlyOne(List<Choice> choices) {
             List<String> selectors = new ArrayList<String>();
             for (Choice choice : choices) selectors.add(choice.selector);
-            if (selectors.size() == 1) return selectors.get(0);
-            List<String> atMostOne = new ArrayList<String>();
-            atMostOne.add(VmTermLowering.or(selectors));
-            for (int left = 0; left < selectors.size(); left++) {
-                for (int right = left + 1; right < selectors.size(); right++) {
-                    atMostOne.add("(not (and " + selectors.get(left) + " "
-                            + selectors.get(right) + "))");
-                }
-            }
-            return VmTermLowering.and(atMostOne);
+            return Arms.exactlyOne(selectors);
         }
 
         // ---- naming --------------------------------------------------

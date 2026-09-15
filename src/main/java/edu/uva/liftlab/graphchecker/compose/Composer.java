@@ -457,7 +457,7 @@ public final class Composer {
                 selectors.add(disjunct.selector());
             }
             lowering.assertNamed("target_path_partition",
-                    exactlyOne(selectors));
+                    Arms.exactlyOne(selectors));
             // The disjunction is over the SELECTORS: each path already
             // asserts "selector => (pi and phi)", so asserting that some
             // selector holds says exactly OR_p (pi_p and phi_p), without
@@ -1855,15 +1855,6 @@ public final class Composer {
                     "valueInt", "valueLong", "valueFloat", "valueDouble",
                     "valueBool", "valueRef", "valueString", "str", "fp",
                     "to_real", "to_int", "divisible"));
-
-    private static String exactlyOne(List<String> selectors) {
-        if (selectors.size() == 1) return selectors.get(0);
-        StringBuilder sum = new StringBuilder("(= (+");
-        for (String selector : selectors) {
-            sum.append(" (ite ").append(selector).append(" 1 0)");
-        }
-        return sum.append(") 1)").toString();
-    }
 
     /**
      * A gap the COMPOSITION raised, as against one a session published.
