@@ -151,6 +151,21 @@ public final class ObligationFactory {
     public static List<Candidate> candidates(Corpus corpus, Task task,
                                              Bounds bounds,
                                              Predicate<String> asked) {
+        return candidates(corpus, task, bounds, asked,
+                new ArrayList<GapRow>());
+    }
+
+    /**
+     * The same, naming every candidate the corpus has already answered.
+     *
+     * @param gaps where a skipped candidate is recorded, so a reader can see
+     *             that the wave shrank because the corpus grew
+     */
+    public static List<Candidate> candidates(Corpus corpus, Task task,
+                                             Bounds bounds,
+                                             Predicate<String> asked,
+                                             List<GapRow> gaps) {
+        Map<String, String> attested = attestedArms(corpus, task);
         List<Candidate> candidates = new ArrayList<Candidate>();
         int paths = 0;
         for (Corpus.RecordedPath path : corpus.pathsOf(task.focused())) {
@@ -166,11 +181,64 @@ public final class ObligationFactory {
                 if (asked != null && asked.test(candidate.obligationId)) {
                     continue;
                 }
+                String recorded = attested.get(arm(decision.siteId(),
+                        decision.ordinal(), !decision.outcome()));
+                if (recorded != null) {
+                    gaps.add(GapRow.of(path.sessionId,
+                            GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
+                            decision.siteId() + "#" + decision.ordinal()
+                                    + " -> " + !decision.outcome(),
+                            "arm already recorded by " + recorded
+                                    + ": this occurrence took that arm at "
+                                    + "that site in that session, so a "
+                                    + "focused replay of it would collect "
+                                    + "nothing the corpus lacks (HANDOVER "
+                                    + "SS1.5: exploration collects the arms "
+                                    + "the seed LACKS)"));
+                    continue;
+                }
                 candidates.add(candidate);
                 flips++;
             }
         }
         return candidates;
+    }
+
+    /**
+     * Every arm of this task's occurrence that some session already took.
+     *
+     * <p>Keyed by site, ordinal and outcome, over the occurrence's OWN rows
+     * in every session of the epoch -- {@link Corpus#pathsOf} spans them --
+     * because an arm is attested by the identity that took it, not by the
+     * session that happens to hold the row.  On laneA6 wave 1 this is the
+     * marker decision flipped BACK to true out of the focused sessions the
+     * wave 0 flips wrote: nine minutes of replay each, to record a row the
+     * seed already had.</p>
+     *
+     * <p>The PREFIX is deliberately not part of the key, and that is a
+     * choice: an arm recorded under a different prefix of the same
+     * occurrence is treated as recorded, so that combination of prefix and
+     * flip is never replayed.  It is the fail-closed side of the question --
+     * the rule only ever skips an arm the corpus demonstrably HOLDS, so no
+     * unrecorded arm is dropped -- and the arm is what the composition
+     * needs: a family's arm is a writer's or a producer's path condition,
+     * and a second prefix over the same arm adds a disjunct to a formula
+     * that already has one, not an arm it lacks.</p>
+     */
+    private static Map<String, String> attestedArms(Corpus corpus,
+                                                    Task task) {
+        Map<String, String> attested = new LinkedHashMap<String, String>();
+        for (Corpus.RecordedPath path : corpus.pathsOf(task.focused())) {
+            for (DecisionRow decision : path.decisions) {
+                attested.put(arm(decision.siteId(), decision.ordinal(),
+                        decision.outcome()), path.sessionId);
+            }
+        }
+        return attested;
+    }
+
+    private static String arm(String siteId, int ordinal, boolean outcome) {
+        return siteId + "#" + ordinal + "#" + outcome;
     }
 
     /**

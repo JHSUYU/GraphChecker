@@ -165,7 +165,7 @@ public final class ExploreMain {
                 new ArrayList<ObligationFactory.Candidate>();
         for (Task task : tasks) {
             candidates.addAll(ObligationFactory.candidates(corpus, task,
-                    bounds, frontier::asked));
+                    bounds, frontier::asked, gaps));
         }
         Frontier.Wave open = skeleton.replaced
                 ? frontier.open(wave,
