@@ -4,7 +4,6 @@ package edu.uva.liftlab.graphchecker.plan;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
-import edu.uva.liftlab.graphchecker.plan.SharedExpressionTable;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -68,7 +67,6 @@ public final class ExecutionTask extends PlanRow {
     private final Set<String> rootLoopControlSites;
     private final Set<String> fixedCountLoopSites;
     private final Map<String, List<String>> exportConsumerOccurrences;
-    private JsonElement expandedReplayContract;
 
     /** {@code bound} and {@code phases} are the values
      *  {@link #create} just encoded; a decoder passes null and the wire is
@@ -186,10 +184,7 @@ public final class ExecutionTask extends PlanRow {
         if (encoded == null) {
             throw new IllegalArgumentException("execution task is required");
         }
-        JsonObject portable = encoded.has(SharedExpressionTable.FIELD)
-                ? SharedExpressionTable.compact(encoded)
-                : encoded.deepCopy();
-        return new ExecutionTask(portable, null, null);
+        return new ExecutionTask(encoded.deepCopy(), null, null);
     }
 
     /** Creates the one task for a scheduler-selected occurrence union. */

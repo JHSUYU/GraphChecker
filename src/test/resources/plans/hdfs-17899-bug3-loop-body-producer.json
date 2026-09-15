@@ -520,6 +520,7 @@
    "<org.apache.hadoop.hdfs.security.token.block.BlockTokenSecretManager: void removeExpiredKeys()>#u7": 8,
    "L(<org.apache.hadoop.ipc.Client$Connection: void sendRpcRequest(org.apache.hadoop.ipc.Client$Call)>#u49+<org.apache.hadoop.ipc.Client$Connection: void sendRpcRequest(org.apache.hadoop.ipc.Client$Call)>#u54)": 8
   },
+  "defaultBackedgeTraversals": 8,
   "maxBackedgeTraversals": 8,
   "schemaVersion": 1
  },
@@ -537,7 +538,6 @@
    ],
    "loopExitDecisions": [
     {
-     "decisionToken": "{\"branchKind\":\"BINARY\",\"sourceTakenOutcome\":true}",
      "kind": "LOOP_EXIT_DECISION",
      "schemaVersion": 4,
      "siteId": "<org.apache.hadoop.hdfs.protocolPB.PBHelper: org.apache.hadoop.hdfs.protocol.proto.HdfsServerProtos$ExportedBlockKeysProto convert(org.apache.hadoop.hdfs.security.token.block.ExportedBlockKeys)>#u14"

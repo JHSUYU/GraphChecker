@@ -1,8 +1,7 @@
 package edu.uva.liftlab.graphchecker.causynth;
 
-import edu.uva.liftlab.graphchecker.plan.GapLedger;
-
-
+import edu.uva.liftlab.graphchecker.contract.GapClass;
+import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.plan.CommunicationCatalogContract;
 import edu.uva.liftlab.graphchecker.plan.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.plan.SiteId;
@@ -24,14 +23,6 @@ import java.util.function.Function;
 
 /** The static communication and loop catalog of one target-selected slice. */
 final class CommunicationCatalogPlanner {
-    /**
-     * A retained {@code FIXED_COUNT_INDEXED} loop with no declared {@code
-     * K_L}: its trip count is the array length the replay observes, and
-     * nothing here has seen a replay yet.
-     */
-    static final String FIXED_COUNT_BOUND_UNDECLARED =
-            "BOUNDED_LOOP_FIXED_COUNT_BOUND_UNDECLARED";
-
     private CommunicationCatalogPlanner() {
     }
 
@@ -119,7 +110,8 @@ final class CommunicationCatalogPlanner {
                     loop.classification);
             if (loop.guardsClassifyDifferently) {
                 result.gaps.add(gap(
-                        LoopBoundPolicy.GAP_LOOP_CLASSIFICATION_INCONSISTENT,
+                        GapKind.BOUNDED_LOOP_CLASSIFICATION_INCONSISTENT,
+                        GapClass.DIAGNOSTIC,
                         "LOOP_NEST_GUARDS_CLASSIFY_DIFFERENTLY", method,
                         loopSiteId, controlSites.toString()));
             }
@@ -127,9 +119,11 @@ final class CommunicationCatalogPlanner {
             if (!fixedCount && declaredBound == 0) {
                 // The loop still runs under the inherited K_L, and the model
                 // it produces is a prefix nobody stated for this workload.
-                result.gaps.add(gap("BOUNDED_LOOP_BODY_BOUND_UNDECLARED",
+                result.gaps.add(gap(
+                        GapKind.BOUNDED_LOOP_BODY_BOUND_UNDECLARED,
+                        GapClass.DIAGNOSTIC,
                         "INHERITED_K_L_"
-                                + LoopBoundPolicy.MAX_LOOP_BODY_ITERATIONS,
+                                + LoopBoundPolicy.declaredDefault(),
                         method, loopSiteId, controlSites.toString()));
             } else if (fixedCount && declaredBound == 0) {
                 // An array-indexed for was exempt from the row above and
@@ -140,18 +134,14 @@ final class CommunicationCatalogPlanner {
                 // named anywhere.
                 //
                 // It is still not the same finding.  This loop's trip count
-                // is its array length, which is exact where the replay
-                // publishes a dense cardinality vector covering the body
-                // count -- and where it does not,
-                // The loop-bound policy raises
-                // PATH_LOCAL_ARRAY_CARDINALITY_MISSING against that case and
-                // the claim is withheld by name.  Demanding a declared K_L
-                // here would replace an exact count with a stated prefix,
-                // which is what experiments/hadoop/hdfs-11741 argues in its
-                // own loop-bounds file.  So the row is published under its
-                // own code and GapLedger classes it against that downstream
-                // check.
-                result.gaps.add(gap(FIXED_COUNT_BOUND_UNDECLARED,
+                // is its array length, which the replay observes exactly,
+                // so demanding a declared K_L here would replace an exact
+                // count with a stated prefix -- what
+                // experiments/hadoop/hdfs-11741 argues in its own
+                // loop-bounds file.  Hence its own kind, DIAGNOSTIC.
+                result.gaps.add(gap(
+                        GapKind.BOUNDED_LOOP_FIXED_COUNT_BOUND_UNDECLARED,
+                        GapClass.DIAGNOSTIC,
                         "EXACT_ARRAY_CARDINALITY_EXPECTED",
                         method, loopSiteId, controlSites.toString()));
             }
@@ -262,12 +252,17 @@ final class CommunicationCatalogPlanner {
         return row;
     }
 
-    static Map<String, Object> gap(String kind, String reason,
+    /**
+     * One catalog gap, stating its own kind and class exactly like a
+     * {@link edu.uva.liftlab.graphchecker.contract.GapRow}: the stage that
+     * raised it knows what it could not do, and no later stage is in a
+     * position to overrule that.
+     */
+    static Map<String, Object> gap(GapKind kind, GapClass cls, String reason,
                                    String method, String siteId,
                                    String detail) {
-        Map<String, Object> row = newRow(
-                CommunicationCatalogContract.GAP_ROW_KIND);
-        row.put(CommunicationCatalogContract.GAP_KIND, kind);
+        Map<String, Object> row = newRow(kind.name());
+        row.put(CommunicationCatalogContract.GAP_CLASS, cls.name());
         row.put(CommunicationCatalogContract.GAP_REASON, reason);
         row.put(CommunicationCatalogContract.GAP_METHOD, method);
         row.put(CommunicationCatalogContract.GAP_SITE_ID, siteId);

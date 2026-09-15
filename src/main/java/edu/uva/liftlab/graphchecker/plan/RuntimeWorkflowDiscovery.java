@@ -41,30 +41,21 @@ public final class RuntimeWorkflowDiscovery {
     }
 
     /**
-     * Selects the target and the candidate closure that replays with it.
+     * The candidate scope: the target and the candidate closure that replays
+     * with it.
      *
      * <p>The candidate graph is the instrumentation frontier and the replay
      * scope both.  There used to be a third scope that narrowed it to the
      * occurrences a previous iteration's result envelope reported as
      * activated; the envelope is gone, and the narrowing was wrong anyway --
-     * see the comment at the closure below.</p>
+     * see the comment at the closure below.  With it went the last thing that
+     * told a candidate schedule from a seed-replay one HERE: both asked for
+     * the same closure, so this is one entry rather than two names for it,
+     * and what a seed replay still varies is withSeedReplayGroup.</p>
      */
-    static RankedWorkflow candidateWorkflow(List<RegionInstancePlan> plans,
-                                            String declaredOccurrence)
+    static RankedWorkflow workflow(List<RegionInstancePlan> plans,
+                                   String declaredOccurrence)
             throws IOException {
-        return rankedWorkflow(plans, declaredOccurrence);
-    }
-
-    /** The first replay activates the target's complete dynamic ancestry. */
-    static RankedWorkflow seedReplayWorkflow(List<RegionInstancePlan> plans,
-                                             String declaredOccurrence)
-            throws IOException {
-        return rankedWorkflow(plans, declaredOccurrence);
-    }
-
-    private static RankedWorkflow rankedWorkflow(
-            List<RegionInstancePlan> plans,
-            String declaredOccurrence) throws IOException {
         if (plans == null || plans.isEmpty()) {
             throw new IOException("runtime region plan is empty");
         }
@@ -404,8 +395,6 @@ public final class RuntimeWorkflowDiscovery {
             JsonObject index = new JsonObject();
             index.addProperty("schemaVersion", 2);
             index.addProperty("kind", "RUNTIME_REGION_PATH_SCHEDULE_INDEX");
-            index.addProperty("selectionAuthority",
-                    "VM_OBSERVED_LINKED_REPLAY_SCOPE_V1");
             index.add("regionPlan", regionPlanIdentity.deepCopy());
             index.add("executionTaskPlan", taskPlanIdentity.deepCopy());
             JsonArray members = new JsonArray();
@@ -434,7 +423,6 @@ public final class RuntimeWorkflowDiscovery {
         final String regionId;
         final String occurrenceId;
         final String goalId;
-        final String relationKey;
         final boolean target;
         /** Whether this member's goal captures the annotated target's reach.
          *  True for the elected target and for every other observed
@@ -447,7 +435,6 @@ public final class RuntimeWorkflowDiscovery {
             this.regionId = plan.regionId();
             this.occurrenceId = plan.occurrenceId();
             this.goalId = goal.goalId();
-            this.relationKey = plan.relationKey();
             this.target = target;
             this.targetReach = targetReach;
         }
@@ -467,7 +454,6 @@ public final class RuntimeWorkflowDiscovery {
             JsonObject row = new JsonObject();
             row.addProperty("campaignId", campaignId);
             row.addProperty("regionId", regionId);
-            row.addProperty("relationKey", relationKey);
             row.addProperty("occurrenceId", occurrenceId);
             row.addProperty("goalId", goalId);
             row.addProperty("taskId", taskId);

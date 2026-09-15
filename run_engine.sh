@@ -82,6 +82,13 @@ workflow_config_keys=(
   "causynth_process_dirs CAUSYNTH_PROCESS_DIRS krp -"
   "causynth_communication_mappings CAUSYNTH_COMMUNICATION_MAPPINGS krp -"
   "causynth_loop_bounds CAUSYNTH_LOOP_BOUNDS krp -"
+  # The backedge ceiling a retained loop the case did not narrow runs under.
+  # It used to be a constant in LoopBoundPolicy, applied silently to 54 of
+  # hdfs-17960's retained loops, which README LOOP-1 forbids a retained
+  # condition loop doing.  The case states it; every inherited application is
+  # still published as the catalog's DIAGNOSTIC gap row (INHERITED_K_L_<n>).
+  # No default here: a campaign that states none is refused by name.
+  "causynth_loop_default_bound CAUSYNTH_LOOP_DEFAULT_BOUND krp -"
   "causynth_symbolic_inputs CAUSYNTH_SYMBOLIC_INPUTS krp -"
   # CLOSURE-V2 SS4: the epoch's static scope map (write sites, export
   # sites, guard sets).  Two stages read it and both must read the SAME
@@ -160,10 +167,10 @@ reset_config() {
   done
 }
 
-# Workflow configs deliberately use a small key=value grammar. Unknown
-# keys remain available to GraphChecker through -C but are not evaluated by the
-# shell. This keeps a target config from changing PATH, HOME, IFS, or shell
-# control variables.
+# Workflow configs deliberately use a small key=value grammar, and only the
+# keys workflow_config_keys carries.  A key outside it is refused by name, so
+# a target config can neither change PATH, HOME, IFS or a shell control
+# variable nor ship a setting nothing reads.
 load_config_file() {
   local path=$1
   local raw key value
@@ -173,7 +180,13 @@ load_config_file() {
     [[ "${raw}" == *=* ]] || continue
     key=$(trim "${raw%%=*}")
     value=$(trim "${raw#*=}")
-    known_config_key "${key}" || continue
+    # A key this table does not carry is a refusal, not a comment.  It used to
+    # be skipped, so a misspelling -- or a key a stage deletion retired --
+    # stayed in a shipped config and read as a setting that did nothing:
+    # `reach_max_inputs`, `reach_max_valuations` and `causynth_analysis_scope`
+    # all shipped that way in all four case configs.
+    known_config_key "${key}" \
+      || die "unknown workflow config key in ${path}: ${key}"
     if [[ ${#value} -ge 2 ]]; then
       if [[ "${value:0:1}" == '"' && "${value: -1}" == '"' ]] \
           || [[ "${value:0:1}" == "'" && "${value: -1}" == "'" ]]; then
@@ -387,6 +400,7 @@ run_java_main() {
     runtime_classpath="${runtime_classpath}:${project_classpath}"
   fi
   run_in_directory "${graphchecker_work_dir}" "${java_bin}" \
+    "-Dcausynth.loop.default.bound=${causynth_loop_default_bound}" \
     -cp "${runtime_classpath}" "${main_class}" "$@"
 }
 
@@ -412,7 +426,7 @@ require_positive_integer() {
 validate_config() {
   local key
   local missing=0
-  for key in project_repo project_module_dir project_classes_dir project_classpath causynth_output_dir causynth_cache_dir causynth_target_spec custom_jdk_home z3_bin workload_command trace_test causynth_loop_bounds; do
+  for key in project_repo project_module_dir project_classes_dir project_classpath causynth_output_dir causynth_cache_dir causynth_target_spec custom_jdk_home z3_bin workload_command trace_test causynth_loop_bounds causynth_loop_default_bound; do
     if [[ -z "${!key}" ]]; then
       echo "Missing workflow config value: ${key}" >&2
       missing=1
@@ -444,7 +458,8 @@ validate_config() {
   local key
   for key in solver_timeout_ms schedule_max_jobs \
       concolic_worker_count campaign_max_iterations \
-      region_path_max_waves compose_max_valuations; do
+      region_path_max_waves compose_max_valuations \
+      causynth_loop_default_bound; do
     require_positive_integer "${key}"
   done
   # The one stage a campaign may be asked to stop after.  Refused here rather
@@ -521,6 +536,7 @@ do_analyze() {
   require_file "loop body bound declarations" "${causynth_loop_bounds}"
   system_properties+=(
     "-Dcausynth.loop.bounds=${causynth_loop_bounds}"
+    "-Dcausynth.loop.default.bound=${causynth_loop_default_bound}"
   )
   if [[ -n "${CAUSYNTH_TRACE_MODE:-}" ]]; then
     system_properties+=(
@@ -2231,7 +2247,7 @@ campaign_decide() {
 campaign_artifact_digests() {
   local name path bytes sha row
   local -a required=(candidate.smt2 candidate_composition_manifest.json
-    gaps.json gap_ledger.json result.json)
+    gaps.json result.json)
   local -a names=()
   local -a rows=()
   for name in "${required[@]}"; do
@@ -2254,28 +2270,6 @@ campaign_artifact_digests() {
     rows+=("${row}")
   done
   printf '%s\n' "${rows[@]}" | jq -c -s .
-}
-
-# Aggregate the already-validated owner reports without copying their contents
-# into exec argv.  Real compositions and topology deltas routinely exceed both
-# Linux's per-argument limit and ARG_MAX, so every JSON input is a file.
-#
-# There is one gap ledger and it lives in GapLedger.java.  This function used
-# to be the second one: it hand-picked two sources -- the Composer's
-# finalStatusRefusals and the solver's own gaps -- as blocking and demoted
-# every other gap the pipeline raised into a telemetryGaps array no claim
-# read.  On hdfs-17960 that demoted all 27 rows of a run that then published
-# gapCount 0, including 15 regions whose causal anchor was never observed.
-# Now every source is folded into one list and each row is classed by the
-# ledger, which defaults an unregistered code to BLOCKING in both readers.
-campaign_write_gap_ledger() {
-  local output=$1
-  run_java_main edu.uva.liftlab.graphchecker.plan.GapLedger \
-    --output "${output}"
-  require_nonempty "gap ledger" "${output}"
-  campaign_require_json "gap ledger" "${output}" \
-    || campaign_fail EMIT GapLedger "${output}" \
-      "the published gap ledger is malformed"
 }
 
 # The static catalog's own gaps, as a JSON array.  A campaign that restored
@@ -2317,15 +2311,15 @@ campaign_json_file() {
 # Every gap this campaign raised, in one document, each row classed by the row
 # itself.
 #
-# A GapRow states its own kind and class (CONTRACT-SPEC SS2): the runtime
-# raises it where it knows what it could not do, and no later stage is in a
-# position to overrule that.  So this is a partition, not a classification --
-# the 190 lines of jq that used to decide a row's class against the replay
-# slice, the composed ports and the flip wave are gone with the questions they
-# asked.  Rows from the static catalog and the runtime plan carry no class of
-# their own; the ledger classes those, and an unregistered code is BLOCKING.
+# A GapRow states its own kind and class (CONTRACT-SPEC SS2): the stage that
+# raised it knows what it could not do, and no later stage is in a position to
+# overrule that.  So this is a partition, not a classification -- the 190
+# lines of jq that used to decide a row's class against the replay slice, the
+# composed ports and the flip wave are gone with the questions they asked, and
+# so is the second registry that classed PLAN rows by code.  A row that states
+# no class is BLOCKING.
 campaign_write_gaps() {
-  local composition=$1 ledger=$2 iteration_dir=$3 output=$4
+  local composition=$1 iteration_dir=$2 output=$3
   local scratch status=0
   scratch=$(mktemp -d "${TMPDIR:-/tmp}/graphchecker-gapargs.XXXXXX") \
     || return 1
@@ -2344,16 +2338,12 @@ campaign_write_gaps() {
   jq -n \
     --argjson provenance "${campaign_provenance}" \
     --slurpfile composedDocuments "${composition}" \
-    --slurpfile ledgerDocuments "${ledger}" \
     --slurpfile staticGapDocuments "${scratch}/static-gaps.json" \
     --slurpfile planGapDocuments "${scratch}/plan-gaps.json" \
     --rawfile sessionGaps "${scratch}/session-gaps.jsonl" '
     ($staticGapDocuments[0] // []) as $staticGaps |
     ($planGapDocuments[0] // []) as $planGaps |
     $composedDocuments[0] as $composed |
-    $ledgerDocuments[0] as $ledger |
-    ($ledger.diagnostic // []) as $diagnosticCodes |
-    ($ledger.reasonByCode // {}) as $reasonByCode |
     # A row that states its own class is taken at its word.
     (($sessionGaps | split("\n") | map(select(length > 0) | fromjson))
       | map({stage: "REPLAY", source: (.sessionId // "RUNTIME"),
@@ -2385,25 +2375,24 @@ campaign_write_gaps() {
                            end)}))
       as $composerGapRows |
     ($refusalRows + $composerGapRows) as $composeRows |
-    # Rows with no class of their own: the ledger decides, blocking by default.
+    # The static catalog and the runtime plan state kind and class on their
+    # own rows, like every other producer; a row that states none is blocking.
     (($staticGaps + $planGaps)
       | map({stage: "PLAN", source: (.source // "CATALOG"),
-             code: (.code // .kind // ""),
+             code: (.kind // ""),
              subject: (.subject // .siteId // ""), detail: (.detail // ""),
-             class: (if ((.code // .kind // "") | IN($diagnosticCodes[]))
-                     then "DIAGNOSTIC" else "BLOCKING" end)}
-            | . + {classReason: ($reasonByCode[.code]
-                                 // "no ledger entry: blocking by default")}))
+             class: (if (.cls // "BLOCKING") == "DIAGNOSTIC"
+                     then "DIAGNOSTIC" else "BLOCKING" end),
+             classReason: (if (.cls // "") == "DIAGNOSTIC"
+                           then "the row states its own class"
+                           else "no stated class: blocking by default"
+                           end)}))
       as $declaredRows |
     (($sessionRows + $composeRows + $declaredRows)
       | unique_by([.stage, .source, .code, .subject, .detail])) as $rows |
     {schemaVersion: 2,
      kind: "CAMPAIGN_COVERAGE_GAPS",
      provenance: $provenance,
-     gapLedger: {kind: ($ledger.kind // ""),
-                 schemaVersion: ($ledger.schemaVersion // 0),
-                 defaultClass: ($ledger.defaultClass // "BLOCKING"),
-                 diagnosticCodes: $diagnosticCodes},
      gaps: [$rows[] | select(.class == "BLOCKING")],
      telemetryGaps: [$rows[] | select(.class == "DIAGNOSTIC")]}
     | .gapCount = (.gaps | length)
@@ -2438,16 +2427,11 @@ campaign_emit() {
   require_nonempty "replay session census" \
     "${iteration_dir}/session_census.jsonl"
 
-  # One ledger classes every gap this campaign raised, wherever it was
-  # raised.  A code the ledger does not register is blocking, so a gap added
-  # to some stage withholds the claim until somebody states why it cannot
-  # break a chain.  The ledger is published beside the gaps it classed, so a
-  # reader of the final directory can check the classification without the
-  # jar.
-  campaign_write_gap_ledger "${campaign_final}/gap_ledger.json"
+  # Every gap row states its own kind and class, wherever it was raised, and
+  # a row that states no class is blocking: a gap added to some stage
+  # withholds the claim until its producer states why it cannot break a chain.
   campaign_write_gaps \
     "${composition_manifest}" \
-    "${campaign_final}/gap_ledger.json" \
     "${iteration_dir}" \
     "${campaign_final}/gaps.json"
   require_nonempty "campaign gaps" "${campaign_final}/gaps.json"
@@ -2505,12 +2489,11 @@ campaign_emit() {
      gapCount: $gapCount,
      telemetryCount: $telemetryCount,
      # The claim is what ClaimPolicy decided; acceptance is that claim
-     # together with the gap ledger, because the stages the policy cannot
-     # see -- IMPORT, EXPLORE, CLASSIFY and the static plan -- raise their
-     # own blocking gaps and the ledger classes all of them from one
-     # table. This is the
-     # conjunction the exit code below already tests, published so a reader
-     # of result.json alone does not have to infer it from two numbers.
+     # together with the named gaps, because the stages the policy cannot
+     # see -- IMPORT, EXPLORE and the static plan -- raise their own blocking
+     # gaps.  This is the conjunction the exit code below already tests,
+     # published so a reader of result.json alone does not have to infer it
+     # from two numbers.
      accepted: (($decided.claim == "SAT_CANDIDATE"
                  or $decided.claim == "UNSAT_CLOSED")
                 and $gapCount == 0),
@@ -2635,9 +2618,9 @@ campaign_emit() {
       exit 2
       ;;
   esac
-  # Every blocking gap in the ledger is a hard failure, whichever stage
-  # raised it.  The telemetry array holds only the codes the ledger names as
-  # unable to change a chain, and each of those carries its reason there.
+  # Every blocking gap is a hard failure, whichever stage raised it.  The
+  # telemetry array holds only the rows their own producer classed as unable
+  # to change a chain, and each of those carries its reason there.
   [[ "${gapCount}" -eq 0 ]] || {
     jq -r '"[campaign] candidate withheld: claim=\(.claim), but the run named "
       + (.gapCount | tostring) + " BLOCKING gap(s); "

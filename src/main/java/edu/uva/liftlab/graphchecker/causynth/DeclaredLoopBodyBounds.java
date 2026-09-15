@@ -63,7 +63,7 @@ import static edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelec
  * LoopBoundPolicy#DECLARED_BOUND_SITE_UNDECLARED}.  Both matter because a
  * unit index moves when the workload is recompiled: without the refusal, a
  * stale key would leave its loop quietly inheriting {@link
- * LoopBoundPolicy#MAX_LOOP_BODY_ITERATIONS} and the campaign would model a
+ * LoopBoundPolicy#declaredDefault()} and the campaign would model a
  * prefix nobody asked for.  A value outside
  * {@code 1..}{@link LoopBoundPolicy#MAX_DECLARED_LOOP_BODY_ITERATIONS} is
  * refused where it is emitted, naming the key that stated it - mint time
@@ -254,7 +254,7 @@ final class DeclaredLoopBodyBounds {
             // whose members hold two different prefixes has no one prefix.
             throw disagreement(sites, declared, bound, KEY_PREFIX + undeclared,
                     "absent, inheriting "
-                            + LoopBoundPolicy.MAX_LOOP_BODY_ITERATIONS);
+                            + LoopBoundPolicy.declaredDefault());
         }
         return bound;
     }
@@ -278,7 +278,7 @@ final class DeclaredLoopBodyBounds {
                         + LoopBoundPolicy.LOOP_CONTROL_SITE_IDS
                         + " publishes it. A key that names no retained loop"
                         + " leaves its loop inheriting "
-                        + LoopBoundPolicy.MAX_LOOP_BODY_ITERATIONS
+                        + LoopBoundPolicy.declaredDefault()
                         + " body executions, so it is refused rather than"
                         + " ignored");
     }

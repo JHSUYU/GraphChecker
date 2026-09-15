@@ -286,8 +286,15 @@ public final class CausynthTraceRecorder {
                     "schemaVersion", 3,
                     "event", LINEAGE_GAP_EVENT,
                     "seq", EVENT_COUNTER.incrementAndGet(),
-                    "code", edu.uva.liftlab.graphchecker.contract.GapKind
+                    // Stated the way every other gap row states it: the
+                    // kind, and the class its producer decided (item 1 of
+                    // the PLAN cleanup -- there is no ledger to look it up
+                    // in).  A degraded address is a diagnostic: the row it
+                    // is about still says what it observed.
+                    "kind", edu.uva.liftlab.graphchecker.contract.GapKind
                             .LINEAGE_LOST.name(),
+                    "cls", edu.uva.liftlab.graphchecker.contract.GapClass
+                            .DIAGNOSTIC.name(),
                     "subject", MapFields.safe(subject),
                     "detail", MapFields.safe(detail));
         }
@@ -1916,8 +1923,8 @@ public final class CausynthTraceRecorder {
         } else if (LINEAGE_GAP_EVENT.equals(eventKind)) {
             Map<String, Object> gap = new LinkedHashMap<>();
             gap.put("schemaVersion", 1);
-            gap.put("kind", RuntimeSelectedRegionFinalizer.PLAN_GAP_KIND);
-            gap.put("code", row.stringValue("code"));
+            gap.put("kind", row.stringValue("kind"));
+            gap.put("cls", row.stringValue("cls"));
             gap.put("subject", row.stringValue("subject"));
             gap.put("detail", row.stringValue("detail"));
             trace.lineageGaps.add(gap);

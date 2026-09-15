@@ -10,11 +10,11 @@ import com.google.gson.ToNumberPolicy;
 import edu.uva.liftlab.graphchecker.causynth.MapFields;
 import edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts;
 import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
+import edu.uva.liftlab.graphchecker.causynth.StaticDataflowEdgeSchema;
 import edu.uva.liftlab.graphchecker.causynth.StaticProgram;
 import edu.uva.liftlab.graphchecker.plan.AutomaticRegionEdge;
 import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics;
 import edu.uva.liftlab.graphchecker.plan.SharedFieldFlow;
-import edu.uva.liftlab.graphchecker.plan.SharedStateEvidence;
 import edu.uva.liftlab.graphchecker.plan.CommunicationCatalogContract;
 import edu.uva.liftlab.graphchecker.plan.CommunicationHandoffSpec;
 import edu.uva.liftlab.graphchecker.plan.ConfiguredSourcePhaseContract;
@@ -111,9 +111,7 @@ final class RuntimeRegionPlanner {
         for (boolean endpoints : new boolean[]{false, true}) {
             for (StaticProgram.RegionRow skeleton : skeletons) {
                 if (endpoints != COMMUNICATION_ENTRY.equals(
-                        skeleton.rootAuthority)
-                        || !endpoints && "AUTHORITY_ENVELOPE".equals(
-                                skeleton.selection)) {
+                        skeleton.rootAuthority)) {
                     continue;
                 }
                 for (MethodEvent root : trace.methods(skeleton.rootMethod)) {
@@ -1026,7 +1024,7 @@ final class RuntimeRegionPlanner {
         // README LOOP-1: a declared bound that happens to equal the inherited
         // default is still a declaration.
         return LoopBoundPolicy.cfgBackedges(
-                LoopBoundPolicy.MAX_LOOP_BODY_ITERATIONS, declared);
+                LoopBoundPolicy.declaredDefault(), declared);
     }
 
     /** In-memory planning entry point. {@code regionSource} and {@code
@@ -2758,14 +2756,11 @@ final class RuntimeRegionPlanner {
             return boundedCandidates;
         }
 
+        /** Whether one edge carries a value forward into a return site. */
         private static boolean returnValueTransfer(String transferKind) {
             return "VALUE_PASS".equals(transferKind)
-                    || "IDENTITY_BINDING".equals(transferKind)
-                    || "FUNCTION_RETURN".equals(transferKind)
-                    || "CONSTRUCT".equals(transferKind)
-                    || "MODEL_TRANSFORM".equals(transferKind)
-                    || "COMPUTE".equals(transferKind)
-                    || "HEAP_LOOKUP".equals(transferKind)
+                    || StaticDataflowEdgeSchema.VALUE_TRANSFER
+                            .equals(transferKind)
                     || "DYNAMIC_DISPATCH".equals(transferKind);
         }
 

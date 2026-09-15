@@ -5,7 +5,8 @@ package edu.uva.liftlab.graphchecker.contract;
  *
  * <p>Closed on purpose: a kind without a consumer is a report nobody reads, and
  * the deletion pass removed several.  Every kind here is either BLOCKING for
- * some stage or a DIAGNOSTIC that a report prints.</p>
+ * some stage or a DIAGNOSTIC that a report prints, and the producer that raises
+ * it states which on the row.</p>
  */
 public enum GapKind {
     /** A selected path's replay was not admitted on its focused region. */
@@ -41,6 +42,25 @@ public enum GapKind {
      * row published after it is addressed by the wrong occurrence.</p>
      */
     FRAME_UNBALANCED,
+    /** A retained condition loop ran under an inherited K_L, not a declared
+     *  one, so the model it produces is a prefix nobody stated. */
+    BOUNDED_LOOP_BODY_BOUND_UNDECLARED,
+    /** A retained array-indexed loop declared no K_L: its trip count is the
+     *  array length the replay observes, which the replay states exactly. */
+    BOUNDED_LOOP_FIXED_COUNT_BOUND_UNDECLARED,
+    /** One loop nest's control sites do not all classify alike, so the nest
+     *  is published as the weaker CONDITION_BOUNDED and named here. */
+    BOUNDED_LOOP_CLASSIFICATION_INCONSISTENT,
+    /** A declared wire flow no region of the slice holds the capture of. */
+    COMMUNICATION_REQUEST_PORT_UNRESOLVED,
+    /** A port truncated its recorded accesses, so the accesses above the
+     *  retained ones are invisible to every later stage. */
+    BOUND_INSUFFICIENT,
+    /** Two activations of one region share an address: nothing IDENTITY-V3
+     *  names tells them apart.  Every one of them is published with its own
+     *  events, so a chain is not broken; a declared selector's k picks among
+     *  them in seed order. */
+    OCCURRENCE_ADDRESS_SHARED,
     /**
      * A mint this run could attribute to no node, so nothing was written.
      *

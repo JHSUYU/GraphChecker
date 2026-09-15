@@ -1,6 +1,7 @@
 package edu.uva.liftlab.graphchecker.plan;
 
 import com.google.gson.JsonArray;
+import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
@@ -231,6 +232,20 @@ public final class ConfiguredSourcePhaseContract {
                 + requiredPhase(phase).name();
         return "SOURCE_PHASE." + UUID.nameUUIDFromBytes(
                 identity.getBytes(StandardCharsets.UTF_8));
+    }
+
+    /**
+     * The VM label one configured source asks the engine for.
+     *
+     * <p>Derived from the phase, so the same site asks for the same leaf in
+     * every replay of it; it used to live beside a row that published it,
+     * and that row had no reader left once the result envelope went.</p>
+     */
+    public static String engineLabelForPhase(String sourcePhaseId,
+                                             String sourceId) {
+        return "SRC." + ArtifactIO.sha256(
+                required(sourcePhaseId, "sourcePhaseId") + "\n"
+                        + required(sourceId, "sourceId"));
     }
 
     private static Declaration validateDeclaration(JsonObject row) {

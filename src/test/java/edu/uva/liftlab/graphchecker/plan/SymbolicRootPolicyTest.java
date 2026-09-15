@@ -2,7 +2,6 @@ package edu.uva.liftlab.graphchecker.plan;
 
 
 import com.google.gson.JsonArray;
-import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import org.junit.Rule;
@@ -59,11 +58,22 @@ public class SymbolicRootPolicyTest {
     public void onlyADeclarationMakesAReadSymbolic() throws Exception {
         ConcolicScheduler.SymbolicInputSelection selection = read(
                 "{\"regionId\":\"" + NN + "\",\"cells\":[\"" + CLOCK_CELL
-                        + "\"]}");
+                        + "\"],\"clock\":true}");
         JsonArray selected = selection.select(NN, proposals());
 
         assertTrue("the declared clock carries the mint marker",
                 selected.get(0).getAsJsonObject().get(ROOT).getAsBoolean());
+        // WHICH reads are wall clocks is declared by the case, never matched
+        // against a list of callee signatures: the flag travels from the
+        // declaration row onto the action, and the replay reads it there.
+        assertTrue("and the clock the case declared",
+                selected.get(0).getAsJsonObject()
+                        .get(InputActionCatalog.DECLARED_WALL_CLOCK)
+                        .getAsBoolean());
+        assertFalse("a declared read the case did not call a clock is none",
+                declaredWithoutClockFlag().select(NN, proposals()).get(0)
+                        .getAsJsonObject()
+                        .has(InputActionCatalog.DECLARED_WALL_CLOCK));
         assertEquals("a read no declaration names is concrete by name",
                 "CONCRETE", member(selected, 1, "mode"));
         assertEquals(ConcolicScheduler.SymbolicInputSelection.UNDECLARED,
@@ -79,10 +89,6 @@ public class SymbolicRootPolicyTest {
         JsonObject cut = selection.select(DN, actions).get(3).getAsJsonObject();
         assertEquals("SYMBOLIC", cut.get("mode").getAsString());
         assertFalse("a cut port is not a declared root", cut.has(ROOT));
-        assertEquals("tracked, and never mint-eligible",
-                "false|" + InputActionCatalog
-                        .DECLARED_COMMUNICATION_CUT_PORT,
-                verdictOf(selection, "<C: int getKeyId()>.return"));
 
         // And the write side of a DECLARED cell: the VM retains a location
         // by value, so the stores of a declared counter publish nothing
@@ -139,19 +145,6 @@ public class SymbolicRootPolicyTest {
                         + ACCESSOR_RETURN + "\"]}");
         selection.resolveDeclaredNames(Collections.singletonList(edge));
         return selection;
-    }
-
-    /** {@code mintEligible|verdict} of the decision row naming one cell. */
-    private static String verdictOf(
-            ConcolicScheduler.SymbolicInputSelection selection, String cell) {
-        for (JsonElement element : selection.rootDecisions()) {
-            JsonObject row = element.getAsJsonObject();
-            if (cell.equals(row.get("cell").getAsString())) {
-                return row.get("mintEligible").getAsString() + "|"
-                        + row.get("verdict").getAsString();
-            }
-        }
-        return "";
     }
 
     /** The declared counter of hdfs-17960 and the store the graph names. */
@@ -238,6 +231,13 @@ public class SymbolicRootPolicyTest {
                 read("{" + site + ",\"cells\":[\"" + CLOCK_CELL + "\"]}");
         for (String id : declaring) assertTrue(site, selection.declares(id, CLOCK_CELL));
         for (String id : silent) assertFalse(site, selection.declares(id, CLOCK_CELL));
+    }
+
+    /** The same declaration of {@link #CLOCK_CELL}, stating no clock. */
+    private ConcolicScheduler.SymbolicInputSelection
+            declaredWithoutClockFlag() throws IOException {
+        return read("{\"regionId\":\"" + NN + "\",\"cells\":[\""
+                + CLOCK_CELL + "\"]}");
     }
 
     /** One declaration row, written where the campaign would put the file. */

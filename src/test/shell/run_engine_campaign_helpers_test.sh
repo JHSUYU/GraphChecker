@@ -242,14 +242,14 @@ jq -e '.findingKind == "MARKER_FLIPPED" and .polarityDecides == true
   || fail "result.json does not carry the mechanism the claim rests on"
 
 # GAP-1: a gap raised by a stage the claim cannot see still withholds the
-# candidate, because one ledger classes every code and an unregistered code
+# candidate, because the row states its own class and a row that states none
 # is blocking.  BOUND_INSUFFICIENT is the finalizer truncation that used to
 # build a refusal string and throw it away.
 emit_fixture
 jq -n -c '{schemaVersion: 2, kind: "CONCOLIC_RUNTIME_MODEL_CATALOG",
   edges: [], regions: [],
-  gaps: [{schemaVersion: 1, kind: "RUNTIME_PLAN_GAP",
-          code: "BOUND_INSUFFICIENT", subject: "port\nsite",
+  gaps: [{schemaVersion: 1, kind: "BOUND_INSUFFICIENT", cls: "BLOCKING",
+          subject: "port\nsite",
           detail: "static site demands more accesses than are retained"}]}' \
   >"${runtime_region_plan}"
 run_emit
@@ -266,6 +266,30 @@ $(jq -c '.gaps' "${campaign_final}/gaps.json")"
 jq -e '.accepted == false and .gapCount == 1' \
   "${campaign_final}/result.json" >/dev/null \
   || fail "result.json did not state that acceptance was withheld"
+# And a static-catalog row that states DIAGNOSTIC is telemetry, not a
+# blocker: the loop catalog knows an inherited K_L is a prefix nobody stated,
+# and it is the producer that says so.  This used to be decided by a second
+# registry keyed on a code the shell read out of the wrong member, which
+# classed all 74 of hdfs-17960's catalog rows BLOCKING by accident.
+emit_fixture
+printf '%s\n' \
+  '{"schemaVersion":4,"kind":"BOUNDED_LOOP_BODY_BOUND_UNDECLARED","cls":"DIAGNOSTIC","reason":"INHERITED_K_L_8","method":"<C: void m()>","siteId":"<C: void m()>#u3","detail":"[<C: void m()>#u3]"}' \
+  | gzip -c >"${causynth_output_dir}/communication_gaps.jsonl.gz"
+run_emit
+[[ "${emit_status}" -eq 0 ]] \
+  || fail "a diagnostic catalog row withheld the candidate \
+(exit ${emit_status}): $(<"${emit_root}/emit.log")"
+jq -e '.gapCount == 0
+  and ([.telemetryGaps[] | select(.stage == "PLAN")]
+       == [{stage: "PLAN", source: "CATALOG",
+            code: "BOUNDED_LOOP_BODY_BOUND_UNDECLARED",
+            subject: "<C: void m()>#u3", detail: "[<C: void m()>#u3]",
+            class: "DIAGNOSTIC",
+            classReason: "the row states its own class"}])' \
+  "${campaign_final}/gaps.json" >/dev/null \
+  || fail "the diagnostic catalog row was not published as telemetry: \
+$(jq -c '[(.gaps+.telemetryGaps)[]|{stage,code,class}]' \
+    "${campaign_final}/gaps.json")"
 # EMIT-2: and a WITHHELD epoch publishes too.  campaign_emit leaves this shell
 # with exit 3 on a blocking gap, so the epoch loop's own publish call never
 # ran: lane17897h composed, solved and decided, then published nothing at
@@ -374,14 +398,6 @@ jq -e '[(.gaps + .telemetryGaps)[] | select((.classReason // "") == "")]
        | length == 0' \
   "${campaign_final}/gaps.json" >/dev/null \
   || fail "a gap row carries no classification reason"
-
-# GAP-2: the ledger is published beside the gaps it classed, and it names its
-# own exceptions rather than leaving a reader to guess the default.
-jq -e '.kind == "GAP_LEDGER" and .defaultClass == "BLOCKING"
-  and (.diagnostic | index("SELECTED_PATH_SET_INCOMPLETE")) != null
-  and (.entries | length) > 40' \
-  "${campaign_final}/gap_ledger.json" >/dev/null \
-  || fail "EMIT published no usable gap ledger"
 
 # An undecided root space is no longer a witness. The claim ClaimPolicy
 # decided is published with every named blocker and one readable summary, and
@@ -666,7 +682,12 @@ done
 # campaign did not select -- so which file it is belongs to the configuration
 # a campaign publishes, and a weave that read a different one would stand on
 # a different frame stack and address a different occurrence for one event.
-[[ "$(print_normalized_config | wc -l)" -eq 43 ]] \
+# 44: `causynth_loop_default_bound` joined it when the bound an unnarrowed
+# retained loop inherits stopped being a constant in LoopBoundPolicy.  It was
+# applied silently to 54 of hdfs-17960's retained loops, which README LOOP-1
+# forbids a retained condition loop doing, so the case states it and the
+# campaign publishes what it stated.
+[[ "$(print_normalized_config | wc -l)" -eq 44 ]] \
   || fail "config prints a different number of keys than it used to: \
 $(print_normalized_config | wc -l)"
 # CONFIG-3: the region skeletons are ONE path, and every weave takes them
@@ -683,6 +704,20 @@ grep -qF '"-Dcausynth.region.skeletons=${CAUSYNTH_REGION_SKELETONS:-${causynth_r
 # from that one key.  The workload JVM installs the guard sites the map names
 # and EXPLORE flips at them, so a second derivation of the path is two stages
 # reading two files.
+# CONFIG-1: a key workflow_config_keys does not carry is a refusal, not a
+# comment.  It used to be skipped, so `reach_max_inputs`,
+# `reach_max_valuations` and `causynth_analysis_scope` shipped in all four case
+# configs and read as settings that did nothing.
+unknown_config=$(mktemp "${test_tmp}/unknown-config.XXXXXX")
+printf 'workflow_path_base=project\nreach_max_inputs=8\n' >"${unknown_config}"
+if (load_config_file "${unknown_config}") 2>"${unknown_config}.err"; then
+  fail "an unknown workflow config key was accepted"
+fi
+grep -qF 'unknown workflow config key' "${unknown_config}.err" \
+  || fail "the refusal does not name the key: $(<"${unknown_config}.err")"
+grep -qF 'reach_max_inputs' "${unknown_config}.err" \
+  || fail "the refusal does not name the key: $(<"${unknown_config}.err")"
+
 [[ " ${config_table_keys[*]} " == *" causynth_static_scope_map "* ]] \
   || fail "the static scope map is not a declared workflow key"
 grep -qF 'causynth_static_scope_map=${causynth_static_scope_map:-${causynth_output_dir}/static_scope_map.jsonl}' \
@@ -794,11 +829,11 @@ $(campaign_seeding_replay "${seed_dir}")"
 # It used to die before it started.  campaign_seeding_results handed
 # do_schedule a session DIRECTORY as --summaries, do_schedule ran require_file
 # on it, and [[ -f <dir> ]] is false -- so every epoch after the first exited
-# at that line.  The option it fed is gone with it: the scheduler's --summaries
-# rows are keyed on summaryId, which has exactly one occurrence in src/main
-# (the reader), and its only other consumer needs ClosureMode.ACTIVE_OBSERVED,
-# which this script never sets.  What a second epoch actually varies is the
-# retained set, through --retain-regions.
+# at that line.  The option it fed is gone with it, and so is the option: the
+# scheduler no longer declares --summaries at all, because its only consumer
+# was ClosureMode.ACTIVE_OBSERVED and no caller ever asked for that scope.
+# What a second epoch actually varies is the retained set, through
+# --retain-regions.
 epoch2_dir="${test_tmp}/epoch2"
 mkdir -p "${epoch2_dir}/out"
 : >"${epoch2_dir}/region_plan.jsonl"
@@ -868,6 +903,7 @@ stop_after_config() {
   trace_test=T
   causynth_loop_bounds="${stop_after_dir}/loop-bounds.jsonl"
   : >"${causynth_loop_bounds}"
+  causynth_loop_default_bound=8
   causynth_communication_mappings=""
   causynth_symbolic_inputs=""
   causynth_root_domains=""
