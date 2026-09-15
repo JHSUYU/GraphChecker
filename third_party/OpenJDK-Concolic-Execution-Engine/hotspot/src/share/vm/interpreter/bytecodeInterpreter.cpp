@@ -3093,12 +3093,16 @@ run:
                 // read from the object, not from the operand stack, because
                 // the concrete load has not been pushed yet here; it is the
                 // same word the load is about to produce.  A reference-typed
-                // field yields NULL and keeps today's pair-less shape, since
-                // there is no primitive value to state.
+                // field answers with the referent's identity, in the same
+                // spelling this owner's identity has, or with the null
+                // symbol: `Snapshot.root` read out of the snapshot map is
+                // exactly such a read, and its 80 projections in 17960's seed
+                // carried no pair at all, so every anchor path through them
+                // was refused as UNSTATED_FIELD_PROJECTION.
                 Expression *concrete_owner =
                     SharedFieldVersions::reference_expression(obj);
                 Expression *concrete_field =
-                    SharedFieldVersions::primitive_field_value(
+                    SharedFieldVersions::field_value(
                         obj, field_offset, field_type);
                 sym_inst->init_sym_exp(field_offset,
                     new FieldAccessExpression(
@@ -3231,9 +3235,13 @@ run:
           // a question about the selected writer's object; the concrete pair
           // states what this execution observed, which pins the arm the run
           // did take without constraining the arms it did not.  Only a
-          // primitive-valued field is routed: a reference-valued one would
-          // hand the composer an owner shape it has no projection for, and
-          // the concrete shadow it already installs is still exact.
+          // primitive-valued field is routed.  A reference-valued one already
+          // leaves this bytecode with a shadow that states what it read --
+          // the carrier resolution above installs a guarded read naming its
+          // writer version, and the demand mint states the referent's
+          // identity as its concrete value -- and rebuilding it here would
+          // replace that resolved read with a projection, dropping the
+          // carrier's published version chain out of the formula.
           if (reference_owner != NULL) {
             jlong observed_bits = 0;
             bool primitive_field = true;

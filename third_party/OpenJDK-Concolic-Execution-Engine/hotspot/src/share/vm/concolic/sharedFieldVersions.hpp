@@ -545,15 +545,22 @@ public:
   static Expression *reference_expression(oop value);
 
   /**
-   * What a primitive field holds right now, as a constant expression.
+   * What a field holds right now, as an expression.
    *
    * Read straight from the object rather than from an operand stack, so a
    * projection can state the value this run observed wherever it is built --
-   * including before the concrete load has been pushed.  NULL for a
-   * reference-typed field, which has no primitive value to state.
+   * including before the concrete load has been pushed.
+   *
+   * A primitive field answers with its constant.  A reference-typed one
+   * answers with the referent's identity in the one spelling an owner
+   * identity has (`reference_expression`), so that a read reference and the
+   * owner of another read are the same term, and with the null symbol when
+   * the field held null.  Either way the read states what it read: a
+   * reference-typed field used to answer NULL, which left its projection
+   * with nothing for the composer to value it by.
    */
-  static Expression *primitive_field_value(oop owner, int field_offset,
-                                           BasicType type);
+  static Expression *field_value(oop owner, int field_offset,
+                                 BasicType type);
 
   static const char *location_kind_name(int kind);
   static const char *version_kind_name(int kind);

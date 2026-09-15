@@ -460,11 +460,19 @@ Expression *SharedFieldVersions::primitive_expression(BasicType type,
   }
 }
 
-Expression *SharedFieldVersions::primitive_field_value(oop owner,
-                                                      int field_offset,
-                                                      BasicType type) {
+Expression *SharedFieldVersions::field_value(oop owner, int field_offset,
+                                             BasicType type) {
   if (owner == NULL) return NULL;
   switch (type) {
+    case T_OBJECT:
+    case T_ARRAY:
+      // The identity of the object the field held, in the same spelling an
+      // owner identity has, so the composer can equate this read reference
+      // with the owner of another read; null answers with the null symbol.
+      // An object with no identity yet is given one here exactly as an owner
+      // is given one, which is what makes the answer distinct and stable for
+      // the rest of the session instead of absent.
+      return reference_expression(owner->obj_field(field_offset));
     case T_BOOLEAN:
       return primitive_expression(type, raw_bits(owner->bool_field(field_offset)));
     case T_BYTE:

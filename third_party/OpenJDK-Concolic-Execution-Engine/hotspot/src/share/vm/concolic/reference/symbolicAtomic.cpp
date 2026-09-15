@@ -125,8 +125,7 @@ Expression *prepare_current_value(oop receiver, BasicType type,
   return new FieldAccessExpression(
       owner, receiver->klass()->name()->as_C_string(), field->offset(), type,
       std::string(), SharedFieldVersions::reference_expression(receiver),
-      SharedFieldVersions::primitive_field_value(receiver, field->offset(),
-                                                 type));
+      SharedFieldVersions::field_value(receiver, field->offset(), type));
 }
 
 
