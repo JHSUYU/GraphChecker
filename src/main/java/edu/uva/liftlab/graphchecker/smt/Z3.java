@@ -1,11 +1,10 @@
-package edu.uva.liftlab.graphchecker.compose;
+package edu.uva.liftlab.graphchecker.smt;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
@@ -19,21 +18,41 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
- * One z3 answer per valuation.
+ * THE z3 driver: one query text in, one answer out.
  *
- * <p>The composed body is asked once per valuation with that valuation's
- * root pins conjoined, because the pins are the question and the body is
- * the program: re-rendering the body per valuation would make sixteen
- * copies of one formula, and pinning inside the body would make the
- * enumeration a property of the artifact.</p>
+ * <p>Owns the four things running a solver is: launching the process,
+ * enforcing the budget, reading both streams without deadlocking, and
+ * reading the verdict, the model and the errors back out of what z3
+ * printed.  Nothing here decides what an answer MEANS -- the composer turns
+ * an undecided valuation or an error into its own named BLOCKING gap, and
+ * the obligation solver refuses a model equal to the seed's -- because a
+ * policy is about the campaign and this is about a process.</p>
  *
  * <p>An answer that is not {@code sat} or {@code unsat} is neither: a
- * timeout or an {@code unknown} says the solver did not decide, and a
- * claim that reads it as a refutation is a claim about the solver.</p>
+ * timeout, an {@code unknown} or an {@code (error ...)} says the solver did
+ * not decide, and a caller that reads one as a refutation is making a claim
+ * about the solver.  {@link Answer#decided()} is the one test for that.</p>
+ *
+ * <p>The model is asked for in its OWN run, after the verdict is known, and
+ * so are the unsat core and the reason: a script that appends
+ * {@code (get-value ...)} to every question makes z3 answer
+ * {@code "(error ... model is not available)"} on every unsat one, and an
+ * error z3 prints as a matter of course is an error nobody reads -- which is
+ * how a genuine "invalid bit-vector literal" once sat in a manifest as if it
+ * were a verdict.</p>
  */
-public final class Solver {
+public final class Z3 {
 
-    /** What one z3 run answered. */
+    /** The budget one question gets when the campaign names none. */
+    public static final long DEFAULT_TIMEOUT_MILLIS = 20_000L;
+
+    /** How z3 says it could not read the query. */
+    private static final String ERROR = "(error ";
+
+    /** The status of an answer no process lived long enough to print. */
+    private static final String TIMEOUT = "timeout";
+
+    /** What one question answered. */
     public static final class Answer {
         private final String status;
         private final Map<String, String> values;
@@ -50,21 +69,7 @@ public final class Solver {
             this.reason = reason == null ? "" : reason;
         }
 
-        /**
-         * Why the solver did not decide, in its own words, or "".
-         *
-         * <p>{@code (get-info :reason-unknown)}, asked only of an answer
-         * that is neither sat nor unsat.  Without it an undecided valuation
-         * reached the manifest as a bare {@code state=unknown}, which tells
-         * a reader nothing about whether the query was too hard, in the
-         * wrong fragment, or cut off -- 17960's moved valuation came back
-         * {@code (incomplete quantifiers)}, and that named the two
-         * {@code lambda} definitions it was about.</p>
-         */
-        public String reason() {
-            return reason;
-        }
-
+        /** The first line z3 printed: sat, unsat, unknown, or neither. */
         public String status() {
             return status;
         }
@@ -82,6 +87,26 @@ public final class Solver {
             return sat() || unsat();
         }
 
+        /** Whether the budget ran out before z3 said anything. */
+        public boolean timedOut() {
+            return TIMEOUT.equals(status);
+        }
+
+        /**
+         * Why the solver did not decide, in its own words, or "".
+         *
+         * <p>{@code (get-info :reason-unknown)}, asked only of an answer
+         * that is neither sat nor unsat.  Without it an undecided valuation
+         * reached the manifest as a bare {@code state=unknown}, which tells
+         * a reader nothing about whether the query was too hard, in the
+         * wrong fragment, or cut off -- 17960's moved valuation came back
+         * {@code (incomplete quantifiers)}, and that named the two
+         * {@code lambda} definitions it was about.</p>
+         */
+        public String reason() {
+            return reason;
+        }
+
         /** Symbol -> the value the model gave it, for the symbols asked. */
         public Map<String, String> values() {
             return values;
@@ -90,6 +115,11 @@ public final class Solver {
         /** The names of the conjuncts one unsat answer closed on. */
         public List<String> core() {
             return core;
+        }
+
+        /** Everything z3 printed, for a reader of the run. */
+        public String output() {
+            return output;
         }
 
         @Override
@@ -104,9 +134,10 @@ public final class Solver {
     private int runs;
     private final Set<String> errors = new LinkedHashSet<String>();
 
-    public Solver(Path z3, long timeoutMillis) {
-        this.z3 = z3 == null ? Paths.get("z3") : z3;
-        this.timeoutMillis = timeoutMillis <= 0L ? 20000L : timeoutMillis;
+    public Z3(Path executable, long timeoutMillis) {
+        this.z3 = executable == null ? Paths.get("z3") : executable;
+        this.timeoutMillis = timeoutMillis <= 0L
+                ? DEFAULT_TIMEOUT_MILLIS : timeoutMillis;
     }
 
     /** How many times z3 was asked; the cost of one composition. */
@@ -122,100 +153,66 @@ public final class Solver {
      * printed afterwards is about a different formula.  It is collected
      * here, over the auxiliary asks (the unsat core, the pairing probes,
      * the clock probe) as well as the valuations, because one such answer
-     * anywhere invalidates the claim the composition would otherwise read
-     * off the others.</p>
+     * anywhere invalidates the claim a caller would otherwise read off the
+     * others.</p>
      */
     public List<String> errors() {
         return new ArrayList<String>(errors);
     }
 
     /**
-     * One question: the body, these extra assertions, this model request.
+     * One question: this query, this model request, this core request.
      *
-     * @param body          the composed query, declarations and assertions,
-     *                      without a {@code check-sat}
-     * @param assumptions   named assertions conjoined for this question only
+     * @param query         the declarations and assertions, without a
+     *                      {@code check-sat}
      * @param modelSymbols  the constants whose value a sat answer must carry
      * @param wantCore      whether an unsat answer should name its core
      */
-    public Answer ask(String body, List<String> assumptions,
-                      List<String> modelSymbols, boolean wantCore) {
-        StringBuilder query = new StringBuilder(body);
-        if (assumptions != null) {
-            for (String assumption : assumptions) {
-                if (assumption == null || assumption.isEmpty()) continue;
-                query.append(assumption).append('\n');
-            }
-        }
-        String question = query.toString();
-        query.append("(check-sat)\n");
-        String output = run(SmtLowering.legalSymbols(query.toString()));
+    public Answer ask(String query, List<String> modelSymbols,
+                      boolean wantCore) {
+        String text = query == null ? "" : query;
+        String output = run(text + "(check-sat)\n");
         String status = firstLine(output);
         Map<String, String> values = Collections.emptyMap();
-        // The model is asked for in its OWN run, after the answer is known.
-        // A script that appends (get-value ...) to every question makes z3
-        // answer "(error ... model is not available)" on every unsat one --
-        // and an error z3 prints as a matter of course is an error nobody
-        // reads, which is how a genuine "invalid bit-vector literal" sat in
-        // a manifest as if it were a verdict.  Same shape as the unsat core
-        // below: one more run, only when there is something to ask for.
         if ("sat".equals(status) && modelSymbols != null
                 && !modelSymbols.isEmpty()) {
-            StringBuilder model = new StringBuilder(question);
-            model.append("(check-sat)\n(get-value (");
-            for (String symbol : modelSymbols) {
-                model.append(' ').append(symbol);
-            }
-            model.append("))\n");
-            values = parseValues(run(
-                    SmtLowering.legalSymbols(model.toString())));
+            values = parseValues(run(modelQuery(text, modelSymbols)));
         }
         List<String> core = Collections.emptyList();
         if (wantCore && "unsat".equals(status)) {
-            String coreOutput = run(SmtLowering.legalSymbols(body
-                    + join(assumptions)
-                    + "(check-sat)\n(get-unsat-core)\n"));
-            core = parseCore(coreOutput);
+            core = parseCore(run(text + "(check-sat)\n(get-unsat-core)\n"));
         }
         // Why it did not decide, asked the same way: one more run, only
         // when there is something to ask for.  An undecided answer with no
-        // reason is a silence, and a silence is not a verdict.
+        // reason is a silence, and a silence is not a verdict.  A timeout is
+        // not asked: no process survived to print a reason, so a second run
+        // would spend the whole budget again to read the same "".
         String reason = "";
-        if (!"sat".equals(status) && !"unsat".equals(status)) {
-            reason = parseReason(run(SmtLowering.legalSymbols(question
-                    + "(check-sat)\n(get-info :reason-unknown)\n")));
+        if (!"sat".equals(status) && !"unsat".equals(status)
+                && !TIMEOUT.equals(status)) {
+            reason = parseReason(run(text
+                    + "(check-sat)\n(get-info :reason-unknown)\n"));
         }
         return new Answer(status, values, core, output, reason);
     }
 
-    /** The text of one {@code (:reason-unknown "…")} line, or "". */
-    private static String parseReason(String output) {
-        if (output == null) return "";
-        int at = output.indexOf(":reason-unknown");
-        if (at < 0) return "";
-        int open = output.indexOf('"', at);
-        int close = open < 0 ? -1 : output.indexOf('"', open + 1);
-        if (open < 0 || close < 0) return "";
-        return output.substring(open + 1, close).trim();
-    }
-
-    private static String join(List<String> assumptions) {
-        StringBuilder text = new StringBuilder();
-        if (assumptions != null) {
-            for (String assumption : assumptions) {
-                if (assumption == null || assumption.isEmpty()) continue;
-                text.append(assumption).append('\n');
+    /**
+     * The exact text {@link #ask} sends when it asks for a model.
+     *
+     * <p>Public because a stage that publishes its query as an artifact
+     * publishes the question that was asked, and there is one spelling of
+     * that question: a file that says {@code (get-model)} while the run
+     * asked {@code (get-value ...)} is a second query nobody solved.</p>
+     */
+    public static String modelQuery(String query, List<String> modelSymbols) {
+        StringBuilder text = new StringBuilder(query == null ? "" : query);
+        text.append("(check-sat)\n(get-value (");
+        if (modelSymbols != null) {
+            for (String symbol : modelSymbols) {
+                text.append(' ').append(symbol);
             }
         }
-        return text.toString();
-    }
-
-    /** Writes the query beside the artifacts, for a reader of the run. */
-    public static void save(Path file, String query) throws IOException {
-        if (file.getParent() != null) {
-            Files.createDirectories(file.getParent());
-        }
-        Files.write(file, query.getBytes(StandardCharsets.UTF_8));
+        return text.append("))\n").toString();
     }
 
     // ------------------------------------------------------------------
@@ -229,7 +226,7 @@ public final class Solver {
      * pipe buffers as soon as a query or a model is larger than one: both
      * directions are therefore their own thread, and the timeout is
      * enforced here rather than handed to z3, so that a solver that ignores
-     * it cannot hold the composition open.</p>
+     * it cannot hold the campaign open.</p>
      */
     private String run(String input) {
         runs++;
@@ -241,6 +238,8 @@ public final class Solver {
             builder.redirectErrorStream(true);
             process = builder.start();
         } catch (IOException notLaunched) {
+            // Not an "(error ...)" z3 printed -- z3 never ran -- so it is
+            // an undecided answer and not a query the solver could not read.
             return "error " + notLaunched.getMessage();
         }
         final Process running = process;
@@ -284,14 +283,14 @@ public final class Solver {
                 process.destroyForcibly();
                 writer.interrupt();
                 reader.interrupt();
-                return "timeout";
+                return TIMEOUT;
             }
             reader.join(TimeUnit.NANOSECONDS.toMillis(budget));
             writer.join(TimeUnit.NANOSECONDS.toMillis(budget));
         } catch (InterruptedException interrupted) {
             process.destroyForcibly();
             Thread.currentThread().interrupt();
-            return "timeout";
+            return TIMEOUT;
         }
         return errorsOf(read.get());
     }
@@ -308,9 +307,6 @@ public final class Solver {
         }
         return output;
     }
-
-    /** How z3 says it could not read the query. */
-    private static final String ERROR = "(error ";
 
     private static String readAll(InputStream stream) throws IOException {
         ByteArrayOutputStream buffer = new ByteArrayOutputStream();
@@ -372,6 +368,17 @@ public final class Solver {
             if (!digits.isEmpty()) return "-" + digits;
         }
         return text;
+    }
+
+    /** The text of one {@code (:reason-unknown "…")} line, or "". */
+    private static String parseReason(String output) {
+        if (output == null) return "";
+        int at = output.indexOf(":reason-unknown");
+        if (at < 0) return "";
+        int open = output.indexOf('"', at);
+        int close = open < 0 ? -1 : output.indexOf('"', open + 1);
+        if (open < 0 || close < 0) return "";
+        return output.substring(open + 1, close).trim();
     }
 
     /** The names an unsat core lists, in the order z3 printed them. */

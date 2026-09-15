@@ -27,7 +27,14 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Collection;
 import java.util.Set;
+import java.util.function.Predicate;
+
+import static edu.uva.liftlab.graphchecker.compose.VmTermLowering.smtLiteral;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalInteger;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalLongInteger;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.primitiveString;
 
 /**
  * The ONE SMT lowering: the composer's and the flip solver's.
@@ -764,7 +771,7 @@ public final class SmtLowering extends VmLoweringCore {
     @Override
     public Term symbolTerm(JsonObject expression, Sort expected,
                            String origin) {
-        String raw = JsonText.string(expression, "_exp");
+        String raw = primitiveString(expression, "_exp");
         // Java null, which the VM spells "N" on a SymbolExpression leaf
         // exactly as it does on a constant one (VmExpressionIr
         // .SYMBOLIC_NULL).  Read as a NAME instead, it minted an opaque
@@ -775,7 +782,7 @@ public final class SmtLowering extends VmLoweringCore {
             return nullLeaf(expected);
         }
         if ("V".equals(raw)) return Term.of("true", Sort.BOOL);
-        String javaType = JsonText.string(expression, "_java_type");
+        String javaType = primitiveString(expression, "_java_type");
         Sort encoded = JavaSmtSorts.sortOfJava(javaType);
         Sort sort = expected == Sort.MAP || expected == Sort.ARRAY_VALUE
                 ? expected
@@ -836,8 +843,8 @@ public final class SmtLowering extends VmLoweringCore {
 
     @Override
     public Term placeholderTerm(JsonObject expression, String origin) {
-        String function = JsonText.string(expression, "_place_holder_func");
-        int count = JsonText.integer(expression, "_count", -1);
+        String function = primitiveString(expression, "_place_holder_func");
+        int count = optionalInteger(expression, "_count", -1);
         if (!"currentTimeMills".equals(function) || count < 1) {
             refuse("PlaceholderExpression:"
                     + (function.isEmpty() ? "unknown" : function)
@@ -924,7 +931,7 @@ public final class SmtLowering extends VmLoweringCore {
             }
             if (!minted.isEmpty()) {
                 return symbolTerm(symbolNode(minted,
-                                JsonText.string(expression, "_java_type")),
+                                primitiveString(expression, "_java_type")),
                         expected, origin + ":minted");
             }
         }
@@ -980,7 +987,7 @@ public final class SmtLowering extends VmLoweringCore {
                 || VmRows.referencedObjectRid(text) > 0L) {
             return symbolTerm(symbolNode(text, javaType), null, origin);
         }
-        String literal = JsonText.smtLiteral(text);
+        String literal = smtLiteral(text);
         if (literal.isEmpty()) return null;
         Sort sort = JavaSmtSorts.sortOfJava(javaType);
         if (sort != Sort.BOOL && sort != Sort.INT && sort != Sort.FLOAT32
@@ -1016,16 +1023,16 @@ public final class SmtLowering extends VmLoweringCore {
                          JsonObject location, String key, long version,
                          Sort expected, String origin) {
         if (value == null || !value.sort.containerState()) return value;
-        String javaType = JsonText.string(expression, "_java_type");
+        String javaType = primitiveString(expression, "_java_type");
         Sort cell = JavaSmtSorts.sortOfJava(javaType);
         // The read IS of the container: the value is what it read.
         if (cell.containerState() || cell == Sort.UNKNOWN
                 || expected != null && expected.containerState()) {
             return value;
         }
-        long slot = JsonText.longInteger(location, "slot", -1L);
+        long slot = optionalLongInteger(location, "slot", -1L);
         boolean indexed = value.sort == Sort.ARRAY_VALUE && slot >= 0L
-                && locationKind(JsonText.string(location, "locationKind"))
+                && locationKind(primitiveString(location, "locationKind"))
                 == LocationKind.ARRAY;
         if (indexed) {
             Term cellValue = Term.of("(indexed_read " + value.text + " "
@@ -1054,18 +1061,18 @@ public final class SmtLowering extends VmLoweringCore {
             // carried it on.  A field projection states no operation, so
             // naming the operation alone left the row blank -- a refusal
             // nobody can read is the silence rule 8 forbids.
-            String named = JsonText.string(expression, "operation");
+            String named = primitiveString(expression, "operation");
             if (named.isEmpty()) {
                 named = field
-                        ? "FIELD:" + JsonText.string(expression, "ownerClass")
-                        + "@" + JsonText.longInteger(expression,
+                        ? "FIELD:" + primitiveString(expression, "ownerClass")
+                        + "@" + optionalLongInteger(expression,
                         "fieldOffset", -1L)
-                        : JsonText.string(expression, "shape");
+                        : primitiveString(expression, "shape");
             }
             refuse("ContainerRelation:" + (named.isEmpty() ? "unnamed"
                     : named), "");
             return free(JavaSmtSorts.sortOfJava(
-                    JsonText.string(expression, "_java_type")));
+                    primitiveString(expression, "_java_type")));
         }
         Sort sort = VmTermLowering.sortOfContainer(value.sort);
         if (sort == Sort.UNKNOWN) {
@@ -1148,7 +1155,7 @@ public final class SmtLowering extends VmLoweringCore {
                         origin + ":container-state");
                 if (reference == null || reference.sort != Sort.REF) {
                     if (identity != null && identity.isJsonObject()) {
-                        String raw = JsonText.string(
+                        String raw = primitiveString(
                                 identity.getAsJsonObject(), "_exp");
                         if (!raw.isEmpty()) {
                             String name = symbols.mint("container__",
@@ -1692,6 +1699,54 @@ public final class SmtLowering extends VmLoweringCore {
     }
 
     /**
+     * Every name the query's own logic gives a meaning to.
+     *
+     * <p>The operators belong here for the same reason the datatype
+     * selectors do: in SMT-LIB {@code =} and {@code <=} are SYMBOLS, and
+     * {@link #names} reads them as such, so a caller asking "which names
+     * does nothing declare" must be told that the theory declares these.
+     * Left out, the check reported {@code =} as a free symbol of every term
+     * it read.</p>
+     *
+     * <p>One set, for both stages: it was the composer's private BUILTIN and
+     * the flip query's own KEYWORDS, and the two differed -- the flip
+     * query's was missing every datatype selector and every bit-vector
+     * operator the composer lists, and the composer's was missing
+     * {@code is_int} beside the {@code to_int} and {@code to_real} it
+     * already had.  Two vocabularies over one query text is a name one
+     * stage calls a theory operator and the other calls undeclared.</p>
+     */
+    public static final Set<String> BUILTIN =
+            Collections.unmodifiableSet(new LinkedHashSet<String>(
+                    Arrays.asList("=", "=>", "+", "-", "*", "/", "<", "<=",
+                    ">", ">=", "!", "_",
+                    "and", "or", "not", "xor", "ite", "let", "forall",
+                    "exists", "distinct", "true", "false", "div", "mod",
+                    "abs", "rem", "select", "store", "as", "const", "lambda",
+                    "is", "bvadd", "bvsub", "bvmul", "bvand", "bvor",
+                    "bvxor", "bvnot", "bvshl", "bvlshr", "bvashr", "bvsdiv",
+                    "bvudiv", "bvsrem", "bvurem", "bvule", "bvult", "bvsle",
+                    "bvslt", "bvuge", "bvugt", "bvsge", "bvsgt", "concat",
+                    "extract", "zero_extend", "sign_extend", "Int", "Bool",
+                    "Real", "String", "Ref", "Value", "AssocState",
+                    "IndexedState", "FloatingPoint", "RoundingMode",
+                    "roundNearestTiesToEven", "RNE", "RTZ", "RTP", "RTN",
+                    "RNA", "nullRef", "java_int_wrap", "java_long_wrap",
+                    "java_int_to_string", "indexed_state_of",
+                    "assoc_state_of", "indexed_read", "indexed_write",
+                    "indexed_append", "indexed_insert", "indexed_remove",
+                    "indexed_contains", "indexed_size", "indexed_elements",
+                    "assoc_has", "assoc_read", "assoc_key_at",
+                    "assoc_value_at", "assoc_put", "assoc_remove",
+                    "assoc_size", "assoc_present", "assoc_values",
+                    "assoc_order", "assoc_position", "VByte", "VChar",
+                    "VShort", "VInt", "VLong", "VFloat", "VDouble", "VBool",
+                    "VRef", "VString", "valueByte", "valueChar", "valueShort",
+                    "valueInt", "valueLong", "valueFloat", "valueDouble",
+                    "valueBool", "valueRef", "valueString", "str", "fp",
+                    "to_real", "to_int", "is_int", "divisible")));
+
+    /**
      * Every NAME one SMT term names: the one tokenizer.
      *
      * <p>The alphabet is {@link #symbolCharacter}'s, which is SMT-LIB's, so
@@ -1702,26 +1757,91 @@ public final class SmtLowering extends VmLoweringCore {
      * the same one-rule-two-implementations defect as the two declaration
      * maps, in the same path.  Text inside {@code "..."} is a literal and
      * names nothing; text inside {@code |...|} is ONE name, however it is
-     * spelled; a numeral is a value and not a name.</p>
+     * spelled; a numeral is a value and not a name, and neither is a
+     * {@code #x}/{@code #b} literal.</p>
      */
     public static List<String> names(String text) {
         List<String> names = new ArrayList<String>();
-        if (text == null) return names;
+        pass(text, Collections.<String, String>emptyMap(), names);
+        return names;
+    }
+
+    /**
+     * The same names, minus the ones the theory declares.
+     *
+     * <p>What a caller means by "the symbols of this term": the free names,
+     * which it then asks the corpus about.  One tokenizer, one vocabulary --
+     * the flip query and the closure planner each had their own pair.</p>
+     */
+    public static Set<String> symbols(String text, Set<String> into) {
+        for (String name : names(text)) {
+            if (!BUILTIN.contains(name)) into.add(name);
+        }
+        return into;
+    }
+
+    /**
+     * The same text with the caller's renames applied, and every name it
+     * left free that nothing states.
+     *
+     * <p>A recorded predicate arrives already spelled in SMT-LIB over the
+     * symbols the recording declared, so a stage that needs it over its own
+     * variables RENAMES -- it never re-derives the predicate.  Renaming is
+     * therefore one pass of the one tokenizer, and a token the renames do
+     * not name is copied through exactly as it was written, bars and all.</p>
+     *
+     * <p>{@code unknown} collects the free names that are neither theory
+     * vocabulary nor stated by {@code stated}; that is what makes a query
+     * refuse itself rather than emit a formula over a constant nothing
+     * declares.  A term that BINDS names of its own ({@code let}) reports
+     * none of them, because a bound name is not free and the pass does not
+     * track scopes.</p>
+     */
+    public static String rename(String text, Map<String, String> renames,
+                                Predicate<String> stated,
+                                Set<String> unknown) {
+        Set<String> named = new LinkedHashSet<String>();
+        String out = pass(text, renames, named);
+        if (text != null && !text.contains("(let ")) {
+            for (String name : named) {
+                if (BUILTIN.contains(name)) continue;
+                if (stated != null && stated.test(name)) continue;
+                unknown.add(name);
+            }
+        }
+        return out.trim();
+    }
+
+    /**
+     * ONE pass over an SMT term: the names it names, renamed where asked.
+     *
+     * <p>Every consumer of a term's names goes through here -- "which names
+     * are these", "which of them is free", "the same term over my own
+     * variables" -- so the three questions are asked of one tokenizer and
+     * cannot disagree about where a name ends.</p>
+     */
+    private static String pass(String text, Map<String, String> renames,
+                               Collection<String> named) {
+        StringBuilder out = new StringBuilder();
+        if (text == null) return "";
         int index = 0;
         while (index < text.length()) {
             char value = text.charAt(index);
             if (value == '"') {
-                index = pastLiteral(text, index, '"');
+                int end = pastLiteral(text, index, '"');
+                out.append(text, index, end);
+                index = end;
                 continue;
             }
             if (value == '|') {
                 int end = pastLiteral(text, index, '|');
-                name(names, text.substring(index + 1,
-                        Math.max(index + 1, end - 1)));
-                index = end;
+                String token = text.substring(index + 1,
+                        Math.max(index + 1, end - 1));
+                index = emit(out, text, index, end, token, renames, named);
                 continue;
             }
             if (!symbolCharacter(value)) {
+                out.append(value);
                 index++;
                 continue;
             }
@@ -1730,10 +1850,33 @@ public final class SmtLowering extends VmLoweringCore {
                     && symbolCharacter(text.charAt(end))) {
                 end++;
             }
-            name(names, text.substring(index, end));
-            index = end;
+            index = emit(out, text, index, end, text.substring(index, end),
+                    renames, named);
         }
-        return names;
+        return out.toString();
+    }
+
+    /**
+     * One token: renamed, or copied exactly as it was spelled.
+     *
+     * @return the index past the token
+     */
+    private static int emit(StringBuilder out, String text, int start,
+                            int end, String token,
+                            Map<String, String> renames,
+                            Collection<String> named) {
+        if (!name(token)) {
+            out.append(text, start, end);
+            return end;
+        }
+        String renamed = renames.get(token);
+        if (renamed != null) {
+            out.append(renamed);
+            return end;
+        }
+        out.append(text, start, end);
+        named.add(token);
+        return end;
     }
 
     /** One index past the literal that opens at {@code at}. */
@@ -1745,12 +1888,20 @@ public final class SmtLowering extends VmLoweringCore {
         return index < text.length() ? index + 1 : index;
     }
 
-    /** Keeps one token if it is a name and not a numeral. */
-    private static void name(List<String> names, String token) {
-        if (token.isEmpty()) return;
+    /**
+     * Whether one token is a NAME and not a value.
+     *
+     * <p>A numeral is a value; so is {@code #x1f} and {@code #b01}, which
+     * SMT-LIB spells with a {@code #} that {@link #symbolCharacter} admits
+     * because the runtime's own location symbols use one.  Reporting a
+     * hexadecimal literal as a free name is how a float in a lowered term
+     * became "this term names symbols nothing declares".</p>
+     */
+    private static boolean name(String token) {
+        if (token.isEmpty()) return false;
         char first = token.charAt(0);
-        if (Character.isDigit(first) || first == '-' || first == '.') return;
-        names.add(token);
+        return !Character.isDigit(first) && first != '-' && first != '.'
+                && first != '#';
     }
 
     /** The preamble alone: the sorts and functions, no declaration. */
@@ -1931,17 +2082,17 @@ public final class SmtLowering extends VmLoweringCore {
     /** The join key of one VM location node, in the same spelling. */
     public static String locationKey(JsonObject location) {
         if (location == null || location.size() == 0) return "";
-        String kind = JsonText.string(location, "locationKind");
+        String kind = primitiveString(location, "locationKind");
         if (kind.isEmpty()) return "";
-        String owner = JsonText.string(location, "ownerSymRid");
+        String owner = primitiveString(location, "ownerSymRid");
         if (owner.isEmpty()) {
-            long rid = JsonText.longInteger(location, "ownerSymRid", 0L);
+            long rid = optionalLongInteger(location, "ownerSymRid", 0L);
             owner = rid == 0L ? "" : Long.toString(rid);
         }
         if (owner.isEmpty()) return "";
-        String slot = JsonText.string(location, "slot");
+        String slot = primitiveString(location, "slot");
         if (slot.isEmpty()) {
-            slot = Long.toString(JsonText.longInteger(location, "slot", 0L));
+            slot = Long.toString(optionalLongInteger(location, "slot", 0L));
         }
         return locationKey(LocationId.of(locationKind(kind), owner, slot));
     }
@@ -1971,7 +2122,7 @@ public final class SmtLowering extends VmLoweringCore {
                 VmRows.OBSERVED_VERSION);
         if (observed == null || observed.isJsonNull()) return -1L;
         if (observed.isJsonObject()) {
-            return JsonText.longInteger(observed.getAsJsonObject(),
+            return optionalLongInteger(observed.getAsJsonObject(),
                     "fieldVersionId", -1L);
         }
         try {

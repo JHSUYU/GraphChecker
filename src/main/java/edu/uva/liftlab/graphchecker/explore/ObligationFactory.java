@@ -1,6 +1,7 @@
 package edu.uva.liftlab.graphchecker.explore;
 
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
+import edu.uva.liftlab.graphchecker.smt.Z3;
 
 import edu.uva.liftlab.graphchecker.contract.DecisionRow;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
@@ -11,9 +12,7 @@ import edu.uva.liftlab.graphchecker.contract.ObligationResult;
 import edu.uva.liftlab.graphchecker.contract.Task;
 import edu.uva.liftlab.graphchecker.contract.Verdict;
 
-import java.io.IOException;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -39,8 +38,6 @@ import java.util.function.Predicate;
  * open.</p>
  */
 public final class ObligationFactory {
-    /** What one obligation's query may cost. */
-    public static final long DEFAULT_TIMEOUT_MILLIS = 20_000L;
     /** How many recorded paths of one task a wave proposes flips from. */
     public static final int DEFAULT_MAX_PATHS_PER_TASK = 32;
     /** How many flips one path may offer in one wave. */
@@ -316,25 +313,14 @@ public final class ObligationFactory {
                             "the query was refused: " + built.refusal),
                     "", gaps);
         }
-        Z3Solver.Answer answer;
-        long budget = timeoutMillis <= 0 ? DEFAULT_TIMEOUT_MILLIS
+        long budget = timeoutMillis <= 0 ? Z3.DEFAULT_TIMEOUT_MILLIS
                 : timeoutMillis;
-        try {
-            answer = Z3Solver.solve(z3 == null ? Paths.get("z3") : z3,
-                    built.smt2, budget);
-        } catch (IOException | InterruptedException failed) {
-            if (failed instanceof InterruptedException) {
-                Thread.currentThread().interrupt();
-            }
-            gaps.add(GapRow.of(candidate.path.sessionId,
-                    GapKind.SOLVER_TIMEOUT, GapClass.DIAGNOSTIC, id,
-                    "the solver could not be run: " + failed));
-            return new Outcome(id, candidate.task.taskId(), null,
-                    ObligationResult.of(id, Verdict.NOT_ADMITTED, "",
-                            "the solver could not be run: " + failed),
-                    built.smt2, gaps);
-        }
-        if (answer.timedOut) {
+        Z3 solver = new Z3(z3, budget);
+        Z3.Answer answer = solver.ask(built.smt2, built.modelSymbols, false);
+        // The query as it was ASKED, for the artifact: the body plus the
+        // question the one driver puts to z3.
+        String query = Z3.modelQuery(built.smt2, built.modelSymbols);
+        if (answer.timedOut()) {
             gaps.add(GapRow.of(candidate.path.sessionId,
                     GapKind.SOLVER_TIMEOUT, GapClass.DIAGNOSTIC, id,
                     "no verdict in " + budget + "ms: the flip is an "
@@ -342,26 +328,43 @@ public final class ObligationFactory {
             return new Outcome(id, candidate.task.taskId(), null,
                     ObligationResult.of(id, Verdict.NOT_ADMITTED, "",
                             "SOLVER_TIMEOUT after " + budget + "ms"),
-                    built.smt2, gaps);
+                    query, gaps);
         }
-        if (!answer.sat) {
+        // An answer that is neither sat nor unsat is not a verdict about the
+        // corpus: an "(error ...)" says z3 could not READ the query and an
+        // "unknown" says it did not decide, so reading either as UNSAT would
+        // publish "no world of this corpus takes the other arm" on the
+        // solver's authority.  Refused by name, the way the composer refuses
+        // the same two answers.
+        if (!answer.decided()) {
+            return new Outcome(id, candidate.task.taskId(), null,
+                    ObligationResult.of(id, Verdict.NOT_ADMITTED, "",
+                            "the solver did not decide this flip: "
+                                    + answer.status()
+                                    + (answer.reason().isEmpty() ? ""
+                                    : " " + answer.reason())
+                                    + (solver.errors().isEmpty() ? ""
+                                    : " " + solver.errors())),
+                    query, gaps);
+        }
+        if (!answer.sat()) {
             return new Outcome(id, candidate.task.taskId(), null,
                     ObligationResult.of(id, Verdict.UNSAT, "",
                             "no world of this corpus takes the other arm at "
                                     + decision.siteId() + "#"
                                     + decision.ordinal()),
-                    built.smt2, gaps);
+                    query, gaps);
         }
         Map<String, String> roots = new LinkedHashMap<String, String>();
         for (Map.Entry<String, String> variable
                 : built.rootVariables.entrySet()) {
-            String value = answer.model.get(variable.getKey());
+            String value = answer.values().get(variable.getKey());
             if (value != null) roots.put(variable.getValue(), value);
         }
         Map<String, String> answers = new LinkedHashMap<String, String>();
         List<String> unproducible = new ArrayList<String>();
         for (FlipQuery.Control control : built.controls) {
-            String value = answer.model.get(control.variable);
+            String value = answer.values().get(control.variable);
             if (value != null) answers.put(control.attachEndpointId, value);
             if (control.unproducible) {
                 unproducible.add(control.attachEndpointId);
@@ -382,7 +385,7 @@ public final class ObligationFactory {
                     GapKind.ADMISSION_GAP, GapClass.BLOCKING, id, recorded));
             return new Outcome(id, candidate.task.taskId(), null,
                     ObligationResult.of(id, Verdict.NOT_ADMITTED, "",
-                            recorded), built.smt2, gaps);
+                            recorded), query, gaps);
         }
         return new Outcome(id, candidate.task.taskId(), solved,
                 ObligationResult.of(id, Verdict.SAT_MODEL_READY, "",
@@ -390,6 +393,6 @@ public final class ObligationFactory {
                                 + decision.ordinal() + " is reachable under "
                                 + roots.size() + " root value(s) and "
                                 + answers.size() + " answered handoff(s)"),
-                built.smt2, gaps);
+                query, gaps);
     }
 }

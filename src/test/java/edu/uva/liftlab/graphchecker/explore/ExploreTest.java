@@ -410,10 +410,14 @@ public class ExploreTest {
         open.flush();
         scopeMap(declared, targetSite("REGION.target", "Throw#u30",
                 "Arrival#u8"));
+        // The case's own file, in the one spelling a case writes it in:
+        // sourceId and two bounds RELATIVE to the recording.
         Path domains = declared.resolve("root-domains.jsonl");
-        RowCodec.writeAll(domains, Collections.singletonList(RootDomain.of(
-                        "CASE.SERIAL", RootKind.INTEGRAL, "7", "+4", "+5")),
-                ExploreCodec::writeDomain);
+        Files.write(domains, Collections.singletonList(
+                "{\"sourceId\":\"CASE.SERIAL\","
+                        + "\"declaredDomainMin\":\"+4\","
+                        + "\"declaredDomainMax\":\"+5\"}"),
+                java.nio.charset.StandardCharsets.UTF_8);
         Path declaredOut = tree.newFolder("declared-out").toPath();
         Path declaredWave = declaredOut.resolve("obligations-0000");
         plan(declared, TARGET_SELECTOR, domains,

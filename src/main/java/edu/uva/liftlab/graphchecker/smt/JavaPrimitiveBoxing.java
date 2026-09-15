@@ -53,8 +53,18 @@ public final class JavaPrimitiveBoxing {
         return false;
     }
 
+    /**
+     * The descriptor of the primitive this WRAPPER boxes, or "".
+     *
+     * <p>Not the wrapper's own descriptor: {@code java.lang.Integer} answers
+     * {@code I}, which is the question an unboxing site asks.  The wrapper's
+     * own descriptor is {@link JavaPrimitiveSmtSemantics#javaTypeDescriptor}
+     * -- one name per question, after the alias that spelled the second one
+     * "primitiveDescriptor" as well.</p>
+     */
     public static String primitiveDescriptor(String wrapperType) {
-        Primitive primitive = BY_WRAPPER.get(normalize(wrapperType));
+        Primitive primitive = BY_WRAPPER.get(
+                JavaPrimitiveSmtSemantics.typeName(wrapperType));
         return primitive == null ? "" : primitive.descriptor;
     }
 
@@ -70,14 +80,6 @@ public final class JavaPrimitiveBoxing {
         return value.endsWith(".return")
                 ? value.substring(0, value.length() - ".return".length())
                 : "";
-    }
-
-    private static String normalize(String type) {
-        String value = type == null ? "" : type.trim().replace('/', '.');
-        if (value.startsWith("L") && value.endsWith(";")) {
-            value = value.substring(1, value.length() - 1);
-        }
-        return value;
     }
 
     private static final class Primitive {
