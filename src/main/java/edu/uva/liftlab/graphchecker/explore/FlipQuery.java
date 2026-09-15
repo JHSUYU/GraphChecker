@@ -127,10 +127,14 @@ final class FlipQuery {
      * branch, published with no term because the VM had no symbolic value at
      * the site.  There is nothing to negate and no valuation that could take
      * the other arm; asking anyway asserted {@code "(not )"}, which is not
-     * SMT at all.  This is the ONE rule -- the closure's own task test
-     * ({@link ClosurePlanner#symbolicDecision}) and the obligation factory
-     * both call it, so a decision cannot be a task's reason and not its
-     * candidate.</p>
+     * SMT at all.</p>
+     *
+     * <p>Where a candidate may SIT is a different question, and the closure
+     * answers it: CLOSURE-V2 SS3 restricts candidates to the guard set the
+     * demand named for that occurrence
+     * ({@link ObligationFactory#candidates}).  This predicate test is what
+     * is left of E7's rule -- a branch that carries a symbol is flippable --
+     * and it is still one rule, asked in one place.</p>
      */
     static boolean flippable(Corpus corpus, String sessionId,
                              DecisionRow decision) {

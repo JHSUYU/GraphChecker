@@ -19,6 +19,7 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.function.Predicate;
 
 /**
@@ -139,12 +140,27 @@ public final class ObligationFactory {
     }
 
     /**
-     * The same, naming every candidate the corpus has already answered.
+     * The flips one task offers, naming every candidate the corpus has
+     * already answered.
      *
+     * <p>CLOSURE-V2 SS3: a candidate is a symbolic decision of a closure
+     * member AT A SITE THE CLOSURE DEMANDED IT FOR -- the target's guards for
+     * the anchor, a writer's or a producer's own guards for a writer or a
+     * producer.  E7's rule was every symbolic decision of every instrumented
+     * occurrence, which spent a wave on branches no value the target read
+     * rests on: on the P2f' three-session corpus that was 45 candidates where
+     * the closure demands two.  The guard set comes from the wave's closure
+     * plan, which took it from the epoch's static map, so "why is this
+     * occurrence a task" and "which of its branches may be flipped" are one
+     * answer.</p>
+     *
+     * @param flipSites the site ids this task's demand names; a task with
+     *                  none offers no flip, and null is the same as none
      * @param gaps where a skipped candidate is recorded, so a reader can see
      *             that the wave shrank because the corpus grew
      */
     public static List<Candidate> candidates(Corpus corpus, Task task,
+                                             Set<String> flipSites,
                                              Bounds bounds,
                                              Predicate<String> asked,
                                              List<GapRow> gaps) {
@@ -158,6 +174,10 @@ public final class ObligationFactory {
                     && flips < bounds.maxFlipsPerPath; index++) {
                 DecisionRow decision = path.decisions.get(index);
                 if (!FlipQuery.flippable(corpus, path.sessionId, decision)) {
+                    continue;
+                }
+                if (flipSites == null
+                        || !flipSites.contains(decision.siteId())) {
                     continue;
                 }
                 Candidate candidate = new Candidate(task, path, index);

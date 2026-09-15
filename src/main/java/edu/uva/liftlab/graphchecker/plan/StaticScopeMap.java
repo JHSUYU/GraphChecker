@@ -426,6 +426,24 @@ public final class StaticScopeMap {
         return carriers;
     }
 
+    /**
+     * Every write site the map states IN THE METHOD of one recorded site.
+     *
+     * <p>The join is the method the two spellings share, so this answers
+     * about the method and not about the bytecode index inside it.</p>
+     */
+    public List<Site> sitesAt(String recordedSite) {
+        List<Site> found = new ArrayList<Site>();
+        String site = recordedSite == null ? "" : recordedSite;
+        for (Site named : sites) {
+            if (WRITE_SITE.equals(named.role) && !named.vmSite.isEmpty()
+                    && site.startsWith(named.vmSite + "#")) {
+                found.add(named);
+            }
+        }
+        return found;
+    }
+
     /** Every static write site of one carrier, whatever region runs it. */
     public List<Site> writersOf(String carrier) {
         List<Site> found = new ArrayList<Site>();

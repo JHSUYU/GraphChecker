@@ -1940,6 +1940,7 @@ campaign_explore() {
     run_java_main edu.uva.liftlab.graphchecker.explore.ExploreMain \
       --sessions "${sessions}" \
       --results "${results}" \
+      --static-scope-map "${causynth_output_dir}/static_scope_map.jsonl" \
       --topology-epoch "${iteration_id}" \
       --wave "${wave}" \
       --output-dir "${wave_dir}" \
