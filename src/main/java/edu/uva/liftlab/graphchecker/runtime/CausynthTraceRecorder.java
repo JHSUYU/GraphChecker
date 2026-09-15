@@ -166,8 +166,17 @@ public final class CausynthTraceRecorder {
         }
     }
 
-    /** Rich method-entry event used by graph-directed symbolic instrumentation. */
-    public static long enterMethod(String method, Object receiver) {
+    /**
+     * Rich method-entry event used by graph-directed symbolic
+     * instrumentation.
+     *
+     * @param openedRegionId the region this method is the ROOT of, or
+     *                       {@code ""}: the recording pushes an execution
+     *                       index frame and states an occurrence address
+     *                       exactly where the replay does
+     */
+    public static long enterMethod(String method, Object receiver,
+                                   String openedRegionId) {
         if (method == null) {
             return 0L;
         }
@@ -193,6 +202,19 @@ public final class CausynthTraceRecorder {
                 ? context.receiverAttributed
                 : context.source != null && context.source.equals(
                 RuntimeTraceContext.sourceFor(receiver));
+        String region = MapFields.safe(openedRegionId);
+        calls.push(new ActiveCall(id, parentSiteId, method,
+                context.spanId, parent == null, !region.isEmpty()));
+        // The frame of a region activation, and no other: the replay pushes
+        // exactly this one (ConcolicRegionRuntime.enterRegionFrame), and a
+        // frame one pass pushes and the other does not moves every address
+        // below it.  The frame is standing before the address is read, as
+        // it is in the replay.
+        String address = "";
+        if (!region.isEmpty()) {
+            pushMethodFrame(method);
+            address = occurrenceAddress(receiver, region);
+        }
         RuntimeRegionPlanner.MethodEvent event =
                 new RuntimeRegionPlanner.MethodEvent(id, testName,
                         threadName, tid, method, objectId,
@@ -200,10 +222,7 @@ public final class CausynthTraceRecorder {
                         context.laneId, context.spanId, context.parentSpanId,
                         context.remoteParentSpanId, context.source,
                         receiverAttributed,
-                        context.requestKey, context.requestApi);
-        calls.push(new ActiveCall(id, parentSiteId, method,
-                context.spanId, parent == null));
-        pushMethodFrame(method);
+                        context.requestKey, context.requestApi, address);
         if (contextOnlyConcolicReplay) {
             return id;
         }
@@ -211,6 +230,32 @@ public final class CausynthTraceRecorder {
             writeTraceLine(event);
         }
         return id;
+    }
+
+    /**
+     * The address of the activation entering here, by the one computation.
+     *
+     * <p>{@code Identity.occurrence} -- the same function, over the same
+     * frame stack and scope, that a replay calls from its region hook -- and
+     * the node by {@code RuntimeTraceContext.activationSource}, which is the
+     * rule the replay evaluates at its own root entry.  The region is not
+     * opened here: the recording indexes no endpoints from it.</p>
+     */
+    private static String occurrenceAddress(Object receiver, String regionId) {
+        edu.uva.liftlab.graphchecker.contract.OccurrenceAddress address =
+                Identity.occurrence(RuntimeTraceContext
+                                .activationSource(receiver).key(),
+                        regionId, false);
+        return address == null ? "" : address.render();
+    }
+
+    /** Files the frame of one work start, for the work it started. */
+    public static void startWork(String startSiteId, Object carrier) {
+        try {
+            Identity.startWork(MapFields.safe(startSiteId), carrier);
+        } catch (Throwable ignored) {
+            // Work is started whether or not its frame can be named.
+        }
     }
 
     /** Records only the balanced activation tree for skeleton selection. */
@@ -233,8 +278,7 @@ public final class CausynthTraceRecorder {
         // Keep the nesting stack balanced even after the trace budget has
         // been exhausted; the silent exit hook must not pop the parent.
         calls.push(new ActiveCall(id, 0L, method, context.spanId,
-                parent == null));
-        pushMethodFrame(method);
+                parent == null, false));
         if (id > maxEvents) {
             return id;
         }
@@ -284,10 +328,6 @@ public final class CausynthTraceRecorder {
                 || isTaskFork(declaredCallee, receiver)) {
             RuntimeTraceContext.captureAsync(receiver);
         }
-        // The execution index's stack: one frame per instrumented call
-        // site, carrying the iteration of the loop enclosing it.
-        edu.uva.liftlab.graphchecker.runtime.Identity.enterCall(
-                event.siteId);
         if (event.id > 0L) {
             ACTIVE_CALL_SITES.get().push(new ActiveCallSite(event.id, ownerCallId,
                     event.siteId, event.method, event.declaredCallee));
@@ -315,22 +355,14 @@ public final class CausynthTraceRecorder {
         emitExecutionEvent(event);
     }
 
-    /** Leaves the call site {@link #beginCall} pushed. */
-    private static void exitCallFrame() {
-        edu.uva.liftlab.graphchecker.runtime.Identity.exitCall();
-    }
-
     /**
-     * Pushes the execution-index frame of one method ACTIVATION.
+     * Pushes the execution-index frame of one REGION activation.
      *
-     * <p>A call-site frame exists only where the caller was woven.  Plenty
-     * of callers are not -- a JDK callback, a lambda body, an unselected
-     * class -- and two activations entered from such a caller under one
-     * enclosing frame would otherwise carry the same index and mint the
-     * same address, which is exactly the duplicate the finalizer rejects.
-     * An activation frame is always there, so the index is defined for
-     * every activation, and its iteration counts the k-th entry of THIS
-     * method under the frame that encloses it.</p>
+     * <p>Its iteration counts the k-th entry of this region root under the
+     * frame that encloses it, which is how two activations of one region
+     * under one enclosing occurrence are told apart (IDENTITY-V3: loop
+     * iteration, not an ordinal).  Two activations that this index cannot
+     * separate are reported as sharing an address, never renumbered.</p>
      */
     private static void pushMethodFrame(String method) {
         edu.uva.liftlab.graphchecker.runtime.Identity.enterCall(
@@ -352,13 +384,11 @@ public final class CausynthTraceRecorder {
         event.primitiveValue = MapFields.safe(primitiveValue);
         emitExecutionEvent(event);
         removeCallSite(invocationId);
-        exitCallFrame();
     }
 
     /** Closes one exact call-site activation on its exceptional edge. */
     public static void throwCall(long invocationId) {
         closeCallSite(activeCallSite(invocationId), "CALL_SITE_THROW");
-        exitCallFrame();
     }
 
     public static void recordBranch(long callId, String method, int unitIndex,
@@ -408,7 +438,7 @@ public final class CausynthTraceRecorder {
         event.primitiveValue = MapFields.safe(primitiveValue);
         emitExecutionEvent(event);
         removeCall(resolvedCallId);
-        if (call != null) {
+        if (call != null && call.regionFrame) {
             popMethodFrame();
         }
         if (call != null && call.rootContext) {
@@ -439,7 +469,7 @@ public final class CausynthTraceRecorder {
             }
         }
         removeCall(resolvedCallId);
-        if (call != null) {
+        if (call != null && call.regionFrame) {
             popMethodFrame();
         }
         if (call != null && call.rootContext) {
@@ -457,7 +487,9 @@ public final class CausynthTraceRecorder {
         if (call != null) {
             closeCallSites(call.callId, callSiteExit);
             removeCall(call.callId);
-            popMethodFrame();
+            if (call.regionFrame) {
+                popMethodFrame();
+            }
             if (call.rootContext) {
                 RuntimeTraceContext.exitRoot(call.spanId);
             }
@@ -801,30 +833,6 @@ public final class CausynthTraceRecorder {
      * trace also carries on both its {@code EXCHANGE_SEND} and {@code
      * EXCHANGE_RECEIVE} rows lets it be resolved without guessing.</p>
      */
-    private static String recordedCausalContext() {
-        String anchor = edu.uva.liftlab.graphchecker.runtime.Lineage
-                .anchor();
-        if (!anchor.isEmpty()) {
-            return "Anchor:" + anchor + "@"
-                    + edu.uva.liftlab.graphchecker.runtime.Lineage
-                            .rpcSite();
-        }
-        String started = edu.uva.liftlab.graphchecker.runtime.Lineage
-                .startedBy();
-        if (!started.isEmpty()) {
-            return "Anchor:" + started + "@THREAD_START";
-        }
-        edu.uva.liftlab.graphchecker.contract.Role role =
-                edu.uva.liftlab.graphchecker.runtime.Lineage.rootRole();
-        int window = edu.uva.liftlab.graphchecker.runtime.Lineage
-                .rootWindowIndex();
-        if (role != edu.uva.liftlab.graphchecker.contract.Role.UNKNOWN
-                && window > 0) {
-            return "Root:" + role.name() + "#" + window;
-        }
-        return "Lost:" + role.name();
-    }
-
     private static void emitExecutionEvent(ExecutionEvent event) {
         if (event == null || event.id <= 0L) {
             return;
@@ -1836,8 +1844,7 @@ public final class CausynthTraceRecorder {
                     row.longValue("receiverAttributed", 0L) != 0L,
                     row.stringValue("requestKey"),
                     row.stringValue("requestApi"),
-                    row.stringValue("executionIndex"),
-                    row.stringValue("causalContext")));
+                    row.stringValue("occurrenceAddress")));
         } else if (!skeletonOnly && ("FIELD_READ".equals(eventKind)
                 || "FIELD_WRITE".equals(eventKind))) {
             trace.fields.add(
@@ -1946,11 +1953,12 @@ public final class CausynthTraceRecorder {
                 "receiverAttributed", event.receiverAttributed ? 1 : null,
                 "requestKey", event.requestKey,
                 "requestApi", event.requestApi,
-                // Identity v3, on the exchange rows too: an export's
-                // site-local index and the scope it crossed in.
-                "executionIndex", edu.uva.liftlab.graphchecker.runtime
-                        .Identity.atScope().render(),
-                "causalContext", recordedCausalContext());
+                // Identity v3, computed here, where the activation ran, by
+                // the one function (Identity.occurrence).  Present only on
+                // the entry of a region root; every other entry is a plain
+                // frame of the trace.
+                "occurrenceAddress", event.occurrenceAddress.isEmpty()
+                        ? null : event.occurrenceAddress);
     }
 
     private static void writeFieldTraceLine(
@@ -2028,12 +2036,7 @@ public final class CausynthTraceRecorder {
                 "sourceEpoch", sourceEpoch(event.source),
                 "sourceKey", sourceKey(event.source),
                 "requestKey", event.requestKey,
-                "requestApi", event.requestApi,
-                // Identity v3, on the exchange rows too: an export's
-                // site-local index and the scope it crossed in.
-                "executionIndex", edu.uva.liftlab.graphchecker.runtime
-                        .Identity.atScope().render(),
-                "causalContext", recordedCausalContext());
+                "requestApi", event.requestApi);
     }
 
     private static void writeSourceTraceLine(String event, SourceRef source,
@@ -2181,23 +2184,6 @@ public final class CausynthTraceRecorder {
         private String branchKind = "";
         private Integer successorIndex;
         private String switchCaseKeys = "";
-        /**
-         * Identity v3, as the recording can state it (IDENTITY-IMPL §B).
-         *
-         * <p>{@code executionIndex} is the path from the scope root to this
-         * event, {@code callSite@iteration/...}; the region-entry event's
-         * own index is a prefix of every event inside that region, so the
-         * offline minter takes the region's index from the entry event and
-         * each site's index by dropping that prefix.  {@code causalContext}
-         * is why the scope ran: {@code Root:<ROLE>#<k>}, {@code
-         * Lost:<ROLE>}, or {@code Anchor:corr:<correlationId>@<site>} --
-         * the correlation rather than the producer's endpoint id, because
-         * the producer's occurrence is what the offline pass is computing.
-         * {@code scopeDepth} is how many frames of the index belong to the
-         * scope, so a reader never has to guess where a region began.</p>
-         */
-        private String executionIndex = "";
-        private String causalContext = "";
     }
 
     static final class TraceData {
@@ -2247,14 +2233,18 @@ public final class CausynthTraceRecorder {
         private final String method;
         private final long spanId;
         private final boolean rootContext;
+        /** Whether this activation pushed an execution-index frame. */
+        private final boolean regionFrame;
 
         private ActiveCall(long callId, long parentSiteId, String method,
-                           long spanId, boolean rootContext) {
+                           long spanId, boolean rootContext,
+                           boolean regionFrame) {
             this.callId = callId;
             this.parentSiteId = parentSiteId;
             this.method = MapFields.safe(method);
             this.spanId = spanId;
             this.rootContext = rootContext;
+            this.regionFrame = regionFrame;
         }
     }
 

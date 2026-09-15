@@ -456,6 +456,18 @@ public final class GapLedger {
                         + " row names which loops rest on that check and the"
                         + " case where the count is missing is withheld by"
                         + " name");
+        diagnostic(plan, "OCCURRENCE_ADDRESS_SHARED",
+                "the activations are all published, each keeping its own"
+                        + " events, and the address they share is the one"
+                        + " IDENTITY-V3 gives them: node, region, causal"
+                        + " context and execution index all equal.  Nothing"
+                        + " is missing from a chain -- what is missing is a"
+                        + " fact that would tell the activations apart (a"
+                        + " role/window index, a call path, a loop or"
+                        + " start-site iteration), and the row names which"
+                        + " recorded root calls are involved so that fact"
+                        + " can be recorded; a declared selector's k picks"
+                        + " among them in seed order");
         blocking(plan, "BOUND_INSUFFICIENT",
                 "one static site demanded more activation-local accesses"
                         + " than the finalizer retains, so the port below it"

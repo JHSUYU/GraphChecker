@@ -862,11 +862,6 @@ public final class ConcolicRegionRuntime {
         // inherits no frame from the submission: the start filed for THIS
         // task is claimed here, on the object the region was entered on.
         RowRuntime.claimStart(receiver);
-        // The execution index's frame stack.  In a replay the woven hooks
-        // are the region frames and the accessor call contexts -- the trace
-        // recorder's call-site hooks belong to the recording pass -- so
-        // this is where the control path is seen (IDENTITY-IMPL §B).
-        RowRuntime.enterFrame(safe(rootMethod));
         ConcolicTaskPlan config = configuration();
         RootHookGroup group = config.rootHookGroup(
                 instrumentationSelector, rootMethod);
@@ -879,14 +874,21 @@ public final class ConcolicRegionRuntime {
         for (RootInvocationFrame existing : frames) {
             if (existing.claimsSiblingHook(group.key)) {
                 frames.push(new RootInvocationFrame(instrumentationSelector,
-                        rootMethod, group.key, 0, 0L));
+                        rootMethod, group.key, 0, 0L, false));
                 return 0L;
             }
         }
         RootInvocationFrame frame = new RootInvocationFrame(
                 instrumentationSelector, rootMethod, group.key,
-                Math.max(0, group.hookCount - 1), 0L);
+                Math.max(0, group.hookCount - 1), 0L, true);
         frames.push(frame);
+        // The execution index's frame stack: ONE frame per region
+        // activation, which is the frame the recording's own hook pushes at
+        // this same entry (CausynthTraceRecorder.enterMethod).  After the
+        // sibling check, because a second hook at one entry is not a second
+        // activation and a frame it pushed would sit under every index
+        // computed inside.
+        RowRuntime.enterFrame(safe(rootMethod));
         ActiveRegion active = admitRegion(config, group.key, rootMethod,
                 receiver, rootArguments);
         long token = active == null ? 0L : active.token;
@@ -915,6 +917,12 @@ public final class ConcolicRegionRuntime {
         // the bodies of one occurrence are the bodies of ONE enclosing
         // activation, and a second one is a second k.
         long token = TOKEN_COUNTER.incrementAndGet();
+        // The same one frame per activation as every other region root: the
+        // recording pushed it at this entry, so an address computed here
+        // without it is one frame short of the recorded one -- which is what
+        // made the plan address hdfs-17960's enclosing loadFSImage at a
+        // frame the replay answered with an empty index (REPORT-M2 §5).
+        RowRuntime.enterFrame(safe(rootMethod));
         Map<String, Integer> admittedTasks = config.addressLoopRootInvocation(
                 group.key, rootMethod, receiver, rootArguments, token);
         contexts.push(new LoopRootInvocationContext(token, group.key,
@@ -931,6 +939,7 @@ public final class ConcolicRegionRuntime {
             LoopRootInvocationContext context = contexts.peek();
             if (context == null || context.token != token) return;
             contexts.pop();
+            RowRuntime.exitFrame();
             if (contexts.isEmpty()) LOOP_ROOT_INVOCATIONS.remove();
         } catch (Throwable ignored) {
             // Runtime bookkeeping must not alter a workload terminal.
@@ -3169,10 +3178,10 @@ public final class ConcolicRegionRuntime {
      */
     public static void exitRegionFrame(String instrumentationSelector,
                                        String rootMethod) {
-        RowRuntime.exitFrame();
         try {
             RootInvocationFrame frame = popRootInvocationFrame(
                     instrumentationSelector, rootMethod);
+            if (frame != null && frame.indexFrame) RowRuntime.exitFrame();
             if (frame != null && frame.token != 0L) {
                 finish(frame.token, "NORMAL", "", null);
             }
@@ -3189,10 +3198,10 @@ public final class ConcolicRegionRuntime {
     public static void throwRegionFrame(String instrumentationSelector,
                                         String rootMethod,
                                         Throwable throwable) {
-        RowRuntime.exitFrame();
         try {
             RootInvocationFrame frame = popRootInvocationFrame(
                     instrumentationSelector, rootMethod);
+            if (frame != null && frame.indexFrame) RowRuntime.exitFrame();
             if (frame != null && frame.token != 0L) {
                 if (throwable instanceof LoopBoundCut) {
                     finish(frame.token, "CUT", "", throwable);
@@ -3260,15 +3269,18 @@ public final class ConcolicRegionRuntime {
         private final String instrumentationSelector;
         private final String rootMethod;
         private long token;
+        /** Whether this hook pushed the activation's index frame. */
+        private final boolean indexFrame;
 
         private RootInvocationFrame(String instrumentationSelector,
                                     String rootMethod, String rootHookGroupKey,
                                     int remainingSiblingHooks,
-                                    long token) {
+                                    long token, boolean indexFrame) {
             super(rootHookGroupKey, remainingSiblingHooks);
             this.instrumentationSelector = instrumentationSelector;
             this.rootMethod = rootMethod;
             this.token = token;
+            this.indexFrame = indexFrame;
         }
     }
 

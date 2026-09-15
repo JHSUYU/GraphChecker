@@ -54,11 +54,6 @@ public final class RowRuntime {
             new ConcurrentHashMap<Long, OccurrenceAddress>();
     private static final Map<String, AtomicInteger> ORDINALS =
             new ConcurrentHashMap<String, AtomicInteger>();
-    /** The causal context and execution index of each live activation. */
-    private static final Map<Long, CausalContext> CONTEXTS =
-            new ConcurrentHashMap<Long, CausalContext>();
-    private static final Map<Long, ExecutionIndex> INDEXES =
-            new ConcurrentHashMap<Long, ExecutionIndex>();
     /** This replay's clock readings so far, by root id. */
     private static final Map<String, Long> CLOCKS =
             new ConcurrentHashMap<String, Long>();
@@ -166,12 +161,11 @@ public final class RowRuntime {
                                                     String nodeKey,
                                                     String regionId,
                                                     String taskId) {
-        CausalContext context = Identity.context(Lineage.anchor(),
-                Lineage.rpcSite(), Lineage.rootRole(),
-                Lineage.rootWindowIndex());
-        ExecutionIndex index = Identity.regionEnter();
-        OccurrenceAddress address = OccurrenceMinterV2.mint(nodeKey,
-                regionId, context, index);
+        // One computation, opening the region here: Identity.occurrence is
+        // the same function the recorder ran on the stock JDK, so this
+        // address and the one the SEED trace carries cannot disagree.
+        OccurrenceAddress address = Identity.occurrence(nodeKey, regionId,
+                true);
         SessionPublisher session = publisher;
         if (address == null) {
             if (session != null) {
@@ -183,10 +177,6 @@ public final class RowRuntime {
             return null;
         }
         if (token > 0L) ACTIVATIONS.put(token, address);
-        if (token > 0L) {
-            CONTEXTS.put(token, context);
-            INDEXES.put(token, index);
-        }
         if (session != null) {
             session.activation(ActivationRow.of(sessionId(), address,
                     Text.safe(taskId), FocusedReplay.focused(taskId,
@@ -238,8 +228,6 @@ public final class RowRuntime {
 
     public static void endActivation(long token) {
         ACTIVATIONS.remove(token);
-        CONTEXTS.remove(token);
-        INDEXES.remove(token);
     }
 
     // ------------------------------------------------------------------
@@ -400,7 +388,7 @@ public final class RowRuntime {
      */
     public static OccurrenceAddress degraded(String nodeKey, String site) {
         Role role = Lineage.named() ? Lineage.role() : Role.UNKNOWN;
-        return OccurrenceMinterV2.degraded(nodeKey, role, site);
+        return Identity.roleOccurrence(nodeKey, role);
     }
 
     /**
@@ -902,8 +890,6 @@ public final class RowRuntime {
             ACTIVATIONS.clear();
             AMBIENT.clear();
             STARTERS.clear();
-            CONTEXTS.clear();
-            INDEXES.clear();
             ORDINALS.clear();
             CLAIMED_READS.clear();
             PLACEHOLDERS.clear();
@@ -914,7 +900,6 @@ public final class RowRuntime {
             LAST_SEQ.set(0L);
             publisher = null;
             sessionId = "";
-            OccurrenceMinterV2.resetForTests();
             Interactions.resetForTests();
             Lineage.resetForTests();
             FocusedReplay.resetForTests();

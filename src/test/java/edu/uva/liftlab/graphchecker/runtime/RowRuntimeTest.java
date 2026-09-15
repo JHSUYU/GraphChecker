@@ -11,6 +11,7 @@ import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.GapRow;
 import edu.uva.liftlab.graphchecker.contract.LocationId;
 import edu.uva.liftlab.graphchecker.contract.LocationKind;
+import edu.uva.liftlab.graphchecker.contract.NodeId;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
 import edu.uva.liftlab.graphchecker.contract.CausalContext;
@@ -27,7 +28,7 @@ import edu.uva.liftlab.graphchecker.runtime.RowRuntime;
 import edu.uva.liftlab.graphchecker.runtime.Identity;
 import edu.uva.liftlab.graphchecker.runtime.Interactions;
 import edu.uva.liftlab.graphchecker.runtime.Lineage;
-import edu.uva.liftlab.graphchecker.runtime.OccurrenceMinterV2;
+import edu.uva.liftlab.graphchecker.runtime.Identity;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -123,6 +124,14 @@ public class RowRuntimeTest {
         assertEquals("", Lineage.path());
     }
 
+    /** One address, by the contract constructor the runtime calls. */
+    private static OccurrenceAddress address(String nodeKey, String regionId,
+                                             CausalContext context,
+                                             ExecutionIndex index) {
+        return OccurrenceAddress.of(NodeId.parse(nodeKey), regionId, context,
+                index);
+    }
+
     /**
      * A daemon tick is a root of its own: the NameNode's key rotation is
      * addressed by its role and the k-th tick of the window, where before
@@ -136,7 +145,7 @@ public class RowRuntimeTest {
         for (int tick = 0; tick < 2; tick++) {
             long token = CausynthTraceRecorder.beginDaemonTick(anchor,
                     "HEARTBEAT_TICK");
-            addresses.add(OccurrenceMinterV2.mint("hdfs-17899/nn0#epoch0",
+            addresses.add(address("hdfs-17899/nn0#epoch0",
                     "REGION.aaa1cfd7",
                     CausalContext.of(Role.HEARTBEAT_TICK,
                             Lineage.rootWindowIndex()),
@@ -152,12 +161,13 @@ public class RowRuntimeTest {
         assertFalse(addresses.get(0).id().equals(addresses.get(1).id()));
 
         // An unattributable scope degrades rather than disappearing.
-        OccurrenceAddress lost = OccurrenceMinterV2.degraded(
-                "hdfs-17899/nn0#epoch0", Role.KEY_MANAGER_TICK, "XCH.port");
+        OccurrenceAddress lost = Identity.roleOccurrence(
+                "hdfs-17899/nn0#epoch0", Role.KEY_MANAGER_TICK);
         assertTrue(lost.lineageLost());
         assertEquals("ROLE.KEY_MANAGER_TICK", lost.regionId());
-        assertNull(OccurrenceMinterV2.mint("", "REGION.aaa1cfd7",
-                CausalContext.of(Role.UNKNOWN), ExecutionIndex.empty()));
+        // A node this run cannot name addresses nothing: a guessed node is
+        // a wrong causal chain.
+        assertNull(Identity.occurrence("", "REGION.aaa1cfd7", false));
         executionIndexIsStableUnderUnrelatedCalls();
     }
 
@@ -169,7 +179,7 @@ public class RowRuntimeTest {
     public void anUnselectedAttachMintsAndPairsToItsExportByHandle()
             throws Exception {
         RowRuntime.configure(sessionFile());
-        OccurrenceAddress producer = OccurrenceMinterV2.mint(
+        OccurrenceAddress producer = address(
                 "hdfs-17899/nn0#epoch0", "REGION.2392e4b7",
                 CausalContext.of(Role.HEARTBEAT_TICK, 3),
                 ExecutionIndex.parse("PBHelper.convert()#u2@0"));
@@ -203,7 +213,7 @@ public class RowRuntimeTest {
     @Test
     public void theSessionRoundTripsEveryRowKind() throws Exception {
         RowRuntime.configure(sessionFile());
-        OccurrenceAddress occurrence = OccurrenceMinterV2.mint(
+        OccurrenceAddress occurrence = address(
                 "hdfs-17899/target-dn#epoch0", "REGION.53092d3e",
                 CausalContext.of("producer-endpoint-id", "HDFS_SASL#replace"),
                 ExecutionIndex.parse("DataXceiver.run()#u9@0"));
@@ -633,7 +643,7 @@ public class RowRuntimeTest {
     public void phiIsPublishedInTheFatalPolarityForBothObservedArms()
             throws Exception {
         RowRuntime.configure(sessionFile());
-        OccurrenceAddress occurrence = OccurrenceMinterV2.mint(
+        OccurrenceAddress occurrence = address(
                 "hdfs-17899/target-dn#epoch0", "REGION.53092d3e",
                 CausalContext.of("producer-endpoint-id", "HDFS_SASL#replace"),
                 ExecutionIndex.parse("DataXceiver.run()#u9@0"));
@@ -741,7 +751,7 @@ public class RowRuntimeTest {
         // event stood on, and the occurrence that performed it.  A row of a
         // read belongs to the activation the VM names on the record, not to
         // whichever activation's read-out found the location's log first.
-        OccurrenceAddress performer = OccurrenceMinterV2.mint(
+        OccurrenceAddress performer = address(
                 "hdfs-17960/nn0#epoch1", "REGION.9492ec77",
                 CausalContext.of(Role.CLIENT, 1),
                 ExecutionIndex.parse("Manager.delete()#u3@0"));

@@ -3,6 +3,8 @@ package edu.uva.liftlab.graphchecker.runtime;
 import edu.uva.liftlab.graphchecker.contract.CausalContext;
 import edu.uva.liftlab.graphchecker.contract.ExecutionIndex;
 import edu.uva.liftlab.graphchecker.contract.Frame;
+import edu.uva.liftlab.graphchecker.contract.NodeId;
+import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.Role;
 import java.lang.ref.Reference;
 import java.lang.ref.ReferenceQueue;
@@ -410,6 +412,61 @@ public final class Identity {
     public static ExecutionIndex here() {
         State state = state();
         return state.from(0);
+    }
+
+    /**
+     * The address of the activation entering here (IDENTITY-IMPL A).
+     *
+     * <p>THE one computation of an occurrence address, and there is no
+     * second one.  The recording calls it on the stock JDK from the trace
+     * recorder's own method hook, and the replay calls it on the custom VM
+     * from the region hook; both read the frame stack and the scope this
+     * class maintains, so the address the SEED trace carries and the address
+     * a replay computes for the same occurrence are the same string by
+     * construction rather than by reconciliation.  An offline pass over
+     * trace rows never re-derives it: it reads what the recording
+     * stated.</p>
+     *
+     * <p>{@code null} when this run can name no node to put the occurrence
+     * on -- a guessed node is a wrong causal chain.</p>
+     *
+     * @param open whether the region is opened here (the replay: every
+     *             endpoint inside is indexed from this entry) or only read
+     *             (the recording and admission, which must not move the base
+     *             the endpoints of an already-open region are indexed from)
+     */
+    public static OccurrenceAddress occurrence(String nodeKey, String regionId,
+                                               boolean open) {
+        if (Text.safe(nodeKey).isEmpty() || Text.safe(regionId).isEmpty()) {
+            return null;
+        }
+        ExecutionIndex index = open ? regionEnter() : atScope();
+        return OccurrenceAddress.of(NodeId.parse(Text.safe(nodeKey)),
+                Text.safe(regionId), here(Lineage.rootRole()), index);
+    }
+
+    /**
+     * The address of work that ran under no region this plan selected: its
+     * role, on its node, at the path the thread stood on.
+     *
+     * <p>REPORT-ENTRY §4: the region slot carries a role id rather than a
+     * plan region, so a reader tells an ambient occurrence from a planned
+     * one by the visible {@code ROLE.} prefix.  An activation no PLAN
+     * selected is not an activation with no CONTEXT: the message that opened
+     * its scope, or the root it descends from, is known exactly as it is for
+     * a selected one.</p>
+     */
+    public static OccurrenceAddress roleOccurrence(String nodeKey, Role role) {
+        if (Text.safe(nodeKey).isEmpty()) return null;
+        Role kind = role == null ? Role.UNKNOWN : role;
+        return OccurrenceAddress.of(NodeId.parse(Text.safe(nodeKey)),
+                "ROLE." + kind.name(), here(kind), here());
+    }
+
+    /** The context the running thread is in, by the one rule. */
+    private static CausalContext here(Role role) {
+        return context(Lineage.anchor(), Lineage.rpcSite(), role,
+                Lineage.rootWindowIndex());
     }
 
     /** The context an occurrence entered under, from its scope frame. */
