@@ -27,7 +27,9 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Collection;
 import java.util.Set;
+import java.util.function.Predicate;
 
 /**
  * The ONE SMT lowering: the composer's and the flip solver's.
@@ -1692,6 +1694,54 @@ public final class SmtLowering extends VmLoweringCore {
     }
 
     /**
+     * Every name the query's own logic gives a meaning to.
+     *
+     * <p>The operators belong here for the same reason the datatype
+     * selectors do: in SMT-LIB {@code =} and {@code <=} are SYMBOLS, and
+     * {@link #names} reads them as such, so a caller asking "which names
+     * does nothing declare" must be told that the theory declares these.
+     * Left out, the check reported {@code =} as a free symbol of every term
+     * it read.</p>
+     *
+     * <p>One set, for both stages: it was the composer's private BUILTIN and
+     * the flip query's own KEYWORDS, and the two differed -- the flip
+     * query's was missing every datatype selector and every bit-vector
+     * operator the composer lists, and the composer's was missing
+     * {@code is_int} beside the {@code to_int} and {@code to_real} it
+     * already had.  Two vocabularies over one query text is a name one
+     * stage calls a theory operator and the other calls undeclared.</p>
+     */
+    public static final Set<String> BUILTIN =
+            Collections.unmodifiableSet(new LinkedHashSet<String>(
+                    Arrays.asList("=", "=>", "+", "-", "*", "/", "<", "<=",
+                    ">", ">=", "!", "_",
+                    "and", "or", "not", "xor", "ite", "let", "forall",
+                    "exists", "distinct", "true", "false", "div", "mod",
+                    "abs", "rem", "select", "store", "as", "const", "lambda",
+                    "is", "bvadd", "bvsub", "bvmul", "bvand", "bvor",
+                    "bvxor", "bvnot", "bvshl", "bvlshr", "bvashr", "bvsdiv",
+                    "bvudiv", "bvsrem", "bvurem", "bvule", "bvult", "bvsle",
+                    "bvslt", "bvuge", "bvugt", "bvsge", "bvsgt", "concat",
+                    "extract", "zero_extend", "sign_extend", "Int", "Bool",
+                    "Real", "String", "Ref", "Value", "AssocState",
+                    "IndexedState", "FloatingPoint", "RoundingMode",
+                    "roundNearestTiesToEven", "RNE", "RTZ", "RTP", "RTN",
+                    "RNA", "nullRef", "java_int_wrap", "java_long_wrap",
+                    "java_int_to_string", "indexed_state_of",
+                    "assoc_state_of", "indexed_read", "indexed_write",
+                    "indexed_append", "indexed_insert", "indexed_remove",
+                    "indexed_contains", "indexed_size", "indexed_elements",
+                    "assoc_has", "assoc_read", "assoc_key_at",
+                    "assoc_value_at", "assoc_put", "assoc_remove",
+                    "assoc_size", "assoc_present", "assoc_values",
+                    "assoc_order", "assoc_position", "VByte", "VChar",
+                    "VShort", "VInt", "VLong", "VFloat", "VDouble", "VBool",
+                    "VRef", "VString", "valueByte", "valueChar", "valueShort",
+                    "valueInt", "valueLong", "valueFloat", "valueDouble",
+                    "valueBool", "valueRef", "valueString", "str", "fp",
+                    "to_real", "to_int", "is_int", "divisible")));
+
+    /**
      * Every NAME one SMT term names: the one tokenizer.
      *
      * <p>The alphabet is {@link #symbolCharacter}'s, which is SMT-LIB's, so
@@ -1702,26 +1752,91 @@ public final class SmtLowering extends VmLoweringCore {
      * the same one-rule-two-implementations defect as the two declaration
      * maps, in the same path.  Text inside {@code "..."} is a literal and
      * names nothing; text inside {@code |...|} is ONE name, however it is
-     * spelled; a numeral is a value and not a name.</p>
+     * spelled; a numeral is a value and not a name, and neither is a
+     * {@code #x}/{@code #b} literal.</p>
      */
     public static List<String> names(String text) {
         List<String> names = new ArrayList<String>();
-        if (text == null) return names;
+        pass(text, Collections.<String, String>emptyMap(), names);
+        return names;
+    }
+
+    /**
+     * The same names, minus the ones the theory declares.
+     *
+     * <p>What a caller means by "the symbols of this term": the free names,
+     * which it then asks the corpus about.  One tokenizer, one vocabulary --
+     * the flip query and the closure planner each had their own pair.</p>
+     */
+    public static Set<String> symbols(String text, Set<String> into) {
+        for (String name : names(text)) {
+            if (!BUILTIN.contains(name)) into.add(name);
+        }
+        return into;
+    }
+
+    /**
+     * The same text with the caller's renames applied, and every name it
+     * left free that nothing states.
+     *
+     * <p>A recorded predicate arrives already spelled in SMT-LIB over the
+     * symbols the recording declared, so a stage that needs it over its own
+     * variables RENAMES -- it never re-derives the predicate.  Renaming is
+     * therefore one pass of the one tokenizer, and a token the renames do
+     * not name is copied through exactly as it was written, bars and all.</p>
+     *
+     * <p>{@code unknown} collects the free names that are neither theory
+     * vocabulary nor stated by {@code stated}; that is what makes a query
+     * refuse itself rather than emit a formula over a constant nothing
+     * declares.  A term that BINDS names of its own ({@code let}) reports
+     * none of them, because a bound name is not free and the pass does not
+     * track scopes.</p>
+     */
+    public static String rename(String text, Map<String, String> renames,
+                                Predicate<String> stated,
+                                Set<String> unknown) {
+        Set<String> named = new LinkedHashSet<String>();
+        String out = pass(text, renames, named);
+        if (text != null && !text.contains("(let ")) {
+            for (String name : named) {
+                if (BUILTIN.contains(name)) continue;
+                if (stated != null && stated.test(name)) continue;
+                unknown.add(name);
+            }
+        }
+        return out.trim();
+    }
+
+    /**
+     * ONE pass over an SMT term: the names it names, renamed where asked.
+     *
+     * <p>Every consumer of a term's names goes through here -- "which names
+     * are these", "which of them is free", "the same term over my own
+     * variables" -- so the three questions are asked of one tokenizer and
+     * cannot disagree about where a name ends.</p>
+     */
+    private static String pass(String text, Map<String, String> renames,
+                               Collection<String> named) {
+        StringBuilder out = new StringBuilder();
+        if (text == null) return "";
         int index = 0;
         while (index < text.length()) {
             char value = text.charAt(index);
             if (value == '"') {
-                index = pastLiteral(text, index, '"');
+                int end = pastLiteral(text, index, '"');
+                out.append(text, index, end);
+                index = end;
                 continue;
             }
             if (value == '|') {
                 int end = pastLiteral(text, index, '|');
-                name(names, text.substring(index + 1,
-                        Math.max(index + 1, end - 1)));
-                index = end;
+                String token = text.substring(index + 1,
+                        Math.max(index + 1, end - 1));
+                index = emit(out, text, index, end, token, renames, named);
                 continue;
             }
             if (!symbolCharacter(value)) {
+                out.append(value);
                 index++;
                 continue;
             }
@@ -1730,10 +1845,33 @@ public final class SmtLowering extends VmLoweringCore {
                     && symbolCharacter(text.charAt(end))) {
                 end++;
             }
-            name(names, text.substring(index, end));
-            index = end;
+            index = emit(out, text, index, end, text.substring(index, end),
+                    renames, named);
         }
-        return names;
+        return out.toString();
+    }
+
+    /**
+     * One token: renamed, or copied exactly as it was spelled.
+     *
+     * @return the index past the token
+     */
+    private static int emit(StringBuilder out, String text, int start,
+                            int end, String token,
+                            Map<String, String> renames,
+                            Collection<String> named) {
+        if (!name(token)) {
+            out.append(text, start, end);
+            return end;
+        }
+        String renamed = renames.get(token);
+        if (renamed != null) {
+            out.append(renamed);
+            return end;
+        }
+        out.append(text, start, end);
+        named.add(token);
+        return end;
     }
 
     /** One index past the literal that opens at {@code at}. */
@@ -1745,12 +1883,20 @@ public final class SmtLowering extends VmLoweringCore {
         return index < text.length() ? index + 1 : index;
     }
 
-    /** Keeps one token if it is a name and not a numeral. */
-    private static void name(List<String> names, String token) {
-        if (token.isEmpty()) return;
+    /**
+     * Whether one token is a NAME and not a value.
+     *
+     * <p>A numeral is a value; so is {@code #x1f} and {@code #b01}, which
+     * SMT-LIB spells with a {@code #} that {@link #symbolCharacter} admits
+     * because the runtime's own location symbols use one.  Reporting a
+     * hexadecimal literal as a free name is how a float in a lowered term
+     * became "this term names symbols nothing declares".</p>
+     */
+    private static boolean name(String token) {
+        if (token.isEmpty()) return false;
         char first = token.charAt(0);
-        if (Character.isDigit(first) || first == '-' || first == '.') return;
-        names.add(token);
+        return !Character.isDigit(first) && first != '-' && first != '.'
+                && first != '#';
     }
 
     /** The preamble alone: the sorts and functions, no declaration. */

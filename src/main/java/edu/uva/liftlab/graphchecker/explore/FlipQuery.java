@@ -638,7 +638,7 @@ final class FlipQuery {
                               Set<String> rootsTouched, Set<String> unknown) {
             lowered.add(sessionId);
             Map<String, String> rename = renamesOf(sessionId);
-            Set<String> symbols = SmtText.symbols(term,
+            Set<String> symbols = SmtLowering.symbols(term,
                     new LinkedHashSet<String>());
             // THE CLOSURE: the recorded symbols of a term are the ones
             // reachable from it, not the ones visible in it.  A lowered term
@@ -659,7 +659,7 @@ final class FlipQuery {
                     }
                 }
             }
-            return SmtText.rewrite(term, rename,
+            return SmtLowering.rename(term, rename,
                     name -> stated(name, sessionId), unknown);
         }
 
@@ -893,7 +893,7 @@ final class FlipQuery {
                             ? declaration.render()
                             : "(define-fun " + declaration.name + " () "
                             + declaration.sort + " "
-                            + SmtText.rewrite(declaration.body, rename,
+                            + SmtLowering.rename(declaration.body, rename,
                             name -> stated(name, sessionId),
                             new LinkedHashSet<String>()) + ")");
                 }

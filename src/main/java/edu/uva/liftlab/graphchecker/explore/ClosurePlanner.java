@@ -322,13 +322,13 @@ public final class ClosurePlanner {
                     if (!demand.flipSites.contains(decision.siteId())) {
                         continue;
                     }
-                    SmtText.symbols(FlipQuery.statedTerm(corpus,
+                    SmtLowering.symbols(FlipQuery.statedTerm(corpus,
                             path.sessionId, decision.term()), named);
                 }
             }
             if (demand.anchor) {
                 for (TargetRow target : corpus.targetsOn(member)) {
-                    SmtText.symbols(FlipQuery.statedTerm(corpus,
+                    SmtLowering.symbols(FlipQuery.statedTerm(corpus,
                             target.sessionId(), target.phiTerm()), named);
                 }
             }

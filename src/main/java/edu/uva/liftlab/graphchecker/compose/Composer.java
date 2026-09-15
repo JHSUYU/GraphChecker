@@ -1800,7 +1800,7 @@ public final class Composer {
                             String subject) {
         List<String> free = new ArrayList<String>();
         for (String token : SmtLowering.names(term)) {
-            if (BUILTIN.contains(token)) continue;
+            if (SmtLowering.BUILTIN.contains(token)) continue;
             if (lowering.defined(token)) continue;
             // The one registry says whether the recording states it, and
             // at what sort: a published term can name a recorded symbol
@@ -1816,45 +1816,6 @@ public final class Composer {
         }
         return true;
     }
-
-    /**
-     * Every name the query's own logic gives a meaning to.
-     *
-     * <p>The operators belong here for the same reason the datatype
-     * selectors do: in SMT-LIB {@code =} and {@code <=} are SYMBOLS, and
-     * the one tokenizer reads them as such, so a caller asking "which
-     * names does nothing declare" must be told that the theory declares
-     * these.  Left out, the check reported {@code =} as a free symbol of
-     * every term it read.</p>
-     */
-    private static final Set<String> BUILTIN = new LinkedHashSet<String>(
-            Arrays.asList("=", "=>", "+", "-", "*", "/", "<", "<=", ">",
-                    ">=", "!", "_",
-                    "and", "or", "not", "xor", "ite", "let", "forall",
-                    "exists", "distinct", "true", "false", "div", "mod",
-                    "abs", "rem", "select", "store", "as", "const", "lambda",
-                    "is", "bvadd", "bvsub", "bvmul", "bvand", "bvor",
-                    "bvxor", "bvnot", "bvshl", "bvlshr", "bvashr", "bvsdiv",
-                    "bvudiv", "bvsrem", "bvurem", "bvule", "bvult", "bvsle",
-                    "bvslt", "bvuge", "bvugt", "bvsge", "bvsgt", "concat",
-                    "extract", "zero_extend", "sign_extend", "Int", "Bool",
-                    "Real", "String", "Ref", "Value", "AssocState",
-                    "IndexedState", "FloatingPoint", "RoundingMode",
-                    "roundNearestTiesToEven", "RNE", "RTZ", "RTP", "RTN",
-                    "RNA", "nullRef", "java_int_wrap", "java_long_wrap",
-                    "java_int_to_string", "indexed_state_of",
-                    "assoc_state_of", "indexed_read", "indexed_write",
-                    "indexed_append", "indexed_insert", "indexed_remove",
-                    "indexed_contains", "indexed_size", "indexed_elements",
-                    "assoc_has", "assoc_read", "assoc_key_at",
-                    "assoc_value_at", "assoc_put", "assoc_remove",
-                    "assoc_size", "assoc_present", "assoc_values",
-                    "assoc_order", "assoc_position", "VByte", "VChar",
-                    "VShort", "VInt", "VLong", "VFloat", "VDouble", "VBool",
-                    "VRef", "VString", "valueByte", "valueChar", "valueShort",
-                    "valueInt", "valueLong", "valueFloat", "valueDouble",
-                    "valueBool", "valueRef", "valueString", "str", "fp",
-                    "to_real", "to_int", "divisible"));
 
     /**
      * A gap the COMPOSITION raised, as against one a session published.
