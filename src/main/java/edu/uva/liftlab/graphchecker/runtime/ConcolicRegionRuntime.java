@@ -327,10 +327,6 @@ public final class ConcolicRegionRuntime {
      */
     public static void checkLoopBackedge(
             String backedgeId, int instrumentedMaxTraversals) {
-        // The iteration an execution index frame carries (IDENTITY-V3):
-        // charged whether or not a region is live, because the index is a
-        // property of the control structure and not of the selection.
-        RowRuntime.loopIteration(backedgeId);
         ActiveRegion active = observingActiveRegion();
         if (active == null) return;
 
@@ -983,12 +979,12 @@ public final class ConcolicRegionRuntime {
         // the bodies of one occurrence are the bodies of ONE enclosing
         // activation, and a second one is a second k.
         long token = TOKEN_COUNTER.incrementAndGet();
-        // The same one frame per activation as every other region root: the
-        // recording pushed it at this entry, so an address computed here
-        // without it is one frame short of the recorded one -- which is what
-        // made the plan address hdfs-17960's enclosing loadFSImage at a
-        // frame the replay answered with an empty index (REPORT-M2 §5).
-        RowRuntime.enterFrame(safe(rootMethod));
+        // No index frame: this hook is woven by the campaign and by nothing
+        // else, so a frame pushed here is a frame the recording never stands
+        // on.  The frame of this entry is the one its REGION hook pushes --
+        // the campaign's at a campaign root, the skeleton weave's at any
+        // other skeleton root -- which is exactly where the recording pushes
+        // one.
         Map<String, Integer> admittedTasks = config.addressLoopRootInvocation(
                 group.key, rootMethod, receiver, rootArguments, token);
         contexts.push(new LoopRootInvocationContext(token, group.key,
@@ -1005,7 +1001,6 @@ public final class ConcolicRegionRuntime {
             LoopRootInvocationContext context = contexts.peek();
             if (context == null || context.token != token) return;
             contexts.pop();
-            RowRuntime.exitFrame();
             if (contexts.isEmpty()) LOOP_ROOT_INVOCATIONS.remove();
         } catch (Throwable ignored) {
             // Runtime bookkeeping must not alter a workload terminal.

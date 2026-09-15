@@ -66,10 +66,6 @@ public final class Identity {
             return entries.isEmpty() ? roots
                     : entries.get(entries.size() - 1);
         }
-        /** loop id -> iterations charged inside the innermost frame. */
-        private final Map<String, Integer> loops =
-                new HashMap<String, Integer>();
-        private String loop = "";
         private int scopeBase;
         /** Whether this thread has looked for the start that created it. */
         private boolean claimed;
@@ -94,8 +90,6 @@ public final class Identity {
                 child.entries.add(new HashMap<String, Integer>(frame));
             }
             child.roots.putAll(roots);
-            child.loops.putAll(loops);
-            child.loop = loop;
             child.scopeBase = scopeBase;
             // The start frame of the work THIS thread runs is not the start
             // frame of the work the child will run: the child claims its
@@ -415,15 +409,6 @@ public final class Identity {
         state.journal();
     }
 
-    /** Charges one iteration of {@code loopId} to the current frame. */
-    public static void loopIteration(String loopId) {
-        String loop = Text.safe(loopId);
-        if (loop.isEmpty()) return;
-        State state = state();
-        state.loop = loop;
-        Integer charged = state.loops.get(loop);
-        state.loops.put(loop, charged == null ? 1 : charged + 1);
-    }
 
     /** Opens a scope: the execution index of what runs inside starts here. */
     public static void scopeStart() {

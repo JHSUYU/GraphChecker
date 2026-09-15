@@ -88,6 +88,13 @@ workflow_config_keys=(
   # file: the workload JVM installs the guard sites it names, and EXPLORE
   # flips at them.  Defaults beside the other discovery artifacts.
   "causynth_static_scope_map CAUSYNTH_STATIC_SCOPE_MAP krp -"
+  # The epoch's selected region skeletons.  Two weaves read it and both must
+  # read the SAME file: the recording opens an execution-index region at
+  # every root it names, and the concolic weave opens one at every root the
+  # campaign did not select, so the frame stack a replay stands on is the
+  # frame stack the recording stood on.  Written by the skeleton pass,
+  # beside the other discovery artifacts.
+  "causynth_region_skeletons CAUSYNTH_REGION_SKELETONS krp -"
   # What the case says its declared roots may be, beside what the recording
   # read: one row per source id, with declaredDomainMin/Max absolute or
   # written +k / -k from the recorded value.  A root with no row stays pinned
@@ -336,6 +343,8 @@ initialize_config() {
   fi
   causynth_static_scope_map=${causynth_static_scope_map:-${causynth_output_dir}/static_scope_map.jsonl}
   causynth_static_scope_map=$(resolve_path "${causynth_static_scope_map}")
+  causynth_region_skeletons=${causynth_region_skeletons:-${causynth_output_dir}/runtime/skeleton-pass/region_skeletons.jsonl}
+  causynth_region_skeletons=$(resolve_path "${causynth_region_skeletons}")
   candidate_graph=${candidate_graph:-${causynth_output_dir}/candidate_dataflow_edges.jsonl.gz}
   runtime_region_plan=${runtime_region_plan:-${causynth_output_dir}/runtime/concolic_region_plan.jsonl}
   refined_graph=${refined_graph:-$(dirname "${runtime_region_plan}")/refined_dataflow_edges.jsonl.gz}
@@ -518,11 +527,14 @@ do_analyze() {
       "-Dcausynth.trace.mode=${CAUSYNTH_TRACE_MODE}"
     )
   fi
-  if [[ -n "${CAUSYNTH_REGION_SKELETONS:-}" ]]; then
-    system_properties+=(
-      "-Dcausynth.region.skeletons=${CAUSYNTH_REGION_SKELETONS}"
-    )
-  fi
+  # One key, every weave.  The region-state pass and the concolic pass both
+  # open their regions from this file; a pass that read a different one (or
+  # none) would stand on a different frame stack and address a different
+  # occurrence for the same event.  The environment may still name it for a
+  # one-off run, and the key is the default.
+  system_properties+=(
+    "-Dcausynth.region.skeletons=${CAUSYNTH_REGION_SKELETONS:-${causynth_region_skeletons}}"
+  )
   if [[ "${concolic_selected}" == true ]]; then
     system_properties+=(
       "-Dcausynth.instrument.concolic=true"

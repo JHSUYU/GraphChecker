@@ -549,11 +549,6 @@ public final class RowRuntime {
      * thread id is the key and the name travels with it for a reader.</p>
      */
 
-    /** Charges one loop iteration to the running execution index. */
-    public static void loopIteration(String loopId) {
-        Identity.loopIteration(loopId);
-    }
-
     /** Files one expression and returns the ref rows name it by. */
     public static String expressionRef(JsonElement expression) {
         if (expression == null || expression.isJsonNull()

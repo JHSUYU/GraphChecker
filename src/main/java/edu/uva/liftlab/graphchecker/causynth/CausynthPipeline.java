@@ -622,16 +622,17 @@ public final class CausynthPipeline {
         envelope.boundSelectedLoops();
         instrumentConcolicCommunicationHandoffs(campaign, refs);
         envelope.freezeRootLoops();
-        Set<String> campaignRoots = new LinkedHashSet<>();
+        // The methods that ACTUALLY received a region frame hook, filled by
+        // the weave that inserts them.  Not re-derived from the plan's
+        // rootMethod / replayEntry / rootLoopMethod spellings: those three
+        // strings missed five methods the campaign had framed, both hooks
+        // fired at one entry, and the replay's index carried five repeated
+        // frames the recording never stood on.
+        Set<SootMethod> framed = new LinkedHashSet<>();
         for (InstrumentationPlan plan : campaign) {
-            instrumentConcolicRegion(plan, refs, envelope);
-            campaignRoots.add(plan.rootMethod());
-            campaignRoots.add(envelope.replayEntry(plan).getSignature());
-            if (plan.loopBodyRoot()) {
-                campaignRoots.add(plan.rootLoopMethod());
-            }
+            instrumentConcolicRegion(plan, refs, envelope, framed);
         }
-        instrumentSkeletonRegions(campaignRoots, refs);
+        instrumentSkeletonRegions(framed, refs);
         instrumentWorkStarts(envelope.methods, refs);
         instrumentConcolicConfiguredSourceCallContexts(
                 envelope.configuredSourcePhaseSites.values(), refs);
@@ -657,14 +658,31 @@ public final class CausynthPipeline {
      * one-region-per-activation: the campaign's own roots keep their rich
      * hooks and are excluded here, so a root that is both opens once.</p>
      */
-    private void instrumentSkeletonRegions(Set<String> campaignRoots,
+    private void instrumentSkeletonRegions(Set<SootMethod> framed,
                                            HookCatalog refs) {
         Map<String, String> roots = RegionSkeletonInstrumentationSelection
                 .regionRootsFromEnvironment();
         List<String> lite = new ArrayList<>();
+        int campaignFramed = 0;
         for (Map.Entry<String, String> root : roots.entrySet()) {
-            if (!campaignRoots.contains(root.getKey())) {
-                lite.add(root.getKey());
+            SootMethod method = CausynthStaticFacts.method(root.getKey());
+            if (method != null && framed.contains(method)) {
+                campaignFramed++;
+                continue;
+            }
+            lite.add(root.getKey());
+        }
+        // Fail closed: one entry, one region frame.  Two hooks at one entry
+        // push two frames, and an index with a frame the recording does not
+        // have addresses a different occurrence -- silently, which is how
+        // 33 of 90 planned tasks came to be refused.
+        for (String signature : lite) {
+            SootMethod method = CausynthStaticFacts.method(signature);
+            if (method != null && framed.contains(method)) {
+                throw new IllegalStateException(
+                        "one method would receive both a campaign region "
+                                + "hook and a skeleton region hook: "
+                                + signature);
             }
         }
         Set<String> rewritten = instrumentMethods(lite, "",
@@ -673,9 +691,9 @@ public final class CausynthPipeline {
                                 lowerBound, receiver, refs,
                                 roots.get(method.getSignature())));
         LOG.info("Opened {} of {} skeleton region root(s) for the execution "
-                + "index; {} are campaign roots with their own hooks",
-                rewritten.size(), roots.size(),
-                roots.size() - lite.size());
+                + "index; {} already carry a campaign region hook; the "
+                + "one-frame-per-entry check passed",
+                rewritten.size(), roots.size(), campaignFramed);
     }
 
     /** The frame and the occurrence of one unselected region activation. */
@@ -714,7 +732,8 @@ public final class CausynthPipeline {
      */
     private void instrumentConcolicRegion(InstrumentationPlan plan,
                                           HookCatalog refs,
-                                          CampaignEnvelope envelope) {
+                                          CampaignEnvelope envelope,
+                                          Set<SootMethod> framed) {
         String signature = plan.rootMethod();
         SootMethod replayEntry = envelope.replayEntry(plan);
         String replayEntrySignature = replayEntry.getSignature();
@@ -733,6 +752,9 @@ public final class CausynthPipeline {
                                 : replayEntrySignature));
             }
             Body body = method.retrieveActiveBody();
+            // This entry now carries a region frame; the skeleton weave
+            // below must not add a second one.
+            framed.add(method);
             List<Unit> originalUnits = snapshotUnits(body);
             tagOriginalUnits(originalUnits);
             CfgLoopControl.NaturalLoop rootLoop = plan.loopBodyRoot()
