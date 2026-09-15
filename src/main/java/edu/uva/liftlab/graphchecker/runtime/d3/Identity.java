@@ -48,6 +48,17 @@ public final class Identity {
     private static final class State {
         private final List<Frame> frames =
                 new ArrayList<Frame>();
+        /** Per frame, how often each child call site has been entered. */
+        private final List<Map<String, Integer>> entries =
+                new ArrayList<Map<String, Integer>>();
+        private final Map<String, Integer> roots =
+                new HashMap<String, Integer>();
+
+        /** The counters of the frame a new child is entered under. */
+        private Map<String, Integer> children() {
+            return entries.isEmpty() ? roots
+                    : entries.get(entries.size() - 1);
+        }
         /** loop id -> iterations charged inside the innermost frame. */
         private final Map<String, Integer> loops =
                 new HashMap<String, Integer>();
@@ -58,6 +69,10 @@ public final class Identity {
         private State copy() {
             State child = new State();
             child.frames.addAll(frames);
+            for (Map<String, Integer> frame : entries) {
+                child.entries.add(new HashMap<String, Integer>(frame));
+            }
+            child.roots.putAll(roots);
             child.loops.putAll(loops);
             child.loop = loop;
             child.scopeBase = scopeBase;
@@ -73,13 +88,27 @@ public final class Identity {
         }
     }
 
-    /** Enters one instrumented call site. */
+    /**
+     * Enters one instrumented call site.
+     *
+     * <p>The frame's iteration is the k-th entry of THIS call site under
+     * the frame that encloses it, counted since that frame was entered.  A
+     * loop body re-entering the same site is the same site at iteration
+     * 1, 2, 3 -- which is what the innermost enclosing loop's iteration
+     * count means -- and one rule computes it in the recording and in the
+     * replay alike, because the recording weaves no loop-backedge hook and
+     * an index that differed between the two passes would name two
+     * different points for one execution point.</p>
+     */
     public static void enterCall(String callSiteId) {
         State state = CURRENT.get();
-        int iteration = state.loop.isEmpty() ? 0
-                : state.loops.containsKey(state.loop)
-                        ? state.loops.get(state.loop) : 0;
-        state.frames.add(Frame.of(callSiteId, iteration));
+        String site = Text.safe(callSiteId);
+        Map<String, Integer> siblings = state.children();
+        Integer seen = siblings.get(site);
+        int iteration = seen == null ? 0 : seen;
+        siblings.put(site, iteration + 1);
+        state.frames.add(Frame.of(site, iteration));
+        state.entries.add(new HashMap<String, Integer>());
     }
 
     /** Leaves the innermost call site. */
@@ -88,6 +117,12 @@ public final class Identity {
         int depth = state.frames.size();
         if (depth == 0) return;
         state.frames.remove(depth - 1);
+        // The frame's own children are gone with it; the counters of the
+        // frame it returns to stay, which is what makes the next turn of a
+        // loop the next iteration.
+        if (!state.entries.isEmpty()) {
+            state.entries.remove(state.entries.size() - 1);
+        }
     }
 
     /** Charges one iteration of {@code loopId} to the current frame. */
