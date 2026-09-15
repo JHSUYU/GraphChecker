@@ -215,6 +215,9 @@ final class FlipQuery {
         private final Set<String> lowered = new LinkedHashSet<String>();
         /** session|symbol the query bound to a variable of its own. */
         private final Set<String> bound = new LinkedHashSet<String>();
+        /** session -> recorded symbol -> the query's variable for it. */
+        private final Map<String, Map<String, String>> renames =
+                new LinkedHashMap<String, Map<String, String>>();
         private final List<GapRow> gaps = new ArrayList<GapRow>();
         private String refusal = "";
 
@@ -269,6 +272,16 @@ final class FlipQuery {
                 return new Built("", refusal, flipped,
                         new ArrayList<Control>(controls.values()),
                         rootVariables, gaps);
+            }
+            String free = unbound();
+            if (!free.isEmpty()) {
+                return refuse(GapKind.UNPRODUCIBLE_ANSWER, free,
+                        "the query would declare this recorded symbol and "
+                                + "bind it to nothing: no family and no pin "
+                                + "states it, so the query is not causally "
+                                + "closed and a model of it would answer "
+                                + "with a value the chain does not reach",
+                        flipped);
             }
             return new Built(render(flipped, flipIndex), "", flipped,
                     new ArrayList<Control>(controls.values()), rootVariables,
@@ -693,9 +706,18 @@ final class FlipQuery {
          */
         private String rename(String term, String sessionId,
                               Set<String> rootsTouched, Set<String> unknown) {
-            Map<String, String> rename = new LinkedHashMap<String, String>();
-            for (String token : SmtText.symbols(term,
-                    new LinkedHashSet<String>())) {
+            lowered.add(sessionId);
+            Map<String, String> rename = renamesOf(sessionId);
+            Set<String> symbols = SmtText.symbols(term,
+                    new LinkedHashSet<String>());
+            // THE CLOSURE: the recorded symbols of a term are the ones
+            // reachable from it, not the ones visible in it.  A lowered term
+            // reaches its leaves through the subterms it names, so a handoff
+            // inside a shared define-fun is a symbol of this term -- and
+            // binding it is what gives the query an arm, the obligation an
+            // answer, and the replay something to apply.
+            symbols.addAll(reached(term, sessionId));
+            for (String token : symbols) {
                 Corpus.SymbolKind kind = corpus.symbolKind(sessionId, token);
                 if (kind == Corpus.SymbolKind.UNKNOWN) continue;
                 rename.put(token, variable(sessionId, token));
@@ -709,6 +731,27 @@ final class FlipQuery {
             }
             return SmtText.rewrite(term, rename,
                     name -> stated(name, sessionId), unknown);
+        }
+
+        private Map<String, String> renamesOf(String sessionId) {
+            Map<String, String> held = renames.get(sessionId);
+            if (held == null) {
+                held = new LinkedHashMap<String, String>();
+                renames.put(sessionId, held);
+            }
+            return held;
+        }
+
+        /** The names one text reaches through the subterms it mentions. */
+        private Set<String> reached(String term, String sessionId) {
+            Set<String> names = new LinkedHashSet<String>();
+            SmtLowering lowering = corpus.lowering(sessionId);
+            if (lowering == null) return names;
+            for (SmtLowering.Declaration declaration
+                    : lowering.reachedBy(Collections.singletonList(term))) {
+                if (declaration.body.isEmpty()) names.add(declaration.name);
+            }
+            return names;
         }
 
         /**
@@ -834,51 +877,34 @@ final class FlipQuery {
         }
 
         /**
-         * A RECORDED symbol the rendered declarations state as a free
-         * constant.
+         * A RECORDED symbol the query would declare and bind to nothing.
          *
-         * <p>A lowered term reaches its leaves inside the lowering's own
-         * shared subterms, so a handoff or a root that the assertion text
-         * never names is declared by the preamble and bound by nothing --
-         * and a model is then free to answer with a value no producer
-         * delivered.  The query is still the question it was asked; what is
-         * missing is the family that would constrain it, and it is named
-         * here rather than left for a witness to rest on.</p>
+         * <p>The query has to be CAUSALLY CLOSED: every recorded symbol it
+         * names is stated by a family (some producer delivered it) or by a
+         * pin (the recording states it).  One left over is a value the
+         * chain does not reach, and a model that assigns it has answered a
+         * question the execution never asked -- which is the one thing a
+         * query of this pipeline may not do.  It is refused by that
+         * symbol's name; nothing here is about reproducing anything.</p>
          */
-        private void free(Set<String> declarations) {
-            for (String line : declarations) {
-                String name = declaredName(line);
-                if (name.isEmpty()) continue;
-                for (String sessionId : lowered) {
-                    if (corpus.symbolKind(sessionId, name)
+        private String unbound() {
+            for (String sessionId : lowered) {
+                SmtLowering lowering = corpus.lowering(sessionId);
+                if (lowering == null) continue;
+                for (SmtLowering.Declaration declaration
+                        : lowering.reachedBy(assertions)) {
+                    if (!declaration.body.isEmpty()) continue;
+                    if (corpus.symbolKind(sessionId, declaration.name)
                             == Corpus.SymbolKind.UNKNOWN) {
                         continue;
                     }
-                    if (bound.contains(sessionId + "|" + name)) continue;
-                    gaps.add(GapRow.of(sessionId, GapKind.UNSTATED_VALUE,
-                            GapClass.DIAGNOSTIC, name,
-                            "the query declares this recorded symbol and "
-                                    + "binds it to nothing: it is inside a "
-                                    + "shared subterm the assertions never "
-                                    + "name, so no family constrains it"));
+                    if (bound.contains(sessionId + "|" + declaration.name)) {
+                        continue;
+                    }
+                    return declaration.name;
                 }
             }
-        }
-
-        /** The name one declaration line states, or "". */
-        private static String declaredName(String line) {
-            String head = "(declare-const ";
-            if (!line.startsWith(head)) {
-                head = "(declare-fun ";
-                if (!line.startsWith(head)) return "";
-            }
-            int from = head.length();
-            int to = line.indexOf(' ', from);
-            if (to < 0) return "";
-            String name = line.substring(from, to);
-            return name.length() > 1 && name.startsWith("|")
-                    && name.endsWith("|")
-                    ? name.substring(1, name.length() - 1) : name;
+            return "";
         }
 
         private Built refuse(GapKind kind, String subject, String detail,
@@ -911,27 +937,49 @@ final class FlipQuery {
                 text.append("; ").append(entry.getKey()).append(" = ")
                         .append(entry.getValue()).append('\n');
             }
-            // The lowering's own preamble and declarations, deduplicated
-            // by line: two sessions state the same container model and the
-            // same subterm under the same digest only when it IS the same
-            // text, and each session's leaves were minted in its own scope,
-            // which is the composer's rule for a multi-session formula and
-            // not a second naming of this stage's own.
-            Set<String> stated = new LinkedHashSet<String>();
+            // The lowering's own preamble, and EXACTLY the declarations
+            // the assertions reach -- a lowering is cached per session and
+            // answers many questions, so emitting all of them would state
+            // symbols this query does not conjoin.  Deduplicated by line:
+            // two sessions share a minted name only when the definition is
+            // literally the same closed term, because the digest is over
+            // the scoped text.
+            Set<String> opening = new LinkedHashSet<String>();
             for (String sessionId : lowered) {
                 SmtLowering lowering = corpus.lowering(sessionId);
                 if (lowering == null) continue;
-                for (String line : lowering.declarationsOnly().split("\n")) {
-                    if (!line.trim().isEmpty()) stated.add(line);
-                }
+                opening.addAll(lowering.preambleLines());
             }
-            if (stated.isEmpty()) text.append("(set-logic ALL)\n");
-            for (String line : stated) text.append(line).append('\n');
-            free(stated);
+            if (opening.isEmpty()) opening.add("(set-logic ALL)");
+            for (String line : opening) text.append(line).append('\n');
+            // The query's OWN variables before the definitions: a renamed
+            // subterm body names them, and a define-fun over a constant
+            // nothing has declared yet is an error that cascades into every
+            // definition above it.
             for (Map.Entry<String, String> entry : sorts.entrySet()) {
                 text.append("(declare-fun ").append(entry.getKey())
                         .append(" () ").append(entry.getValue()).append(")\n");
             }
+            Set<String> stated = new LinkedHashSet<String>();
+            for (String sessionId : lowered) {
+                SmtLowering lowering = corpus.lowering(sessionId);
+                if (lowering == null) continue;
+                Map<String, String> rename = renamesOf(sessionId);
+                for (SmtLowering.Declaration declaration
+                        : lowering.reachedBy(assertions)) {
+                    // A recorded symbol the query bound is declared by the
+                    // query, under its own variable, once.
+                    if (rename.containsKey(declaration.name)) continue;
+                    stated.add(declaration.body.isEmpty()
+                            ? declaration.render()
+                            : "(define-fun " + declaration.name + " () "
+                            + declaration.sort + " "
+                            + SmtText.rewrite(declaration.body, rename,
+                            name -> stated(name, sessionId),
+                            new LinkedHashSet<String>()) + ")");
+                }
+            }
+            for (String line : stated) text.append(line).append('\n');
             for (String assertion : assertions) {
                 text.append("(assert ").append(assertion).append(")\n");
             }

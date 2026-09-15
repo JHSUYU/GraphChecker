@@ -347,9 +347,19 @@ public final class SmtLowering extends VmLoweringCore {
         return false;
     }
 
+    /**
+     * A character a NAME may be spelled with.
+     *
+     * <p>SMT-LIB's simple-symbol alphabet, plus the two the runtime's own
+     * names use: {@code #} in a row's location symbol, {@code '} in the
+     * VM's.  The set was letters, digits, {@code _ . $} -- which splits
+     * {@code M_I_field_HOFF.…_edu/uva/liftlab/…} at the slash, so half a
+     * name was looked up, no declaration was found for it, and a query
+     * emitted a subterm over a constant it never declared.</p>
+     */
     private static boolean symbolCharacter(char value) {
-        return Character.isLetterOrDigit(value) || value == '_'
-                || value == '.' || value == '$';
+        if (Character.isLetterOrDigit(value)) return true;
+        return "~!@$%^&*_-+=<>.?/#'".indexOf(value) >= 0;
     }
 
     /** One lowered expression: its text, the symbols it names, or why not. */
@@ -959,7 +969,13 @@ public final class SmtLowering extends VmLoweringCore {
         }
         Sort sort = VmTermLowering.sortOfContainer(value.sort);
         if (sort == Sort.UNKNOWN) return value;
-        String identity = sort.name() + SEPARATOR + value.text;
+        // The digest is over the SCOPED text: a subterm that mentions a
+        // recorded symbol is one session's term, because the symbol is that
+        // session's row, and two sessions share a name only when the
+        // definition is literally the same closed term.  An identity and an
+        // environment cell already carry the scope in their own mint; this
+        // is the same rule for the one name that did not.
+        String identity = sort.name() + SEPARATOR + scoped(value.text);
         String digest = JsonText.digest(identity, 0);
         SharedTerm held = sharedTerms.get(digest);
         if (held == null) {
@@ -974,6 +990,41 @@ public final class SmtLowering extends VmLoweringCore {
     // ------------------------------------------------------------------
     // The query.
     // ------------------------------------------------------------------
+
+    /**
+     * One term's text with every RECORDED symbol in it read as this
+     * session's.
+     *
+     * <p>For the digest only: what is emitted is the text as it stands.  A
+     * recorded symbol is a row of one recording, so the same spelling in
+     * two sessions is two values, and a name minted over the bare text
+     * would make one definition of the two.</p>
+     */
+    private String scoped(String text) {
+        if (text == null || text.isEmpty() || scope.isEmpty()) return text;
+        StringBuilder out = new StringBuilder(text.length());
+        int index = 0;
+        while (index < text.length()) {
+            char value = text.charAt(index);
+            if (!symbolCharacter(value)) {
+                out.append(value);
+                index++;
+                continue;
+            }
+            int end = index;
+            while (end < text.length()
+                    && symbolCharacter(text.charAt(end))) {
+                end++;
+            }
+            String token = text.substring(index, end);
+            index = end;
+            if (usedSymbols.contains(token)) {
+                out.append(scope).append(SEPARATOR);
+            }
+            out.append(token);
+        }
+        return out.toString();
+    }
 
     /** Declares one name once; a second, different sort is a defect. */
     public void declare(String name, Sort sort) {
@@ -1176,6 +1227,113 @@ public final class SmtLowering extends VmLoweringCore {
 
     public Set<String> cuts() {
         return cuts;
+    }
+
+    /**
+     * One name this query gives a meaning, and how.
+     *
+     * <p>{@code body} empty is a {@code declare-const}; otherwise it is the
+     * body of a {@code define-fun} of that sort.</p>
+     */
+    public static final class Declaration {
+        public final String name;
+        public final String sort;
+        public final String body;
+
+        private Declaration(String name, String sort, String body) {
+            this.name = name;
+            this.sort = sort;
+            this.body = body;
+        }
+
+        /** This declaration as one line of SMT-LIB. */
+        public String render() {
+            return body.isEmpty()
+                    ? "(declare-const " + name + " " + sort + ")"
+                    : "(define-fun " + name + " () " + sort + " " + body
+                    + ")";
+        }
+    }
+
+    /**
+     * Exactly the declarations these texts reach, dependencies first.
+     *
+     * <p>A query that emitted every declaration its lowering ever made
+     * would state symbols from terms it does not conjoin -- a lowering is
+     * cached per session and answers many questions -- and a reader cannot
+     * tell those from the ones the query rests on.  Reachability is by the
+     * names a text mentions, through the bodies of the subterms it names,
+     * to a fixed point.</p>
+     */
+    public List<Declaration> reachedBy(Iterable<String> texts) {
+        List<Declaration> ordered = new ArrayList<Declaration>();
+        Set<String> done = new LinkedHashSet<String>();
+        Map<String, SharedTerm> byName = new LinkedHashMap<String, SharedTerm>();
+        for (SharedTerm shared : sharedTerms.values()) {
+            byName.put(shared.name, shared);
+        }
+        if (texts != null) {
+            for (String text : texts) {
+                reach(text, byName, done, ordered, 0);
+            }
+        }
+        return ordered;
+    }
+
+    private void reach(String text, Map<String, SharedTerm> byName,
+                       Set<String> done, List<Declaration> ordered,
+                       int depth) {
+        if (text == null || text.isEmpty() || depth > 512) return;
+        for (String token : names(text)) {
+            if (!done.add(token)) continue;
+            SharedTerm shared = byName.get(token);
+            if (shared != null) {
+                // Its own dependencies first: a define-fun may name another.
+                reach(shared.body, byName, done, ordered, depth + 1);
+                ordered.add(new Declaration(shared.name, shared.sort.smt,
+                        shared.body));
+                continue;
+            }
+            Sort sort = declarations.get(token);
+            if (sort != null) {
+                ordered.add(new Declaration(token, sort.smt, ""));
+            }
+        }
+    }
+
+    /** Every symbol-shaped token of one term. */
+    private static List<String> names(String text) {
+        List<String> names = new ArrayList<String>();
+        int index = 0;
+        while (index < text.length()) {
+            char value = text.charAt(index);
+            if (!symbolCharacter(value)) {
+                index++;
+                continue;
+            }
+            int end = index;
+            while (end < text.length()
+                    && symbolCharacter(text.charAt(end))) {
+                end++;
+            }
+            names.add(text.substring(index, end));
+            index = end;
+        }
+        return names;
+    }
+
+    /** The preamble alone: the sorts and functions, no declaration. */
+    public List<String> preambleLines() {
+        List<String> lines = new ArrayList<String>();
+        lines.add("(set-logic ALL)");
+        lines.add("(set-option :produce-models true)");
+        for (String line : VmTermLowering.preamble(false)) lines.add(line);
+        if (usesJavaIntString) {
+            lines.add(VmTermLowering.JAVA_INT_TO_STRING);
+        }
+        lines.add(JavaPrimitiveSmtSemantics.INT_WRAP_DEFINITION);
+        lines.add(JavaPrimitiveSmtSemantics.LONG_WRAP_DEFINITION);
+        return lines;
     }
 
     /** Preamble and declarations, with no assertion and no check. */

@@ -2,6 +2,7 @@ package edu.uva.liftlab.graphchecker.d3.explore;
 
 import com.google.gson.JsonObject;
 
+import edu.uva.liftlab.graphchecker.d3.compose.SmtLowering;
 import edu.uva.liftlab.graphchecker.d3.contract.ActivationRow;
 import edu.uva.liftlab.graphchecker.d3.contract.AttachRow;
 import edu.uva.liftlab.graphchecker.d3.contract.CausalContext;
@@ -109,6 +110,23 @@ public class D3ExploreTest {
         seed.decision(target, "Concrete#u3", 1, false, "");
         seed.flush();
 
+        // M3c: the recorded symbols of a term are the ones REACHABLE from
+        // it -- the tokens the text shows are only the first hop.  The one
+        // lowering answers that question, and the closure is what gives a
+        // handoff inside a shared subterm its family, its control and its
+        // answer.
+        Corpus reading = Corpus.read(iteration, null);
+        SmtLowering lowering = reading.lowering("s-seed");
+        SmtLowering.Lowered phi = lowering.lower("EXPR.0000000000000001");
+        assertTrue("the reference lowers", phi.ok());
+        boolean reaches = false;
+        for (SmtLowering.Declaration declaration
+                : lowering.reachedBy(Collections.singletonList(phi.text()))) {
+            reaches |= declaration.body.isEmpty()
+                    && "M_MARKER".equals(declaration.name);
+        }
+        assertTrue("and the query states exactly what it reaches", reaches);
+
         Path out = tree.newFolder("depth-out").toPath();
         Path results = out.resolve("obligation_results.jsonl");
         Files.write(results, new byte[0]);
@@ -142,7 +160,7 @@ public class D3ExploreTest {
         flipped.decision(target, "Guard#u19", 1, false, "(> M_COUNT 5)");
         flipped.flush();
         record(results, ObligationResult.of(proposed.get(0).obligationId(),
-                Verdict.VALIDATED, "s-flip", "the flip ran"));
+                Verdict.ADMITTED, "s-flip", "the flip ran"));
 
         Path wave1 = out.resolve("obligations-0001");
         plan(iteration, TARGET_SELECTOR, null, results, wave1, 1);
