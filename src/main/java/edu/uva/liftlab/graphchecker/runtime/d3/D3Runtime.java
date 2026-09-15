@@ -189,7 +189,7 @@ public final class D3Runtime {
         if (session != null) {
             session.activation(ActivationRow.of(sessionId(), address,
                     Text.safe(taskId), FocusedReplay.focused(taskId,
-                            address)));
+                            address), true, threadKey(), null));
             if (address.lineageLost()) {
                 session.gap(GapRow.of(sessionId(), GapKind.LINEAGE_LOST,
                         GapClass.DIAGNOSTIC, address.render(),
@@ -214,11 +214,26 @@ public final class D3Runtime {
         SessionPublisher session = publisher;
         if (session == null || address == null) return;
         if (AMBIENT.putIfAbsent(address.id(), Boolean.TRUE) != null) return;
-        session.activation(ActivationRow.of(sessionId(), address, "", false));
+        // A lightweight entry hook published this one: the region is not in
+        // the instrumented set, so it has no decisions to find.
+        session.activation(ActivationRow.of(sessionId(), address, "", false,
+                false, threadKey(), null));
     }
 
     private static final Map<String, Boolean> AMBIENT =
             new ConcurrentHashMap<String, Boolean>();
+
+    /**
+     * The session's key for the thread this activation runs on.
+     *
+     * <p>Name plus JVM thread id: the name alone repeats across a pool, and
+     * the id alone says nothing to a reader.  Stable for the life of the
+     * session, which is all program order needs.</p>
+     */
+    private static String threadKey() {
+        Thread thread = Thread.currentThread();
+        return thread.getName() + "#" + thread.getId();
+    }
 
     /** The address minted for this activation, or {@code null}. */
     public static OccurrenceAddress addressOf(long token) {

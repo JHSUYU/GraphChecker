@@ -227,7 +227,7 @@ public class D3ContractTest {
         clocks.put("clock_dn0", 1757700000000L);
 
         ActivationRow activation = ActivationRow.of("s-17897-1", anchor,
-                "task-1", true);
+                "task-1", true, true, "DataXceiver-7#41", export);
         // The session's own event order: export, attach, write, decision,
         // read, anchor -- the numbers a producer's condition is cut at.
         DecisionRow decision = DecisionRow.of("s-17897-1", 12L, anchor,
@@ -258,6 +258,20 @@ public class D3ContractTest {
 
         assertEquals(activation, RowCodec.readActivation(
                 reline(RowCodec.writeActivation(activation))));
+        // An activation a lightweight entry hook published carries no thread
+        // starter, and says the region was never instrumented -- so a reader
+        // that finds no decisions for it knows why.
+        ActivationRow ambient = ActivationRow.of("s-17897-1", producer, "",
+                false, false, "KeyManager-1#13", null);
+        ActivationRow ambientBack = RowCodec.readActivation(
+                reline(RowCodec.writeActivation(ambient)));
+        assertEquals(ambient, ambientBack);
+        assertFalse(ambientBack.instrumented());
+        assertNull(ambientBack.startedBy());
+        assertEquals("KeyManager-1#13", ambientBack.threadKey());
+        assertEquals(export.id(), RowCodec.readActivation(
+                reline(RowCodec.writeActivation(activation)))
+                .startedBy().id());
         assertEquals(decision, RowCodec.readDecision(
                 reline(RowCodec.writeDecision(decision))));
         assertEquals(exported, RowCodec.readExport(
