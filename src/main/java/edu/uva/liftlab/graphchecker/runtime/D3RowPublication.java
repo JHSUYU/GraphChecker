@@ -125,8 +125,13 @@ final class D3RowPublication {
     private static void roots(ActiveRegion active,
                               OccurrenceAddress occurrence) {
         for (JsonObject row : active.symbolizedRows) {
-            String symbol = optionalString(row, "rawSymbol");
-            if (symbol.isEmpty()) symbol = optionalString(row, "symbol");
+            // The root's OWN name, not the VM's type-derived one: two roots
+            // minted on fields of one class share the VM's raw symbol
+            // (M_L'…BlockKey'_15), and a corpus where one solver name
+            // stands for three roots is refused -- rightly -- by the
+            // composer.  The requested symbol is per site by construction.
+            String symbol = optionalString(row, "symbol");
+            if (symbol.isEmpty()) symbol = optionalString(row, "rawSymbol");
             if (symbol.isEmpty()) continue;
             String rootId = optionalString(row, "sourceId");
             if (rootId.isEmpty()) rootId = optionalString(row, "portId");
