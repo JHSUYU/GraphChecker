@@ -216,9 +216,19 @@ public class RowRuntimeTest {
         assertEquals(exported, row.producer());
         assertTrue(row.interaction().producerDegraded() == false);
         assertTrue(row.endpoint().occurrence().lineageLost());
-        // Pairing is the run's own evidence: another port's delivery on the
-        // same correlation takes no producer from this one.
-        assertNull(Interactions.producer("XCH.resp.other", 0L, ""));
+        // Pairing is the run's own RECORDED evidence and nothing else: the
+        // handle the VM handed out, or the correlation the workload named
+        // with the port.  A delivery on the same port that carries neither
+        // pairs to nothing -- it used to take the port's last producer,
+        // which states a chain nobody made -- and another port's delivery
+        // takes no producer from this one either.
+        assertNull("no handle and no correlation is no pairing",
+                Interactions.producer("XCH.resp.block-key-id", 0L, ""));
+        assertNull("another port is another interaction",
+                Interactions.producer("XCH.resp.other", 0L, "hadoop-ipc-7"));
+        assertEquals("the handle is the strongest evidence there is",
+                exported,
+                Interactions.producer("XCH.resp.other", 4242L, ""));
     }
 
     /** Every row kind round-trips through the codec it is written with. */

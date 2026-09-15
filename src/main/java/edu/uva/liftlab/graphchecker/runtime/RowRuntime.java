@@ -266,7 +266,7 @@ public final class RowRuntime {
         if (producer == null) return null;
         Endpoint endpoint = endpoint(producer, portId, attempt);
         String ref = expressionRef(expression);
-        Interactions.exported(portId, handle, correlationId, endpoint, ref);
+        Interactions.exported(portId, handle, correlationId, endpoint);
         SessionPublisher session = publisher;
         if (session != null) {
             session.export(ExportRow.of(sessionId(), sequence(seq), endpoint,
