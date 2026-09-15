@@ -4,6 +4,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
+import edu.uva.liftlab.graphchecker.d3.contract.InteractionKind;
 import edu.uva.liftlab.graphchecker.d3.contract.Obligation;
 import edu.uva.liftlab.graphchecker.d3.contract.ObligationResult;
 import edu.uva.liftlab.graphchecker.d3.contract.OccurrenceAddress;
@@ -95,6 +96,29 @@ public final class ExploreCodec {
         return ObligationResult.of(string(json, "obligationId"),
                 Verdict.valueOf(string(json, "verdict")),
                 string(json, "sessionId"), string(json, "detail"));
+    }
+
+    /** One slot of the epoch's skeleton. */
+    public static JsonObject writeSlot(SlotTable.Slot slot) {
+        JsonObject json = new JsonObject();
+        json.addProperty("schemaVersion", 1);
+        json.addProperty("kind", "SLOT");
+        json.addProperty("interactionId", slot.interactionId());
+        json.addProperty("interactionKind", slot.kind.name());
+        json.add("producer", RowCodec.writeEndpoint(slot.producer));
+        json.add("consumer", RowCodec.writeEndpoint(slot.consumer));
+        json.addProperty("openedBySession", slot.openedBySession);
+        json.addProperty("openedAtWave", slot.openedAtWave);
+        return json;
+    }
+
+    public static SlotTable.Slot readSlot(JsonObject json) {
+        return new SlotTable.Slot(
+                InteractionKind.valueOf(string(json, "interactionKind")),
+                RowCodec.readEndpoint(object(json, "producer")),
+                RowCodec.readEndpoint(object(json, "consumer")),
+                string(json, "openedBySession"),
+                integer(json, "openedAtWave"));
     }
 
     /** One row of the case's {@code root-domains.jsonl}. */

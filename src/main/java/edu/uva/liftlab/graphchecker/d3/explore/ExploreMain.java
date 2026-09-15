@@ -12,6 +12,7 @@ import edu.uva.liftlab.graphchecker.d3.contract.GapKind;
 import edu.uva.liftlab.graphchecker.d3.contract.GapRow;
 import edu.uva.liftlab.graphchecker.d3.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.d3.contract.RowCodec;
+import edu.uva.liftlab.graphchecker.d3.contract.SessionReader;
 import edu.uva.liftlab.graphchecker.d3.contract.Selector;
 import edu.uva.liftlab.graphchecker.d3.contract.Task;
 
@@ -316,8 +317,8 @@ public final class ExploreMain {
         List<OccurrenceAddress> occurrences =
                 new ArrayList<OccurrenceAddress>();
         Set<String> seen = new LinkedHashSet<String>();
-        for (SessionReader.Session session : corpus.sessions()) {
-            for (ActivationRow activation : session.activations) {
+        for (SessionReader session : corpus.sessions()) {
+            for (ActivationRow activation : session.activations()) {
                 if (seen.add(activation.occurrence().id())) {
                     occurrences.add(activation.occurrence());
                 }
@@ -332,9 +333,9 @@ public final class ExploreMain {
         List<OccurrenceAddress> occurrences =
                 new ArrayList<OccurrenceAddress>();
         Set<String> seen = new LinkedHashSet<String>();
-        SessionReader.Session session = corpus.session(seed);
+        SessionReader session = corpus.session(seed);
         if (session == null) return occurrences;
-        for (ActivationRow activation : session.activations) {
+        for (ActivationRow activation : session.activations()) {
             if (seen.add(activation.occurrence().id())) {
                 occurrences.add(activation.occurrence());
             }

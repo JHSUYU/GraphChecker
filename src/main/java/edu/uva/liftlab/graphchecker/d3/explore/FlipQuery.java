@@ -10,6 +10,7 @@ import edu.uva.liftlab.graphchecker.d3.contract.GapRow;
 import edu.uva.liftlab.graphchecker.d3.contract.Interaction;
 import edu.uva.liftlab.graphchecker.d3.contract.InteractionKind;
 import edu.uva.liftlab.graphchecker.d3.contract.ReadRow;
+import edu.uva.liftlab.graphchecker.d3.contract.SessionReader;
 import edu.uva.liftlab.graphchecker.d3.contract.RootKind;
 import edu.uva.liftlab.graphchecker.d3.contract.RootMintRow;
 import edu.uva.liftlab.graphchecker.d3.contract.Task;
@@ -236,9 +237,17 @@ final class FlipQuery {
 
         // ---- the four rules ------------------------------------------
 
-        private void root(RootMintRow row) {
-            String variable = variable(row.sessionId(), row.symbol());
+        private void root(RootMintRow minted) {
+            String variable = variable(minted.sessionId(), minted.symbol());
             if (!explained.add(variable)) return;
+            // A declared domain is RELATIVE to what the recording read, and
+            // "the recording" here is the execution this obligation is about:
+            // the path being flipped.  Which session's mint row reached this
+            // symbol first is an accident of the drain order, and resolving
+            // +0..+3 against another replay's reading would move the window
+            // the case declared.
+            RootMintRow own = corpus.rootOf(path.sessionId, minted.rootId());
+            RootMintRow row = own == null ? minted : own;
             if (row.kind() == RootKind.CLOCK) {
                 assertions.add("(>= " + variable + " 0)");
                 return;
@@ -313,9 +322,9 @@ final class FlipQuery {
             WriteRow writer = corpus.writeOf(row.sessionId(), row.location(),
                     row.observedVersion());
             if (writer != null) {
-                SessionReader.Session session = corpus.session(row.sessionId());
-                SmtLowering.Lowered lowered = session.lowering()
-                        .lower(writer.expressionRef());
+                SmtLowering.Lowered lowered =
+                        corpus.lowering(row.sessionId())
+                                .lower(writer.expressionRef());
                 Set<String> unknown = new LinkedHashSet<String>();
                 if (lowered.ok()) {
                     String value = rename(lowered.text(), row.sessionId(),
@@ -352,15 +361,15 @@ final class FlipQuery {
          */
         private String arm(ExportRow export, String variable,
                            List<String> refusals) {
-            SessionReader.Session session = corpus.session(export.sessionId());
+            SessionReader session = corpus.session(export.sessionId());
             if (session == null) {
                 refusals.add("no session to resolve " + export.sessionId());
                 return "";
             }
             Set<String> roots = new LinkedHashSet<String>();
             Set<String> unknown = new LinkedHashSet<String>();
-            SmtLowering.Lowered lowered =
-                    session.lowering().lower(export.expressionRef());
+            SmtLowering.Lowered lowered = corpus.lowering(export.sessionId())
+                    .lower(export.expressionRef());
             String delivered;
             boolean attested;
             if (lowered.ok()) {

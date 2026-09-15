@@ -10,6 +10,7 @@ import edu.uva.liftlab.graphchecker.d3.contract.GapRow;
 import edu.uva.liftlab.graphchecker.d3.contract.LocationId;
 import edu.uva.liftlab.graphchecker.d3.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.d3.contract.ReadRow;
+import edu.uva.liftlab.graphchecker.d3.contract.SessionReader;
 import edu.uva.liftlab.graphchecker.d3.contract.Task;
 import edu.uva.liftlab.graphchecker.d3.contract.WriteRow;
 
@@ -164,13 +165,13 @@ public final class ClosurePlanner {
         }
         crossCheck(attach, gaps);
         into.add(attach.producer().occurrence());
-        SessionReader.Session session = corpus.session(attach.sessionId());
+        SessionReader session = corpus.session(attach.sessionId());
         if (session == null) return;
         for (ExportRow export : corpus.exportsAt(attach.producer())) {
-            SessionReader.Session exporting = corpus.session(export.sessionId());
+            SessionReader exporting = corpus.session(export.sessionId());
             if (exporting == null) continue;
-            SmtLowering.Lowered lowered =
-                    exporting.lowering().lower(export.expressionRef());
+            SmtLowering.Lowered lowered = corpus.lowering(export.sessionId())
+                    .lower(export.expressionRef());
             for (Map.Entry<String, String> symbol
                     : lowered.declarations().entrySet()) {
                 AttachRow nested = corpus.attach(export.sessionId(),
@@ -242,11 +243,11 @@ public final class ClosurePlanner {
     /** The session an occurrence was first recorded in. */
     private static String seedSession(Corpus corpus,
                                       OccurrenceAddress occurrence) {
-        for (SessionReader.Session session : corpus.sessions()) {
-            if (corpus.activation(session.sessionId, occurrence) != null
-                    || !corpus.decisionsOf(session.sessionId, occurrence)
+        for (SessionReader session : corpus.sessions()) {
+            if (corpus.activation(session.sessionId(), occurrence) != null
+                    || !corpus.decisionsOf(session.sessionId(), occurrence)
                     .isEmpty()) {
-                return session.sessionId;
+                return session.sessionId();
             }
         }
         return "";

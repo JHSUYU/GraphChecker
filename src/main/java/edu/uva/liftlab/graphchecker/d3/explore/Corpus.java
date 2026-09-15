@@ -11,7 +11,9 @@ import edu.uva.liftlab.graphchecker.d3.contract.ReadRow;
 import edu.uva.liftlab.graphchecker.d3.contract.RootDomain;
 import edu.uva.liftlab.graphchecker.d3.contract.RootKind;
 import edu.uva.liftlab.graphchecker.d3.contract.RootMintRow;
+import edu.uva.liftlab.graphchecker.d3.compose.SmtLowering;
 import edu.uva.liftlab.graphchecker.d3.contract.RowCodec;
+import edu.uva.liftlab.graphchecker.d3.contract.SessionReader;
 import edu.uva.liftlab.graphchecker.d3.contract.WriteRow;
 
 import java.io.IOException;
@@ -60,9 +62,12 @@ public final class Corpus {
     /** What one raw symbol of one session names. */
     public enum SymbolKind { ROOT, HANDOFF, READ, UNKNOWN }
 
-    private final List<SessionReader.Session> sessions;
-    private final Map<String, SessionReader.Session> sessionById =
-            new LinkedHashMap<String, SessionReader.Session>();
+    private final List<SessionReader> sessions;
+    private final Map<String, SessionReader> sessionById =
+            new LinkedHashMap<String, SessionReader>();
+    /** One lowering per session: the cache belongs to the stage that lowers. */
+    private final Map<String, SmtLowering> loweringById =
+            new LinkedHashMap<String, SmtLowering>();
     /** occurrence id -> the activations of it, across sessions. */
     private final Map<String, List<ActivationRow>> activations =
             new LinkedHashMap<String, List<ActivationRow>>();
@@ -101,9 +106,9 @@ public final class Corpus {
     private final Map<String, RootDomain> declaredDomains =
             new LinkedHashMap<String, RootDomain>();
 
-    private Corpus(List<SessionReader.Session> sessions) {
+    private Corpus(List<SessionReader> sessions) {
         this.sessions = Collections.unmodifiableList(sessions);
-        for (SessionReader.Session session : sessions) index(session);
+        for (SessionReader session : sessions) index(session);
     }
 
     /** Reads an iteration and its case-declared root domains. */
@@ -122,50 +127,51 @@ public final class Corpus {
     }
 
     /** A corpus over sessions already in memory (tests, and one-shot runs). */
-    public static Corpus of(List<SessionReader.Session> sessions) {
-        return new Corpus(new ArrayList<SessionReader.Session>(sessions));
+    public static Corpus of(List<SessionReader> sessions) {
+        return new Corpus(new ArrayList<SessionReader>(sessions));
     }
 
-    private void index(SessionReader.Session session) {
-        sessionById.put(session.sessionId, session);
-        for (ActivationRow row : session.activations) {
+    private void index(SessionReader session) {
+        sessionById.put(session.sessionId(), session);
+        loweringById.put(session.sessionId(), SmtLowering.forSession(session));
+        for (ActivationRow row : session.activations()) {
             remember(occurrenceById, row.occurrence());
             add(activations, row.occurrence().id(), row);
         }
-        for (DecisionRow row : session.decisions) {
+        for (DecisionRow row : session.decisions()) {
             remember(occurrenceById, row.occurrence());
-            add(decisions, session.sessionId + "|" + row.occurrence().id(), row);
+            add(decisions, session.sessionId() + "|" + row.occurrence().id(), row);
         }
-        for (ExportRow row : session.exports) {
+        for (ExportRow row : session.exports()) {
             remember(occurrenceById, row.endpoint().occurrence());
             add(exports, row.endpoint().id(), row);
         }
-        for (AttachRow row : session.attaches) {
+        for (AttachRow row : session.attaches()) {
             remember(occurrenceById, row.endpoint().occurrence());
-            attachBySymbol.put(session.sessionId + "|" + row.symbol(), row);
+            attachBySymbol.put(session.sessionId() + "|" + row.symbol(), row);
             add(attachesOn, row.endpoint().occurrence().id(), row);
         }
-        for (RootMintRow row : session.roots) {
+        for (RootMintRow row : session.roots()) {
             remember(occurrenceById, row.occurrence());
-            rootBySymbol.put(session.sessionId + "|" + row.symbol(), row);
+            rootBySymbol.put(session.sessionId() + "|" + row.symbol(), row);
             Map<String, RootMintRow> bySession = rootsById.get(row.rootId());
             if (bySession == null) {
                 bySession = new LinkedHashMap<String, RootMintRow>();
                 rootsById.put(row.rootId(), bySession);
             }
-            bySession.put(session.sessionId, row);
+            bySession.put(session.sessionId(), row);
         }
-        for (WriteRow row : session.writes) {
+        for (WriteRow row : session.writes()) {
             remember(occurrenceById, row.endpoint().occurrence());
-            writeByVersion.put(versionKey(session.sessionId, row.location(),
+            writeByVersion.put(versionKey(session.sessionId(), row.location(),
                     row.version()), row);
             add(writesOn, row.endpoint().occurrence().id(), row);
             touch(row.endpoint().occurrence(), row.location());
         }
-        for (ReadRow row : session.reads) {
+        for (ReadRow row : session.reads()) {
             remember(occurrenceById, row.endpoint().occurrence());
             if (!row.symbol().isEmpty()) {
-                readBySymbol.put(session.sessionId + "|" + row.symbol(), row);
+                readBySymbol.put(session.sessionId() + "|" + row.symbol(), row);
             }
             add(readsOn, row.endpoint().occurrence().id(), row);
             touch(row.endpoint().occurrence(), row.location());
@@ -208,32 +214,35 @@ public final class Corpus {
     }
 
     /**
-     * The session the recording itself wrote.
+     * Which session is the recording, or "" when that has no answer.
      *
-     * <p>The seed replay runs everything concretely and focuses nothing; an
-     * exploration replay focuses exactly the occurrence its task names.  So
-     * "was this the recording, or a counterfactual" is a fact of the rows and
-     * needs no naming convention -- the same reading the composer applies.
-     * A corpus in which every session focused something (an offline corpus of
-     * flips alone) falls back to its first session, because a selector that
-     * cannot be resolved would otherwise stop exploration outright.</p>
+     * <p>One rule, stated once in the contract: the seed is the session whose
+     * activations focused nothing.  A corpus with none of those, or with more
+     * than one, does not state which recording a declaration was written
+     * about, and the caller refuses with a named gap -- naming an exploration
+     * replay as the recording is how a claim comes to be about the wrong
+     * execution.</p>
      */
     public String seedSessionId() {
-        for (SessionReader.Session session : sessions) {
-            boolean explored = false;
-            for (ActivationRow activation : session.activations) {
-                explored |= activation.focused();
-            }
-            if (!explored) return session.sessionId;
-        }
-        return sessions.isEmpty() ? "" : sessions.get(0).sessionId;
+        String seed = SessionReader.seedSessionId(sessions);
+        return seed == null ? "" : seed;
     }
 
-    public List<SessionReader.Session> sessions() {
+    /** Every session that focused nothing: what such a refusal names. */
+    public List<String> unfocusedSessionIds() {
+        return SessionReader.unfocusedSessionIds(sessions);
+    }
+
+    /** One session's lowering: the one the composer lowers with. */
+    public SmtLowering lowering(String sessionId) {
+        return loweringById.get(sessionId);
+    }
+
+    public List<SessionReader> sessions() {
         return sessions;
     }
 
-    public SessionReader.Session session(String sessionId) {
+    public SessionReader session(String sessionId) {
         return sessionById.get(sessionId);
     }
 
@@ -255,13 +264,13 @@ public final class Corpus {
      */
     public List<RecordedPath> pathsOf(OccurrenceAddress occurrence) {
         List<RecordedPath> paths = new ArrayList<RecordedPath>();
-        for (SessionReader.Session session : sessions) {
-            ActivationRow activation = activation(session.sessionId,
+        for (SessionReader session : sessions) {
+            ActivationRow activation = activation(session.sessionId(),
                     occurrence);
             List<DecisionRow> path = decisions.get(
-                    session.sessionId + "|" + occurrence.id());
+                    session.sessionId() + "|" + occurrence.id());
             if (activation == null && path == null) continue;
-            paths.add(new RecordedPath(session.sessionId, occurrence,
+            paths.add(new RecordedPath(session.sessionId(), occurrence,
                     path == null ? new ArrayList<DecisionRow>() : path,
                     activation != null && activation.focused()));
         }
@@ -354,6 +363,12 @@ public final class Corpus {
         Map<String, RootMintRow> bySession = rootsById.get(rootId);
         RootMintRow row = bySession == null ? null : bySession.get(sessionId);
         return row == null ? "" : row.recordedValue();
+    }
+
+    /** What one session minted for one root, or null when it minted none. */
+    public RootMintRow rootOf(String sessionId, String rootId) {
+        Map<String, RootMintRow> bySession = rootsById.get(rootId);
+        return bySession == null ? null : bySession.get(sessionId);
     }
 
     /** Any mint row of one root, for its kind and its published domain. */
