@@ -262,14 +262,26 @@ final class D3RowPublication {
                             + " read: " + optionalString(row, "portId"));
             return;
         }
-        // One row per read, per activation.  The declared ports of one
-        // activation are reads of one location that carry one symbol -- the
-        // VM keeps the field's shadow, so the second mint finds the first
-        // symbol -- and the same manual row is reachable again from every
-        // activation the read ran inside.  One row states it.
+        // One row per (occurrence, location).  A cell holds one value at a
+        // time, so one occurrence's read of it is one statement -- and the
+        // key is the occurrence this row is published under, not the
+        // planned occurrenceId the mint carried: two mints of one cell in
+        // one activation carry different planned ids, so keying on that let
+        // both through (the anchor stated INSTANCE/2#24 twice in every
+        // session of the P2f' corpus, seed seq 242/308 and focused
+        // 185/209).  Worse, REGION.f0132fca declares the cell under two
+        // ports -- getNumSnapshots() is called twice -- so one occurrence
+        // could state it under two symbols (in.6dbe2027 and in.2f41e4ec in
+        // session 412e284c), and a ReadFrom naming that version then
+        // resolves to two symbols and the composer refuses the path
+        // (22 UNSTATED_VALUE).  The suppressed mint is named, never silent.
         if (!D3Runtime.claimEvent("placeholder",
-                optionalString(row, "occurrenceId") + "#" + locationKey
-                        + "#" + symbol)) {
+                occurrence.id() + "#" + locationKey)) {
+            D3Runtime.gap(GapKind.DECLARATION_MISSING, GapClass.DIAGNOSTIC,
+                    symbol, "this occurrence already states a read of "
+                            + locationKey + ", so this declared input's mint"
+                            + " publishes no second row for it: "
+                            + optionalString(row, "portId"));
             return;
         }
         D3Runtime.read(occurrence,

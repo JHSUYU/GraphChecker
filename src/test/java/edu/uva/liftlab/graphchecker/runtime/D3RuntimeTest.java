@@ -269,11 +269,17 @@ public class D3RuntimeTest {
         // join to that writer.
         placeholder(occurrence, placeholderRow("c", null), "M_I_installed",
                 Collections.singletonMap("M_I_installed",
-                        new String[]{"INSTANCE_FIELD/22#24", "126", "125"}));
+                        new String[]{"INSTANCE_FIELD/22#28", "126", "125"}));
+        // A second declared port of a cell this occurrence already states:
+        // a cell holds one value at a time, so one occurrence's read of it
+        // is one row, and the suppressed port is named.
+        placeholder(occurrence, placeholderRow("g", null), "M_I_second",
+                Collections.singletonMap("M_I_second",
+                        new String[]{"INSTANCE_FIELD/22#28", "127", "125"}));
         // A mint with no write before it states -1 and pins the decimal.
         placeholder(occurrence, placeholderRow("e", null), "M_I_unwritten",
                 Collections.singletonMap("M_I_unwritten",
-                        new String[]{"INSTANCE_FIELD/22#24", "126", "-1"}));
+                        new String[]{"INSTANCE_FIELD/22#32", "126", "-1"}));
         D3Runtime.closeSession();
 
         SessionDir dir = session();
@@ -322,15 +328,16 @@ public class D3RuntimeTest {
                 reads.get(2).location());
         // The mint is not a write -- no WriteRow states its version -- so
         // the row names the VM's location and the LAST REAL WRITE before
-        // the mint, which is the write above: the placeholder read is the
-        // anchor's JOIN to the occurrence that wrote the cell.
-        assertEquals(writes.get(0).location(), reads.get(3).location());
+        // the mint: the placeholder read is the anchor's JOIN to the
+        // occurrence that wrote the cell.
+        assertEquals(LocationKind.INSTANCE, reads.get(3).location().kind());
         assertEquals(125L, reads.get(3).observedVersion());
         assertEquals("2", reads.get(3).concreteValue());
         assertEquals("no write precedes the mint: -1 and the decimal",
                 ReadRow.UNKNOWN_VERSION, reads.get(4).observedVersion());
         assertEquals("2", reads.get(4).concreteValue());
-        assertEquals("a reference-sorted mint for an int cell states no row",
+        assertEquals("a reference-sorted mint for an int cell states no row,"
+                        + " and one occurrence states one read per location",
                 5, reads.size());
         List<RootMintRow> roots = RowCodec.readAll(dir.roots(),
                 RowCodec::readRootMint);
