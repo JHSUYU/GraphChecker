@@ -4,6 +4,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
+import edu.uva.liftlab.graphchecker.d3.contract.ActivationRow;
 import edu.uva.liftlab.graphchecker.d3.contract.AttachRow;
 import edu.uva.liftlab.graphchecker.d3.contract.CausalContext;
 import edu.uva.liftlab.graphchecker.d3.contract.DecisionRow;
@@ -103,6 +104,12 @@ public final class Arms {
 
         /** The session event this endpoint's row was sequenced at, or -1. */
         long seqOf(String sessionId, String endpointId);
+
+        /** This session's activation of that occurrence, or null. */
+        ActivationRow activationOf(String sessionId, String occurrenceId);
+
+        /** The session that recorded the run, or null when unanswerable. */
+        String seedSessionId();
     }
 
     /** One delivery a slot records, and what it happened under. */
@@ -342,8 +349,12 @@ public final class Arms {
         // follow to its root -- an anchor naming a producer endpoint no row
         // places -- leaves the ordering unstated, and an unstated ordering
         // is not permission to reorder.
-        if (!chainKnown(reader) || !chainKnown(writer)) return false;
-        return !ancestor(writer, reader) && !ancestor(reader, writer);
+        if (sameThread(session, reader, writer)) return false;
+        if (!chainKnown(session, reader) || !chainKnown(session, writer)) {
+            return false;
+        }
+        return !ancestor(session, writer, reader)
+                && !ancestor(session, reader, writer);
     }
 
     /**
@@ -354,16 +365,22 @@ public final class Arms {
      * action or a daemon tick.  A chain that ends at a Lost context, or at
      * an endpoint nothing places, states no ordering.</p>
      */
-    private boolean chainKnown(OccurrenceAddress occurrence) {
+    private boolean chainKnown(String session,
+                               OccurrenceAddress occurrence) {
         Set<String> seen = new LinkedHashSet<String>();
         OccurrenceAddress at = occurrence;
         while (at != null && seen.add(at.id())) {
             if (at.context().form() == CausalContext.Form.ROOT) return true;
-            if (at.context().form() != CausalContext.Form.ANCHOR) {
-                return false;
+            if (at.context().form() == CausalContext.Form.ANCHOR) {
+                at = rows.occurrenceOf(((CausalContext.Anchor) at.context())
+                        .producerEndpointId());
+                continue;
             }
-            at = rows.occurrenceOf(((CausalContext.Anchor) at.context())
-                    .producerEndpointId());
+            // A context the chain cannot name may still be placed by the
+            // thread that started it.
+            Endpoint starter = startedBy(session, at);
+            if (starter == null) return false;
+            at = starter.occurrence();
         }
         return false;
     }
@@ -383,27 +400,66 @@ public final class Arms {
         if (a == null || b == null) return false;
         OccurrenceAddress left = a.occurrence();
         OccurrenceAddress right = b.occurrence();
-        if (left.id().equals(right.id())) {
+        // One thread is one order, whether or not it is one occurrence: two
+        // activations the runtime ran on the same thread cannot interleave
+        // with each other, and the session's event order says which came
+        // first.
+        if (left.id().equals(right.id())
+                || sameThread(session, left, right)) {
             long first = rows.seqOf(session, a.id());
             long second = rows.seqOf(session, b.id());
             return first >= 0L && second >= 0L && first < second;
         }
-        if (!chainKnown(left) || !chainKnown(right)) return false;
-        return ancestor(left, right);
+        if (!chainKnown(session, left) || !chainKnown(session, right)) {
+            return false;
+        }
+        return ancestor(session, left, right);
+    }
+
+    /** Whether one session ran these two occurrences on one thread. */
+    private boolean sameThread(String session, OccurrenceAddress left,
+                               OccurrenceAddress right) {
+        String one = threadKey(session, left);
+        String other = threadKey(session, right);
+        return !one.isEmpty() && one.equals(other);
+    }
+
+    private String threadKey(String session, OccurrenceAddress occurrence) {
+        ActivationRow activation = rows.activationOf(session,
+                occurrence.id());
+        return activation == null || activation.threadKey() == null
+                ? "" : activation.threadKey();
+    }
+
+    /** The endpoint that started the thread this occurrence ran on. */
+    private Endpoint startedBy(String session,
+                               OccurrenceAddress occurrence) {
+        ActivationRow activation = rows.activationOf(session,
+                occurrence.id());
+        return activation == null ? null : activation.startedBy();
     }
 
     /** Whether {@code older} starts the request {@code younger} runs in. */
-    private boolean ancestor(OccurrenceAddress older,
+    private boolean ancestor(String session, OccurrenceAddress older,
                              OccurrenceAddress younger) {
         Set<String> seen = new LinkedHashSet<String>();
         OccurrenceAddress at = younger;
         while (at != null && seen.add(at.id())) {
-            if (at.context().form() != CausalContext.Form.ANCHOR) return false;
-            String producer = ((CausalContext.Anchor) at.context())
-                    .producerEndpointId();
-            OccurrenceAddress parent = rows.occurrenceOf(producer);
-            if (parent == null) return false;
-            if (parent.id().equals(older.id())) return true;
+            OccurrenceAddress parent = null;
+            if (at.context().form() == CausalContext.Form.ANCHOR) {
+                parent = rows.occurrenceOf(((CausalContext.Anchor)
+                        at.context()).producerEndpointId());
+            }
+            if (parent == null) {
+                // The thread this one runs on was started by somebody, and
+                // everything that somebody had already done is before it.
+                Endpoint starter = startedBy(session, at);
+                if (starter == null) return false;
+                if (starter.occurrence().id().equals(older.id())) return true;
+                parent = starter.occurrence();
+            } else if (parent.id().equals(older.id())) {
+                return true;
+            }
             at = parent;
         }
         return false;
@@ -419,7 +475,7 @@ public final class Arms {
         JsonObject expression = rows.expression(session, expressionRef);
         if (expression == null) return null;
         List<DecisionRow> decisions = rows.decisionsOf(session, producer);
-        boolean attested = !decisions.isEmpty();
+        boolean attested = attested(session, producer);
         // The prefix: what the replay had decided BY THE TIME it delivered.
         // A decision it took afterwards is not a reason the delivery
         // happened.
@@ -452,6 +508,28 @@ public final class Arms {
         return new Arm(slotId, symbol, session,
                 attested ? rows.pathIdOf(session, producer) : "",
                 expressionRef, pi, guard, guardRoots, attested, nested);
+    }
+
+    /**
+     * Whether this session explored that occurrence symbolically.
+     *
+     * <p>An arm is ATTESTED when the recording can say what the producer
+     * would have done, not merely what it did -- and that is a property of
+     * how the replay ran it, not of how many branches it happened to meet.
+     * The activation must be INSTRUMENTED, and the occurrence must have run
+     * symbolically in this session: in the seed, where every instrumented
+     * region is symbolic, or as the focus of the task that drove an
+     * exploration replay.  A symbolic straight-line region with no decision
+     * at all is attested, which "has decisions" got wrong; decisions
+     * present remain a corroboration and never the criterion.</p>
+     */
+    public boolean attested(String session, OccurrenceAddress occurrence) {
+        ActivationRow activation = rows.activationOf(session,
+                occurrence.id());
+        if (activation == null || !activation.instrumented()) return false;
+        if (activation.focused()) return true;
+        String seed = rows.seedSessionId();
+        return seed != null && seed.equals(session);
     }
 
     /**
