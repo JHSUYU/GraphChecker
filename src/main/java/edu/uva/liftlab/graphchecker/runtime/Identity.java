@@ -80,6 +80,12 @@ public final class Identity {
         private int startDepth = -1;
         /** The region activations open on this thread, innermost last. */
         private final List<Region> regions = new ArrayList<Region>();
+        /**
+         * The node of the frame that started the work this thread runs, or
+         * {@code ""}: the component an occurrence belongs to when its own
+         * frames name none.
+         */
+        private String startNode = "";
 
         private State copy() {
             State child = new State();
@@ -96,6 +102,7 @@ public final class Identity {
             // own, at the site that started it.
             child.claimed = false;
             child.startDepth = -1;
+            child.startNode = "";
             for (Region region : regions) {
                 // The depth carries over -- a child thread's frames continue
                 // its parent's -- but not the journal: a journal is one
@@ -196,8 +203,27 @@ public final class Identity {
      * inherits its creator's state when it is CONSTRUCTED and the start
      * happens afterwards.</p>
      */
-    private static final Map<Carrier, Frame> STARTS =
-            new ConcurrentHashMap<Carrier, Frame>();
+    private static final Map<Carrier, Start> STARTS =
+            new ConcurrentHashMap<Carrier, Start>();
+
+    /**
+     * One filed start: where it was made, and on which node.
+     *
+     * <p>The node travels with the frame because it is the same fact about
+     * the same event.  A thread whose own frames name no component belongs
+     * to the component that STARTED it -- the DataNode whose
+     * BPServiceActor this is -- and that is a statement of the recording
+     * and of every replay alike, not an inference over the graph.</p>
+     */
+    private static final class Start {
+        private final Frame frame;
+        private final String nodeKey;
+
+        private Start(Frame frame, String nodeKey) {
+            this.frame = frame;
+            this.nodeKey = nodeKey;
+        }
+    }
 
     private static final ReferenceQueue<Object> COLLECTED =
             new ReferenceQueue<Object>();
@@ -251,8 +277,10 @@ public final class Identity {
 
     private static void adopt(State state, Object carrier) {
         if (carrier == null || STARTS.isEmpty()) return;
-        Frame frame = STARTS.remove(new Carrier(carrier, null));
-        if (frame != null) state.openStart(frame);
+        Start start = STARTS.remove(new Carrier(carrier, null));
+        if (start == null) return;
+        state.openStart(start.frame);
+        if (!start.nodeKey.isEmpty()) state.startNode = start.nodeKey;
     }
 
     /**
@@ -266,7 +294,8 @@ public final class Identity {
      * It is a structural count of starts, never a thread id, an address or
      * a session ordinal.</p>
      */
-    public static void startWork(String startSiteId, Object carrier) {
+    public static void startWork(String startSiteId, Object carrier,
+                                 String starterNodeKey) {
         String site = Text.safe(startSiteId);
         if (site.isEmpty() || carrier == null) return;
         State state = state();
@@ -276,7 +305,30 @@ public final class Identity {
         int iteration = made == null ? 0 : made;
         starts.put(key, iteration + 1);
         sweep();
-        STARTS.put(new Carrier(carrier, COLLECTED), Frame.of(site, iteration));
+        STARTS.put(new Carrier(carrier, COLLECTED),
+                new Start(Frame.of(site, iteration),
+                        attributable(starterNodeKey)
+                                ? Text.safe(starterNodeKey)
+                                : node()));
+    }
+
+    /** Whether a node key names a component rather than the degraded one. */
+    private static boolean attributable(String nodeKey) {
+        String key = Text.safe(nodeKey);
+        return !key.isEmpty()
+                && !OccurrenceBinding.UNREGISTERED_SOURCE_KEY.equals(key);
+    }
+
+    /**
+     * The node this thread belongs to when nothing else names one: the node
+     * of the start that created the work it is running.
+     *
+     * <p>Transitive by construction -- a thread that inherited a node hands
+     * it to what it starts -- so a component's own worker tree stays its
+     * own however deep it goes.</p>
+     */
+    public static String node() {
+        return state().startNode;
     }
 
     /**
@@ -438,9 +490,12 @@ public final class Identity {
      */
     public static OccurrenceAddress occurrence(String nodeKey, String regionId,
                                                boolean open) {
-        if (Text.safe(nodeKey).isEmpty() || Text.safe(regionId).isEmpty()) {
+        String node = attributable(nodeKey) || !attributable(node())
+                ? Text.safe(nodeKey) : node();
+        if (node.isEmpty() || Text.safe(regionId).isEmpty()) {
             return null;
         }
+        nodeKey = node;
         ExecutionIndex index = open ? regionEnter() : atScope();
         OccurrenceAddress address = OccurrenceAddress.of(
                 NodeId.parse(Text.safe(nodeKey)), Text.safe(regionId),

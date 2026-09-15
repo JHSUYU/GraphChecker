@@ -267,7 +267,8 @@ public final class CausynthTraceRecorder {
     public static void startWork(String startSiteId, Object carrier) {
         String site = MapFields.safe(startSiteId);
         try {
-            Identity.startWork(site, carrier);
+            Identity.startWork(site, carrier,
+                    RuntimeTraceContext.activationSource(null).key());
         } catch (Throwable unnamed) {
             RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind
                             .LINEAGE_LOST,

@@ -528,7 +528,11 @@ public final class RowRuntime {
      * indexed from (IDENTITY-V3 SS1, scope transfer).</p>
      */
     public static void startWork(String startSiteId, Object carrier) {
-        Identity.startWork(startSiteId, carrier);
+        // The starter's node travels with the start frame: work whose own
+        // frames name no component belongs to the component that started
+        // it (IDENTITY-V3 §1, LogicalComponent).
+        Identity.startWork(startSiteId, carrier,
+                RuntimeTraceContext.activationSource(null).key());
     }
 
     /** Takes the start frame filed for the work this object carries. */

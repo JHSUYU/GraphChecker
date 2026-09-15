@@ -812,8 +812,8 @@ public class RowRuntimeTest {
         });
         Identity.scopeStart();
         Identity.enterCall("Pool.submitAll()#u5");
-        Identity.startWork("Pool.submitAll()#u9", tasks[0]);
-        Identity.startWork("Pool.submitAll()#u9", tasks[1]);
+        Identity.startWork("Pool.submitAll()#u9", tasks[0], NN.key());
+        Identity.startWork("Pool.submitAll()#u9", tasks[1], NN.key());
         worker.start();
         try {
             worker.join();
@@ -853,7 +853,7 @@ public class RowRuntimeTest {
                 onChild.set(Identity.atScope().render());
             }
         });
-        Identity.startWork(startSite, child);
+        Identity.startWork(startSite, child, NN.key());
         child.start();
         try {
             child.join();
