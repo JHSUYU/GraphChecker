@@ -60,6 +60,22 @@ final class SmtText {
      */
     static String rewrite(String term, Map<String, String> rename,
                           Set<String> unknown) {
+        return rewrite(term, rename, null, unknown);
+    }
+
+    /**
+     * The same, with the names the query's PREAMBLE already states.
+     *
+     * <p>A lowered term names two more kinds of thing than a recorded one:
+     * the container model's own vocabulary, and the subterms and identities
+     * the lowering minted.  The query renders both (it renders the
+     * lowering's declarations), so neither is a free name -- but neither is
+     * a recorded symbol either, and without this the one rule that catches
+     * the propagation cut would fire on every one of them.</p>
+     */
+    static String rewrite(String term, Map<String, String> rename,
+                          java.util.function.Predicate<String> stated,
+                          Set<String> unknown) {
         StringBuilder out = new StringBuilder();
         StringBuilder token = new StringBuilder();
         boolean binds = term.contains("(let ");
@@ -72,7 +88,10 @@ final class SmtText {
                     if (renamed != null) {
                         out.append(renamed);
                     } else {
-                        if (!binds && !vocabulary(text)) unknown.add(text);
+                        if (!binds && !vocabulary(text)
+                                && (stated == null || !stated.test(text))) {
+                            unknown.add(text);
+                        }
                         out.append(text);
                     }
                     token.setLength(0);

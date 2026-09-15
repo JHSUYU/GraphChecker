@@ -211,6 +211,10 @@ final class FlipQuery {
                 new LinkedHashMap<String, List<Choice>>();
         private final Map<String, String> rootVariables =
                 new LinkedHashMap<String, String>();
+        /** Sessions whose lowering this query's terms are written in. */
+        private final Set<String> lowered = new LinkedHashSet<String>();
+        /** session|symbol the query bound to a variable of its own. */
+        private final Set<String> bound = new LinkedHashSet<String>();
         private final List<GapRow> gaps = new ArrayList<GapRow>();
         private String refusal = "";
 
@@ -272,6 +276,24 @@ final class FlipQuery {
         }
 
         /**
+         * One published term, lowered, and the session it was lowered in
+         * remembered: the query renders that lowering's declarations, so a
+         * term and the names it rests on travel together.
+         */
+        private String lower(String term, String sessionId) {
+            String text = statedTerm(corpus, sessionId, term);
+            if (text != null && !text.equals(term)) lowered.add(sessionId);
+            return text;
+        }
+
+        /** Whether the rendered query already states this name. */
+        private boolean stated(String name, String sessionId) {
+            if (SmtLowering.preambleNames().contains(name)) return true;
+            SmtLowering lowering = corpus.lowering(sessionId);
+            return lowering != null && lowering.minted(name);
+        }
+
+        /**
          * One decision, as the arm its run took, with its references
          * lowered.
          *
@@ -280,7 +302,7 @@ final class FlipQuery {
          * repeats that either.</p>
          */
         private String conjunct(DecisionRow decision, String sessionId) {
-            String term = statedTerm(corpus, sessionId, decision.term());
+            String term = lower(decision.term(), sessionId);
             return decision.outcome() ? term : "(not " + term + ")";
         }
 
@@ -330,6 +352,22 @@ final class FlipQuery {
             if (row.kind() == RootKind.MARKER && row.declared()) return;
             String[] domain = corpus.domainOf(row);
             if (domain == null) {
+                // A DECLARED window is relative to what the replay read, so
+                // a mint row that states no reading leaves the case's
+                // declaration unresolvable -- which is a fact about the row,
+                // not "this root has no domain", and it is named as one.
+                if (corpus.declaredDomain(row.rootId()) != null
+                        && SmtText.literal(row.recordedValue(),
+                                sorts.get(variable)).isEmpty()) {
+                    gaps.add(GapRow.of(row.sessionId(),
+                            GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
+                            row.rootId(), "the case declares a window "
+                                    + "relative to what this replay read and "
+                                    + "the mint row states no reading, so "
+                                    + "the root is neither enumerated nor "
+                                    + "pinned"));
+                    return;
+                }
                 pin(variable, row.recordedValue(),
                         "root " + row.rootId() + " has no declared domain");
                 return;
@@ -432,7 +470,7 @@ final class FlipQuery {
             if (!unknown.isEmpty()) return "";
             List<String> conjuncts = new ArrayList<String>();
             for (String term : arm.pi()) {
-                String renamed = rename(statedTerm(corpus, arm.sessionId(), term),
+                String renamed = rename(lower(term, arm.sessionId()),
                         arm.sessionId(), new LinkedHashSet<String>(), unknown);
                 if (!unknown.isEmpty()) return "";
                 conjuncts.add(renamed);
@@ -617,8 +655,8 @@ final class FlipQuery {
                 // which those are (CONTRACT-SPEC v1.1 seq).
                 if (decision.seq() >= export.seq()) continue;
                 if (!flippable(corpus, export.sessionId(), decision)) continue;
-                String term = rename(statedTerm(corpus, export.sessionId(),
-                                decision.term()), export.sessionId(),
+                String term = rename(lower(decision.term(),
+                                export.sessionId()), export.sessionId(),
                         roots, unknown);
                 if (!unknown.isEmpty()) {
                     refusals.add("its prefix names " + unknown.iterator().next()
@@ -661,6 +699,7 @@ final class FlipQuery {
                 Corpus.SymbolKind kind = corpus.symbolKind(sessionId, token);
                 if (kind == Corpus.SymbolKind.UNKNOWN) continue;
                 rename.put(token, variable(sessionId, token));
+                bound.add(sessionId + "|" + token);
                 if (kind == Corpus.SymbolKind.ROOT) {
                     RootMintRow root = corpus.rootBySymbol(sessionId, token);
                     if (root.kind() != RootKind.CLOCK) {
@@ -668,7 +707,8 @@ final class FlipQuery {
                     }
                 }
             }
-            return SmtText.rewrite(term, rename, unknown);
+            return SmtText.rewrite(term, rename,
+                    name -> stated(name, sessionId), unknown);
         }
 
         /**
@@ -793,6 +833,54 @@ final class FlipQuery {
             assertions.add("(= " + variable + " " + literal + ")");
         }
 
+        /**
+         * A RECORDED symbol the rendered declarations state as a free
+         * constant.
+         *
+         * <p>A lowered term reaches its leaves inside the lowering's own
+         * shared subterms, so a handoff or a root that the assertion text
+         * never names is declared by the preamble and bound by nothing --
+         * and a model is then free to answer with a value no producer
+         * delivered.  The query is still the question it was asked; what is
+         * missing is the family that would constrain it, and it is named
+         * here rather than left for a witness to rest on.</p>
+         */
+        private void free(Set<String> declarations) {
+            for (String line : declarations) {
+                String name = declaredName(line);
+                if (name.isEmpty()) continue;
+                for (String sessionId : lowered) {
+                    if (corpus.symbolKind(sessionId, name)
+                            == Corpus.SymbolKind.UNKNOWN) {
+                        continue;
+                    }
+                    if (bound.contains(sessionId + "|" + name)) continue;
+                    gaps.add(GapRow.of(sessionId, GapKind.UNSTATED_VALUE,
+                            GapClass.DIAGNOSTIC, name,
+                            "the query declares this recorded symbol and "
+                                    + "binds it to nothing: it is inside a "
+                                    + "shared subterm the assertions never "
+                                    + "name, so no family constrains it"));
+                }
+            }
+        }
+
+        /** The name one declaration line states, or "". */
+        private static String declaredName(String line) {
+            String head = "(declare-const ";
+            if (!line.startsWith(head)) {
+                head = "(declare-fun ";
+                if (!line.startsWith(head)) return "";
+            }
+            int from = head.length();
+            int to = line.indexOf(' ', from);
+            if (to < 0) return "";
+            String name = line.substring(from, to);
+            return name.length() > 1 && name.startsWith("|")
+                    && name.endsWith("|")
+                    ? name.substring(1, name.length() - 1) : name;
+        }
+
         private Built refuse(GapKind kind, String subject, String detail,
                              DecisionRow flipped) {
             gaps.add(GapRow.of(path.sessionId, kind, GapClass.BLOCKING,
@@ -823,7 +911,23 @@ final class FlipQuery {
                 text.append("; ").append(entry.getKey()).append(" = ")
                         .append(entry.getValue()).append('\n');
             }
-            text.append("(set-logic ALL)\n");
+            // The lowering's own preamble and declarations, deduplicated
+            // by line: two sessions state the same container model and the
+            // same subterm under the same digest only when it IS the same
+            // text, and each session's leaves were minted in its own scope,
+            // which is the composer's rule for a multi-session formula and
+            // not a second naming of this stage's own.
+            Set<String> stated = new LinkedHashSet<String>();
+            for (String sessionId : lowered) {
+                SmtLowering lowering = corpus.lowering(sessionId);
+                if (lowering == null) continue;
+                for (String line : lowering.declarationsOnly().split("\n")) {
+                    if (!line.trim().isEmpty()) stated.add(line);
+                }
+            }
+            if (stated.isEmpty()) text.append("(set-logic ALL)\n");
+            for (String line : stated) text.append(line).append('\n');
+            free(stated);
             for (Map.Entry<String, String> entry : sorts.entrySet()) {
                 text.append("(declare-fun ").append(entry.getKey())
                         .append(" () ").append(entry.getValue()).append(")\n");
@@ -832,7 +936,9 @@ final class FlipQuery {
                 text.append("(assert ").append(assertion).append(")\n");
             }
             text.append("(check-sat)\n(get-model)\n");
-            return text.toString();
+            // A name SMT-LIB cannot spell bare is quoted, once, on the way
+            // out -- the same routine the composed query is rendered by.
+            return SmtLowering.legalSymbols(text.toString());
         }
     }
 }

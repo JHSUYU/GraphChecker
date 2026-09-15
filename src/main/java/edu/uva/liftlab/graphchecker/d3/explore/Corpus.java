@@ -562,6 +562,11 @@ public final class Corpus implements Arms.Rows {
      * in the composition -- so exploration never spends a wave on a move the
      * composition cannot accept.</p>
      */
+    /** What the CASE declares for one root, or null when it declares none. */
+    public RootDomain declaredDomain(String rootId) {
+        return declaredDomains.get(rootId);
+    }
+
     public String[] domainOf(RootMintRow root) {
         if (root == null || root.kind() == RootKind.CLOCK) return null;
         RootDomain declared = declaredDomains.get(root.rootId());

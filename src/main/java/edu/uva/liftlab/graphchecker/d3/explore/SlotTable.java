@@ -131,6 +131,9 @@ public final class SlotTable {
         return byInteraction.size();
     }
 
+    /** The region slot a degraded occurrence carries: a role, not a region. */
+    static final String ROLE_REGION = "ROLE.";
+
     public boolean holds(String interactionId) {
         return byInteraction.containsKey(interactionId);
     }
@@ -287,6 +290,22 @@ public final class SlotTable {
                 if (activation.instrumented()) continue;
                 OccurrenceAddress occurrence = activation.occurrence();
                 if (!named.add(occurrence.regionId())) continue;
+                // A DEGRADED occurrence's region slot is ROLE.<ROLE>: the
+                // scope was lost, so the row names the role instead of a
+                // region.  No such region exists in the static candidate
+                // graph, so no retained set can ever grow to hold it -- SS8
+                // case 2 is about a region that exists and is not retained.
+                // What it states is the lineage, and that is what it says.
+                if (occurrence.regionId().startsWith(ROLE_REGION)) {
+                    gaps.add(GapRow.of(session.sessionId(),
+                            GapKind.LINEAGE_LOST, GapClass.DIAGNOSTIC,
+                            occurrence.render(),
+                            "a flipped path reached a region whose scope the "
+                                    + "recording lost: " + occurrence.regionId()
+                                    + " is a role, not a region of the static "
+                                    + "graph, so nothing can retain it"));
+                    continue;
+                }
                 gaps.add(GapRow.of(session.sessionId(),
                         GapKind.TOPOLOGY_DIVERGENCE, GapClass.BLOCKING,
                         occurrence.render(),
@@ -301,10 +320,19 @@ public final class SlotTable {
      * A closure member started for a different reason than the skeleton's.
      *
      * <p>The causal context is INSIDE an occurrence id, so a changed context
-     * is a different id and no id-keyed test could ever see it.  The weaker
-     * key is the one the rule means: the same component, the same region and
-     * the same execution index — the same code point in the same control
-     * context — carrying another context.</p>
+     * is a different id and no id-keyed test could ever see it.  What a
+     * REPLACEMENT looks like from the rows is an ABSENCE beside a presence:
+     * one replay did not run the closure's occurrence at all, and it DID run
+     * the same code point -- the same component, region and execution index
+     * -- under another context.  Then the skeleton's member is gone and
+     * something else stands where it stood.</p>
+     *
+     * <p>Two occurrences at one code point that a session ran BOTH are
+     * growth (R-I6), never replacement: the two client checksum requests of
+     * one recording are two occurrences of one code point by construction,
+     * and under IDENTITY-V3 every concurrent request of one entry point is.
+     * Reading that as a contradiction closed the frontier of every wave and
+     * proposed nothing.</p>
      */
     private static boolean contextChanged(Corpus corpus, Set<String> closure,
                                           List<GapRow> gaps) {
@@ -315,17 +343,30 @@ public final class SlotTable {
             if (member != null) byCodePoint.put(codePoint(member), member);
         }
         boolean replaced = false;
-        for (OccurrenceAddress occurrence : corpus.occurrences()) {
-            OccurrenceAddress member = byCodePoint.get(codePoint(occurrence));
-            if (member == null || member.id().equals(occurrence.id())) {
-                continue;
+        for (SessionReader session : corpus.sessions()) {
+            Set<String> ran = new LinkedHashSet<String>();
+            for (ActivationRow activation : session.activations()) {
+                ran.add(activation.occurrence().id());
             }
-            gaps.add(GapRow.of(ExploreCodec.EXPLORATION, GapKind.TOPOLOGY_DIVERGENCE,
-                    GapClass.BLOCKING, occurrence.render(),
-                    "the closure holds " + member.context().render()
-                            + " at this code point and this replay ran it as "
-                            + occurrence.context().render()));
-            replaced = true;
+            for (ActivationRow activation : session.activations()) {
+                OccurrenceAddress occurrence = activation.occurrence();
+                OccurrenceAddress member =
+                        byCodePoint.get(codePoint(occurrence));
+                if (member == null || member.id().equals(occurrence.id())) {
+                    continue;
+                }
+                // Both ran here: two occurrences of one code point, which is
+                // what a second request IS.
+                if (ran.contains(member.id())) continue;
+                gaps.add(GapRow.of(session.sessionId(),
+                        GapKind.TOPOLOGY_DIVERGENCE, GapClass.BLOCKING,
+                        occurrence.render(),
+                        "the closure holds " + member.context().render()
+                                + " at this code point, this replay did not "
+                                + "run it, and it ran "
+                                + occurrence.context().render() + " there"));
+                replaced = true;
+            }
         }
         return replaced;
     }

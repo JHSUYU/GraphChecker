@@ -528,6 +528,65 @@ public class D3ExploreTest {
                             "retained set must grow: REGION.notretained");
         }
         assertTrue("and it names the region INSTRUMENT must retain", asked);
+
+        // A DEGRADED occurrence's region slot is ROLE.<ROLE>: the scope was
+        // lost, so there is no region of the static graph to retain and no
+        // epoch to cut.  What it states is the lineage.
+        Path roleOnly = tree.newFolder("closure-role").toPath();
+        OccurrenceAddress lost = occurrence("hdfs-case/dn0",
+                "ROLE.IPC_HANDLER", CausalContext.of(Role.IPC_HANDLER),
+                "o.a.h.ipc.Server$Handler#run#1");
+        Session degraded = new Session(roleOnly, "s-seed");
+        degraded.activation(target, false);
+        degraded.lightweight(lost);
+        degraded.flush();
+        SlotTable.Reconciliation roleGap = new SlotTable().reconcile(
+                Corpus.read(roleOnly, null),
+                Collections.singleton(target.id()), 4);
+        assertFalse("a role is not a region, so nothing can retain it and "
+                + "no epoch is cut", roleGap.replaced);
+        boolean lineage = false;
+        for (GapRow gap : roleGap.gaps) {
+            lineage |= gap.kind() == GapKind.LINEAGE_LOST
+                    && gap.cls() == GapClass.DIAGNOSTIC
+                    && gap.detail().contains("ROLE.IPC_HANDLER");
+        }
+        assertTrue("and the lost scope is named as one", lineage);
+
+        // R-I6: two occurrences of ONE code point that a replay ran BOTH are
+        // two requests -- growth.  A REPLACEMENT is the closure's member
+        // ABSENT from a replay that ran the same code point under another
+        // context.
+        Path requests = tree.newFolder("closure-two-requests").toPath();
+        OccurrenceAddress firstRequest = occurrence("hdfs-case/dn0",
+                "REGION.checksum",
+                CausalContext.of("a1b2c3d4e5f60718", "HDFS_SASL/checksum"),
+                "o.a.h.h.s.d.DataXceiver#run#44");
+        OccurrenceAddress secondRequest = occurrence("hdfs-case/dn0",
+                "REGION.checksum",
+                CausalContext.of("00112233445566aa", "HDFS_SASL/checksum"),
+                "o.a.h.h.s.d.DataXceiver#run#44");
+        Session bothRan = new Session(requests, "s-seed");
+        bothRan.activation(firstRequest, false);
+        bothRan.activation(secondRequest, false);
+        bothRan.flush();
+        assertFalse("two requests at one code point are growth",
+                new SlotTable().reconcile(Corpus.read(requests, null),
+                        Collections.singleton(firstRequest.id()), 5)
+                        .replaced);
+
+        Path instead = tree.newFolder("closure-instead").toPath();
+        Session ranIt = new Session(instead, "s-seed");
+        ranIt.activation(firstRequest, false);
+        ranIt.flush();
+        Session ranOther = new Session(instead, "s-flip");
+        ranOther.activation(secondRequest, true);
+        ranOther.flush();
+        assertTrue("a replay that did not run the member and ran another "
+                        + "context in its place IS a replacement",
+                new SlotTable().reconcile(Corpus.read(instead, null),
+                        Collections.singleton(firstRequest.id()), 6)
+                        .replaced);
     }
 
     // ---- driving the stage the way the campaign drives it -------------
