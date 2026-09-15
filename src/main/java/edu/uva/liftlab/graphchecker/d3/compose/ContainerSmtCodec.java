@@ -76,6 +76,16 @@ public final class ContainerSmtCodec {
         return "CLEAR".equals(operation) || "SNAPSHOT_BASE".equals(operation);
     }
 
+    /**
+     * The cell that holds Java null: one spelling for every caller.
+     *
+     * <p>It is the value an absent element denotes, the value a refused
+     * read leaves behind, and what a {@code null} leaf lowers to where the
+     * relation it stands in is written over cells rather than over
+     * references.</p>
+     */
+    public static final String NULL_CELL = "(VRef nullRef)";
+
     /** One tagged transport value shared by path solving and composition. */
     public static String valueDatatypeDeclaration() {
         return "(declare-datatypes () ((Value"
@@ -845,15 +855,15 @@ public final class ContainerSmtCodec {
             if ("INDEXED".equals(shape)) {
                 return new Term("(mkIndexedState 0"
                         + " ((as const (Array Int Value))"
-                        + " (VRef nullRef)))", Sort.INDEXED);
+                        + " " + NULL_CELL + "))", Sort.INDEXED);
             }
             if ("ASSOCIATIVE".equals(shape)) {
                 return new Term("(mkAssocState 0"
                         + " ((as const (Array Value Bool)) false)"
                         + " ((as const (Array Value Value))"
-                        + " (VRef nullRef))"
+                        + " " + NULL_CELL + ")"
                         + " ((as const (Array Int Value))"
-                        + " (VRef nullRef))"
+                        + " " + NULL_CELL + ")"
                         + " ((as const (Array Value Int)) (- 1)))",
                         Sort.ASSOCIATIVE);
             }
@@ -1229,7 +1239,7 @@ public final class ContainerSmtCodec {
         }
         if (emptiesState(mutation.operation)) {
             return memo.put(memo.keys, expression, index.text,
-                    new Term("(VRef nullRef)", Sort.VALUE));
+                    new Term(NULL_CELL, Sort.VALUE));
         }
         Term mutatedKey = memo.box(mutation.arguments.get(0), host);
         Term previous = associativeKeyAt(mutation.receiver, index, host,
@@ -1409,12 +1419,12 @@ public final class ContainerSmtCodec {
             Term result = state == null ? null : shared(new Term(
                     "(let ((s " + state.text + ")) (ite (assoc_has s "
                             + key.text + ") (assoc_read s " + key.text
-                            + ") (VRef nullRef)))", Sort.VALUE), host);
+                            + ") " + NULL_CELL + "))", Sort.VALUE), host);
             return memo.put(memo.reads, expression, key.text, result);
         }
         if (emptiesState(mutation.operation)) {
             return memo.put(memo.reads, expression, key.text,
-                    new Term("(VRef nullRef)", Sort.VALUE));
+                    new Term(NULL_CELL, Sort.VALUE));
         }
         Term mutatedKey = memo.box(mutation.arguments.get(0), host);
         Term previous = associativeRead(mutation.receiver, key, host, memo);
@@ -1422,7 +1432,7 @@ public final class ContainerSmtCodec {
         String sameKey = "(= " + key.text + " " + mutatedKey.text + ")";
         Term mutatedValue = "PUT".equals(mutation.operation)
                 ? memo.box(mutation.arguments.get(1), host)
-                : new Term("(VRef nullRef)", Sort.VALUE);
+                : new Term(NULL_CELL, Sort.VALUE);
         if (mutatedValue == null) return null;
         // A conditional remove deletes the read key only when its recorded
         // guard holds; flipping that guard can restore or remove the key.
@@ -1810,7 +1820,7 @@ public final class ContainerSmtCodec {
         }
         if (emptiesState(operation)) {
             return memo.put(memo.reads, state, index.text,
-                    new Term("(VRef nullRef)", Sort.VALUE));
+                    new Term(NULL_CELL, Sort.VALUE));
         }
         if (!indexedSizeStep(operation)) {
             Term whole = host.operand(state, Sort.INDEXED);

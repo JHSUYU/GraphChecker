@@ -11,8 +11,10 @@ import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -87,6 +89,7 @@ public final class Solver {
     private final Path z3;
     private final long timeoutMillis;
     private int runs;
+    private final Set<String> errors = new LinkedHashSet<String>();
 
     public Solver(Path z3, long timeoutMillis) {
         this.z3 = z3 == null ? Paths.get("z3") : z3;
@@ -96,6 +99,21 @@ public final class Solver {
     /** How many times z3 was asked; the cost of one composition. */
     public int runs() {
         return runs;
+    }
+
+    /**
+     * Every {@code (error ...)} z3 answered, over every ask.
+     *
+     * <p>An error is not a verdict and not an "undecided": it says the
+     * solver could not READ the query this lowering wrote, so whatever it
+     * printed afterwards is about a different formula.  It is collected
+     * here, over the auxiliary asks (the unsat core, the pairing probes,
+     * the clock probe) as well as the valuations, because one such answer
+     * anywhere invalidates the claim the composition would otherwise read
+     * off the others.</p>
+     */
+    public List<String> errors() {
+        return new ArrayList<String>(errors);
     }
 
     /**
@@ -116,19 +134,29 @@ public final class Solver {
                 query.append(assumption).append('\n');
             }
         }
+        String question = query.toString();
         query.append("(check-sat)\n");
-        if (modelSymbols != null && !modelSymbols.isEmpty()) {
-            query.append("(get-value (");
-            for (String symbol : modelSymbols) {
-                query.append(' ').append(symbol);
-            }
-            query.append("))\n");
-        }
         String output = run(SmtLowering.legalSymbols(query.toString()));
         String status = firstLine(output);
-        Map<String, String> values = "sat".equals(status)
-                ? parseValues(output)
-                : Collections.<String, String>emptyMap();
+        Map<String, String> values = Collections.emptyMap();
+        // The model is asked for in its OWN run, after the answer is known.
+        // A script that appends (get-value ...) to every question makes z3
+        // answer "(error ... model is not available)" on every unsat one --
+        // and an error z3 prints as a matter of course is an error nobody
+        // reads, which is how a genuine "invalid bit-vector literal" sat in
+        // a manifest as if it were a verdict.  Same shape as the unsat core
+        // below: one more run, only when there is something to ask for.
+        if ("sat".equals(status) && modelSymbols != null
+                && !modelSymbols.isEmpty()) {
+            StringBuilder model = new StringBuilder(question);
+            model.append("(check-sat)\n(get-value (");
+            for (String symbol : modelSymbols) {
+                model.append(' ').append(symbol);
+            }
+            model.append("))\n");
+            values = parseValues(run(
+                    SmtLowering.legalSymbols(model.toString())));
+        }
         List<String> core = Collections.emptyList();
         if (wantCore && "unsat".equals(status)) {
             String coreOutput = run(SmtLowering.legalSymbols(body
@@ -233,8 +261,24 @@ public final class Solver {
             Thread.currentThread().interrupt();
             return "timeout";
         }
-        return read.get();
+        return errorsOf(read.get());
     }
+
+    /** The same output, with every error line it names remembered. */
+    private String errorsOf(String output) {
+        if (output == null) return "";
+        int at = output.indexOf(ERROR);
+        while (at >= 0) {
+            int end = output.indexOf('\n', at);
+            errors.add((end < 0 ? output.substring(at)
+                    : output.substring(at, end)).trim());
+            at = output.indexOf(ERROR, at + ERROR.length());
+        }
+        return output;
+    }
+
+    /** How z3 says it could not read the query. */
+    private static final String ERROR = "(error ";
 
     private static String readAll(InputStream stream) throws IOException {
         ByteArrayOutputStream buffer = new ByteArrayOutputStream();

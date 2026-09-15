@@ -887,7 +887,8 @@ public abstract class VmLoweringCore implements VmTermLowering.Policy {
             boxed = "false".equals(value.stringNullness)
                     ? "(VString " + value.text + ")"
                     : "(ite " + value.stringNullness
-                    + " (VRef nullRef) (VString " + value.text + "))";
+                    + " " + ContainerSmtCodec.NULL_CELL + " (VString "
+                    + value.text + "))";
         } else {
             return refuse(Reason.CANNOT_BOX, origin,
                     String.valueOf(value.sort), Sort.VALUE);
