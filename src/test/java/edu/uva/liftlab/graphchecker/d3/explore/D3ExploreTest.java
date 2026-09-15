@@ -3,18 +3,23 @@ package edu.uva.liftlab.graphchecker.d3.explore;
 import com.google.gson.JsonObject;
 
 import edu.uva.liftlab.graphchecker.d3.contract.ActivationRow;
+import edu.uva.liftlab.graphchecker.d3.contract.CausalContext;
 import edu.uva.liftlab.graphchecker.d3.contract.AttachRow;
 import edu.uva.liftlab.graphchecker.d3.contract.DecisionRow;
 import edu.uva.liftlab.graphchecker.d3.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.d3.contract.ExportRow;
+import edu.uva.liftlab.graphchecker.d3.contract.ExecutionIndex;
 import edu.uva.liftlab.graphchecker.d3.contract.ExpressionTable;
+import edu.uva.liftlab.graphchecker.d3.contract.Frame;
 import edu.uva.liftlab.graphchecker.d3.contract.GapKind;
 import edu.uva.liftlab.graphchecker.d3.contract.GapRow;
 import edu.uva.liftlab.graphchecker.d3.contract.LocationId;
 import edu.uva.liftlab.graphchecker.d3.contract.LocationKind;
 import edu.uva.liftlab.graphchecker.d3.contract.Obligation;
 import edu.uva.liftlab.graphchecker.d3.contract.ObligationResult;
+import edu.uva.liftlab.graphchecker.d3.contract.NodeId;
 import edu.uva.liftlab.graphchecker.d3.contract.OccurrenceAddress;
+import edu.uva.liftlab.graphchecker.d3.contract.Role;
 import edu.uva.liftlab.graphchecker.d3.contract.ReadRow;
 import edu.uva.liftlab.graphchecker.d3.contract.RootDomain;
 import edu.uva.liftlab.graphchecker.d3.contract.RootKind;
@@ -57,12 +62,31 @@ import static org.junit.Assert.assertTrue;
  * so an assertion about SAT or UNSAT is an assertion about the query.</p>
  */
 public class D3ExploreTest {
-    private static final String TARGET =
-            "hdfs-case/dn0#epoch0/region/REGION.target#1";
-    private static final String WRITER =
-            "hdfs-case/dn0#epoch0/region/REGION.addkeys#1";
-    private static final String PRODUCER =
-            "hdfs-case/nn0#epoch0/region/REGION.rotate#1";
+    // IDENTITY-V3 addresses.  These are fixture identities: what every
+    // assertion below needs of them is that they are well formed and
+    // distinct, which is what the v1 strings gave before.
+    private static final OccurrenceAddress TARGET = occurrence(
+            "hdfs-case/dn0", "REGION.target", Role.DATA_XCEIVER,
+            "DataXceiver#run#12");
+    private static final OccurrenceAddress WRITER = occurrence(
+            "hdfs-case/dn0", "REGION.addkeys", Role.BP_SERVICE_ACTOR,
+            "BPServiceActor#offerService#40");
+    private static final OccurrenceAddress PRODUCER = occurrence(
+            "hdfs-case/nn0", "REGION.rotate", Role.KEY_MANAGER_TICK,
+            "BlockKeyUpdater#run#8");
+
+    private static OccurrenceAddress occurrence(String node, String region,
+                                                Role role, String callSite) {
+        return OccurrenceAddress.of(NodeId.of(node, 0), region,
+                CausalContext.of(role, 1), ExecutionIndex.of(
+                        Collections.singletonList(Frame.of(callSite, 0))));
+    }
+
+    /** One site-local execution index: what the k-th event is now. */
+    private static ExecutionIndex at(String callSite) {
+        return ExecutionIndex.of(Collections.singletonList(
+                Frame.of(callSite, 0)));
+    }
 
     @Rule
     public TemporaryFolder tree = new TemporaryFolder();
@@ -73,7 +97,7 @@ public class D3ExploreTest {
     public void nestedGuardChainDeepensOneDecisionPerWave() throws Exception {
         Assume.assumeTrue(z3Available());
         Path iteration = tree.newFolder("depth").toPath();
-        OccurrenceAddress target = OccurrenceAddress.parse(TARGET);
+        OccurrenceAddress target = TARGET;
         Session seed = new Session(iteration, "s-seed");
         seed.activation(target, true);
         seed.root(target, "CASE.MARKER", "M_MARKER", RootKind.MARKER, "false",
@@ -145,10 +169,10 @@ public class D3ExploreTest {
             throws Exception {
         Assume.assumeTrue(z3Available());
         Path iteration = tree.newFolder("family").toPath();
-        OccurrenceAddress target = OccurrenceAddress.parse(TARGET);
-        OccurrenceAddress producer = OccurrenceAddress.parse(PRODUCER);
-        Endpoint exported = Endpoint.of(producer, "XCH.resp.block-key-id", 1, 0);
-        Endpoint attached = Endpoint.of(target, "XCH.resp.block-key-id", 1, 0);
+        OccurrenceAddress target = TARGET;
+        OccurrenceAddress producer = PRODUCER;
+        Endpoint exported = Endpoint.of(producer, "XCH.resp.block-key-id", at("XCH.resp.block-key-id"), 0);
+        Endpoint attached = Endpoint.of(target, "XCH.resp.block-key-id", at("XCH.resp.block-key-id"), 0);
 
         Session seed = new Session(iteration, "s-seed");
         seed.activation(target, true);
@@ -219,8 +243,8 @@ public class D3ExploreTest {
     public void controlWithNoArmIsUnproducible() throws Exception {
         Assume.assumeTrue(z3Available());
         Path iteration = tree.newFolder("unproducible").toPath();
-        OccurrenceAddress target = OccurrenceAddress.parse(TARGET);
-        Endpoint attached = Endpoint.of(target, "XCH.req.key-id", 1, 0);
+        OccurrenceAddress target = TARGET;
+        Endpoint attached = Endpoint.of(target, "XCH.req.key-id", at("XCH.req.key-id"), 0);
         Session seed = new Session(iteration, "s-seed");
         seed.activation(target, true);
         // Unpaired: the value arrived from outside this corpus.
@@ -252,7 +276,7 @@ public class D3ExploreTest {
     @Test
     public void rootWithoutADomainCannotBeMoved() throws Exception {
         Assume.assumeTrue(z3Available());
-        OccurrenceAddress target = OccurrenceAddress.parse(TARGET);
+        OccurrenceAddress target = TARGET;
         Path pinned = tree.newFolder("pinned").toPath();
         Session seed = new Session(pinned, "s-seed");
         seed.activation(target, true);
@@ -303,13 +327,13 @@ public class D3ExploreTest {
     public void closureHoldsTheWriterOfAReadVersionAndTheWireProducer()
             throws Exception {
         Path iteration = tree.newFolder("closure").toPath();
-        OccurrenceAddress target = OccurrenceAddress.parse(TARGET);
-        OccurrenceAddress writer = OccurrenceAddress.parse(WRITER);
-        OccurrenceAddress producer = OccurrenceAddress.parse(PRODUCER);
+        OccurrenceAddress target = TARGET;
+        OccurrenceAddress writer = WRITER;
+        OccurrenceAddress producer = PRODUCER;
         LocationId allKeys = LocationId.of(LocationKind.MAP,
                 "BlockTokenSecretManager", "allKeys");
-        Endpoint exported = Endpoint.of(producer, "XCH.resp.block-key-id", 1, 0);
-        Endpoint attached = Endpoint.of(writer, "XCH.resp.block-key-id", 1, 0);
+        Endpoint exported = Endpoint.of(producer, "XCH.resp.block-key-id", at("XCH.resp.block-key-id"), 0);
+        Endpoint attached = Endpoint.of(writer, "XCH.resp.block-key-id", at("XCH.resp.block-key-id"), 0);
 
         Session seed = new Session(iteration, "s-seed");
         seed.activation(target, true);
@@ -319,9 +343,11 @@ public class D3ExploreTest {
         seed.export(exported, "e.119992", 11L, "119992");
         seed.attach(attached, "M_HOFF_KEY", "119992", exported);
         seed.write(Endpoint.of(writer, "BlockTokenSecretManager#addKeys#12"
-                + ":WRITE", 1, 0), allKeys, 5L, "e.119992");
+                + ":WRITE", at("BlockTokenSecretManager#addKeys#12"
+                + ":WRITE"), 0), allKeys, 5L, "e.119992");
         seed.read(Endpoint.of(target, "BlockTokenSecretManager"
-                + "#retrieveDataEncryptionKey#8:READ", 1, 0), allKeys, 5L,
+                + "#retrieveDataEncryptionKey#8:READ", at("BlockTokenSecretManager"
+                + "#retrieveDataEncryptionKey#8:READ"), 0), allKeys, 5L,
                 "M_READ_KEY", "119992");
         seed.flush();
 
@@ -480,7 +506,7 @@ public class D3ExploreTest {
                             Endpoint producer) {
             attaches.add(AttachRow.of(sessionId, ++seq, endpoint, symbol, "I",
                     arrival, false, null, producer,
-                    "corr-" + endpoint.ordinal()));
+                    "corr-" + endpoint.siteIndex().hash()));
         }
 
         private void write(Endpoint endpoint, LocationId location,
