@@ -466,7 +466,14 @@ public final class ConcolicRegionRuntime {
     public static long enterAccessorCallContext(
             String callerMethod, int callUnitIndex, String callSiteId,
             String declaredCallee, Object receiver) {
-        RowRuntime.enterFrame(safe(callSiteId));
+        // No index frame.  An accessor call context is woven by the
+        // campaign and by nothing else, so a frame pushed here is a frame
+        // the recording never stands on: the replay's execution index was
+        // five frames deeper than the recorded one for the same occurrence
+        // (planned 8 frames, ran 13), and every address below it drifted.
+        // What the frame was for -- telling two reads of one accessor site
+        // inside one occurrence apart -- is Identity.eventSiteIndex's job,
+        // which counts per occurrence and per site in both passes alike.
         try {
             ActiveRegion active = activeRegion();
             String caller = safe(callerMethod);
@@ -504,7 +511,6 @@ public final class ConcolicRegionRuntime {
 
     /** Closes a lightweight accessor scope on normal or exceptional return. */
     public static void exitAccessorCallContext(long contextToken) {
-        RowRuntime.exitFrame();
         if (contextToken == 0L) return;
         try {
             AccessorCallContext current =
@@ -6694,10 +6700,10 @@ public final class ConcolicRegionRuntime {
             row.addProperty("occurrenceId", occurrenceId());
             // WHERE in the region this read stood, captured here because
             // here is where it runs: the row is published at the end of the
-            // activation, and the frames are gone by then.  The accessor
-            // call context pushes its own frame (RowRuntime.enterFrame), so
-            // two reads of one accessor site inside one occurrence differ by
-            // that frame's iteration rather than by an ordinal.
+            // activation, and the frames are gone by then.  Two reads of one
+            // accessor site inside one occurrence differ by the site index's
+            // own innermost frame (Identity.eventSiteIndex), not by an
+            // ordinal and not by a frame only a replay stands on.
             row.addProperty("siteIndex", RowRuntime.siteIndexHere());
             row.addProperty("symbol", safe(requestedSymbol));
             JsonArray encodedPath = new JsonArray();
