@@ -118,8 +118,8 @@ emit_fixture() {
   # Neither can change the chain the claim rests on, and each says so on the
   # row rather than in a table a later stage consults.
   printf '%s\n' \
-    '{"schemaVersion":1,"kind":"GAP_ROW","sessionId":"SESSION.seed","gapKind":"UNATTESTED_ARM","gapClass":"DIAGNOSTIC","subject":"IXN.7","detail":"the producer ran concretely"}' \
-    '{"schemaVersion":1,"kind":"GAP_ROW","sessionId":"SESSION.seed","gapKind":"UNPRODUCIBLE_ANSWER","gapClass":"DIAGNOSTIC","subject":"OBL.slow","detail":"SOLVER_TIMEOUT"}' \
+    '{"schemaVersion":1,"sessionId":"SESSION.seed","kind":"UNATTESTED_ARM","cls":"DIAGNOSTIC","subject":"IXN.7","detail":"the producer ran concretely"}' \
+    '{"schemaVersion":1,"sessionId":"SESSION.seed","kind":"UNPRODUCIBLE_ANSWER","cls":"DIAGNOSTIC","subject":"OBL.slow","detail":"SOLVER_TIMEOUT"}' \
     >"${emit_iteration}/sessions/SESSION.seed/gaps.jsonl"
   printf '{}\n' >"${emit_iteration}/sessions/SESSION.seed/expressions.json"
   jq -n -c '{schemaVersion: 1, kind: "SESSION_CENSUS",
@@ -294,9 +294,9 @@ import json, sys
 with open(sys.argv[1], "w") as handle:
     for n in range(1600):
         handle.write(json.dumps({
-            "schemaVersion": 1, "kind": "GAP_ROW",
-            "sessionId": "SESSION.seed", "gapKind": "UNATTESTED_ARM",
-            "gapClass": "DIAGNOSTIC", "subject": "IXN.%048d" % n,
+            "schemaVersion": 1, 
+            "sessionId": "SESSION.seed", "kind": "UNATTESTED_ARM",
+            "cls": "DIAGNOSTIC", "subject": "IXN.%048d" % n,
             "detail": "the producer ran concretely at %048d" % n}) + "\n")
 OVERSIZED
 oversized=$(wc -c <"${emit_iteration}/sessions/SESSION.seed/gaps.jsonl")
@@ -339,8 +339,8 @@ $(jq -c '[.gaps[].code]' "${campaign_final}/gaps.json")"
 # region with no activation is a broken chain wherever it is raised.
 emit_fixture
 printf '%s\n' \
-  '{"schemaVersion":1,"kind":"GAP_ROW","sessionId":"SESSION.seed","gapKind":"ADMISSION_GAP","gapClass":"BLOCKING","subject":"OCC.kept","detail":"anchor never observed"}' \
-  '{"schemaVersion":1,"kind":"GAP_ROW","sessionId":"SESSION.seed","gapKind":"ADMISSION_GAP","gapClass":"BLOCKING","subject":"OCC.pruned","detail":"anchor never observed"}' \
+  '{"schemaVersion":1,"sessionId":"SESSION.seed","kind":"ADMISSION_GAP","cls":"BLOCKING","subject":"OCC.kept","detail":"anchor never observed"}' \
+  '{"schemaVersion":1,"sessionId":"SESSION.seed","kind":"ADMISSION_GAP","cls":"BLOCKING","subject":"OCC.pruned","detail":"anchor never observed"}' \
   >"${emit_iteration}/sessions/SESSION.seed/gaps.jsonl"
 run_emit
 [[ "${emit_status}" -eq 3 ]] \
@@ -359,7 +359,7 @@ $(jq -c '[(.gaps+.telemetryGaps)[]|{code,subject,class}]' \
 # what it could not do, and no later stage is in a position to overrule it.
 emit_fixture
 printf '%s\n' \
-  '{"schemaVersion":1,"kind":"GAP_ROW","sessionId":"SESSION.seed","gapKind":"UNATTESTED_ARM","gapClass":"DIAGNOSTIC","subject":"IXN.9","detail":"the producer ran concretely"}' \
+  '{"schemaVersion":1,"sessionId":"SESSION.seed","kind":"UNATTESTED_ARM","cls":"DIAGNOSTIC","subject":"IXN.9","detail":"the producer ran concretely"}' \
   >"${emit_iteration}/sessions/SESSION.seed/gaps.jsonl"
 : >"${emit_iteration}/campaign_gaps.jsonl"
 run_emit
@@ -479,10 +479,16 @@ jq -n '{schemaVersion: 2, kind: "RUNTIME_REGION_PATH_SCHEDULE_INDEX",
      targetReachGoal: false}]}' >"${index_file}"
 index_rows=$(campaign_decode_index_members "${index_file}") \
   || fail "a complete schedule index was refused"
-[[ "$(printf '%s\n' "${index_rows}" | cut -f7 | tr '\n' ' ')" \
-    == "true true false " ]] \
-  || fail "the decoded members do not name the target occurrences: \
-$(printf '%s\n' "${index_rows}" | cut -f7 | tr '\n' ' ')"
+# The rows carry the six fields the consumers read, and nothing else: the
+# target-reach flag is validated above and not emitted.
+[[ "$(printf '%s\n' "${index_rows}" | awk -F'\t' '{print NF}' \
+    | sort -u | tr '\n' ' ')" == "6 " ]] \
+  || fail "the decoded members do not carry exactly six fields: \
+$(printf '%s\n' "${index_rows}" | head -1)"
+[[ "$(printf '%s\n' "${index_rows}" | cut -f1,6 | tr '\n' ' ')" \
+    == "TARGET	task-a DEPENDENCY	task-b DEPENDENCY	task-c " ]] \
+  || fail "the decoded members do not name the roles and tasks: \
+$(printf '%s\n' "${index_rows}" | cut -f1,6 | tr '\n' ' ')"
 # An index whose elected TARGET is not a target-reach member is an index this
 # shell cannot dispatch on: every later stage composes from that flag.
 jq '.members[0].targetReachGoal = false' "${index_file}" \
@@ -566,7 +572,7 @@ $(jq -c '.gaps' "${campaign_final}/gaps.json")"
 emit_fixture
 : >"${emit_iteration}/sessions/SESSION.seed/gaps.jsonl"
 printf '%s\n' \
-  '{"schemaVersion":1,"kind":"GAP_ROW","sessionId":"","gapKind":"ADMISSION_GAP","gapClass":"DIAGNOSTIC","subject":"REGION_PATH_CLOSURE_NO_PROGRESS","detail":"wave 3 proposes the same 2 obligation(s) as the wave before it"}' \
+  '{"schemaVersion":1,"sessionId":"","kind":"ADMISSION_GAP","cls":"DIAGNOSTIC","subject":"REGION_PATH_CLOSURE_NO_PROGRESS","detail":"wave 3 proposes the same 2 obligation(s) as the wave before it"}' \
   >"${emit_iteration}/campaign_gaps.jsonl"
 run_emit
 [[ "${emit_status}" -eq 0 ]] \
@@ -586,13 +592,13 @@ mkdir -p "${div_dir}/sessions/SESSION.a"
 [[ "$(campaign_topology_divergences "${div_dir}")" == "0" ]] \
   || fail "an iteration with no session gaps reported a divergence"
 printf '%s\n' \
-  '{"kind":"GAP_ROW","gapKind":"ADMISSION_GAP","subject":"t","detail":"x"}' \
+  '{"kind":"ADMISSION_GAP","subject":"t","detail":"x"}' \
   >"${div_dir}/sessions/SESSION.a/gaps.jsonl"
 [[ "$(campaign_topology_divergences "${div_dir}")" == "0" ]] \
   || fail "an unrelated gap row was counted as a topology divergence"
 printf '%s\n' \
-  '{"kind":"GAP_ROW","gapKind":"TOPOLOGY_DIVERGENCE","subject":"IXN.1","detail":"unplanned producer"}' \
-  '{"kind":"GAP_ROW","gapKind":"TOPOLOGY_DIVERGENCE","subject":"IXN.2","detail":"unplanned producer"}' \
+  '{"kind":"TOPOLOGY_DIVERGENCE","subject":"IXN.1","detail":"unplanned producer"}' \
+  '{"kind":"TOPOLOGY_DIVERGENCE","subject":"IXN.2","detail":"unplanned producer"}' \
   >>"${div_dir}/sessions/SESSION.a/gaps.jsonl"
 [[ "$(campaign_topology_divergences "${div_dir}")" == "2" ]] \
   || fail "the topology divergence rows were not counted: \
@@ -637,11 +643,11 @@ done
 # whole helper test red on staging until REPORT-GAPJOIN found it -- and
 # `causynth_root_domains` joined it in a6da088f1, where the case gained a way
 # to say what a declared root may be.
-# `composer` left with the Design 3 stage reduction; `reach_max_inputs` and
+# `composer` left with the stage reduction; `reach_max_inputs` and
 # `reach_max_valuations` left with the separate solver process, because the
 # composer runs z3 per valuation while it composes and SOLVE reads the verdict
 # it wrote.  `compose_max_valuations` joined it in their place: the enumeration
-# is still the campaign's to bound, it is just the composer that runs it.  `composer` left it with the Design 3
+# is still the campaign's to bound, it is just the composer that runs it.  `composer` left it with the
 # stage reduction: there is one composition of the anchored target's paths,
 # and a key naming which one selected nothing.
 # 42: `campaign_stop_after` joined it when the IMPORT stop became a declared
@@ -705,10 +711,10 @@ done
 grow_dir="${test_tmp}/epoch-growth"
 mkdir -p "${grow_dir}/sessions/SESSION.a"
 printf '%s\n' \
-  '{"kind":"GAP_ROW","gapKind":"TOPOLOGY_DIVERGENCE","subject":"IXN.1","detail":"a replaced pairing: the catalog names another producer"}' \
-  '{"kind":"GAP_ROW","gapKind":"TOPOLOGY_DIVERGENCE","subject":"REGION.k","detail":"retained set must grow: REGION.k (entry hooks only)"}' \
-  '{"kind":"GAP_ROW","gapKind":"TOPOLOGY_DIVERGENCE","subject":"REGION.k","detail":"retained set must grow: REGION.k (entry hooks only)"}' \
-  '{"kind":"GAP_ROW","gapKind":"ADMISSION_GAP","subject":"x","detail":"retained set must grow: REGION.ignored"}' \
+  '{"kind":"TOPOLOGY_DIVERGENCE","subject":"IXN.1","detail":"a replaced pairing: the catalog names another producer"}' \
+  '{"kind":"TOPOLOGY_DIVERGENCE","subject":"REGION.k","detail":"retained set must grow: REGION.k (entry hooks only)"}' \
+  '{"kind":"TOPOLOGY_DIVERGENCE","subject":"REGION.k","detail":"retained set must grow: REGION.k (entry hooks only)"}' \
+  '{"kind":"ADMISSION_GAP","subject":"x","detail":"retained set must grow: REGION.ignored"}' \
   >"${grow_dir}/sessions/SESSION.a/gaps.jsonl"
 [[ "$(campaign_topology_divergences "${grow_dir}")" == "3" ]] \
   || fail "the divergence rows were not counted: \
@@ -722,7 +728,7 @@ $(campaign_retained_growth "${grow_dir}")"
 pair_dir="${test_tmp}/epoch-pairing"
 mkdir -p "${pair_dir}/sessions/SESSION.a"
 printf '%s\n' \
-  '{"kind":"GAP_ROW","gapKind":"TOPOLOGY_DIVERGENCE","subject":"IXN.9","detail":"a replaced pairing"}' \
+  '{"kind":"TOPOLOGY_DIVERGENCE","subject":"IXN.9","detail":"a replaced pairing"}' \
   >"${pair_dir}/sessions/SESSION.a/gaps.jsonl"
 [[ "$(campaign_topology_divergences "${pair_dir}")" == "1" ]] \
   || fail "a pairing divergence was not counted"
@@ -743,8 +749,8 @@ mkdir -p "${seed_dir}/sessions/SESSION.diverged"
 [[ -z "$(campaign_seeding_replay "${seed_dir}")" ]] \
   || fail "a closed topology seeds no epoch"
 printf '%s\n' \
-  '{"kind":"GAP_ROW","sessionId":"SESSION.diverged","gapKind":"TOPOLOGY_DIVERGENCE","gapClass":"DIAGNOSTIC","subject":"IXN.1","detail":"unplanned producer","seedsNextEpoch":true}' \
-  '{"kind":"GAP_ROW","sessionId":"SESSION.diverged","gapKind":"ADMISSION_GAP","gapClass":"BLOCKING","subject":"OCC.x","detail":"never observed"}' \
+  '{"sessionId":"SESSION.diverged","kind":"TOPOLOGY_DIVERGENCE","cls":"DIAGNOSTIC","subject":"IXN.1","detail":"unplanned producer","seedsNextEpoch":true}' \
+  '{"sessionId":"SESSION.diverged","kind":"ADMISSION_GAP","cls":"BLOCKING","subject":"OCC.x","detail":"never observed"}' \
   >"${seed_dir}/sessions/SESSION.diverged/gaps.jsonl"
 [[ "$(campaign_seeding_replay "${seed_dir}")" == "SESSION.diverged" ]] \
   || fail "the seeding session is not read off the divergent row: \
@@ -908,7 +914,7 @@ $(tr '\n' ' ' <"${stop_after_dir}/labels-full.tsv")"
 
 # IMPORT-GATE: the row contract stops the campaign at IMPORT, or records.
 #
-# The gate's own rules are checked in D3ContractTest; what is checked here is
+# The gate's own rules are checked in ContractTest; what is checked here is
 # the control flow the stage wraps around them: a BLOCKING count fails the
 # stage naming the first subject, a DIAGNOSTIC-only run goes on, and either
 # way the gap file the gate appended is the artifact the failure names.
@@ -919,7 +925,7 @@ mkdir -p "${gate_dir}/sessions"
 gate_stub() {
   printf '{"violations":%s,"blocking":%s,"firstBlockingSubject":"%s"}\n' \
     "$1" "$2" "$3"
-  printf '{"schemaVersion":1,"kind":"GAP_ROW","gapClass":"%s"}\n' "$4" \
+  printf '{"schemaVersion":1,"cls":"%s"}\n' "$4" \
     >>"${gate_dir}/campaign_gaps.jsonl"
 }
 (

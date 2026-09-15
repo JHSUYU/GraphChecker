@@ -6,11 +6,11 @@ import com.google.gson.ToNumberPolicy;
 import com.google.gson.reflect.TypeToken;
 import edu.uva.liftlab.graphchecker.annotation.Debug;
 import edu.uva.liftlab.graphchecker.causynth.MapFields;
-import edu.uva.liftlab.graphchecker.d3.smt.JsonFields;
+import edu.uva.liftlab.graphchecker.smt.JsonFields;
 import edu.uva.liftlab.graphchecker.causynth.StaticProgram;
-import edu.uva.liftlab.graphchecker.d3.smt.JavaContainerTypes;
+import edu.uva.liftlab.graphchecker.smt.JavaContainerTypes;
 
-import edu.uva.liftlab.graphchecker.d3.plan.SiteId;
+import edu.uva.liftlab.graphchecker.plan.SiteId;
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
 import java.io.File;
@@ -718,15 +718,6 @@ final class RuntimeRefinedGraphBuilder {
         return declaration.substring(separator + 1, end);
     }
 
-    private static String associativeMemberToken(String sourceKey,
-                                                  int containerObjectId,
-                                                  long invocationId) {
-        String provenance = sourceKey + "\n" + containerObjectId + "\n"
-                + invocationId;
-        return "MEMBER." + UUID.nameUUIDFromBytes(provenance.getBytes(
-                StandardCharsets.UTF_8));
-    }
-
     private static int integer(Object value, int fallback) {
         if (value instanceof Number) {
             return ((Number) value).intValue();
@@ -1030,76 +1021,10 @@ final class RuntimeRefinedGraphBuilder {
                         mutationEnter.invocationId);
                 result.put("mutatorDeclaredCallee",
                         mutationEnter.declaredCallee);
-                addAssociativeMemberIdentity(result);
             }
             return result;
         }
 
-        /** Names one map member by its defining mutation, never by its value
-         * or iteration position. */
-        private void addAssociativeMemberIdentity(
-                Map<String, Object> result) {
-            if (!JavaContainerTypes.associativePut(
-                    mutationEnter.declaredCallee)
-                    || mutationEnter.objectId == 0
-                    || mutationEnter.invocationId <= 0L) {
-                return;
-            }
-            RuntimeRegionPlanner.RuntimeEvent key = uniqueArgument(0);
-            RuntimeRegionPlanner.RuntimeEvent value = uniqueArgument(1);
-            if (key == null || value == null || key.objectId == 0
-                    || value.objectId == 0) {
-                return;
-            }
-            result.put("containerMemberToken", associativeMemberToken(
-                    root.sourceKey, mutationEnter.objectId,
-                    mutationEnter.invocationId));
-            result.put("containerMemberIdentityAuthority",
-                    ASSOCIATIVE_MEMBER_AUTHORITY);
-            result.put("containerObjectId", mutationEnter.objectId);
-            result.put("containerKeyObjectId", key.objectId);
-            result.put("containerValueObjectId", value.objectId);
-
-            Map<String, RuntimeRegionPlanner.FieldAccessEvent> latest =
-                    new LinkedHashMap<>();
-            for (RuntimeRegionPlanner.FieldAccessEvent field
-                    : activationFields) {
-                if (field.seq >= mutationEnter.seq
-                        || field.receiverObjectId != value.objectId
-                        || field.primitiveValue.isEmpty()) {
-                    continue;
-                }
-                RuntimeRegionPlanner.FieldAccessEvent previous =
-                        latest.get(field.field);
-                if (previous == null || field.seq > previous.seq) {
-                    latest.put(field.field, field);
-                }
-            }
-            List<Map<String, Object>> leaves = new ArrayList<>();
-            for (RuntimeRegionPlanner.FieldAccessEvent field
-                    : latest.values()) {
-                Map<String, Object> leaf = new LinkedHashMap<>();
-                leaf.put("field", field.field);
-                leaf.put("eventSeq", field.seq);
-                leaf.put("callId", field.callId);
-                leaf.put("siteId", field.siteId);
-                leaf.put("fieldReceiverObjectId",
-                        field.receiverObjectId);
-                leaves.add(leaf);
-            }
-            result.put("containerMemberFieldBindings", leaves);
-        }
-
-        private RuntimeRegionPlanner.RuntimeEvent uniqueArgument(int index) {
-            RuntimeRegionPlanner.RuntimeEvent selected = null;
-            for (RuntimeRegionPlanner.RuntimeEvent argument
-                    : mutationArguments) {
-                if (argument.argumentIndex != index) continue;
-                if (selected != null) return null;
-                selected = argument;
-            }
-            return selected;
-        }
     }
 
     private static final class RuntimeRoot {

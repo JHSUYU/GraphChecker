@@ -3,8 +3,8 @@ package edu.uva.liftlab.graphchecker.runtime;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
-import edu.uva.liftlab.graphchecker.d3.smt.CanonicalJson;
-import edu.uva.liftlab.graphchecker.d3.plan.ExecutionTask;
+import edu.uva.liftlab.graphchecker.smt.CanonicalJson;
+import edu.uva.liftlab.graphchecker.plan.ExecutionTask;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
@@ -68,15 +68,12 @@ public class BranchDecisionRecordingTest {
 
     /**
      * What a region writes down for one binary decision at a declared
-     * site: one row carrying the exact observation, and the reach.
+     * site: one row naming the site, the arm it took and the empty
+     * path-condition window, and the reach.
      */
     @Test
     public void aBinaryDecisionPublishesOneRowAndTheReach() throws Exception {
-        assertEquals("rows=[{\"concreteObservation\":{\"kind\":"
-                + "\"EXACT_CONCRETE_BINARY_BRANCH_OBSERVATION\","
-                + "\"schemaVersion\":1,\"site\":{\"method\":\"" + METHOD
-                + "\",\"occurrence\":1,\"siteId\":\"" + DECLARED
-                + "\",\"unitIndex\":4},\"sourceTakenOutcome\":true},"
+        assertEquals("rows=[{"
                 + "\"method\":\"" + METHOD + "\",\"occurrence\":1,"
                 + "\"outcome\":true,"
                 + "\"rawPathConditionBaseline\":0,"
@@ -86,18 +83,13 @@ public class BranchDecisionRecordingTest {
     }
 
     /**
-     * The switch answers the same questions, parameterised by the case: its
-     * row names the branch kind, the case keys and the successor observed.
+     * The switch answers the same questions: one row, at the same site and
+     * the same arm.  The successor it selected is the replay authority and
+     * states no predicate of its own, so the row is the binary one.
      */
     @Test
     public void aSwitchDecisionPublishesTheSameRowAndReach() throws Exception {
-        assertEquals("rows=[{\"concreteObservation\":{\"branchKind\":"
-                + "\"TABLE_SWITCH\",\"caseKeys\":[0,1,2],\"kind\":"
-                + "\"EXACT_CONCRETE_SWITCH_BRANCH_OBSERVATION\","
-                + "\"observedSuccessorIndex\":1,\"schemaVersion\":1,"
-                + "\"site\":{\"method\":\"" + METHOD + "\",\"occurrence\":1,"
-                + "\"siteId\":\"" + DECLARED + "\",\"unitIndex\":4},"
-                + "\"sourceTakenOutcome\":true},\"method\":\"" + METHOD
+        assertEquals("rows=[{\"method\":\"" + METHOD
                 + "\",\"occurrence\":1,\"outcome\":true,"
                 + "\"rawPathConditionBaseline\":0,"
                 + "\"rawPathConditionSize\":0,\"siteId\":\"" + DECLARED

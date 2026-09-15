@@ -1,23 +1,22 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
-import edu.uva.liftlab.graphchecker.d3.plan.ConcolicScheduler;
+import edu.uva.liftlab.graphchecker.plan.ConcolicScheduler;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.google.gson.JsonPrimitive;
-import edu.uva.liftlab.graphchecker.d3.plan.BranchReplayContract;
-import edu.uva.liftlab.graphchecker.d3.plan.SharedStateEvidence;
-import edu.uva.liftlab.graphchecker.d3.plan.CommunicationHandoffSpec;
-import edu.uva.liftlab.graphchecker.d3.plan.ConfiguredSourcePhaseContract;
-import edu.uva.liftlab.graphchecker.d3.contract.OccurrenceAddress;
-import edu.uva.liftlab.graphchecker.d3.plan.ExecutionTask;
-import edu.uva.liftlab.graphchecker.d3.plan.FieldPathSpec;
-import edu.uva.liftlab.graphchecker.d3.plan.FieldPathSpec.DeclaredField;
-import edu.uva.liftlab.graphchecker.d3.plan.InputActionCatalog;
-import edu.uva.liftlab.graphchecker.d3.smt.JavaContainerTypes;
-import edu.uva.liftlab.graphchecker.d3.plan.LoopBoundPolicy;
+import edu.uva.liftlab.graphchecker.plan.SharedStateEvidence;
+import edu.uva.liftlab.graphchecker.plan.CommunicationHandoffSpec;
+import edu.uva.liftlab.graphchecker.plan.ConfiguredSourcePhaseContract;
+import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
+import edu.uva.liftlab.graphchecker.plan.ExecutionTask;
+import edu.uva.liftlab.graphchecker.plan.FieldPathSpec;
+import edu.uva.liftlab.graphchecker.plan.FieldPathSpec.DeclaredField;
+import edu.uva.liftlab.graphchecker.plan.InputActionCatalog;
+import edu.uva.liftlab.graphchecker.smt.JavaContainerTypes;
+import edu.uva.liftlab.graphchecker.plan.LoopBoundPolicy;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -34,13 +33,13 @@ import java.util.Map;
 import java.util.Set;
 import java.util.regex.Matcher;
 
-import static edu.uva.liftlab.graphchecker.d3.smt.JavaPrimitiveSmtSemantics.javaTypeDescriptor;
-import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.array;
-import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.firstNonBlank;
-import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.object;
-import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.optionalInteger;
-import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.optionalLongInteger;
-import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.optionalString;
+import static edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics.javaTypeDescriptor;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.array;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.object;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalInteger;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalLongInteger;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 import edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.ConsumerAccessAnchor;
 import edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.GuardedReadAssignment;
 import edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.ModelAssignment;
@@ -158,15 +157,6 @@ final class ConcolicTaskPlan {
     synchronized void markOccurrenceClaimed(RuntimeTask task) {
         int index = tasks.indexOf(task);
         if (index >= 0) occurrenceClaimed[index] = true;
-    }
-
-    /** The campaign task with this id, or {@code null}. */
-    RuntimeTask taskById(String taskId) {
-        if (taskId == null || taskId.isEmpty()) return null;
-        for (RuntimeTask task : tasks) {
-            if (taskId.equals(task.taskId)) return task;
-        }
-        return null;
     }
 
     /**
@@ -390,23 +380,6 @@ final class ConcolicTaskPlan {
     }
 
     /**
-     * How the request this root entered differs from the planned one, or "".
-     *
-     * <p>Information, not admission.  The request was the stitcher's way of
-     * addressing an occurrence, because it merged replays and needed the RPC
-     * exchange to tell two runs of one region apart.  An occurrence is
-     * (node, epoch, region, k-th activation); which exchange happened to be
-     * open around it says where it was reached from, not which occurrence it
-     * is.</p>
-     */
-    static String requestMismatch(
-            RuntimeTask task, SourceRef registeredReceiverSource,
-            RuntimeTraceContext.View context) {
-        return task.rootContextSelector.reachedUnder
-                .requestDifference(context);
-    }
-
-    /**
      * Why this activation is not the planned node's, or {@code ""}.
      *
      * <p>One answer, with nothing deferred behind it.  A unique
@@ -545,41 +518,6 @@ final class ConcolicTaskPlan {
                     + " counts in the unregistered source)";
         }
         return " (attributed to " + activationSource.key() + ")";
-    }
-
-    /** Whether this run attributed the activation to no node at all. */
-    static boolean unattributed(SourceRef activationSource) {
-        return activationSource == null
-                || RuntimeTraceContext.UNREGISTERED_SOURCE.key()
-                .equals(activationSource.key());
-    }
-
-    /**
-     * Counts this physical entry once in the bucket it belongs to.
-     *
-     * <p>Once per entry however many tasks are offered it: the guard is the
-     * per-entry map, so two tasks sharing one counter scope do not advance
-     * it twice.</p>
-     */
-    /**
-     * Whether this task's bucket counts an entry at this hook.
-     *
-     * <p>The one difference between a method root and an enclosing loop
-     * root: which hook group the task belongs to and which argument selector
-     * its plan row carries.  Everything after it is the same question.</p>
-     */
-    private boolean countsEntry(RuntimeTask task, boolean loopRoot,
-                                String hookGroupKey, String rootMethod,
-                                Object receiver, Object[] rootArguments,
-                                String threadName) {
-        if (task.loopBodyRoot != loopRoot) return false;
-        return (loopRoot ? task.loopRootHookGroupKey()
-                : task.rootHookGroupKey()).equals(safe(hookGroupKey))
-                && compatibleRoot(task.rootMethod, rootMethod,
-                task.rootContextSelector,
-                loopRoot ? task.enclosingRootArgumentSelector
-                        : task.rootArgumentSelector,
-                receiver, rootArguments, threadName);
     }
 
     /** The source keys this run attributed to one live root entry. */
@@ -848,21 +786,6 @@ final class ConcolicTaskPlan {
                     && (threadName.isEmpty()
                     || threadName.equals(stableReplayThreadContext(
                     actualThreadName)));
-        }
-
-        /** How the exchange this root entered differs, or {@code ""}. */
-        private String requestDifference(RuntimeTraceContext.View context) {
-            if (!requestKey.equals(safe(context.requestKey))) {
-                return "matching root entered request "
-                        + safe(context.requestKey) + " instead of "
-                        + requestKey;
-            }
-            if (!requestApi.equals(safe(context.requestApi))) {
-                return "matching root entered request API "
-                        + safe(context.requestApi) + " instead of "
-                        + requestApi;
-            }
-            return "";
         }
 
         /** The circumstances on one line, for a named gap. */
@@ -1202,7 +1125,6 @@ final class ConcolicTaskPlan {
         /** Stable identity shared by every task in one linked replay. */
         final String replayGroupId;
         final String topologyEpoch;
-        final BranchReplayContract.RuntimeSchedule replayContract;
         /** The declared target branch event of a target-reach task. */
         final String targetBranchSite;
         final int targetBranchOccurrence;
@@ -1335,7 +1257,6 @@ final class ConcolicTaskPlan {
                 configuredSourcePhasesById.putIfAbsent(phase.phaseId(),
                         phase);
             }
-            this.replayContract = task.replaySchedule();
             JsonObject targetBranch = object(task.json(), "targetBranch");
             this.targetBranchSite = optionalString(targetBranch, "siteId");
             this.targetBranchOccurrence = optionalInteger(targetBranch,
@@ -1440,8 +1361,7 @@ final class ConcolicTaskPlan {
                         publish.fieldSignature())
                         || !assignment.matchesConfiguredSource(
                         publish.phaseId(), publish.sourceId(),
-                        publish.fieldSignature())
-                        || assignment.hasContainerTarget()) {
+                        publish.fieldSignature())) {
                     throw new IllegalArgumentException(
                             "model assignment names an undeclared or "
                                     + "unsupported configured source in "
@@ -1466,7 +1386,6 @@ final class ConcolicTaskPlan {
         private boolean answersHandoffPhase(ModelAssignment assignment) {
             String phaseId = assignment.configuredSourcePhaseId;
             if (!ConcolicRegionRuntime.isHandoffMintKey(phaseId)
-                    || assignment.hasContainerTarget()
                     || !assignment.matchesConfiguredSource(phaseId, phaseId,
                     "")) {
                 return false;
@@ -1547,15 +1466,6 @@ final class ConcolicTaskPlan {
                     safe(portId));
             return consumers == null ? Collections.<String>emptyList()
                     : consumers;
-        }
-
-        Set<String> declaredOutgoingPorts() {
-            Set<String> ports = new LinkedHashSet<>();
-            for (CommunicationHandoffSpec handoff
-                    : communicationHandoffs.values()) {
-                if (handoff.outgoing()) ports.add(handoff.portId());
-            }
-            return ports;
         }
 
         /**
@@ -1717,12 +1627,6 @@ final class ConcolicTaskPlan {
             return LoopBoundPolicy.MAX_REPLAY_PATH_LOOP_BODIES;
         }
 
-        String policy(String siteId) {
-            String policy = branchPolicies.get(siteId);
-            return "EXPLORE".equals(policy)
-                    || "PATH_ASSUMPTION".equals(policy) ? policy : "EXPLORE";
-        }
-
         /** Whether the frozen plan declares a policy for this branch site. */
         boolean declaresBranch(String siteId) {
             return branchPolicies.containsKey(safe(siteId));
@@ -1772,13 +1676,6 @@ final class ConcolicTaskPlan {
             reserveConfiguredSourcePhaseOrdinals(sourceOrdinals);
         }
 
-
-        /** One bound gap per task, however many turns follow it. */
-        synchronized boolean claimLoopBoundGapMarker() {
-            if (loopBoundGapClaimed) return false;
-            loopBoundGapClaimed = true;
-            return true;
-        }
 
         synchronized boolean cutsBoundedLoopOccurrence() {
             if (!loopBodyRoot) return false;
@@ -1869,7 +1766,7 @@ final class ConcolicTaskPlan {
          * matches nothing rather than half-matching on the node.</p>
          */
         OccurrenceAddress observedAddress(String lifecycle) {
-            return edu.uva.liftlab.graphchecker.runtime.d3
+            return edu.uva.liftlab.graphchecker.runtime
                     .OccurrenceMinterV2.mint(
                             safe(lifecycle).isEmpty() ? sourceKey : lifecycle,
                             regionId, liveContext(), liveIndex());
@@ -1904,14 +1801,14 @@ final class ConcolicTaskPlan {
         }
 
         /** The causal context this thread is in, as the minter reads it. */
-        private static edu.uva.liftlab.graphchecker.d3.contract.CausalContext
+        private static edu.uva.liftlab.graphchecker.contract.CausalContext
                 liveContext() {
-            return edu.uva.liftlab.graphchecker.runtime.d3.Identity.context(
-                    edu.uva.liftlab.graphchecker.runtime.d3.Lineage.anchor(),
-                    edu.uva.liftlab.graphchecker.runtime.d3.Lineage.rpcSite(),
-                    edu.uva.liftlab.graphchecker.runtime.d3.Lineage
+            return edu.uva.liftlab.graphchecker.runtime.Identity.context(
+                    edu.uva.liftlab.graphchecker.runtime.Lineage.anchor(),
+                    edu.uva.liftlab.graphchecker.runtime.Lineage.rpcSite(),
+                    edu.uva.liftlab.graphchecker.runtime.Lineage
                             .rootRole(),
-                    edu.uva.liftlab.graphchecker.runtime.d3.Lineage
+                    edu.uva.liftlab.graphchecker.runtime.Lineage
                             .rootWindowIndex());
         }
 
@@ -1923,9 +1820,9 @@ final class ConcolicTaskPlan {
          * session publisher opens the region, and opening it twice would
          * move the base every endpoint inside is indexed from.</p>
          */
-        private static edu.uva.liftlab.graphchecker.d3.contract.ExecutionIndex
+        private static edu.uva.liftlab.graphchecker.contract.ExecutionIndex
                 liveIndex() {
-            return edu.uva.liftlab.graphchecker.runtime.d3.Identity.atScope();
+            return edu.uva.liftlab.graphchecker.runtime.Identity.atScope();
         }
 
         boolean acceptsRootInvocation(OccurrenceAddress observed) {
@@ -1957,10 +1854,10 @@ final class ConcolicTaskPlan {
         void noteAddressDrift(OccurrenceAddress observed) {
             String difference = addressDifference(observed);
             if (!addressDrifts.add(difference)) return;
-            edu.uva.liftlab.graphchecker.runtime.d3.D3Runtime.gap(
-                    edu.uva.liftlab.graphchecker.d3.contract.GapKind
+            edu.uva.liftlab.graphchecker.runtime.RowRuntime.gap(
+                    edu.uva.liftlab.graphchecker.contract.GapKind
                             .LINEAGE_LOST,
-                    edu.uva.liftlab.graphchecker.d3.contract.GapClass
+                    edu.uva.liftlab.graphchecker.contract.GapClass
                             .DIAGNOSTIC,
                     safe(occurrenceId),
                     "the plan and this replay address one activation"

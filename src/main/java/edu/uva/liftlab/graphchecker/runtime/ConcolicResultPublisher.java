@@ -3,9 +3,9 @@ package edu.uva.liftlab.graphchecker.runtime;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
-import edu.uva.liftlab.graphchecker.d3.plan.RecordedEvidenceIdentity;
-import edu.uva.liftlab.graphchecker.d3.plan.SymbolicSourceEvidence;
-import edu.uva.liftlab.graphchecker.d3.plan.LoopBoundPolicy;
+import edu.uva.liftlab.graphchecker.plan.RecordedEvidenceIdentity;
+import edu.uva.liftlab.graphchecker.plan.SymbolicSourceEvidence;
+import edu.uva.liftlab.graphchecker.plan.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.ActiveRegion;
 import edu.uva.liftlab.graphchecker.runtime.ConcolicTaskPlan.RuntimeTask;
 import edu.uva.liftlab.graphchecker.runtime.SharedStateCapture.RawSharedStateReadOut;
@@ -27,10 +27,10 @@ import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
-import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.array;
-import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.object;
-import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.optionalBool;
-import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.shallowCopy;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.array;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.object;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalBool;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.shallowCopy;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.ACTIVE;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.CONFIGURED_SOURCE_PHASE_GAPS;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.CONFIGURED_SOURCE_PHASE_OBSERVATIONS;
@@ -246,7 +246,7 @@ final class ConcolicResultPublisher {
         // here first: a campaign halts the JVM as soon as the selected
         // result settles, which runs no shutdown hook, and a replay that
         // ends by its workload throwing exits through JUnitMethodRunner.
-        edu.uva.liftlab.graphchecker.runtime.d3.D3Runtime.closeSession();
+        edu.uva.liftlab.graphchecker.runtime.RowRuntime.closeSession();
     }
 
     private static boolean runTotalsPublished;
@@ -327,11 +327,11 @@ final class ConcolicResultPublisher {
                     rawSharedState == null ? evidenceIdentity(active)
                             : rawSharedState.identity);
             mergeEngineSummary(active, result, rawEngineSummary);
-            // The same activation, as the Design 3 per-kind row set.  Here
+            // The same activation, as the per-kind row set.  Here
             // because this is where the write log has been assembled and
             // the engine summary merged: every row this activation can
             // state is complete exactly once, on one thread.
-            D3RowPublication.publish(active);
+            RowPublication.publish(active);
             JsonObject portableResult = active.expressionStore.compact(result);
             boolean written = appendResult(portableResult);
             boolean goalAnswered = written
@@ -485,7 +485,7 @@ final class ConcolicResultPublisher {
         // Every evidence row this activation publishes names the run, the
         // session, the activation, and the read-out batch it came from.
         // D2: export, attach and gap rows are published per kind by
-        // runtime/d3 SessionPublisher (M2).
+        // SessionPublisher (M2).
     }
 
     /** Whether this candidate supplied the evidence its selected goal needs. */

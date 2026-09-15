@@ -4,18 +4,18 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
-import edu.uva.liftlab.graphchecker.d3.smt.JsonFields;
-import edu.uva.liftlab.graphchecker.d3.plan.SharedFieldFlow;
-import edu.uva.liftlab.graphchecker.d3.plan.CommunicationCatalogContract;
-import edu.uva.liftlab.graphchecker.d3.plan.CommunicationHandoffSpec;
-import edu.uva.liftlab.graphchecker.d3.plan.ConfiguredSourcePhaseContract;
-import edu.uva.liftlab.graphchecker.d3.plan.ExecutionTask;
-import edu.uva.liftlab.graphchecker.d3.plan.FieldPathSpec;
-import edu.uva.liftlab.graphchecker.d3.plan.FieldPathSpec.DeclaredField;
-import edu.uva.liftlab.graphchecker.d3.plan.InputActionCatalog;
-import edu.uva.liftlab.graphchecker.d3.smt.JavaContainerTypes;
-import edu.uva.liftlab.graphchecker.d3.plan.LoopBoundPolicy;
-import edu.uva.liftlab.graphchecker.d3.plan.SiteId;
+import edu.uva.liftlab.graphchecker.smt.JsonFields;
+import edu.uva.liftlab.graphchecker.plan.SharedFieldFlow;
+import edu.uva.liftlab.graphchecker.plan.CommunicationCatalogContract;
+import edu.uva.liftlab.graphchecker.plan.CommunicationHandoffSpec;
+import edu.uva.liftlab.graphchecker.plan.ConfiguredSourcePhaseContract;
+import edu.uva.liftlab.graphchecker.plan.ExecutionTask;
+import edu.uva.liftlab.graphchecker.plan.FieldPathSpec;
+import edu.uva.liftlab.graphchecker.plan.FieldPathSpec.DeclaredField;
+import edu.uva.liftlab.graphchecker.plan.InputActionCatalog;
+import edu.uva.liftlab.graphchecker.smt.JavaContainerTypes;
+import edu.uva.liftlab.graphchecker.plan.LoopBoundPolicy;
+import edu.uva.liftlab.graphchecker.plan.SiteId;
 import soot.PrimType;
 import soot.SootClass;
 import soot.SootField;
@@ -40,8 +40,8 @@ import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.stringValue;
-import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.optionalInteger;
-import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.optionalString;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalInteger;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 
 /** Execution-task parsing and immutable instrumentation selections. */
 public final class ConcolicInstrumentationSelections {
@@ -795,22 +795,6 @@ public final class ConcolicInstrumentationSelections {
             }
         }
 
-        /**
-         * Whether this campaign named the exact bytecode site {@code
-         * method#uUnit}. README section 1's first gate.
-         */
-        boolean selectedSite(String method, int unitIndex) {
-            if (unitIndex < 0) return false;
-            Map<String, Set<Integer>> locals = localsByMethod.get(method);
-            if (locals != null) {
-                for (Set<Integer> sites : locals.values()) {
-                    if (sites.contains(unitIndex)) return true;
-                }
-            }
-            return accessorCallsBySite.containsKey(
-                    SiteId.of(method, unitIndex));
-        }
-
         /** Unique local-definition sites this campaign named. */
         int localSiteCount() {
             int sites = 0;
@@ -927,21 +911,6 @@ public final class ConcolicInstrumentationSelections {
         for (Map.Entry<K, Map<I, Set<V>>> entry : from.entrySet()) {
             mergeSets(into.computeIfAbsent(entry.getKey(),
                     ignored -> new LinkedHashMap<>()), entry.getValue());
-        }
-    }
-
-    static int intValue(Object value, int fallback) {
-        if (value instanceof Number) {
-            return ((Number) value).intValue();
-        }
-        if (value == null || String.valueOf(value).trim().isEmpty()
-                || "null".equals(String.valueOf(value))) {
-            return fallback;
-        }
-        try {
-            return Integer.parseInt(String.valueOf(value));
-        } catch (RuntimeException ignored) {
-            return fallback;
         }
     }
 

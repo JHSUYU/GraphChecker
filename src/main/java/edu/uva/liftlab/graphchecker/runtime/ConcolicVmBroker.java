@@ -1,14 +1,14 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
-import edu.uva.liftlab.graphchecker.d3.plan.FieldPathSpec;
-import edu.uva.liftlab.graphchecker.d3.plan.FieldPathSpec.DeclaredField;
+import edu.uva.liftlab.graphchecker.plan.FieldPathSpec;
+import edu.uva.liftlab.graphchecker.plan.FieldPathSpec.DeclaredField;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
-import static edu.uva.liftlab.graphchecker.d3.smt.JavaPrimitiveSmtSemantics.javaTypeDescriptor;
+import static edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics.javaTypeDescriptor;
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.safe;
 
 /**
@@ -231,22 +231,6 @@ final class ConcolicVmBroker {
         }
         observeExactPrimitiveField.invoke(null, owner, field.owner(),
                 field.name(), javaTypeDescriptor(field.type()));
-    }
-
-    /** One selected field's own version envelope, as the VM holds it now. */
-    String sharedFieldVersions(Object owner, String fieldSignature)
-            throws Exception {
-        DeclaredField field = FieldPathSpec.declaredField(
-                safe(fieldSignature));
-        if (field == null) {
-            throw new UnsupportedOperationException(
-                    "no exact declared field for version read-back: "
-                            + safe(fieldSignature));
-        }
-        return requiredVmJson(sharedFieldVersions.invoke(null, owner,
-                field.owner(), field.name(),
-                javaTypeDescriptor(field.type())),
-                "getSharedFieldVersions");
     }
 
     String expression(Object value) throws Exception {

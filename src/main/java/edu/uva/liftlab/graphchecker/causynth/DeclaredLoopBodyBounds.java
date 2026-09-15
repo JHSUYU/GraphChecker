@@ -3,8 +3,7 @@ package edu.uva.liftlab.graphchecker.causynth;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
-import edu.uva.liftlab.graphchecker.d3.plan.BoundedLoopComposition;
-import edu.uva.liftlab.graphchecker.d3.plan.LoopBoundPolicy;
+import edu.uva.liftlab.graphchecker.plan.LoopBoundPolicy;
 
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -161,7 +160,7 @@ final class DeclaredLoopBodyBounds {
                     // picking either would be this file choosing for the
                     // reader.
                     throw new IOException(
-                            BoundedLoopComposition.LOOP_BODY_BOUND_DISAGREES
+                            LoopBoundPolicy.LOOP_BODY_BOUND_DISAGREES
                                     + ": " + declaration.key()
                                     + " is declared at " + existing.origin
                                     + " and again at " + origin);
@@ -216,7 +215,7 @@ final class DeclaredLoopBodyBounds {
      * state different bounds - or a member that declares one while another
      * inherits - are refused by name rather than resolved by picking either.
      * @throws IllegalArgumentException naming {@link
-     *         BoundedLoopComposition#LOOP_BODY_BOUND_DISAGREES} or {@link
+     *         LoopBoundPolicy#LOOP_BODY_BOUND_DISAGREES} or {@link
      *         LoopBoundPolicy#DECLARED_BOUND_OUT_OF_RANGE}, in both cases
      *         naming the configuration key that stated it
      */
@@ -305,7 +304,7 @@ final class DeclaredLoopBodyBounds {
             Collection<String> sites, Declaration declared, int bound,
             String otherKey, String otherValue) {
         return new IllegalArgumentException(
-                BoundedLoopComposition.LOOP_BODY_BOUND_DISAGREES + ": "
+                LoopBoundPolicy.LOOP_BODY_BOUND_DISAGREES + ": "
                         + declared.key() + "=" + bound + " (" + declared.origin
                         + ") and " + otherKey + "=" + otherValue
                         + " are members of one loop nest "

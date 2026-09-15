@@ -1,6 +1,6 @@
 package edu.uva.liftlab.graphchecker.causynth;
 
-import edu.uva.liftlab.graphchecker.d3.plan.LoopBoundPolicy;
+import edu.uva.liftlab.graphchecker.plan.LoopBoundPolicy;
 import soot.Body;
 import soot.Local;
 import soot.SootMethod;

@@ -1,13 +1,11 @@
 package edu.uva.liftlab.graphchecker.causynth;
 
-import edu.uva.liftlab.graphchecker.d3.plan.GapLedger;
+import edu.uva.liftlab.graphchecker.plan.GapLedger;
 
-import edu.uva.liftlab.graphchecker.d3.plan.BoundedLoopComposition;
 
-import edu.uva.liftlab.graphchecker.d3.plan.CommunicationCatalogContract;
-import edu.uva.liftlab.graphchecker.d3.plan.LoopBoundPolicy;
-import edu.uva.liftlab.graphchecker.d3.plan.ExactConcreteBranchObservation;
-import edu.uva.liftlab.graphchecker.d3.plan.SiteId;
+import edu.uva.liftlab.graphchecker.plan.CommunicationCatalogContract;
+import edu.uva.liftlab.graphchecker.plan.LoopBoundPolicy;
+import edu.uva.liftlab.graphchecker.plan.SiteId;
 import soot.Body;
 import soot.Unit;
 import soot.jimple.IfStmt;
@@ -145,7 +143,7 @@ final class CommunicationCatalogPlanner {
                 // is its array length, which is exact where the replay
                 // publishes a dense cardinality vector covering the body
                 // count -- and where it does not,
-                // BoundedLoopComposition raises
+                // The loop-bound policy raises
                 // PATH_LOCAL_ARRAY_CARDINALITY_MISSING against that case and
                 // the claim is withheld by name.  Demanding a declared K_L
                 // here would replace an exact count with a stated prefix,
@@ -188,12 +186,6 @@ final class CommunicationCatalogPlanner {
                             shape.successors.get(successor))) continue;
                     Map<String, Object> exit = newRow("LOOP_EXIT_DECISION");
                     exit.put("siteId", site);
-                    exit.put("decisionToken", shape.isSwitch()
-                            ? ExactConcreteBranchObservation
-                            .switchDecisionToken(shape.kind, shape.caseKeys,
-                                    successor)
-                            : ExactConcreteBranchObservation
-                            .binaryDecisionToken(successor == 1));
                     exitDecisions.add(exit);
                 }
             }

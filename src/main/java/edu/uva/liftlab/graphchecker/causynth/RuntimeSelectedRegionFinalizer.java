@@ -1,20 +1,20 @@
 package edu.uva.liftlab.graphchecker.causynth;
 
-import edu.uva.liftlab.graphchecker.d3.plan.GapLedger;
+import edu.uva.liftlab.graphchecker.plan.GapLedger;
 
-import edu.uva.liftlab.graphchecker.d3.plan.AutomaticRegionEdge;
-import edu.uva.liftlab.graphchecker.d3.plan.SharedFieldFlow;
-import edu.uva.liftlab.graphchecker.d3.contract.OccurrenceAddress;
-import edu.uva.liftlab.graphchecker.d3.plan.CommunicationCatalogContract;
-import edu.uva.liftlab.graphchecker.d3.plan.DependencyRole;
-import edu.uva.liftlab.graphchecker.d3.plan.FieldPathSpec;
-import edu.uva.liftlab.graphchecker.d3.smt.JavaContainerTypes;
-import edu.uva.liftlab.graphchecker.d3.smt.JavaPrimitiveBoxing;
-import edu.uva.liftlab.graphchecker.d3.plan.LoopBoundPolicy;
-import edu.uva.liftlab.graphchecker.d3.plan.StaticSymbolicSourceDeclaration;
-import edu.uva.liftlab.graphchecker.d3.plan.ConfiguredSourcePhaseContract;
+import edu.uva.liftlab.graphchecker.plan.AutomaticRegionEdge;
+import edu.uva.liftlab.graphchecker.plan.SharedFieldFlow;
+import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
+import edu.uva.liftlab.graphchecker.plan.CommunicationCatalogContract;
+import edu.uva.liftlab.graphchecker.plan.DependencyRole;
+import edu.uva.liftlab.graphchecker.plan.FieldPathSpec;
+import edu.uva.liftlab.graphchecker.smt.JavaContainerTypes;
+import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveBoxing;
+import edu.uva.liftlab.graphchecker.plan.LoopBoundPolicy;
+import edu.uva.liftlab.graphchecker.plan.StaticSymbolicSourceDeclaration;
+import edu.uva.liftlab.graphchecker.plan.ConfiguredSourcePhaseContract;
 import edu.uva.liftlab.graphchecker.runtime.OccurrenceMinter;
-import edu.uva.liftlab.graphchecker.d3.plan.SiteId;
+import edu.uva.liftlab.graphchecker.plan.SiteId;
 
 import java.io.IOException;
 import java.util.ArrayDeque;
@@ -67,14 +67,6 @@ public final class RuntimeSelectedRegionFinalizer {
      * asserting a reporting path that did not exist.
      */
     public static final String BOUND_INSUFFICIENT = "BOUND_INSUFFICIENT";
-    /**
-     * An accessor-return stream reached
-     * {@link LoopBoundPolicy#SYMBOLIC_CONTAINER_SNAPSHOT_CAPACITY}, so the
-     * reads after it were never minted as ports at all.
-     */
-    public static final String SNAPSHOT_CAPACITY_REACHED =
-            "SYMBOLIC_CONTAINER_SNAPSHOT_CAPACITY_REACHED";
-
     /**
      * Existing planner admission vocabulary for a bounded state writer.  Why
      * this activation is in the plan at all, when it is there for anything
@@ -2362,20 +2354,6 @@ public final class RuntimeSelectedRegionFinalizer {
         return new ArrayList<>(result);
     }
 
-    /** The declared field a port's leaf reads, by its own path or its cell. */
-    private static String leafDeclaration(Map<String, Object> port) {
-        List<String> declarations = strings(
-                port.get("fieldPathDeclarations"));
-        return declarations.isEmpty() ? text(port.get("cell"))
-                : declarations.get(declarations.size() - 1);
-    }
-
-    private static boolean primitiveLeaf(Map<String, Object> port) {
-        DeclaredFieldCell field = DeclaredFieldCell.parse(
-                leafDeclaration(port));
-        return field != null && field.primitive();
-    }
-
     /** Republishes one recorded access as the port's own replay address. */
     private static void copyRuntimeOccurrence(
             Map<String, Object> access, Map<String, Object> port) {
@@ -2486,10 +2464,7 @@ public final class RuntimeSelectedRegionFinalizer {
                 "fieldPathDeclarations", "bindingKind",
                 "writerFieldReadSeq", "mutatorEnterSeq",
                 "mutationCompletionSeq", "mutationInvocationId",
-                "mutatorDeclaredCallee", "containerMemberToken",
-                "containerMemberIdentityAuthority", "containerObjectId",
-                "containerKeyObjectId", "containerValueObjectId",
-                "containerMemberFieldBindings"}) {
+                "mutatorDeclaredCallee"}) {
             access.put(key, binding.get(key));
         }
         access.put("staticAccessSiteId", firstNonEmpty(
@@ -2567,23 +2542,6 @@ public final class RuntimeSelectedRegionFinalizer {
                         + declaredCallee + "\n" + implementation;
                 int retained = retainedByActivationStream.getOrDefault(
                         stream, 0);
-                if (retained >= LoopBoundPolicy
-                        .SYMBOLIC_CONTAINER_SNAPSHOT_CAPACITY) {
-                    // Reads past the capacity were never minted as ports, so
-                    // the container this accessor returns is described by its
-                    // first N observations and nothing states that the rest
-                    // exist.
-                    planGap(program.planGaps, SNAPSHOT_CAPACITY_REACHED,
-                            regionId + "\n" + SiteId.of(caller, unitIndex)
-                                    + "\n" + field,
-                            "an accessor-return stream reached the "
-                                    + LoopBoundPolicy
-                                            .SYMBOLIC_CONTAINER_SNAPSHOT_CAPACITY
-                                    + "-observation container snapshot"
-                                    + " capacity, so its later reads were"
-                                    + " never minted as ports");
-                    continue;
-                }
                 retainedByActivationStream.put(stream, retained + 1);
                 Map<String, Object> port = new LinkedHashMap<>(binding);
                 port.put("occurrenceId", occurrenceId);
@@ -3552,7 +3510,7 @@ public final class RuntimeSelectedRegionFinalizer {
      * <p>{@code gaps} may be null where a caller builds ports outside a
      * finalize pass; the two truncations below both run inside one, so in
      * practice every raised gap reaches
-     * {@link edu.uva.liftlab.graphchecker.d3.plan.GapLedger}.</p>
+     * {@link edu.uva.liftlab.graphchecker.plan.GapLedger}.</p>
      */
     private static void planGap(List<Map<String, Object>> gaps, String code,
                                 String subject, String detail) {
@@ -4267,7 +4225,7 @@ public final class RuntimeSelectedRegionFinalizer {
          * says a recorded access or a recorded container observation was
          * dropped, which no later stage can see, so they travel into the
          * runtime plan artifact and are classed by
-         * {@link edu.uva.liftlab.graphchecker.d3.plan.GapLedger}.
+         * {@link edu.uva.liftlab.graphchecker.plan.GapLedger}.
          */
         public final List<Map<String, Object>> gaps;
         private Result(List<Map<String, Object>> regions,

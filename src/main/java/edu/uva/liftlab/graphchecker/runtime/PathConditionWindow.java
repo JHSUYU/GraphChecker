@@ -3,13 +3,13 @@ package edu.uva.liftlab.graphchecker.runtime;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
-import edu.uva.liftlab.graphchecker.d3.plan.VmExpressionTable;
+import edu.uva.liftlab.graphchecker.plan.VmExpressionTable;
 import java.util.ArrayList;
 import java.util.List;
 
-import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.array;
-import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.optionalInteger;
-import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.optionalLongInteger;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.array;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalInteger;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalLongInteger;
 
 /**
  * Indexed access to a serialized path condition without materializing
