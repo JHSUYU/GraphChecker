@@ -51,8 +51,26 @@ public final class RegionFieldExpressionApiSmoke {
         String concreteInt = System.getSymbolicFieldExpression(
                 holder, Holder.class.getName(), "count", "I",
                 Integer.valueOf(holder.count));
-        require(concreteInt.contains("\"kind\":\"CONCRETE_PRIMITIVE\""),
+        // The mint started this location's log, so the concrete store that
+        // followed is a WRITE version on it, and the read of the field
+        // resolves over the log rather than over the owner shadow: a guarded
+        // read whose observed version wrote Y_I_42.  The minted symbol is
+        // gone because the store overwrote it -- that is the whole content of
+        // "a concrete store into a tracked location is kept".  The envelope
+        // describes the boxed operand this read produced, the field itself
+        // having no shadow left after the concrete store.
+        require(concreteInt.contains("\"kind\":\"SYMBOLIC_OBJECT\""),
                 concreteInt);
+        require(concreteInt.contains("\"boundaryKind\":\"FIELD_READ\""),
+                concreteInt);
+        require(concreteInt.contains("\"_type\":\"ReadFromExpression\""),
+                concreteInt);
+        require(concreteInt.contains("\"locationKind\":\"INSTANCE_FIELD\""),
+                concreteInt);
+        require(concreteInt.contains("\"versionKind\":\"WRITE\""),
+                concreteInt);
+        require(concreteInt.contains("\"_exp\":\"Y_I_42\""), concreteInt);
+        require(!concreteInt.contains("FIELD.count"), concreteInt);
 
         Holder[] holders = new Holder[]{new Holder(), new Holder()};
         require(System.trackContainerExpression(holders, "FIELD.holders"),
@@ -66,10 +84,18 @@ public final class RegionFieldExpressionApiSmoke {
         String concreteElementInt = System.getSymbolicFieldExpression(
                 holders[1], Holder.class.getName(), "count", "I",
                 Integer.valueOf(observedCount));
+        // Same rule on an element's own field: the exact mint started the
+        // log, the concrete store is a WRITE version on it, and the getter's
+        // read resolves over the log to that version's value.
+        require(concreteElementInt.contains("\"kind\":\"SYMBOLIC_OBJECT\""),
+                concreteElementInt);
         require(concreteElementInt.contains(
-                "\"kind\":\"CONCRETE_PRIMITIVE\""),
+                "\"_type\":\"ReadFromExpression\""), concreteElementInt);
+        require(concreteElementInt.contains("\"versionKind\":\"WRITE\""),
                 concreteElementInt);
         require(concreteElementInt.contains("\"_exp\":\"Y_I_42\""),
+                concreteElementInt);
+        require(!concreteElementInt.contains("FIELD.element.count"),
                 concreteElementInt);
 
         System.symbolizeExactField(
