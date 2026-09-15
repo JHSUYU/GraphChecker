@@ -105,16 +105,26 @@ public final class RegionExpressionHandoffApiSmoke {
                 Receiver.class.getName(), "keyId", "I",
                 Integer.valueOf(downstream.keyId));
         require(expression.contains("RPC.keyId"), expression);
-        require(count(expression, "\"_type\":\"ConsumerBoundaryExpression\"")
-                        == 2,
-                "two-hop expression did not retain two boundaries: "
+        // One RPC_ATTACH boundary per hop, both retained around one payload.
+        require(count(expression, "\"boundaryKind\":\"RPC_ATTACH\"") == 2,
+                "two-hop expression did not retain two attach boundaries: "
                         + expression);
-        require(expression.contains("\"boundaryKind\":\"RPC_ATTACH\""),
-                expression);
         require(expression.contains("\"eventId\":" + attached[0]),
                 "first consumer event is absent: " + expression);
         require(expression.contains("\"eventId\":" + downstreamAttach[0]),
                 "second consumer event is absent: " + expression);
+        // The attach reaches the read.  An attach publishes a version on the
+        // destination, so the getfield that follows resolves over the log --
+        // exactly one FIELD_READ wrapper, over the WRITE version the attach
+        // published.  Before the attach published, this destination's log had
+        // already been started by `downstream.keyId = receiver.keyId` and the
+        // read took the ordinary write instead: three FIELD_READ boundaries,
+        // no RPC_ATTACH, and the RPC lineage cut at the attach hop.
+        require(count(expression, "\"boundaryKind\":\"FIELD_READ\"") == 1,
+                "the read did not resolve to the attach: " + expression);
+        require(expression.contains("\"_type\":\"ReadFromExpression\""),
+                expression);
+        require(expression.contains("\"versionKind\":\"WRITE\""), expression);
     }
 
     /**

@@ -31,21 +31,23 @@
  * object.  Versioning all of them would append a record and a folded path
  * guard on a bytecode that a workload executes millions of
  * times, which is a cost no bounded analysis can pay for state it will never
- * ask about.  A location therefore has to be *selected* before it is
- * versioned, and selection is explicit: `ConcolicMngr::selectSharedCarrier*`
- * names one owner and one slot.
+ * ask about.  A location is therefore *tracked* before it is versioned, and
+ * tracking is by value: the first symbolic value stored here starts the log
+ * (`is_tracked`, `publish_value`).  Nothing declares a location in advance,
+ * because a declaration is a guess about what will matter and a symbolic
+ * store is evidence that it already does.
  *
- * Selection is what makes the hook affordable.  When no carrier exists at all
- * the hooks read one relaxed counter and stop, which is why every pre-existing
- * workload keeps its old cost exactly.  When carriers do exist, a location is
- * still rejected by one map lookup, and only a selected location pays for a
- * version.
+ * Tracking by value is what makes the hook affordable.  When no location is
+ * tracked at all the hooks read one relaxed counter and stop, which is why
+ * every pre-existing workload keeps its old cost exactly.  When tracked
+ * locations do exist, an untracked one is still rejected by one map lookup,
+ * and only a tracked location pays for a version.
  *
- * Selecting a location also publishes an INITIAL version holding the value the
- * location had at that moment.  Without it the value a read observes before
- * any tracked write would have no candidate at all, and the resolver would
- * have to invent one.  With it, "the state this location started in" is an
- * ordinary candidate with ordinary evidence.
+ * A container's log opens with an INITIAL version holding the state the
+ * location started in (`publish_initial`).  Without it the mutation chain
+ * would have no receiver a reader can resolve, and the resolver would have to
+ * invent one.  With it, "the state this location started in" is an ordinary
+ * candidate with ordinary evidence.
  *
  * ---------------------------------------------------------------------------
  * Ordering the concrete access and the version
@@ -395,35 +397,6 @@ public:
   static bool has_carriers() { return _carrier_count > 0; }
 
   /**
-   * Selects one location and publishes its INITIAL version.  Returns the
-   * INITIAL version id, or 0 if
-   * the location was already selected or is not addressable.
-   */
-
-  /**
-   * As above, recording what the INITIAL value says about the container's
-   * pre-selection contents.
-   */
-
-  /**
-   * Remembers what one initial-snapshot offer did to `owner`, so the
-   * selection that follows can say so.  `answer` is a
-   * ConcolicMngr::InitialSnapshotAnswer and `entries` is the member count
-   * that answer is about, or -1 when the answer knows no count.  Cleared with
-   * the session.
-   *
-   * The offer and the selection are two calls, and only the offer knows which
-   * of its several outcomes happened: the state root it leaves behind cannot
-   * tell a container that held nothing from one whose contents the bound
-   * refused, and both of those from one whose recorded history was kept.
-   */
-
-  /**
-   * What an offer for `owner` answered, or false when none was made.  A
-   * container nobody offered is not the same as one that was offered and
-   * declined, and only the second is a fact about this engine.
-   */
-  /**
    * Whether this location's contents are being kept.
    *
    * They are, from the first symbolic value written here onwards.  There is
@@ -485,16 +458,6 @@ public:
    */
   static jlong publish_initial(const Location &location, Expression *base,
                                const InitialSnapshot &snapshot);
-
-  /**
-   * Records what a location's INITIAL version says about the contents that
-   * predate tracking, when the version already exists.
-   *
-   * The snapshot offer and the first symbolic write race: whichever arrives
-   * first creates the version, and this lets the other one still contribute
-   * the fact it owns.  Only an INITIAL version can carry it and only once.
-   * Returns false when there is nothing to fill in.
-   */
 
   /**
    * Appends one version for a completed write.  `value` and `path_guard` must

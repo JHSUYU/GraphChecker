@@ -372,6 +372,31 @@ jlong ConcolicMngr::attachExpression(
   } else {
     instance->set_sym_exp(field.offset(), attached);
     instance->mark_semantic_expression();
+    // An attach is a write of the message leaf to this location by the
+    // attaching occurrence, so it is published as one.  The shadow alone was
+    // not enough: a read of a location that has a log resolves over the log,
+    // and a destination whose log had already been started -- a field the
+    // receiver assigned before the attach, which is what every key-delivery
+    // case does (`receiver.keyId = sender.keyId` here, and the DataNode key
+    // fields in 11741/17897/17899) -- took the newest ordinary WRITE and
+    // never consulted the shadow, so the attached expression was dropped and
+    // the RPC lineage was cut at the attach hop.
+    //
+    // Published for every attach, not only for a location that already has a
+    // log: publish_value() starts the log at the first symbolic value, so the
+    // uniform rule needs no case analysis and cannot leave a hop stated in
+    // one place for one destination and another place for the next.  The
+    // version's own value is the RPC_ATTACH boundary, which is where this
+    // version says where it came from; `Version::operation` renders only for
+    // VERSION_STATE, and the consumer's version-kind vocabulary is closed.
+    SharedFieldVersions::Location location(
+        instance->get_sym_rid(), field.offset(),
+        SharedFieldVersions::LOC_INSTANCE_FIELD);
+    // Folded outside every engine lock, as the store's concurrency contract
+    // requires; the same guard a putfield of this value would publish.
+    Expression *guard = ctx->path_guard();
+    SharedFieldVersions::publish_value(location, attached, guard, true,
+                                       SharedFieldVersions::VERSION_WRITE);
   }
   ctx->set_pc_admitted(true);
   for (int index = 0; index < pause_depth; ++index) {
