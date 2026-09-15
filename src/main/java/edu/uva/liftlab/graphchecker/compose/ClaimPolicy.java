@@ -1,6 +1,7 @@
 package edu.uva.liftlab.graphchecker.compose;
 
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
+import edu.uva.liftlab.graphchecker.smt.Z3;
 
 import edu.uva.liftlab.graphchecker.contract.Claim;
 import edu.uva.liftlab.graphchecker.contract.ClaimKind;
@@ -58,10 +59,10 @@ public final class ClaimPolicy {
     /** One valuation, and what the solver answered about it. */
     public static final class Outcome {
         private final Composer.Valuation valuation;
-        private final Solver.Answer answer;
+        private final Z3.Answer answer;
         private final Composer.Disjunct selected;
 
-        Outcome(Composer.Valuation valuation, Solver.Answer answer,
+        Outcome(Composer.Valuation valuation, Z3.Answer answer,
                 Composer.Disjunct selected) {
             this.valuation = valuation;
             this.answer = answer;
@@ -72,7 +73,7 @@ public final class ClaimPolicy {
             return valuation;
         }
 
-        public Solver.Answer answer() {
+        public Z3.Answer answer() {
             return answer;
         }
 
@@ -113,7 +114,7 @@ public final class ClaimPolicy {
 
     /** Solves every valuation of one composition and reads the claim off. */
     public static Decision decide(Composer.Composition composition,
-                                  Solver solver) {
+                                  Z3 solver) {
         Decision decision = read(composition, solver);
         // AFTER the asks, over all of them: a solver error is not a verdict
         // it answered with, it is the solver saying it could not read the
@@ -139,7 +140,7 @@ public final class ClaimPolicy {
     }
 
     private static Decision read(Composer.Composition composition,
-                                 Solver solver) {
+                                 Z3 solver) {
         List<GapRow> gaps = new ArrayList<GapRow>(composition.gaps());
         List<Outcome> outcomes = new ArrayList<Outcome>();
         if (composition.disjuncts().isEmpty()) {
@@ -151,9 +152,9 @@ public final class ClaimPolicy {
         }
         List<String> selectors = composition.selectors();
         for (Composer.Valuation valuation : composition.valuations()) {
-            Solver.Answer answer = solver.ask(composition.body(),
-                    valuation.assertions(), selectors,
-                    valuation.ordinal() == 0);
+            Z3.Answer answer = solver.ask(
+                    composition.query(valuation.assertions()),
+                    selectors, valuation.ordinal() == 0);
             outcomes.add(new Outcome(valuation, answer,
                     selectedOf(composition, answer)));
         }
@@ -325,7 +326,7 @@ public final class ClaimPolicy {
      * witness.</p>
      */
     private static ClaimKind pairing(Composer.Composition composition,
-                                     Solver solver, Outcome outcome,
+                                     Z3 solver, Outcome outcome,
                                      ClaimKind otherwise) {
         if (outcome == null || outcome.selected() == null) return otherwise;
         String pathId = outcome.selected().path().pathId;
@@ -342,20 +343,20 @@ public final class ClaimPolicy {
 
     /** This valuation, this disjunct, and what the run actually paired. */
     private static boolean unsatWith(Composer.Composition composition,
-                                     Solver solver, Outcome outcome,
+                                     Z3 solver, Outcome outcome,
                                      List<String> observed) {
         if (observed.isEmpty()) return false;
         List<String> pinned =
                 new ArrayList<String>(outcome.valuation().assertions());
         pinned.add("(assert " + outcome.selected().selector() + ")");
         pinned.addAll(observed);
-        return solver.ask(composition.body(), pinned,
+        return solver.ask(composition.query(pinned),
                 Collections.<String>emptyList(), false).unsat();
     }
 
     /** Which disjunct a sat model selected, or null when it named none. */
     private static Composer.Disjunct selectedOf(
-            Composer.Composition composition, Solver.Answer answer) {
+            Composer.Composition composition, Z3.Answer answer) {
         if (!answer.sat()) return null;
         for (Map.Entry<String, String> value : answer.values().entrySet()) {
             if (!"true".equals(value.getValue())) continue;
@@ -398,7 +399,7 @@ public final class ClaimPolicy {
      * names it would name a mechanism the formula does not need.</p>
      */
     private static boolean clockNecessary(Composer.Composition composition,
-                                          Solver solver, Outcome outcome) {
+                                          Z3 solver, Outcome outcome) {
         if (composition.clockCells().isEmpty()) return false;
         List<String> pinned =
                 new ArrayList<String>(outcome.valuation().assertions());
@@ -410,7 +411,7 @@ public final class ClaimPolicy {
                     + ") :named clock_pinned__"
                     + ArtifactIO.digest(cell, 10) + "))");
         }
-        Solver.Answer answer = solver.ask(composition.body(), pinned,
+        Z3.Answer answer = solver.ask(composition.query(pinned),
                 Collections.<String>emptyList(), false);
         return answer.unsat();
     }
@@ -459,7 +460,7 @@ public final class ClaimPolicy {
      * A corpus with no seed session states nothing either way.</p>
      */
     private static boolean seedDisjunctUnsat(
-            Composer.Composition composition, Solver solver) {
+            Composer.Composition composition, Z3 solver) {
         String seed = composition.seedSessionId();
         if (seed == null) return false;
         List<String> pinned = new ArrayList<String>();
@@ -475,7 +476,7 @@ public final class ClaimPolicy {
             found = true;
         }
         if (!found) return false;
-        return solver.ask(composition.body(), pinned,
+        return solver.ask(composition.query(pinned),
                 Collections.<String>emptyList(), false).unsat();
     }
 }

@@ -4,6 +4,7 @@ import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 
 import com.google.gson.JsonObject;
 
+import edu.uva.liftlab.graphchecker.smt.Z3;
 import edu.uva.liftlab.graphchecker.contract.ActivationRow;
 import edu.uva.liftlab.graphchecker.contract.CausalContext;
 import edu.uva.liftlab.graphchecker.contract.Arm;
@@ -158,7 +159,7 @@ public class ComposerTest {
         // is refused by name and blocks, instead of being read off the
         // answers as if an undecided valuation.
         ClaimPolicy.Decision errored = ClaimPolicy.decide(composition,
-                new Solver(erroringSolver(), 30000L));
+                new Z3(erroringSolver(), 30000L));
         assertEquals("an error is not a finding",
                 ClaimKind.NO_SUPPORTED_WITNESS, errored.claim().kind());
         assertTrue("and it is named and blocking",
@@ -173,7 +174,7 @@ public class ComposerTest {
         // as a bare state=unknown with nothing to route: named, BLOCKING,
         // and carrying the fragment z3 named.
         ClaimPolicy.Decision undecided = ClaimPolicy.decide(composition,
-                new Solver(undecidingSolver(), 30000L));
+                new Z3(undecidingSolver(), 30000L));
         assertEquals("an undecided valuation is not a finding",
                 ClaimKind.NO_SUPPORTED_WITNESS, undecided.claim().kind());
         assertTrue("it blocks, and the row names the valuation",
@@ -638,14 +639,14 @@ public class ComposerTest {
 
         Composer.Composition composition = compose(iteration, 4);
         assertEquals(2, composition.disjuncts().size());
-        Solver solver = solver();
+        Z3 solver = solver();
         for (Composer.Disjunct disjunct : composition.disjuncts()) {
             List<String> pinned = new ArrayList<String>(
                     composition.valuations().get(0).assertions());
             pinned.add("(assert " + disjunct.selector() + ")");
             assertEquals("each path is satisfiable as the execution that "
                             + "made it: " + disjunct.path().sessionId,
-                    "sat", solver.ask(composition.body(), pinned,
+                    "sat", solver.ask(composition.query(pinned),
                             Collections.<String>emptyList(), false).status());
         }
     }
@@ -717,12 +718,12 @@ public class ComposerTest {
 
         // The value the old corpus-wide window excluded: legal for the
         // session that read 119997, and for no other.
-        Solver solver = solver();
+        Z3 solver = solver();
         for (Composer.Disjunct disjunct : composition.disjuncts()) {
             List<String> pinned = new ArrayList<String>();
             pinned.add("(assert " + disjunct.selector() + ")");
             pinned.add("(assert (= " + SERIAL + " 120000))");
-            String status = solver.ask(composition.body(), pinned,
+            String status = solver.ask(composition.query(pinned),
                     Collections.<String>emptyList(), false).status();
             assertEquals("three rotations past its own reading, on "
                             + disjunct.path().sessionId,
@@ -1569,12 +1570,12 @@ public class ComposerTest {
                         emptyMap(), maxValuations);
     }
 
-    private Solver solver() {
+    private Z3 solver() {
         Path z3 = Paths.get("/usr/local/bin/z3");
         if (!Files.isExecutable(z3)) z3 = Paths.get("z3");
         Assume.assumeTrue("z3 is not on this machine",
                 Files.isExecutable(z3) || !z3.isAbsolute());
-        return new Solver(z3, 30000L);
+        return new Z3(z3, 30000L);
     }
 
     /** The one assertion that carries a path's own conjunction. */

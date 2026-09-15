@@ -206,6 +206,31 @@ public final class Composer {
             return body;
         }
 
+        /**
+         * One question's text: this body with those assertions conjoined.
+         *
+         * <p>The body is the program and the extra assertions are the
+         * question, so the body is rendered once and every valuation, probe
+         * and pairing test appends only its own lines: re-rendering per
+         * question would put a copy of one formula in the solver for each.
+         * Legal spelling is applied here because a pin names recorded
+         * symbols -- a clock cell is spelled {@code CLOCK/...#...} -- and
+         * {@code #} opens a bit-vector literal, so a pin written bare makes
+         * z3 answer the whole query "invalid bit-vector literal" instead of
+         * a verdict.  {@link SmtLowering#legalSymbols} is idempotent, so a
+         * body that already passed through it is the text it was.</p>
+         */
+        public String query(List<String> assertions) {
+            StringBuilder text = new StringBuilder(body);
+            if (assertions != null) {
+                for (String assertion : assertions) {
+                    if (assertion == null || assertion.isEmpty()) continue;
+                    text.append(assertion).append('\n');
+                }
+            }
+            return SmtLowering.legalSymbols(text.toString());
+        }
+
         public List<Disjunct> disjuncts() {
             return disjuncts;
         }

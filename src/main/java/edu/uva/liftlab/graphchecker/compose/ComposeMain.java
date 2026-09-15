@@ -22,7 +22,9 @@ import edu.uva.liftlab.graphchecker.contract.RootDomain;
 import edu.uva.liftlab.graphchecker.contract.RootKind;
 import edu.uva.liftlab.graphchecker.contract.RowCodec;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;
+import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 import edu.uva.liftlab.graphchecker.smt.JsonFields;
+import edu.uva.liftlab.graphchecker.smt.Z3;
 import edu.uva.liftlab.graphchecker.explore.Corpus;
 
 import java.io.IOException;
@@ -52,7 +54,7 @@ import java.util.Map;
  *   --root-domains &lt;file&gt; what the CASE says each root may be
  *   --z3 &lt;path&gt;           default "z3"
  *   --max-valuations &lt;n&gt;  how many questions to ask, default 64
- *   --timeout-ms &lt;n&gt;      per solver run, default 20000
+ *   --solver-timeout-ms &lt;n&gt; per solver run, default 20000
  * </pre>
  *
  * <p>Every outcome is an artifact.  A declared occurrence no session
@@ -104,11 +106,12 @@ public final class ComposeMain {
         Composer.Composition composition = Composer.compose(corpus, anchor,
                 declaredDomains(arguments.rootDomains),
                 arguments.maxValuations);
-        Solver solver = new Solver(arguments.z3, arguments.timeoutMillis);
+        Z3 solver = new Z3(arguments.z3, arguments.timeoutMillis);
         ClaimPolicy.Decision decision = ClaimPolicy.decide(composition,
                 solver);
 
-        Solver.save(arguments.output, candidate(composition, decision));
+        ArtifactIO.replace(arguments.output,
+                candidate(composition, decision));
         CompositionManifest composed = CompositionManifest.of(anchor,
                 composition.paths(), composition.families(),
                 composition.roots(), composition.valuations().size(),
@@ -222,7 +225,7 @@ public final class ComposeMain {
     private static JsonObject manifest(CompositionManifest composed,
                                        Composer.Composition composition,
                                        ClaimPolicy.Decision decision,
-                                       Solver solver) {
+                                       Z3 solver) {
         JsonObject row = GSON.toJsonTree(composed).getAsJsonObject();
         row.addProperty("schemaVersion", 1);
         row.addProperty("kind", "COMPOSITION_MANIFEST");
@@ -249,7 +252,7 @@ public final class ComposeMain {
 
     private static JsonObject solverRows(Composer.Composition composition,
                                          ClaimPolicy.Decision decision,
-                                         Solver solver) {
+                                         Z3 solver) {
         boolean decided = true;
         boolean anySat = false;
         String state = "unknown";
@@ -421,7 +424,7 @@ public final class ComposeMain {
 
     private static JsonObject claim(Composer.Composition composition,
                                     ClaimPolicy.Decision decision,
-                                    Solver solver) {
+                                    Z3 solver) {
         JsonObject row = new JsonObject();
         row.addProperty("schemaVersion", 1);
         row.addProperty("kind", "CLAIM");
@@ -467,7 +470,7 @@ public final class ComposeMain {
     private static String summary(OccurrenceAddress anchor,
                                   Composer.Composition composition,
                                   ClaimPolicy.Decision decision,
-                                  Solver solver) {
+                                  Z3 solver) {
         return "anchor " + anchor.render()
                 + " paths=" + composition.paths().size()
                 + " families=" + composition.families().size()
@@ -531,7 +534,7 @@ public final class ComposeMain {
         public Path output;
         public Path manifest;
         public Path z3 = Paths.get("z3");
-        public long timeoutMillis = 20000L;
+        public long timeoutMillis = Z3.DEFAULT_TIMEOUT_MILLIS;
 
         public static Arguments parse(String[] argv) {
             Map<String, String> values = new LinkedHashMap<String, String>();
@@ -560,8 +563,9 @@ public final class ComposeMain {
                     ? Paths.get(values.get("z3")) : Paths.get("z3");
             arguments.maxValuations = integer(values.get("max-valuations"),
                     64);
-            arguments.timeoutMillis = integer(values.get("timeout-ms"),
-                    20000);
+            arguments.timeoutMillis = integer(
+                    values.get("solver-timeout-ms"),
+                    (int) Z3.DEFAULT_TIMEOUT_MILLIS);
             Path out = path(values.get("out"));
             arguments.output = path(values.get("output"));
             arguments.manifest = path(values.get("manifest"));
