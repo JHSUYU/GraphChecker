@@ -124,8 +124,7 @@ final class D3RowPublication {
     private static void roots(ActiveRegion active,
                               OccurrenceAddress occurrence) {
         for (JsonObject row : active.symbolizedRows) {
-            String symbol = optionalString(row, "symbol");
-            if (symbol.isEmpty()) symbol = optionalString(row, "rawSymbol");
+            String symbol = vmSymbol(row);
             if (symbol.isEmpty()) continue;
             String sourceId = optionalString(row, "sourceId");
             String clock = optionalString(row, "declaredCallee");
@@ -143,7 +142,7 @@ final class D3RowPublication {
                     : RootKind.CLOCK;
             D3Runtime.rootMint(occurrence,
                     optionalLongInteger(row, "eventSeq", 0L), rootId, symbol,
-                    kind, optionalString(row, "recordedValue"),
+                    kind, literal(optionalString(row, "recordedValue")),
                     optionalString(row, "domainMin"),
                     optionalString(row, "domainMax"), true);
         }
@@ -169,6 +168,12 @@ final class D3RowPublication {
         }
         String value = optionalString(row, "observedValue");
         if (value.isEmpty()) value = optionalString(row, "recordedValue");
+        if (literal(value).isEmpty()) {
+            D3Runtime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
+                    symbol, "a declared region input states no value it"
+                            + " read: " + optionalString(row, "portId"));
+            return;
+        }
         D3Runtime.read(occurrence,
                 optionalLongInteger(row, "eventSeq", 0L),
                 Endpoint.stateSite(signature, "PLACEHOLDER", 0, false),
@@ -220,6 +225,48 @@ final class D3RowPublication {
             return stated.substring(4);
         }
         return stated;
+    }
+
+    /**
+     * The one spelling of a symbol.
+     *
+     * <p>A row's symbol and the symbol leaf inside the expressions the
+     * same session publishes have to be the same string: the composer
+     * binds a root by finding its name in a lowered term, and a row that
+     * names {@code REGION.r.in.uuid} while every term says {@code
+     * M_J_field_REGION.r.in.uuid.occ.<hash>_java/lang/Long} binds
+     * nothing.  The VM's name is the one that appears in the terms, so
+     * that is the one the row states.</p>
+     */
+    private static String vmSymbol(JsonObject row) {
+        String raw = optionalString(row, "rawSymbol");
+        if (!raw.isEmpty()) return raw;
+        // A configured source mints through the VM's own label and states
+        // no raw symbol of its own; the expression it published names it.
+        String leaf = symbolLeaf(row.get("expression"), 0);
+        return leaf.isEmpty() ? optionalString(row, "symbol") : leaf;
+    }
+
+    /** The first symbol leaf an expression states, or {@code ""}. */
+    private static String symbolLeaf(JsonElement node, int depth) {
+        if (node == null || node.isJsonNull() || depth > 8) return "";
+        if (node.isJsonArray()) {
+            for (JsonElement element : node.getAsJsonArray()) {
+                String found = symbolLeaf(element, depth + 1);
+                if (!found.isEmpty()) return found;
+            }
+            return "";
+        }
+        if (!node.isJsonObject()) return "";
+        JsonObject object = node.getAsJsonObject();
+        if (optionalString(object, "_type").contains("Symbol")) {
+            return optionalString(object, "_exp");
+        }
+        for (Map.Entry<String, JsonElement> member : object.entrySet()) {
+            String found = symbolLeaf(member.getValue(), depth + 1);
+            if (!found.isEmpty()) return found;
+        }
+        return "";
     }
 
     /**
@@ -344,15 +391,9 @@ final class D3RowPublication {
         String locationKey = locationKey(where);
         LocationId location = location(locationKey);
         if (location == null) return;
-        JsonElement stated = node.get("observedVersion");
-        long observed = -1L;
-        if (stated != null && stated.isJsonObject()) {
-            observed = optionalLongInteger(stated.getAsJsonObject(),
-                    "fieldVersionId", -1L);
-        } else if (stated != null && stated.isJsonPrimitive()) {
-            observed = stated.getAsLong();
-        }
-        String identity = locationKey + "#" + observed;
+        long observed = versionOf(node);
+        long event = eventOf(node);
+        String identity = readIdentity(locationKey, observed, event);
         if (!published.add(identity)) return;
         String symbol = optionalString(node, "_exp");
         if (symbol.isEmpty()) {
@@ -369,7 +410,8 @@ final class D3RowPublication {
                             + " observed nor the value it returned");
             return;
         }
-        D3Runtime.read(occurrence, Math.max(0L, observed),
+        if (!D3Runtime.claimRead(identity)) return;
+        D3Runtime.read(occurrence, event >= 0L ? event : Math.max(0L, observed),
                 Endpoint.stateSite(locationKey, "READ_FROM", 0, false),
                 location, observed, symbol,
                 optionalString(node, "_java_type"), value);
@@ -378,6 +420,14 @@ final class D3RowPublication {
     /**
      * A read the log does not cover: the object read from and what its
      * field then held, which is the pair the VM states (REPORT15).
+     *
+     * <p>The value the VM states here is an expression, not always a
+     * constant: a field read whose value came from another read carries
+     * that read, and with it the version it observed and the location it
+     * observed it at.  A row states the version when there is one and the
+     * literal when there is not -- never neither -- and spells the
+     * location the way the write log spells it, so the two sides of one
+     * location join.</p>
      */
     private static void fieldAccess(JsonObject node,
                                     OccurrenceAddress occurrence,
@@ -386,26 +436,101 @@ final class D3RowPublication {
         if (value == null || value.isJsonNull()) return;
         String ownerClass = optionalString(node, "ownerClass");
         int offset = optionalInteger(node, "fieldOffset", -1);
-        String locationKey = "INSTANCE_FIELD/" + ownerClass + "#" + offset;
-        String identity = locationKey + "#concrete";
-        if (!published.add(identity)) return;
-        LocationId location = LocationId.of(LocationKind.INSTANCE,
-                ownerClass.isEmpty() ? "<unstated>" : ownerClass,
-                String.valueOf(offset));
-        String projected = optionalString(node, "_exp");
-        String stated = literal(value.isJsonObject()
-                ? optionalString(value.getAsJsonObject(), "_exp")
-                : value.getAsString());
-        if (stated.isEmpty()) {
+        JsonObject read = nestedRead(value, 0);
+        String locationKey = read == null ? ""
+                : locationKey(object(read, "location"));
+        LocationId location = location(locationKey);
+        if (location == null) {
+            locationKey = "INSTANCE_FIELD/" + ownerClass + "#" + offset;
+            location = LocationId.of(LocationKind.INSTANCE,
+                    ownerClass.isEmpty() ? "<unstated>" : ownerClass,
+                    String.valueOf(offset));
+        }
+        long observed = versionOf(node);
+        if (observed < 0L && read != null) observed = versionOf(read);
+        long event = eventOf(node);
+        if (event < 0L) event = eventOf(value);
+        if (event < 0L && read != null) event = eventOf(read);
+        String stated = literal(leaf(value, 0));
+        if (observed < 0L && stated.isEmpty()) {
             D3Runtime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
-                    locationKey, "a projected read states no value");
+                    locationKey, "a projected read states neither the"
+                            + " version it observed nor the value it"
+                            + " returned");
             return;
         }
-        D3Runtime.read(occurrence, 0L,
-                Endpoint.stateSite(locationKey, "FIELD", offset, false),
-                location, ReadRow.UNKNOWN_VERSION,
-                projected.isEmpty() ? locationKey + "@concrete" : projected,
+        String identity = readIdentity(locationKey, observed, event);
+        if (!published.add(identity)) return;
+        String projected = optionalString(node, "_exp");
+        if (projected.isEmpty()) {
+            // One symbol per READ, not per field: the same name on every
+            // read of one field is one unknown the whole run shares.
+            projected = locationKey + (observed >= 0L ? "@v" + observed
+                    : "@e" + event);
+        }
+        if (!D3Runtime.claimRead(identity)) return;
+        D3Runtime.read(occurrence, event >= 0L ? event : Math.max(0L, observed),
+                Endpoint.stateSite(locationKey, "FIELD",
+                        Math.max(0, offset), false),
+                location, observed, projected,
                 optionalString(node, "_java_type"), stated);
+    }
+
+    /**
+     * One read event, wherever it is reached from.
+     *
+     * <p>A read happened once, inside one occurrence; the expression trees
+     * of every activation that later used the value carry the same node,
+     * and a row per tree counts one read many times.  The first activation
+     * to publish it states it -- activations finish innermost first, so
+     * that is the innermost region the read ran in.</p>
+     */
+    private static String readIdentity(String locationKey, long observed,
+                                       long event) {
+        return locationKey + "#" + observed + "#" + event;
+    }
+
+    /** The version a node observed, or {@code -1}. */
+    private static long versionOf(JsonObject node) {
+        JsonElement stated = node == null ? null : node.get("observedVersion");
+        if (stated == null) return -1L;
+        if (stated.isJsonObject()) {
+            return optionalLongInteger(stated.getAsJsonObject(),
+                    "fieldVersionId", -1L);
+        }
+        return stated.isJsonPrimitive() ? stated.getAsLong() : -1L;
+    }
+
+    /** The VM event a node names, or {@code -1}. */
+    private static long eventOf(JsonElement node) {
+        if (node == null || !node.isJsonObject()) return -1L;
+        JsonObject object = node.getAsJsonObject();
+        long read = optionalLongInteger(object, "readEventId", -1L);
+        return read >= 0L ? read
+                : optionalLongInteger(object, "eventId", -1L);
+    }
+
+    /** The read a value node states under the VM's boundary wrappers. */
+    private static JsonObject nestedRead(JsonElement value, int depth) {
+        if (value == null || !value.isJsonObject() || depth > 8) return null;
+        JsonObject object = value.getAsJsonObject();
+        if ("ReadFromExpression".equals(optionalString(object, "_type"))) {
+            return object;
+        }
+        return nestedRead(object.get("expression"), depth + 1);
+    }
+
+    /** The literal a value node states, under the VM's wrappers. */
+    private static String leaf(JsonElement value, int depth) {
+        if (value == null || value.isJsonNull() || depth > 8) return "";
+        if (value.isJsonPrimitive()) return value.getAsString();
+        if (!value.isJsonObject()) return "";
+        JsonObject object = value.getAsJsonObject();
+        String spelling = optionalString(object, "_exp");
+        if (!spelling.isEmpty()) return spelling;
+        String nested = leaf(object.get("expression"), depth + 1);
+        if (!nested.isEmpty()) return nested;
+        return leaf(object.get("concreteValue"), depth + 1);
     }
 
     /** What a read node says the read returned, or {@code ""}. */
