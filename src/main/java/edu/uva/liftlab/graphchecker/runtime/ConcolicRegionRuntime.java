@@ -1457,13 +1457,14 @@ public final class ConcolicRegionRuntime {
                     active.recordSymbolizedInputPort(action.symbol, value);
                     expression = engineExpression(api.expression(value));
                 } else {
-                    active.addUnresolvedOnce(action.symbol
-                            + ": exact input has no propagated VM expression");
-                    continue;
+                    expression = mintExactFieldLeaf(active, action, api,
+                            leafOwner, leafFieldSignature, action.symbol,
+                            value);
+                    if (expression == null) continue;
                 }
                 active.recordManualSymbolization(action, action.symbol,
                         action.fieldPath, leafFieldSignature, expression,
-                        true, false);
+                        true, false, recordedScalar(value));
             } catch (Throwable throwable) {
                 active.addUnresolvedOnce(action.symbol
                         + ": field materialization "
@@ -4350,13 +4351,9 @@ public final class ConcolicRegionRuntime {
                 active.recordSymbolizedInputPort(action.symbol, value);
                 expression = engineExpression(api.expression(value));
             } else {
-                api.symbolizeExactField(owner, leafFieldSignature,
-                        manualMintLabel(symbol, active.activation.occurrenceId,
-                                primitiveDescriptor(field.type())));
-                ensurePathRecordingStarted(active);
-                expression = engineExpression(api.fieldExpression(owner,
-                        field.owner(), field.name(),
-                        javaTypeDescriptor(field.type()), value));
+                expression = mintExactFieldLeaf(active, action, api, owner,
+                        leafFieldSignature, symbol, value);
+                if (expression == null) return;
             }
             active.recordManualSymbolization(action, symbol, exactFieldPath,
                     leafFieldSignature, expression, true, false,
@@ -4365,6 +4362,41 @@ public final class ConcolicRegionRuntime {
             active.unresolved.add(symbol + ": shallow field symbolize failed: "
                     + rootCause(throwable));
         }
+    }
+
+    /**
+     * Mints the scalar leaf of one exact field read and returns the
+     * expression the VM carries afterwards, or {@code null} when the leaf
+     * has no resolvable declaration (filed as unresolved).
+     *
+     * <p>One rule, one implementation.  The receiver-field hook
+     * ({@link #symbolizeField}) and the heap-field hook
+     * ({@link #materializeField}) reach the same decision by the same
+     * route -- {@link #retainPropagatedInput} said nothing propagated into
+     * this input and {@link #observeWithoutMinting} said the plan makes it
+     * mint-eligible, so the search starts here -- and only the first of
+     * them used to act on it.  The second refused with "exact input has no
+     * propagated VM expression", which is how hdfs-17960's declared
+     * {@code <AtomicInteger: int value>} region input stayed concrete: the
+     * accessor materialization is a {@code HEAP_OBJECT_FIELD} action, so
+     * it arrived at the hook that refused.</p>
+     */
+    private static JsonElement mintExactFieldLeaf(
+            ActiveRegion active, SymbolizeAction action,
+            ConcolicVmBroker api, Object owner, String leafFieldSignature,
+            String symbol, Object value) throws Exception {
+        DeclaredField field = FieldPathSpec.declaredField(leafFieldSignature);
+        if (field == null) {
+            active.addUnresolvedOnce(safe(symbol)
+                    + ": exact field declaration is unavailable");
+            return null;
+        }
+        api.symbolizeExactField(owner, leafFieldSignature,
+                manualMintLabel(symbol, active.activation.occurrenceId,
+                        primitiveDescriptor(field.type())));
+        ensurePathRecordingStarted(active);
+        return engineExpression(api.fieldExpression(owner, field.owner(),
+                field.name(), javaTypeDescriptor(field.type()), value));
     }
 
     private static void symbolizeFieldPath(ActiveRegion active,

@@ -2837,6 +2837,7 @@ public final class ConcolicScheduler {
         void seedCarrierSlice(
                 List<JsonObject> refinedGraph,
                 List<Map.Entry<String, JsonArray>> proposals) {
+            renameDeclaredNames(refinedGraph);
             Set<String> rootCells = new LinkedHashSet<>();
             for (Map<String, String> sites : minted.values()) {
                 rootCells.addAll(sites.values());
@@ -3108,12 +3109,83 @@ public final class ConcolicScheduler {
             return names != null && names.contains(name);
         }
 
+        /**
+         * Whether one region admits one proposed action.
+         *
+         * <p>A declaration names the action's port or one of its dataflow
+         * cells, and {@link RootDependenceSlice#actionCells} is already the
+         * one answer to "which cells does this action name": the read's own
+         * location <em>and</em> the local the value lands in, which is the
+         * only cell an accessor read shares with the graph.  Asking the
+         * narrower question here -- the access signature, the port, the
+         * cell -- is what refused hdfs-17960's declared region input, whose
+         * port names the {@code AtomicInteger.value} leaf while the case
+         * names the accessor's return.</p>
+         */
         private boolean admits(String regionId, JsonObject action) {
             Set<String> names = admitted.get(safe(regionId));
-            return names != null
-                    && (names.contains(actionField(action))
-                    || names.contains(actionPort(action))
-                    || names.contains(optionalString(action, "cell")));
+            if (names == null || names.isEmpty()) return false;
+            if (names.contains(actionPort(action))) return true;
+            for (String cell : RootDependenceSlice.actionCells(action)) {
+                if (names.contains(cell)) return true;
+            }
+            return false;
+        }
+
+        /** Soot's own proofs that one dataflow edge is a pure rename. */
+        private static final Set<String> EXACT_VALUE_COPY_AUTHORITIES =
+                Collections.unmodifiableSet(new LinkedHashSet<>(Arrays.asList(
+                        "SOOT_EXACT_LOCAL_DIRECT_COPY_V1",
+                        "SOOT_EXACT_PARAMETER_IDENTITY_BINDING_V1")));
+
+        /**
+         * Adds to every declared name the cells it is a proven exact copy of.
+         *
+         * <p>A declaration names a <em>value</em>; the graph names the same
+         * value once per Jimple local it is copied into, and a method's
+         * {@code .return} cell is one of those names -- the return statement
+         * is a rename of the local it returns.  Soot proves which edges are
+         * exact JVM value copies and stamps {@code valueFlowAuthority} on
+         * them, so walking <em>only</em> those edges backwards renames the
+         * declaration without inferring any dataflow: nothing upstream of
+         * the copy chain is reached, so an upstream carrier never becomes a
+         * declared root.</p>
+         *
+         * <p>This is what lets hdfs-17960 declare
+         * {@code <SnapshotManager: int getNumSnapshots()>.return} and select
+         * the accessor-return port that already names
+         * {@code <SnapshotManager: int getNumSnapshots()>::$i0} in its
+         * {@code dependencyCells}.  Idempotent, and a graph with no such
+         * edge leaves every declaration exactly as the case wrote it.</p>
+         */
+        private void renameDeclaredNames(List<JsonObject> refinedGraph) {
+            if (admitted.isEmpty()) return;
+            Map<String, Set<String>> copies = new LinkedHashMap<>();
+            for (JsonObject edge : refinedGraph == null
+                    ? Collections.<JsonObject>emptyList() : refinedGraph) {
+                if (!EXACT_VALUE_COPY_AUTHORITIES.contains(
+                        optionalString(edge, "valueFlowAuthority"))) {
+                    continue;
+                }
+                String from = optionalString(edge, "fromCell");
+                String to = optionalString(edge, "toCell");
+                if (from.isEmpty() || to.isEmpty()) continue;
+                copies.computeIfAbsent(to,
+                        ignored -> new LinkedHashSet<>()).add(from);
+            }
+            if (copies.isEmpty()) return;
+            for (Set<String> names : admitted.values()) {
+                Set<String> renamed = new LinkedHashSet<>(names);
+                Deque<String> pending = new ArrayDeque<>(names);
+                while (!pending.isEmpty()) {
+                    for (String copied : copies.getOrDefault(
+                            pending.removeFirst(),
+                            Collections.<String>emptySet())) {
+                        if (renamed.add(copied)) pending.addLast(copied);
+                    }
+                }
+                names.addAll(renamed);
+            }
         }
 
         private static String actionField(JsonObject action) {

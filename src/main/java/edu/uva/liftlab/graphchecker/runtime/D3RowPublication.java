@@ -94,6 +94,13 @@ final class D3RowPublication {
             String siteId = optionalString(mapping, "siteId");
             int ordinal = optionalInteger(mapping, "occurrence", 1);
             long seq = optionalLongInteger(mapping, "vmEventId", 0L);
+            // One branch event, one occurrence: the VM's event range is read
+            // out per activation and overlaps every activation the branch
+            // ran inside.
+            if (!D3Runtime.claimEvent("decision",
+                    seq + "#" + siteId + "#" + ordinal)) {
+                continue;
+            }
             // The row states the site, the arm it took and the predicate as
             // written; nothing here applies one to the other
             // (CONTRACT-SPEC §2), and nothing reads the old witness shapes.
@@ -123,28 +130,56 @@ final class D3RowPublication {
      */
     private static void roots(ActiveRegion active,
                               OccurrenceAddress occurrence) {
+        Map<String, String[]> installed = mintedLocations(active);
+        Set<String> stated = new LinkedHashSet<String>();
         for (JsonObject row : active.symbolizedRows) {
             String symbol = vmSymbol(row);
             if (symbol.isEmpty()) continue;
+            stated.add(optionalString(row, "portId"));
             String sourceId = optionalString(row, "sourceId");
-            String clock = optionalString(row, "declaredCallee");
-            String javaType = optionalString(row, "javaType");
-            boolean marker = "Z".equals(javaType)
-                    || "boolean".equals(javaType);
-            if (sourceId.isEmpty() && clock.isEmpty() && !marker) {
-                placeholder(occurrence, row, symbol);
+            // The kind is read off the declaration, once
+            // (see #kindOf): a configured source states no javaType of its
+            // own and carries it on the symbol it minted, which is why a
+            // declared boolean root read INTEGRAL while the composer looked
+            // for a range with two values in it.
+            RootKind kind = kindOf(row);
+            if (sourceId.isEmpty() && kind == RootKind.INTEGRAL) {
+                placeholder(occurrence, row, symbol, installed);
                 continue;
             }
             String rootId = sourceId.isEmpty()
                     ? optionalString(row, "portId") : sourceId;
-            RootKind kind = clock.isEmpty()
-                    ? (marker ? RootKind.MARKER : RootKind.INTEGRAL)
-                    : RootKind.CLOCK;
             D3Runtime.rootMint(occurrence,
                     optionalLongInteger(row, "eventSeq", 0L), rootId, symbol,
                     kind, literal(optionalString(row, "recordedValue")),
                     optionalString(row, "domainMin"),
                     optionalString(row, "domainMax"), true);
+        }
+        refusedDeclarations(active, occurrence, stated);
+    }
+
+    /**
+     * Every declared region input this activation never symbolized.
+     *
+     * <p>A declaration the replay silently does not reach is the one
+     * failure mode that reads downstream as "this branch is concrete":
+     * hdfs-17960's empty phi was exactly that, a declared read that neither
+     * minted nor refused.  The row names the port so the absence is
+     * answerable from the session rather than from a replay trace.</p>
+     */
+    private static void refusedDeclarations(ActiveRegion active,
+                                            OccurrenceAddress occurrence,
+                                            Set<String> stated) {
+        for (ConcolicRegionRuntime.SymbolizeAction action
+                : active.activation.symbolize) {
+            if (!action.declaredSymbolicRoot
+                    || stated.contains(action.symbol)) {
+                continue;
+            }
+            D3Runtime.gap(GapKind.DECLARATION_MISSING, GapClass.DIAGNOSTIC,
+                    action.symbol, "a declared region input was never"
+                            + " symbolized in this activation: site="
+                            + action.siteId + " cell=" + action.cell);
         }
     }
 
@@ -157,9 +192,38 @@ final class D3RowPublication {
      * it joins any other read.</p>
      */
     private static void placeholder(OccurrenceAddress occurrence,
-                                    JsonObject row, String symbol) {
+                                    JsonObject row, String symbol,
+                                    Map<String, String[]> installed) {
         String signature = optionalString(row, "fieldSignature");
-        LocationId location = fieldLocation(signature);
+        // A read placeholder, session-wide, so no activation's write log
+        // offers the mint's own version as a write of that location.
+        D3Runtime.placeholderSymbol(symbol);
+        // The location is the VM's own -- owner rid, slot offset -- so this
+        // read and every write of the same storage spell one location.
+        // Naming the Java field signature instead left the read saying
+        // AtomicInteger#value while the write log said
+        // INSTANCE_FIELD/<rid>#<offset>.
+        String[] installedAt = installed.get(symbol);
+        String locationKey = installedAt == null ? "" : installedAt[0];
+        LocationId location = location(locationKey);
+        // The version the VM observed for this read.  It is NOT a write --
+        // no WriteRow states it (see #mintedVersion) -- but it is the
+        // version the anchor's own ReadFrom names, so a reader that meets
+        // `INSTANCE/22#24@174` in a term finds this row's symbol there.
+        long observed = location == null ? ReadRow.UNKNOWN_VERSION
+                : Long.parseLong(installedAt[1]);
+        if (location == null) {
+            JsonObject read = nestedRead(row.get("expression"), 0);
+            locationKey = read == null ? ""
+                    : locationKey(object(read, "location"));
+            location = location(locationKey);
+            observed = location == null ? ReadRow.UNKNOWN_VERSION
+                    : versionOf(read);
+        }
+        if (location == null) {
+            locationKey = signature;
+            location = fieldLocation(signature);
+        }
         if (location == null) {
             D3Runtime.gap(GapKind.DECLARATION_MISSING, GapClass.DIAGNOSTIC,
                     symbol, "a declared region input states no field to"
@@ -168,18 +232,118 @@ final class D3RowPublication {
         }
         String value = optionalString(row, "observedValue");
         if (value.isEmpty()) value = optionalString(row, "recordedValue");
-        if (literal(value).isEmpty()) {
+        if (observed < 0L && literal(value).isEmpty()) {
             D3Runtime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
                     symbol, "a declared region input states no value it"
                             + " read: " + optionalString(row, "portId"));
             return;
         }
+        // One row per read, per activation.  The declared ports of one
+        // activation are reads of one location that carry one symbol -- the
+        // VM keeps the field's shadow, so the second mint finds the first
+        // symbol -- and the same manual row is reachable again from every
+        // activation the read ran inside.  One row states it.
+        if (!D3Runtime.claimEvent("placeholder",
+                optionalString(row, "occurrenceId") + "#" + locationKey
+                        + "#" + symbol)) {
+            return;
+        }
         D3Runtime.read(occurrence,
                 optionalLongInteger(row, "eventSeq", 0L),
-                Endpoint.stateSite(signature, "PLACEHOLDER", 0, false),
-                location, ReadRow.UNKNOWN_VERSION, symbol,
+                Endpoint.stateSite(locationKey, "PLACEHOLDER", 0, false),
+                location, observed, symbol,
                 javaDescriptor(optionalString(row, "javaType")),
                 literal(value));
+    }
+
+    /**
+     * The symbols this activation minted at its declared region inputs.
+     *
+     * <p>Same test {@link #roots} publishes a placeholder by, so the two
+     * cannot disagree about which symbol is a read and which is a root.</p>
+     */
+    private static Set<String> placeholderSymbols(ActiveRegion active) {
+        Set<String> symbols = new LinkedHashSet<String>();
+        for (JsonObject row : active.symbolizedRows) {
+            String symbol = vmSymbol(row);
+            if (symbol.isEmpty()
+                    || !optionalString(row, "sourceId").isEmpty()
+                    || kindOf(row) != RootKind.INTEGRAL) {
+                continue;
+            }
+            symbols.add(symbol);
+        }
+        return symbols;
+    }
+
+    /**
+     * Whether one version of a location exists only because a mint set the
+     * field's shadow expression.
+     *
+     * <p>The VM has one way to root a symbol at a field
+     * ({@code System.symbolizeExactField}): it replaces the field's shadow
+     * expression, and the tracked-location log then records a new version
+     * whose whole value is that symbol.  <b>Nothing wrote the field.</b>
+     * Publishing that version as a WriteRow states a write nobody
+     * performed, hides the location's real history behind it, and hands the
+     * composer a writer for a value that is a READ -- on hdfs-17960 it put
+     * one fabricated version 172 of {@code INSTANCE_FIELD/19#24} into 14
+     * regions' write logs.  A declared region input is a read placeholder
+     * (HANDOVER section 1.3), so this version is not a write and states no
+     * row.  The VM item is that the mint is expressible only as a shadow
+     * store; the row contract is answered here.</p>
+     */
+    private static boolean mintedVersion(JsonObject version,
+                                         Set<String> mints) {
+        JsonElement written = version == null ? null
+                : version.get("expression");
+        if (written == null || !written.isJsonObject()) return false;
+        JsonObject node = written.getAsJsonObject();
+        if (!optionalString(node, "_type").contains("Symbol")) return false;
+        String symbol = optionalString(node, "_exp");
+        return mints.contains(symbol)
+                || D3Runtime.isPlaceholderSymbol(symbol);
+    }
+
+    /**
+     * Where the VM says each minted symbol lives: symbol -&gt; location key.
+     *
+     * <p>A mint installs a symbol INTO a field the VM versions, so the
+     * write log already names the location and the exact version whose
+     * whole value that symbol is -- hdfs-17960's counter is version 172 of
+     * {@code INSTANCE_FIELD/19#24}, and the anchor's own branch reads that
+     * version.  Only a version whose expression IS the symbol counts (a
+     * later version computed FROM it is a different value), and the first
+     * such version wins.</p>
+     */
+    private static Map<String, String[]> mintedLocations(ActiveRegion active) {
+        Map<String, String[]> bySymbol =
+                new java.util.LinkedHashMap<String, String[]>();
+        for (JsonObject record : active.sharedStateRecords.values()) {
+            String locationKey = optionalString(record, "locationKey");
+            if (location(locationKey) == null) continue;
+            for (JsonElement element
+                    : array(object(record, "envelope"), "versions")) {
+                if (!element.isJsonObject()) continue;
+                JsonObject version = element.getAsJsonObject();
+                long id = optionalLongInteger(version, "fieldVersionId", -1L);
+                JsonElement written = version.get("expression");
+                if (id < 0L || written == null || !written.isJsonObject()) {
+                    continue;
+                }
+                JsonObject node = written.getAsJsonObject();
+                if (!optionalString(node, "_type").contains("Symbol")) {
+                    continue;
+                }
+                String symbol = optionalString(node, "_exp");
+                if (symbol.isEmpty()) continue;
+                if (!bySymbol.containsKey(symbol)) {
+                    bySymbol.put(symbol, new String[]{locationKey,
+                            Long.toString(id)});
+                }
+            }
+        }
+        return bySymbol;
     }
 
     /** {@code <Class: type field>} as the location it names. */
@@ -343,6 +507,7 @@ final class D3RowPublication {
         Set<String> published = new LinkedHashSet<String>();
         Map<JsonElement, Boolean> seen =
                 new IdentityHashMap<JsonElement, Boolean>();
+        Set<String> mints = placeholderSymbols(active);
         for (JsonObject record : active.sharedStateRecords.values()) {
             String locationKey = optionalString(record, "locationKey");
             LocationId location = location(locationKey);
@@ -352,7 +517,10 @@ final class D3RowPublication {
                 if (!element.isJsonObject()) continue;
                 JsonObject version = element.getAsJsonObject();
                 long id = optionalLongInteger(version, "fieldVersionId", -1L);
-                if (id < 0L) continue;
+                if (id < 0L || mintedVersion(version, mints)) continue;
+                if (!D3Runtime.claimEvent("write", locationKey + "#" + id)) {
+                    continue;
+                }
                 namedSiteMissing = true;
                 JsonElement expression = version.get("expression");
                 JsonObject written =

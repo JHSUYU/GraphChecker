@@ -12,8 +12,11 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.AbstractMap;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -72,6 +75,73 @@ public class SymbolicRootPolicyTest {
         JsonObject cut = selection.select(DN, actions).get(3).getAsJsonObject();
         assertEquals("SYMBOLIC", cut.get("mode").getAsString());
         assertFalse(cut.get("mintEligible").getAsBoolean());
+
+        // A declaration names a VALUE, and the graph names one value once
+        // per local it is copied into: the case knows the accessor's own
+        // return cell, while the port that materializes it names the local
+        // the value lands in.  Soot proves which edges are exact copies, so
+        // following only those renames the declaration onto the port --
+        // which is how hdfs-17960's declared region input stops matching
+        // nothing.
+        JsonObject accessorPort = accessorPort();
+        assertTrue("the proven rename selects the port",
+                renamed(exactCopy()).select(NN, actions(accessorPort))
+                        .get(0).getAsJsonObject().get(ROOT).getAsBoolean());
+        assertFalse("an edge Soot did not prove a copy is not a rename",
+                renamed(plainCopy()).select(NN, actions(accessorPort))
+                        .get(0).getAsJsonObject().has(ROOT));
+    }
+
+    /** The accessor's return cell, as a case declares a manual read. */
+    private static final String ACCESSOR_RETURN =
+            "<S: int getNumSnapshots()>.return";
+    /** The local the accessor copies it into, which the port names. */
+    private static final String ACCESSOR_LOCAL =
+            "<S: int getNumSnapshots()>::$i0";
+
+    /** One declaration of {@link #ACCESSOR_RETURN}, seeded over one graph. */
+    private ConcolicScheduler.SymbolicInputSelection renamed(JsonObject edge)
+            throws IOException {
+        ConcolicScheduler.SymbolicInputSelection selection = read(
+                "{\"regionId\":\"" + NN + "\",\"cells\":[\""
+                        + ACCESSOR_RETURN + "\"]}");
+        selection.seedCarrierSlice(Collections.singletonList(edge),
+                Collections.<Map.Entry<String, JsonArray>>singletonList(
+                        new AbstractMap.SimpleImmutableEntry<>(NN,
+                                actions(accessorPort()))));
+        return selection;
+    }
+
+    private static JsonArray actions(JsonObject action) {
+        JsonArray actions = new JsonArray();
+        actions.add(action.deepCopy());
+        return actions;
+    }
+
+    /** The accessor-return port: its cell is the Atomic's value leaf. */
+    private static JsonObject accessorPort() {
+        JsonObject port = action("ACCESSOR_RETURN",
+                "<S: int getNumSnapshots()>#u2",
+                "<java.util.concurrent.atomic.AtomicInteger: int value>");
+        port.addProperty("accessFieldSignature",
+                "<java.util.concurrent.atomic.AtomicInteger: int value>");
+        JsonArray cells = new JsonArray();
+        cells.add(ACCESSOR_LOCAL);
+        port.add("dependencyCells", cells);
+        return port;
+    }
+
+    private static JsonObject exactCopy() {
+        JsonObject edge = plainCopy();
+        edge.addProperty("valueFlowAuthority",
+                "SOOT_EXACT_LOCAL_DIRECT_COPY_V1");
+        return edge;
+    }
+
+    private static JsonObject plainCopy() {
+        return json("{\"kind\":\"local_def_use\",\"transferKind\":"
+                + "\"VALUE_PASS\",\"fromCell\":\"" + ACCESSOR_LOCAL
+                + "\",\"toCell\":\"" + ACCESSOR_RETURN + "\"}");
     }
 
     /**
