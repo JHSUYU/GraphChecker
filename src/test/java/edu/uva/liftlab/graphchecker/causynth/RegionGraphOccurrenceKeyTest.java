@@ -481,18 +481,34 @@ public class RegionGraphOccurrenceKeyTest {
                 assertFirst, write, done)) {
             body.getUnits().add(unit);
         }
-        StaticScopeMap.Guards guards = SiteControlDependence.over(
-                Collections.singletonList(
-                        SiteId.of(method.getSignature(), 7)));
-        assertEquals(Arrays.asList(SiteId.of(method.getSignature(), 3),
-                        SiteId.of(method.getSignature(), 4)),
-                guards.of(SiteId.of(method.getSignature(), 7)));
+        String decrement = SiteId.of(method.getSignature(), 7);
+        List<String> expected = Arrays.asList(
+                SiteId.of(method.getSignature(), 3),
+                SiteId.of(method.getSignature(), 4));
+        assertEquals(expected, SiteControlDependence.over(
+                Collections.singletonList(decrement)).of(decrement));
         // Both arms of the marker branch CAN reach the write, which is why
         // the graph's may-reach guard rule drops it.
-        assertEquals(2, ((soot.toolkits.graph.UnitGraph)
-                new soot.toolkits.graph.BriefUnitGraph(body))
+        assertEquals(2, new soot.toolkits.graph.BriefUnitGraph(body)
                 .getSuccsOf(ordered).size());
+
+        // And after INSTRUMENT has woven a hook into the same body, the guard
+        // ids are STILL the ids the branches were planned and woven under: a
+        // published site id is in the ORIGINAL numbering, and reading the
+        // guards off positions in a woven body shifted every one of them past
+        // the first hook (the whole of G1's "0 of the 27 installed guard ids
+        // is decided anywhere in the session").
+        CausynthPipeline.tagOriginalUnits(new ArrayList<Unit>(
+                body.getUnits()));
+        Unit hook = Jimple.v().newAssignStmt(count, IntConstant.v(7));
+        body.getUnits().insertBefore(hook, ordered);
+        assertEquals("the hook shifted the positions", 8,
+                new ArrayList<Unit>(body.getUnits()).indexOf(write));
+        assertEquals(expected, SiteControlDependence.over(
+                Collections.singletonList(decrement)).of(decrement));
     }
+
+
 
     private static Map<String, Object> row(Object... fields) {
         Map<String, Object> result = new LinkedHashMap<>();

@@ -5,11 +5,14 @@ import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.A
 import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.ConcolicBranchSelection;
 import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.ConcolicMaterializationSelection;
 import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.InstrumentationPlan;
+import com.google.gson.JsonObject;
+
 import edu.uva.liftlab.graphchecker.plan.CommunicationCatalogContract;
 import edu.uva.liftlab.graphchecker.plan.CommunicationHandoffSpec;
 import edu.uva.liftlab.graphchecker.plan.ConfiguredSourcePhaseContract;
 import edu.uva.liftlab.graphchecker.plan.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.plan.SiteId;
+import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 import edu.uva.liftlab.graphchecker.option.GraphCheckerOptions;
 import edu.uva.liftlab.graphchecker.runtime.RuntimeTraceMode;
 import org.slf4j.Logger;
@@ -141,12 +144,26 @@ public final class CausynthPipeline {
         // several RPC handlers.
         StaticSymbolicSourceDiscovery.discover(result);
         long skeletonPlanningMillis = elapsedMillis(skeletonPlanningStart);
+        // CLOSURE-V2 SS4, before ANY weaving: the sites of the static scope
+        // map are named in original unit indices (the graph's own numbering),
+        // and its guard sets are read off the same bodies the graph was built
+        // from.  Computing them after instrumentRegionSkeletonTrace read the
+        // guards off a body with hooks in it, which shifted every index past
+        // the first hook -- 17960's target guard came out #u63 for a branch
+        // INSTRUMENT wove as #u61 -- so no published guard id was a site any
+        // replay could decide at.  SiteControlDependence also reads the
+        // original-unit tags, so the two answers cannot drift apart again.
+        List<StaticScopeMap.Site> scopeSites = StaticScopeMap.sites(
+                result.edges, result.regions);
+        List<JsonObject> scopeMap = StaticScopeMap.rows(scopeSites,
+                SiteControlDependence.over(
+                        StaticScopeMap.siteIds(scopeSites)));
         long instrumentationStart = System.nanoTime();
         instrumentRegionSkeletonTrace(result);
         long instrumentationMillis = elapsedMillis(instrumentationStart);
         long artifactWriteStart = System.nanoTime();
         CausynthArtifactWriter.writeDiscoveryArtifacts(
-                target.outputDir, result);
+                target.outputDir, result, scopeMap);
         long artifactWriteMillis = elapsedMillis(artifactWriteStart);
         LOG.info("Discovery phase timing: seedAnalysis={} ms, "
                         + "skeletonPlanning={} ms, instrumentation={} ms, "
@@ -2220,7 +2237,15 @@ public final class CausynthPipeline {
         Value invoke(Local boxed);
     }
 
-    private static int originalUnitIndex(Unit unit) {
+    /**
+     * The index this unit had before any weaving, or -1 for a woven one.
+     *
+     * <p>Package-private because it is the ONE numbering every published
+     * site id is in: {@link SiteControlDependence} names a guard by it for
+     * the same reason {@link #instrumentConcolicBranches} finds a branch by
+     * it.</p>
+     */
+    static int originalUnitIndex(Unit unit) {
         for (Tag tag : unit.getTags()) {
             if (tag instanceof OriginalUnitIndexTag) {
                 return ((OriginalUnitIndexTag) tag).index;
@@ -2782,7 +2807,9 @@ public final class CausynthPipeline {
         return units;
     }
 
-    private static void tagOriginalUnits(List<Unit> units) {
+    /** Freezes one body's original numbering; see {@link
+     *  #originalUnitIndex}. */
+    static void tagOriginalUnits(List<Unit> units) {
         // Trace and concolic instrumentation may run in the same transform.
         for (Unit unit : units) {
             for (Tag tag : unit.getTags()) {

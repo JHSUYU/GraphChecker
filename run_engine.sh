@@ -83,6 +83,11 @@ workflow_config_keys=(
   "causynth_communication_mappings CAUSYNTH_COMMUNICATION_MAPPINGS krp -"
   "causynth_loop_bounds CAUSYNTH_LOOP_BOUNDS krp -"
   "causynth_symbolic_inputs CAUSYNTH_SYMBOLIC_INPUTS krp -"
+  # CLOSURE-V2 SS4: the epoch's static scope map (write sites, export
+  # sites, guard sets).  Two stages read it and both must read the SAME
+  # file: the workload JVM installs the guard sites it names, and EXPLORE
+  # flips at them.  Defaults beside the other discovery artifacts.
+  "causynth_static_scope_map CAUSYNTH_STATIC_SCOPE_MAP krp -"
   # What the case says its declared roots may be, beside what the recording
   # read: one row per source id, with declaredDomainMin/Max absolute or
   # written +k / -k from the recorded value.  A root with no row stays pinned
@@ -329,6 +334,8 @@ initialize_config() {
   if [[ -n "${causynth_symbolic_inputs}" ]]; then
     causynth_symbolic_inputs=$(resolve_path "${causynth_symbolic_inputs}")
   fi
+  causynth_static_scope_map=${causynth_static_scope_map:-${causynth_output_dir}/static_scope_map.jsonl}
+  causynth_static_scope_map=$(resolve_path "${causynth_static_scope_map}")
   candidate_graph=${candidate_graph:-${causynth_output_dir}/candidate_dataflow_edges.jsonl.gz}
   runtime_region_plan=${runtime_region_plan:-${causynth_output_dir}/runtime/concolic_region_plan.jsonl}
   refined_graph=${refined_graph:-$(dirname "${runtime_region_plan}")/refined_dataflow_edges.jsonl.gz}
@@ -1654,7 +1661,9 @@ campaign_replay() {
     "CAUSYNTH_CONCOLIC_CLASSES=${classes}" \
     "CAUSYNTH_CONCOLIC_WORKER_DIR=${worker}" \
     "CAUSYNTH_CONCOLIC_MAX_TASKS=${schedule_max_jobs}" \
-    "CAUSYNTH_TRACE_TEST=${trace_test}" >"${worker}/replay.log" 2>&1
+    "CAUSYNTH_TRACE_TEST=${trace_test}" \
+    "CAUSYNTH_STATIC_SCOPE_MAP=${causynth_static_scope_map}" \
+    >"${worker}/replay.log" 2>&1
   # A workload whose target branch throws exits nonzero by design, so the gate
   # is the evidence it published and not its exit code. An empty result is
   # always a failure, and it is reported with the path that is empty.
@@ -1940,7 +1949,7 @@ campaign_explore() {
     run_java_main edu.uva.liftlab.graphchecker.explore.ExploreMain \
       --sessions "${sessions}" \
       --results "${results}" \
-      --static-scope-map "${causynth_output_dir}/static_scope_map.jsonl" \
+      --static-scope-map "${causynth_static_scope_map}" \
       --topology-epoch "${iteration_id}" \
       --wave "${wave}" \
       --output-dir "${wave_dir}" \

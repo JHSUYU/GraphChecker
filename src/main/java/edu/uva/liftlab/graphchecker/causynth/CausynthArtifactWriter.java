@@ -1,5 +1,7 @@
 package edu.uva.liftlab.graphchecker.causynth;
 
+import com.google.gson.JsonObject;
+
 import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 import edu.uva.liftlab.graphchecker.smt.JsonFields;
@@ -21,7 +23,8 @@ final class CausynthArtifactWriter {
     }
 
     static void writeDiscoveryArtifacts(Path outputDir,
-                                        StaticProgram program)
+                                        StaticProgram program,
+                                        List<JsonObject> staticScopeMap)
             throws IOException {
         Files.createDirectories(outputDir);
         Files.write(outputDir.resolve("target_resolved.json"),
@@ -42,12 +45,11 @@ final class CausynthArtifactWriter {
         // CLOSURE-V2 SS4: what the slice knows about the sites the target's
         // demand can reach, for EXPLORE to join the recording against.  Plain
         // JSONL and small (one row per site), because the stage that reads it
-        // reads nothing else of the static analysis.
-        List<StaticScopeMap.Site> sites = StaticScopeMap.sites(program.edges,
-                program.regions);
+        // reads nothing else of the static analysis.  Built by the caller,
+        // BEFORE any weaving: a guard id has to be in the same unit numbering
+        // as the branch site the instrumentation wove.
         ArtifactIO.replaceJsonl(outputDir.resolve(StaticScopeMap.FILE),
-                StaticScopeMap.rows(sites, SiteControlDependence.over(
-                        StaticScopeMap.siteIds(sites))));
+                staticScopeMap);
     }
 
     private static void writeGzipJsonl(Path output, List<?> values)
