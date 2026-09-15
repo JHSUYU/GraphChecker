@@ -80,7 +80,17 @@ final class FlipQuery {
 
     /** One assembled query, or the reason there is none. */
     static final class Built {
+        /** The formula: declarations and assertions, without a check-sat. */
         final String smt2;
+        /**
+         * Every variable this query declared, in declaration order.
+         *
+         * <p>What a model of it must carry, asked for by name: the roots and
+         * the handoff controls the outcome reads back are all among them, and
+         * a solver that is handed the names it must answer about never has to
+         * parse a whole model to find them.</p>
+         */
+        final List<String> modelSymbols;
         final String refusal;
         final DecisionRow flipped;
         final List<Control> controls;
@@ -88,10 +98,13 @@ final class FlipQuery {
         final Map<String, String> rootVariables;
         final List<GapRow> gaps;
 
-        private Built(String smt2, String refusal, DecisionRow flipped,
+        private Built(String smt2, List<String> modelSymbols, String refusal,
+                      DecisionRow flipped,
                       List<Control> controls, Map<String, String> rootVariables,
                       List<GapRow> gaps) {
             this.smt2 = smt2;
+            this.modelSymbols =
+                    Collections.unmodifiableList(modelSymbols);
             this.refusal = refusal;
             this.flipped = flipped;
             this.controls = Collections.unmodifiableList(controls);
@@ -275,7 +288,8 @@ final class FlipQuery {
             }
             drain();
             if (!refusal.isEmpty()) {
-                return new Built("", refusal, flipped,
+                return new Built("", Collections.<String>emptyList(),
+                        refusal, flipped,
                         new ArrayList<Control>(controls.values()),
                         rootVariables, gaps);
             }
@@ -289,7 +303,8 @@ final class FlipQuery {
                                 + "with a value the chain does not reach",
                         flipped);
             }
-            return new Built(render(flipped, flipIndex), "", flipped,
+            return new Built(render(flipped, flipIndex),
+                    new ArrayList<String>(sorts.keySet()), "", flipped,
                     new ArrayList<Control>(controls.values()), rootVariables,
                     gaps);
         }
@@ -610,16 +625,7 @@ final class FlipQuery {
         private static String exactlyOne(List<Choice> choices) {
             List<String> selectors = new ArrayList<String>();
             for (Choice choice : choices) selectors.add(choice.selector);
-            if (selectors.size() == 1) return selectors.get(0);
-            List<String> atMostOne = new ArrayList<String>();
-            atMostOne.add(VmTermLowering.or(selectors));
-            for (int left = 0; left < selectors.size(); left++) {
-                for (int right = left + 1; right < selectors.size(); right++) {
-                    atMostOne.add("(not (and " + selectors.get(left) + " "
-                            + selectors.get(right) + "))");
-                }
-            }
-            return VmTermLowering.and(atMostOne);
+            return Arms.exactlyOne(selectors);
         }
 
         // ---- naming --------------------------------------------------
@@ -632,7 +638,7 @@ final class FlipQuery {
                               Set<String> rootsTouched, Set<String> unknown) {
             lowered.add(sessionId);
             Map<String, String> rename = renamesOf(sessionId);
-            Set<String> symbols = SmtText.symbols(term,
+            Set<String> symbols = SmtLowering.symbols(term,
                     new LinkedHashSet<String>());
             // THE CLOSURE: the recorded symbols of a term are the ones
             // reachable from it, not the ones visible in it.  A lowered term
@@ -653,7 +659,7 @@ final class FlipQuery {
                     }
                 }
             }
-            return SmtText.rewrite(term, rename,
+            return SmtLowering.rename(term, rename,
                     name -> stated(name, sessionId), unknown);
         }
 
@@ -828,7 +834,8 @@ final class FlipQuery {
                              DecisionRow flipped) {
             gaps.add(GapRow.of(path.sessionId, kind, GapClass.BLOCKING,
                     subject, detail));
-            return new Built("", kind.name() + ":" + subject, flipped,
+            return new Built("", Collections.<String>emptyList(),
+                    kind.name() + ":" + subject, flipped,
                     new ArrayList<Control>(controls.values()), rootVariables,
                     gaps);
         }
@@ -886,7 +893,7 @@ final class FlipQuery {
                             ? declaration.render()
                             : "(define-fun " + declaration.name + " () "
                             + declaration.sort + " "
-                            + SmtText.rewrite(declaration.body, rename,
+                            + SmtLowering.rename(declaration.body, rename,
                             name -> stated(name, sessionId),
                             new LinkedHashSet<String>()) + ")");
                 }
@@ -895,7 +902,11 @@ final class FlipQuery {
             for (String assertion : assertions) {
                 text.append("(assert ").append(assertion).append(")\n");
             }
-            text.append("(check-sat)\n(get-model)\n");
+            // No check-sat here: the body is the formula, and what is
+            // ASKED of it -- the verdict, then the values of the variables
+            // this query declared -- is the one z3 driver's own text
+            // ({@link Z3#modelQuery}), so the published query is the
+            // question that was actually solved and not a second one.
             // A name SMT-LIB cannot spell bare is quoted, once, on the way
             // out -- the same routine the composed query is rendered by.
             return SmtLowering.legalSymbols(text.toString());

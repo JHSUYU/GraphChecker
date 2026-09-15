@@ -48,7 +48,7 @@ import java.util.Set;
  *   --wave &lt;n&gt;                 which wave this is
  *   --topology-epoch &lt;id&gt;      the epoch these sessions belong to
  *   --output-dir &lt;dir&gt;         obligations.jsonl, tasks.jsonl, gaps.jsonl,
- *                              root-domains.jsonl, explore_manifest.json
+ *                              explore_manifest.json
  *   --max-tasks / --max-paths-per-region / --max-flips-per-path
  * </pre>
  *

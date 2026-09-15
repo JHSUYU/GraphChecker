@@ -97,7 +97,7 @@ public final class JavaContainerTypes {
     }
 
     public static Shape shape(String type) {
-        String value = normalize(type);
+        String value = JavaPrimitiveSmtSemantics.typeName(type);
         if (value.startsWith("[") || value.endsWith("[]")) {
             return Shape.INDEXED;
         }
@@ -187,14 +187,6 @@ public final class JavaContainerTypes {
                 0, value.length() - ".return".length()));
     }
 
-    private static String normalize(String type) {
-        String value = type == null ? "" : type.trim();
-        if (value.startsWith("L") && value.endsWith(";")) {
-            value = value.substring(1, value.length() - 1);
-        }
-        return value.replace('/', '.');
-    }
-
     private static final class MethodSignature {
         private final String owner;
         private final String subsignature;
@@ -223,7 +215,8 @@ public final class JavaContainerTypes {
             // operation that is genuinely declared void - today the indexed
             // mutators add(int,E) and clear().
             return new MethodSignature(
-                    normalize(value.substring(1, ownerEnd)),
+                    JavaPrimitiveSmtSemantics.typeName(
+                            value.substring(1, ownerEnd)),
                     subsignature);
         }
     }

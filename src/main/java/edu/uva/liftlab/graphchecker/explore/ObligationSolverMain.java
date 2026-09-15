@@ -3,6 +3,8 @@ package edu.uva.liftlab.graphchecker.explore;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 
+import edu.uva.liftlab.graphchecker.smt.Z3;
+
 import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.GapRow;
@@ -68,7 +70,7 @@ public final class ObligationSolverMain {
                 obligationId, out,
                 Paths.get(ExploreMain.value(options, "z3", "z3")),
                 ExploreMain.number(options, "solver-timeout-ms",
-                        ObligationFactory.DEFAULT_TIMEOUT_MILLIS));
+                        Z3.DEFAULT_TIMEOUT_MILLIS));
         System.out.println(ExploreMain.pretty(result));
     }
 
