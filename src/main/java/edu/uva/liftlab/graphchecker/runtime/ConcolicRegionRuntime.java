@@ -33,7 +33,6 @@ import edu.uva.liftlab.graphchecker.d3.plan.FieldPathSpec.DeclaredField;
 import edu.uva.liftlab.graphchecker.d3.plan.InputActionCatalog;
 import edu.uva.liftlab.graphchecker.d3.smt.JavaPrimitiveBoxing;
 import edu.uva.liftlab.graphchecker.d3.plan.LoopBoundPolicy;
-import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.runtime.d3.D3Runtime;
 import edu.uva.liftlab.graphchecker.runtime.d3.Interactions;
 
@@ -2663,7 +2662,7 @@ public final class ConcolicRegionRuntime {
         String consumerOccurrenceId = declaredConsumerOccurrence(portId,
                 active);
         String phaseId = handoffMintKey(portId,
-                OccurrenceAddress.parse(consumerOccurrenceId).render(),
+                consumerOccurrenceId,
                 active.nextHandoffAttach(portId + "\n" + elementPath),
                 elementPath);
         if (phaseId.isEmpty()) return;
