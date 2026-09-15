@@ -56,7 +56,6 @@ public final class CausynthTraceRecorder {
             ThreadLocal.withInitial(ArrayDeque::new);
     private static final ThreadLocal<Deque<ActiveCallSite>> ACTIVE_CALL_SITES =
             ThreadLocal.withInitial(ArrayDeque::new);
-    private static final int DEFAULT_MAX_EVENTS = 200000;
     /** A concolic replay keeps call stacks but does not publish a trace. */
     private static volatile boolean contextOnlyConcolicReplay;
     private static volatile boolean recordingEnabled = true;
@@ -65,7 +64,6 @@ public final class CausynthTraceRecorder {
 
     private static volatile File outputDir;
     private static volatile String testName;
-    private static volatile int maxEvents;
     /** Guarded by {@link #LOCK}; persisted in the streaming close manifest. */
     private static boolean traceWriteFailure;
     private static BufferedWriter traceWriter;
@@ -111,17 +109,6 @@ public final class CausynthTraceRecorder {
     /** Test hook: a fixture states whether its run has opened the window. */
     static void setRecordingStartedForTests(boolean started) {
         recordingStarted = started;
-    }
-
-    private static boolean configuredContextOnlyConcolicReplay() {
-        String concolicResults = firstNonBlank(System.getProperty(
-                        "causynth.concolic.results"),
-                System.getenv("CAUSYNTH_CONCOLIC_RESULTS"));
-        String traceOutput = firstNonBlank(System.getProperty(
-                        "causynth.trace.output.dir"),
-                System.getenv("CAUSYNTH_TRACE_OUTPUT_DIR"));
-        return concolicResults != null && !concolicResults.trim().isEmpty()
-                && (traceOutput == null || traceOutput.trim().isEmpty());
     }
 
     public static void main(String[] args) {
@@ -182,9 +169,6 @@ public final class CausynthTraceRecorder {
         }
         initialize();
         long id = EVENT_COUNTER.incrementAndGet();
-        if (id > maxEvents) {
-            return 0L;
-        }
         Thread thread = Thread.currentThread();
         String threadName = thread.getName();
         long tid = thread.getId();
@@ -326,13 +310,8 @@ public final class CausynthTraceRecorder {
                 ? context.receiverAttributed
                 : context.source != null && context.source.equals(
                 RuntimeTraceContext.sourceFor(receiver));
-        // Keep the nesting stack balanced even after the trace budget has
-        // been exhausted; the silent exit hook must not pop the parent.
         calls.push(new ActiveCall(id, 0L, method, context.spanId,
                 parent == null, false));
-        if (id > maxEvents) {
-            return id;
-        }
         Thread thread = Thread.currentThread();
         String threadName = thread.getName();
         RuntimeRegionPlanner.MethodEvent event =
@@ -570,9 +549,6 @@ public final class CausynthTraceRecorder {
             return;
         }
         long id = EVENT_COUNTER.incrementAndGet();
-        if (id > maxEvents) {
-            return;
-        }
         int receiverObjectId = identity(fieldReceiver);
         int valueObjectId = identity(valueObject);
         ActiveCall activeCall = ACTIVE_CALLS.get().peek();
@@ -599,9 +575,6 @@ public final class CausynthTraceRecorder {
             return;
         }
         long id = EVENT_COUNTER.incrementAndGet();
-        if (id > maxEvents) {
-            return;
-        }
         ActiveCall activeCall = ACTIVE_CALLS.get().peek();
         RuntimeRegionPlanner.ArrayAccessEvent event =
                 new RuntimeRegionPlanner.ArrayAccessEvent(id, kind, method,
@@ -719,9 +692,6 @@ public final class CausynthTraceRecorder {
                 RuntimeTraceContext.exchange(localOwner, carriedScope);
         if (contextOnlyConcolicReplay) return;
         long id = EVENT_COUNTER.incrementAndGet();
-        if (id > maxEvents) {
-            return;
-        }
         Thread thread = Thread.currentThread();
         ActiveCall call = ACTIVE_CALLS.get().peek();
         ActiveCallSite site = ACTIVE_CALL_SITES.get().peek();
@@ -860,9 +830,6 @@ public final class CausynthTraceRecorder {
                                                     long callId) {
         initialize();
         long id = EVENT_COUNTER.incrementAndGet();
-        if (id > maxEvents) {
-            return new ExecutionEvent();
-        }
         ExecutionEvent event = new ExecutionEvent();
         event.id = id;
         event.kind = MapFields.safe(kind);
@@ -1131,13 +1098,18 @@ public final class CausynthTraceRecorder {
             String configuredTestName = firstNonBlank(
                     System.getProperty("causynth.trace.test"),
                     System.getenv("CAUSYNTH_TRACE_TEST"), "unknown-test");
-            boolean configuredContextOnly =
-                    configuredContextOnlyConcolicReplay();
+            // Which pass this JVM is, DECLARED: one key, three values, and
+            // the campaign sets it.  It used to be inferred from which of
+            // two unrelated keys happened to be set -- results yes, trace
+            // directory no -- so a lane whose shell exported a trace
+            // directory turned a replay into a recording, and a replay
+            // nothing exported at all wrote its trace over the seed's.
+            boolean configuredContextOnly = RuntimeTraceMode.configured()
+                    == RuntimeTraceMode.REPLAY_CONTEXT;
             recordingEnabled = !Boolean.getBoolean(
                     "causynth.trace.start.paused");
             File configuredOutputDir = configuredContextOnly ? null
                     : new File(firstNonBlank(
-                    System.getProperty("causynth.trace.output.dir"),
                     System.getenv("CAUSYNTH_TRACE_OUTPUT_DIR"),
                     "target/causynth-trace"));
             File configuredTraceFile = configuredOutputDir == null ? null
@@ -1148,7 +1120,6 @@ public final class CausynthTraceRecorder {
                     // Keep the exact method/call-site TLS alive for every
                     // accessor invocation.
                     testName = configuredTestName;
-                    maxEvents = Integer.MAX_VALUE;
                     traceWriteFailure = false;
                     outputDir = null;
                     traceWriter = null;
@@ -1177,8 +1148,6 @@ public final class CausynthTraceRecorder {
                 // INITIALIZED is the release publication for every field
                 // above.
                 testName = configuredTestName;
-                maxEvents = Integer.getInteger(
-                        "causynth.trace.max.events", DEFAULT_MAX_EVENTS);
                 traceWriteFailure = false;
                 outputDir = configuredOutputDir;
                 traceWriter = configuredWriter;
@@ -1239,9 +1208,12 @@ public final class CausynthTraceRecorder {
                         objectWithoutNulls(
                                 "schemaVersion", 1,
                                 "kind", "STREAMING_RUNTIME_TRACE",
-                                "status", EVENT_COUNTER.get() <= maxEvents
-                                        && !traceWriteFailure
-                                        ? "CLOSED" : "INCOMPLETE"));
+                                // INCOMPLETE is a crash or a write that
+                                // did not reach the file, and nothing else:
+                                // a recorder that stopped at a count is a
+                                // trace whose absence of events is silent.
+                                "status", traceWriteFailure
+                                        ? "INCOMPLETE" : "CLOSED"));
             }
         }
     }

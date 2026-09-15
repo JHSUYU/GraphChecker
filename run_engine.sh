@@ -1674,6 +1674,7 @@ campaign_replay() {
     "CAUSYNTH_CONCOLIC_WORKER_DIR=${worker}" \
     "CAUSYNTH_CONCOLIC_MAX_TASKS=${schedule_max_jobs}" \
     "CAUSYNTH_TRACE_TEST=${trace_test}" \
+    "CAUSYNTH_TRACE_MODE=replay-context" \
     "CAUSYNTH_STATIC_SCOPE_MAP=${causynth_static_scope_map}" \
     >"${worker}/replay.log" 2>&1
   # A workload whose target branch throws exits nonzero by design, so the gate
