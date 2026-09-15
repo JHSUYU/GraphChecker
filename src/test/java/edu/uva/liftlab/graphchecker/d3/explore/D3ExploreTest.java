@@ -207,7 +207,24 @@ public class D3ExploreTest {
             assertFalse("a query answered by an earlier wave is never re-asked",
                     obligation.obligationId().equals(
                             proposed.get(0).obligationId()));
+            // An arm SOME session of the epoch already took is not asked for
+            // again, whichever session holds the row and whichever prefix it
+            // was taken under: the seed took Guard#u8 false and the flip
+            // replay took it true, so both arms of that site are attested
+            // and a replay of either collects nothing the corpus lacks.  On
+            // laneA6 wave 1 this was the marker decision flipped BACK to
+            // true out of the wave-0 replays: nine minutes each.
+            assertFalse("an arm the corpus already holds is not re-flipped: "
+                            + sites, "Guard#u8".equals(obligation.siteId()));
         }
+        boolean held = false;
+        for (GapRow gap : RowCodec.readAll(wave1.resolve("gaps.jsonl"),
+                RowCodec::readGap)) {
+            held |= gap.cls() == GapClass.DIAGNOSTIC
+                    && gap.subject().startsWith("Guard#u8#1 -> ")
+                    && gap.detail().contains("arm already recorded by");
+        }
+        assertTrue("and the wave says which session holds it", held);
         // The deeper obligation carries the earlier wave's answer in its own
         // prefix: it needs the marker true AND the count above five.
         Obligation deeper = named(next, "Guard#u19");
