@@ -214,15 +214,17 @@ public class D3RuntimeTest {
 
         D3Runtime.decision(occurrence, 12L, "Klass.m()#u8", 1, true,
                 expression);
-        // hdfs-17960's marker decision, in the shape the VM publishes it:
-        // the source reads `if marker == 0 goto`, the run had marker true so
-        // the jump fell through, and the VM's path condition holds the
-        // predicate it SATISFIED -- `marker != false`.  The row states that
-        // term and outcome=true, because the term held; stating the taken
-        // jump instead (false) would assert `marker == false` against the
-        // mint the same session publishes.
+        // hdfs-17960's marker decision: the source reads
+        // `if marker == 0 goto`, the run had marker true so the jump fell
+        // through, and the VM published the constraint it SATISFIED,
+        // `marker != false`.  The row states the JUMP's predicate --
+        // `marker == false`, the one spelling of this site that does not
+        // move between arms or replays -- and outcome=false, the arm.  The
+        // conjunct a consumer forms, `(not term)`, is the satisfied
+        // constraint back again; the flipped replay states the same term
+        // with outcome=true, which is what lets a flip be seen at all.
         D3Runtime.decision(occurrence, 13L, "SnapshotManager.delete()#u7", 1,
-                true, markerHeld("M_Z_marker"));
+                false, markerJumpCondition("M_Z_marker"));
         D3Runtime.exported(occurrence, 4L, "XCH.port", 7L, "c1", 0,
                 expression, "J", "1");
         D3Runtime.attachedAt(endpoint, 9L, "XCH.port", 7L, "c1", "v_H", "J",
@@ -347,8 +349,11 @@ public class D3RuntimeTest {
             Boolean held = holdsAtRoots(table.get(row.term()), recorded,
                     table);
             if (held == null) continue;
-            assertEquals("the term of " + row.siteId() + " held", held,
-                    Boolean.valueOf(row.outcome()));
+            // `outcome ? term : (not term)` is the constraint the run
+            // satisfied, so a term over declared roots alone holds exactly
+            // when the row's arm says it does.
+            assertEquals("the conjunct of " + row.siteId() + " is satisfied",
+                    held, Boolean.valueOf(row.outcome()));
             checked++;
         }
         assertEquals("one decision is over declared roots only", 1, checked);
@@ -427,8 +432,8 @@ public class D3RuntimeTest {
         return record;
     }
 
-    /** {@code marker != false}, the predicate a fall-through satisfied. */
-    private static JsonObject markerHeld(String symbol) {
+    /** {@code marker == false}, the predicate the jump is taken under. */
+    private static JsonObject markerJumpCondition(String symbol) {
         JsonObject marker = new JsonObject();
         marker.addProperty("_type", "SymbolExpression");
         marker.addProperty("_java_type", "Z");
@@ -445,7 +450,7 @@ public class D3RuntimeTest {
         JsonObject predicate = new JsonObject();
         predicate.addProperty("_type", "BinaryExpression");
         predicate.add("_left", read);
-        predicate.addProperty("_op", "!=");
+        predicate.addProperty("_op", "==");
         predicate.add("_right", literal);
         return predicate;
     }
