@@ -780,7 +780,12 @@ campaign_require_claim() {
     and ($r.campaignClaim.blockers | type) == "array"
     and ($r.campaignClaim.blockerCount | type) == "number"
     and ($r.campaignClaim.claimReason | type) == "string"
-    and ($r.campaignClaim.whyNotAccepted | type) == "string"' \
+    and ($r.campaignClaim.whyNotAccepted | type) == "string"
+    and (($r.campaignClaim.findingKind // "")
+      | IN("MARKER_FLIPPED", "CLOCK_SKEW", "MESSAGE_PAIRING_FLIPPED",
+           "STATE_PAIRING_FLIPPED", "RECORDED_FAILURE_EXPLAINED",
+           "NO_SUPPORTED_WITNESS"))
+    and ($r.campaignClaim.polarityDecides | type) == "boolean"' \
     "${path}" >/dev/null \
     || campaign_fail EMIT ClaimPolicy "${path}" \
       "the composition manifest published no ClaimPolicy decision"
@@ -2537,6 +2542,18 @@ campaign_emit() {
      # the published count drift from the policy that decided the claim.
      blockerCount: $decided.blockerCount,
      whyNotAccepted: $decided.whyNotAccepted,
+     # WHICH mechanism the formula supports, beside WHETHER the run is
+     # accepted.  Two questions, and a reader of result.json alone could
+     # answer only the second: the ClaimKind, the valuation that carried it
+     # and the roots it moved stayed in the composition manifest, so the
+     # acceptance harness had to re-derive the mechanism from a probe of its
+     # own.  polarityDecides travels with them because it is the condition
+     # the claim rests on -- ClaimPolicy refuses MARKER_FLIPPED and
+     # CLOCK_SKEW outright without it -- not a note beside the claim.
+     findingKind: $decided.findingKind,
+     polarityDecides: $decided.polarityDecides,
+     valuationOrdinal: $decided.valuationOrdinal,
+     movedRoots: $decided.movedRoots,
      reachability: $reachability,
      solverState: ($r.state // ""),
      finalStatus: ($c.finalStatus // ""),

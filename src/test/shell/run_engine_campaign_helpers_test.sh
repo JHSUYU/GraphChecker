@@ -95,12 +95,15 @@ emit_fixture() {
       state: "sat", reachability: "REACHABLE",
       unsatClosureComplete: false, gaps: [],
       symbolicVariableModels: [],
-      valuations: [{values: [false], status: "sat"},
-                   {values: [true], status: "unsat"}],
+      valuations: [{values: [false], status: "unsat"},
+                   {values: [true], status: "sat"}],
       campaignClaim: {schemaVersion: 1, kind: "CAMPAIGN_CLAIM",
         claim: "SAT_CANDIDATE",
         claimReason: "a valuation satisfies the target predicate inside the recorded model and a symbolic root flips it",
         blockers: [], blockerCount: 0, whyNotAccepted: "",
+        findingKind: "MARKER_FLIPPED", polarityDecides: true,
+        valuationOrdinal: 1,
+        movedRoots: {"HDFS.CONFIG.SNAPSHOT_DELETION_ORDERED": "true"},
         rootSpace: {reachability: "REACHABLE",
                     faultSensitive: true}}}}' \
     >"${composition_manifest}"
@@ -157,6 +160,8 @@ emit_fixture_undecided_roots() {
         {code: "FINDING_MECHANISM_UNNAMED", subject: "NO_MECHANISM",
          detail: "no satisfying witness names a mechanism"}],
       whyNotAccepted: ("claim=INCONCLUSIVE_PARTIAL: 2 blocker(s) withhold acceptance\n  TARGET_UNCONSTRAINED_BY_ROOTS: no symbolic root flips the target predicate\n  FINDING_MECHANISM_UNNAMED [NO_MECHANISM]: no satisfying witness names a mechanism"),
+      findingKind: "NO_SUPPORTED_WITNESS", polarityDecides: false,
+      valuationOrdinal: 0, movedRoots: {},
       rootSpace: {reachability: "REACHABLE",
                   faultSensitive: true}}}' \
     "${composition_manifest}" >"${composition_manifest}.tmp"
@@ -230,6 +235,14 @@ jq -e '[.gaps[] | select(.code == "PATH_FLIP_SOLVER_TIMEOUT")] | length == 0' \
 jq -e '.blockers == [] and .blockerCount == 0 and .whyNotAccepted == ""' \
   "${campaign_final}/result.json" >/dev/null \
   || fail "an accepted claim published blockers"
+# WHICH mechanism, beside WHETHER accepted.  The acceptance harness gates
+# on these four, so a result.json that publishes the claim without them
+# reads as a refusal for a reason the run never had.
+jq -e '.findingKind == "MARKER_FLIPPED" and .polarityDecides == true
+  and .valuationOrdinal == 1
+  and .movedRoots == {"HDFS.CONFIG.SNAPSHOT_DELETION_ORDERED": "true"}' \
+  "${campaign_final}/result.json" >/dev/null \
+  || fail "result.json does not carry the mechanism the claim rests on"
 
 # GAP-1: a gap raised by a stage the claim cannot see still withholds the
 # candidate, because one ledger classes every code and an unregistered code
