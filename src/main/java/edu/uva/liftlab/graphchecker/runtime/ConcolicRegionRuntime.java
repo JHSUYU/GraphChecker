@@ -14,7 +14,6 @@ import com.google.gson.JsonParser;
 import com.google.gson.JsonPrimitive;
 import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
 import edu.uva.liftlab.graphchecker.d3.plan.BranchPredicateAlgebra;
-import edu.uva.liftlab.graphchecker.d3.plan.BranchReplayContract;
 import edu.uva.liftlab.graphchecker.d3.plan.BranchWitness;
 import edu.uva.liftlab.graphchecker.d3.smt.CanonicalJson;
 import edu.uva.liftlab.graphchecker.d3.plan.ClockRootPhysics;
@@ -3435,7 +3434,8 @@ public final class ConcolicRegionRuntime {
             // address; the branch mapping beside it retains the actual
             // occurrence and symbolic support which matched that source.
             boolean permuted = decision.addressesPermutedTargetOccurrence()
-                    && active.activation.replayContract != null;
+                    && edu.uva.liftlab.graphchecker.runtime.d3.FocusedReplay
+                            .focused(active.d3Address);
             if (statesTargetReach(recorded.decided, permuted,
                     active.activation.targetBranchSite,
                     active.activation.targetBranchOccurrence,
@@ -3535,6 +3535,7 @@ public final class ConcolicRegionRuntime {
                 ? vmAttestation.conditionIndices.get(0) : -1;
         JsonObject mapping = branchMapping(method, unitIndex, occurrence,
                 vmEventId);
+        mapping.addProperty("outcome", observedOutcome);
         // Exact VM ownership is one condition for an IfStmt.
         int mappingBaseline = conditionIndex >= 0
                 ? conditionIndex : baseline;
@@ -3650,6 +3651,7 @@ public final class ConcolicRegionRuntime {
                 conditionIndices.size() - 1) + 1;
         JsonObject mapping = branchMapping(method, unitIndex, occurrence,
                 vmEventId);
+        mapping.addProperty("outcome", expected.caseArm());
         mapping.addProperty("rawPathConditionSize", mappingLimit);
         mapping.addProperty("rawPathConditionBaseline", mappingBaseline);
         if (!attestation.valid) {
@@ -3720,6 +3722,9 @@ public final class ConcolicRegionRuntime {
      */
     private static JsonObject branchMapping(
             String method, int unitIndex, int occurrence, long vmEventId) {
+        // The row the DecisionRow is built from states the site, the arm
+        // and the predicate as written; the witness objects beside it are
+        // the old publication's shapes and nothing reads them now.
         JsonObject mapping = new JsonObject();
         mapping.addProperty("siteId", SiteId.render(method, unitIndex));
         mapping.addProperty("method", safe(method));
@@ -4072,18 +4077,21 @@ public final class ConcolicRegionRuntime {
 
         if (active.replayPrefixContradicted()) {
             abandonOccurrence(active, SKIP_REPLAY_PREFIX_UNMATCHED,
-                    "activation contradicts the recorded replay prefix: "
-                            + active.replayProgress.failure());
+                    "activation contradicts its obligation's prefix: "
+                            + edu.uva.liftlab.graphchecker.runtime.d3
+                                    .FocusedReplay.refusal(active.d3Address));
             return;
         }
-        // Replay progress is frozen at this terminal.
-        if (active.activation.replayContract != null) {
-            if (!active.replayProgress.complete()) {
-                abandonOccurrence(active, SKIP_REPLAY_PREFIX_UNMATCHED,
-                        "no compatible activation matched replay prefix: "
-                                + active.replayProgress.failure());
-                return;
-            }
+        // The obligation is answered at this terminal, by the one matcher.
+        if (active.d3Address != null
+                && !edu.uva.liftlab.graphchecker.runtime.d3.FocusedReplay
+                        .complete(active.d3Address)) {
+            abandonOccurrence(active, SKIP_REPLAY_PREFIX_UNMATCHED,
+                    "the focused occurrence did not take the decision its "
+                            + "obligation flips: "
+                            + edu.uva.liftlab.graphchecker.runtime.d3
+                                    .FocusedReplay.refusal(active.d3Address));
+            return;
         }
         List<String> unapplied = new ArrayList<>();
         for (ModelAssignment assignment
@@ -4149,9 +4157,6 @@ public final class ConcolicRegionRuntime {
             abandonOccurrence(active, SKIP_UNAPPLIED_MODEL_ASSIGNMENT,
                     "terminal reached with unapplied guarded read "
                             + "assignments " + unappliedReads);
-            return;
-        }
-        if (active.activation.replayContract != null) {
             return;
         }
     }
@@ -5836,18 +5841,6 @@ public final class ConcolicRegionRuntime {
          * replay authority itself, so there is no second, symbolic reading of
          * a switch for the prefix to disagree with.
          */
-        boolean observeReplayProgress(
-                BranchReplayContract.ReplayProgress progress, String siteId,
-                int occurrence, String symbolicSupportDigest) {
-            if (expected == null) {
-                return progress.observeBinary(siteId, occurrence, outcome,
-                        symbolicSupportDigest);
-            }
-            progress.observeSwitch(siteId, occurrence, expected.branchKind,
-                    expected.caseKeys, expected.observedSuccessorIndex);
-            return true;
-        }
-
         /** How {@code REPLAY_OBSERVE} names the decision it just observed. */
         String replayTrace(boolean matched) {
             return expected == null
@@ -6206,7 +6199,6 @@ public final class ConcolicRegionRuntime {
                 symbolizedInputPorts = new IdentityHashMap<>();
         private final Map<String, Integer> associativeAccessOccurrences =
                 new LinkedHashMap<>();
-        private final BranchReplayContract.ReplayProgress replayProgress;
         /** One shared expression DAG for all read-outs in this VM session. */
         final VmExpressionTable.Store expressionStore;
         private long preparedBranchSequence;
@@ -6224,8 +6216,6 @@ public final class ConcolicRegionRuntime {
             this.expressionStore = workloadExpressionStore;
             this.loopBackedges = new LoopBackedgeBudget(
                     activation.loopBound);
-            this.replayProgress = new BranchReplayContract.ReplayProgress(
-                    activation.replayContract);
         }
 
 
@@ -6411,12 +6401,21 @@ public final class ConcolicRegionRuntime {
                 ExactConcreteBranchObservation observation) {
             JsonObject mapping = branchMapping(method, unitIndex, occurrence,
                     0L);
+            mapping.addProperty("outcome", observation.sourceTakenOutcome());
             mapping.addProperty("rawPathConditionSize", 0);
             mapping.addProperty("rawPathConditionBaseline", 0);
             mapping.add("concreteObservation", observation.toJson());
             branchMappings.add(mapping);
         }
 
+        /**
+         * States one decision to the one prefix matcher.
+         *
+         * <p>{@code runtime/d3/FocusedReplay} is the only account of
+         * whether a replay is following its obligation: it reads the
+         * obligation and the published decisions, and a second account of
+         * the same decisions is how two answers to one question appear.</p>
+         */
         private boolean observeReplayDecision(
                 String siteId, int occurrence, BranchDecision decision) {
             return observeReplayDecision(siteId, occurrence, decision, "");
@@ -6425,26 +6424,31 @@ public final class ConcolicRegionRuntime {
         private boolean observeReplayDecision(
                 String siteId, int occurrence, BranchDecision decision,
                 String symbolicSupportDigest) {
-            boolean matched = decision.observeReplayProgress(replayProgress,
-                    siteId, occurrence, symbolicSupportDigest);
+            if (d3Address == null) return true;
+            edu.uva.liftlab.graphchecker.runtime.d3.FocusedReplay
+                    .observeDecision(d3Address, siteId, occurrence,
+                            decision.outcome);
+            boolean contradicted = edu.uva.liftlab.graphchecker.runtime.d3
+                    .FocusedReplay.contradicted(d3Address);
             diag("REPLAY_OBSERVE", siteId + " occ=" + occurrence
-                    + decision.replayTrace(matched)
-                    + " complete=" + replayProgress.complete()
-                    + " failed=" + replayProgress.failed());
-            if (replayProgress.failed()) {
+                    + decision.replayTrace(!contradicted)
+                    + " contradicted=" + contradicted);
+            if (contradicted) {
                 addUnresolvedOnce("REPLAY_PREFIX_MISMATCH:"
-                        + replayProgress.failure());
+                        + edu.uva.liftlab.graphchecker.runtime.d3
+                                .FocusedReplay.refusal(d3Address));
             }
-            return matched;
+            return !contradicted;
         }
 
         /**
-         * Whether this activation has already walked a branch the recorded
-         * replay prefix forbids.
+         * Whether this activation has already walked a branch its
+         * obligation forbids.
          */
         private boolean replayPrefixContradicted() {
-            return activation.replayContract != null
-                    && replayProgress.failed();
+            return d3Address != null
+                    && edu.uva.liftlab.graphchecker.runtime.d3.FocusedReplay
+                            .contradicted(d3Address);
         }
 
         private int nextLocalMaterializationOccurrence(

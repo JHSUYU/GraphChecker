@@ -91,27 +91,16 @@ final class D3RowPublication {
     private static void decisions(ActiveRegion active,
                                   OccurrenceAddress occurrence) {
         for (JsonObject mapping : active.branchMappings) {
-            JsonObject witness = object(mapping, "witness");
-            JsonObject concrete = object(mapping, "concreteObservation");
             String siteId = optionalString(mapping, "siteId");
             int ordinal = optionalInteger(mapping, "occurrence", 1);
             long seq = optionalLongInteger(mapping, "vmEventId", 0L);
-            if (witness.size() > 0) {
-                // The term is the predicate as written at the site; the
-                // outcome is the arm this run took.  Nothing here applies
-                // one to the other -- CONTRACT-SPEC §2.
-                JsonObject written = object(mapping, "siteCondition");
-                D3Runtime.decision(occurrence, seq, siteId, ordinal,
-                        optionalBool(witness, "sourceTakenOutcome", false),
-                        written.size() > 0 ? written : predicate(witness));
-            } else if (concrete.size() > 0) {
-                // A decision the VM held no condition for still happened,
-                // and the arm it took is a fact of this run.
-                D3Runtime.decision(occurrence, seq, siteId, ordinal,
-                        optionalBool(concrete, "observedOutcome",
-                                optionalBool(concrete, "outcome", false)),
-                        null);
-            }
+            // The row states the site, the arm it took and the predicate as
+            // written; nothing here applies one to the other
+            // (CONTRACT-SPEC §2), and nothing reads the old witness shapes.
+            JsonObject written = object(mapping, "siteCondition");
+            D3Runtime.decision(occurrence, seq, siteId, ordinal,
+                    optionalBool(mapping, "outcome", false),
+                    written.size() > 0 ? written : null);
         }
     }
 

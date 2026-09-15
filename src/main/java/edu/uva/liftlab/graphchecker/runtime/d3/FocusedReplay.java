@@ -249,6 +249,62 @@ public final class FocusedReplay {
         MATCHED.put(id, matched + 1);
     }
 
+    /**
+     * Whether this occurrence has already contradicted its obligation.
+     *
+     * <p>The one prefix matcher: a replay is admitted or refused by what
+     * {@link #observeDecision} has seen, and nothing else keeps a second
+     * account of the same decisions.  A replay that was handed no
+     * obligation contradicts nothing -- the seed decides by running.</p>
+     */
+    public static boolean contradicted(OccurrenceAddress occurrence) {
+        load();
+        if (task == null || !focused(occurrence)) return false;
+        synchronized (LOCK) {
+            for (Obligation obligation : OBLIGATIONS) {
+                if (REFUSALS.containsKey(Text.safe(
+                        obligation.obligationId()))) {
+                    return true;
+                }
+            }
+            return false;
+        }
+    }
+
+    /** Why it was refused, for the row that says so. */
+    public static String refusal(OccurrenceAddress occurrence) {
+        load();
+        if (task == null) return "";
+        synchronized (LOCK) {
+            for (Obligation obligation : OBLIGATIONS) {
+                String detail = REFUSALS.get(Text.safe(
+                        obligation.obligationId()));
+                if (detail != null) return detail;
+            }
+            return "";
+        }
+    }
+
+    /**
+     * Whether this occurrence has taken the decision its obligation flips.
+     *
+     * <p>True for a replay with no obligation: there is no prefix to
+     * complete, and a seed activation is never abandoned for one.</p>
+     */
+    public static boolean complete(OccurrenceAddress occurrence) {
+        load();
+        if (task == null || !focused(occurrence)) return true;
+        synchronized (LOCK) {
+            for (Obligation obligation : OBLIGATIONS) {
+                if (!FLIPPED.contains(Text.safe(
+                        obligation.obligationId()))) {
+                    return false;
+                }
+            }
+            return true;
+        }
+    }
+
     /** States one interaction endpoint the focused occurrence reached. */
     public static void observeInteraction(String endpointRender) {
         load();
