@@ -1065,4 +1065,48 @@ grep -q "artifact=${gate_dir}/campaign_gaps.jsonl" "${gate_dir}/error.log" \
 [[ "$(wc -l <"${gate_dir}/campaign_gaps.jsonl")" -eq 2 ]] \
   || fail "the gate's gap file is not append-only"
 
+# INSTRUMENT-VERIFY: the woven classes are put to the JVM verifier in the
+# stage that wrote them.  9d2761c17 asked it for the first time inside the
+# seed replay, which died on woven FSNamesystem.allowSnapshot @142 before any
+# region ran and was reported as a failed workload method.  VerifyWovenClasses
+# itself is exercised offline against real woven trees; what is pinned here is
+# the control flow around it -- INSTRUMENT calls it, a non-zero verifier exit
+# fails the stage naming the class and the reason, the report it wrote is the
+# named artifact, and a verifier that refuses nothing goes on.
+declare -f campaign_instrument | grep -q campaign_verify_woven_classes \
+  || fail "INSTRUMENT does not put its woven classes to the verifier"
+verify_dir="${test_tmp}/instrument-verify"
+mkdir -p "${verify_dir}/instrumented-classes"
+project_classpath="${verify_dir}/classpath-entry"
+(
+  run_java_main() { echo "verified 18 woven class(es) under $2"; }
+  campaign_verify_woven_classes "${verify_dir}" >/dev/null
+) || fail "a verifier run that refused nothing failed the campaign"
+grep -q 'verified 18 woven class' \
+  "${verify_dir}/woven_class_verification.log" \
+  || fail "the verifier's report was not written beside the classes"
+(
+  run_java_main() {
+    echo "verified 3 of 18 woven class(es) under $2"
+    echo "UNVERIFIABLE org.apache.hadoop.hdfs.server.namenode.FSNamesystem: \
+java.lang.VerifyError at \
+org/apache/hadoop/hdfs/server/namenode/FSNamesystem.allowSnapshot(Ljava/lang\
+/String;)V @142: lload_2: Local index 2 is invalid"
+    return 1
+  }
+  campaign_verify_woven_classes "${verify_dir}" >/dev/null
+) 2>"${verify_dir}/error.log" \
+  && fail "a woven class the JVM verifier refused did not fail the campaign"
+grep -q 'stage=INSTRUMENT' "${verify_dir}/error.log" \
+  || fail "the verifier's failure is not attributed to INSTRUMENT: \
+$(cat "${verify_dir}/error.log")"
+grep -q 'component=VerifyWovenClasses' "${verify_dir}/error.log" \
+  || fail "the verifier's failure names no component"
+grep -q "artifact=${verify_dir}/woven_class_verification.log" \
+  "${verify_dir}/error.log" \
+  || fail "the verifier's failure does not name the report it wrote"
+grep -q 'allowSnapshot.*Local index 2 is invalid' "${verify_dir}/error.log" \
+  || fail "the verifier's failure does not name the class, method and \
+reason: $(cat "${verify_dir}/error.log")"
+
 echo "run_engine campaign helper tests passed"
