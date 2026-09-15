@@ -19,10 +19,7 @@ public final class RegionMapValuesToObjectArrayApiSmoke {
         require(System.trackContainerExpression(
                         map, "REGION.map-values-array.in.map"),
                 "map live-in rejected");
-        long initial = System.selectSharedMapCarrier(map);
-        require(initial > 0L, "map carrier selection rejected: " + initial);
-
-        // Select the empty state first, then publish two STATE_PUT versions.
+        // The empty base is stated first, then two STATE_PUT versions.
         // values() keeps all three states as one guarded read; toArray()
         // inherits it instead of issuing a second map read.
         map.put(Integer.valueOf(7), new Entry(17));
@@ -46,15 +43,24 @@ public final class RegionMapValuesToObjectArrayApiSmoke {
         require(count(versions, "\"versionKind\":\"STATE_PUT\"") == 2,
                 versions);
         require(count(versions, "\"readEventId\"") == 1, versions);
-        require(versions.contains("\"candidateCount\":3"), versions);
+        require(count(versions, "\"readerContextId\"") == 1, versions);
+        // The INITIAL version states the content the recorder walked before
+        // the first symbolic mutation: this map was empty, and zero is an
+        // answer rather than an absent one.
+        require(versions.contains(
+                "\"initialSnapshot\":{\"stated\":true,\"entries\":0,"
+                + "\"truncated\":false}"), versions);
+        // One read, one version named: the state the values view observed is
+        // the newest STATE_PUT, and the value it carries is the whole chain
+        // below it, so the stated base and both puts are in the read.
         require(expression.contains("\"_type\":\"ReadFromExpression\""),
                 expression);
-        require(expression.contains(
-                "\"exactlyOne\":[\"rf1\",\"rf2\",\"rf3\"]"), expression);
+        require(count(expression, "\"observedVersion\"") == 1, expression);
         require(count(expression,
-                "\"versionKind\":\"INITIAL\"") == 1, expression);
+                "\"versionKind\":\"STATE_PUT\"") == 1, expression);
         require(count(expression,
-                "\"versionKind\":\"STATE_PUT\"") == 2, expression);
+                "\"operation\":\"SNAPSHOT_BASE\"") == 1, expression);
+        require(count(expression, "\"operation\":\"PUT\"") == 2, expression);
         require(!expression.contains("\"versionKind\":\"\""), expression);
         require(versions.contains("\"serializationTruncated\":false"),
                 versions);

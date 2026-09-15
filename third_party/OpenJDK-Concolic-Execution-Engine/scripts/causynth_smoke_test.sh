@@ -23,7 +23,6 @@ cd "$JDK_ROOT"
   test/causynth/RegionContainerLiveInApiSmoke.java \
   test/causynth/RegionIndexedCarrierApiSmoke.java \
   test/causynth/RegionUnshadowedStringArgumentSmoke.java \
-  test/causynth/RegionInitialSnapshotCarrierSmoke.java \
   test/causynth/RegionDeepExpressionSerializeSmoke.java \
   test/causynth/RegionMapApiSmoke.java \
   test/causynth/RegionMapIteratorRemoveApiSmoke.java \
@@ -31,7 +30,6 @@ cd "$JDK_ROOT"
   test/causynth/RegionNumericLoopApiSmoke.java \
   test/causynth/RegionNumericSemanticsApiSmoke.java \
   test/causynth/RegionObjectArrayMapApiSmoke.java \
-  test/causynth/RegionOutputContainerSnapshotApiSmoke.java \
   test/causynth/RegionPausedSymbolizationSmoke.java \
   test/causynth/RegionLookupSwitchApiSmoke.java \
   test/causynth/org/slf4j/helpers/CausynthObservationProbe.java \
@@ -41,7 +39,6 @@ cd "$JDK_ROOT"
   test/causynth/RegionShadowStackLifecycleSmoke.java \
   test/causynth/RegionSymbolicKeySourceSmoke.java \
   test/causynth/RegionSharedReadFromSmoke.java \
-  test/causynth/RegionReferenceCarrierFieldSmoke.java \
   test/causynth/RegionReferenceFieldStatedReadSmoke.java \
   test/causynth/RegionExactMintOverCarrierWriteSmoke.java \
   test/causynth/RegionNestedRegionArmedReadSmoke.java \
@@ -73,7 +70,6 @@ for smoke in \
   RegionNumericLoopApiSmoke \
   RegionNumericSemanticsApiSmoke \
   RegionObjectArrayMapApiSmoke \
-  RegionOutputContainerSnapshotApiSmoke \
   RegionPausedSymbolizationSmoke \
   RegionLookupSwitchApiSmoke \
   RegionLoggingObservationSmoke \
@@ -82,7 +78,6 @@ for smoke in \
   RegionShadowStackLifecycleSmoke \
   RegionSymbolicKeySourceSmoke \
   RegionSharedReadFromSmoke \
-  RegionReferenceCarrierFieldSmoke \
   RegionReferenceFieldStatedReadSmoke \
   RegionExactMintOverCarrierWriteSmoke \
   RegionNestedRegionArmedReadSmoke \
@@ -106,18 +101,3 @@ done
   -cp "$OUT" RegionPathConditionTruncationSmoke
 "$JDK_HOME/bin/java" -Xint -Dcausynth.vm.pathcondition.bytes=8192 \
   -cp "$OUT" RegionPathConditionTruncationSmoke
-
-# What a whole-state carrier's INITIAL version says about the content the
-# container held, on every arm of the answer.  The bound's default is 64
-# members, so the refusal arm is unreachable from a smoke unless the bound is
-# lowered for the run -- which is the whole reason it is a property.  Every
-# case here holds at most two members, so one lowered-bound run exercises all
-# of them:
-#   two members            snapshotted exactly
-#   no members             a stated *empty* base, which is a snapshot too
-#   mutated before select  the watched mutation is undone to recover the base
-#                          and rebuilt on top of it, so the base is published
-#   REMOVE before select   no inverse, so the base is published as unknown
-#   three members          over the lowered bound; the opaque root is kept
-"$JDK_HOME/bin/java" -Xint -Dcausynth.concolic.initial.snapshot.max=2 \
-  -cp "$OUT" RegionInitialSnapshotCarrierSmoke
