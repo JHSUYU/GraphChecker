@@ -32,7 +32,7 @@ import java.util.Objects;
  * constant per task -- so every candidate fell into one bucket whatever it
  * actually entered under.  One address, one comparison, one counting rule.</p>
  *
- * <p>The rendered form is {@link OccurrenceId}'s: {@code
+ * <p>The rendered form is: {@code
  * <node>#<epoch>/region/<regionId>#<k>}, optionally with {@code #a<n>} for
  * the activation that ran it.  A corpus written while the family was part of
  * the address spells {@code <regionId>@<family>}; that suffix parses and is
@@ -45,7 +45,7 @@ public final class OccurrenceAddress {
     /**
      * The one spelling of the region separator in an occurrence id.
      *
-     * <p>{@link OccurrenceId} parses the same grammar from the other end and
+     * <p>the rendered id parses the same grammar from the other end and
      * held its own copy of this string.  One grammar, one constant: a second
      * spelling is how two parsers of one identity drift apart.</p>
      */
@@ -79,7 +79,7 @@ public final class OccurrenceAddress {
      * address is the same occurrence.</p>
      */
     public static OccurrenceAddress parse(String occurrenceId) {
-        String planned = OccurrenceId.parse(occurrenceId).planned();
+        String planned = withoutActivationSuffix(occurrenceId);
         int region = planned.indexOf(REGION_MARKER);
         if (region <= 0) return NONE;
         String source = planned.substring(0, region);
@@ -239,7 +239,7 @@ public final class OccurrenceAddress {
                 + (rootMethod == null ? "" : rootMethod);
     }
 
-    /** This address as {@link OccurrenceId} spells it, without activation. */
+    /** This address, rendered. */
     public String render() {
         if (!isNamed()) return "";
         return sourceKey() + REGION_MARKER + regionId + "#" + ordinal;
@@ -270,4 +270,25 @@ public final class OccurrenceAddress {
     public String toString() {
         return isNamed() ? render() : "<unnamed occurrence>";
     }
+    /**
+     * An id without the {@code #a<n>} a v1 minter appended, if it has one.
+     *
+     * <p>Nothing mints that suffix any longer: identity v1 numbered the
+     * activations of one planned address because two runs of it were
+     * occurrences it could not otherwise tell apart, and identity v3
+     * distinguishes them by the execution index they entered under. A corpus
+     * written while something did mint it is still read here rather than
+     * refused, which is the whole reason this stayed a step of parsing.</p>
+     */
+    private static String withoutActivationSuffix(String occurrenceId) {
+        String value = occurrenceId == null ? "" : occurrenceId;
+        int marker = value.lastIndexOf("#a");
+        int ordinal = marker + 2;
+        if (marker <= 0 || ordinal >= value.length()) return value;
+        for (int index = ordinal; index < value.length(); index++) {
+            if (!Character.isDigit(value.charAt(index))) return value;
+        }
+        return value.substring(0, marker);
+    }
+
 }

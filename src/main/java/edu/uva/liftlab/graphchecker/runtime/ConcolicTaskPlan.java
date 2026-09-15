@@ -18,7 +18,6 @@ import edu.uva.liftlab.graphchecker.d3.plan.FieldPathSpec.DeclaredField;
 import edu.uva.liftlab.graphchecker.d3.plan.InputActionCatalog;
 import edu.uva.liftlab.graphchecker.d3.smt.JavaContainerTypes;
 import edu.uva.liftlab.graphchecker.d3.plan.LoopBoundPolicy;
-import edu.uva.liftlab.graphchecker.contract.OccurrenceId;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;

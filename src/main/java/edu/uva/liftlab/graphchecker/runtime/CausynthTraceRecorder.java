@@ -79,6 +79,10 @@ public final class CausynthTraceRecorder {
         initialize();
         recordingEnabled = true;
         recordingStarted = true;
+        // k is window-local on both ends: the recording counts from the
+        // moment the workload opens its window and so does every replay of
+        // it, so a hop's k names the same activation in both.
+        edu.uva.liftlab.graphchecker.runtime.d3.Lineage.openWindow();
     }
 
     /**
@@ -276,6 +280,10 @@ public final class CausynthTraceRecorder {
         if (isThreadStart(declaredCallee, receiver)) {
             RuntimeTraceContext.captureAsync(receiver);
         }
+        // The execution index's stack: one frame per instrumented call
+        // site, carrying the iteration of the loop enclosing it.
+        edu.uva.liftlab.graphchecker.runtime.d3.Identity.enterCall(
+                event.siteId);
         if (event.id > 0L) {
             ACTIVE_CALL_SITES.get().push(new ActiveCallSite(event.id, ownerCallId,
                     event.siteId, event.method, event.declaredCallee));
@@ -300,6 +308,11 @@ public final class CausynthTraceRecorder {
         emitExecutionEvent(event);
     }
 
+    /** Leaves the call site {@link #beginCall} pushed. */
+    private static void exitCallFrame() {
+        edu.uva.liftlab.graphchecker.runtime.d3.Identity.exitCall();
+    }
+
     public static void endCall(long invocationId, Object returnValue,
                                String primitiveValue) {
         ActiveCallSite site = activeCallSite(invocationId);
@@ -310,11 +323,13 @@ public final class CausynthTraceRecorder {
         event.primitiveValue = MapFields.safe(primitiveValue);
         emitExecutionEvent(event);
         removeCallSite(invocationId);
+        exitCallFrame();
     }
 
     /** Closes one exact call-site activation on its exceptional edge. */
     public static void throwCall(long invocationId) {
         closeCallSite(activeCallSite(invocationId), "CALL_SITE_THROW");
+        exitCallFrame();
     }
 
     public static void recordBranch(long callId, String method, int unitIndex,
@@ -519,6 +534,12 @@ public final class CausynthTraceRecorder {
         }
         recordExchange("SEND", transport, correlationId, attemptId, half,
                 localOwner, carriedScope);
+        // IDENTITY-V3 SS C: the message carries its producer's endpoint, so
+        // the receiver can state the anchor it ran under.  Filed by
+        // correlation because the endpoint is bigger than the header slot
+        // this transport has; the pairing itself is the run's own fact.
+        ConcolicRegionRuntime.noteMessageSender(transport, correlationId,
+                half);
         return header;
     }
 
@@ -627,6 +648,59 @@ public final class CausynthTraceRecorder {
     public static void captureAsync(Object carrier) {
         initialize();
         RuntimeTraceContext.captureAsync(carrier);
+    }
+
+    /**
+     * Enters the scope a queued unit of work carried from where it was made.
+     *
+     * <p>The dequeue half of {@link #captureScope()}: the enqueueing thread
+     * captures, the running thread enters here and leaves through {@link
+     * #exitCarriedScope(long)}.  Hadoop's IPC {@code Server.Call} is the
+     * case this exists for -- built on a reader thread, run on a handler of
+     * a pool created at connection setup, which no inheritable context ever
+     * reaches.</p>
+     *
+     * @param carriedScope the value {@link #captureScope()} returned
+     * @param roleName     the scope kind serving it, e.g. {@code
+     *                     IPC_HANDLER}
+     * @param apiName      the api being served, or {@code null}
+     * @return the token to hand {@link #exitCarriedScope(long)}, or 0
+     */
+    public static long enterCarriedScope(Object carriedScope,
+                                         String roleName, String apiName) {
+        initialize();
+        return RuntimeTraceContext.enterCarriedScope(carriedScope, roleName,
+                apiName);
+    }
+
+    /** Leaves the scope {@link #enterCarriedScope} entered. */
+    public static void exitCarriedScope(long token) {
+        RuntimeTraceContext.exitCarriedScope(token);
+    }
+
+    /**
+     * Opens one daemon tick as a root of its own.
+     *
+     * <p>A timer thread serves no request and is created by none, so its
+     * activations have no scope to inherit or repair.  Naming the tick --
+     * role plus the k-th tick in the recording window -- is what makes the
+     * NameNode's key rotation an addressable occurrence.</p>
+     *
+     * @param owner    an object whose registered source names the node, or
+     *                 {@code null} to take the thread's own
+     * @param roleName {@code HEARTBEAT_TICK}, {@code BP_SERVICE_ACTOR},
+     *                 {@code KEY_MANAGER_TICK}, {@code SPS}, {@code
+     *                 BALANCER}
+     * @return the token to hand {@link #endDaemonTick(long)}
+     */
+    public static long beginDaemonTick(Object owner, String roleName) {
+        initialize();
+        return RuntimeTraceContext.beginTick(owner, roleName);
+    }
+
+    /** Closes the tick {@link #beginDaemonTick} opened. */
+    public static void endDaemonTick(long token) {
+        RuntimeTraceContext.endTick(token);
     }
 
     /** Starts an external API request without changing the application data. */

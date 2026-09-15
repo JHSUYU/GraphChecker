@@ -8,7 +8,6 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.d3.plan.ExecutionTask;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
-import edu.uva.liftlab.graphchecker.contract.OccurrenceId;
 import edu.uva.liftlab.graphchecker.d3.plan.RegionInstancePlan;
 import edu.uva.liftlab.graphchecker.d3.plan.RegionInstancePlan.Goal;
 
@@ -87,8 +86,7 @@ public final class RuntimeWorkflowDiscovery {
         Map<String, JsonObject> edges = new LinkedHashMap<>();
         List<Target> targets = new ArrayList<>();
         for (RegionInstancePlan plan : plans) {
-            String occurrence = OccurrenceId.parse(
-                    plan.occurrenceId()).planned();
+            String occurrence = plan.occurrenceId();
             RegionInstancePlan prior = byOccurrence.putIfAbsent(
                     occurrence, plan);
             if (prior != null && prior != plan) {
@@ -344,8 +342,7 @@ public final class RuntimeWorkflowDiscovery {
 
     private static String plannedOccurrence(JsonObject row) {
         String planned = optionalString(row, "plannedOccurrenceId");
-        return planned.isEmpty() ? OccurrenceId.parse(
-                optionalString(row, "occurrenceId")).planned() : planned;
+        return planned.isEmpty() ? optionalString(row, "occurrenceId") : planned;
     }
 
 
@@ -366,10 +363,8 @@ public final class RuntimeWorkflowDiscovery {
             if (!element.isJsonObject()) continue;
             JsonObject edge = element.getAsJsonObject();
             if (!AutomaticRegionEdge.summaryTraversalBinding(edge)) continue;
-            String from = OccurrenceId.parse(
-                    optionalString(edge, "fromOccurrenceId")).planned();
-            String to = OccurrenceId.parse(
-                    optionalString(edge, "toOccurrenceId")).planned();
+            String from = optionalString(edge, "fromOccurrenceId");
+            String to = optionalString(edge, "toOccurrenceId");
             if (from.isEmpty() || to.isEmpty()) continue;
             String id = optionalString(edge, "edgeId");
             if (id.isEmpty()) id = ArtifactIO.sha256(CanonicalJson.render(edge));
@@ -390,10 +385,8 @@ public final class RuntimeWorkflowDiscovery {
         while (!work.isEmpty()) {
             String consumer = work.removeFirst();
             for (JsonObject edge : edges.values()) {
-                String to = OccurrenceId.parse(
-                        optionalString(edge, "toOccurrenceId")).planned();
-                String from = OccurrenceId.parse(
-                        optionalString(edge, "fromOccurrenceId")).planned();
+                String to = optionalString(edge, "toOccurrenceId");
+                String from = optionalString(edge, "fromOccurrenceId");
                 if (consumer.equals(to) && plans.containsKey(from)
                         && selected.add(from)) {
                     work.addLast(from);
@@ -408,10 +401,8 @@ public final class RuntimeWorkflowDiscovery {
         Map<String, JsonObject> result = new LinkedHashMap<>();
         for (Map.Entry<String, JsonObject> entry : edges.entrySet()) {
             JsonObject edge = entry.getValue();
-            String from = OccurrenceId.parse(
-                    optionalString(edge, "fromOccurrenceId")).planned();
-            String to = OccurrenceId.parse(
-                    optionalString(edge, "toOccurrenceId")).planned();
+            String from = optionalString(edge, "fromOccurrenceId");
+            String to = optionalString(edge, "toOccurrenceId");
             if (closure.contains(from) && closure.contains(to)) {
                 result.put(entry.getKey(), edge.deepCopy());
             }
@@ -586,8 +577,7 @@ public final class RuntimeWorkflowDiscovery {
         private Target(RegionInstancePlan plan, Goal goal) {
             this.plan = plan;
             this.goal = goal;
-            this.occurrenceId = OccurrenceId.parse(
-                    plan.occurrenceId()).planned();
+            this.occurrenceId = plan.occurrenceId();
             this.campaignId = "CAMPAIGN.REGION_PATH."
                     + ArtifactIO.sha256(plan.regionId() + "\n"
                     + occurrenceId + "\n" + goal.goalId());
@@ -667,14 +657,12 @@ public final class RuntimeWorkflowDiscovery {
             Map<String, JsonObject> directProtocol = new LinkedHashMap<>();
             Set<String> unresolvedTopology = new LinkedHashSet<>();
             for (JsonObject edge : topologyEdges) {
-                if (target.occurrenceId.equals(OccurrenceId.parse(
-                        optionalString(edge, "toOccurrenceId")).planned())
+                if (target.occurrenceId.equals(optionalString(edge, "toOccurrenceId"))
                         && AutomaticRegionEdge.tracedExchangeCandidate(edge)) {
                     directProtocol.put(optionalString(edge, "toInputPort"), edge);
                 }
                 if (unresolvedTopology(edge)) {
-                    unresolvedTopology.add(OccurrenceId.parse(
-                            optionalString(edge, "toOccurrenceId")).planned()
+                    unresolvedTopology.add(optionalString(edge, "toOccurrenceId")
                             + "\n" + optionalString(edge, "toInputPort"));
                 }
             }
@@ -710,8 +698,7 @@ public final class RuntimeWorkflowDiscovery {
             for (JsonElement element : array(action, "runtimeAccesses")) {
                 if (!element.isJsonObject()) continue;
                 JsonObject access = element.getAsJsonObject();
-                if (occurrence.equals(OccurrenceId.parse(
-                        optionalString(access, "occurrenceId")).planned())
+                if (occurrence.equals(optionalString(access, "occurrenceId"))
                         && optionalLongInteger(access, "eventSeq", -1L) >= 0L) {
                     return true;
                 }

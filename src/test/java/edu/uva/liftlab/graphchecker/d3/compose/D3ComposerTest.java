@@ -521,6 +521,72 @@ public class D3ComposerTest {
     }
 
     // ------------------------------------------------------------------
+    // 12. A witness that needs the other writer says so.
+    // ------------------------------------------------------------------
+
+    @Test
+    public void aWitnessOnAnotherEligibleWriterIsStatePairingFlipped()
+            throws Exception {
+        Path iteration = folder.newFolder("pairing").toPath();
+        OccurrenceAddress reader = occurrence("case/dn0", "REGION.read",
+                CausalContext.of(Role.DATA_XCEIVER, 1),
+                frame("Reader#run#4", 0));
+        OccurrenceAddress first = occurrence("case/dn0", "REGION.first",
+                CausalContext.of(Role.IPC_HANDLER, 1),
+                frame("Handler#run#2", 0));
+        OccurrenceAddress second = occurrence("case/dn0", "REGION.second",
+                CausalContext.of(Role.HEARTBEAT_TICK, 1),
+                frame("Heartbeat#run#9", 0));
+        LocationId keys = LocationId.of(LocationKind.MAP,
+                "BlockTokenSecretManager", "allKeys");
+
+        for (String[] each : new String[][]{{"s0", "false", "false"},
+                {"s1", "true", "true"}}) {
+            Session session = new Session(iteration, each[0],
+                    "true".equals(each[2]));
+            session.occurrence = reader;
+            session.activation(reader);
+            session.activation(first);
+            session.activation(second);
+            session.marker(each[1]);
+            // The writer the read observed holds a constant; the writer
+            // beside it holds the marker itself.
+            session.expression("EXPR.v1.observed", constant("false"));
+            session.expression("EXPR.v1.other", symbol(MARKER, "Z"));
+            session.decision(first, "first#u1", "(or " + MARKER + " (not "
+                    + MARKER + "))");
+            session.write(Endpoint.of(first, "Handler#put#3:WRITE",
+                    at("w#1", 0), 0), keys, 1L, "EXPR.v1.observed");
+            session.decision(second, "second#u1", "(or " + MARKER + " (not "
+                    + MARKER + "))");
+            session.write(Endpoint.of(second, "Heartbeat#put#7:WRITE",
+                    at("w#1", 0), 0), keys, 2L, "EXPR.v1.other");
+            session.read(Endpoint.of(reader, "Reader#get#5:READ",
+                    at("r#1", 0), 0), keys, 1L, "read_k", "false");
+            session.target("read_k", false, true);
+            session.write();
+        }
+
+        Composer.Composition composition = Composer.compose(
+                CorpusIndex.of(iteration), reader,
+                Collections.<String,
+                        edu.uva.liftlab.graphchecker.d3.contract.RootDomain>
+                        emptyMap(), 4);
+        assertTrue("the read has alternatives, so the family owns it",
+                composition.body().contains("state_family__"));
+
+        ClaimPolicy.Decision decision = ClaimPolicy.decide(composition,
+                solver());
+        assertEquals("the run as it happened does not reach the arm",
+                "unsat", decision.outcomes().get(0).answer().status());
+        assertEquals("sat", decision.outcomes().get(1).answer().status());
+        assertEquals("the witness needs the writer the read did not observe",
+                ClaimKind.STATE_PAIRING_FLIPPED, decision.claim().kind());
+        assertTrue("with the polarity the recording decides",
+                decision.claim().polarityDecides());
+    }
+
+    // ------------------------------------------------------------------
     // Fixture.
     // ------------------------------------------------------------------
 
@@ -574,6 +640,15 @@ public class D3ComposerTest {
     private static ExecutionIndex at(String callSite, int iteration) {
         return ExecutionIndex.of(Collections.singletonList(
                 Frame.of(callSite, iteration)));
+    }
+
+    /** One recorded constant, as the VM serializes it. */
+    private static JsonObject constant(String value) {
+        JsonObject node = new JsonObject();
+        node.addProperty("_type", "ConstExpr");
+        node.addProperty("_java_type", "Z");
+        node.addProperty("_exp", "true".equals(value) ? "Y_Z_1" : "Y_Z_0");
+        return node;
     }
 
     private static JsonObject symbol(String name, String javaType) {

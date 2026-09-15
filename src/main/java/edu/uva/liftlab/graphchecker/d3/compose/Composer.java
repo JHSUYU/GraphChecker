@@ -159,6 +159,7 @@ public final class Composer {
         private final Map<String, Long> clockReadings;
         private final Map<String, Set<String>> unattestedRoots;
         private final Map<String, List<String>> observedReads;
+        private final Map<String, List<String>> observedArrivals;
         private final String seedSessionId;
 
         private Composition(OccurrenceAddress anchor, String body,
@@ -169,6 +170,7 @@ public final class Composer {
                             Map<String, Long> clockReadings,
                             Map<String, Set<String>> unattestedRoots,
                             Map<String, List<String>> observedReads,
+                            Map<String, List<String>> observedArrivals,
                             String seedSessionId) {
             this.anchor = anchor;
             this.body = body;
@@ -185,6 +187,8 @@ public final class Composer {
                     Collections.unmodifiableMap(unattestedRoots);
             this.observedReads =
                     Collections.unmodifiableMap(observedReads);
+            this.observedArrivals =
+                    Collections.unmodifiableMap(observedArrivals);
             this.seedSessionId = seedSessionId;
         }
 
@@ -243,6 +247,13 @@ public final class Composer {
                     : observed;
         }
 
+        /** Path id -> the values that path's attaches actually received. */
+        public List<String> observedArrivals(String pathId) {
+            List<String> observed = observedArrivals.get(pathId);
+            return observed == null ? Collections.<String>emptyList()
+                    : observed;
+        }
+
         public String seedSessionId() {
             return seedSessionId;
         }
@@ -290,6 +301,9 @@ public final class Composer {
             new LinkedHashMap<String, Set<String>>();
     /** Path id -> what its reads observed, as named assertions. */
     private final Map<String, List<String>> observedReads =
+            new LinkedHashMap<String, List<String>>();
+    /** Path id -> the arrivals its attaches actually received. */
+    private final Map<String, List<String>> observedArrivals =
             new LinkedHashMap<String, List<String>>();
     /** Attaches already named as unpaired; one row per attach, not per path. */
     private final Set<String> unpairedNamed = new LinkedHashSet<String>();
@@ -423,7 +437,7 @@ public final class Composer {
                 new ArrayList<Family>(families.values()),
                 new ArrayList<RootDomain>(roots.values()), valuations(),
                 gaps, clockCells, clockReadings, unattestedRoots,
-                observedReads, corpus.seedSessionId());
+                observedReads, observedArrivals, corpus.seedSessionId());
     }
 
     // ------------------------------------------------------------------
@@ -499,10 +513,14 @@ public final class Composer {
         terms.addAll(handoffReads(session, interactionIds, refusals));
 
         // (3) The state joins: read := the expression of the write version
-        //     it observed, within this session.
+        //     it observed, within this session.  Kept by symbol, because a
+        //     read with ALTERNATIVES takes its value from the family and
+        //     not from a conjunct of the path -- asserting both would make
+        //     the family redundant and the alternatives unreachable.
         List<ReadRow> joined = new ArrayList<ReadRow>();
         List<String> observed = new ArrayList<String>();
-        terms.addAll(stateJoins(session, refusals, joined, observed));
+        Map<String, String> joins = new LinkedHashMap<String, String>();
+        stateJoins(session, refusals, joined, observed, joins);
 
         // (4) pi_p, as the runtime published it.
         for (DecisionRow decision : path.decisions()) {
@@ -535,15 +553,22 @@ public final class Composer {
             return null;
         }
 
-        lowering.assertNamed("path_fatal__" + ordinal,
-                "(=> " + selector + " " + VmTermLowering.and(terms) + ")");
-
         // (6) The families of every interaction this path's chain reaches,
         //     each under this path's selector.
         closeFamilies(path, ordinal, selector, interactionIds);
         // (7) And the STATE families: which writer the read may have seen.
-        stateFamilies(path, ordinal, selector, joined, interactionIds);
+        //     A read a family gives alternatives to takes its value there.
+        Set<String> chosen = stateFamilies(path, ordinal, selector, joined,
+                interactionIds);
+        for (Map.Entry<String, String> join : joins.entrySet()) {
+            if (chosen.contains(join.getKey())) continue;
+            terms.add(join.getValue());
+        }
+
+        lowering.assertNamed("path_fatal__" + ordinal,
+                "(=> " + selector + " " + VmTermLowering.and(terms) + ")");
         observedReads.put(path.pathId(), observed);
+        observedArrivals.put(path.pathId(), arrivals(session));
         return new Disjunct(path, selector, target.observedFatal(),
                 interactionIds);
     }
@@ -752,10 +777,9 @@ public final class Composer {
      * writers: the version the read observed is a recorded fact of one
      * session's own counter.</p>
      */
-    private List<String> stateJoins(String session, List<GapRow> refusals,
-                                    List<ReadRow> joined,
-                                    List<String> observed) {
-        List<String> joins = new ArrayList<String>();
+    private void stateJoins(String session, List<GapRow> refusals,
+                            List<ReadRow> joined, List<String> observed,
+                            Map<String, String> joins) {
         for (ReadRow read : corpus.readsAt(session, anchor)) {
             if (read.symbol() == null || read.symbol().isEmpty()) continue;
             String key = SmtLowering.locationKey(read.location());
@@ -768,7 +792,8 @@ public final class Composer {
                         "state-join:" + key + "@" + read.observedVersion());
                 if (value != null) {
                     lowering.declare(read.symbol(), value.sort);
-                    joins.add("(= " + read.symbol() + " " + value.text + ")");
+                    joins.put(read.symbol(), "(= " + read.symbol() + " "
+                            + value.text + ")");
                     joined.add(read);
                     String literal = JsonText.smtLiteral(
                             read.concreteValue());
@@ -791,7 +816,8 @@ public final class Composer {
                         read.symbol(), refusals);
                 if (sort == null) continue;
                 lowering.declare(read.symbol(), sort);
-                joins.add("(= " + read.symbol() + " " + literal + ")");
+                joins.put(read.symbol(), "(= " + read.symbol() + " "
+                        + literal + ")");
                 continue;
             }
             refusals.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
@@ -800,7 +826,30 @@ public final class Composer {
                             + "session, and the recording states no value "
                             + "the read returned"));
         }
-        return joins;
+    }
+
+    /**
+     * What this session received at each attach, as the pairing it took.
+     *
+     * <p>Kept beside the path rather than inside it: where a read binds to
+     * the paired producer's expression (R-READ) the arrival is a
+     * CONSEQUENCE of that producer's roots, so pinning it would pin them --
+     * but it is still the pairing the run had, and that is the question
+     * MESSAGE_PAIRING_FLIPPED asks.</p>
+     */
+    private List<String> arrivals(String session) {
+        List<String> stated = new ArrayList<String>();
+        Set<String> seen = new LinkedHashSet<String>();
+        for (AttachRow attach : corpus.attachesRead(session, anchor)) {
+            if (!seen.add(attach.symbol())) continue;
+            String literal = JsonText.smtLiteral(JsonText.firstNonBlank(
+                    attach.answeredValue(), attach.arrival()));
+            if (literal.isEmpty()) continue;
+            stated.add("(assert (! (= " + attach.symbol() + " " + literal
+                    + ") :named observed_arrival__"
+                    + JsonText.digest(attach.symbol(), 10) + "))");
+        }
+        return stated;
     }
 
     // ------------------------------------------------------------------
@@ -964,10 +1013,12 @@ public final class Composer {
                         + "composition states about it"));
     }
 
-    private void stateFamilies(CorpusIndex.PathRecord path, int ordinal,
-                               String selector, List<ReadRow> joined,
-                               Set<String> reached) {
+    private Set<String> stateFamilies(CorpusIndex.PathRecord path,
+                                      int ordinal, String selector,
+                                      List<ReadRow> joined,
+                                      Set<String> reached) {
         String session = path.sessionId();
+        Set<String> chosen = new LinkedHashSet<String>();
         // One choice per (reader occurrence, location): a writer's writes to
         // it move as a BLOCK, and every read of that location inside this
         // occurrence takes the same arm -- never a writer interposed between
@@ -997,11 +1048,13 @@ public final class Composer {
             // One arm is the run's own interleaving and says nothing the
             // join has not already said.
             if (armTerms.size() < 2) continue;
+            chosen.addAll(symbols);
             lowering.assertNamed("state_family__" + ordinal + "__"
                             + JsonText.digest(entry.getKey(), 12),
                     "(=> " + selector + " "
                             + VmTermLowering.or(armTerms) + ")");
         }
+        return chosen;
     }
 
     /**
