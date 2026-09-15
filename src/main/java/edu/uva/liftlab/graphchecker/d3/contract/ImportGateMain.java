@@ -177,22 +177,19 @@ public final class ImportGateMain {
     }
 
     /**
-     * One gap in the campaign file's own spelling.
+     * One gap row, in the one spelling a gap row has.
      *
-     * <p>{@code campaign_gaps.jsonl} carries {@code gapKind}/{@code gapClass}
-     * and a {@code topologyEpoch}, which is what the stages that read it
-     * select on; the session files carry {@code kind}/{@code cls}.  This
-     * writes the campaign spelling because this file is the campaign's.</p>
+     * <p>This file used to carry {@code gapKind}/{@code gapClass} while the
+     * session files carried the contract's {@code kind}/{@code cls}, and the
+     * reader of both read only the campaign spelling: every session row's
+     * code defaulted to {@code ADMISSION_GAP} and its class to
+     * {@code BLOCKING}, which is how the accepted HDFS-17960 run published
+     * 262 blocking gaps that were all DIAGNOSTIC in their own rows.  One
+     * spelling, {@link RowCodec#writeGap}'s, plus the epoch this file is
+     * selected on.</p>
      */
     private static JsonObject campaignGap(GapRow gap, String topologyEpoch) {
-        JsonObject row = new JsonObject();
-        row.addProperty("schemaVersion", 1);
-        row.addProperty("kind", "GAP_ROW");
-        row.addProperty("sessionId", gap.sessionId());
-        row.addProperty("gapKind", gap.kind().name());
-        row.addProperty("gapClass", gap.cls().name());
-        row.addProperty("subject", gap.subject());
-        row.addProperty("detail", gap.detail());
+        JsonObject row = RowCodec.writeGap(gap);
         row.addProperty("topologyEpoch", topologyEpoch);
         return row;
     }
