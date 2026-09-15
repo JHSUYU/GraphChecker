@@ -229,14 +229,14 @@ public class D3RuntimeTest {
         // spelled the way the write log spells it, so the placeholder joins
         // the write above rather than naming a second location nobody wrote.
         placeholder(occurrence, placeholderRow("a", vmRead(125L)), "M_I_placeholder",
-                Collections.<String, String>emptyMap());
+                Collections.<String, String[]>emptyMap());
         placeholder(occurrence, placeholderRow("b", null), "M_I_unversioned",
-                Collections.<String, String>emptyMap());
-        // The mint's own shadow store is not a write, so the row states the
-        // location the VM minted at and NO version -- the value it read.
+                Collections.<String, String[]>emptyMap());
+        // The mint's own shadow store is not a write, and the row still
+        // states the location and version the VM observed for the read.
         placeholder(occurrence, placeholderRow("c", null), "M_I_installed",
                 Collections.singletonMap("M_I_installed",
-                        "INSTANCE_FIELD/22#24"));
+                        new String[]{"INSTANCE_FIELD/22#24", "125"}));
         D3Runtime.closeSession();
 
         SessionDir dir = session();
@@ -275,10 +275,11 @@ public class D3RuntimeTest {
         assertEquals(LocationId.of(LocationKind.INSTANCE,
                         "java.util.concurrent.atomic.AtomicInteger", "value"),
                 reads.get(2).location());
-        // The mint is not a write: the row names the VM's location and
-        // pins the decimal it read rather than claiming a version.
+        // The mint is not a write -- no WriteRow states its version -- but
+        // the row names the VM's location and the version the read saw, so
+        // a term that spells that read finds this symbol there.
         assertEquals(writes.get(0).location(), reads.get(3).location());
-        assertEquals(ReadRow.UNKNOWN_VERSION, reads.get(3).observedVersion());
+        assertEquals(125L, reads.get(3).observedVersion());
         assertEquals("2", reads.get(3).concreteValue());
         List<RootMintRow> roots = RowCodec.readAll(dir.roots(),
                 RowCodec::readRootMint);
@@ -350,7 +351,7 @@ public class D3RuntimeTest {
 
     private static void placeholder(OccurrenceAddress occurrence,
                                     JsonObject row, String symbol,
-                                    java.util.Map<String, String> installed)
+                                    java.util.Map<String, String[]> installed)
             throws Exception {
         java.lang.reflect.Method publish = D3RowPublication.class
                 .getDeclaredMethod("placeholder", OccurrenceAddress.class,

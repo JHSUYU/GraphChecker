@@ -130,7 +130,7 @@ final class D3RowPublication {
      */
     private static void roots(ActiveRegion active,
                               OccurrenceAddress occurrence) {
-        Map<String, String> installed = mintedLocations(active);
+        Map<String, String[]> installed = mintedLocations(active);
         Set<String> stated = new LinkedHashSet<String>();
         for (JsonObject row : active.symbolizedRows) {
             String symbol = vmSymbol(row);
@@ -193,7 +193,7 @@ final class D3RowPublication {
      */
     private static void placeholder(OccurrenceAddress occurrence,
                                     JsonObject row, String symbol,
-                                    Map<String, String> installed) {
+                                    Map<String, String[]> installed) {
         String signature = optionalString(row, "fieldSignature");
         // A read placeholder, session-wide, so no activation's write log
         // offers the mint's own version as a write of that location.
@@ -202,14 +202,16 @@ final class D3RowPublication {
         // read and every write of the same storage spell one location.
         // Naming the Java field signature instead left the read saying
         // AtomicInteger#value while the write log said
-        // INSTANCE_FIELD/<rid>#<offset>.  The version the mint's own shadow
-        // store created is NOT a version to join to (see #mintedVersion),
-        // so the row states the value it read instead; a version the VM
-        // observed inside a retained expression still counts.
-        String locationKey = installed.containsKey(symbol)
-                ? installed.get(symbol) : "";
+        // INSTANCE_FIELD/<rid>#<offset>.
+        String[] installedAt = installed.get(symbol);
+        String locationKey = installedAt == null ? "" : installedAt[0];
         LocationId location = location(locationKey);
-        long observed = ReadRow.UNKNOWN_VERSION;
+        // The version the VM observed for this read.  It is NOT a write --
+        // no WriteRow states it (see #mintedVersion) -- but it is the
+        // version the anchor's own ReadFrom names, so a reader that meets
+        // `INSTANCE/22#24@174` in a term finds this row's symbol there.
+        long observed = location == null ? ReadRow.UNKNOWN_VERSION
+                : Long.parseLong(installedAt[1]);
         if (location == null) {
             JsonObject read = nestedRead(row.get("expression"), 0);
             locationKey = read == null ? ""
@@ -314,9 +316,9 @@ final class D3RowPublication {
      * later version computed FROM it is a different value), and the first
      * such version wins.</p>
      */
-    private static Map<String, String> mintedLocations(ActiveRegion active) {
-        Map<String, String> bySymbol =
-                new java.util.LinkedHashMap<String, String>();
+    private static Map<String, String[]> mintedLocations(ActiveRegion active) {
+        Map<String, String[]> bySymbol =
+                new java.util.LinkedHashMap<String, String[]>();
         for (JsonObject record : active.sharedStateRecords.values()) {
             String locationKey = optionalString(record, "locationKey");
             if (location(locationKey) == null) continue;
@@ -336,7 +338,8 @@ final class D3RowPublication {
                 String symbol = optionalString(node, "_exp");
                 if (symbol.isEmpty()) continue;
                 if (!bySymbol.containsKey(symbol)) {
-                    bySymbol.put(symbol, locationKey);
+                    bySymbol.put(symbol, new String[]{locationKey,
+                            Long.toString(id)});
                 }
             }
         }
