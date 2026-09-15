@@ -28,7 +28,7 @@ import java.util.concurrent.atomic.AtomicLong;
  * an {@code InheritableThreadLocal} reaches.</p>
  */
 public final class Lineage {
-    /** Counters are window-local: k counts inside the recording window. */
+    /** k for the root hops of one (node, role, api) in this window. */
     private static final Map<String, AtomicInteger> COUNTERS =
             new ConcurrentHashMap<String, AtomicInteger>();
     private static final AtomicLong TOKENS = new AtomicLong(1L);
@@ -50,29 +50,21 @@ public final class Lineage {
     private Lineage() {
     }
 
-    /** One hop of the chain, and whether this run could attribute it. */
+    /** One hop of the chain: its scope kind, and what opened it. */
     private static final class Frame {
         private final long token;
         private final Role role;
-        private final String api;
+        /** The window index of this hop, which only a ROOT hop carries. */
         private final int k;
-        private final boolean lost;
         /** The producer endpoint whose message opened this scope, or "". */
         private String anchor = "";
         /** The transport site that message crossed, or "". */
         private String rpcSite = "";
 
-        private Frame(long token, Role role, String api, int k,
-                      boolean lost) {
+        private Frame(long token, Role role, int k) {
             this.token = token;
             this.role = role;
-            this.api = api;
             this.k = k;
-            this.lost = lost;
-        }
-
-        private String render() {
-            return role.name() + (api.isEmpty() ? "" : "@" + api) + "#" + k;
         }
     }
 
@@ -108,21 +100,26 @@ public final class Lineage {
     /**
      * Enters one scope frame and returns the token that leaves it.
      *
-     * <p>{@code k} is taken from a counter keyed by the node, the parent's
-     * rendered path, the role and the api -- the four things the hop counts
-     * within.  A node this run cannot name still gets its hop, marked lost:
-     * the activation ran, and a guessed node is a wrong causal chain.</p>
+     * <p>{@code k} counts the ROOT hops of one (node, role, api) inside the
+     * recording window, because that k is the only one any address reads
+     * ({@link #rootWindowIndex}, the window index of a
+     * {@link edu.uva.liftlab.graphchecker.contract.CausalContext.Root}).  A
+     * hop entered inside another counts nothing: IDENTITY-V3 SS4 replaced the
+     * rendered lineage list with the causal anchor, so nothing asks a nested
+     * hop which one it is.  A node this run cannot name still gets its hop,
+     * marked lost: the activation ran, and a guessed node is a wrong causal
+     * chain.</p>
      */
     public static long push(String nodeKey, Role role, String api) {
         List<Frame> stack = STACK.get();
         String node = Text.safe(nodeKey);
-        String scope = node + "\n" + path(stack) + "\n"
-                + (role == null ? Role.UNKNOWN : role).name() + "\n"
-                + Text.safe(api);
-        int k = counter(scope).incrementAndGet();
+        Role kind = role == null ? Role.UNKNOWN : role;
+        int k = stack.isEmpty()
+                ? counter(node + "\n" + kind.name() + "\n"
+                        + Text.safe(api)).incrementAndGet()
+                : 0;
         long token = TOKENS.getAndIncrement();
-        stack.add(new Frame(token, role == null ? Role.UNKNOWN : role,
-                Text.safe(api), k, node.isEmpty()));
+        stack.add(new Frame(token, kind, k));
         return token;
     }
 
@@ -281,11 +278,6 @@ public final class Lineage {
         return stack.isEmpty() ? 0 : stack.get(0).k;
     }
 
-    /** The rendered lineage path, {@code ""} at a root. */
-    public static String path() {
-        return path(STACK.get());
-    }
-
     /** Opens the recording window: k counts from here, in every replay. */
     public static void openWindow() {
         COUNTERS.clear();
@@ -297,16 +289,6 @@ public final class Lineage {
         AtomicInteger fresh = new AtomicInteger();
         AtomicInteger raced = COUNTERS.putIfAbsent(scope, fresh);
         return raced == null ? fresh : raced;
-    }
-
-    private static String path(List<Frame> stack) {
-        if (stack.isEmpty()) return "";
-        StringBuilder rendered = new StringBuilder();
-        for (Frame frame : stack) {
-            if (rendered.length() > 0) rendered.append('/');
-            rendered.append(frame.render());
-        }
-        return rendered.toString();
     }
 
     /**

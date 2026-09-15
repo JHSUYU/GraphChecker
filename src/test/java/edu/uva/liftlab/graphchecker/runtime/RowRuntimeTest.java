@@ -75,6 +75,12 @@ public class RowRuntimeTest {
      * A scope reaches the work, not the thread: a thread started inside a
      * request and a task submitted to a pool created before it both carry
      * the lineage they were made in.
+     *
+     * <p>Asserted on the ADDRESS the scope produces rather than on a
+     * rendered chain: what an occurrence is addressed by is its causal
+     * context (IDENTITY-V3 SS4), so the root role and the window index the
+     * carried scope hands the worker are what "the scope reached the work"
+     * means -- the innermost role beside them says which hop is running.</p>
      */
     @Test
     public void aCarriedScopeReachesTheThreadThatRunsTheWork()
@@ -82,7 +88,8 @@ public class RowRuntimeTest {
         Object anchor = new Object();
         RuntimeTraceContext.registerSource(anchor, NN);
         long request = RuntimeTraceContext.beginRequest(NN, "balance-block");
-        assertEquals("CLIENT@balance-block#1", Lineage.path());
+        assertEquals("Root:CLIENT#1", rootContext());
+        assertEquals(Role.CLIENT, Lineage.role());
 
         // The IPC Server.Call queue: captured at enqueue on this thread,
         // restored at dequeue on a handler that never saw the request.
@@ -93,14 +100,13 @@ public class RowRuntimeTest {
             public void run() {
                 long scope = RuntimeTraceContext.enterCarriedScope(carried,
                         "IPC_HANDLER", "balance-block");
-                onHandler.set(Lineage.path());
+                onHandler.set(rootContext() + "/" + Lineage.role());
                 RuntimeTraceContext.exitCarriedScope(scope);
             }
         });
         handler.start();
         handler.join();
-        assertEquals("CLIENT@balance-block#1/IPC_HANDLER@balance-block#1",
-                onHandler.get());
+        assertEquals("Root:CLIENT#1/IPC_HANDLER", onHandler.get());
 
         // An executor submission: the same carry, through the seed the
         // recorder captures at Thread.start and at submit(task).
@@ -112,16 +118,21 @@ public class RowRuntimeTest {
             public void run() {
                 RuntimeTraceContext.View entered =
                         RuntimeTraceContext.enterRoot(task);
-                onWorker.set(Lineage.path());
+                onWorker.set(rootContext() + "/" + Lineage.role());
                 RuntimeTraceContext.exitRoot(entered.spanId);
             }
         });
         worker.start();
         worker.join();
-        assertEquals("CLIENT@balance-block#1/EXECUTOR_TASK#1",
-                onWorker.get());
+        assertEquals("Root:CLIENT#1/EXECUTOR_TASK", onWorker.get());
         RuntimeTraceContext.endRequest(request);
-        assertEquals("", Lineage.path());
+        assertFalse("the request's scope ended with it", Lineage.named());
+    }
+
+    /** The causal context the calling thread's outermost hop states. */
+    private static String rootContext() {
+        return CausalContext.of(Lineage.rootRole(),
+                Lineage.rootWindowIndex()).render();
     }
 
     /** One address, by the contract constructor the runtime calls. */
