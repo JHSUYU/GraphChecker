@@ -13,6 +13,7 @@ import edu.uva.liftlab.graphchecker.d3.compose.VmTermLowering.Term;
 import edu.uva.liftlab.graphchecker.d3.contract.ExpressionTable;
 import edu.uva.liftlab.graphchecker.d3.contract.LocationId;
 import edu.uva.liftlab.graphchecker.d3.contract.LocationKind;
+import edu.uva.liftlab.graphchecker.d3.contract.ReadRow;
 import edu.uva.liftlab.graphchecker.d3.contract.SessionReader;
 
 import java.util.ArrayList;
@@ -73,6 +74,21 @@ public final class SmtLowering extends VmLoweringCore {
     public interface SessionJoin {
         /** The write expression at this location and version, or null. */
         JsonElement writeExpression(String locationKey, long version);
+
+        /**
+         * The symbols this session's ROWS state for a read of this
+         * location at this version.
+         *
+         * <p>A version no write log entry covers can still be a version
+         * the recording states: the VM's mint primitive gives a declared
+         * region input a fresh version whose value IS the minted symbol,
+         * and the row contract publishes that as a READ -- the location,
+         * the version the VM observed, the symbol and the plain decimal it
+         * returned -- and as no write, because nobody wrote it.  The
+         * symbols are the rows' own, so this is the recording answering
+         * what the version holds, not a value reconstructed here.</p>
+         */
+        Set<String> statedReadSymbols(String locationKey, long version);
     }
 
     private static final SessionJoin NO_JOIN = new SessionJoin() {
@@ -80,7 +96,67 @@ public final class SmtLowering extends VmLoweringCore {
         public JsonElement writeExpression(String locationKey, long version) {
             return null;
         }
+
+        @Override
+        public Set<String> statedReadSymbols(String locationKey,
+                                             long version) {
+            return Collections.<String>emptySet();
+        }
     };
+
+    /**
+     * What one session's rows state about each {@code (location, version)}.
+     *
+     * <p>The index every view of a session builds, so that "which symbol
+     * does a row state for this version" has ONE answer however the
+     * session was opened -- the composer's corpus index and the flip
+     * query's single session alike.  A row counts when it states the value
+     * its read returned: its symbol is then bound by that row's own PIN,
+     * which is what makes it usable as the value of another read of the
+     * same version.</p>
+     */
+    public static Map<String, Set<String>> statedReadIndex(
+            Iterable<ReadRow> reads) {
+        Map<String, Set<String>> stated =
+                new LinkedHashMap<String, Set<String>>();
+        if (reads == null) return stated;
+        for (ReadRow read : reads) {
+            if (read == null || read.observedVersion() < 0L) continue;
+            if (read.symbol() == null || read.symbol().isEmpty()) continue;
+            if (read.concreteValue() == null
+                    || read.concreteValue().trim().isEmpty()) {
+                continue;
+            }
+            String key = locationKey(read.location()) + "#"
+                    + read.observedVersion();
+            Set<String> symbols = stated.get(key);
+            if (symbols == null) {
+                symbols = new LinkedHashSet<String>();
+                stated.put(key, symbols);
+            }
+            symbols.add(read.symbol());
+        }
+        return stated;
+    }
+
+    /**
+     * The one symbol the rows state for a read of this version.
+     *
+     * <p>{@code ""} when no row states one.  Rows that disagree state NO
+     * answer -- {@code null} -- and every caller refuses that by name:
+     * picking one of two symbols would put one read's value on another
+     * read's version, which is the reconstruction this design does not
+     * do.</p>
+     */
+    public static String statedReadSymbol(SessionJoin join,
+                                          String locationKey, long version) {
+        Set<String> symbols = join == null || locationKey == null
+                || locationKey.isEmpty() || version < 0L
+                ? null : join.statedReadSymbols(locationKey, version);
+        if (symbols == null || symbols.isEmpty()) return "";
+        if (symbols.size() > 1) return null;
+        return symbols.iterator().next();
+    }
 
     private final SmtSymbolTable symbols = new SmtSymbolTable();
     /**
@@ -216,7 +292,7 @@ public final class SmtLowering extends VmLoweringCore {
         return lowering;
     }
 
-    /** One session's write log, as the state join reads it. */
+    /** One session's write log and read rows, as the state join reads them. */
     private static SessionJoin joinOf(final SessionReader session) {
         final Map<String, String> writes = new LinkedHashMap<String, String>();
         for (edu.uva.liftlab.graphchecker.d3.contract.WriteRow write
@@ -224,6 +300,8 @@ public final class SmtLowering extends VmLoweringCore {
             writes.put(locationKey(write.location()) + "#" + write.version(),
                     write.expressionRef());
         }
+        final Map<String, Set<String>> stated =
+                statedReadIndex(session.reads());
         return new SessionJoin() {
             @Override
             public JsonElement writeExpression(String locationKey,
@@ -231,6 +309,15 @@ public final class SmtLowering extends VmLoweringCore {
                 String ref = writes.get(locationKey + "#" + version);
                 return ref == null ? null
                         : session.expressions().expression(ref);
+            }
+
+            @Override
+            public Set<String> statedReadSymbols(String locationKey,
+                                                 long version) {
+                Set<String> symbols =
+                        stated.get(locationKey + "#" + version);
+                return symbols == null
+                        ? Collections.<String>emptySet() : symbols;
             }
         };
     }
@@ -765,6 +852,35 @@ public final class SmtLowering extends VmLoweringCore {
      * Enumerating the versions the VM retained and letting the solver pick
      * one is what made the old composition a reconstruction rather than a
      * merge, so it is not done here at any step.</p>
+     *
+     * <p>JOIN is the ROW of the write that made the version -- the
+     * {@code WriteRow} of this location at this version, in this session --
+     * and its two steps are one question asked of the rows:</p>
+     * <ol>
+     *   <li>a write log entry, whose expression is the writer's own
+     *       propagation and whose row also names the writer occurrence the
+     *       STATE families are built over;</li>
+     *   <li>otherwise the symbol a READ row of this session states for the
+     *       same version.  A mint is not a write: the VM's primitive gives
+     *       a declared region input a version whose value is the minted
+     *       symbol, and that version's statement is the read row, bound by
+     *       that row's own pin.</li>
+     * </ol>
+     *
+     * <p>The node also carries the VM's own expression for the version,
+     * under {@code observedVersion} -- the version's value AS THIS READ SAW
+     * IT, so for a list read through {@code size()} it is
+     * {@code SIZE(state)} where the write log entry is the state.  It is
+     * the PROJECTION this execution performed, and it is read only inside
+     * step 1, where a row has already stated that a write made the
+     * version: rows decide WHETHER and BY WHOM a version was made, and
+     * hence what a read may bind to, and this decides which cell of it
+     * came back.  Consulted for a version no row states, it binds a read
+     * to a value nothing in the recording stands behind -- which is how a
+     * symbol the composition never bound reached 18 leaves of the 17960
+     * anchor as {@code UndeclaredFreeSymbol} -- and it can hand the formula
+     * a value from somewhere other than the writer occurrence the STATE
+     * families are keyed by.</p>
      */
     @Override
     public Term guardedReadTerm(JsonObject expression, Sort expected,
@@ -772,25 +888,29 @@ public final class SmtLowering extends VmLoweringCore {
         JsonObject location = JsonText.object(expression, "location");
         String key = locationKey(location);
         long version = observedVersion(expression);
-        // The VM publishes, ON the node, the expression of the version this
-        // read observed -- and it is the version's expression AS THIS READ
-        // SAW IT: for a map-state location that is assoc_read(state, key),
-        // not the state.  Taking the write log's entry instead hands a
-        // whole container back where a reference cell was read, which is
-        // how "allKeys.get(id) != null" came to compare a map with null and
-        // how a projected read had its projection thrown away.  Same
-        // version, same session, same join -- one step further along.
-        JsonElement stated = observedVersionExpression(expression);
-        if (stated != null && !stated.isJsonNull()) {
-            return element(dispatch(stated, expected, origin + ":observed"),
-                    expression, location, key, version, expected, origin);
-        }
         if (!key.isEmpty() && version >= 0L) {
             JsonElement written = join.writeExpression(key, version);
             if (written != null && !written.isJsonNull()) {
-                return element(dispatch(written, expected,
+                JsonElement projected = observedVersionExpression(expression);
+                return element(dispatch(projected != null
+                                        && !projected.isJsonNull()
+                                        ? projected : written, expected,
                                 origin + ":join"), expression, location,
                         key, version, expected, origin);
+            }
+            String minted = statedReadSymbol(join, key, version);
+            if (minted == null) {
+                return unstated("ReadVersion:" + key + "@" + version + ":"
+                                + join.statedReadSymbols(key, version),
+                        "two read rows of this session state different "
+                                + "symbols for this location at this "
+                                + "version, so what the version holds has "
+                                + "no answer", expected);
+            }
+            if (!minted.isEmpty()) {
+                return symbolTerm(symbolNode(minted,
+                                JsonText.string(expression, "_java_type")),
+                        expected, origin + ":minted");
             }
         }
         JsonElement concrete = expression.get("concreteValue");
@@ -804,6 +924,56 @@ public final class SmtLowering extends VmLoweringCore {
                 "no write of this location at this version in this session, "
                         + "and the recording states no value it returned",
                 expected);
+    }
+
+    /**
+     * One recorded symbol as the VM's own leaf.
+     *
+     * <p>A symbol a ROW states and a symbol an expression names are the
+     * same thing -- the contract makes the two string-equal -- so a row's
+     * symbol is lowered by building the leaf the VM would have serialized
+     * and asking {@link #symbolTerm} for it.  One leaf rule: the
+     * declaration registry decides the sort, an identity spelling mints the
+     * same {@code identity__} name every other leaf of that object gets,
+     * {@code "N"} is null, and a symbol nothing states is cut by name.</p>
+     */
+    private static JsonObject symbolNode(String symbol, String javaType) {
+        JsonObject node = new JsonObject();
+        node.addProperty("_type", "SymbolExpression");
+        node.addProperty("_exp", symbol);
+        node.addProperty("_java_type", javaType == null ? "" : javaType);
+        return node;
+    }
+
+    /**
+     * The term one ROW states as the value its read returned, or null.
+     *
+     * <p>One implementation for every row that states a value, so that a
+     * read row's pin and a {@code FieldAccess} {@code concreteValue} cannot
+     * disagree about what a recorded value means.  A reference is the VM's
+     * own leaf -- the {@code M_L'class'_rid} identity spelling, or
+     * {@code "N"} for null -- through {@link #symbolTerm}, which is where
+     * the identity name is minted; a scalar is its literal at the sort the
+     * row's Java type names.  A value this places nowhere is null, and the
+     * caller names the refusal.</p>
+     */
+    public Term statedValue(String concreteValue, String javaType,
+                            String origin) {
+        String text = concreteValue == null ? "" : concreteValue.trim();
+        if (text.isEmpty()) return null;
+        if (VmExpressionIr.SYMBOLIC_NULL.equals(text)
+                || VmRows.referencedObjectRid(text) > 0L) {
+            return symbolTerm(symbolNode(text, javaType), null, origin);
+        }
+        String literal = JsonText.smtLiteral(text);
+        if (literal.isEmpty()) return null;
+        Sort sort = JavaSmtSorts.sortOfJava(javaType);
+        if (sort != Sort.BOOL && sort != Sort.INT && sort != Sort.FLOAT32
+                && sort != Sort.FLOAT64 && sort != Sort.STRING) {
+            return null;
+        }
+        return Term.of(literal, sort,
+                JavaPrimitiveSmtSemantics.widthOfJavaType(javaType));
     }
 
     /**
@@ -1781,7 +1951,12 @@ public final class SmtLowering extends VmLoweringCore {
         return LocationKind.INSTANCE;
     }
 
-    /** What the node itself states the observed version's value was. */
+    /**
+     * The version's value as the read itself saw it, or null.
+     *
+     * <p>Read only where a row states the version: see
+     * {@link #guardedReadTerm}.</p>
+     */
     private static JsonElement observedVersionExpression(JsonObject node) {
         JsonElement observed = node.get(VmRows.OBSERVED_VERSION);
         if (observed == null || !observed.isJsonObject()) return null;
