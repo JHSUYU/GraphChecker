@@ -499,7 +499,7 @@ public class D3ExploreTest {
                 "o.a.h.h.s.d.DataXceiver#run#44");
         Session partial = new Session(unseen, "s-seed");
         partial.activation(target, false);
-        partial.activation(lightweight, false);
+        partial.lightweight(lightweight);
         partial.read(at(target, Endpoint.stateSite("BlockTokenSecretManager",
                         "get", 3, false), "BlockTokenSecretManager#get#3"),
                 allKeys, 5L, "M_READ_KEY", "119992");
@@ -656,9 +656,22 @@ public class D3ExploreTest {
 
         private void activation(OccurrenceAddress occurrence,
                                 boolean focused) {
+            activation(occurrence, focused, true);
+        }
+
+        /**
+         * The lightweight entry hook's row: this region RAN, and nothing
+         * else about it can exist because it was never retained.
+         */
+        private void lightweight(OccurrenceAddress occurrence) {
+            activation(occurrence, false, false);
+        }
+
+        private void activation(OccurrenceAddress occurrence, boolean focused,
+                                boolean instrumented) {
             activations.add(ActivationRow.of(sessionId, occurrence,
-                    "task-" + occurrence.regionId(), focused, true,
-                    "fixture#1", null));
+                    "task-" + occurrence.regionId(), focused, instrumented,
+                    "fixture#" + occurrence.node().node(), null));
         }
 
         private void decision(OccurrenceAddress occurrence, String site,
