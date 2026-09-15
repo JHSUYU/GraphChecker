@@ -2,7 +2,6 @@ package edu.uva.liftlab.graphchecker.d3.explore;
 
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
-import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
 import edu.uva.liftlab.graphchecker.d3.contract.ActivationRow;
@@ -35,11 +34,8 @@ import java.util.Set;
  * <pre>
  *   --sessions &lt;dir&gt;           the corpus (the campaign's own layout), or
  *   --iteration &lt;dir&gt;          its parent, which holds sessions/
- *   --task-plan &lt;file&gt;         the seed replay's plan; each occurrenceId is
- *                              checked against the seed session's own
- *                              activations, and one the seed did not run is
- *                              named as a gap, never planned
- *   --target-occurrence &lt;sel&gt;  the case's declared anchor, a v1 selector
+ *   --target-occurrence &lt;sel&gt;  the case's declared anchor, a v1 selector,
+ *                              and the ONE root of the closure
  *   --results &lt;file&gt;           every ObligationResult the waves before this
  *                              one recorded; a query answered there is never
  *                              proposed again
@@ -80,13 +76,12 @@ public final class ExploreMain {
             throw new IllegalArgumentException("Missing --output-dir");
         }
         String declaredAnchor = value(options, "target-occurrence", "");
-        List<String> planned = planned(options);
-        if (declaredAnchor.isEmpty() && planned.isEmpty()) {
+        if (declaredAnchor.isEmpty()) {
             throw new IllegalArgumentException("the closure has no root: "
-                    + "pass --target-occurrence, or a --task-plan whose rows "
-                    + "name an occurrenceId");
+                    + "pass --target-occurrence. A case declares ONE anchor "
+                    + "(HANDOVER SS1.6) and the closure is that anchor's");
         }
-        JsonObject manifest = plan(iteration, declaredAnchor, planned,
+        JsonObject manifest = plan(iteration, declaredAnchor,
                 path(options, "root-domains"), path(options, "results"), out,
                 (int) number(options, "wave", 0),
                 value(options, "topology-epoch", ""),
@@ -104,17 +99,12 @@ public final class ExploreMain {
      * Plans one wave.
      *
      * @param declaredAnchor the case's own declaration, in the v1 spelling a
-     *                       human writes, or {@code ""}.  It is resolved
-     *                       against the seed session here, because a selector
-     *                       is not an identity and nothing downstream may see
-     *                       one.
-     * @param planned        the seed replay plan's {@code occurrenceId}s.
-     *                       Each is checked against the recording the same
-     *                       way; one the seed session did not run is named
-     *                       and dropped, never planned.
+     *                       human writes, and the only root the closure has
+     *                       (HANDOVER SS1.5).  It is resolved against the
+     *                       seed session here, because a selector is not an
+     *                       identity and nothing downstream may see one.
      */
     public static JsonObject plan(Path iteration, String declaredAnchor,
-                                  List<String> planned,
                                   Path rootDomains, Path results, Path out,
                                   int wave, String topologyEpoch,
                                   int maxTasks,
@@ -122,8 +112,7 @@ public final class ExploreMain {
             throws IOException {
         Corpus corpus = Corpus.read(iteration, rootDomains);
         List<GapRow> gaps = new ArrayList<GapRow>();
-        List<OccurrenceAddress> roots = resolve(corpus, declaredAnchor,
-                planned, gaps);
+        List<OccurrenceAddress> roots = resolve(corpus, declaredAnchor, gaps);
         List<Task> tasks = new ArrayList<Task>();
         Set<String> opened = new LinkedHashSet<String>();
         for (OccurrenceAddress root : roots) {
@@ -177,23 +166,8 @@ public final class ExploreMain {
         return manifest;
     }
 
-    /** The seed replay plan's own {@code occurrenceId}s, in plan order. */
-    private static List<String> planned(Map<String, String> options)
-            throws IOException {
-        List<String> planned = new ArrayList<String>();
-        Path plan = path(options, "task-plan");
-        if (plan == null || !Files.isRegularFile(plan)) return planned;
-        for (JsonObject row : RowCodec.readJsonl(plan)) {
-            JsonElement occurrence = row.get("occurrenceId");
-            if (occurrence == null || !occurrence.isJsonPrimitive()) continue;
-            String text = occurrence.getAsString();
-            if (!planned.contains(text)) planned.add(text);
-        }
-        return planned;
-    }
-
     /**
-     * Resolves each declaration against the seed session's own activations.
+     * Resolves the case's declared anchor against the seed's own activations.
      *
      * <p>Humans do not write execution indexes (IDENTITY-V3 SS2), and which
      * occurrence a case meant is one question with one answer:
@@ -211,21 +185,23 @@ public final class ExploreMain {
      * seed did not run is named and dropped rather than planned. The stage
      * cannot focus a replay on an occurrence no run recorded, and a task
      * carrying an empty {@code seedSessionId} is refused by the contract
-     * (CONTRACT-SPEC SS3) far from where the address came from. The declared
-     * anchor is BLOCKING — without it there is no claim to make — and a seed
-     * plan's occurrence is a DIAGNOSTIC: the closure is the ANCHOR's
-     * (HANDOVER SS1.5), computed from the recording's own producers and
-     * writers, so a plan-side address the recording never published takes
-     * nothing out of it.</p>
+     * (CONTRACT-SPEC SS3) far from where the address came from. Refusing it
+     * is BLOCKING: the anchor is the closure's only root, so without it there
+     * is no claim to make.</p>
+     *
+     * <p>The seed replay's task plan used to be a second source of roots, and
+     * is not one: the closure is the ANCHOR's (HANDOVER SS1.5), and a plan
+     * row is the PLAN side's own address for a region, which in the first
+     * real 17960 corpus disagreed with the recording's for 43 of 45 rows.
+     * What exploration needs to know about a region it cannot see inside is
+     * whether the workload retained it, and the rows say that themselves
+     * ({@code ActivationRow.instrumented}, INTERACTION-ID SS8 case 2, read in
+     * {@link SlotTable}).</p>
      */
     private static List<OccurrenceAddress> resolve(Corpus corpus,
                                                    String declaredAnchor,
-                                                   List<String> planned,
                                                    List<GapRow> gaps) {
         String seed = corpus.seedSessionId();
-        List<String> declarations = new ArrayList<String>();
-        if (!declaredAnchor.isEmpty()) declarations.add(declaredAnchor);
-        declarations.addAll(planned);
         if (seed.isEmpty()) {
             // The contract's rule, and no fallback under it: the seed is the
             // session that focused nothing, and a corpus with none of those
@@ -233,7 +209,7 @@ public final class ExploreMain {
             // was written about. Naming an exploration replay as the
             // recording is how a claim comes to be about the wrong execution.
             gaps.add(GapRow.of(ExploreCodec.EXPLORATION, GapKind.ADMISSION_GAP, GapClass.BLOCKING,
-                    String.join(", ", declarations),
+                    declaredAnchor,
                     "this corpus states no single seed session: "
                             + corpus.unfocusedSessionIds().size()
                             + " of its " + corpus.sessions().size()
@@ -248,30 +224,13 @@ public final class ExploreMain {
             ranInTheSeed.add(activation.occurrence().id());
         }
         List<OccurrenceAddress> roots = new ArrayList<OccurrenceAddress>();
-        Set<String> resolved = new LinkedHashSet<String>();
-        if (!declaredAnchor.isEmpty()) {
-            OccurrenceAddress anchor = root(declaredAnchor, seed, activations,
-                    ranInTheSeed, GapClass.BLOCKING, gaps);
-            if (anchor != null && resolved.add(anchor.id())) roots.add(anchor);
-        }
-        for (String text : planned) {
-            OccurrenceAddress match = root(text, seed, activations,
-                    ranInTheSeed, GapClass.DIAGNOSTIC, gaps);
-            if (match != null && resolved.add(match.id())) roots.add(match);
-        }
-        if (roots.isEmpty()) {
-            gaps.add(GapRow.of(ExploreCodec.EXPLORATION,
-                    GapKind.ADMISSION_GAP, GapClass.BLOCKING,
-                    declarations.isEmpty() ? "(nothing was declared)"
-                            : String.join(", ", declarations),
-                    "no declaration this wave was given names an occurrence "
-                            + "the seed session " + seed + " recorded, so "
-                            + "there is no closure to plan"));
-        }
+        OccurrenceAddress anchor = root(declaredAnchor, seed, activations,
+                ranInTheSeed, GapClass.BLOCKING, gaps);
+        if (anchor != null) roots.add(anchor);
         return roots;
     }
 
-    /** One declaration's occurrence, or null with the refusal named. */
+    /** The declaration's occurrence, or null with the refusal named. */
     private static OccurrenceAddress root(String declared, String seed,
                                           List<ActivationRow> activations,
                                           Set<String> ranInTheSeed,

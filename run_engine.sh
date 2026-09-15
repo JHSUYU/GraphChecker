@@ -1907,7 +1907,6 @@ campaign_explore() {
     status=0
     run_java_main edu.uva.liftlab.graphchecker.d3.explore.ExploreMain \
       --sessions "${sessions}" \
-      --task-plan "${iteration_dir}/seed-replay/execution_task_plan.jsonl" \
       --results "${results}" \
       --topology-epoch "${iteration_id}" \
       --wave "${wave}" \
