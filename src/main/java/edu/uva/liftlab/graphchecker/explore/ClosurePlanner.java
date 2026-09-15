@@ -119,32 +119,40 @@ public final class ClosurePlanner {
         }
         demands.put(anchor.id(), start);
         pending.add(anchor.id());
-        while (!pending.isEmpty() && demands.size() <= maxTasks) {
+        Set<String> truncated = new LinkedHashSet<String>();
+        while (!pending.isEmpty()) {
             Demand demand = demands.get(pending.remove());
             demand.dirty = false;
             for (Demand next : successors(corpus, scope, demand, gaps)) {
                 Demand held = demands.get(next.occurrence.id());
-                if (held == null) {
-                    demands.put(next.occurrence.id(), next);
-                    pending.add(next.occurrence.id());
+                if (held != null) {
+                    if (held.absorb(next) && !held.dirty) {
+                        held.dirty = true;
+                        pending.add(held.occurrence.id());
+                    }
                     continue;
                 }
-                if (held.absorb(next) && !held.dirty) {
-                    held.dirty = true;
-                    pending.add(held.occurrence.id());
+                if (demands.size() >= maxTasks) {
+                    truncated.add(next.occurrence.render());
+                    continue;
                 }
+                demands.put(next.occurrence.id(), next);
+                pending.add(next.occurrence.id());
             }
         }
-        if (!pending.isEmpty()) {
+        if (!truncated.isEmpty()) {
             // A truncated closure composes a formula that is missing
             // producers the anchor's paths read, and a composition missing an
-            // arm is not a weaker claim -- it is an unsound one.
+            // arm is not a weaker claim -- it is an unsound one.  The
+            // fixed point still runs to the end for the demands it did
+            // admit, so what this refusal names is exactly what was left
+            // out.
             gaps.add(GapRow.of(ExploreCodec.EXPLORATION, GapKind.ADMISSION_GAP,
                     GapClass.BLOCKING, anchor.render(),
                     "closure truncated at " + maxTasks + " tasks; "
-                            + pending.size() + " occurrences were not "
+                            + truncated.size() + " occurrences were not "
                             + "planned, so this anchor's closure is "
-                            + "incomplete"));
+                            + "incomplete: " + truncated));
         }
         List<Task> tasks = new ArrayList<Task>();
         Map<String, String> why = new LinkedHashMap<String, String>();
