@@ -174,7 +174,8 @@ public final class ClaimPolicy {
                 undecidedPolarity(gaps, recorded, ClaimKind.MARKER_FLIPPED);
                 break;
             }
-            return new Decision(Claim.of(ClaimKind.MARKER_FLIPPED,
+            return new Decision(Claim.of(pairing(composition, solver,
+                    outcome, ClaimKind.MARKER_FLIPPED),
                     outcome.valuation().ordinal(),
                     outcome.valuation().moved(), true, gaps),
                     outcomes);
@@ -192,7 +193,8 @@ public final class ClaimPolicy {
                 undecidedPolarity(gaps, recorded, ClaimKind.CLOCK_SKEW);
                 break;
             }
-            return new Decision(Claim.of(ClaimKind.CLOCK_SKEW,
+            return new Decision(Claim.of(pairing(composition, solver,
+                    outcome, ClaimKind.CLOCK_SKEW),
                     outcome.valuation().ordinal(),
                     Collections.<String, String>emptyMap(), true,
                     gaps), outcomes);
@@ -206,15 +208,17 @@ public final class ClaimPolicy {
             String session = recorded.selected().path().sessionId();
             boolean seed = session.equals(composition.seedSessionId());
             if (seed && flipsRefuted(outcomes)) {
-                return new Decision(Claim.of(
-                        ClaimKind.RECORDED_FAILURE_EXPLAINED, 0,
-                        Collections.<String, String>emptyMap(), false, gaps),
+                ClaimKind kind = pairing(composition, solver, recorded,
+                        ClaimKind.RECORDED_FAILURE_EXPLAINED);
+                return new Decision(Claim.of(kind, 0,
+                        Collections.<String, String>emptyMap(),
+                        kind != ClaimKind.RECORDED_FAILURE_EXPLAINED, gaps),
                         outcomes);
             }
             if (!seed && attestedArms(composition, recorded)
                     && seedDisjunctUnsat(composition, solver)) {
-                return new Decision(Claim.of(
-                        ClaimKind.MESSAGE_PAIRING_FLIPPED, 0,
+                return new Decision(Claim.of(pairing(composition, solver,
+                        recorded, ClaimKind.MESSAGE_PAIRING_FLIPPED), 0,
                         Collections.<String, String>emptyMap(), true, gaps),
                         outcomes);
             }
@@ -251,6 +255,52 @@ public final class ClaimPolicy {
                 "the formula shows " + kind + ", and it is satisfiable with "
                         + "every declared root at its recorded value too, so "
                         + "the recording does not decide the arm"));
+    }
+
+    /**
+     * Whether this witness rests on a pairing the run did not take.
+     *
+     * <p>One mechanism, two kinds by the edge it is about.  Pin what the
+     * selected path's own run received -- the versions its reads observed,
+     * or the values its attaches arrived at -- and ask again at the same
+     * valuation.  Still satisfiable means the witness works with the
+     * pairing the recording had, and whatever kind it already was, it stays.
+     * UNSAT means the witness needs a DIFFERENT eligible attested writer, or
+     * a different producer: the pairing is the mechanism, and the kind says
+     * which edge.</p>
+     *
+     * <p>The STATE edge is asked first because it is the narrower claim: a
+     * witness that needs both is about the interleaving it needs, and the
+     * wire pairing it also happens to use is not what makes it a
+     * witness.</p>
+     */
+    private static ClaimKind pairing(Composer.Composition composition,
+                                     Solver solver, Outcome outcome,
+                                     ClaimKind otherwise) {
+        if (outcome == null || outcome.selected() == null) return otherwise;
+        String pathId = outcome.selected().path().pathId();
+        if (unsatWith(composition, solver, outcome,
+                composition.observedReads(pathId))) {
+            return ClaimKind.STATE_PAIRING_FLIPPED;
+        }
+        if (unsatWith(composition, solver, outcome,
+                composition.observedArrivals(pathId))) {
+            return ClaimKind.MESSAGE_PAIRING_FLIPPED;
+        }
+        return otherwise;
+    }
+
+    /** This valuation, this disjunct, and what the run actually paired. */
+    private static boolean unsatWith(Composer.Composition composition,
+                                     Solver solver, Outcome outcome,
+                                     List<String> observed) {
+        if (observed.isEmpty()) return false;
+        List<String> pinned =
+                new ArrayList<String>(outcome.valuation().assertions());
+        pinned.add("(assert " + outcome.selected().selector() + ")");
+        pinned.addAll(observed);
+        return solver.ask(composition.body(), pinned,
+                Collections.<String>emptyList(), false).unsat();
     }
 
     /** Which disjunct a sat model selected, or null when it named none. */
