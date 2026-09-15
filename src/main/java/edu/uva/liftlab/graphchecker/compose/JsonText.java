@@ -53,14 +53,6 @@ final class JsonText {
         }
     }
 
-    /** The first of these that is not blank, or "". */
-    static String firstNonBlank(String... values) {
-        for (String value : values) {
-            if (value != null && !value.trim().isEmpty()) return value;
-        }
-        return "";
-    }
-
     /** One decimal integer as SMT-LIB spells it, or "". */
     static String smtInteger(String value) {
         return JavaPrimitiveSmtSemantics.integralLiteral(value);

@@ -1,6 +1,8 @@
 package edu.uva.liftlab.graphchecker.explore;
 
+import edu.uva.liftlab.graphchecker.compose.JavaSmtSorts;
 import edu.uva.liftlab.graphchecker.compose.SmtLowering;
+import edu.uva.liftlab.graphchecker.compose.VmTermLowering;
 import edu.uva.liftlab.graphchecker.smt.Arms;
 import edu.uva.liftlab.graphchecker.contract.AttachRow;
 import edu.uva.liftlab.graphchecker.contract.DecisionRow;
@@ -138,7 +140,7 @@ final class FlipQuery {
      */
     static boolean flippable(Corpus corpus, String sessionId,
                              DecisionRow decision) {
-        return predicate(decision.term());
+        return Arms.predicate(decision.term());
     }
 
     /**
@@ -153,12 +155,6 @@ final class FlipQuery {
      * cannot disagree about what the predicate says.  A term with no
      * reference in it comes back as it was.</p>
      */
-    /** Whether a published term states a predicate at all. */
-    static boolean predicate(String term) {
-        String text = term == null ? "" : term.trim();
-        return !text.isEmpty() && !"(not )".equals(text);
-    }
-
     static String statedTerm(Corpus corpus, String sessionId,
                              String term) {
         if (term == null || term.isEmpty()) return "";
@@ -249,7 +245,7 @@ final class FlipQuery {
                 // the polarity is the recording's, the names are this
                 // query's.
                 boolean last = index == flipIndex;
-                if (!predicate(decision.term())) {
+                if (!Arms.predicate(decision.term())) {
                     // Concrete: no predicate to assert, and (by flippable)
                     // never the decision this obligation flips.
                     continue;
@@ -436,7 +432,7 @@ final class FlipQuery {
                 }
             }
             for (Map.Entry<String, List<String>> family : bySlot.entrySet()) {
-                assertions.add(SmtText.disjoin(family.getValue()));
+                assertions.add(VmTermLowering.or(family.getValue()));
                 if (family.getKey().equals(slotIdOf(attach))) {
                     disjuncts.addAll(family.getValue());
                 }
@@ -522,7 +518,7 @@ final class FlipQuery {
                         "the producer ran concretely: this arm states what "
                                 + "it delivered, not why"));
             }
-            return SmtText.conjoin(conjuncts);
+            return VmTermLowering.and(conjuncts);
         }
 
         private void read(ReadRow row) {
@@ -616,14 +612,14 @@ final class FlipQuery {
             for (Choice choice : choices) selectors.add(choice.selector);
             if (selectors.size() == 1) return selectors.get(0);
             List<String> atMostOne = new ArrayList<String>();
-            atMostOne.add(SmtText.disjoin(selectors));
+            atMostOne.add(VmTermLowering.or(selectors));
             for (int left = 0; left < selectors.size(); left++) {
                 for (int right = left + 1; right < selectors.size(); right++) {
                     atMostOne.add("(not (and " + selectors.get(left) + " "
                             + selectors.get(right) + "))");
                 }
             }
-            return SmtText.conjoin(atMostOne);
+            return VmTermLowering.and(atMostOne);
         }
 
         // ---- naming --------------------------------------------------
@@ -749,15 +745,18 @@ final class FlipQuery {
         /**
          * The sort the runtime declared one value at.
          *
-         * <p>A descriptor this query cannot state -- a reference, a string, a
-         * floating value -- refuses the obligation under its own name instead
-         * of being lowered as an integer.  The shared lowering states those
-         * sorts; the flip query's own assembly does not, and guessing is how
-         * two formulas come to be about two different variables.</p>
+         * <p>{@link JavaSmtSorts} is the one Java-type vocabulary, so a
+         * boxed Integer is Int here exactly as it is in the composed query.
+         * A descriptor this query has no sort for -- a reference, a string,
+         * a floating value, a container -- refuses the obligation under its
+         * own name instead of being lowered as an integer.  The second copy
+         * this replaced answered nothing for the boxed types and "" for
+         * everything else, so one stage's Int was another's refusal.</p>
          */
         private String sortOf(String javaType, String name, String subject) {
-            String sort = SmtText.sortOfJavaType(javaType);
-            if (!sort.isEmpty()) return sort;
+            VmTermLowering.Sort sort = JavaSmtSorts.sortOfJava(javaType);
+            if (sort == VmTermLowering.Sort.INT) return "Int";
+            if (sort == VmTermLowering.Sort.BOOL) return "Bool";
             refusal = "UNSTATED_VALUE:" + subject;
             gaps.add(GapRow.of(path.sessionId, GapKind.UNSTATED_VALUE,
                     GapClass.BLOCKING, subject,
