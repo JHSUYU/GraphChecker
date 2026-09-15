@@ -781,7 +781,7 @@ public final class ConcolicRegionRuntime {
             // inside it carries, so a logged event can be given the frames
             // it stood on (FrameJournal).
             edu.uva.liftlab.graphchecker.runtime.d3.D3Runtime.journalRegion(
-                    active.vmRegionEnterEventId);
+                    active.vmRegionEnterEventId, active.d3Address);
             // A delivery can establish the causal request immediately before
             // the selected handler entry.
             RuntimeTraceContext.View context = RuntimeTraceContext.current();

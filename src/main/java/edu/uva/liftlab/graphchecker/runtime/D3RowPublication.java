@@ -66,7 +66,7 @@ final class D3RowPublication {
             } else if ("roots".equals(kind)) {
                 roots(active, occurrence);
             } else if ("state".equals(kind)) {
-                writes(active, occurrence);
+                writes(active);
             } else {
                 target(active, occurrence);
             }
@@ -521,10 +521,12 @@ final class D3RowPublication {
      * Both halves of an endpoint come from the run itself: the VM states the
      * bytecode site of every version and read it logs (REPORT-VM21), and the
      * frames those events stood on come from the activation's own frame
-     * journal, aligned to the event id (FrameJournal).</p>
+     * journal, aligned to the event id (FrameJournal).  The row belongs to
+     * the activation that PERFORMED the event, which the VM also states, not
+     * to this one -- this activation is only the one whose read-out found the
+     * event first (see {@link #performer}).</p>
      */
-    private static void writes(ActiveRegion active,
-                               OccurrenceAddress occurrence) {
+    private static void writes(ActiveRegion active) {
         // One activation, one population of reads: the same node is reached
         // from many versions of one location, and a row per reachable path
         // would count one read many times.
@@ -555,15 +557,19 @@ final class D3RowPublication {
                 JsonObject written =
                         expression != null && expression.isJsonObject()
                                 ? expression.getAsJsonObject() : null;
-                D3Runtime.write(occurrence, id,
-                        loggedSite(version, locationKey, id, true),
-                        location, id, written, "",
-                        loggedFrames(version, locationKey, id, true));
-                collect(expression, occurrence, published, seen);
+                OccurrenceAddress performer = performer(version, locationKey,
+                        id, true);
+                if (performer != null) {
+                    D3Runtime.write(performer, id,
+                            loggedSite(version, locationKey, id, true),
+                            location, id, written, "",
+                            loggedFrames(version, locationKey, id, true));
+                }
+                collect(expression, published, seen);
             }
         }
         for (JsonObject mapping : active.branchMappings) {
-            collect(mapping.get("witness"), occurrence, published, seen);
+            collect(mapping.get("witness"), published, seen);
         }
     }
 
@@ -671,6 +677,41 @@ final class D3RowPublication {
     }
 
     /**
+     * The occurrence that performed one logged event, or null with a gap.
+     *
+     * <p>The VM names the activation on every record it keeps, and that
+     * activation is what the row is a row OF: a read the deletion region
+     * made is not a read of the occurrence that happened to publish the
+     * location's log first, and a path through the publisher would carry a
+     * read it never performed.  An event whose activation this session has
+     * no occurrence for states so and publishes no row -- attributing it to
+     * the publisher is the thing this replaces.</p>
+     */
+    private static OccurrenceAddress performer(JsonObject node,
+                                               String locationKey,
+                                               long eventId, boolean write) {
+        long activation = loggedActivation(node, eventId);
+        OccurrenceAddress performer = D3Runtime.occurrenceAt(activation);
+        if (performer != null) return performer;
+        D3Runtime.gap(GapKind.LINEAGE_LOST, GapClass.DIAGNOSTIC,
+                locationKey + "#" + eventId,
+                "this " + (write ? "version" : "read") + " states activation "
+                        + activation + ", which is no activation of this"
+                        + " session, so the run cannot say which occurrence"
+                        + " performed it and states no row for it");
+        return null;
+    }
+
+    /** The activation the event states, its own or its log record's. */
+    private static long loggedActivation(JsonObject node, long eventId) {
+        long activation = optionalLongInteger(node, "regionEnterEventId", -1L);
+        if (activation > 0L) return activation;
+        Logged record = eventId < 0L ? null
+                : LOGGED.get(Long.valueOf(eventId));
+        return record == null ? -1L : record.activation;
+    }
+
+    /**
      * The frames one logged event stood on, or {@code ""} with a gap.
      *
      * <p>The event states the activation it ran inside
@@ -681,12 +722,7 @@ final class D3RowPublication {
      */
     private static String loggedFrames(JsonObject node, String locationKey,
                                        long eventId, boolean write) {
-        long activation = optionalLongInteger(node, "regionEnterEventId", -1L);
-        if (activation <= 0L) {
-            Logged record = eventId < 0L ? null
-                    : LOGGED.get(Long.valueOf(eventId));
-            activation = record == null ? -1L : record.activation;
-        }
+        long activation = loggedActivation(node, eventId);
         String frames = D3Runtime.framesOf(activation, eventId);
         // "" is placed on no frames -- the store or read is in the region's
         // own method -- and the bci of the site is then what distinguishes
@@ -713,8 +749,7 @@ final class D3RowPublication {
      * before the reads, and publishing no read row reads afterwards as a
      * path that read nothing.</p>
      */
-    private static void collect(JsonElement root, OccurrenceAddress occurrence,
-                                Set<String> published,
+    private static void collect(JsonElement root, Set<String> published,
                                 Map<JsonElement, Boolean> seen) {
         if (root == null) return;
         java.util.Deque<JsonElement> pending =
@@ -736,9 +771,9 @@ final class D3RowPublication {
             JsonObject object = node.getAsJsonObject();
             String type = optionalString(object, "_type");
             if ("ReadFromExpression".equals(type)) {
-                readFrom(object, occurrence, published);
+                readFrom(object, published);
             } else if ("FieldAccessExpression".equals(type)) {
-                fieldAccess(object, occurrence, published);
+                fieldAccess(object, published);
             }
             for (Map.Entry<String, JsonElement> member : object.entrySet()) {
                 pending.push(member.getValue());
@@ -747,9 +782,7 @@ final class D3RowPublication {
     }
 
     /** A read the write log covers: the location, and the version it saw. */
-    private static void readFrom(JsonObject node,
-                                 OccurrenceAddress occurrence,
-                                 Set<String> published) {
+    private static void readFrom(JsonObject node, Set<String> published) {
         JsonObject where = object(node, "location");
         String locationKey = locationKey(where);
         LocationId location = location(locationKey);
@@ -774,7 +807,10 @@ final class D3RowPublication {
             return;
         }
         if (!D3Runtime.claimRead(identity)) return;
-        D3Runtime.read(occurrence, event >= 0L ? event : Math.max(0L, observed),
+        OccurrenceAddress performer = performer(node, locationKey, event,
+                false);
+        if (performer == null) return;
+        D3Runtime.read(performer, event >= 0L ? event : Math.max(0L, observed),
                 loggedSite(node, locationKey, event, false),
                 location, observed, symbol,
                 optionalString(node, "_java_type"), value,
@@ -794,7 +830,6 @@ final class D3RowPublication {
      * location join.</p>
      */
     private static void fieldAccess(JsonObject node,
-                                    OccurrenceAddress occurrence,
                                     Set<String> published) {
         JsonElement value = node.get("concreteValue");
         if (value == null || value.isJsonNull()) return;
@@ -833,7 +868,10 @@ final class D3RowPublication {
                     : "@e" + event);
         }
         if (!D3Runtime.claimRead(identity)) return;
-        D3Runtime.read(occurrence, event >= 0L ? event : Math.max(0L, observed),
+        OccurrenceAddress performer = performer(node, locationKey, event,
+                false);
+        if (performer == null) return;
+        D3Runtime.read(performer, event >= 0L ? event : Math.max(0L, observed),
                 loggedSite(node, locationKey, event, false),
                 location, observed, projected,
                 optionalString(node, "_java_type"), stated,

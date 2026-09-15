@@ -690,6 +690,18 @@ public class D3RuntimeTest {
         // rather than answered with someone else's frames.
         assertNull(FrameJournal.framesAt(99L, 49L));
         assertNull(FrameJournal.framesAt(41L, 41L));
+        // One key, two answers of the same activation: the frames a logged
+        // event stood on, and the occurrence that performed it.  A row of a
+        // read belongs to the activation the VM names on the record, not to
+        // whichever activation's read-out found the location's log first.
+        OccurrenceAddress performer = OccurrenceMinterV2.mint(
+                "hdfs-17960/nn0#epoch1", "REGION.9492ec77",
+                CausalContext.of(Role.CLIENT, 1),
+                ExecutionIndex.parse("Manager.delete()#u3@0"));
+        D3Runtime.journalRegion(41L, performer);
+        assertEquals(performer, D3Runtime.occurrenceAt(41L));
+        assertNull("an event of no activation of this session names none",
+                D3Runtime.occurrenceAt(99L));
         Identity.resetForTests();
         Identity.scopeStart();
         Identity.enterCall("Caller.run()#u3");

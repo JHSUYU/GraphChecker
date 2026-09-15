@@ -775,9 +775,35 @@ public final class D3Runtime {
      * carries.  Until then the activation journals nothing: an entry with no
      * key could not be found again.</p>
      */
-    public static void journalRegion(long vmRegionEnterEventId) {
+    public static void journalRegion(long vmRegionEnterEventId,
+                                     OccurrenceAddress occurrence) {
         Identity.regionKey(vmRegionEnterEventId);
+        if (vmRegionEnterEventId > 0L && occurrence != null) {
+            PERFORMERS.put(Long.valueOf(vmRegionEnterEventId), occurrence);
+        }
     }
+
+    /**
+     * The occurrence whose activation the VM named, or null.
+     *
+     * <p>A logged read or write is an event of the activation that PERFORMED
+     * it, and the VM states which one on every record it keeps
+     * ({@code regionEnterEventId}).  The row used to name the innermost
+     * activation that happened to publish the location's log instead, which
+     * on hdfs-17960 put a read the deletion region made into the anchor's
+     * rows -- so the anchor's path carried a read it never performed, and
+     * "each path carries its own reads" was false of it.  One key, filed
+     * here and in {@link FrameJournal}, so the occurrence a row names and
+     * the frames it carries are the same activation's.</p>
+     */
+    public static OccurrenceAddress occurrenceAt(long vmRegionEnterEventId) {
+        return vmRegionEnterEventId <= 0L ? null
+                : PERFORMERS.get(Long.valueOf(vmRegionEnterEventId));
+    }
+
+    /** The occurrence of every activation this session has entered. */
+    private static final Map<Long, OccurrenceAddress> PERFORMERS =
+            new ConcurrentHashMap<Long, OccurrenceAddress>();
 
     /** Leaves the innermost region of the execution index. */
     public static void exitRegionIndex() {
