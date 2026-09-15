@@ -100,7 +100,13 @@ public class D3ExploreTest {
         seed.root(target, "CASE.COUNT", "M_COUNT", RootKind.INTEGRAL, "0",
                 "0", "10", true);
         // if (a) if (b) throw: the recording took not-a and never reached b.
-        seed.decision(target, "Guard#u8", 1, false, "M_MARKER");
+        // The predicate is published the way the VM publishes one over a
+        // propagated value: a REFERENCE into the session's expression
+        // table, which the one lowering resolves for the flip query too.
+        seed.symbolic("EXPR.0000000000000001", "M_MARKER", "Z");
+        seed.decision(target, "Guard#u8", 1, false, "EXPR.0000000000000001");
+        // A CONCRETE branch beside it: no predicate, so nothing to flip.
+        seed.decision(target, "Concrete#u3", 1, false, "");
         seed.flush();
 
         Path out = tree.newFolder("depth-out").toPath();
@@ -114,6 +120,11 @@ public class D3ExploreTest {
         assertEquals(1, proposed.size());
         assertEquals("Guard#u8", proposed.get(0).siteId());
         assertTrue(proposed.get(0).flippedOutcome());
+        for (Obligation obligation : proposed) {
+            assertFalse("a branch the recording states no predicate for is "
+                            + "not a flip: there is nothing to negate",
+                    "Concrete#u3".equals(obligation.siteId()));
+        }
         Worker worker = solve(iteration, wave0, proposed.get(0), out, "w0");
         assertEquals(Verdict.SAT_MODEL_READY, worker.verdict);
         assertEquals("true",
@@ -727,10 +738,14 @@ public class D3ExploreTest {
 
         /** The value a handoff minted, as the VM propagated it. */
         private void symbolic(String ref, String symbol) {
+            symbolic(ref, symbol, "I");
+        }
+
+        private void symbolic(String ref, String symbol, String javaType) {
             JsonObject expression = new JsonObject();
             expression.addProperty("_type", "SymbolExpression");
             expression.addProperty("_exp", symbol);
-            expression.addProperty("_java_type", "I");
+            expression.addProperty("_java_type", javaType);
             expressions.put(ref, expression);
         }
 

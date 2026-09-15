@@ -91,7 +91,7 @@ public final class ClosurePlanner {
             // A truncated closure composes a formula that is missing
             // producers the anchor's paths read, and a composition missing an
             // arm is not a weaker claim -- it is an unsound one.
-            gaps.add(GapRow.of("", GapKind.ADMISSION_GAP, GapClass.BLOCKING,
+            gaps.add(GapRow.of(ExploreCodec.EXPLORATION, GapKind.ADMISSION_GAP, GapClass.BLOCKING,
                     anchor.render(), "closure truncated at " + maxTasks
                             + " tasks; " + pending.size() + " occurrences "
                             + "were not planned, so this anchor's closure is "

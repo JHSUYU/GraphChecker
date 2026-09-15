@@ -320,7 +320,7 @@ public final class SlotTable {
             if (member == null || member.id().equals(occurrence.id())) {
                 continue;
             }
-            gaps.add(GapRow.of("", GapKind.TOPOLOGY_DIVERGENCE,
+            gaps.add(GapRow.of(ExploreCodec.EXPLORATION, GapKind.TOPOLOGY_DIVERGENCE,
                     GapClass.BLOCKING, occurrence.render(),
                     "the closure holds " + member.context().render()
                             + " at this code point and this replay ran it as "

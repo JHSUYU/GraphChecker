@@ -113,8 +113,14 @@ final class FlipQuery {
      */
     static boolean flippable(Corpus corpus, String sessionId,
                              DecisionRow decision) {
+        // A CONCRETE branch is published with no term: the VM had no
+        // symbolic value at the site, so there is no predicate to negate
+        // and no valuation that could take the other arm.  Asking anyway
+        // asserted "(not )", which is not SMT at all.
+        if (!predicate(decision.term())) return false;
         if (!decision.clockReadings().isEmpty()) return true;
-        for (String token : SmtText.symbols(decision.term(),
+        for (String token : SmtText.symbols(statedTerm(corpus, sessionId,
+                        decision.term()),
                 new LinkedHashSet<String>())) {
             Corpus.SymbolKind kind = corpus.symbolKind(sessionId, token);
             if (kind == Corpus.SymbolKind.ROOT
@@ -123,6 +129,35 @@ final class FlipQuery {
             }
         }
         return false;
+    }
+
+    /**
+     * One published term with its expression REFERENCES lowered.
+     *
+     * <p>The runtime publishes a predicate over a propagated value as
+     * {@code (not EXPR.1f3c6978d870b1bc)} -- a reference into the session's
+     * expression table -- so a query that read the token as a name asked
+     * about nothing and every such decision looked unflippable.  The ONE
+     * lowering resolves it (d3.compose.SmtLowering), the same routine the
+     * composer runs, so a flip and the composition it is meant to satisfy
+     * cannot disagree about what the predicate says.  A term with no
+     * reference in it comes back as it was.</p>
+     */
+    /** Whether a published term states a predicate at all. */
+    static boolean predicate(String term) {
+        String text = term == null ? "" : term.trim();
+        return !text.isEmpty() && !"(not )".equals(text);
+    }
+
+    static String statedTerm(Corpus corpus, String sessionId,
+                             String term) {
+        if (term == null || term.isEmpty()) return "";
+        SmtLowering lowering = corpus.lowering(sessionId);
+        if (lowering == null) return term;
+        String lowered = lowering.statedTerm(term, "flip:" + sessionId);
+        // A refusal leaves "": the term names a value this replay does not
+        // state, and the caller's own unknown-symbol rule names it.
+        return lowered.isEmpty() ? term : lowered;
     }
 
     static Built build(Corpus corpus, Task task, Corpus.RecordedPath path,
@@ -196,9 +231,14 @@ final class FlipQuery {
                 // query and in the composed one.  Renaming comes after it:
                 // the polarity is the recording's, the names are this
                 // query's.
-                String held = rename(Arms.conjunct(decision), path.sessionId,
-                        new LinkedHashSet<String>(), unknown);
                 boolean last = index == flipIndex;
+                if (!predicate(decision.term())) {
+                    // Concrete: no predicate to assert, and (by flippable)
+                    // never the decision this obligation flips.
+                    continue;
+                }
+                String held = rename(conjunct(decision, path.sessionId),
+                        path.sessionId, new LinkedHashSet<String>(), unknown);
                 if (!unknown.isEmpty()) {
                     String named = unknown.iterator().next();
                     if (last) {
@@ -229,6 +269,19 @@ final class FlipQuery {
             return new Built(render(flipped, flipIndex), "", flipped,
                     new ArrayList<Control>(controls.values()), rootVariables,
                     gaps);
+        }
+
+        /**
+         * One decision, as the arm its run took, with its references
+         * lowered.
+         *
+         * <p>{@link Arms#conjunct} owns the polarity and nothing here
+         * repeats it; the lowering owns the references and nothing here
+         * repeats that either.</p>
+         */
+        private String conjunct(DecisionRow decision, String sessionId) {
+            String term = statedTerm(corpus, sessionId, decision.term());
+            return decision.outcome() ? term : "(not " + term + ")";
         }
 
         /** The fixed point: every symbol the query names gets its own rule. */
@@ -379,8 +432,8 @@ final class FlipQuery {
             if (!unknown.isEmpty()) return "";
             List<String> conjuncts = new ArrayList<String>();
             for (String term : arm.pi()) {
-                String renamed = rename(term, arm.sessionId(),
-                        new LinkedHashSet<String>(), unknown);
+                String renamed = rename(statedTerm(corpus, arm.sessionId(), term),
+                        arm.sessionId(), new LinkedHashSet<String>(), unknown);
                 if (!unknown.isEmpty()) return "";
                 conjuncts.add(renamed);
             }
@@ -564,7 +617,8 @@ final class FlipQuery {
                 // which those are (CONTRACT-SPEC v1.1 seq).
                 if (decision.seq() >= export.seq()) continue;
                 if (!flippable(corpus, export.sessionId(), decision)) continue;
-                String term = rename(decision.term(), export.sessionId(),
+                String term = rename(statedTerm(corpus, export.sessionId(),
+                                decision.term()), export.sessionId(),
                         roots, unknown);
                 if (!unknown.isEmpty()) {
                     refusals.add("its prefix names " + unknown.iterator().next()

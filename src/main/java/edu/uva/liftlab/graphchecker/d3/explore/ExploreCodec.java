@@ -29,6 +29,17 @@ import java.util.Map;
  * and the two join on the rendered address.</p>
  */
 public final class ExploreCodec {
+    /**
+     * The session id a gap raised BY this stage carries.
+     *
+     * <p>{@code GapRow.sessionId} is required, and a gap the exploration
+     * itself raises belongs to no replay -- exactly as a composer-raised one
+     * belongs to none and says "composition".  Every such row used to pass
+     * "", which throws, so the first divergence a wave found killed the
+     * wave instead of being reported by it.</p>
+     */
+    public static final String EXPLORATION = "exploration";
+
     private ExploreCodec() {
     }
 

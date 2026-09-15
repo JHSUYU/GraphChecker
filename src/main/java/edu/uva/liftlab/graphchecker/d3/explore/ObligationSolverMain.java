@@ -94,7 +94,7 @@ public final class ObligationSolverMain {
                             "no session of this corpus still states path "
                                     + proposal.pathId() + " of task "
                                     + proposal.taskId()), "",
-                    Collections.singletonList(GapRow.of("",
+                    Collections.singletonList(GapRow.of(ExploreCodec.EXPLORATION,
                             GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
                             obligationId, "the obligation names a path the "
                                     + "corpus does not hold")));
