@@ -91,6 +91,10 @@ workflow_config_keys=(
   # workflow key nor a CLI override point.
   "schedule_summaries - r -"
   "schedule_closure_mode - r candidate"
+  # Regions a previous epoch's TOPOLOGY_DIVERGENCE said the retained set must
+  # grow to include.  Internal campaign state: it is derived from the epoch
+  # that diverged, never configured.
+  "schedule_retain_regions - r -"
   "schedule_max_jobs CAUSYNTH_SCHEDULE_MAX_JOBS krp -"
   # The replay-task count this experiment expects to schedule.  It caps
   # nothing: the scheduler publishes the kept count against it and every
@@ -564,6 +568,11 @@ do_schedule() {
     args+=(--summaries "${schedule_summaries}")
   fi
   args+=(--closure-mode "${schedule_closure_mode}")
+  # The regions a previous epoch's divergence said this plan must name, so
+  # that INSTRUMENT -- which instruments the regions the plan names --
+  # instruments them before this epoch replays.
+  [[ -z "${schedule_retain_regions}" ]] \
+    || args+=(--retain-regions "${schedule_retain_regions}")
   [[ -z "${declared_target_occurrence}" ]] \
     || args+=(--target-occurrence "${declared_target_occurrence}")
   run_java_main edu.uva.liftlab.graphchecker.d3.plan.ConcolicScheduler \
@@ -1599,7 +1608,7 @@ campaign_seed() {
 # share one workload JVM so VM expressions cross their real RPC/field
 # boundaries.
 campaign_plan() {
-  local iteration_dir=$1 carry=$2
+  local iteration_dir=$1 carry=$2 retain=${3:-}
   local plan="${iteration_dir}/execution_task_plan.jsonl"
   local index="${iteration_dir}/runtime_workflow_schedule_index.json"
   local seed_dir="${iteration_dir}/seed-replay"
@@ -1613,6 +1622,7 @@ campaign_plan() {
   require_nonempty "runtime-refined data-flow graph" "${refined_graph}"
   cp -f "${runtime_region_plan}" "${frozen}"
   schedule_output_dir="${iteration_dir}"
+  schedule_retain_regions="${retain}"
   schedule_summaries="${carry}"
   do_schedule
   # Every later consumer reads this iteration's frozen copy, never the mutable
@@ -2715,20 +2725,44 @@ campaign_publish_pending_refinement() {
 }
 
 
+
 # How many rows this iteration's replays published about a topology their plan
 # had not addressed: a consumer endpoint paired with a producer endpoint the
-# epoch catalog does not carry (INTERACTION-ID R-I3).  Zero means the topology
-# is closed.
+# epoch catalog does not carry (INTERACTION-ID R-I3), or a path that reached a
+# region the workload never retained (section 8 case 2).  Zero means the
+# topology is closed.
 campaign_topology_divergences() {
   local iteration_dir=$1
-  local sessions="${iteration_dir}/sessions"
-  [[ -d "${sessions}" ]] || { printf '0'; return 0; }
-  find "${sessions}" -type f -name 'gaps.jsonl' -print0 \
-    | LC_ALL=C sort -z | xargs -0 -r cat \
-    | jq -r -s '[.[] | select(.gapKind == "TOPOLOGY_DIVERGENCE")] | length' \
-      2>/dev/null || printf '0'
+  campaign_divergence_rows "${iteration_dir}" \
+    | jq -r -s 'length' 2>/dev/null || printf '0'
 }
 
+# Every TOPOLOGY_DIVERGENCE row of this iteration, from the sessions.
+campaign_divergence_rows() {
+  local sessions="$1/sessions"
+  [[ -d "${sessions}" ]] || return 0
+  find "${sessions}" -type f -name 'gaps.jsonl' -print0 \
+    | LC_ALL=C sort -z | xargs -0 -r cat \
+    | jq -c 'select(.gapKind == "TOPOLOGY_DIVERGENCE")' 2>/dev/null || true
+}
+
+# The regions a divergence says the retained set must grow to include.
+#
+# INTERACTION-ID section 8 distinguishes two causes, and the epoch loop has to
+# act differently on them.  A path that reached a region the workload never
+# retained -- lightweight entry hooks ran there, so it published activations
+# and no decisions -- names that region here, and the next epoch must
+# INSTRUMENT it before it replays or it will diverge identically.  Every other
+# divergence is a pairing or a context the catalog did not carry: a new epoch
+# over the same retained set.
+campaign_retained_growth() {
+  campaign_divergence_rows "$1" \
+    | jq -r 'select((.detail // "")
+               | test("retained set must grow: "))
+             | (.detail | sub(".*retained set must grow: *"; "")
+                        | split(" ") | .[0])' 2>/dev/null \
+    | LC_ALL=C sort -u | paste -sd, - 2>/dev/null || true
+}
 
 # The session whose own trace is the recording of the next epoch, as the
 # runtime named it on the divergent row.  Empty when this epoch's topology
@@ -2777,7 +2811,8 @@ campaign_publish_epoch_final() {
 campaign_max_epochs=3
 
 do_campaign() {
-  local iteration=0 iteration_id="" parent="" carry="" iteration_dir
+  local iteration=0 iteration_id="" parent="" carry="" retain=""
+  local iteration_dir
   local divergences=0 seeding_replay="" seeding_results=""
   campaign_root="${schedule_output_dir}"
   # Set per iteration inside the loop: each epoch composes into its own
@@ -2816,7 +2851,7 @@ do_campaign() {
     # from the previous one, so a stage can never read a stale member set.
     campaign_member_rows=""
     campaign_stage "PLAN[${iteration}]" campaign_plan "${iteration_dir}" \
-      "${carry}"
+      "${carry}" "${retain}"
     campaign_stage "INSTRUMENT[${iteration}]" campaign_instrument \
       "${iteration_dir}"
     campaign_stage "REPLAY[${iteration}]" campaign_session_replay \
@@ -2852,7 +2887,18 @@ do_campaign() {
     # claim=MISSING.  An epoch's evidence is its own; a refinement that is
     # owed is a row that says so.
     divergences=$(campaign_topology_divergences "${iteration_dir}")
+    # INTERACTION-ID section 8: two causes, two epochs.  A path that reached a
+    # region the workload never retained needs that region INSTRUMENTED before
+    # the next epoch replays, or the next epoch diverges identically; every
+    # other divergence is a pairing or a context the catalog did not carry,
+    # and the next epoch plans the same retained set again.
+    retain=$(campaign_retained_growth "${iteration_dir}")
     if [[ "${divergences}" -gt 0 ]]; then
+      if [[ -n "${retain}" ]]; then
+        campaign_log "topology divergences: ${divergences}; the retained set \
+must grow by ${retain}, so epoch $((iteration + 1)) instruments them before \
+it replays"
+      fi
       campaign_log "topology divergences: ${divergences}; epoch \
 ${iteration_id} composes its own paths and the refinement is pending"
       campaign_publish_pending_refinement "${iteration_dir}" \
