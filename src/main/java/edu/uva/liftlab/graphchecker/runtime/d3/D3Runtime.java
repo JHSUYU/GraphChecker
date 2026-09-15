@@ -779,8 +779,8 @@ public final class D3Runtime {
         Identity.regionKey(vmRegionEnterEventId);
     }
 
-    /** Leaves the innermost region frame of the execution index. */
-    public static void exitRegionFrame() {
+    /** Leaves the innermost region of the execution index. */
+    public static void exitRegionIndex() {
         Identity.regionExit();
     }
 

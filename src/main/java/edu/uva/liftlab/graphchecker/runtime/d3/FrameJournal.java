@@ -138,11 +138,6 @@ public final class FrameJournal {
         return ExecutionIndex.of(Arrays.asList(standing));
     }
 
-    /** Whether any activation of this run has a journal at all. */
-    public static boolean any() {
-        return !JOURNALS.isEmpty();
-    }
-
     static void resetForTests() {
         JOURNALS.clear();
     }

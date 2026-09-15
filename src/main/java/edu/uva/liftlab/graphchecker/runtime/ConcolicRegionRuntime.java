@@ -810,7 +810,7 @@ public final class ConcolicRegionRuntime {
                     popActiveRegion(active);
                 } else if (identityRegionEntered) {
                     edu.uva.liftlab.graphchecker.runtime.d3.D3Runtime
-                            .exitRegionFrame();
+                            .exitRegionIndex();
                 }
                 active.releaseActivationOrdinal();
             }
@@ -5425,7 +5425,7 @@ public final class ConcolicRegionRuntime {
         // the enclosing one resumes being the innermost here.  The journal
         // itself outlives the region: another activation publishes the rows
         // of events this one performed.
-        edu.uva.liftlab.graphchecker.runtime.d3.D3Runtime.exitRegionFrame();
+        edu.uva.liftlab.graphchecker.runtime.d3.D3Runtime.exitRegionIndex();
     }
 
     /**
