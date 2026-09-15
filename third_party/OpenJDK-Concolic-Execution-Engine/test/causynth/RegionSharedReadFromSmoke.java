@@ -87,8 +87,128 @@ public final class RegionSharedReadFromSmoke {
                 Holder.class.getName(), "unselected", "I");
         require(unselected.contains("\"selected\":false"), unselected);
 
+        everyRecordStatesItsSite(evidence, multiple);
+
         System.endConcolic();
         System.out.println("RegionSharedReadFromSmoke OK");
+    }
+
+    /**
+     * Every logged read and write states the bytecode site it stood at, and
+     * the read node states the same one.
+     *
+     * <p>Identity v3 addresses an endpoint by {@code (occurrence, site,
+     * siteIndex, attempt)}, and the innermost frame of a read's or a write's
+     * site index is a bytecode site only the VM stands at.  The log used to
+     * state none, so two reads of one location by one occurrence at different
+     * places in the code were indistinguishable: 38 of 46 ReadRows and 50 of
+     * 52 WriteRows of the 17960 seed carried an empty site index, and the
+     * anchor's two reads of {@code MAP_STATE/1#-3} collapsed onto one
+     * endpoint id, which the explorer then read as a replacement.</p>
+     *
+     * <p>The site is components, never a rendered id: the consumer spells
+     * the method part its own way and has to be the only place that does.</p>
+     */
+    private static void everyRecordStatesItsSite(String evidence,
+                                                 String read) {
+        System.out.println("READ_LOG " + evidence);
+        System.out.println("EVENT_ID " + System.currentSymbolicEventId());
+
+        // Four records state a site here: the two writers, the read record,
+        // and the read node the expression table holds -- and every one of
+        // them is in this method, so nothing states a site by accident.
+        require(count(evidence, "\"site\":{") == 4, evidence);
+        require(count(evidence, SITE) == 4,
+                "not every logged read and write stated its site: "
+                        + evidence);
+        require(read.contains(SITE),
+                "the read node stated no site: " + read);
+
+        // The read record and the read node name the SAME site: one read,
+        // one place, stated identically by the log and by the expression.
+        String reads = section(evidence, "\"reads\":[");
+        require(count(reads, SITE) == 1, reads);
+        int where = bciAfter(reads, SITE);
+        require(read.contains(SITE + where + "}"),
+                "the read log and the read node disagree about where the"
+                        + " read ran: " + reads + " vs " + read);
+        // Two guarded reads reach this value -- of the other input inside the
+        // guarded store, and of the shared field -- and each states its own
+        // site, which is how they are told apart at all.
+        require(count(read, SITE) == 2, read);
+
+        // Four different places in this one method: the mint's call site,
+        // the read of the other input inside the guarded store, the store
+        // itself, and this load.  This is the whole point -- two events of
+        // ONE location are told apart by where they ran, which a location
+        // key and an occurrence id cannot do.  None is 0: neither a store
+        // nor a load sits at the method entry, and an unstated site is
+        // absent rather than bci 0.
+        require(distinctBcis(evidence) == 4,
+                "the log did not tell its events apart by site: " + evidence);
+        require(bciAfter(evidence, SITE) > 0, evidence);
+        require(bciAfter(read, SITE) > 0, read);
+
+        // The event id is read-only and bounds the log, which is what lets a
+        // caller's own journal say which log events happened inside one of
+        // its frames.
+        long now = System.currentSymbolicEventId();
+        require(System.currentSymbolicEventId() == now,
+                "currentSymbolicEventId published an event of its own");
+        require(now > 0L, "no event was published: " + now);
+        require(versionId(evidence, true) <= now,
+                "a version id exceeded the published event id: " + now);
+    }
+
+    /** The one spelling every record of this run's sites must carry. */
+    private static final String SITE = "\"site\":{\"className\":"
+            + "\"RegionSharedReadFromSmoke\",\"methodName\":\"main\","
+            + "\"methodDescriptor\":\"([Ljava/lang/String;)V\",\"bci\":";
+
+    /** One flat array of the envelope, from `start` to its close. */
+    private static String section(String json, String start) {
+        int at = json.indexOf(start);
+        require(at >= 0, start + " is absent from " + json);
+        int end = json.indexOf(']', at);
+        require(end > at, json);
+        return json.substring(at, end);
+    }
+
+    /** How many different bcis the sites in `json` name. */
+    private static int distinctBcis(String json) {
+        String key = "\"bci\":";
+        StringBuilder seen = new StringBuilder(",");
+        int count = 0;
+        int offset = 0;
+        while ((offset = json.indexOf(SITE, offset)) >= 0) {
+            int from = json.indexOf(key, offset) + key.length();
+            int to = from;
+            while (to < json.length() && json.charAt(to) >= '0'
+                    && json.charAt(to) <= '9') {
+                to++;
+            }
+            String bci = "," + json.substring(from, to) + ",";
+            if (seen.indexOf(bci) < 0) {
+                seen.append(bci.substring(1));
+                count++;
+            }
+            offset = to;
+        }
+        return count;
+    }
+
+    /** The bci of the first site in `json`. */
+    private static int bciAfter(String json, String site) {
+        int at = json.indexOf(site);
+        require(at >= 0, json);
+        int from = at + site.length();
+        int to = from;
+        while (to < json.length() && json.charAt(to) >= '0'
+                && json.charAt(to) <= '9') {
+            to++;
+        }
+        require(to > from, json);
+        return Integer.parseInt(json.substring(from, to));
     }
 
     private static String expression(Sink sink) {

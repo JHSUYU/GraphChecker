@@ -546,6 +546,15 @@ JVM_ENTRY(void, JVM_ResumeConcolicPathCondition(JNIEnv *env, jclass ignored))
 #endif
 JVM_END
 
+JVM_ENTRY(jlong, JVM_CurrentSymbolicEventId(JNIEnv *env, jclass ignored))
+  JVMWrapper("JVM_CurrentSymbolicEventId");
+#ifdef ENABLE_CONCOLIC
+  return ConcolicMngr::currentEventId();
+#else
+  return 0;
+#endif
+JVM_END
+
 JVM_ENTRY(jlong, JVM_MarkConcolicBranch(JNIEnv *env, jclass ignored,
                                         jstring site_id, jint occurrence))
   JVMWrapper("JVM_MarkConcolicBranch");

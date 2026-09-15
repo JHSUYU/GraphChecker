@@ -496,6 +496,19 @@ public final class System {
      * next symbolic conditional bytecode binds this event to its real path
      * condition index.  A zero result means there is no eligible context.
      */
+    /**
+     * The id of the last event the symbolic session published, or 0 before
+     * the first one.  Read-only: it publishes nothing, records nothing and
+     * changes no symbolic state.
+     *
+     * <p>It exists so a caller's own journal can be aligned with the VM's
+     * read/write log.  A woven call window that takes this id on entry knows,
+     * on exit, that exactly the log events above it happened inside that
+     * window -- which is what lets a read or a write be attributed to the
+     * frame it ran in.</p>
+     */
+    public static native long currentSymbolicEventId();
+
     public static native long markConcolicBranch(String siteId,
                                                   int occurrence);
 

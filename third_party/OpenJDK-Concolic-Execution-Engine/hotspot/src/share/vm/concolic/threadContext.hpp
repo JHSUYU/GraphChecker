@@ -247,6 +247,33 @@ public:
 public:
   std::string get_current_code_pos();
 
+  /**
+   * One bytecode site, in the JVM's own components.
+   *
+   * The holder's internal class name, the method's name and descriptor, and
+   * the bci -- not a rendered string.  A consumer's site id has its own
+   * spelling for the method part, and there has to be exactly one place that
+   * renders it; get_current_code_pos() renders a human-readable form for
+   * diagnostics and is deliberately not that place.
+   */
+  struct CodeSite {
+    std::string class_name;
+    std::string method_name;
+    std::string method_descriptor;
+    int bci;
+    CodeSite() : bci(-1) {}
+    bool stated() const { return !class_name.empty(); }
+  };
+
+  /**
+   * Where this thread stands right now, or false when it cannot be said --
+   * no shadow frame (an event published from a VM entry rather than from a
+   * bytecode) or no interpreter frame under it.  An unstated site is left
+   * absent by every record that carries one: "this event names no site" and
+   * "this event happened at bci 0" are different claims.
+   */
+  bool current_code_site(CodeSite *site);
+
 public:
   /** This object's session identity, naming it if it has none; never
    *  makes it symbolic.  See SessionSymbolicHeap::name_reference. */

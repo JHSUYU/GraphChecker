@@ -58,6 +58,9 @@ public:
 
   inline ShadowFrame &get_last_frame() { return *_s_frames.back(); }
 
+  /** Whether there is a last frame to ask about at all. */
+  inline bool has_frames() const { return !_s_frames.empty(); }
+
   inline bool symbolic_tracking_enabled() const {
     return !_s_frames.empty()
         && _s_frames.back()->symbolic_tracking_enabled();

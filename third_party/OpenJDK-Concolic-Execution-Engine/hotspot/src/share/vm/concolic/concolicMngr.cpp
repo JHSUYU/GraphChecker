@@ -543,6 +543,10 @@ std::string ConcolicMngr::getSymbolicExpression(Handle handle) {
   return std::string(buffer.GetString(), buffer.GetLength());
 }
 
+jlong ConcolicMngr::currentEventId() {
+  return GlobalSymbolicSession::last_event_id();
+}
+
 std::string ConcolicMngr::getSymbolicFieldExpression(
     Handle owner, const char *declaring_class, const char *field_name,
     const char *descriptor, Handle concrete_value) {

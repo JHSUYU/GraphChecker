@@ -175,6 +175,33 @@ public:
     VERSION_STATE = 3
   };
 
+  /**
+   * The bytecode site one logged event stood at.
+   *
+   * Identity v3 asks every read and write endpoint where in the region's
+   * control structure it happened, and the frames are the runtime's to
+   * journal -- but the innermost one is a bytecode site, and only the VM
+   * stands at it.  The log used to record no site at all, so two reads of one
+   * location by one occurrence at different places in the code were
+   * indistinguishable and collapsed onto one endpoint id.
+   *
+   * Kept as the JVM's own components, never as a rendered site id: the
+   * consumer spells the method part its own way and must be the only place
+   * that does.  `bci` is -1, and every member empty, when the event was
+   * published from a VM entry with no bytecode under it.
+   *
+   * No loop iteration count: this engine does not count loop back edges, so
+   * it has nothing to say about LOOPOWN and says nothing rather than 0.
+   */
+  struct EventSite {
+    std::string class_name;
+    std::string method_name;
+    std::string method_descriptor;
+    int bci;
+    EventSite() : bci(-1) {}
+    bool stated() const { return !class_name.empty(); }
+  };
+
   struct Location {
     sym_rid_t owner;
     int slot;
@@ -251,6 +278,8 @@ public:
     // Non-empty when the snapshot was refused because the container's class
     // is not one this engine walks.
     std::string initial_snapshot_unsupported_class;
+    // Where this event stood; see EventSite.
+    EventSite site;
     Version()
         : version_id(0), version_kind(VERSION_WRITE), writer_context_id(0),
           region_enter_event_id(0), value(NULL), path_guard(NULL),
@@ -287,6 +316,8 @@ public:
    */
   struct ReadPlan {
     jlong read_event_id;
+    // The site the read stood at, for the node build_read_from emits.
+    EventSite site;
     // The version live when the read ran: the newest one retained for the
     // location.  The run performed one read and the location held one value;
     // the set of versions it did not hold was never evidence about it.
@@ -538,6 +569,14 @@ public:
    */
   static std::string version_label(const Version &version);
 
+  /** Where the calling thread stands, for one logged event to state. */
+  static EventSite current_site();
+
+  /** The one writer of a logged event's `site` member. */
+  static void write_site(
+      rapidjson::Writer<rapidjson::StringBuffer> &writer,
+      const EventSite &site);
+
   /** One resolved read, kept so that a consumer can audit the decision. */
   struct ReadRecord {
     jlong read_event_id;
@@ -545,6 +584,8 @@ public:
     std::string region_id;
     std::string task_id;
     jlong region_enter_event_id;
+    // Where this event stood; see EventSite.
+    EventSite site;
     ReadRecord()
         : read_event_id(0), reader_context_id(0),
           region_enter_event_id(0) {}
