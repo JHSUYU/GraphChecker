@@ -328,29 +328,25 @@ public final class ConcolicRegionRuntime {
         endAtCut(active, cut);
     }
 
-    /**
-     * Records the exact array length supplying one fixed-count loop
-     * invocation.
-     */
-    public static void recordLoopCardinality(
-            String loopId, int cardinality) {
+    /** Opens one dynamic invocation of a fixed-count loop. */
+    public static void openLoopInvocation(String loopId) {
         ActiveRegion active = observingActiveRegion();
         if (active == null) return;
         beginBookkeeping();
         try {
-            active.recordLoopCardinality(safe(loopId), cardinality);
+            active.openLoopInvocation(safe(loopId));
         } finally {
             endBookkeeping();
         }
     }
 
-    /** Ends the current dynamic occurrence of one fixed-count loop. */
-    public static void completeLoopCardinality(String loopId) {
+    /** Closes the open dynamic invocation of a fixed-count loop. */
+    public static void closeLoopInvocation(String loopId) {
         ActiveRegion active = observingActiveRegion();
         if (active == null) return;
         beginBookkeeping();
         try {
-            active.completeLoopCardinality(safe(loopId));
+            active.closeLoopInvocation(safe(loopId));
         } finally {
             endBookkeeping();
         }
@@ -5245,14 +5241,22 @@ public final class ConcolicRegionRuntime {
         private final Map<String, Integer> accessorCallOccurrences =
                 new LinkedHashMap<>();
         final LoopBackedgeBudget loopBackedges;
-        /** Current fixed-count invocation by runtime natural-loop id. */
-        private final Map<String, DynamicLoopCardinality>
-                activeLoopCardinalities = new LinkedHashMap<>();
-        /** Next occurrence ordinal by runtime natural-loop id. */
-        private final Map<String, Integer> loopCardinalityOccurrences =
+        /**
+         * The ordinal of the OPEN dynamic invocation of each fixed-count
+         * loop, by runtime natural-loop id.
+         *
+         * <p>Its only reader is {@link #chargeLoopBody}, which scopes the
+         * replay body budget to one dynamic invocation.  It used to also
+         * publish a {@code loopCardinalities} row per invocation carrying
+         * the exact array length, its ordinal and a cardinality authority;
+         * nothing read those rows once R1 deleted the result envelope they
+         * were written onto.</p>
+         */
+        private final Map<String, Integer> activeLoopInvocations =
                 new LinkedHashMap<>();
-        /** Exact N for every dynamic fixed-count invocation in this path. */
-        final List<JsonObject> loopCardinalities = new ArrayList<>();
+        /** Next invocation ordinal by runtime natural-loop id. */
+        private final Map<String, Integer> loopInvocationOrdinals =
+                new LinkedHashMap<>();
         private final Map<Long, PreparedBranch> preparedBranches =
                 new LinkedHashMap<>();
         /** One shared expression DAG for all read-outs in this VM session. */
@@ -5320,46 +5324,30 @@ public final class ConcolicRegionRuntime {
             // activation.  Its resource ceiling applies to each dynamic
             // invocation; accumulating all invocations under the static loop
             // id cuts ordinary code after (for example) two 16-element array
-            // walks.  recordLoopCardinality opens the exact invocation before
-            // the first body hook and completeLoopCardinality closes it.
-            DynamicLoopCardinality invocation =
-                    activeLoopCardinalities.get(loopId);
+            // walks.  openLoopInvocation opens the exact invocation before
+            // the first body hook and closeLoopInvocation closes it.
+            Integer invocation = activeLoopInvocations.get(loopId);
             String budgetKey = invocation == null ? loopId
                     : LoopBackedgeBudget.scoped(
-                    loopId, invocation.occurrence);
+                    loopId, invocation.intValue());
             long entered = loopBackedges.recordBody(budgetKey);
             if (entered <= maxBodies) return null;
             replayResourceCut = true;
             return new ReplayLoopResourceCut(loopId, maxBodies, entered);
         }
 
-        private synchronized void recordLoopCardinality(
-                String loopId, int cardinality) {
-            if (loopId.isEmpty() || cardinality < 0) return;
-            DynamicLoopCardinality current =
-                    activeLoopCardinalities.get(loopId);
-            if (current == null) {
-                int occurrence = loopCardinalityOccurrences
-                        .getOrDefault(loopId, 0) + 1;
-                loopCardinalityOccurrences.put(loopId, occurrence);
-                current = new DynamicLoopCardinality(
-                        occurrence, cardinality);
-                activeLoopCardinalities.put(loopId, current);
-                JsonObject row = new JsonObject();
-                row.addProperty(LoopBoundPolicy.RUNTIME_LOOP_ID, loopId);
-                row.addProperty(LoopBoundPolicy.DYNAMIC_OCCURRENCE,
-                        occurrence);
-                row.addProperty(LoopBoundPolicy.LOOP_CARDINALITY,
-                        cardinality);
-                row.addProperty("cardinalityAuthority",
-                        LoopBoundPolicy.PATH_CARDINALITY_AUTHORITY);
-                loopCardinalities.add(row);
+        private synchronized void openLoopInvocation(String loopId) {
+            if (loopId.isEmpty()
+                    || activeLoopInvocations.containsKey(loopId)) {
                 return;
             }
+            int ordinal = loopInvocationOrdinals.getOrDefault(loopId, 0) + 1;
+            loopInvocationOrdinals.put(loopId, ordinal);
+            activeLoopInvocations.put(loopId, Integer.valueOf(ordinal));
         }
 
-        private synchronized void completeLoopCardinality(String loopId) {
-            if (!loopId.isEmpty()) activeLoopCardinalities.remove(loopId);
+        private synchronized void closeLoopInvocation(String loopId) {
+            if (!loopId.isEmpty()) activeLoopInvocations.remove(loopId);
         }
 
         /** Records the terminal of this activation's bounded local path. */
@@ -5856,17 +5844,6 @@ public final class ConcolicRegionRuntime {
                     ? "the registry attributes this mint to " + attributed
                     + ", which does not include " + planned
                     : elsewhere;
-        }
-    }
-
-    /** Active identity of one dynamic fixed-count loop invocation. */
-    private static final class DynamicLoopCardinality {
-        private final int occurrence;
-        private final int cardinality;
-
-        private DynamicLoopCardinality(int occurrence, int cardinality) {
-            this.occurrence = occurrence;
-            this.cardinality = cardinality;
         }
     }
 
