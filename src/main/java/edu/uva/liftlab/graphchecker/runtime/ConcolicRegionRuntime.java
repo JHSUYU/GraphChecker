@@ -332,6 +332,10 @@ public final class ConcolicRegionRuntime {
      */
     public static void checkLoopBackedge(
             String backedgeId, int instrumentedMaxTraversals) {
+        // The iteration an execution index frame carries (IDENTITY-V3):
+        // charged whether or not a region is live, because the index is a
+        // property of the control structure and not of the selection.
+        D3Runtime.loopIteration(backedgeId);
         ActiveRegion active = observingActiveRegion();
         if (active == null) return;
 
@@ -2252,6 +2256,34 @@ public final class ConcolicRegionRuntime {
             // Publishing never ends a workload run.
         } finally {
             endBookkeeping();
+        }
+    }
+
+    /**
+     * Files the endpoint of the message this thread is sending.
+     *
+     * <p>IDENTITY-V3 §C: the producer endpoint travels with the message, so
+     * the receiving occurrence can state the anchor it ran under.  This
+     * transport has no spare header slot for 48 bytes, so it is filed by
+     * the exchange's own correlation id -- which is the same within-run
+     * pairing evidence the leaf handles use, not a second mechanism.</p>
+     */
+    static void noteMessageSender(String transport, String correlationId,
+                                  String half) {
+        if (!D3Runtime.open()) return;
+        try {
+            ActiveRegion active = activeRegion();
+            RuntimeTraceContext.View view = RuntimeTraceContext.current();
+            String nodeKey = view.source == null ? "" : view.source.key();
+            edu.uva.liftlab.graphchecker.d3.contract.OccurrenceAddress sender =
+                    active == null || active.d3Address == null
+                            ? D3Runtime.degraded(nodeKey,
+                                    safe(transport) + "#" + safe(half))
+                            : active.d3Address;
+            D3Runtime.sending(sender, safe(transport), safe(correlationId),
+                    safe(half));
+        } catch (Throwable ignored) {
+            // A message is sent whether or not its endpoint can be filed.
         }
     }
 

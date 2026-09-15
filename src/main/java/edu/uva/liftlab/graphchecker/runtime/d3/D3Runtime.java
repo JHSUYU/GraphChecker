@@ -47,6 +47,11 @@ public final class D3Runtime {
             new ConcurrentHashMap<Long, OccurrenceAddress>();
     private static final Map<String, AtomicInteger> ORDINALS =
             new ConcurrentHashMap<String, AtomicInteger>();
+    /** The causal context and execution index of each live activation. */
+    private static final Map<Long, CausalContext> CONTEXTS =
+            new ConcurrentHashMap<Long, CausalContext>();
+    private static final Map<Long, ExecutionIndex> INDEXES =
+            new ConcurrentHashMap<Long, ExecutionIndex>();
     /** This replay's clock readings so far, by root id. */
     private static final Map<String, Long> CLOCKS =
             new ConcurrentHashMap<String, Long>();
@@ -170,9 +175,23 @@ public final class D3Runtime {
             return null;
         }
         if (token > 0L) ACTIVATIONS.put(token, address);
+        // IDENTITY-V3: why it ran, and where in the component's control
+        // structure.  Published beside the row until the contract carries
+        // them (v2.0): a computed identity nobody can read is not one.
+        CausalContext context = Identity.context(Lineage.anchor(),
+                Lineage.rpcSite(), Lineage.rootRole(),
+                Lineage.rootWindowIndex());
+        ExecutionIndex index = Identity.regionEnter();
+        if (token > 0L) {
+            CONTEXTS.put(token, context);
+            INDEXES.put(token, index);
+        }
         if (session != null) {
+            session.identity(address, context, index, Text.safe(regionId),
+                    Text.safe(taskId));
             session.activation(ActivationRow.of(sessionId(), address,
-                    Text.safe(taskId), FocusedReplay.focused(address)));
+                    Text.safe(taskId), FocusedReplay.focused(taskId,
+                            address)));
             if (address.lineageLost()) {
                 session.gap(GapRow.of(sessionId(), GapKind.LINEAGE_LOST,
                         GapClass.DIAGNOSTIC, address.render(),
@@ -191,6 +210,18 @@ public final class D3Runtime {
 
     public static void endActivation(long token) {
         ACTIVATIONS.remove(token);
+        CONTEXTS.remove(token);
+        INDEXES.remove(token);
+    }
+
+    /** The causal context this activation entered under, or null. */
+    public static CausalContext contextOf(long token) {
+        return CONTEXTS.get(token);
+    }
+
+    /** The execution index of this activation's entry, or null. */
+    public static ExecutionIndex indexOf(long token) {
+        return INDEXES.get(token);
     }
 
     // ------------------------------------------------------------------
@@ -302,6 +333,20 @@ public final class D3Runtime {
     }
 
     /**
+     * Files the endpoint of one message, for the anchor its receiver states.
+     *
+     * <p>The site is the transport leg itself, so a message that carries no
+     * declared port still names its producer -- which is what a causal
+     * context needs (IDENTITY-V3 §1).</p>
+     */
+    public static void sending(OccurrenceAddress sender, String transport,
+                               String correlationId, String half) {
+        if (sender == null) return;
+        Endpoint endpoint = endpoint(sender, transport + "#" + half, 0);
+        Interactions.sent(transport, correlationId, half, endpoint.id());
+    }
+
+    /**
      * The address of an activation that ran under no live occurrence: its
      * role, on its node, at a window-local k.
      *
@@ -378,6 +423,11 @@ public final class D3Runtime {
         if (session == null) return;
         session.gap(GapRow.of(sessionId(), kind, cls, Text.safe(subject),
                 Text.safe(detail)));
+    }
+
+    /** Charges one loop iteration to the running execution index. */
+    public static void loopIteration(String loopId) {
+        Identity.loopIteration(loopId);
     }
 
     /** Files one expression and returns the ref rows name it by. */
@@ -461,8 +511,17 @@ public final class D3Runtime {
             AtomicInteger raced = ORDINALS.putIfAbsent(scope, fresh);
             counter = raced == null ? fresh : raced;
         }
-        return Endpoint.of(occurrence, Text.safe(site),
+        Endpoint endpoint = Endpoint.of(occurrence, Text.safe(site),
                 counter.incrementAndGet(), attempt);
+        // IDENTITY-V3: the site-local execution index replaces the k-th
+        // ordinal when the contract carries it (v2.0); until then the row
+        // keeps the ordinal and the index is stated beside it.
+        SessionPublisher session = publisher;
+        if (session != null) {
+            session.siteIdentity(endpoint.id(), Text.safe(site),
+                    Identity.siteIndex());
+        }
+        return endpoint;
     }
 
     /** Publishes what only the end of a replay can state, and closes. */
@@ -478,7 +537,10 @@ public final class D3Runtime {
     public static void resetForTests() {
         synchronized (LOCK) {
             ACTIVATIONS.clear();
+            CONTEXTS.clear();
+            INDEXES.clear();
             ORDINALS.clear();
+            Identity.resetForTests();
             CLOCKS.clear();
             LAST_SEQ.set(0L);
             publisher = null;

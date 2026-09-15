@@ -21,6 +21,9 @@ import edu.uva.liftlab.graphchecker.d3.contract.SessionDir;
 import edu.uva.liftlab.graphchecker.d3.contract.TargetRow;
 import edu.uva.liftlab.graphchecker.d3.contract.WriteRow;
 import edu.uva.liftlab.graphchecker.runtime.d3.D3Runtime;
+import edu.uva.liftlab.graphchecker.runtime.d3.CausalContext;
+import edu.uva.liftlab.graphchecker.runtime.d3.ExecutionIndex;
+import edu.uva.liftlab.graphchecker.runtime.d3.Identity;
 import edu.uva.liftlab.graphchecker.runtime.d3.Interactions;
 import edu.uva.liftlab.graphchecker.runtime.d3.Lineage;
 import edu.uva.liftlab.graphchecker.runtime.d3.OccurrenceMinterV2;
@@ -149,6 +152,7 @@ public class D3RuntimeTest {
         assertTrue(lost.lineageLost());
         assertEquals("ROLE.KEY_MANAGER_TICK", lost.regionId());
         assertNull(OccurrenceMinterV2.mint("", "REGION.aaa1cfd7"));
+        executionIndexIsStableUnderUnrelatedCalls();
     }
 
     /**
@@ -288,6 +292,50 @@ public class D3RuntimeTest {
         assertTrue(rows.get(0).observedFatal());
         assertEquals("(not " + ref + ")", rows.get(1).phiTerm());
         assertFalse(rows.get(1).observedFatal());
+    }
+
+    /**
+     * The execution index, and why it is not an ordinal.
+     *
+     * <p>Folded into the daemon-tick case because it is the same question:
+     * an identity that moves when an unrelated call is inserted elsewhere
+     * is not an identity.</p>
+     */
+    private void executionIndexIsStableUnderUnrelatedCalls() {
+        Identity.resetForTests();
+        Identity.scopeStart();
+        Identity.enterCall("Caller.run()#u3");
+        Identity.enterCall("Caller.step()#u7");
+        ExecutionIndex inner = Identity.atScope();
+        assertEquals("Caller.run()#u3@0/Caller.step()#u7@0", inner.render());
+
+        // An unrelated call, entered and left, moves nothing.
+        Identity.enterCall("Other.helper()#u1");
+        Identity.exitCall();
+        assertEquals(inner, Identity.atScope());
+
+        // A loop iteration on the path does move it: that is inherent.
+        Identity.loopIteration("LOOP.a");
+        Identity.enterCall("Caller.body()#u9");
+        assertEquals("Caller.run()#u3@0/Caller.step()#u7@0"
+                + "/Caller.body()#u9@1", Identity.atScope().render());
+
+        // A region entry re-bases the index: an endpoint inside it is
+        // addressed from the region, not from the thread's whole stack.
+        ExecutionIndex atEntry = Identity.regionEnter();
+        assertEquals(3, atEntry.frames().size());
+        assertTrue(Identity.siteIndex().isEmpty());
+        Identity.enterCall("Region.port()#u2");
+        assertEquals("Region.port()#u2@1", Identity.siteIndex().render());
+
+        // The three causal contexts, and the one that is not an ordinal.
+        assertEquals("Root:HEARTBEAT_TICK#4", Identity.context("", "",
+                Role.HEARTBEAT_TICK, 4).render());
+        assertEquals("Anchor:abc123@HADOOP_IPC#heartbeat",
+                Identity.context("abc123", "HADOOP_IPC#heartbeat",
+                        Role.IPC_HANDLER, 2).render());
+        assertEquals("Lost:DATA_XCEIVER",
+                Identity.context("", "", Role.DATA_XCEIVER, 0).render());
     }
 
     /** A thread a pool created before any scope existed. */

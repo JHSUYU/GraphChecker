@@ -132,6 +132,7 @@ final class RuntimeTraceContext {
         // which k-th one, instead of only which request key was in force.
         scope.lineageToken = Lineage.push(source.key(), Role.CLIENT,
                 normalizedApi);
+        edu.uva.liftlab.graphchecker.runtime.d3.Identity.scopeStart();
         state.scopes.push(scope);
         state.source = source;
         state.requestKey = requestKey;
@@ -326,6 +327,7 @@ final class RuntimeTraceContext {
                 ? scope.requestApi : MapFields.safe(apiName);
         frame.lineageToken = Lineage.restore(scope.lineage,
                 scope.source.key(), Lineage.roleOf(roleName), api);
+        edu.uva.liftlab.graphchecker.runtime.d3.Identity.scopeStart();
         publishCausalSource(state);
         return token;
     }
@@ -352,6 +354,7 @@ final class RuntimeTraceContext {
         State state = CURRENT.get();
         SourceRef source = sourceFor(owner);
         if (source == null) source = state.view().source;
+        edu.uva.liftlab.graphchecker.runtime.d3.Identity.scopeStart();
         return Lineage.push(source == null ? "" : source.key(),
                 Lineage.roleOf(roleName), "");
     }
@@ -491,6 +494,15 @@ final class RuntimeTraceContext {
                 state.source == null ? "" : state.source.key(),
                 servedRole(state.exchangeTransport),
                 inboundFamily(remote.requestKey, remote.requestApi));
+        edu.uva.liftlab.graphchecker.runtime.d3.Identity.scopeStart();
+        // The message that opened this scope names its producer; that
+        // endpoint IS this occurrence's causal context (IDENTITY-V3).
+        Lineage.anchor(edu.uva.liftlab.graphchecker.runtime.d3.Interactions
+                        .sender(state.exchangeTransport,
+                                state.exchangeCorrelationId,
+                                state.exchangeHalf),
+                normalizedUpper(transport) + "#"
+                        + MapFields.safe(remote.requestApi));
         publishCausalSource(state);
         return token;
     }

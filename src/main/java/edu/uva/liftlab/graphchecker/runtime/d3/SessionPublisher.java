@@ -7,6 +7,7 @@ import edu.uva.liftlab.graphchecker.d3.contract.DecisionRow;
 import edu.uva.liftlab.graphchecker.d3.contract.ExportRow;
 import edu.uva.liftlab.graphchecker.d3.contract.ExpressionTable;
 import edu.uva.liftlab.graphchecker.d3.contract.GapRow;
+import edu.uva.liftlab.graphchecker.d3.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.d3.contract.ObligationResult;
 import edu.uva.liftlab.graphchecker.d3.contract.ReadRow;
 import edu.uva.liftlab.graphchecker.d3.contract.RootMintRow;
@@ -173,6 +174,52 @@ public final class SessionPublisher {
         json.addProperty("sessionId", row.sessionId());
         json.addProperty("detail", row.detail());
         append(layout.dir().resolve(OBLIGATION_RESULTS), json);
+    }
+
+    /** The identity every row's occurrence is, as IDENTITY-V3 states it. */
+    public static final String IDENTITIES = "identity.jsonl";
+
+    /**
+     * States one activation's identity v3: why it ran and where.
+     *
+     * <p>Its own file until contract v2.0 carries the context and the index
+     * on {@code ActivationRow} and on every {@code Endpoint} -- the
+     * computation is what has to be right, and a reader that cannot see it
+     * cannot check it.  The address beside it is the same activation as v1.2
+     * spells it, so the two join without anything having to guess.</p>
+     */
+    public void identity(OccurrenceAddress address, CausalContext context,
+                         ExecutionIndex index, String regionId,
+                         String taskId) {
+        if (address == null) return;
+        JsonObject row = new JsonObject();
+        row.addProperty("sessionId", sessionId());
+        row.addProperty("address", address.render());
+        row.addProperty("addressId", address.id());
+        row.addProperty("regionId", Text.safe(regionId));
+        row.addProperty("taskId", Text.safe(taskId));
+        row.addProperty("context", context == null ? "" : context.render());
+        row.addProperty("contextKind",
+                context == null ? "" : context.kind().name());
+        row.addProperty("index", index == null ? "" : index.render());
+        row.addProperty("indexFrames", index == null ? 0
+                : index.frames().size());
+        append(layout.dir().resolve(IDENTITIES), row);
+    }
+
+    /** States where inside its occurrence one endpoint's event was. */
+    public void siteIdentity(String endpointId, String site,
+                             ExecutionIndex siteIndex) {
+        if (Text.safe(endpointId).isEmpty()) return;
+        JsonObject row = new JsonObject();
+        row.addProperty("sessionId", sessionId());
+        row.addProperty("endpointId", Text.safe(endpointId));
+        row.addProperty("site", Text.safe(site));
+        row.addProperty("siteIndex",
+                siteIndex == null ? "" : siteIndex.render());
+        row.addProperty("siteFrames",
+                siteIndex == null ? 0 : siteIndex.frames().size());
+        append(layout.dir().resolve(IDENTITIES), row);
     }
 
     /** Files one expression under the ref the rows name it by. */

@@ -323,11 +323,13 @@ public final class CausynthTraceRecorder {
         event.primitiveValue = MapFields.safe(primitiveValue);
         emitExecutionEvent(event);
         removeCallSite(invocationId);
+        exitCallFrame();
     }
 
     /** Closes one exact call-site activation on its exceptional edge. */
     public static void throwCall(long invocationId) {
         closeCallSite(activeCallSite(invocationId), "CALL_SITE_THROW");
+        exitCallFrame();
     }
 
     public static void recordBranch(long callId, String method, int unitIndex,
@@ -532,6 +534,12 @@ public final class CausynthTraceRecorder {
         }
         recordExchange("SEND", transport, correlationId, attemptId, half,
                 localOwner, carriedScope);
+        // IDENTITY-V3 SS C: the message carries its producer's endpoint, so
+        // the receiver can state the anchor it ran under.  Filed by
+        // correlation because the endpoint is bigger than the header slot
+        // this transport has; the pairing itself is the run's own fact.
+        ConcolicRegionRuntime.noteMessageSender(transport, correlationId,
+                half);
         return header;
     }
 
