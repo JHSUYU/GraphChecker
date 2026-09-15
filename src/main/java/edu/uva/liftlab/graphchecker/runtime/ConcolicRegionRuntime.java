@@ -3631,21 +3631,38 @@ public final class ConcolicRegionRuntime {
                         observedOutcome, semanticCondition, conditionIndex,
                         metadata);
                 mapping.add("witness", witness.toImmutableJsonView());
-                // The predicate AS WRITTEN at the site, polarity-free: the
-                // DecisionRow states this and the arm separately, and the
-                // composer asserts (outcome ? term : (not term)).  The
-                // witness's own predicate is the one the taken arm
-                // satisfied, which is the same thing with the outcome
-                // already applied -- publishing that as the term would make
-                // every reader negate it a second time.
-                JsonElement written = semanticBranchCondition(expression,
-                        true, condition);
+                // The predicate under which the JUMP is taken, which is the
+                // one thing about this site that does not move between
+                // replays or between arms, and the arm beside it
+                // (CONTRACT v2.3 sec 1.3: a consumer forms
+                // `outcome ? term : (not term)`).
+                //
+                // The VM publishes its constraint in the form the run
+                // SATISFIED: `marker != false` where the source reads
+                // `if marker == 0 goto` and the jump fell through, and
+                // `marker == false` in the replay that took it.  Publishing
+                // the satisfied form as the term moves the arm INTO the
+                // term -- the term then differs between the two runs of one
+                // site while `outcome` is true in both, so a flip cannot be
+                // observed by comparing outcomes at all (P2f').  So the
+                // taken arm's constraint is the term as it stands, and the
+                // fallen-through arm's is its negation, which is a spelling
+                // operation on the VM's own constraint and re-evaluates
+                // nothing.
+                JsonElement written = observedOutcome ? condition
+                        : negatedCondition(condition);
                 if (written != null && written.isJsonObject()) {
                     mapping.add("siteCondition", written);
-                    // And the arm, restated as what the contract asks of it:
-                    // whether the term just published held.
-                    mapping.addProperty("outcome",
-                            termHeld(condition, written));
+                } else if (!observedOutcome) {
+                    // The run cannot spell the jump condition of an arm it
+                    // did not take, so it states no term rather than the
+                    // satisfied form with the wrong arm beside it.  An empty
+                    // term reads as a concrete branch, which is skipped and
+                    // never refused.
+                    active.addUnresolvedOnce(siteId
+                            + ": the VM's satisfied constraint has no"
+                            + " relational operator to negate, so this"
+                            + " fall-through states no site predicate");
                 }
             }
         } else if (vmAttestation.valid
@@ -5669,36 +5686,29 @@ public final class ConcolicRegionRuntime {
     }
 
     /**
-     * Whether the term a DecisionRow publishes held in this run.
+     * One constraint, negated by spelling, or null.
      *
-     * <p>{@code DecisionRow.outcome} is the truth value of the polarity-free
-     * term beside it -- every consumer forms {@code outcome ? term :
-     * (not term)} (CONTRACT v2.3 sec 1.3) -- and NOT whether the conditional
-     * jump was taken.  The two disagree at every branch whose jump the run
-     * did not take: the VM's path condition holds the predicate the
-     * execution SATISFIED, so a source line reading {@code if x == 0 goto}
-     * that fell through contributes {@code x != 0}, and publishing that
-     * beside {@code outcome=false} asserts its negation -- on hdfs-17960 it
-     * asserted {@code marker == false} on the two {@code deleteSnapshot}
-     * decisions of a run whose marker mint recorded true, contradicting the
-     * root the same session published.</p>
-     *
-     * <p>One rule, no per-opcode table: the published term is the satisfied
-     * predicate, at most with its operator replaced by one that predicate
-     * implies ({@link #semanticBranchCondition}).  The same operator, or an
-     * implied one, held; the complement is that predicate's negation and did
-     * not.  A term with no comparison operator to compare is the satisfied
-     * predicate itself.</p>
+     * <p>The negation of a relational predicate is the same predicate over
+     * the same operands with the complementary operator, so nothing is
+     * re-evaluated and no second expression is built: the operands are the
+     * VM's own nodes.  Null when the constraint carries no relational
+     * operator to complement -- the run then states no term rather than one
+     * it cannot spell.</p>
      */
-    private static boolean termHeld(JsonElement satisfied,
-                                    JsonElement published) {
-        String held = binaryOperator(satisfied);
-        String states = binaryOperator(published);
-        if (held.isEmpty() || states.isEmpty() || held.equals(states)) {
-            return true;
+    private static JsonElement negatedCondition(JsonElement condition) {
+        if (condition == null || !condition.isJsonObject()) return null;
+        JsonObject original = condition.getAsJsonObject();
+        String operator = binaryOperator(original);
+        if (operator.isEmpty()) return null;
+        final String complement;
+        try {
+            complement = BranchPredicateAlgebra.complementOperator(operator);
+        } catch (IllegalArgumentException unsupported) {
+            return null;
         }
-        return !states.equals(
-                BranchPredicateAlgebra.complementOperator(held));
+        JsonObject negated = shallowCopy(original);
+        negated.addProperty("_op", complement);
+        return negated;
     }
 
     private static String binaryOperator(JsonElement condition) {
