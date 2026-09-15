@@ -511,6 +511,19 @@ public final class Composer {
 
         List<String> terms = new ArrayList<String>();
         List<GapRow> refusals = new ArrayList<GapRow>();
+        List<ReadRow> joined = new ArrayList<ReadRow>();
+        List<String> observed = new ArrayList<String>();
+        Map<String, String> joins = new LinkedHashMap<String, String>();
+
+        // (0) Every read of this occurrence whose value the ROW states
+        //     outright, bound BEFORE any expression of this path is
+        //     lowered.  A read symbol is a declared symbol of its session,
+        //     so a leaf naming it -- in phi, in a decision's term, in an
+        //     arm, or inside the write expression another read joined to
+        //     -- must be this path's binding for it wherever it appears.
+        //     Declared as each row was met instead, it resolved only for
+        //     the leaves that happened to come after its own row.
+        statedReads(session, refusals, joins);
 
         // (1) The valuation this replay ran under, for every VARIED root.
         //     A replay's assignments are not all visible as decisions -- a
@@ -531,9 +544,6 @@ public final class Composer {
         //     read with ALTERNATIVES takes its value from the family and
         //     not from a conjunct of the path -- asserting both would make
         //     the family redundant and the alternatives unreachable.
-        List<ReadRow> joined = new ArrayList<ReadRow>();
-        List<String> observed = new ArrayList<String>();
-        Map<String, String> joins = new LinkedHashMap<String, String>();
         stateJoins(session, refusals, joined, observed, joins);
 
         // (4) pi_p, through the one routine that applies each decision's
@@ -633,7 +643,7 @@ public final class Composer {
                 continue;
             }
             if (!corpus.varied(row.rootId())) continue;
-            lowering.declare(row.symbol(),
+            lowering.declareStated(row.symbol(),
                     row.kind() == RootKind.MARKER ? Sort.BOOL : Sort.INT);
             // A DECLARED domain is relative to what THIS replay read, and
             // what each replay read is its own fact: the NameNode's serial
@@ -746,7 +756,7 @@ public final class Composer {
         Sort sort = scalarSort(attach.javaType(), attach.sessionId(),
                 symbol, refusals);
         if (sort == null) return "";
-        lowering.declare(symbol, sort);
+        lowering.declareStated(symbol, sort);
         return "(= " + symbol + " " + literal + ")";
     }
 
@@ -800,7 +810,7 @@ public final class Composer {
             // The arm's own sort declares the variable: the arrival's
             // spelling says what it looked like, the delivery says what it
             // is, and one variable has one sort.
-            lowering.declare(attach.symbol(), delivered.sort);
+            lowering.declareStated(attach.symbol(), delivered.sort);
             return delivered.text;
         }
         return "";
@@ -814,6 +824,50 @@ public final class Composer {
      * writers: the version the read observed is a recorded fact of one
      * session's own counter.</p>
      */
+    /**
+     * Read := the value the ROW states it returned, before any lowering.
+     *
+     * <p>The PIN half of {@link #stateJoins}, hoisted: it needs no
+     * expression, so it can bind every symbol the rows state outright
+     * before the first leaf of this path is lowered.  That is what makes a
+     * read symbol a DECLARED symbol of its session rather than one that
+     * happened to be declared in time -- a leaf of it inside another
+     * read's joined write expression was cut as free because that read's
+     * row came first (the 17960 anchor's AtomicInteger placeholder, 18
+     * rows, reached through write v172's expression).</p>
+     *
+     * <p>Only the reads the JOIN half does not own: a read the write log
+     * covers takes its value from the write's expression, which is the
+     * chain, and is bound there.  A read this half leaves unbound -- no
+     * stated value, or a Java type that names no scalar -- is named by the
+     * JOIN half exactly as before, so nothing is refused twice and
+     * nothing is refused here that was not refused before.</p>
+     */
+    private void statedReads(String session, List<GapRow> refusals,
+                             Map<String, String> joins) {
+        for (ReadRow read : corpus.readsAt(session, anchor)) {
+            if (read.symbol() == null || read.symbol().isEmpty()) continue;
+            if (joins.containsKey(read.symbol())) continue;
+            if (joinable(session, read)) continue;
+            String literal = JsonText.smtLiteral(read.concreteValue());
+            if (literal.isEmpty()) continue;
+            Sort sort = scalarSort(read.javaType(), session, read.symbol(),
+                    refusals);
+            if (sort == null) continue;
+            lowering.declareStated(read.symbol(), sort);
+            joins.put(read.symbol(), "(= " + read.symbol() + " "
+                    + literal + ")");
+        }
+    }
+
+    /** Whether this session's write log covers the version this read saw. */
+    private boolean joinable(String session, ReadRow read) {
+        return read.observedVersion() >= 0L
+                && corpus.write(session,
+                SmtLowering.locationKey(read.location()),
+                read.observedVersion()) != null;
+    }
+
     private void stateJoins(String session, List<GapRow> refusals,
                             List<ReadRow> joined, List<String> observed,
                             Map<String, String> joins) {
@@ -828,7 +882,7 @@ public final class Composer {
                 Term value = lowering.term(expression, null,
                         "state-join:" + key + "@" + read.observedVersion());
                 if (value != null) {
-                    lowering.declare(read.symbol(), value.sort);
+                    lowering.declareStated(read.symbol(), value.sort);
                     joins.put(read.symbol(), "(= " + read.symbol() + " "
                             + value.text + ")");
                     joined.add(read);
@@ -847,12 +901,13 @@ public final class Composer {
                     continue;
                 }
             }
+            if (joins.containsKey(read.symbol())) continue;
             String literal = JsonText.smtLiteral(read.concreteValue());
             if (!literal.isEmpty()) {
                 Sort sort = scalarSort(read.javaType(), session,
                         read.symbol(), refusals);
                 if (sort == null) continue;
-                lowering.declare(read.symbol(), sort);
+                lowering.declareStated(read.symbol(), sort);
                 joins.put(read.symbol(), "(= " + read.symbol() + " "
                         + literal + ")");
                 continue;
@@ -948,7 +1003,7 @@ public final class Composer {
         }
         for (String symbol : symbols) {
             if (symbol == null || symbol.isEmpty()) continue;
-            lowering.declare(symbol, delivered.sort);
+            lowering.declareStated(symbol, delivered.sort);
             conjuncts.add("(= " + symbol + " " + delivered.text + ")");
         }
         if (!arm.attested()) {
@@ -1547,14 +1602,13 @@ public final class Composer {
     private boolean unknown(String term, List<GapRow> refusals,
                             String subject) {
         List<String> free = new ArrayList<String>();
-        for (String token : tokens(term)) {
+        for (String token : SmtLowering.names(term)) {
             if (BUILTIN.contains(token)) continue;
             if (lowering.defined(token)) continue;
-            if (corpus.declaredSymbols().containsKey(token)) {
-                lowering.declare(token,
-                        corpus.declaredSymbols().get(token));
-                continue;
-            }
+            // The one registry says whether the recording states it, and
+            // at what sort: a published term can name a recorded symbol
+            // as text, without a leaf of it ever being lowered.
+            if (lowering.declareStated(token)) continue;
             free.add(token);
         }
         if (free.isEmpty()) return false;
@@ -1566,43 +1620,20 @@ public final class Composer {
         return true;
     }
 
-    /** Every symbol-shaped token of one SMT term. */
-    static List<String> tokens(String term) {
-        List<String> tokens = new ArrayList<String>();
-        if (term == null) return tokens;
-        StringBuilder token = new StringBuilder();
-        boolean quoted = false;
-        for (int index = 0; index < term.length(); index++) {
-            char value = term.charAt(index);
-            if (value == '"') {
-                quoted = !quoted;
-                continue;
-            }
-            if (quoted) continue;
-            if (Character.isLetterOrDigit(value) || value == '_'
-                    || value == '.' || value == '$' || value == '\''
-                    || value == '-' && token.length() > 0) {
-                token.append(value);
-                continue;
-            }
-            take(tokens, token);
-        }
-        take(tokens, token);
-        return tokens;
-    }
-
-    private static void take(List<String> tokens, StringBuilder token) {
-        if (token.length() == 0) return;
-        String value = token.toString();
-        token.setLength(0);
-        if (value.isEmpty()) return;
-        char first = value.charAt(0);
-        if (Character.isDigit(first) || first == '-' || first == '.') return;
-        tokens.add(value);
-    }
-
+    /**
+     * Every name the query's own logic gives a meaning to.
+     *
+     * <p>The operators belong here for the same reason the datatype
+     * selectors do: in SMT-LIB {@code =} and {@code <=} are SYMBOLS, and
+     * the one tokenizer reads them as such, so a caller asking "which
+     * names does nothing declare" must be told that the theory declares
+     * these.  Left out, the check reported {@code =} as a free symbol of
+     * every term it read.</p>
+     */
     private static final Set<String> BUILTIN = new LinkedHashSet<String>(
-            Arrays.asList("and", "or", "not", "xor", "ite", "let", "forall",
+            Arrays.asList("=", "=>", "+", "-", "*", "/", "<", "<=", ">",
+                    ">=", "!", "_",
+                    "and", "or", "not", "xor", "ite", "let", "forall",
                     "exists", "distinct", "true", "false", "div", "mod",
                     "abs", "rem", "select", "store", "as", "const", "lambda",
                     "is", "bvadd", "bvsub", "bvmul", "bvand", "bvor",

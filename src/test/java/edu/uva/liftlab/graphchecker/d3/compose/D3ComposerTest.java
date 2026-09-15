@@ -80,6 +80,13 @@ public class D3ComposerTest {
     private static final String MARKER_ROOT = "ROOT.MARKER";
     private static final String SERIAL = "serial_s";
     private static final String SERIAL_ROOT = "ROOT.SERIAL";
+    /**
+     * A declared region input, as the runtime publishes it: a READ
+     * placeholder, so the row states its value and nothing mints it.
+     */
+    private static final String PLACEHOLDER =
+            "M_I_field_REGION.target.in.count";
+    private static final String NO_ROW = "M_I_field_REGION.target.in.absent";
 
     // ------------------------------------------------------------------
     // 1. Polarity: the recording is refuted, the flip reaches the failure.
@@ -443,6 +450,14 @@ public class D3ComposerTest {
                     vmNull()));
             session.decision(ANCHOR, "anchor#u10", true,
                     "EXPR.00000000000000b3");
+            // And a scalar leaf NO row of this session states: no root
+            // mint, no clock reading, no attach and no read, so nothing
+            // says what it means.  Cut by name -- declared free, the
+            // solver would answer with a value no execution produced.
+            session.expression("EXPR.00000000000000b4", binary("==",
+                    symbol(NO_ROW, "I"), integer("I", 4L)));
+            session.decision(ANCHOR, "anchor#u11", true,
+                    "EXPR.00000000000000b4");
             session.write(Endpoint.of(ANCHOR, "Keys#put#9:WRITE",
                             at("put#1", 0), 0),
                     LocationId.of(LocationKind.MAP, "4", "-3"), 1L,
@@ -465,6 +480,10 @@ public class D3ComposerTest {
         assertTrue("a cell the location does not name is refused by name, "
                         + "naming the location, the version and both sorts",
                 named(gaps, "ContainerElement:MAP/4#-3@1:MAP!=INT"));
+        assertTrue("a scalar symbol no row of the session states is cut "
+                        + "by name, and not declared free",
+                named(gaps, "PROPAGATION_CUT:UndeclaredFreeSymbol:"
+                        + NO_ROW));
         assertTrue("a reference projection the VM valued neither way is "
                         + "refused by name, naming the class and offset",
                 named(gaps, "UNSTATED_FIELD_PROJECTION:"
@@ -751,12 +770,43 @@ public class D3ComposerTest {
                 symbol("M_L'org/apache/Held'_9", "org/apache/Held")));
         session.decision(ANCHOR, "anchor#u4", true, "EXPR.00000000000000d1");
         session.decision(ANCHOR, "anchor#u5", true, "EXPR.00000000000000d2");
+        // A declared region input, published as a READ placeholder: no
+        // version to join to, the row's own value, and leaves of it in two
+        // places.  Its symbol is a declared symbol of this session, so
+        // every leaf naming it is this path's binding for it -- the pin.
+        //
+        // The JOINED read that names it comes FIRST in the session's rows,
+        // so its write expression is lowered before the row that states
+        // the value is reached: bound row by row as they were met, that
+        // leaf was cut as a free symbol (18 PROPAGATION_CUT rows on the
+        // 17960 anchor, reached through write v172's expression, beside a
+        // declare-const of the same name in the same file).
+        session.expression("EXPR.00000000000000e1", symbol(PLACEHOLDER, "I"));
+        session.write(Endpoint.of(ANCHOR, "Manager#store#7:WRITE",
+                        at("store#2", 0), 0),
+                LocationId.of(LocationKind.INSTANCE, "Manager", "count"), 2L,
+                "EXPR.00000000000000e1");
+        session.read(Endpoint.of(ANCHOR, "Manager#read#7:READ",
+                        at("read#2", 0), 0),
+                LocationId.of(LocationKind.INSTANCE, "Manager", "count"), 2L,
+                "INSTANCE/Manager#count@v2", "I", null);
+        session.read(Endpoint.of(ANCHOR,
+                        "<Manager: int count>#PLACEHOLDER#0:READ",
+                        at("count#1", 0), 0),
+                LocationId.of(LocationKind.INSTANCE, "Manager", "held"),
+                -1L, PLACEHOLDER, "I", "2");
         // And phi: a null test, which is what every key case's fatal
-        // predicate is.  The VM spells null "N" on a symbolic leaf.
+        // predicate is, and -- phi is published SMT TEXT over the
+        // session's expression references -- a second leaf of the
+        // placeholder beside it.  The VM spells null "N" on a symbolic
+        // leaf.
         session.expression("EXPR.00000000000000f1", binary("!=",
                 symbol("P_L'org/apache/Foo'_", "Lorg/apache/Foo;"),
                 vmNull()));
-        session.target("EXPR.00000000000000f1", false, true);
+        session.expression("EXPR.00000000000000f2", binary("!=",
+                symbol(PLACEHOLDER, "I"), integer("I", 3L)));
+        session.target("(and EXPR.00000000000000f1 EXPR.00000000000000f2)",
+                false, true);
         session.write();
 
         Composer.Composition composition = compose(iteration, 4);
@@ -769,6 +819,18 @@ public class D3ComposerTest {
                 composition.body().contains("(valueInt (indexed_read "));
         assertTrue("and the cell it read is the slot the location names",
                 composition.body().contains(" 2)) 5)"));
+        assertTrue("a read whose value the ROW states is pinned to it: "
+                        + fatalArm(composition),
+                fatalArm(composition).contains(SmtLowering.legalSymbols(
+                        "(= " + PLACEHOLDER + " 2)")));
+        assertTrue("phi's own leaf of that symbol IS that symbol",
+                fatalArm(composition).contains(SmtLowering.legalSymbols(
+                        "(not (= " + PLACEHOLDER + " 3))")));
+        assertTrue("and so is one reaching the formula through the write "
+                        + "expression a JOINED read observed",
+                fatalArm(composition).contains(SmtLowering.legalSymbols(
+                        "(= INSTANCE/Manager#count@v2 "
+                                + PLACEHOLDER + ")")));
         assertTrue("a reference read the VM valued is the identity of the "
                         + "object it names, under the SAME name an ordinary "
                         + "identity leaf of that rid gets -- and one it "
@@ -1106,8 +1168,13 @@ public class D3ComposerTest {
 
         void read(Endpoint endpoint, LocationId location, long version,
                   String symbol, String concrete) {
+            read(endpoint, location, version, symbol, "Z", concrete);
+        }
+
+        void read(Endpoint endpoint, LocationId location, long version,
+                  String symbol, String javaType, String concrete) {
             reads.add(ReadRow.of(id, ++seq, endpoint, location, version,
-                    symbol, "Z", concrete));
+                    symbol, javaType, concrete));
         }
 
         void decision(OccurrenceAddress at, String site, String term) {

@@ -83,12 +83,22 @@ public final class SmtLowering extends VmLoweringCore {
     };
 
     private final SmtSymbolTable symbols = new SmtSymbolTable();
-    private final Map<String, Sort> declarations =
-            new LinkedHashMap<String, Sort>();
+    /**
+     * Every name this query gives a meaning to: ONE registry.
+     *
+     * <p>There is one notion -- what declares a name -- and it used to be
+     * kept in two maps: what the recording states, read by the leaf
+     * lowering, and what the query declares, written by {@link #declare}.
+     * A symbol a ReadRow states was written into the second and looked up
+     * in the first, so the join or pin bound the NAME while every leaf
+     * naming it was cut as free: 18 {@code PROPAGATION_CUT} rows on the
+     * 17960 anchor and the path with them, beside a
+     * {@code (declare-const M_I_field_... Int)} in the same file.</p>
+     */
+    private final Map<String, Declared> declarations =
+            new LinkedHashMap<String, Declared>();
     private final List<String> assertions = new ArrayList<String>();
     private final Set<String> assertedOnce = new LinkedHashSet<String>();
-    /** Symbol the runtime declared -> the sort it declared it at. */
-    private final Map<String, Sort> declaredSymbols;
     /** Declared symbols this lowering actually put in the formula. */
     private final Set<String> usedSymbols = new LinkedHashSet<String>();
     /** Session -> its objects, by the rid the VM gave them. */
@@ -139,11 +149,45 @@ public final class SmtLowering extends VmLoweringCore {
     private SmtLowering(Map<String, Sort> declaredSymbols,
                         boolean symbolsDeclareThemselves,
                         ExpressionTable table) {
-        this.declaredSymbols = declaredSymbols == null
-                ? Collections.<String, Sort>emptyMap()
-                : new LinkedHashMap<String, Sort>(declaredSymbols);
+        // The corpus's own statements, in the one registry, not yet in the
+        // query: a name the recording declares becomes a declaration of
+        // THIS query when the query names it, and not before -- which is
+        // what `declared` answers and what the preamble emits.
+        if (declaredSymbols != null) {
+            for (Map.Entry<String, Sort> stated
+                    : declaredSymbols.entrySet()) {
+                if (stated.getKey() == null || stated.getValue() == null) {
+                    continue;
+                }
+                this.declarations.put(stated.getKey(),
+                        new Declared(stated.getValue(), true, false));
+            }
+        }
         this.symbolsDeclareThemselves = symbolsDeclareThemselves;
         this.table = table == null ? ExpressionTable.empty() : table;
+    }
+
+    /**
+     * One name's declaration: its sort, who states it, and whether the
+     * query has named it.
+     *
+     * <p>Two facts, one entry.  {@code stated} is the recording's: a root
+     * mint, a clock reading, an attach, or a read row of a session says
+     * this name means something, so a {@code SymbolExpression} leaf
+     * naming it lowers to it rather than being cut as free.
+     * {@code inQuery} is this query's: the formula names it, so the
+     * preamble declares it and {@code declared} answers yes.</p>
+     */
+    private static final class Declared {
+        private final Sort sort;
+        private final boolean stated;
+        private final boolean inQuery;
+
+        private Declared(Sort sort, boolean stated, boolean inQuery) {
+            this.sort = sort;
+            this.stated = stated;
+            this.inQuery = inQuery;
+        }
     }
 
     /**
@@ -214,7 +258,8 @@ public final class SmtLowering extends VmLoweringCore {
                     ? "ABSENT_EXPRESSION:" + expressionRef : refused.get(0));
         }
         Map<String, String> named = new LinkedHashMap<String, String>();
-        for (Map.Entry<String, Sort> declaration : declarations.entrySet()) {
+        for (Map.Entry<String, Sort> declaration
+                : declarations().entrySet()) {
             if (mentions(value.text, declaration.getKey())) {
                 named.put(declaration.getKey(), declaration.getValue().smt);
             }
@@ -641,13 +686,16 @@ public final class SmtLowering extends VmLoweringCore {
                 ? expected
                 : encoded != Sort.VALUE ? encoded
                 : expected == null ? Sort.REF : expected;
-        Sort declared = declaredSymbols.get(raw);
-        if (declared != null) {
-            // The declaration is the mint, and wins over the shape of the
-            // node the symbol turned up in: one variable has one sort.
-            declare(raw, declared);
+        Declared held = declarations.get(raw);
+        if (held != null && held.stated) {
+            // The declaration is the mint, the attach, or the read row of
+            // this session, and it wins over the shape of the node the
+            // symbol turned up in: one variable has one sort.  Whatever
+            // bound it -- a root's valuation, an arm, a read's join or its
+            // pin -- the leaf is that binding wherever it appears.
+            declareStated(raw, held.sort);
             usedSymbols.add(raw);
-            return Term.of(raw, declared,
+            return Term.of(raw, held.sort,
                     JavaPrimitiveSmtSemantics.widthOfJavaType(javaType),
                     "", "", "true");
         }
@@ -663,8 +711,8 @@ public final class SmtLowering extends VmLoweringCore {
                     "", "", "true");
         }
         return cut("UndeclaredFreeSymbol:" + raw,
-                "no root mint, attach or decision of this corpus declares "
-                        + "this symbol", sort);
+                "no root mint, clock reading, attach or read row of this "
+                        + "corpus states this symbol", sort);
     }
 
     /**
@@ -1134,22 +1182,62 @@ public final class SmtLowering extends VmLoweringCore {
         return out.toString();
     }
 
-    /** Declares one name once; a second, different sort is a defect. */
+    /**
+     * Declares one name THIS LOWERING minted; a second, different sort is
+     * a defect.
+     */
     public void declare(String name, Sort sort) {
-        Sort held = declarations.get(name);
-        if (held == null) {
-            declarations.put(name, sort);
-            return;
-        }
-        if (held != sort) {
+        put(name, sort, false);
+    }
+
+    /**
+     * Declares one name a ROW of the recording states, at the sort the
+     * row's own binding gives it.
+     *
+     * <p>Same registry, same sort rule; what it adds is the authority. A
+     * leaf naming this symbol now lowers to it -- to the binding the path
+     * states for it -- instead of being cut as a free symbol.</p>
+     */
+    public void declareStated(String name, Sort sort) {
+        put(name, sort, true);
+    }
+
+    /**
+     * Puts a name the recording already states into the query, answering
+     * whether the recording states one.
+     *
+     * <p>For a caller holding a term's text rather than its leaves: a
+     * published term can name a recorded symbol directly, and the
+     * registry is the one place that says whether the recording declares
+     * it and at what sort.</p>
+     */
+    public boolean declareStated(String name) {
+        Declared held = declarations.get(name);
+        if (held == null || !held.stated) return false;
+        put(name, held.sort, true);
+        return true;
+    }
+
+    private void put(String name, Sort sort, boolean stated) {
+        Declared held = declarations.get(name);
+        if (held != null && held.sort != sort) {
             throw new IllegalStateException("SMT name " + name
-                    + " declared as " + held + " and " + sort);
+                    + " declared as " + held.sort + " and " + sort);
         }
+        declarations.put(name, new Declared(sort,
+                stated || held != null && held.stated, true));
+    }
+
+    /** Whether the recording states a meaning for one name. */
+    public boolean stated(String name) {
+        Declared held = declarations.get(name);
+        return held != null && held.stated;
     }
 
     /** Whether one name is declared in this query. */
     public boolean declared(String name) {
-        return declarations.containsKey(name);
+        Declared held = declarations.get(name);
+        return held != null && held.inQuery;
     }
 
     /**
@@ -1161,15 +1249,23 @@ public final class SmtLowering extends VmLoweringCore {
      * which is more than a declaration, not less.</p>
      */
     public boolean defined(String name) {
-        if (declarations.containsKey(name)) return true;
+        if (declared(name)) return true;
         for (SharedTerm shared : sharedTerms.values()) {
             if (shared.name.equals(name)) return true;
         }
         return false;
     }
 
+    /** The names this query declares, at the sorts it declares them. */
     public Map<String, Sort> declarations() {
-        return Collections.unmodifiableMap(declarations);
+        Map<String, Sort> named = new LinkedHashMap<String, Sort>();
+        for (Map.Entry<String, Declared> entry
+                : declarations.entrySet()) {
+            if (entry.getValue().inQuery) {
+                named.put(entry.getKey(), entry.getValue().sort);
+            }
+        }
+        return Collections.unmodifiableMap(named);
     }
 
     /** Declared symbols this lowering put in the formula. */
@@ -1402,19 +1498,43 @@ public final class SmtLowering extends VmLoweringCore {
                         shared.body));
                 continue;
             }
-            Sort sort = declarations.get(token);
-            if (sort != null) {
-                ordered.add(new Declaration(token, sort.smt, ""));
+            Declared held = declarations.get(token);
+            if (held != null && held.inQuery) {
+                ordered.add(new Declaration(token, held.sort.smt, ""));
             }
         }
     }
 
-    /** Every symbol-shaped token of one term. */
-    private static List<String> names(String text) {
+    /**
+     * Every NAME one SMT term names: the one tokenizer.
+     *
+     * <p>The alphabet is {@link #symbolCharacter}'s, which is SMT-LIB's, so
+     * {@code /} and {@code #} are parts of a name and not breaks in it.  A
+     * second tokenizer that stopped at {@code /} cut
+     * {@code M_I_field_REGION...._java/util/concurrent/atomic/AtomicInteger}
+     * into five pieces and reported all five as symbols nothing declares --
+     * the same one-rule-two-implementations defect as the two declaration
+     * maps, in the same path.  Text inside {@code "..."} is a literal and
+     * names nothing; text inside {@code |...|} is ONE name, however it is
+     * spelled; a numeral is a value and not a name.</p>
+     */
+    public static List<String> names(String text) {
         List<String> names = new ArrayList<String>();
+        if (text == null) return names;
         int index = 0;
         while (index < text.length()) {
             char value = text.charAt(index);
+            if (value == '"') {
+                index = pastLiteral(text, index, '"');
+                continue;
+            }
+            if (value == '|') {
+                int end = pastLiteral(text, index, '|');
+                name(names, text.substring(index + 1,
+                        Math.max(index + 1, end - 1)));
+                index = end;
+                continue;
+            }
             if (!symbolCharacter(value)) {
                 index++;
                 continue;
@@ -1424,10 +1544,27 @@ public final class SmtLowering extends VmLoweringCore {
                     && symbolCharacter(text.charAt(end))) {
                 end++;
             }
-            names.add(text.substring(index, end));
+            name(names, text.substring(index, end));
             index = end;
         }
         return names;
+    }
+
+    /** One index past the literal that opens at {@code at}. */
+    private static int pastLiteral(String text, int at, char delimiter) {
+        int index = at + 1;
+        while (index < text.length() && text.charAt(index) != delimiter) {
+            index++;
+        }
+        return index < text.length() ? index + 1 : index;
+    }
+
+    /** Keeps one token if it is a name and not a numeral. */
+    private static void name(List<String> names, String token) {
+        if (token.isEmpty()) return;
+        char first = token.charAt(0);
+        if (Character.isDigit(first) || first == '-' || first == '.') return;
+        names.add(token);
     }
 
     /** The preamble alone: the sorts and functions, no declaration. */
@@ -1469,7 +1606,8 @@ public final class SmtLowering extends VmLoweringCore {
                 .append('\n');
         query.append(JavaPrimitiveSmtSemantics.LONG_WRAP_DEFINITION)
                 .append('\n');
-        for (Map.Entry<String, Sort> declaration : declarations.entrySet()) {
+        for (Map.Entry<String, Sort> declaration
+                : declarations().entrySet()) {
             query.append("(declare-const ").append(declaration.getKey())
                     .append(' ').append(declaration.getValue().smt)
                     .append(")").append('\n');
@@ -1596,7 +1734,8 @@ public final class SmtLowering extends VmLoweringCore {
 
     /** Named rows of the rendered query, the formula-size measure. */
     public int namedRows() {
-        return declarations.size() + sharedTerms.size() + assertions.size();
+        return declarations().size() + sharedTerms.size()
+                + assertions.size();
     }
 
     // ------------------------------------------------------------------
