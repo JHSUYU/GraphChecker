@@ -3599,6 +3599,9 @@ public final class ConcolicRegionRuntime {
                 ? vmAttestation.conditionIndices.get(0) : -1;
         JsonObject mapping = branchMapping(method, unitIndex, occurrence,
                 vmEventId);
+        // A row with no term of its own states the arm the jump took; a row
+        // that publishes a term states whether THAT term held, and the term
+        // is added below (CONTRACT v2.3 sec 1.3).
         mapping.addProperty("outcome", observedOutcome);
         // Exact VM ownership is one condition for an IfStmt.
         int mappingBaseline = conditionIndex >= 0
@@ -3639,6 +3642,10 @@ public final class ConcolicRegionRuntime {
                         true, condition);
                 if (written != null && written.isJsonObject()) {
                     mapping.add("siteCondition", written);
+                    // And the arm, restated as what the contract asks of it:
+                    // whether the term just published held.
+                    mapping.addProperty("outcome",
+                            termHeld(condition, written));
                 }
             }
         } else if (vmAttestation.valid
@@ -5659,6 +5666,39 @@ public final class ConcolicRegionRuntime {
         JsonObject normalized = shallowCopy(original);
         normalized.addProperty("_op", expected);
         return normalized;
+    }
+
+    /**
+     * Whether the term a DecisionRow publishes held in this run.
+     *
+     * <p>{@code DecisionRow.outcome} is the truth value of the polarity-free
+     * term beside it -- every consumer forms {@code outcome ? term :
+     * (not term)} (CONTRACT v2.3 sec 1.3) -- and NOT whether the conditional
+     * jump was taken.  The two disagree at every branch whose jump the run
+     * did not take: the VM's path condition holds the predicate the
+     * execution SATISFIED, so a source line reading {@code if x == 0 goto}
+     * that fell through contributes {@code x != 0}, and publishing that
+     * beside {@code outcome=false} asserts its negation -- on hdfs-17960 it
+     * asserted {@code marker == false} on the two {@code deleteSnapshot}
+     * decisions of a run whose marker mint recorded true, contradicting the
+     * root the same session published.</p>
+     *
+     * <p>One rule, no per-opcode table: the published term is the satisfied
+     * predicate, at most with its operator replaced by one that predicate
+     * implies ({@link #semanticBranchCondition}).  The same operator, or an
+     * implied one, held; the complement is that predicate's negation and did
+     * not.  A term with no comparison operator to compare is the satisfied
+     * predicate itself.</p>
+     */
+    private static boolean termHeld(JsonElement satisfied,
+                                    JsonElement published) {
+        String held = binaryOperator(satisfied);
+        String states = binaryOperator(published);
+        if (held.isEmpty() || states.isEmpty() || held.equals(states)) {
+            return true;
+        }
+        return !states.equals(
+                BranchPredicateAlgebra.complementOperator(held));
     }
 
     private static String binaryOperator(JsonElement condition) {

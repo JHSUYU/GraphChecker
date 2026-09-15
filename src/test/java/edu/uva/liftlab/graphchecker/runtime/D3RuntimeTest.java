@@ -1,5 +1,6 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
+import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.d3.contract.AttachRow;
 import edu.uva.liftlab.graphchecker.d3.contract.DecisionRow;
@@ -32,6 +33,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.After;
 import org.junit.Before;
@@ -212,6 +214,15 @@ public class D3RuntimeTest {
 
         D3Runtime.decision(occurrence, 12L, "Klass.m()#u8", 1, true,
                 expression);
+        // hdfs-17960's marker decision, in the shape the VM publishes it:
+        // the source reads `if marker == 0 goto`, the run had marker true so
+        // the jump fell through, and the VM's path condition holds the
+        // predicate it SATISFIED -- `marker != false`.  The row states that
+        // term and outcome=true, because the term held; stating the taken
+        // jump instead (false) would assert `marker == false` against the
+        // mint the same session publishes.
+        D3Runtime.decision(occurrence, 13L, "SnapshotManager.delete()#u7", 1,
+                true, markerHeld("M_Z_marker"));
         D3Runtime.exported(occurrence, 4L, "XCH.port", 7L, "c1", 0,
                 expression, "J", "1");
         D3Runtime.attachedAt(endpoint, 9L, "XCH.port", 7L, "c1", "v_H", "J",
@@ -231,6 +242,9 @@ public class D3RuntimeTest {
                 location, 125L, "s", "J", "9", "");
         D3Runtime.rootMint(occurrence, 11L, "HDFS.BLOCK_KEY.SERIAL_NO",
                 "M_I_1", RootKind.INTEGRAL, "3", "3", "6", true);
+        D3Runtime.rootMint(occurrence, 13L,
+                "HDFS.CONFIG.SNAPSHOT_DELETION_ORDERED", "M_Z_marker",
+                RootKind.MARKER, "true", "", "", true);
         D3Runtime.target(occurrence, 15L, "Klass.m()#u8", expression, true,
                 true, true);
         D3Runtime.gap(GapKind.UNSTATED_VALUE, GapClass.BLOCKING, "s", "d");
@@ -257,7 +271,7 @@ public class D3RuntimeTest {
         SessionDir dir = session();
         List<DecisionRow> decisions = RowCodec.readAll(dir.decisions(),
                 RowCodec::readDecision);
-        assertEquals(1, decisions.size());
+        assertEquals(2, decisions.size());
         assertEquals(occurrence, decisions.get(0).occurrence());
         assertTrue(decisions.get(0).term().startsWith("EXPR."));
         List<ExportRow> exports = RowCodec.readAll(dir.exports(),
@@ -310,6 +324,26 @@ public class D3RuntimeTest {
         assertEquals("2", reads.get(4).concreteValue());
         List<RootMintRow> roots = RowCodec.readAll(dir.roots(),
                 RowCodec::readRootMint);
+        // The corpus invariant: a decision whose term is over declared root
+        // symbols only holds exactly when the row says its outcome does.
+        // This is what tells "the term held" apart from "the jump was
+        // taken", and the two differ at every fall-through branch.
+        Map<String, String> recorded = new java.util.HashMap<>();
+        for (RootMintRow root : roots) {
+            recorded.put(root.symbol(), root.recordedValue());
+        }
+        Map<String, JsonObject> table =
+                RowCodec.readExpressions(dir.expressions()).expressions();
+        int checked = 0;
+        for (DecisionRow row : decisions) {
+            Boolean held = holdsAtRoots(table.get(row.term()), recorded,
+                    table);
+            if (held == null) continue;
+            assertEquals("the term of " + row.siteId() + " held", held,
+                    Boolean.valueOf(row.outcome()));
+            checked++;
+        }
+        assertEquals("one decision is over declared roots only", 1, checked);
         assertEquals(RootKind.INTEGRAL, roots.get(0).kind());
         assertEquals(11L, roots.get(0).seq());
         assertFalse(roots.get(0).pinned());
@@ -324,10 +358,142 @@ public class D3RuntimeTest {
         assertTrue(targets.get(0).observedFatal());
         List<GapRow> gaps = RowCodec.readAll(dir.gaps(), RowCodec::readGap);
         assertTrue(gaps.get(0).blocking());
+        // What the read-out keeps of the VM's envelope is what a write or
+        // read endpoint can be built from: the bytecode site the event stood
+        // at and the activation that ran it.  The reduction used to drop
+        // both and the whole read log, which is why every write endpoint
+        // carried its location as a site and the empty index.
+        JsonObject reduced = SharedStateCapture.reduceWriteLogForTest(
+                vmEnvelopeRecord());
+        JsonObject envelope = reduced.getAsJsonObject("envelope");
+        JsonObject version = envelope.getAsJsonArray("versions").get(0)
+                .getAsJsonObject();
+        assertEquals(41L, version.get("regionEnterEventId").getAsLong());
+        assertEquals("getAndIncrement", version.getAsJsonObject("site")
+                .get("methodName").getAsString());
+        JsonObject read = envelope.getAsJsonArray("reads").get(0)
+                .getAsJsonObject();
+        assertEquals(76L, read.get("readEventId").getAsLong());
+        assertEquals(41L, read.get("regionEnterEventId").getAsLong());
+        assertEquals("()I", read.getAsJsonObject("site")
+                .get("methodDescriptor").getAsString());
         // The expressions the refs name are in the session's own table.
         assertTrue(Files.exists(dir.expressions()));
         assertTrue(RowCodec.readExpressions(dir.expressions())
                 .refs().contains(exports.get(0).expressionRef()));
+    }
+
+    /** One tracked location, as the VM's read-out states it. */
+    private static JsonObject vmEnvelopeRecord() {
+        JsonObject site = new JsonObject();
+        site.addProperty("className",
+                "java/util/concurrent/atomic/AtomicInteger");
+        site.addProperty("methodName", "getAndIncrement");
+        site.addProperty("methodDescriptor", "()I");
+        site.addProperty("bci", 12);
+        JsonObject version = new JsonObject();
+        version.addProperty("fieldVersionId", 50L);
+        version.addProperty("versionKind", "RMW");
+        version.addProperty("regionEnterEventId", 41L);
+        version.addProperty("writerContextId", 7L);
+        version.add("site", site);
+        version.add("expression", rmwExpression());
+        JsonObject read = new JsonObject();
+        read.addProperty("readEventId", 76L);
+        read.addProperty("regionEnterEventId", 41L);
+        read.addProperty("readerContextId", 7L);
+        read.add("site", site);
+        JsonArray versions = new JsonArray();
+        versions.add(version);
+        JsonArray reads = new JsonArray();
+        reads.add(read);
+        JsonObject envelope = new JsonObject();
+        envelope.addProperty("kind", "SHARED_FIELD_VERSIONS");
+        envelope.addProperty("schemaVersion", 1);
+        envelope.add("versions", versions);
+        envelope.add("reads", reads);
+        envelope.addProperty("readLogTruncated", false);
+        JsonObject record = new JsonObject();
+        record.addProperty("locationKey", "INSTANCE_FIELD/2#24");
+        record.add("envelope", envelope);
+        return record;
+    }
+
+    /** {@code marker != false}, the predicate a fall-through satisfied. */
+    private static JsonObject markerHeld(String symbol) {
+        JsonObject marker = new JsonObject();
+        marker.addProperty("_type", "SymbolExpression");
+        marker.addProperty("_java_type", "Z");
+        marker.addProperty("_exp", symbol);
+        JsonObject read = new JsonObject();
+        read.addProperty("_type", "ConsumerBoundaryExpression");
+        read.addProperty("boundaryKind", "FIELD_READ");
+        read.addProperty("_java_type", "Z");
+        read.add("expression", marker);
+        JsonObject literal = new JsonObject();
+        literal.addProperty("_type", "ConstExpr");
+        literal.addProperty("_java_type", "Z");
+        literal.addProperty("_exp", "Y_Z_0");
+        JsonObject predicate = new JsonObject();
+        predicate.addProperty("_type", "BinaryExpression");
+        predicate.add("_left", read);
+        predicate.addProperty("_op", "!=");
+        predicate.add("_right", literal);
+        return predicate;
+    }
+
+    /**
+     * Whether one term holds at the roots the session recorded, or null when
+     * it is not a comparison over declared roots and literals alone.
+     *
+     * <p>Deliberately small: {@code Y_<sort>_<value>} is the VM's spelling
+     * of a literal and a root's {@code recordedValue} is what the run read,
+     * so an equality over the two is decidable from the rows without a
+     * solver.  Anything else is not this invariant's business.</p>
+     */
+    private static Boolean holdsAtRoots(JsonObject term,
+                                        Map<String, String> roots,
+                                        Map<String, JsonObject> table) {
+        if (term == null
+                || !"BinaryExpression".equals(text(term, "_type"))) {
+            return null;
+        }
+        String operator = text(term, "_op");
+        if (!"==".equals(operator) && !"!=".equals(operator)) return null;
+        String left = valueAtRoots(term.get("_left"), roots, table);
+        String right = valueAtRoots(term.get("_right"), roots, table);
+        if (left == null || right == null) return null;
+        return Boolean.valueOf("==".equals(operator)
+                ? left.equals(right) : !left.equals(right));
+    }
+
+    private static String valueAtRoots(com.google.gson.JsonElement node,
+                                       Map<String, String> roots,
+                                       Map<String, JsonObject> table) {
+        if (node == null || !node.isJsonObject()) return null;
+        JsonObject object = node.getAsJsonObject();
+        String symbol = text(object, "_exp");
+        if (roots.containsKey(symbol)) return normalized(roots.get(symbol));
+        if (symbol.startsWith("Y_")) {
+            int mark = symbol.lastIndexOf('_');
+            return mark < 0 ? null : normalized(symbol.substring(mark + 1));
+        }
+        com.google.gson.JsonElement nested = object.get("expression");
+        return nested == null ? null : valueAtRoots(nested, roots, table);
+    }
+
+    /** {@code true}/{@code 1} and {@code false}/{@code 0} are one value. */
+    private static String normalized(String value) {
+        String stated = value == null ? "" : value.trim();
+        if ("true".equals(stated)) return "1";
+        if ("false".equals(stated)) return "0";
+        return stated;
+    }
+
+    private static String text(JsonObject object, String field) {
+        com.google.gson.JsonElement value = object.get(field);
+        return value != null && value.isJsonPrimitive()
+                ? value.getAsString() : "";
     }
 
     /** {@code Y_I_0 + Y_I_1}, as the VM publishes a linearized RMW. */

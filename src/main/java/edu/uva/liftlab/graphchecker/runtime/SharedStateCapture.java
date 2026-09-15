@@ -281,6 +281,16 @@ final class SharedStateCapture {
             JsonObject entry = new JsonObject();
             copyIfPresent(version, entry, "fieldVersionId");
             copyIfPresent(version, entry, "versionKind");
+            // Where the store stood, and which region activation it ran
+            // inside: the two halves of the WriteRow's endpoint identity
+            // (IDENTITY-V3 sec 1).  The reduction dropped both, so every
+            // write endpoint published its location as a site and the empty
+            // site index while the VM had stated the bytecode site
+            // (REPORT-VM21) and the entry event of the activation -- four
+            // reads of one location inside one occurrence were then one
+            // endpoint.  Small and bounded: four strings and a long.
+            copyIfPresent(version, entry, "site");
+            copyIfPresent(version, entry, "regionEnterEventId");
             // A container's INITIAL states the contents tracking began from,
             // and every relation over that container stands on them.  The
             // reduction dropped it, so the corpus could not say whether a
@@ -293,6 +303,23 @@ final class SharedStateCapture {
             versions.add(entry);
         }
         publishedEnvelope.add("versions", versions);
+        // The read log, by event id.  A ReadFromExpression node names the
+        // read event it is and the site it stood at, but not the activation
+        // that ran it; the log record of the same event does, and that is
+        // what files the read under a frame journal.  No value travels with
+        // it -- the node already carries the version it observed.
+        JsonArray reads = new JsonArray();
+        for (JsonElement element : array(envelope, "reads")) {
+            if (!element.isJsonObject()) continue;
+            JsonObject read = element.getAsJsonObject();
+            JsonObject entry = new JsonObject();
+            copyIfPresent(read, entry, "readEventId");
+            copyIfPresent(read, entry, "regionEnterEventId");
+            copyIfPresent(read, entry, "site");
+            reads.add(entry);
+        }
+        publishedEnvelope.add("reads", reads);
+        copyIfPresent(envelope, publishedEnvelope, "readLogTruncated");
         published.add("envelope", publishedEnvelope);
         return published;
     }
