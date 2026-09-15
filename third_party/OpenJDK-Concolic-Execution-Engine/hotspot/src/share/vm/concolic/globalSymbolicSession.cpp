@@ -144,6 +144,10 @@ sym_rid_t GlobalSymbolicSession::next_sym_rid() {
   return (sym_rid_t) next;
 }
 
+jlong GlobalSymbolicSession::last_event_id() {
+  return (jlong) OrderAccess::load_ptr_acquire(&_next_event_id);
+}
+
 sym_rid_t GlobalSymbolicSession::minted_sym_rid_bound() {
   return (sym_rid_t) OrderAccess::load_ptr_acquire(&_next_sym_rid);
 }

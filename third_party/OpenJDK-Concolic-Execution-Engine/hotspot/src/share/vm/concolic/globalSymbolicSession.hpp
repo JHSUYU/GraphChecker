@@ -135,6 +135,18 @@ public:
    */
   static jlong next_event_id();
 
+  /**
+   * The id of the last event this session published, or 0 before the first.
+   *
+   * Read-only, and the only thing a caller outside the VM needs to align its
+   * own journal with the VM's log: a woven call window that records this id
+   * on entry knows afterwards that exactly the log events above it happened
+   * inside that window.  Acquire, for the same reason
+   * minted_sym_rid_bound() is: a caller that sees a record must also see a
+   * bound that covers it.
+   */
+  static jlong last_event_id();
+
 private:
   typedef std::vector<Expression *> ExprArena;
 

@@ -32,7 +32,11 @@ public:
                      Expression *observed_value,
                      const std::string &java_type, jlong read_event_id,
                      sym_rid_t owner, int slot, const char *location_kind,
-                     bool writer_set_complete);
+                     bool writer_set_complete,
+                     const std::string &site_class = std::string(),
+                     const std::string &site_method = std::string(),
+                     const std::string &site_descriptor = std::string(),
+                     int site_bci = -1);
 
   virtual bool is_boolean_expression();
   virtual bool is_guarded_reference_read();
@@ -43,6 +47,15 @@ protected:
       rapidjson::Writer<rapidjson::StringBuffer> &writer);
 
 private:
+  // The bytecode site this read stood at, in the JVM's own components, or
+  // empty when the read named none.  Written by
+  // SharedFieldVersions::write_site so the node and the read log cannot
+  // disagree about what a site is; held as components here only to keep this
+  // header independent of that one.
+  std::string _site_class;
+  std::string _site_method;
+  std::string _site_descriptor;
+  int _site_bci;
   jlong _observed_version_id;
   std::string _observed_version_kind;
   Expression *_observed_value;

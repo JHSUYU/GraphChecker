@@ -1,6 +1,7 @@
 #ifdef ENABLE_CONCOLIC
 
 #include "concolic/exp/readFromExpression.hpp"
+#include "concolic/sharedFieldVersions.hpp"
 
 #include "utilities/ostream.hpp"
 
@@ -10,13 +11,17 @@ ReadFromExpression::ReadFromExpression(
     jlong observed_version_id, const std::string &observed_version_kind,
     Expression *observed_value, const std::string &java_type,
     jlong read_event_id, sym_rid_t owner, int slot,
-    const char *location_kind, bool writer_set_complete)
+    const char *location_kind, bool writer_set_complete,
+    const std::string &site_class, const std::string &site_method,
+    const std::string &site_descriptor, int site_bci)
     : _observed_version_id(observed_version_id),
       _observed_version_kind(observed_version_kind),
       _observed_value(observed_value), _java_type(java_type),
       _location_kind(location_kind == NULL ? "" : location_kind),
       _read_event_id(read_event_id), _owner(owner), _slot(slot),
-      _writer_set_complete(writer_set_complete) {
+      _writer_set_complete(writer_set_complete),
+      _site_class(site_class), _site_method(site_method),
+      _site_descriptor(site_descriptor), _site_bci(site_bci) {
   guarantee(_observed_version_id > 0,
             "a read must name the version it observed");
   guarantee(_observed_value != NULL,
@@ -65,6 +70,17 @@ void ReadFromExpression::serialize_internal(
   writer.EndObject();
   writer.Key("writerSetComplete");
   writer.Bool(_writer_set_complete);
+
+  // Where the read stood.  A consumer that has to tell two reads of one
+  // location by one occurrence apart has nothing else to tell them by: the
+  // event id orders them, the location does not distinguish them, and the
+  // site is the innermost frame of the endpoint's site index.
+  SharedFieldVersions::EventSite site;
+  site.class_name = _site_class;
+  site.method_name = _site_method;
+  site.method_descriptor = _site_descriptor;
+  site.bci = _site_bci;
+  SharedFieldVersions::write_site(writer, site);
 
   // One object, never an array.  `fieldVersionId` addresses the same write in
   // the location's write log, so a reader may take the value from either.

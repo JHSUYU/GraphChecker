@@ -591,6 +591,47 @@ void ThreadContext::symbolize_exact_field(
   if (instance != NULL) instance->mark_semantic_expression();
 }
 
+bool ThreadContext::current_code_site(CodeSite *site) {
+  if (site == NULL) return false;
+  *site = CodeSite();
+  ShadowStack &stack = get_shadow_stack();
+  if (!stack.has_frames()) return false;
+  // The innermost frame that HAS a bytecode position.  A native frame is
+  // skipped rather than reported with bci -1: an event published from inside
+  // a VM entry (`System.symbolizeExactField`, `System.attachExpression`)
+  // stands on that entry's *call site*, which is the bytecode the consumer's
+  // woven site id names too, and `java/lang/System.symbolizeExactField:-1`
+  // would name no site at all while looking like one.
+  const ZeroFrame *zero_frame = stack.get_last_frame().get_zero_frame();
+  Method *method = NULL;
+  address bcp = NULL;
+  while (zero_frame != NULL) {
+    if (zero_frame->is_interpreter_frame()) {
+      interpreterState istate =
+          zero_frame->as_interpreter_frame()->interpreter_state();
+      Method *candidate = istate->method();
+      if (candidate != NULL && !candidate->is_native()
+          && istate->bcp() != NULL) {
+        method = candidate;
+        bcp = istate->bcp();
+        break;
+      }
+    }
+    zero_frame = zero_frame->next();
+  }
+  if (method == NULL || method->method_holder() == NULL) return false;
+  ResourceMark rm;
+  Symbol *holder = method->method_holder()->name();
+  Symbol *name = method->name();
+  Symbol *descriptor = method->signature();
+  if (holder == NULL || name == NULL || descriptor == NULL) return false;
+  site->class_name = holder->as_C_string();
+  site->method_name = name->as_C_string();
+  site->method_descriptor = descriptor->as_C_string();
+  site->bci = method->bci_from(bcp);
+  return true;
+}
+
 std::string ThreadContext::get_current_code_pos() {
   // Stack-local, not static: several attached threads reach this from
   // record_branch_conditions at the same time, and one process-global buffer

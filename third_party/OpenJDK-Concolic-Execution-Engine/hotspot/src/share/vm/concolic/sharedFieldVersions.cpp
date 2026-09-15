@@ -179,6 +179,7 @@ jlong SharedFieldVersions::publish(const Location &location, Expression *value,
     version.task_id = ConcolicMngr::ctx->get_task_id();
     version.region_enter_event_id =
         ConcolicMngr::ctx->region_enter_event();
+    version.site = current_site();
   }
 
   VERSION_LOCK;
@@ -262,8 +263,11 @@ bool SharedFieldVersions::plan_read(const Location &location,
   plan->observed = versions.back();
   plan->writer_set_complete = complete;
 
+  plan->site = current_site();
+
   ReadRecord record;
   record.read_event_id = plan->read_event_id;
+  record.site = plan->site;
   record.reader_context_id = ConcolicMngr::ctx->get_context_id();
   record.region_id = ConcolicMngr::ctx->get_region_id();
   record.task_id = ConcolicMngr::ctx->get_task_id();
@@ -302,7 +306,9 @@ Expression *SharedFieldVersions::build_read_from(
   Expression *selection = new ReadFromExpression(
       plan.observed.version_id, version_label(plan.observed), observed_value,
       type_name, plan.read_event_id, location.owner, location.slot,
-      location_kind_name(location.kind), plan.writer_set_complete);
+      location_kind_name(location.kind), plan.writer_set_complete,
+      plan.site.class_name, plan.site.method_name,
+      plan.site.method_descriptor, plan.site.bci);
   return new ConsumerBoundaryExpression(
       selection, type_name, ConsumerBoundaryExpression::FIELD_READ,
       plan.read_event_id);
@@ -523,6 +529,40 @@ const char *SharedFieldVersions::version_kind_name(int kind) {
   }
 }
 
+// Where the calling thread stands, as one logged event states it.  One
+// reader, so a version and a read record cannot drift on what a site is.
+SharedFieldVersions::EventSite SharedFieldVersions::current_site() {
+  EventSite site;
+  if (ConcolicMngr::ctx == NULL) return site;
+  ThreadContext::CodeSite standing;
+  if (!ConcolicMngr::ctx->current_code_site(&standing)) return site;
+  site.class_name = standing.class_name;
+  site.method_name = standing.method_name;
+  site.method_descriptor = standing.method_descriptor;
+  site.bci = standing.bci;
+  return site;
+}
+
+// One writer for the `site` member, so a version, a read record and a
+// ReadFromExpression spell it identically.  Absent when the event named no
+// site: an unstated site is not bci 0 of an unnamed method.
+void SharedFieldVersions::write_site(
+    rapidjson::Writer<rapidjson::StringBuffer> &writer,
+    const EventSite &site) {
+  if (!site.stated()) return;
+  writer.Key("site");
+  writer.StartObject();
+  writer.Key("className");
+  writer.String(site.class_name.c_str());
+  writer.Key("methodName");
+  writer.String(site.method_name.c_str());
+  writer.Key("methodDescriptor");
+  writer.String(site.method_descriptor.c_str());
+  writer.Key("bci");
+  writer.Int(site.bci);
+  writer.EndObject();
+}
+
 std::string SharedFieldVersions::version_label(const Version &version) {
   const std::string kind(version_kind_name(version.version_kind));
   if (version.version_kind != VERSION_STATE || version.operation.empty()) {
@@ -598,6 +638,7 @@ bool SharedFieldVersions::write_versions_envelope(
     writer.String(version.task_id.c_str());
     writer.Key("regionEnterEventId");
     writer.Int64(version.region_enter_event_id);
+    write_site(writer, version.site);
     // Emitted whenever this engine has something to say about the contents
     // that predate tracking -- a stated count, a refusal over the bound, or a
     // class it cannot read.  `stated` is explicit so an absent count is never
@@ -667,6 +708,7 @@ bool SharedFieldVersions::write_versions_envelope(
     writer.String(read.task_id.c_str());
     writer.Key("regionEnterEventId");
     writer.Int64(read.region_enter_event_id);
+    write_site(writer, read.site);
     writer.EndObject();
   }
   writer.EndArray();

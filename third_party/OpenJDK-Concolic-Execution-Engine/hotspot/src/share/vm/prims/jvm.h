@@ -187,6 +187,9 @@ JNIEXPORT void JNICALL
 JVM_ResumeConcolicPathCondition(JNIEnv *env, jclass ignored);
 
 JNIEXPORT jlong JNICALL
+JVM_CurrentSymbolicEventId(JNIEnv *env, jclass ignored);
+
+JNIEXPORT jlong JNICALL
 JVM_MarkConcolicBranch(JNIEnv *env, jclass ignored, jstring site_id,
                        jint occurrence);
 

@@ -190,6 +190,12 @@ public:
   static jlong markBranch(const char *site_id, int occurrence);
   static std::string getBranchEvents();
   static std::string getSymbolicExpression(Handle handle);
+  /**
+   * The id of the last event the session published, or 0 before the first.
+   * Read-only; see GlobalSymbolicSession::last_event_id.
+   */
+  static jlong currentEventId();
+
   static std::string getSymbolicFieldExpression(
       Handle owner, const char *declaring_class, const char *field_name,
       const char *descriptor, Handle concrete_value);
