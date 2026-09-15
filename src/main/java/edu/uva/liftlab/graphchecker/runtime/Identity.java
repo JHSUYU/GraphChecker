@@ -184,23 +184,6 @@ public final class Identity {
             return standing;
         }
 
-        /** The site counters of the innermost open occurrence. */
-        private Map<String, Integer> siteEvents() {
-            return regions.isEmpty() ? ambientSiteEvents
-                    : regions.get(regions.size() - 1).siteEvents;
-        }
-
-        /**
-         * The counters of events minted outside every region.
-         *
-         * <p>A thread that mints an endpoint with no occurrence open does it
-         * under its degraded role occurrence, and two such events at one
-         * site have to differ there too.  Per thread, because that is what
-         * the degraded occurrence is.</p>
-         */
-        private final Map<String, Integer> ambientSiteEvents =
-                new HashMap<String, Integer>();
-
         private ExecutionIndex from(int base) {
             int start = Math.max(0, Math.min(base, frames.size()));
             return start >= frames.size() ? ExecutionIndex.empty()
@@ -569,40 +552,8 @@ public final class Identity {
     public static Endpoint endpointAt(OccurrenceAddress occurrence,
                                       String site, int attempt) {
         return occurrence == null ? null
-                : Endpoint.of(occurrence, Text.safe(site),
-                        eventSiteIndex(site), attempt);
-    }
-
-    /**
-     * The site-local index of the event minting an endpoint HERE, with the
-     * event itself as the innermost frame.
-     *
-     * <p>IDENTITY-V3 §1: an Endpoint is (occurrence, site, site-local
-     * execution index, attempt), and two events of one occurrence at one
-     * site are two points of its control structure.  Without the innermost
-     * frame they share one endpoint id -- which is what RowInvariants:337
-     * states as "invariant 4 site index missing ... 2 events of this site in
-     * one occurrence share one endpoint id" and says is the identity's to
-     * fix with no ordinal and no counter of the session's.  The count is
-     * the occurrence's own ({@link Region#siteEvents}): it starts at zero
-     * when the activation opens, dies with it, and is therefore the same
-     * number in the recording and in a replay of that occurrence.  It is
-     * also what separates the five {@code record-ordered-deletes} messages
-     * one client occurrence sends at one transport site, whose consumers
-     * would otherwise share one causal context and one address.</p>
-     */
-    private static ExecutionIndex eventSiteIndex(String site) {
-        State state = state();
-        String key = Text.safe(site);
-        if (key.isEmpty()) return state.from(state.regionBase());
-        Map<String, Integer> events = state.siteEvents();
-        Integer made = events.get(key);
-        int iteration = made == null ? 0 : made;
-        events.put(key, iteration + 1);
-        List<Frame> frames = new ArrayList<Frame>(
-                state.from(state.regionBase()).frames());
-        frames.add(Frame.of(key, iteration));
-        return ExecutionIndex.of(frames);
+                : Endpoint.of(occurrence, Text.safe(site), siteIndex(),
+                        attempt);
     }
 
     /**
@@ -704,18 +655,6 @@ public final class Identity {
         private FrameJournal journal;
         /** The occurrence this activation is, for the endpoints inside it. */
         private OccurrenceAddress occurrence;
-        /**
-         * How many events this occurrence has minted at each site.
-         *
-         * <p>Owned by the activation, so it starts at zero when the
-         * occurrence opens and is gone when it closes: it counts events of
-         * ONE occurrence at ONE site, which is what an Endpoint's
-         * site-local index has to separate (IDENTITY-V3 §1), and it is not
-         * a session ordinal -- nothing outside this activation can move
-         * it.</p>
-         */
-        private final Map<String, Integer> siteEvents =
-                new HashMap<String, Integer>();
 
         private Region(int base) {
             this.base = base;

@@ -622,16 +622,9 @@ public final class CausynthPipeline {
         envelope.boundSelectedLoops();
         instrumentConcolicCommunicationHandoffs(campaign, refs);
         envelope.freezeRootLoops();
-        Set<String> campaignRoots = new LinkedHashSet<>();
         for (InstrumentationPlan plan : campaign) {
             instrumentConcolicRegion(plan, refs, envelope);
-            campaignRoots.add(plan.rootMethod());
-            campaignRoots.add(envelope.replayEntry(plan).getSignature());
-            if (plan.loopBodyRoot()) {
-                campaignRoots.add(plan.rootLoopMethod());
-            }
         }
-        instrumentSkeletonRegions(campaignRoots, refs);
         instrumentWorkStarts(envelope.methods, refs);
         instrumentConcolicConfiguredSourceCallContexts(
                 envelope.configuredSourcePhaseSites.values(), refs);
@@ -643,69 +636,6 @@ public final class CausynthPipeline {
         instrumentConcolicMaterializations(envelope, refs);
         instrumentConcolicBranches(envelope.branches, refs);
         envelope.report();
-    }
-
-    /**
-     * Opens the execution-index region of every skeleton root the campaign
-     * did NOT select.
-     *
-     * <p>The recording opens one at every skeleton root, so a replay that
-     * opened them only at its own task roots stood on a different frame
-     * stack: {@code Identity.currentOccurrence} then named a different
-     * occurrence for the same event, and every endpoint and every causal
-     * anchor computed from it drifted.  Same file, same rule, same
-     * one-region-per-activation: the campaign's own roots keep their rich
-     * hooks and are excluded here, so a root that is both opens once.</p>
-     */
-    private void instrumentSkeletonRegions(Set<String> campaignRoots,
-                                           HookCatalog refs) {
-        Map<String, String> roots = RegionSkeletonInstrumentationSelection
-                .regionRootsFromEnvironment();
-        List<String> lite = new ArrayList<>();
-        for (Map.Entry<String, String> root : roots.entrySet()) {
-            if (!campaignRoots.contains(root.getKey())) {
-                lite.add(root.getKey());
-            }
-        }
-        Set<String> rewritten = instrumentMethods(lite, "",
-                (body, method, units, entry, lowerBound, receiver) ->
-                        instrumentLiteRegion(body, method, units, entry,
-                                lowerBound, receiver, refs,
-                                roots.get(method.getSignature())));
-        LOG.info("Opened {} of {} skeleton region root(s) for the execution "
-                + "index; {} are campaign roots with their own hooks",
-                rewritten.size(), roots.size(),
-                roots.size() - lite.size());
-    }
-
-    /** The frame and the occurrence of one unselected region activation. */
-    private void instrumentLiteRegion(Body body, SootMethod method,
-                                      List<Unit> originalUnits,
-                                      Unit insertionPoint, Unit lowerBound,
-                                      Value receiver, HookCatalog refs,
-                                      String regionId) {
-        List<Unit> entry = new ArrayList<>();
-        Value region = StringConstant.v(regionId);
-        Value signature = StringConstant.v(method.getSignature());
-        refs.bracket(entry, Hook.ENTER_LITE_REGION_FRAME, region, signature,
-                receiver);
-        insertBeforeOrAppendNoRedirect(body, insertionPoint, entry);
-        Unit regionStart = entry.isEmpty() ? insertionPoint : entry.get(0);
-        for (int index = instrumentableFrom(originalUnits, lowerBound);
-                index >= 0 && index < originalUnits.size(); index++) {
-            Unit unit = originalUnits.get(index);
-            if (!(unit instanceof ReturnStmt)
-                    && !(unit instanceof ReturnVoidStmt)) {
-                continue;
-            }
-            List<Unit> exit = new ArrayList<>();
-            refs.bracket(exit, Hook.EXIT_LITE_REGION_FRAME, region,
-                    signature);
-            insertBeforeSequence(body, unit, exit);
-        }
-        addThrowHandler(body, regionStart, refs,
-                Hook.THROW_LITE_REGION_FRAME, "$causynthLiteRegionThrown",
-                region, signature);
     }
 
     /**
@@ -3568,9 +3498,6 @@ public final class CausynthPipeline {
         EXIT_LOOP_ROOT_INVOCATION_FRAME,
         THROW_LOOP_ROOT_INVOCATION_FRAME,
         ENTER_REGION_FRAME,
-        ENTER_LITE_REGION_FRAME,
-        EXIT_LITE_REGION_FRAME,
-        THROW_LITE_REGION_FRAME,
         START_WORK,
         ENTER_CONFIGURED_SOURCE_PHASE_SITE,
         EXIT_CONFIGURED_SOURCE_PHASE_SITE,
@@ -3706,15 +3633,6 @@ public final class CausynthPipeline {
                     .add(Hook.ENTER_REGION_FRAME, runtime, "enterRegionFrame",
                             LongType.v(), string, string, object,
                             ArrayType.v(object, 1))
-                    .add(Hook.ENTER_LITE_REGION_FRAME, runtime,
-                            "enterLiteRegionFrame", VoidType.v(), string,
-                            string, object)
-                    .add(Hook.EXIT_LITE_REGION_FRAME, runtime,
-                            "exitLiteRegionFrame", VoidType.v(), string,
-                            string)
-                    .add(Hook.THROW_LITE_REGION_FRAME, runtime,
-                            "throwLiteRegionFrame", VoidType.v(), string,
-                            string, RefType.v("java.lang.Throwable"))
                     .add(Hook.START_WORK, runtime, "startWork",
                             VoidType.v(), string, object)
                     .add(Hook.ENTER_CONFIGURED_SOURCE_PHASE_SITE, runtime,

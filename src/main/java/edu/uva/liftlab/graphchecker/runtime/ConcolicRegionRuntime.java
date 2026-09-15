@@ -874,45 +874,6 @@ public final class ConcolicRegionRuntime {
         }
     }
 
-    /**
-     * Opens the execution-index region of one skeleton root the campaign did
-     * not select.
-     *
-     * <p>The recording opens a region at EVERY skeleton root
-     * (CausynthTraceRecorder.enterMethod), and an occurrence's execution
-     * index is the frames from its scope root while every endpoint inside
-     * it is indexed from its entry.  A replay that opened regions only at
-     * its own task roots therefore stood on a different frame stack and
-     * named a different occurrence for the same event -- the drift this
-     * branch exists to remove.  So the same rule is woven here, over the
-     * same skeleton file the recording read: frames and the occurrence
-     * address, and no row -- an activation row belongs to the planned
-     * occurrences alone.</p>
-     */
-    public static void enterLiteRegionFrame(String regionId,
-                                            String rootMethod,
-                                            Object receiver) {
-        RowRuntime.claimStart(receiver);
-        RowRuntime.enterFrame(safe(rootMethod));
-        edu.uva.liftlab.graphchecker.runtime.Identity.occurrence(
-                RuntimeTraceContext.activationSource(receiver).key(),
-                safe(regionId), true);
-    }
-
-    /** Closes the region {@link #enterLiteRegionFrame} opened. */
-    public static void exitLiteRegionFrame(String regionId,
-                                           String rootMethod) {
-        RowRuntime.exitRegionIndex();
-        RowRuntime.exitFrame();
-    }
-
-    /** The exceptional edge of {@link #enterLiteRegionFrame}. */
-    public static void throwLiteRegionFrame(String regionId,
-                                            String rootMethod,
-                                            Throwable throwable) {
-        exitLiteRegionFrame(regionId, rootMethod);
-    }
-
     /** Instrumentation-facing root entry. */
     public static long enterRegionFrame(String instrumentationSelector,
                                         String rootMethod,
