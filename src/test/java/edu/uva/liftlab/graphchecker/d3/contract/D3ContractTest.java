@@ -404,6 +404,25 @@ public class D3ContractTest {
                 BLOCK_KEY));
         assertInvariant(7, GapClass.BLOCKING, "field=expressionRef",
                 fabricated);
+        // Contract v2.4: a placeholder read states the version it mints, so
+        // a version no write carries is stated all the same -- and a
+        // placeholder that states none is refused, once the recording
+        // publishes the field at all.
+        Rows mintStated = clean();
+        mintStated.writes.clear();
+        mintStated.mintVersion = 7L;
+        assertTrue("a version the placeholder mint states is stated: "
+                        + names(gate(mintStated)),
+                noViolation(gate(mintStated), 7));
+        Rows unminted = clean();
+        unminted.mintVersion = -1L;
+        assertInvariant(7, GapClass.BLOCKING, "field=mintVersion", unminted);
+        // P2m: the window-start pseudo-occurrence owns a write no activation
+        // can, and nothing else is let through with it.
+        assertFalse(RowInvariants.windowStart(clean().anchor));
+        assertFalse(RowInvariants.windowStart(OccurrenceAddress.of(DN0,
+                REGION, CausalContext.of(PRODUCER_ID, RPC),
+                index(frame(RUN, 0)))));
         // 8: a RootMintRow is published for a declared root, and its reading
         // is spelled the way its kind is read back.
         Rows undeclared = clean();
@@ -429,9 +448,24 @@ public class D3ContractTest {
         assertInvariant(9, GapClass.DIAGNOSTIC, "field=phiTerm", concrete);
     }
 
+    /** No violation of that rule at all, whatever its class. */
+    private static boolean noViolation(List<GapRow> gaps, int rule) {
+        for (GapRow gap : gaps) {
+            if (gap.detail().contains("invariant " + rule)) return false;
+        }
+        return true;
+    }
+
     /** One session's rows, as a recording a table row can bend. */
     private final class Rows {
         private String id = "s-gate";
+        /**
+         * What every placeholder row of this session states as its
+         * {@code mintVersion}, or null to publish the field at all -- the
+         * contract v2.4 field, written straight into the line because the
+         * typed row does not carry it until runtime P2k lands on staging.
+         */
+        private Long mintVersion;
         private OccurrenceAddress anchor;
         private Endpoint readAt;
         private Endpoint writeAt;
@@ -453,6 +487,18 @@ public class D3ContractTest {
             RowCodec.writeAll(dir.decisions(), decisions,
                     RowCodec::writeDecision);
             RowCodec.writeAll(dir.reads(), reads, RowCodec::writeRead);
+            if (mintVersion != null) {
+                List<String> lines = new java.util.ArrayList<>();
+                for (ReadRow row : reads) {
+                    JsonObject line = RowCodec.writeRead(row);
+                    if (row.endpoint().site()
+                            .contains(RowInvariants.PLACEHOLDER)) {
+                        line.addProperty("mintVersion", mintVersion);
+                    }
+                    lines.add(RowCodec.toLine(line));
+                }
+                java.nio.file.Files.write(dir.reads(), lines);
+            }
             RowCodec.writeAll(dir.writes(), writes, RowCodec::writeWrite);
             RowCodec.writeAll(dir.roots(), roots, RowCodec::writeRootMint);
             RowCodec.writeAll(dir.targets(), targets, RowCodec::writeTarget);
