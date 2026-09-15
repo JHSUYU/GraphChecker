@@ -25,5 +25,19 @@ public enum GapKind {
     /** An address degraded because a lineage hop was unattributable. */
     LINEAGE_LOST,
     /** The solver gave no answer in the time it was given. */
-    SOLVER_TIMEOUT
+    SOLVER_TIMEOUT,
+    /** A retained condition loop ran under an inherited K_L, not a declared
+     *  one, so the model it produces is a prefix nobody stated. */
+    BOUNDED_LOOP_BODY_BOUND_UNDECLARED,
+    /** A retained array-indexed loop declared no K_L: its trip count is the
+     *  array length the replay observes, which the replay states exactly. */
+    BOUNDED_LOOP_FIXED_COUNT_BOUND_UNDECLARED,
+    /** One loop nest's control sites do not all classify alike, so the nest
+     *  is published as the weaker CONDITION_BOUNDED and named here. */
+    BOUNDED_LOOP_CLASSIFICATION_INCONSISTENT,
+    /** A declared wire flow no region of the slice holds the capture of. */
+    COMMUNICATION_REQUEST_PORT_UNRESOLVED,
+    /** A port truncated its recorded accesses, so the accesses above the
+     *  retained ones are invisible to every later stage. */
+    BOUND_INSUFFICIENT
 }

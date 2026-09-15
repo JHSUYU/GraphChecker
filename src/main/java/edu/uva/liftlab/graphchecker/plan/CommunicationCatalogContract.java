@@ -21,8 +21,6 @@ public final class CommunicationCatalogContract {
     /** Bump whenever a field is added, removed or re-interpreted. */
     public static final int SCHEMA_VERSION = 4;
 
-    public static final String GAP_ROW_KIND = "COMMUNICATION_GAP";
-
     public static final String SCHEMA_VERSION_FIELD = "schemaVersion";
     public static final String KIND = "kind";
 
@@ -74,14 +72,13 @@ public final class CommunicationCatalogContract {
     // Discovery never guesses: anything it cannot resolve statically becomes
     // one of these gap rows and no call-site or port row.
 
-    public static final String GAP_KIND = "gapKind";
+    /** The row's class, BLOCKING or DIAGNOSTIC, as a GapRow states it. */
+    public static final String GAP_CLASS = "cls";
     public static final String GAP_REASON = "reason";
     public static final String GAP_SITE_ID = SiteId.MEMBER;
     public static final String GAP_METHOD = "method";
     public static final String GAP_DETAIL = "detail";
 
-    public static final String GAP_REQUEST_PORT_UNRESOLVED =
-            "COMMUNICATION_REQUEST_PORT_UNRESOLVED";
     private CommunicationCatalogContract() {
     }
 

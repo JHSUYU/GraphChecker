@@ -1,5 +1,7 @@
 package edu.uva.liftlab.graphchecker.causynth;
 
+import edu.uva.liftlab.graphchecker.contract.GapClass;
+import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.plan.CommunicationCatalogContract;
 import edu.uva.liftlab.graphchecker.plan.DependencyRole;
 
@@ -437,7 +439,8 @@ final class SymbolicRegionPlanner {
         }
         if (regions.isEmpty()) {
             program.communicationGaps.add(CommunicationCatalogPlanner.gap(
-                    CommunicationCatalogContract.GAP_REQUEST_PORT_UNRESOLVED,
+                    GapKind.COMMUNICATION_REQUEST_PORT_UNRESOLVED,
+                    GapClass.BLOCKING,
                     "NO_REGION_HOLDS_WIRE_CAPTURE", method,
                     text(flow.get(CommunicationCatalogContract.CALL_SITE_ID)),
                     portId));

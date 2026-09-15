@@ -2225,7 +2225,7 @@ campaign_decide() {
 campaign_artifact_digests() {
   local name path bytes sha row
   local -a required=(candidate.smt2 candidate_composition_manifest.json
-    gaps.json gap_ledger.json result.json)
+    gaps.json result.json)
   local -a names=()
   local -a rows=()
   for name in "${required[@]}"; do
@@ -2248,28 +2248,6 @@ campaign_artifact_digests() {
     rows+=("${row}")
   done
   printf '%s\n' "${rows[@]}" | jq -c -s .
-}
-
-# Aggregate the already-validated owner reports without copying their contents
-# into exec argv.  Real compositions and topology deltas routinely exceed both
-# Linux's per-argument limit and ARG_MAX, so every JSON input is a file.
-#
-# There is one gap ledger and it lives in GapLedger.java.  This function used
-# to be the second one: it hand-picked two sources -- the Composer's
-# finalStatusRefusals and the solver's own gaps -- as blocking and demoted
-# every other gap the pipeline raised into a telemetryGaps array no claim
-# read.  On hdfs-17960 that demoted all 27 rows of a run that then published
-# gapCount 0, including 15 regions whose causal anchor was never observed.
-# Now every source is folded into one list and each row is classed by the
-# ledger, which defaults an unregistered code to BLOCKING in both readers.
-campaign_write_gap_ledger() {
-  local output=$1
-  run_java_main edu.uva.liftlab.graphchecker.plan.GapLedger \
-    --output "${output}"
-  require_nonempty "gap ledger" "${output}"
-  campaign_require_json "gap ledger" "${output}" \
-    || campaign_fail EMIT GapLedger "${output}" \
-      "the published gap ledger is malformed"
 }
 
 # The static catalog's own gaps, as a JSON array.  A campaign that restored
@@ -2311,15 +2289,15 @@ campaign_json_file() {
 # Every gap this campaign raised, in one document, each row classed by the row
 # itself.
 #
-# A GapRow states its own kind and class (CONTRACT-SPEC SS2): the runtime
-# raises it where it knows what it could not do, and no later stage is in a
-# position to overrule that.  So this is a partition, not a classification --
-# the 190 lines of jq that used to decide a row's class against the replay
-# slice, the composed ports and the flip wave are gone with the questions they
-# asked.  Rows from the static catalog and the runtime plan carry no class of
-# their own; the ledger classes those, and an unregistered code is BLOCKING.
+# A GapRow states its own kind and class (CONTRACT-SPEC SS2): the stage that
+# raised it knows what it could not do, and no later stage is in a position to
+# overrule that.  So this is a partition, not a classification -- the 190
+# lines of jq that used to decide a row's class against the replay slice, the
+# composed ports and the flip wave are gone with the questions they asked, and
+# so is the second registry that classed PLAN rows by code.  A row that states
+# no class is BLOCKING.
 campaign_write_gaps() {
-  local composition=$1 ledger=$2 iteration_dir=$3 output=$4
+  local composition=$1 iteration_dir=$2 output=$3
   local scratch status=0
   scratch=$(mktemp -d "${TMPDIR:-/tmp}/graphchecker-gapargs.XXXXXX") \
     || return 1
@@ -2338,16 +2316,12 @@ campaign_write_gaps() {
   jq -n \
     --argjson provenance "${campaign_provenance}" \
     --slurpfile composedDocuments "${composition}" \
-    --slurpfile ledgerDocuments "${ledger}" \
     --slurpfile staticGapDocuments "${scratch}/static-gaps.json" \
     --slurpfile planGapDocuments "${scratch}/plan-gaps.json" \
     --rawfile sessionGaps "${scratch}/session-gaps.jsonl" '
     ($staticGapDocuments[0] // []) as $staticGaps |
     ($planGapDocuments[0] // []) as $planGaps |
     $composedDocuments[0] as $composed |
-    $ledgerDocuments[0] as $ledger |
-    ($ledger.diagnostic // []) as $diagnosticCodes |
-    ($ledger.reasonByCode // {}) as $reasonByCode |
     # A row that states its own class is taken at its word.
     (($sessionGaps | split("\n") | map(select(length > 0) | fromjson))
       | map({stage: "REPLAY", source: (.sessionId // "RUNTIME"),
@@ -2379,25 +2353,24 @@ campaign_write_gaps() {
                            end)}))
       as $composerGapRows |
     ($refusalRows + $composerGapRows) as $composeRows |
-    # Rows with no class of their own: the ledger decides, blocking by default.
+    # The static catalog and the runtime plan state kind and class on their
+    # own rows, like every other producer; a row that states none is blocking.
     (($staticGaps + $planGaps)
       | map({stage: "PLAN", source: (.source // "CATALOG"),
-             code: (.code // .kind // ""),
+             code: (.kind // ""),
              subject: (.subject // .siteId // ""), detail: (.detail // ""),
-             class: (if ((.code // .kind // "") | IN($diagnosticCodes[]))
-                     then "DIAGNOSTIC" else "BLOCKING" end)}
-            | . + {classReason: ($reasonByCode[.code]
-                                 // "no ledger entry: blocking by default")}))
+             class: (if (.cls // "BLOCKING") == "DIAGNOSTIC"
+                     then "DIAGNOSTIC" else "BLOCKING" end),
+             classReason: (if (.cls // "") == "DIAGNOSTIC"
+                           then "the row states its own class"
+                           else "no stated class: blocking by default"
+                           end)}))
       as $declaredRows |
     (($sessionRows + $composeRows + $declaredRows)
       | unique_by([.stage, .source, .code, .subject, .detail])) as $rows |
     {schemaVersion: 2,
      kind: "CAMPAIGN_COVERAGE_GAPS",
      provenance: $provenance,
-     gapLedger: {kind: ($ledger.kind // ""),
-                 schemaVersion: ($ledger.schemaVersion // 0),
-                 defaultClass: ($ledger.defaultClass // "BLOCKING"),
-                 diagnosticCodes: $diagnosticCodes},
      gaps: [$rows[] | select(.class == "BLOCKING")],
      telemetryGaps: [$rows[] | select(.class == "DIAGNOSTIC")]}
     | .gapCount = (.gaps | length)
@@ -2442,16 +2415,11 @@ campaign_emit() {
   require_nonempty "replay session census" \
     "${iteration_dir}/session_census.jsonl"
 
-  # One ledger classes every gap this campaign raised, wherever it was
-  # raised.  A code the ledger does not register is blocking, so a gap added
-  # to some stage withholds the claim until somebody states why it cannot
-  # break a chain.  The ledger is published beside the gaps it classed, so a
-  # reader of the final directory can check the classification without the
-  # jar.
-  campaign_write_gap_ledger "${campaign_final}/gap_ledger.json"
+  # Every gap row states its own kind and class, wherever it was raised, and
+  # a row that states no class is blocking: a gap added to some stage
+  # withholds the claim until its producer states why it cannot break a chain.
   campaign_write_gaps \
     "${composition_manifest}" \
-    "${campaign_final}/gap_ledger.json" \
     "${iteration_dir}" \
     "${campaign_final}/gaps.json"
   require_nonempty "campaign gaps" "${campaign_final}/gaps.json"
@@ -2509,12 +2477,11 @@ campaign_emit() {
      gapCount: $gapCount,
      telemetryCount: $telemetryCount,
      # The claim is what ClaimPolicy decided; acceptance is that claim
-     # together with the gap ledger, because the stages the policy cannot
-     # see -- IMPORT, EXPLORE, CLASSIFY and the static plan -- raise their
-     # own blocking gaps and the ledger classes all of them from one
-     # table. This is the
-     # conjunction the exit code below already tests, published so a reader
-     # of result.json alone does not have to infer it from two numbers.
+     # together with the named gaps, because the stages the policy cannot
+     # see -- IMPORT, EXPLORE and the static plan -- raise their own blocking
+     # gaps.  This is the conjunction the exit code below already tests,
+     # published so a reader of result.json alone does not have to infer it
+     # from two numbers.
      accepted: (($decided.claim == "SAT_CANDIDATE"
                  or $decided.claim == "UNSAT_CLOSED")
                 and $gapCount == 0),
@@ -2633,9 +2600,9 @@ campaign_emit() {
       exit 2
       ;;
   esac
-  # Every blocking gap in the ledger is a hard failure, whichever stage
-  # raised it.  The telemetry array holds only the codes the ledger names as
-  # unable to change a chain, and each of those carries its reason there.
+  # Every blocking gap is a hard failure, whichever stage raised it.  The
+  # telemetry array holds only the rows their own producer classed as unable
+  # to change a chain, and each of those carries its reason there.
   [[ "${gapCount}" -eq 0 ]] || {
     jq -r '"[campaign] candidate withheld: claim=\(.claim), but the run named "
       + (.gapCount | tostring) + " BLOCKING gap(s); "

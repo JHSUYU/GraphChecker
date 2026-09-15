@@ -245,14 +245,14 @@ jq -e '.findingKind == "MARKER_FLIPPED" and .polarityDecides == true
   || fail "result.json does not carry the mechanism the claim rests on"
 
 # GAP-1: a gap raised by a stage the claim cannot see still withholds the
-# candidate, because one ledger classes every code and an unregistered code
+# candidate, because the row states its own class and a row that states none
 # is blocking.  BOUND_INSUFFICIENT is the finalizer truncation that used to
 # build a refusal string and throw it away.
 emit_fixture
 jq -n -c '{schemaVersion: 2, kind: "CONCOLIC_RUNTIME_MODEL_CATALOG",
   edges: [], regions: [],
-  gaps: [{schemaVersion: 1, kind: "RUNTIME_PLAN_GAP",
-          code: "BOUND_INSUFFICIENT", subject: "port\nsite",
+  gaps: [{schemaVersion: 1, kind: "BOUND_INSUFFICIENT", cls: "BLOCKING",
+          subject: "port\nsite",
           detail: "static site demands more accesses than are retained"}]}' \
   >"${runtime_region_plan}"
 run_emit
@@ -269,6 +269,30 @@ $(jq -c '.gaps' "${campaign_final}/gaps.json")"
 jq -e '.accepted == false and .gapCount == 1' \
   "${campaign_final}/result.json" >/dev/null \
   || fail "result.json did not state that acceptance was withheld"
+# And a static-catalog row that states DIAGNOSTIC is telemetry, not a
+# blocker: the loop catalog knows an inherited K_L is a prefix nobody stated,
+# and it is the producer that says so.  This used to be decided by a second
+# registry keyed on a code the shell read out of the wrong member, which
+# classed all 74 of hdfs-17960's catalog rows BLOCKING by accident.
+emit_fixture
+printf '%s\n' \
+  '{"schemaVersion":4,"kind":"BOUNDED_LOOP_BODY_BOUND_UNDECLARED","cls":"DIAGNOSTIC","reason":"INHERITED_K_L_8","method":"<C: void m()>","siteId":"<C: void m()>#u3","detail":"[<C: void m()>#u3]"}' \
+  | gzip -c >"${causynth_output_dir}/communication_gaps.jsonl.gz"
+run_emit
+[[ "${emit_status}" -eq 0 ]] \
+  || fail "a diagnostic catalog row withheld the candidate \
+(exit ${emit_status}): $(<"${emit_root}/emit.log")"
+jq -e '.gapCount == 0
+  and ([.telemetryGaps[] | select(.stage == "PLAN")]
+       == [{stage: "PLAN", source: "CATALOG",
+            code: "BOUNDED_LOOP_BODY_BOUND_UNDECLARED",
+            subject: "<C: void m()>#u3", detail: "[<C: void m()>#u3]",
+            class: "DIAGNOSTIC",
+            classReason: "the row states its own class"}])' \
+  "${campaign_final}/gaps.json" >/dev/null \
+  || fail "the diagnostic catalog row was not published as telemetry: \
+$(jq -c '[(.gaps+.telemetryGaps)[]|{stage,code,class}]' \
+    "${campaign_final}/gaps.json")"
 # EMIT-2: and a WITHHELD epoch publishes too.  campaign_emit leaves this shell
 # with exit 3 on a blocking gap, so the epoch loop's own publish call never
 # ran: lane17897h composed, solved and decided, then published nothing at
@@ -377,14 +401,6 @@ jq -e '[(.gaps + .telemetryGaps)[] | select((.classReason // "") == "")]
        | length == 0' \
   "${campaign_final}/gaps.json" >/dev/null \
   || fail "a gap row carries no classification reason"
-
-# GAP-2: the ledger is published beside the gaps it classed, and it names its
-# own exceptions rather than leaving a reader to guess the default.
-jq -e '.kind == "GAP_LEDGER" and .defaultClass == "BLOCKING"
-  and (.diagnostic | index("SELECTED_PATH_SET_INCOMPLETE")) != null
-  and (.entries | length) > 40' \
-  "${campaign_final}/gap_ledger.json" >/dev/null \
-  || fail "EMIT published no usable gap ledger"
 
 # An undecided root space is no longer a witness. The claim ClaimPolicy
 # decided is published with every named blocker and one readable summary, and

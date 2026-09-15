@@ -89,10 +89,6 @@ public final class LoopBoundPolicy {
 
     public static final String LOOP_SITE_UNDECLARED =
             "BOUNDED_LOOP_SITE_UNDECLARED";
-    /** One nest's control sites do not all classify alike, so the nest has no
-     *  single kind: published as the weaker CONDITION_BOUNDED, and named. */
-    public static final String GAP_LOOP_CLASSIFICATION_INCONSISTENT =
-            "BOUNDED_LOOP_CLASSIFICATION_INCONSISTENT";
     /** The executor's backedge ceiling for a loop no declaration narrows: a
      *  resource limit, never a modeled {@code K_L}.  README {@code LOOP-1}
      *  forbids a retained condition loop inheriting a core default. */

@@ -1,9 +1,9 @@
 package edu.uva.liftlab.graphchecker.causynth;
 
-import edu.uva.liftlab.graphchecker.plan.GapLedger;
-
 import edu.uva.liftlab.graphchecker.plan.AutomaticRegionEdge;
 import edu.uva.liftlab.graphchecker.plan.SharedFieldFlow;
+import edu.uva.liftlab.graphchecker.contract.GapClass;
+import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.plan.CommunicationCatalogContract;
 import edu.uva.liftlab.graphchecker.plan.DependencyRole;
@@ -56,17 +56,6 @@ public final class RuntimeSelectedRegionFinalizer {
      */
     public static final String DEMAND_SCOPE = "demandScopeMethods";
 
-    /** Row kind of a gap this finalizer raised about its own ports. */
-    public static final String PLAN_GAP_KIND = "RUNTIME_PLAN_GAP";
-    /**
-     * One static site demanded more activation-local accesses than
-     * {@link #MAX_RETAINED_SITE_ACCESSES}, so the port below it keeps only
-     * the plain resource default.  The refusal string for this has been
-     * computed since the bound existed; until now it was computed and
-     * discarded, which is the failure design point 5 forbids -- a javadoc
-     * asserting a reporting path that did not exist.
-     */
-    public static final String BOUND_INSUFFICIENT = "BOUND_INSUFFICIENT";
     /**
      * Existing planner admission vocabulary for a bounded state writer.  Why
      * this activation is in the plan at all, when it is there for anything
@@ -3505,26 +3494,26 @@ public final class RuntimeSelectedRegionFinalizer {
      * one hot site.
      */
     /**
-     * Records one finalizer gap, once per (code, subject).
+     * Records one finalizer gap, once per (kind, subject), stating its own
+     * class exactly like a {@link
+     * edu.uva.liftlab.graphchecker.contract.GapRow}.
      *
      * <p>{@code gaps} may be null where a caller builds ports outside a
-     * finalize pass; the two truncations below both run inside one, so in
-     * practice every raised gap reaches
-     * {@link edu.uva.liftlab.graphchecker.plan.GapLedger}.</p>
+     * finalize pass; the truncation below runs inside one.</p>
      */
-    private static void planGap(List<Map<String, Object>> gaps, String code,
-                                String subject, String detail) {
+    private static void planGap(List<Map<String, Object>> gaps, GapKind kind,
+                                GapClass cls, String subject, String detail) {
         if (gaps == null) return;
         for (Map<String, Object> existing : gaps) {
-            if (code.equals(text(existing.get("code")))
+            if (kind.name().equals(text(existing.get("kind")))
                     && subject.equals(text(existing.get("subject")))) {
                 return;
             }
         }
         Map<String, Object> row = new LinkedHashMap<>();
         row.put("schemaVersion", 1);
-        row.put("kind", PLAN_GAP_KIND);
-        row.put("code", code);
+        row.put("kind", kind.name());
+        row.put("cls", cls.name());
         row.put("subject", subject);
         row.put("detail", detail);
         gaps.add(row);
@@ -3564,7 +3553,8 @@ public final class RuntimeSelectedRegionFinalizer {
                             + LoopBoundPolicy.MAX_LOOP_BODY_ITERATIONS
                             + "-access resource default and the accesses"
                             + " above it are invisible to every later stage";
-                    planGap(gaps, BOUND_INSUFFICIENT,
+                    planGap(gaps, GapKind.BOUND_INSUFFICIENT,
+                            GapClass.BLOCKING,
                             text(port.get("portId")) + "\n" + site, refusal);
                 }
                 continue;
@@ -4224,8 +4214,7 @@ public final class RuntimeSelectedRegionFinalizer {
          * {@link #demandPruned} these are not telemetry: every one of them
          * says a recorded access or a recorded container observation was
          * dropped, which no later stage can see, so they travel into the
-         * runtime plan artifact and are classed by
-         * {@link edu.uva.liftlab.graphchecker.plan.GapLedger}.
+         * runtime plan artifact stating their own kind and class.
          */
         public final List<Map<String, Object>> gaps;
         private Result(List<Map<String, Object>> regions,
