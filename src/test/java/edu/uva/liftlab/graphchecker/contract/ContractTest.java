@@ -76,7 +76,7 @@ public class ContractTest {
         // A daemon tick has no incoming message, only its role and the k-th
         // tick of that role inside the window.
         OccurrenceAddress tick = OccurrenceAddress.of(NN0, "REGION.a1b2",
-                CausalContext.of(Role.KEY_MANAGER_TICK, 3),
+                CausalContext.of(Role.of("KEY_MANAGER_TICK"), 3),
                 index(frame("o.a.h.h.s.b.KeyManager#run#9", 0)));
         assertEquals(NN0.render() + "/region/REGION.a1b2"
                         + "/ctx:Root:KEY_MANAGER_TICK#3"
@@ -500,7 +500,7 @@ public class ContractTest {
     private Rows clean() {
         Rows rows = new Rows();
         rows.anchor = OccurrenceAddress.of(DN0, REGION,
-                CausalContext.of(Role.DATA_XCEIVER, 1),
+                CausalContext.of(Role.of("DATA_XCEIVER"), 1),
                 index(frame(RUN, 0)));
         ExecutionIndex site = index(frame(COMPUTE, 0));
         rows.readAt = Endpoint.of(rows.anchor, Endpoint.stateSite(
@@ -610,7 +610,7 @@ public class ContractTest {
     /** The w-th key-manager tick of the name node. */
     private static OccurrenceAddress tick(int windowIndex) {
         return OccurrenceAddress.of(NN0, "REGION.a1b2",
-                CausalContext.of(Role.KEY_MANAGER_TICK, windowIndex),
+                CausalContext.of(Role.of("KEY_MANAGER_TICK"), windowIndex),
                 index(frame("o.a.h.h.s.b.KeyManager#run#9", 0)));
     }
 

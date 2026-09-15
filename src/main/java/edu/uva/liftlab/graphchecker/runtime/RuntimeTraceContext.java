@@ -360,7 +360,7 @@ final class RuntimeTraceContext {
         String api = MapFields.safe(apiName).isEmpty()
                 ? scope.requestApi : MapFields.safe(apiName);
         frame.lineageToken = Lineage.restore(scope.lineage,
-                scope.source.key(), Lineage.roleOf(roleName), api);
+                scope.source.key(), Role.of(roleName), api);
         edu.uva.liftlab.graphchecker.runtime.Identity.scopeStart();
         publishCausalSource(state);
         return token;
@@ -390,7 +390,7 @@ final class RuntimeTraceContext {
         if (source == null) source = state.view().source;
         edu.uva.liftlab.graphchecker.runtime.Identity.scopeStart();
         return Lineage.push(source == null ? "" : source.key(),
-                Lineage.roleOf(roleName), "");
+                Role.of(roleName), "");
     }
 
     /** Closes the tick {@link #beginTick} opened. */
@@ -520,9 +520,15 @@ final class RuntimeTraceContext {
         // The api is the remote family rather than the bare api because two
         // callers of one api are two populations -- the v1 family suffix,
         // stated as the hop it always was.
+        // The role a served message opens its scope under is the transport
+        // the WORKLOAD named at the exchange -- one string, carried.  A
+        // table here mapped IPC/RPC to one Hadoop role and
+        // SASL/DATA_TRANSFER/XCEIVER to another, which is a deployment's
+        // vocabulary in engine code and a guess for every transport it did
+        // not list.
         scope.lineageToken = Lineage.push(
                 state.source == null ? "" : state.source.key(),
-                servedRole(state.exchangeTransport),
+                Role.of(state.exchangeTransport),
                 inboundFamily(remote.requestKey, remote.requestApi));
         edu.uva.liftlab.graphchecker.runtime.Identity.scopeStart();
         // The message that opened this scope names its producer; that
@@ -537,25 +543,6 @@ final class RuntimeTraceContext {
                         + MapFields.safe(remote.requestApi));
         publishCausalSource(state);
         return token;
-    }
-
-    /**
-     * The scope kind a transport's receiver serves under.
-     *
-     * <p>Derived from the transport the workload named, never from the
-     * thread name: a role is a scope KIND (IDENTITY-V2 §0) and the thread
-     * that happens to run it is a circumstance.</p>
-     */
-    private static Role servedRole(String transport) {
-        String kind = normalizedUpper(transport);
-        if (kind.contains("IPC") || kind.contains("RPC")) {
-            return Role.IPC_HANDLER;
-        }
-        if (kind.contains("SASL") || kind.contains("DATA_TRANSFER")
-                || kind.contains("XCEIVER")) {
-            return Role.DATA_XCEIVER;
-        }
-        return kind.isEmpty() ? Role.UNKNOWN : Role.REQUEST;
     }
 
     /**

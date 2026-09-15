@@ -158,7 +158,7 @@ public class RowRuntimeTest {
                     "HEARTBEAT_TICK");
             addresses.add(address("hdfs-17899/nn0#epoch0",
                     "REGION.aaa1cfd7",
-                    CausalContext.of(Role.HEARTBEAT_TICK,
+                    CausalContext.of(Role.of("HEARTBEAT_TICK"),
                             Lineage.rootWindowIndex()),
                     ExecutionIndex.empty()));
             CausynthTraceRecorder.endDaemonTick(token);
@@ -173,7 +173,7 @@ public class RowRuntimeTest {
 
         // An unattributable scope degrades rather than disappearing.
         OccurrenceAddress lost = Identity.roleOccurrence(
-                "hdfs-17899/nn0#epoch0", Role.KEY_MANAGER_TICK);
+                "hdfs-17899/nn0#epoch0", Role.of("KEY_MANAGER_TICK"));
         assertTrue(lost.lineageLost());
         assertEquals("ROLE.KEY_MANAGER_TICK", lost.regionId());
         // A node this run cannot name addresses nothing: a guessed node is
@@ -192,7 +192,7 @@ public class RowRuntimeTest {
         RowRuntime.configure(sessionFile());
         OccurrenceAddress producer = address(
                 "hdfs-17899/nn0#epoch0", "REGION.2392e4b7",
-                CausalContext.of(Role.HEARTBEAT_TICK, 3),
+                CausalContext.of(Role.of("HEARTBEAT_TICK"), 3),
                 ExecutionIndex.parse("PBHelper.convert()#u2@0"));
         Endpoint exported = RowRuntime.exported(producer, 61L,
                 "XCH.resp.block-key-id", 4242L, "hadoop-ipc-7", 0, null, "J",
@@ -865,12 +865,12 @@ public class RowRuntimeTest {
 
         // The three causal contexts, and the one that is not an ordinal.
         assertEquals("Root:HEARTBEAT_TICK#4", Identity.context("", "",
-                Role.HEARTBEAT_TICK, 4).render());
+                Role.of("HEARTBEAT_TICK"), 4).render());
         assertEquals("Anchor:abc123@HADOOP_IPC#heartbeat",
                 Identity.context("abc123", "HADOOP_IPC#heartbeat",
-                        Role.IPC_HANDLER, 2).render());
+                        Role.of("IPC_HANDLER"), 2).render());
         assertEquals("Lost:DATA_XCEIVER",
-                Identity.context("", "", Role.DATA_XCEIVER, 0).render());
+                Identity.context("", "", Role.of("DATA_XCEIVER"), 0).render());
     }
 
     /**

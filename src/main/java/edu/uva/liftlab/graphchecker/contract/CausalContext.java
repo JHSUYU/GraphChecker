@@ -67,14 +67,14 @@ public abstract class CausalContext {
                 throw malformed(rendered);
             }
             try {
-                return of(role(body.substring(0, marker), rendered),
+                return of(Role.of(body.substring(0, marker)),
                         Integer.parseInt(body.substring(marker + 1)));
             } catch (NumberFormatException notAnOrdinal) {
                 throw malformed(rendered);
             }
         }
         if (value.startsWith(LOST_PREFIX)) {
-            return of(role(value.substring(LOST_PREFIX.length()), rendered));
+            return of(Role.of(value.substring(LOST_PREFIX.length())));
         }
         throw malformed(rendered);
     }
@@ -92,13 +92,6 @@ public abstract class CausalContext {
     @Override
     public final String toString() {
         return render();
-    }
-
-    private static Role role(String name, String rendered) {
-        for (Role role : Role.values()) {
-            if (role.name().equals(name)) return role;
-        }
-        throw malformed(rendered);
     }
 
     private static IllegalArgumentException malformed(String rendered) {
@@ -185,7 +178,8 @@ public abstract class CausalContext {
             if (this == value) return true;
             if (!(value instanceof Root)) return false;
             Root other = (Root) value;
-            return windowIndex == other.windowIndex && role == other.role;
+            return windowIndex == other.windowIndex
+                    && role.equals(other.role);
         }
 
         @Override
@@ -220,7 +214,7 @@ public abstract class CausalContext {
         public boolean equals(Object value) {
             if (this == value) return true;
             if (!(value instanceof Lost)) return false;
-            return role == ((Lost) value).role;
+            return role.equals(((Lost) value).role);
         }
 
         @Override

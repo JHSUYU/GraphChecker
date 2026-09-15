@@ -76,11 +76,11 @@ public class ExploreTest {
             "hdfs-case/dn0#epoch0/region/REGION.target#1";
     /** The NameNode's key rotation: a daemon tick, nobody's request. */
     private static final OccurrenceAddress PRODUCER = occurrence("hdfs-case/nn0",
-            "REGION.rotate", CausalContext.of(Role.KEY_MANAGER_TICK, 1),
+            "REGION.rotate", CausalContext.of(Role.of("KEY_MANAGER_TICK"), 1),
             "o.a.h.h.s.b.BlockManager#run#8");
     /** The data node's fatal read: its own DataXceiver op. */
     private static final OccurrenceAddress TARGET = occurrence("hdfs-case/dn0",
-            "REGION.target", CausalContext.of(Role.DATA_XCEIVER, 1),
+            "REGION.target", CausalContext.of(Role.of("DATA_XCEIVER"), 1),
             "o.a.h.h.s.d.DataXceiver#run#12");
     /** addKeys on the same node: started by the rotation's own delivery. */
     private static final OccurrenceAddress WRITER = occurrence("hdfs-case/dn0",
@@ -692,7 +692,7 @@ public class ExploreTest {
         // The epoch has to be re-cut with it instrumented (SS8 case 2).
         Path unseen = tree.newFolder("closure-unretained").toPath();
         OccurrenceAddress lightweight = occurrence("hdfs-case/dn0",
-                "REGION.notretained", CausalContext.of(Role.DATA_XCEIVER, 2),
+                "REGION.notretained", CausalContext.of(Role.of("DATA_XCEIVER"), 2),
                 "o.a.h.h.s.d.DataXceiver#run#44");
         Session partial = new Session(unseen, "s-seed");
         partial.activation(target, false);
@@ -720,7 +720,7 @@ public class ExploreTest {
         // epoch to cut.  What it states is the lineage.
         Path roleOnly = tree.newFolder("closure-role").toPath();
         OccurrenceAddress lost = occurrence("hdfs-case/dn0",
-                "ROLE.IPC_HANDLER", CausalContext.of(Role.IPC_HANDLER),
+                "ROLE.IPC_HANDLER", CausalContext.of(Role.of("IPC_HANDLER")),
                 "o.a.h.ipc.Server$Handler#run#1");
         Session degraded = new Session(roleOnly, "s-seed");
         degraded.activation(target, false);
@@ -781,7 +781,7 @@ public class ExploreTest {
         // "seedSessionId is required"; the closure now refuses it by name.
         Path unrun = tree.newFolder("closure-unrun").toPath();
         OccurrenceAddress ghost = occurrence("hdfs-case/dn0",
-                "REGION.unrun", CausalContext.of(Role.DATA_XCEIVER, 7),
+                "REGION.unrun", CausalContext.of(Role.of("DATA_XCEIVER"), 7),
                 "o.a.h.h.s.d.DataXceiver#run#88");
         Session partialRun = new Session(unrun, "s-seed");
         partialRun.activation(target, false);
@@ -1307,7 +1307,7 @@ public class ExploreTest {
      */
     private static String exportedId() {
         return at(occurrence("hdfs-case/nn0", "REGION.rotate",
-                        CausalContext.of(Role.KEY_MANAGER_TICK, 1),
+                        CausalContext.of(Role.of("KEY_MANAGER_TICK"), 1),
                         "o.a.h.h.s.b.BlockManager#run#8"),
                 "XCH.resp.block-key-id", "PBHelper#convert#9").id();
     }

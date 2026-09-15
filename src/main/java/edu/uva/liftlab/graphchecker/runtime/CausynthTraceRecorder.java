@@ -753,8 +753,9 @@ public final class CausynthTraceRecorder {
      * reaches.</p>
      *
      * @param carriedScope the value {@link #captureScope()} returned
-     * @param roleName     the scope kind serving it, e.g. {@code
-     *                     IPC_HANDLER}
+     * @param roleName     what the workload calls the scope kind serving
+     *                     it; that name IS the role
+     *                     ({@code contract.Role})
      * @param apiName      the api being served, or {@code null}
      * @return the token to hand {@link #exitCarriedScope(long)}, or 0
      */
@@ -780,9 +781,9 @@ public final class CausynthTraceRecorder {
      *
      * @param owner    an object whose registered source names the node, or
      *                 {@code null} to take the thread's own
-     * @param roleName {@code HEARTBEAT_TICK}, {@code BP_SERVICE_ACTOR},
-     *                 {@code KEY_MANAGER_TICK}, {@code SPS}, {@code
-     *                 BALANCER}
+     * @param roleName what the workload calls this timer's scope kind;
+     *                 that name IS the role ({@code contract.Role}), and
+     *                 the engine holds no catalog of them
      * @return the token to hand {@link #endDaemonTick(long)}
      */
     public static long beginDaemonTick(Object owner, String roleName) {

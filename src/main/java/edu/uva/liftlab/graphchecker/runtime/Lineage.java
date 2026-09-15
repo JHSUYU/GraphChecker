@@ -291,22 +291,6 @@ public final class Lineage {
         return raced == null ? fresh : raced;
     }
 
-    /**
-     * The role this name spells, or {@link Role#UNKNOWN}.
-     *
-     * <p>Here rather than on the contract enum because the name comes from
-     * a workload string -- a transport, a daemon's declared role -- and an
-     * unknown one is a scope kind this build does not model, not a
-     * malformed contract value.</p>
-     */
-    public static Role roleOf(String name) {
-        String value = Text.safe(name).toUpperCase(java.util.Locale.ROOT);
-        for (Role role : Role.values()) {
-            if (role.name().equals(value)) return role;
-        }
-        return Role.UNKNOWN;
-    }
-
     /** Test hook: one window, one thread, nothing carried over. */
     public static void resetForTests() {
         COUNTERS.clear();
