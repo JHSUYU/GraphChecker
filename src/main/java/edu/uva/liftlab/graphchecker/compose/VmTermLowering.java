@@ -240,10 +240,10 @@ public final class VmTermLowering {
         JsonElement sourceExpression = expression.get("_exp");
         Term source = policy.lower(sourceExpression, null,
                 origin + ":castSource");
-        String sourceType = JavaPrimitiveSmtSemantics.primitiveDescriptor(
+        String sourceType = JavaPrimitiveSmtSemantics.javaTypeDescriptor(
                 firstNonBlank(optionalString(expression, "sourceJavaType"),
                         expressionJavaType(sourceExpression)));
-        String targetType = JavaPrimitiveSmtSemantics.primitiveDescriptor(
+        String targetType = JavaPrimitiveSmtSemantics.javaTypeDescriptor(
                 firstNonBlank(optionalString(expression, "targetJavaType"),
                         optionalString(expression, "_java_type")));
         Sort sourceSort = policy.castSort(sourceType);
