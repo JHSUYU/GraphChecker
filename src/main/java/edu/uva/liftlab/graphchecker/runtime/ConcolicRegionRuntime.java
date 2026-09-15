@@ -92,11 +92,6 @@ public final class ConcolicRegionRuntime {
             "MANUAL_SYMBOLIC_INPUT_OBSERVATION";
     private static final String MANUAL_INPUT_OBSERVATION_AUTHORITY =
             "EXACT_PLANNED_SYMBOLIZATION_ACTION_V1";
-    static final Pattern DEFAULT_EXECUTOR_THREAD_NAME =
-            Pattern.compile("^pool-[0-9]+-thread-([0-9]+)$");
-    static final Pattern DEFAULT_OBJECT_IDENTITY_THREAD_NAME =
-            Pattern.compile("^([A-Za-z_$][A-Za-z0-9_$.]*?)@"
-                    + "[0-9a-fA-F]+$");
     static final String ROOT_ARGUMENT_PREDICATE_KIND =
             "EXACT_RUNTIME_TYPE";
     static final Gson GSON = new GsonBuilder().disableHtmlEscaping().create();
