@@ -199,6 +199,26 @@ SharedFieldVersions::Location state_location(oop container);
 // The caller must already have installed `new_state` as the container's
 // current state: a version is published for a mutation that happened, and the
 // pairing is one-to-one.
+/**
+ * Whether one modelled call is a container mutation this thread is taking
+ * BECAUSE of a symbolic decision.
+ *
+ * A container becomes a symbolic state variable at its first symbolic-or-
+ * guarded write.  Until now only a symbolic *value* admitted the model, so a
+ * concrete mutation of a concrete container was invisible even when the
+ * program only performed it on one arm of a symbolic branch -- HDFS-11741's
+ * removeExpiredKeys(), whose removals are concrete and whose decision
+ * (`expiryDate < now`) is a declared CLOCK root.  What the container holds
+ * afterwards is a function of that predicate, so the mutation is evidence and
+ * the log starts here.
+ *
+ * Only a mutation: a read under a guard tells a reader nothing it did not
+ * already have, and the rule is about writes.  The names are the mutators the
+ * three container models publish state for -- put/remove/clear (associative),
+ * add/offer/set/remove/clear (indexed), add/remove/clear (set).
+ */
+bool guarded_mutation(const std::string &callee);
+
 jlong publish_state(oop container, Expression *new_state,
                     const char *operation);
 
