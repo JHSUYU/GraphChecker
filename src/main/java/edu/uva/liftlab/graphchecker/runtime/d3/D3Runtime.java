@@ -629,7 +629,25 @@ public final class D3Runtime {
      * before the one it runs inside.</p>
      */
     public static boolean claimRead(String identity) {
-        return CLAIMED_READS.put(Text.safe(identity), Boolean.TRUE) == null;
+        return claimEvent("read", identity);
+    }
+
+    /**
+     * The same rule for every row kind: one event, one occurrence.
+     *
+     * <p>The VM's branch, write and read logs are read out per activation
+     * over overlapping event ranges, so one event is reachable from every
+     * activation it ran inside -- on hdfs-17960 each of the 53 write events
+     * was published by up to 42 occurrences.  A row per reachable
+     * activation states one event many times and, worse, attributes it to
+     * occurrences that did not perform it, which is exactly the identity a
+     * STATE family is keyed on (INTERACTION-ID R-I7.1).  The first
+     * publisher wins and that is the innermost, since an activation
+     * finishes before the one it runs inside.</p>
+     */
+    public static boolean claimEvent(String kind, String identity) {
+        return CLAIMED_READS.put(Text.safe(kind) + "\n"
+                + Text.safe(identity), Boolean.TRUE) == null;
     }
 
     /** Submissions already made at one point, by base endpoint id. */

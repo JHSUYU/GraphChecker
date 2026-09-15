@@ -228,16 +228,15 @@ public class D3RuntimeTest {
         // A declared region input is a READ of the location it stands for,
         // spelled the way the write log spells it, so the placeholder joins
         // the write above rather than naming a second location nobody wrote.
-        placeholder(occurrence, placeholderRow(vmRead(125L)), "M_I_placeholder",
-                Collections.<String, String[]>emptyMap());
-        placeholder(occurrence, placeholderRow(null), "M_I_unversioned",
-                Collections.<String, String[]>emptyMap());
-        // And the write log's own answer wins over the retained read: a
-        // mint installs its symbol AS a version of a location, so that is
-        // the location and the version the row states.
-        placeholder(occurrence, placeholderRow(null), "M_I_installed",
+        placeholder(occurrence, placeholderRow("a", vmRead(125L)), "M_I_placeholder",
+                Collections.<String, String>emptyMap());
+        placeholder(occurrence, placeholderRow("b", null), "M_I_unversioned",
+                Collections.<String, String>emptyMap());
+        // The mint's own shadow store is not a write, so the row states the
+        // location the VM minted at and NO version -- the value it read.
+        placeholder(occurrence, placeholderRow("c", null), "M_I_installed",
                 Collections.singletonMap("M_I_installed",
-                        new String[]{"INSTANCE_FIELD/22#24", "125"}));
+                        "INSTANCE_FIELD/22#24"));
         D3Runtime.closeSession();
 
         SessionDir dir = session();
@@ -276,9 +275,11 @@ public class D3RuntimeTest {
         assertEquals(LocationId.of(LocationKind.INSTANCE,
                         "java.util.concurrent.atomic.AtomicInteger", "value"),
                 reads.get(2).location());
-        assertEquals("the version the mint installed the symbol as",
-                writes.get(0).version(), reads.get(3).observedVersion());
+        // The mint is not a write: the row names the VM's location and
+        // pins the decimal it read rather than claiming a version.
         assertEquals(writes.get(0).location(), reads.get(3).location());
+        assertEquals(ReadRow.UNKNOWN_VERSION, reads.get(3).observedVersion());
+        assertEquals("2", reads.get(3).concreteValue());
         List<RootMintRow> roots = RowCodec.readAll(dir.roots(),
                 RowCodec::readRootMint);
         assertEquals(RootKind.INTEGRAL, roots.get(0).kind());
@@ -289,7 +290,7 @@ public class D3RuntimeTest {
         // a declared boolean root is a MARKER and not an INTEGRAL with a
         // range of two.
         assertEquals(RootKind.MARKER, kindOf(booleanConfiguredSourceRow()));
-        assertEquals(RootKind.INTEGRAL, kindOf(placeholderRow(null)));
+        assertEquals(RootKind.INTEGRAL, kindOf(placeholderRow("d", null)));
         List<TargetRow> targets = RowCodec.readAll(dir.targets(),
                 RowCodec::readTarget);
         assertTrue(targets.get(0).observedFatal());
@@ -302,9 +303,11 @@ public class D3RuntimeTest {
     }
 
     /** One manual mint row, as {@code recordManualSymbolization} writes it. */
-    private static JsonObject placeholderRow(JsonObject read) {
+    private static JsonObject placeholderRow(String port, JsonObject read) {
         JsonObject row = new JsonObject();
-        row.addProperty("portId", "REGION.f0132fca.in.6dbe2027");
+        row.addProperty("portId", "REGION.f0132fca.in." + port);
+        row.addProperty("occurrenceId", "hdfs-17960/nn0#epoch1/region/"
+                + "REGION.f0132fca#1");
         row.addProperty("rawSymbol", read == null
                 ? "M_I_unversioned" : "M_I_placeholder");
         row.addProperty("javaType", "int");
@@ -347,7 +350,7 @@ public class D3RuntimeTest {
 
     private static void placeholder(OccurrenceAddress occurrence,
                                     JsonObject row, String symbol,
-                                    java.util.Map<String, String[]> installed)
+                                    java.util.Map<String, String> installed)
             throws Exception {
         java.lang.reflect.Method publish = D3RowPublication.class
                 .getDeclaredMethod("placeholder", OccurrenceAddress.class,
