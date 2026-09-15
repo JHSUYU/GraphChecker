@@ -3447,14 +3447,14 @@ public final class ConcolicRegionRuntime {
         try {
             api.pausePathCondition();
             paused = true;
-            RecordedBranch recorded = decision.recordPaused(active, api,
+            boolean recorded = decision.recordPaused(active, api,
                     method, unitIndex, expression, prepared.occurrence,
                     vmEventId);
             // Advances the replay contract and records a prefix mismatch;
             // whether this decision consumed the contract's source event
             // says nothing about whether the target site ran.
             active.observeReplayDecision(branchSite, prepared.occurrence,
-                    decision, recorded.symbolicSupportDigest);
+                    decision);
             replayContradicted = active.replayPrefixContradicted();
             // A bounded loop may have run the planned target occurrence at
             // another one.  targetReach is the planner's semantic source
@@ -3463,7 +3463,7 @@ public final class ConcolicRegionRuntime {
             boolean permuted = decision.addressesPermutedTargetOccurrence()
                     && edu.uva.liftlab.graphchecker.runtime.FocusedReplay
                             .focused(active.d3Address);
-            if (statesTargetReach(recorded.decided, permuted,
+            if (statesTargetReach(recorded, permuted,
                     active.activation.targetBranchSite,
                     active.activation.targetBranchOccurrence,
                     branchSite, prepared.occurrence)) {
@@ -3519,13 +3519,21 @@ public final class ConcolicRegionRuntime {
         }
     }
 
-    private static RecordedBranch recordBranchPaused(
+    /**
+     * Captures one exact binary decision; false only where the VM emitted no
+     * branch event to capture, so there is no row beside which a target
+     * reach could be stated.  It used to mean "attested well enough to
+     * address a target reach", which read the presence of a path condition as
+     * permission to publish the anchor -- so an activation that decided the
+     * target site concretely published a branch row and no reach.
+     */
+    private static boolean recordBranchPaused(
             ActiveRegion active, ConcolicVmBroker api, String method, int unitIndex,
             String expression, int occurrence, boolean observedOutcome,
             long vmEventId) throws Exception {
         if (vmEventId <= 0L) {
             // The VM emitted no symbolic branch event.
-            return RecordedBranch.NONE;
+            return false;
         }
         String siteId = SiteId.render(method, unitIndex);
         int baseline = active.lastPathConditionSize;
@@ -3573,27 +3581,13 @@ public final class ConcolicRegionRuntime {
                 ? conditionIndex + 1 : rawPathConditionSize;
         mapping.addProperty("rawPathConditionSize", mappingLimit);
         mapping.addProperty("rawPathConditionBaseline", mappingBaseline);
-        String symbolicSupportDigest = "";
         if (conditionIndex >= 0) {
             JsonElement condition = conditions.get(conditionIndex);
             JsonElement semanticCondition = semanticBranchCondition(
                     expression, observedOutcome, condition);
-            String rawOperator = binaryOperator(condition);
-            String semanticOperator = binaryOperator(semanticCondition);
             if (vmAttestation.valid) {
-                symbolicSupportDigest =
-                        BranchPredicateAlgebra.symbolicSupportDigest(
-                                semanticCondition);
-                JsonObject metadata = new JsonObject();
-                metadata.addProperty("predicateNormalization",
-                        safe(rawOperator).equals(safe(semanticOperator))
-                                ? BranchWitness.IDENTITY_NORMALIZATION
-                                : BranchWitness.CMP_NORMALIZATION);
-                BranchWitness witness = BranchWitness.vmPcImmutable(siteId,
-                        safe(method), unitIndex, occurrence,
-                        observedOutcome, semanticCondition, conditionIndex,
-                        metadata);
-                mapping.add("witness", witness.toImmutableJsonView());
+                mapping.add("witness", BranchWitness.immutablePredicate(
+                        semanticCondition).toImmutableJsonView());
                 // The predicate under which the JUMP is taken, which is the
                 // one thing about this site that does not move between
                 // replays or between arms, and the arm beside it
@@ -3635,35 +3629,8 @@ public final class ConcolicRegionRuntime {
         // outcome beside it is this execution's own.  Whether it carried a
         // path condition is whether the row states a site predicate, which
         // is what the decision row publishes.
-        return new RecordedBranch(true, symbolicSupportDigest);
+        return true;
     }
-
-    /**
-     * Result of one exact capture: whether this decision was recorded at
-     * all, and the symbolic support a binary branch matched its replay
-     * prefix on.  A multiway successor is its own authority and carries no
-     * support.
-     *
-     * <p>{@code decided} is false only where the VM emitted no branch event
-     * to capture, and there is no row beside which a target reach could be
-     * stated.  It used to mean "attested well enough to address a target
-     * reach", which read the presence of a path condition as permission to
-     * publish the anchor -- so an activation that decided the target site
-     * concretely published a branch row and no reach.</p>
-     */
-    private static final class RecordedBranch {
-        private static final RecordedBranch NONE =
-                new RecordedBranch(false, "");
-        private final boolean decided;
-        private final String symbolicSupportDigest;
-
-        private RecordedBranch(boolean decided,
-                               String symbolicSupportDigest) {
-            this.decided = decided;
-            this.symbolicSupportDigest = safe(symbolicSupportDigest);
-        }
-    }
-
 
     private static boolean recordSwitchBranchPaused(
             ActiveRegion active, ConcolicVmBroker api, String method, int unitIndex,
@@ -3706,7 +3673,6 @@ public final class ConcolicRegionRuntime {
         }
         active.branchMappings.add(mapping);
         if (attestation.valid) {
-            int decisionOrdinal = 1;
             for (Integer conditionIndex : conditionIndices) {
                 JsonObject predicate = branchMapping(method, unitIndex,
                         occurrence, vmEventId);
@@ -3714,11 +3680,9 @@ public final class ConcolicRegionRuntime {
                 predicate.addProperty("rawPathConditionBaseline",
                         mappingBaseline);
                 predicate.add("witness",
-                        BranchWitness.pcPredicateImmutable(siteId,
-                                safe(method), unitIndex, occurrence,
-                                decisionOrdinal++,
-                                conditions.get(conditionIndex),
-                                conditionIndex).toImmutableJsonView());
+                        BranchWitness.immutablePredicate(
+                                conditions.get(conditionIndex))
+                                .toImmutableJsonView());
                 active.branchMappings.add(predicate);
             }
         }
@@ -5774,16 +5738,15 @@ public final class ConcolicRegionRuntime {
         }
 
         /** This decision's exact capture while the VM window is open. */
-        RecordedBranch recordPaused(
+        boolean recordPaused(
                 ActiveRegion active, ConcolicVmBroker api, String method,
                 int unitIndex, String expression, int occurrence,
                 long vmEventId) throws Exception {
             return expected == null
                     ? recordBranchPaused(active, api, method, unitIndex,
                     expression, occurrence, outcome, vmEventId)
-                    : new RecordedBranch(recordSwitchBranchPaused(active, api,
-                    method, unitIndex, expression, occurrence, expected,
-                    vmEventId), "");
+                    : recordSwitchBranchPaused(active, api, method, unitIndex,
+                    expression, occurrence, expected, vmEventId);
         }
 
         /** What an absent replay-boundary handle is refused as. */
@@ -6337,12 +6300,6 @@ public final class ConcolicRegionRuntime {
          */
         private boolean observeReplayDecision(
                 String siteId, int occurrence, BranchDecision decision) {
-            return observeReplayDecision(siteId, occurrence, decision, "");
-        }
-
-        private boolean observeReplayDecision(
-                String siteId, int occurrence, BranchDecision decision,
-                String symbolicSupportDigest) {
             if (d3Address == null) return true;
             edu.uva.liftlab.graphchecker.runtime.FocusedReplay
                     .observeDecision(d3Address, siteId, occurrence,

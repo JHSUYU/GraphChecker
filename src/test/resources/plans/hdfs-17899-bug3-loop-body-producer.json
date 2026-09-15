@@ -537,7 +537,6 @@
    ],
    "loopExitDecisions": [
     {
-     "decisionToken": "{\"branchKind\":\"BINARY\",\"sourceTakenOutcome\":true}",
      "kind": "LOOP_EXIT_DECISION",
      "schemaVersion": 4,
      "siteId": "<org.apache.hadoop.hdfs.protocolPB.PBHelper: org.apache.hadoop.hdfs.protocol.proto.HdfsServerProtos$ExportedBlockKeysProto convert(org.apache.hadoop.hdfs.security.token.block.ExportedBlockKeys)>#u14"
