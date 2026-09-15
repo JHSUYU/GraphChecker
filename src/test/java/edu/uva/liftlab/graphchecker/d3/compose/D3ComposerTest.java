@@ -2,6 +2,11 @@ package edu.uva.liftlab.graphchecker.d3.compose;
 
 import com.google.gson.JsonObject;
 
+import edu.uva.liftlab.graphchecker.d3.contract.Role;
+import edu.uva.liftlab.graphchecker.d3.contract.CausalContext;
+import edu.uva.liftlab.graphchecker.d3.contract.NodeId;
+import edu.uva.liftlab.graphchecker.d3.contract.Frame;
+import edu.uva.liftlab.graphchecker.d3.contract.ExecutionIndex;
 import edu.uva.liftlab.graphchecker.d3.contract.ActivationRow;
 import edu.uva.liftlab.graphchecker.d3.contract.AttachRow;
 import edu.uva.liftlab.graphchecker.d3.contract.ClaimKind;
@@ -54,12 +59,12 @@ public class D3ComposerTest {
     @Rule
     public TemporaryFolder folder = new TemporaryFolder();
 
-    private static final OccurrenceAddress ANCHOR = OccurrenceAddress.parse(
-            "case/dn0#epoch0/region/REGION.target#1");
+    private static final OccurrenceAddress ANCHOR =
+            occurrence("case/dn0#epoch0", "REGION.target", 1);
     private static final OccurrenceAddress PRODUCER =
-            OccurrenceAddress.parse("case/nn0#epoch0/region/REGION.nn#1");
+            occurrence("case/nn0#epoch0", "REGION.nn", 1);
     private static final OccurrenceAddress UPSTREAM =
-            OccurrenceAddress.parse("case/nn1#epoch0/region/REGION.up#1");
+            occurrence("case/nn1#epoch0", "REGION.up", 1);
     private static final String ANCHOR_SITE = "BlockManager#get#8:READ";
     private static final String MARKER = "marker_m";
     private static final String MARKER_ROOT = "ROOT.MARKER";
@@ -72,8 +77,8 @@ public class D3ComposerTest {
     public void theHealthyRecordingIsRefutedAndTheFlipIsTheWitness()
             throws Exception {
         Path iteration = folder.newFolder("marker").toPath();
-        Endpoint producer = Endpoint.of(PRODUCER, "PORT.key", 1, 0);
-        Endpoint consumer = Endpoint.of(ANCHOR, "PORT.key", 1, 0);
+        Endpoint producer = Endpoint.of(PRODUCER, "PORT.key", siteIndex(1), 0);
+        Endpoint consumer = Endpoint.of(ANCHOR, "PORT.key", siteIndex(1), 0);
         session(iteration, "s0", false, "false", producer, consumer,
                 "vh", "false", null, true, false, "EXPR.v1.marker");
         session(iteration, "s1", true, "true", producer, consumer,
@@ -107,8 +112,8 @@ public class D3ComposerTest {
     @Test
     public void twoProducersOnOnePortAreTwoFamilies() throws Exception {
         Path iteration = folder.newFolder("families").toPath();
-        Endpoint first = Endpoint.of(PRODUCER, "PORT.key", 1, 0);
-        Endpoint second = Endpoint.of(PRODUCER, "PORT.key", 2, 0);
+        Endpoint first = Endpoint.of(PRODUCER, "PORT.key", siteIndex(1), 0);
+        Endpoint second = Endpoint.of(PRODUCER, "PORT.key", siteIndex(2), 0);
         Session session = new Session(iteration, "s0", false);
         session.marker("false");
         session.expression("EXPR.v1.marker", symbol(MARKER, "Z"));
@@ -116,9 +121,9 @@ public class D3ComposerTest {
                 + MARKER + "))");
         session.export(first, "EXPR.v1.marker", 1L, "false");
         session.export(second, "EXPR.v1.marker", 2L, "false");
-        session.attach(Endpoint.of(ANCHOR, "PORT.key", 1, 0), "vh1",
+        session.attach(Endpoint.of(ANCHOR, "PORT.key", siteIndex(1), 0), "vh1",
                 "false", first);
-        session.attach(Endpoint.of(ANCHOR, "PORT.key", 2, 0), "vh2",
+        session.attach(Endpoint.of(ANCHOR, "PORT.key", siteIndex(2), 0), "vh2",
                 "false", second);
         session.target("(and vh1 vh2)", false, true);
         session.write();
@@ -138,8 +143,8 @@ public class D3ComposerTest {
     public void aWitnessMayNotMoveARootInsideAnUnattestedArm()
             throws Exception {
         Path iteration = folder.newFolder("unattested").toPath();
-        Endpoint producer = Endpoint.of(PRODUCER, "PORT.key", 1, 0);
-        Endpoint consumer = Endpoint.of(ANCHOR, "PORT.key", 1, 0);
+        Endpoint producer = Endpoint.of(PRODUCER, "PORT.key", siteIndex(1), 0);
+        Endpoint consumer = Endpoint.of(ANCHOR, "PORT.key", siteIndex(1), 0);
         // The producer ran concretely in both sessions: no decision of its
         // occurrence is recorded anywhere, so every arm is unattested.
         session(iteration, "s0", false, "false", producer, consumer,
@@ -168,10 +173,10 @@ public class D3ComposerTest {
     @Test
     public void aNestedHandoffIsClosedTransitively() throws Exception {
         Path iteration = folder.newFolder("nested").toPath();
-        Endpoint upstream = Endpoint.of(UPSTREAM, "PORT.up", 1, 0);
-        Endpoint forwarded = Endpoint.of(PRODUCER, "PORT.up", 1, 0);
-        Endpoint producer = Endpoint.of(PRODUCER, "PORT.key", 1, 0);
-        Endpoint consumer = Endpoint.of(ANCHOR, "PORT.key", 1, 0);
+        Endpoint upstream = Endpoint.of(UPSTREAM, "PORT.up", siteIndex(1), 0);
+        Endpoint forwarded = Endpoint.of(PRODUCER, "PORT.up", siteIndex(1), 0);
+        Endpoint producer = Endpoint.of(PRODUCER, "PORT.key", siteIndex(1), 0);
+        Endpoint consumer = Endpoint.of(ANCHOR, "PORT.key", siteIndex(1), 0);
 
         Session session = new Session(iteration, "s0", false);
         session.marker("false");
@@ -204,8 +209,8 @@ public class D3ComposerTest {
     @Test
     public void eachPathCarriesItsOwnSessionsArrival() throws Exception {
         Path iteration = folder.newFolder("arrivals").toPath();
-        Endpoint producer = Endpoint.of(PRODUCER, "PORT.id", 1, 0);
-        Endpoint consumer = Endpoint.of(ANCHOR, "PORT.id", 1, 0);
+        Endpoint producer = Endpoint.of(PRODUCER, "PORT.id", siteIndex(1), 0);
+        Endpoint consumer = Endpoint.of(ANCHOR, "PORT.id", siteIndex(1), 0);
         for (String[] each : new String[][]{{"s0", "10", "false"},
                 {"s1", "20", "true"}}) {
             Session session = new Session(iteration, each[0],
@@ -401,4 +406,35 @@ public class D3ComposerTest {
         session.write();
         assertNotNull(answered == null ? "" : answered);
     }
+
+    /**
+     * The site index of the k-th event at one site, for a fixture.
+     *
+     * <p>Contract v2.0 replaced the site ordinal with the execution index of
+     * the frames between the region and the event (IDENTITY-IMPL section A).
+     * A fixture has no real stack, so one frame carrying k is what "the k-th
+     * event of this site" means here: distinct per k, stable across runs.</p>
+     */
+    private static ExecutionIndex siteIndex(int k) {
+        return ExecutionIndex.of(Collections.singletonList(
+                Frame.of("Fixture#site#0", k)));
+    }
+
+
+    /**
+     * One occurrence of a region on a node, as contract v2.0 addresses it.
+     *
+     * <p>The fixture states the causal context a real recording would carry
+     * from its scope -- a daemon tick of the region's role, the k-th of the
+     * window -- and one frame of execution index, which is what "the k-th
+     * activation" meant before the index replaced the ordinal.</p>
+     */
+    private static OccurrenceAddress occurrence(String node, String region,
+                                                int k) {
+        return OccurrenceAddress.of(NodeId.parse(node), region,
+                CausalContext.of(Role.BP_SERVICE_ACTOR, k),
+                ExecutionIndex.of(Collections.singletonList(
+                        Frame.of("Fixture#" + region + "#0", 0))));
+    }
+
 }

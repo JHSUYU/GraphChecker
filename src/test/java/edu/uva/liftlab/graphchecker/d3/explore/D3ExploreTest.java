@@ -2,6 +2,11 @@ package edu.uva.liftlab.graphchecker.d3.explore;
 
 import com.google.gson.JsonObject;
 
+import edu.uva.liftlab.graphchecker.d3.contract.Role;
+import edu.uva.liftlab.graphchecker.d3.contract.CausalContext;
+import edu.uva.liftlab.graphchecker.d3.contract.NodeId;
+import edu.uva.liftlab.graphchecker.d3.contract.Frame;
+import edu.uva.liftlab.graphchecker.d3.contract.ExecutionIndex;
 import edu.uva.liftlab.graphchecker.d3.contract.ActivationRow;
 import edu.uva.liftlab.graphchecker.d3.contract.AttachRow;
 import edu.uva.liftlab.graphchecker.d3.contract.DecisionRow;
@@ -57,12 +62,12 @@ import static org.junit.Assert.assertTrue;
  * so an assertion about SAT or UNSAT is an assertion about the query.</p>
  */
 public class D3ExploreTest {
-    private static final String TARGET =
-            "hdfs-case/dn0#epoch0/region/REGION.target#1";
-    private static final String WRITER =
-            "hdfs-case/dn0#epoch0/region/REGION.addkeys#1";
-    private static final String PRODUCER =
-            "hdfs-case/nn0#epoch0/region/REGION.rotate#1";
+    private static final OccurrenceAddress TARGET =
+            occurrence("hdfs-case/dn0#epoch0", "REGION.target", 1);
+    private static final OccurrenceAddress WRITER =
+            occurrence("hdfs-case/dn0#epoch0", "REGION.addkeys", 1);
+    private static final OccurrenceAddress PRODUCER =
+            occurrence("hdfs-case/nn0#epoch0", "REGION.rotate", 1);
 
     @Rule
     public TemporaryFolder tree = new TemporaryFolder();
@@ -73,7 +78,7 @@ public class D3ExploreTest {
     public void nestedGuardChainDeepensOneDecisionPerWave() throws Exception {
         Assume.assumeTrue(z3Available());
         Path iteration = tree.newFolder("depth").toPath();
-        OccurrenceAddress target = OccurrenceAddress.parse(TARGET);
+        OccurrenceAddress target = TARGET;
         Session seed = new Session(iteration, "s-seed");
         seed.activation(target, true);
         seed.root(target, "CASE.MARKER", "M_MARKER", RootKind.MARKER, "false",
@@ -145,10 +150,10 @@ public class D3ExploreTest {
             throws Exception {
         Assume.assumeTrue(z3Available());
         Path iteration = tree.newFolder("family").toPath();
-        OccurrenceAddress target = OccurrenceAddress.parse(TARGET);
-        OccurrenceAddress producer = OccurrenceAddress.parse(PRODUCER);
-        Endpoint exported = Endpoint.of(producer, "XCH.resp.block-key-id", 1, 0);
-        Endpoint attached = Endpoint.of(target, "XCH.resp.block-key-id", 1, 0);
+        OccurrenceAddress target = TARGET;
+        OccurrenceAddress producer = PRODUCER;
+        Endpoint exported = Endpoint.of(producer, "XCH.resp.block-key-id", siteIndex(1), 0);
+        Endpoint attached = Endpoint.of(target, "XCH.resp.block-key-id", siteIndex(1), 0);
 
         Session seed = new Session(iteration, "s-seed");
         seed.activation(target, true);
@@ -219,8 +224,8 @@ public class D3ExploreTest {
     public void controlWithNoArmIsUnproducible() throws Exception {
         Assume.assumeTrue(z3Available());
         Path iteration = tree.newFolder("unproducible").toPath();
-        OccurrenceAddress target = OccurrenceAddress.parse(TARGET);
-        Endpoint attached = Endpoint.of(target, "XCH.req.key-id", 1, 0);
+        OccurrenceAddress target = TARGET;
+        Endpoint attached = Endpoint.of(target, "XCH.req.key-id", siteIndex(1), 0);
         Session seed = new Session(iteration, "s-seed");
         seed.activation(target, true);
         // Unpaired: the value arrived from outside this corpus.
@@ -252,7 +257,7 @@ public class D3ExploreTest {
     @Test
     public void rootWithoutADomainCannotBeMoved() throws Exception {
         Assume.assumeTrue(z3Available());
-        OccurrenceAddress target = OccurrenceAddress.parse(TARGET);
+        OccurrenceAddress target = TARGET;
         Path pinned = tree.newFolder("pinned").toPath();
         Session seed = new Session(pinned, "s-seed");
         seed.activation(target, true);
@@ -303,13 +308,13 @@ public class D3ExploreTest {
     public void closureHoldsTheWriterOfAReadVersionAndTheWireProducer()
             throws Exception {
         Path iteration = tree.newFolder("closure").toPath();
-        OccurrenceAddress target = OccurrenceAddress.parse(TARGET);
-        OccurrenceAddress writer = OccurrenceAddress.parse(WRITER);
-        OccurrenceAddress producer = OccurrenceAddress.parse(PRODUCER);
+        OccurrenceAddress target = TARGET;
+        OccurrenceAddress writer = WRITER;
+        OccurrenceAddress producer = PRODUCER;
         LocationId allKeys = LocationId.of(LocationKind.MAP,
                 "BlockTokenSecretManager", "allKeys");
-        Endpoint exported = Endpoint.of(producer, "XCH.resp.block-key-id", 1, 0);
-        Endpoint attached = Endpoint.of(writer, "XCH.resp.block-key-id", 1, 0);
+        Endpoint exported = Endpoint.of(producer, "XCH.resp.block-key-id", siteIndex(1), 0);
+        Endpoint attached = Endpoint.of(writer, "XCH.resp.block-key-id", siteIndex(1), 0);
 
         Session seed = new Session(iteration, "s-seed");
         seed.activation(target, true);
@@ -319,9 +324,9 @@ public class D3ExploreTest {
         seed.export(exported, "e.119992", 11L, "119992");
         seed.attach(attached, "M_HOFF_KEY", "119992", exported);
         seed.write(Endpoint.of(writer, "BlockTokenSecretManager#addKeys#12"
-                + ":WRITE", 1, 0), allKeys, 5L, "e.119992");
+                + ":WRITE", siteIndex(1), 0), allKeys, 5L, "e.119992");
         seed.read(Endpoint.of(target, "BlockTokenSecretManager"
-                + "#retrieveDataEncryptionKey#8:READ", 1, 0), allKeys, 5L,
+                + "#retrieveDataEncryptionKey#8:READ", siteIndex(1), 0), allKeys, 5L,
                 "M_READ_KEY", "119992");
         seed.flush();
 
@@ -461,7 +466,7 @@ public class D3ExploreTest {
         private void root(OccurrenceAddress occurrence, String rootId,
                           String symbol, RootKind kind, String recorded,
                           String min, String max, boolean declared) {
-            roots.add(RootMintRow.of(sessionId, occurrence, rootId, symbol,
+            roots.add(RootMintRow.of(sessionId, ++seq, occurrence, rootId, symbol,
                     kind, recorded, min, max, declared));
         }
 
@@ -475,7 +480,7 @@ public class D3ExploreTest {
                             Endpoint producer) {
             attaches.add(AttachRow.of(sessionId, ++seq, endpoint, symbol, "I",
                     arrival, false, null, producer,
-                    "corr-" + endpoint.ordinal()));
+                    "corr-" + endpoint.siteIndex().hash()));
         }
 
         private void write(Endpoint endpoint, LocationId location,
@@ -514,4 +519,35 @@ public class D3ExploreTest {
                     ExpressionTable.of(expressions));
         }
     }
+
+    /**
+     * The site index of the k-th event at one site, for a fixture.
+     *
+     * <p>Contract v2.0 replaced the site ordinal with the execution index of
+     * the frames between the region and the event (IDENTITY-IMPL section A).
+     * A fixture has no real stack, so one frame carrying k is what "the k-th
+     * event of this site" means here: distinct per k, stable across runs.</p>
+     */
+    private static ExecutionIndex siteIndex(int k) {
+        return ExecutionIndex.of(Collections.singletonList(
+                Frame.of("Fixture#site#0", k)));
+    }
+
+
+    /**
+     * One occurrence of a region on a node, as contract v2.0 addresses it.
+     *
+     * <p>The fixture states the causal context a real recording would carry
+     * from its scope -- a daemon tick of the region's role, the k-th of the
+     * window -- and one frame of execution index, which is what "the k-th
+     * activation" meant before the index replaced the ordinal.</p>
+     */
+    private static OccurrenceAddress occurrence(String node, String region,
+                                                int k) {
+        return OccurrenceAddress.of(NodeId.parse(node), region,
+                CausalContext.of(Role.BP_SERVICE_ACTOR, k),
+                ExecutionIndex.of(Collections.singletonList(
+                        Frame.of("Fixture#" + region + "#0", 0))));
+    }
+
 }
