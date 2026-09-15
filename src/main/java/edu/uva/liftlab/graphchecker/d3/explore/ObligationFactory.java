@@ -174,6 +174,40 @@ public final class ObligationFactory {
     }
 
     /**
+     * Why this model is the recording's own valuation, or {@code ""}.
+     *
+     * <p>Every root the model assigns carries the value that session's
+     * {@code RootMintRow} recorded, and no handoff is answered: nothing about
+     * the world this obligation asks for differs from the one already on
+     * disk.  A model that assigns NO root is not this case -- a clock-driven
+     * flip states its skew elsewhere -- so the test is over the roots the
+     * query actually bound.</p>
+     */
+    private static String recordedValuation(Corpus corpus, Candidate candidate,
+                                            Map<String, String> roots,
+                                            Map<String, String> answers) {
+        if (roots.isEmpty() || !answers.isEmpty()) return "";
+        List<String> same = new ArrayList<String>();
+        for (Map.Entry<String, String> assignment : roots.entrySet()) {
+            String reading = corpus.rootReading(candidate.path.sessionId,
+                    assignment.getKey());
+            if (reading.isEmpty()
+                    || !reading.equals(assignment.getValue())) {
+                return "";
+            }
+            same.add(assignment.getKey() + "=" + reading);
+        }
+        return "the model is the recording's own valuation ("
+                + String.join(", ", same) + ") and answers no handoff, so "
+                + "the replay it asks for is the seed replay: this is not an "
+                + "arm the seed lacks. Either the flipped decision's recorded "
+                + "polarity disagrees with the root value the same session "
+                + "minted -- DecisionRow.outcome must say whether the "
+                + "published term HELD (CONTRACT-SPEC SS2) -- or the query "
+                + "binds a root the flip does not depend on";
+    }
+
+    /**
      * Finds the flip one published obligation names.
      *
      * <p>The worker that solves an obligation is handed the row and the
@@ -265,6 +299,20 @@ public final class ObligationFactory {
         Obligation solved = Obligation.of(id, candidate.task.taskId(),
                 candidate.path.pathId, decision.siteId(), decision.ordinal(),
                 !decision.outcome(), roots, answers, unproducible);
+        // Exploration exists to collect an arm the seed does NOT have
+        // (HANDOVER SS1.5).  A model that hands every root back the value the
+        // recording minted, and answers no handoff, asks for the seed replay
+        // under another name: whatever it satisfies, it is not a world the
+        // corpus lacks, and a replay spent on it would record the rows it
+        // already has.  Refused by name rather than run.
+        String recorded = recordedValuation(corpus, candidate, roots, answers);
+        if (!recorded.isEmpty()) {
+            gaps.add(GapRow.of(candidate.path.sessionId,
+                    GapKind.ADMISSION_GAP, GapClass.BLOCKING, id, recorded));
+            return new Outcome(id, candidate.task.taskId(), null,
+                    ObligationResult.of(id, Verdict.NOT_ADMITTED, "",
+                            recorded), built.smt2, gaps);
+        }
         return new Outcome(id, candidate.task.taskId(), solved,
                 ObligationResult.of(id, Verdict.SAT_MODEL_READY, "",
                         "the flip at " + decision.siteId() + "#"

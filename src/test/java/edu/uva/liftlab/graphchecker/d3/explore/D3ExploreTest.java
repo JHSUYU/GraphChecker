@@ -148,6 +148,39 @@ public class D3ExploreTest {
         assertEquals(Verdict.SAT_MODEL_READY, worker.verdict);
         assertEquals("true",
                 worker.obligation.rootAssignments().get("CASE.MARKER"));
+        // The focus row is its own file.  execution_task_plan.jsonl is the
+        // PLAN's name, and the workload session opener decodes whatever
+        // stands under it, so a focus row written there killed every
+        // obligation replay with "execution task requires sourceKey".
+        assertFalse("the solver writes no plan",
+                Files.exists(worker.directory.resolve(
+                        "execution_task_plan.jsonl")));
+        JsonObject focus = RowCodec.readJsonl(worker.directory.resolve(
+                ObligationSolverMain.FOCUSED_TASK)).get(0);
+        assertEquals("FOCUSED_TASK", focus.get("kind").getAsString());
+        assertEquals("the row states WHICH occurrence it focuses",
+                target.render(), focus.get("focused").getAsString());
+        assertEquals(target.id(),
+                focus.get("focusedOccurrenceId").getAsString());
+        assertEquals("s-seed", focus.get("seedSessionId").getAsString());
+        assertEquals("Guard#u8",
+                focus.getAsJsonObject("flip").get("siteId").getAsString());
+
+        // Polarity, asked exactly once.  The recorded conjunct is
+        // outcome ? term : (not term) and the obligation asserts its
+        // negation, so a MODEL of the query makes the published term equal
+        // to the flipped outcome -- whatever polarity the term itself
+        // carries.  The last row below is 17960's own shape: a "!=" term,
+        // which lowers with a (not ...) of its own, and where one extra
+        // negation made the flip ask for the seed's own value.
+        flipAsksTheOtherArmOnce("(= M_MARKER false)", false, "true", "false");
+        flipAsksTheOtherArmOnce("(= M_MARKER false)", true, "false", "true");
+        flipAsksTheOtherArmOnce("(not (= M_MARKER false))", true, "true",
+                "false");
+        // And a model that hands the root back the recording's own value
+        // asks for the seed replay: refused by name, never run.
+        flipAsksTheOtherArmOnce("(not (= M_MARKER false))", false, "true",
+                null);
 
         // The campaign replayed it: the flip took the first guard and
         // recorded the second one, which had never executed before.
@@ -866,6 +899,59 @@ public class D3ExploreTest {
         return ExploreMain.plan(iteration, selector, domains, results,
                 waveDir, wave, "epoch0", ClosurePlanner.DEFAULT_MAX_TASKS,
                 ObligationFactory.Bounds.defaults());
+    }
+
+    /**
+     * One decision, one flip, one polarity.
+     *
+     * @param term     the predicate as the runtime publishes it, polarity-free
+     * @param outcome  whether that term HELD in the recording (CONTRACT-SPEC
+     *                 SS2), which is what makes the conjunct
+     * @param recorded what the session minted for the marker
+     * @param expected the value the model must assign, or null when the wave
+     *                 must refuse because the model would BE the recording
+     */
+    private void flipAsksTheOtherArmOnce(String term, boolean outcome,
+                                         String recorded, String expected)
+            throws IOException {
+        Assume.assumeTrue(z3Available());
+        String name = "polarity-" + Math.abs((term + outcome).hashCode());
+        Path iteration = tree.newFolder(name).toPath();
+        Session seed = new Session(iteration, "s-seed");
+        seed.activation(TARGET, false);
+        seed.root(TARGET, "CASE.MARKER", "M_MARKER", RootKind.MARKER,
+                recorded, null, null, true);
+        seed.decision(TARGET, "Guard#u8", 1, outcome, term);
+        seed.flush();
+        Path out = tree.newFolder(name + "-out").toPath();
+        Path results = out.resolve("obligation_results.jsonl");
+        Files.write(results, new byte[0]);
+        Path wave = out.resolve("obligations-0000");
+        plan(iteration, TARGET_SELECTOR, null, results, wave, 0);
+        List<Obligation> proposed = obligations(wave);
+        assertEquals("one flippable decision, one obligation: " + proposed,
+                1, proposed.size());
+        assertEquals("the flip asks for the arm the recording did not take",
+                !outcome, proposed.get(0).flippedOutcome());
+        Worker solved = solve(iteration, wave, proposed.get(0), out, "w");
+        if (expected == null) {
+            assertEquals("a model that is the recording is not an arm the "
+                    + "seed lacks", Verdict.NOT_ADMITTED, solved.verdict);
+            boolean refused = false;
+            for (GapRow gap : RowCodec.readAll(
+                    solved.directory.resolve("gaps.jsonl"),
+                    RowCodec::readGap)) {
+                refused |= gap.cls() == GapClass.BLOCKING
+                        && gap.detail().contains(
+                                "the recording's own valuation");
+            }
+            assertTrue("and the refusal is named", refused);
+            return;
+        }
+        assertEquals(Verdict.SAT_MODEL_READY, solved.verdict);
+        assertEquals("the model makes the published term take the flipped "
+                        + "outcome's truth value", expected,
+                solved.obligation.rootAssignments().get("CASE.MARKER"));
     }
 
     /** One obligation worker: the verdict row and the completed obligation. */

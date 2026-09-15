@@ -373,27 +373,36 @@ public final class FocusedReplay {
 
     /** Where the campaign names this replay's execution task plan. */
     public static final String PLAN_PROPERTY = "causynth.concolic.task.plan";
+    /** Where the campaign may name the focus row outright. */
+    public static final String FOCUS_PROPERTY = "causynth.d3.focused.task";
+    /** The file the obligation's solver worker writes the focus row into. */
+    public static final String FOCUS_FILE = "focused_task.jsonl";
 
     /**
-     * The wave's own plan rows: one {@code EXECUTION_TASK} per obligation.
+     * The focus row this replay was handed: one obligation's flip.
      *
      * <p>{@code d3.explore.ObligationSolverMain} writes {@code
-     * execution_task_plan.jsonl} with {@code taskId}, {@code obligationId},
-     * {@code pathId}, {@code flip} = {siteId, ordinal, outcome}, {@code
-     * rootAssignments}, {@code answers} (attach endpoint id to value) and
-     * {@code unproducible}.  That file IS the focused task: the replay
-     * applies the assignments at the mints of the focused occurrence, the
-     * answers at its attaches, and enforces the flip at the named
-     * decision.</p>
+     * focused_task.jsonl} with {@code taskId}, {@code obligationId}, {@code
+     * pathId}, {@code focused} (the occurrence, rendered), {@code flip} =
+     * {siteId, ordinal, outcome}, {@code rootAssignments}, {@code answers}
+     * (attach endpoint id to value) and {@code unproducible}.  That row IS
+     * the focused task: the replay applies the assignments at the mints of
+     * the focused occurrence, the answers at its attaches, and enforces the
+     * flip at the named decision.</p>
+     *
+     * <p>It is deliberately NOT {@code execution_task_plan.jsonl}: that name
+     * belongs to the PLAN, whose rows are {@code d3.plan.ExecutionTask}s, and
+     * the workload session opener decodes whatever stands under it.  One
+     * file, one shape.  The row is looked for where the campaign says
+     * ({@link #FOCUS_PROPERTY} or {@code CAUSYNTH_D3_FOCUSED_TASK}), else in
+     * the worker directory, else beside the plan -- all three the same
+     * directory in a campaign, so nothing new has to be wired.</p>
      */
     private static void loadPlanRows() {
-        String path = Text.safe(System.getProperty(PLAN_PROPERTY));
-        if (path.isEmpty()) {
-            path = Text.safe(System.getenv("CAUSYNTH_CONCOLIC_TASK_PLAN"));
-        }
-        if (path.isEmpty() || !Files.isReadable(Paths.get(path))) return;
+        Path path = focusRow();
+        if (path == null) return;
         try {
-            for (JsonObject row : RowCodec.readJsonl(Paths.get(path))) {
+            for (JsonObject row : RowCodec.readJsonl(path)) {
                 if (!row.has("flip") || !row.has("taskId")) continue;
                 JsonObject flip = row.getAsJsonObject("flip");
                 String obligationId = string(row, "obligationId");
@@ -411,16 +420,69 @@ public final class FocusedReplay {
                         strings(row, "answers"),
                         list(row, "unproducible")));
                 FOCUSED_TASKS.add(string(row, "taskId"));
+                // The row states which occurrence it focuses, so the Task
+                // this replay reports against is the recording's, not a stub
+                // with no address.  Task.of refuses a null focus, which is
+                // what a row without one now says rather than throwing on
+                // the way out of this reader.
+                OccurrenceAddress focus = occurrence(row.get("focused"));
+                if (focus != null && focusedTask == null) {
+                    List<OccurrenceAddress> members =
+                            new ArrayList<OccurrenceAddress>();
+                    if (row.has("factor")) {
+                        for (JsonElement member
+                                : row.getAsJsonArray("factor")) {
+                            OccurrenceAddress parsed = occurrence(member);
+                            if (parsed != null) members.add(parsed);
+                        }
+                    }
+                    String seed = string(row, "seedSessionId");
+                    if (seed.isEmpty()) {
+                        seed = Text.safe(
+                                System.getenv("CAUSYNTH_SEED_SESSION"));
+                    }
+                    if (!seed.isEmpty()) {
+                        focusedTask = Task.of(string(row, "taskId"), focus,
+                                members, seed);
+                    }
+                }
             }
         } catch (RuntimeException | IOException unreadable) {
-            System.err.println("Causynth could not read the focused task plan "
+            System.err.println("Causynth could not read the focus row "
                     + path + ": " + unreadable);
         }
-        if (!OBLIGATIONS.isEmpty() && task == null) {
-            task = Task.of(OBLIGATIONS.get(0).taskId(), null,
-                    java.util.Collections.<OccurrenceAddress>emptyList(),
-                    Text.safe(System.getenv("CAUSYNTH_SEED_SESSION")));
+        if (!OBLIGATIONS.isEmpty() && task == null && focusedTask != null) {
+            task = focusedTask;
         }
+    }
+
+    /** The Task the focus row states, when it states one. */
+    private static Task focusedTask;
+
+    /** Where the focus row is, or null when this replay was handed none. */
+    private static Path focusRow() {
+        String named = Text.safe(System.getProperty(FOCUS_PROPERTY));
+        if (named.isEmpty()) {
+            named = Text.safe(System.getenv("CAUSYNTH_D3_FOCUSED_TASK"));
+        }
+        if (!named.isEmpty()) return readable(Paths.get(named));
+        String worker = Text.safe(
+                System.getenv("CAUSYNTH_CONCOLIC_WORKER_DIR"));
+        if (!worker.isEmpty()) {
+            Path inWorker = readable(Paths.get(worker).resolve(FOCUS_FILE));
+            if (inWorker != null) return inWorker;
+        }
+        String plan = Text.safe(System.getProperty(PLAN_PROPERTY));
+        if (plan.isEmpty()) {
+            plan = Text.safe(System.getenv("CAUSYNTH_CONCOLIC_TASK_PLAN"));
+        }
+        if (plan.isEmpty()) return null;
+        Path beside = Paths.get(plan).getParent();
+        return beside == null ? null : readable(beside.resolve(FOCUS_FILE));
+    }
+
+    private static Path readable(Path file) {
+        return Files.isReadable(file) ? file : null;
     }
 
     /** Reads the task file this replay was handed, once. */
