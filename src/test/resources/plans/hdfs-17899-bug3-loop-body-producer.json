@@ -576,24 +576,6 @@
   "kind": "GLOBAL_INVOCATION",
   "method": "<org.apache.hadoop.hdfs.protocolPB.PBHelper: org.apache.hadoop.hdfs.protocol.proto.HdfsServerProtos$ExportedBlockKeysProto convert(org.apache.hadoop.hdfs.security.token.block.ExportedBlockKeys)>"
  },
- "sharedCarriers": [
-  {
-   "declaringClass": "org.apache.hadoop.security.token.delegation.DelegationKey",
-   "descriptor": "J",
-   "fieldName": "expiryDate",
-   "fieldPath": [],
-   "kind": "DECLARED_FIELD",
-   "sourceKind": "ACTIVATION_FIELD_RECEIVER"
-  },
-  {
-   "declaringClass": "org.apache.hadoop.security.token.delegation.DelegationKey",
-   "descriptor": "I",
-   "fieldName": "keyId",
-   "fieldPath": [],
-   "kind": "DECLARED_FIELD",
-   "sourceKind": "ACTIVATION_FIELD_RECEIVER"
-  }
- ],
  "sourceKey": "hdfs-17899/nn0#epoch0",
  "targetMethod": "<org.apache.hadoop.hdfs.protocolPB.PBHelper: org.apache.hadoop.hdfs.protocol.proto.HdfsServerProtos$BlockKeyProto convert(org.apache.hadoop.hdfs.security.token.block.BlockKey)>",
  "taskId": "TASK.SEED.1d0b713e3aa0406bb84a55e8b748de8c0907cb339798433878435119234b1953"

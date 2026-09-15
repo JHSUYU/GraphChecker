@@ -25,13 +25,12 @@ declared there -- by the two static sites it is read at,
 to whichever regions cover them. The key id *on the wire* is not a fourth root: it is a
 *propagated* value carrying the NameNode's minted `serialNo`, moved by the
 `block-key-id` and `data-encryption-key-id` flows in
-`communication-mappings.jsonl`, and `allKeys` is shared state reconstructed
-from its retained writers. Not a root is not the same as not symbolic: both
-are carriers, so the plan tracks them -- the file narrows which inputs may
-*mint*, never which are symbolized. (Until the mint-only policy landed it
-narrowed both, and concretized 14 of this case's 18 `BOUNDED_CONTAINER_STATE`
-actions, `allKeys` among them, which is precisely the reconstruction this
-paragraph describes.) There is no Boolean fault marker in this workload --
+`communication-mappings.jsonl`, whose declared cut ports are tracked and
+mint nothing: the consumer reuses the producer's propagated expression.
+`allKeys` is not modelled at region entry at all -- the map becomes symbolic
+only where a root-derived value is put into it, and the VM then carries the
+INITIAL snapshot base inside the expression the reader gets back.
+There is no Boolean fault marker in this workload --
 `/opt/hadoop-hdfs-11741` contains no `Debug.makeSymbolicBoolean` anywhere -- so
 the only thing that can open the target branch is the symbolic clock. The
 custom JDK propagates the root expressions through the fixed sequence of

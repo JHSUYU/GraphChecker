@@ -1467,19 +1467,20 @@ public final class ConcolicRegionRuntime {
                         leafFieldSignature)) {
                     continue;
                 }
-                JsonElement expression;
                 if (value != null && value != MissingValue.INSTANCE
                         && containerValue(value)) {
-                    requireTrackedContainer(api, value, action.symbol);
-                    ensurePathRecordingStarted(active);
-                    active.recordSymbolizedInputPort(action.symbol, value);
-                    expression = engineExpression(api.expression(value));
-                } else {
-                    expression = mintExactFieldLeaf(active, action, api,
-                            leafOwner, leafFieldSignature, action.symbol,
-                            value);
-                    if (expression == null) continue;
+                    // A container is symbolic only once a root-derived
+                    // value is put into it, which the VM states inside the
+                    // expression it then carries; there is no container
+                    // state to mint at a read.
+                    active.addUnresolvedOnce(action.symbol
+                            + ": " + CONTAINER_INPUT_NOT_MODELLED);
+                    continue;
                 }
+                JsonElement expression = mintExactFieldLeaf(active, action,
+                        api, leafOwner, leafFieldSignature, action.symbol,
+                        value);
+                if (expression == null) continue;
                 active.recordManualSymbolization(action, action.symbol,
                         action.fieldPath, leafFieldSignature, expression,
                         true, false, recordedScalar(value));
@@ -1532,51 +1533,6 @@ public final class ConcolicRegionRuntime {
             active.addUnresolvedOnce(safe(siteId)
                     + ": declared write site could not be observed on "
                     + safe(fieldSignature) + ": " + rootCause(failure));
-        }
-    }
-
-    /** Applies a model to the key used by this exact live Map.get. */
-    public static void materializeAssociativeRead(Object container,
-                                                  Object key) {
-        ActiveRegion active = activeRegion();
-        if (active == null || !(container instanceof Map<?, ?>)) return;
-        beginBookkeeping();
-        try {
-            String inputSymbol = safe(
-                    active.symbolizedInputPorts.get(container));
-            if (inputSymbol.isEmpty()) return;
-            int occurrence = active.associativeAccessOccurrences
-                    .getOrDefault(inputSymbol, 0) + 1;
-            active.associativeAccessOccurrences.put(inputSymbol, occurrence);
-            ModelAssignment selected = null;
-            for (ModelAssignment candidate
-                    : active.activation.modelAssignments) {
-                if (!candidate.dynamicAssociativeTarget()
-                        || !candidate.inputSymbol.equals(inputSymbol)
-                        || candidate.containerAccessOrdinal != occurrence
-                        || active.appliedModelAssignments.contains(
-                        candidate.key)) {
-                    continue;
-                }
-                if (selected != null) {
-                    active.addUnresolvedOnce(inputSymbol + "#access."
-                            + occurrence + ": ambiguous model assignments");
-                    return;
-                }
-                selected = candidate;
-            }
-            if (selected == null) return;
-            if (!selected.validContainerTarget()
-                    || !writeAssociativeContainerTarget(container, key,
-                    selected)) {
-                active.addUnresolvedOnce(inputSymbol + "#access."
-                        + occurrence
-                        + ": solver model could not be materialized");
-                return;
-            }
-            active.recordModelAssignment(selected);
-        } finally {
-            endBookkeeping();
         }
     }
 
@@ -4424,21 +4380,15 @@ public final class ConcolicRegionRuntime {
                     exactFieldPath, leafFieldSignature)) {
                 return;
             }
-            JsonElement expression;
             if (value != null && value != MissingValue.INSTANCE
                     && containerValue(value)) {
-                if (!trackContainerOrObserveConcrete(active, api, value,
-                        action)) {
-                    return;
-                }
-                ensurePathRecordingStarted(active);
-                active.recordSymbolizedInputPort(action.symbol, value);
-                expression = engineExpression(api.expression(value));
-            } else {
-                expression = mintExactFieldLeaf(active, action, api, owner,
-                        leafFieldSignature, symbol, value);
-                if (expression == null) return;
+                active.addUnresolvedOnce(symbol + ": "
+                        + CONTAINER_INPUT_NOT_MODELLED);
+                return;
             }
+            JsonElement expression = mintExactFieldLeaf(active, action, api,
+                    owner, leafFieldSignature, symbol, value);
+            if (expression == null) return;
             active.recordManualSymbolization(action, symbol, exactFieldPath,
                     leafFieldSignature, expression, true, false,
                     recordedScalar(value));
@@ -4457,9 +4407,8 @@ public final class ConcolicRegionRuntime {
      * ({@link #symbolizeField}) and the heap-field hook
      * ({@link #materializeField}) reach the same decision by the same
      * route -- {@link #retainPropagatedInput} said nothing propagated into
-     * this input and {@link #observeWithoutMinting} said the plan makes it
-     * mint-eligible, so the search starts here -- and only the first of
-     * them used to act on it.  The second refused with "exact input has no
+     * this input and the action is a declaration, so the search starts
+     * here -- and only the first of them used to act on it.  The second refused with "exact input has no
      * propagated VM expression", which is how hdfs-17960's declared
      * {@code <AtomicInteger: int value>} region input stayed concrete: the
      * accessor materialization is a {@code HEAP_OBJECT_FIELD} action, so
@@ -5076,19 +5025,14 @@ public final class ConcolicRegionRuntime {
                 return;
             }
             if (containerValue(value)) {
-                if (!trackContainerOrObserveConcrete(active, api, value,
-                        action)) {
-                    return;
-                }
-            } else {
-                api.symbolize(value, manualMintLabel(action.symbol,
-                        active.activation.occurrenceId,
-                        isPrimitiveBox(value)));
+                active.addUnresolvedOnce(action.symbol + ": "
+                        + CONTAINER_INPUT_NOT_MODELLED);
+                return;
             }
+            api.symbolize(value, manualMintLabel(action.symbol,
+                    active.activation.occurrenceId,
+                    isPrimitiveBox(value)));
             ensurePathRecordingStarted(active);
-            if (value != null && !liveArray) {
-                active.recordSymbolizedInputPort(action.symbol, value);
-            }
             JsonElement expression = value == null ? null
                     : engineExpression(api.expression(value));
             active.recordManualSymbolization(action, action.symbol,
@@ -5106,12 +5050,9 @@ public final class ConcolicRegionRuntime {
             JsonElement expression, String requestedSymbol,
             List<String> fieldPath, String fieldSignature) {
         if (!carriesInputAuthority(action, expression)) {
-            return observeWithoutMinting(active, action, value);
+            return observeCutPortWithoutMinting(active, action);
         }
         ensurePathRecordingStarted(active);
-        if (value != null && !value.getClass().isArray()) {
-            active.recordSymbolizedInputPort(action.symbol, value);
-        }
         active.recordManualSymbolization(action, requestedSymbol, fieldPath,
                 fieldSignature, expression, false, true,
                 recordedScalar(value));
@@ -5119,20 +5060,12 @@ public final class ConcolicRegionRuntime {
     }
 
     /**
-     * The one thing a tracked carrier does when nothing propagated into it.
+     * A declared communication cut port when nothing propagated into it yet.
      *
      * <p>Every caller of {@link #retainPropagatedInput} treats {@code false}
-     * as permission to mint.  Two kinds of action must not take it.</p>
-     *
-     * <p>The first is an action the plan tracked but did not make
-     * mint-eligible: the experiment declared where the search starts, and
-     * this read is not it.</p>
-     *
-     * <p>The second is a declared communication cut port, whatever the plan
-     * says about mint eligibility -- including a plan with no selection file
-     * at all, where every action is eligible by default.  The value at such
-     * a port is produced on the other side of the wire, and the instrumented
-     * frame installs the producer's expression with
+     * as permission to mint, and a cut port must not take it.  The value at
+     * such a port is produced on the other side of the wire, and the
+     * instrumented frame installs the producer's expression with
      * {@link #attachCommunicationLeaf} <em>after</em> this hook runs: the
      * handoff pass and the materialization pass both insert after the cut
      * statement, so the later pass lands closer to it and nothing symbolic
@@ -5148,51 +5081,25 @@ public final class ConcolicRegionRuntime {
      * .WIRE_FLOW_VALUE_UNBOUND}; a mint hid all three behind a root that
      * answered to nothing.</p>
      *
-     * <p>Either way: open path recording and publish the port at its
-     * recorded value -- the same two steps a selected shared read already
-     * takes -- so the VM still resolves the writer and creates the read
-     * boundary, and return {@code true} to say the caller has nothing left
-     * to do.</p>
-     *
-     * <p>A container is the exception and falls through: tracking one
-     * publishes the versions of a shared state, which is what a carrier
-     * exists to do, and mints no scalar the solver can move.</p>
+     * <p>Open path recording so the VM still resolves the writer and creates
+     * the read boundary, and return {@code true} to say the caller has
+     * nothing left to do.  Every other action that reaches this point was
+     * declared by the case, so minting is exactly what it asked for.</p>
      */
-    private static boolean observeWithoutMinting(
-            ActiveRegion active, SymbolizeAction action, Object value) {
-        if (action == null || containerValue(value)) return false;
-        boolean cutPort = declaredCommunicationCutPort(action);
-        if (action.mintEligible && !cutPort) return false;
-        if (cutPort) {
-            diag(DECLARED_CUT_PORT_MINT_REFUSED, "port="
-                    + safe(action.symbol) + " occurrence="
-                    + (active == null ? ""
-                    : safe(active.activation.occurrenceId)));
-        }
+    private static boolean observeCutPortWithoutMinting(
+            ActiveRegion active, SymbolizeAction action) {
+        if (!declaredCommunicationCutPort(action)) return false;
+        diag(DECLARED_CUT_PORT_MINT_REFUSED, "port="
+                + safe(action.symbol) + " occurrence="
+                + (active == null ? ""
+                : safe(active.activation.occurrenceId)));
         ensurePathRecordingStarted(active);
-        if (value != null && value != MissingValue.INSTANCE
-                && !value.getClass().isArray()) {
-            active.recordSymbolizedInputPort(action.symbol, value);
-        }
         return true;
     }
 
-    /**
-     * Whether a live value is a container whose whole state one carrier can
-     * select, rather than a reference slot.
-     *
-     * <p>An array is excluded: its elements already have their own element
-     * locations, and selecting the array whole would name the same storage
-     * twice.  A set is excluded because no carrier this build declares
-     * versions one whole.</p>
-     */
-    private static boolean wholeStateContainerValue(Object value) {
-        return value != null && !value.getClass().isArray()
-                && (value instanceof Map<?, ?>
-                || value instanceof List<?>
-                || value instanceof Deque<?>
-                || value instanceof java.util.Queue<?>);
-    }
+    /** Named refusal: a container is not an input this plan can model. */
+    static final String CONTAINER_INPUT_NOT_MODELLED =
+            "CONTAINER_INPUT_NOT_MODELLED";
 
     private static boolean containerValue(Object value) {
         return value != null && (value.getClass().isArray()
@@ -5282,30 +5189,6 @@ public final class ConcolicRegionRuntime {
         String descriptor = javaTypeDescriptor(javaType);
         return descriptor.length() == 1
                 && "ZBCSIJFD".contains(descriptor);
-    }
-
-    private static void requireTrackedContainer(
-            ConcolicVmBroker api, Object value, String symbol) throws Exception {
-        if (!api.trackContainer(value, symbol)) {
-            throw new UnsupportedOperationException(
-                    "custom VM has no symbolic model for container "
-                            + value.getClass().getName());
-        }
-    }
-
-    /**
-     * A bounded container port describes the concrete receiver/cardinality
-     * that scopes separately symbolized leaves.
-     */
-    private static boolean trackContainerOrObserveConcrete(
-            ActiveRegion active, ConcolicVmBroker api, Object value,
-            SymbolizeAction action) throws Exception {
-        if (api.trackContainer(value, action.symbol)) return true;
-        if (!"BOUNDED_CONTAINER_STATE".equals(action.symbolicDemand)) {
-            requireTrackedContainer(api, value, action.symbol);
-        }
-        active.recordSymbolizedInputPort(action.symbol, value);
-        return false;
     }
 
     private static Object readField(Object receiver, String name) {
@@ -6370,10 +6253,6 @@ public final class ConcolicRegionRuntime {
                 new ArrayList<>();
         private final Map<Long, PreparedBranch> preparedBranches =
                 new LinkedHashMap<>();
-        private final IdentityHashMap<Object, String>
-                symbolizedInputPorts = new IdentityHashMap<>();
-        private final Map<String, Integer> associativeAccessOccurrences =
-                new LinkedHashMap<>();
         /** One shared expression DAG for all read-outs in this VM session. */
         final VmExpressionTable.Store expressionStore;
         private long preparedBranchSequence;
@@ -7049,13 +6928,6 @@ public final class ConcolicRegionRuntime {
             return evidenceSnapshot;
         }
 
-        private void recordSymbolizedInputPort(String symbol, Object value) {
-            if (value == null) return;
-            String previous = symbolizedInputPorts.get(value);
-            symbolizedInputPorts.put(value, previous == null
-                    || previous.equals(symbol) ? symbol : "");
-        }
-
         /**
          * The one unspent assignment matching {@code matcher}.  Two survivors
          * address nothing, so the ambiguity is filed and neither applies.
@@ -7377,7 +7249,6 @@ public final class ConcolicRegionRuntime {
         final int accessorCallUnitIndex;
         final String accessorDeclaredCallee;
         final String accessorImplementationMethod;
-        final String symbolicDemand;
         /** How the finalizer classified the port that minted this action. */
         final String sourceKind;
         /** The external call whose return this action symbolizes, or "". */
@@ -7390,19 +7261,6 @@ public final class ConcolicRegionRuntime {
         final String recordedPrimitiveValue;
         /** The selection file named this input by hand: mint, do not reuse. */
         final boolean declaredSymbolicRoot;
-        /**
-         * Whether this input may become a fresh root at all.
-         *
-         * <p>The scheduler tracks every carrier -- so the VM keeps
-         * publishing its {@code ReadFrom} candidates and container versions
-         * -- while reserving the mint for the three declaring authorities.
-         * A tracked carrier that no propagated expression reached is simply
-         * read at its recorded value; falling through to a mint would put a
-         * free root exactly where the experiment said there is none.
-         * Absent from a plan row it defaults to {@code true}, which is the
-         * unnarrowed behaviour of a campaign with no selection file.</p>
-         */
-        final boolean mintEligible;
         final String rootKind;
         final List<String> fieldPath;
         final String javaType;
@@ -7456,7 +7314,6 @@ public final class ConcolicRegionRuntime {
                     "accessorDeclaredCallee");
             this.accessorImplementationMethod = optionalString(json,
                     "accessorImplementationMethod");
-            this.symbolicDemand = optionalString(json, "symbolicDemand");
             this.sourceKind = optionalString(json, "sourceKind");
             this.declaredCallee = optionalString(json, "declaredCallee");
             this.siteId = optionalString(json, "siteId");
@@ -7465,7 +7322,6 @@ public final class ConcolicRegionRuntime {
                     ? optionalString(json, "primitiveValue") : "";
             this.declaredSymbolicRoot = optionalBool(json,
                     InputActionCatalog.DECLARED_SYMBOLIC_ROOT, false);
-            this.mintEligible = optionalBool(json, "mintEligible", true);
             this.rootKind = optionalString(json, "rootKind");
             String explicitLeafSignature = firstNonBlank(
                     optionalString(json, "leafFieldSignature"),

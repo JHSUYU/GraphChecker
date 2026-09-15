@@ -282,7 +282,6 @@ public final class RuntimeSelectedRegionFinalizer {
         program.regionEdges.addAll(runtimeFieldFlows);
         stampEdgeOccurrences(program.regionEdges,
                 occurrenceByRecordedRootCall);
-        markBoundedMutationStateFrontiers(program);
         // The declarations are static and the occurrence-owned copies below
         // are dynamic, so this remains a typed-port join rather than a value
         // or payload guess.  applyClosure removes every declaration and edge
@@ -302,9 +301,6 @@ public final class RuntimeSelectedRegionFinalizer {
         program.regionEdges.addAll(retainExactRequestFaultControls(
                 program, closure, runtimeOccurrenceLinks));
         applyClosure(program, closure);
-        // A Map becomes symbolic only when the retained target slice contains
-        // its exact declared mutation-to-read flow.
-        markBoundedContainerStatePorts(program);
         // Declared last, and deliberately after the closure filter.
         declareCommunicationPorts(program, cutPorts);
         canonicalizeRegionEdges(program);
@@ -2293,148 +2289,6 @@ public final class RuntimeSelectedRegionFinalizer {
         return regionId + "\n" + rootCallId;
     }
 
-    /** Marks retained, failure-directed container flows as symbolic state. */
-    private static void markBoundedContainerStatePorts(
-            StaticProgram program) {
-        Map<String, Map<String, Object>> regionsById = program.regionsById();
-        for (Map<String, Object> edge : program.regionEdges) {
-            if (!"RUNTIME_FIELD_FLOW".equals(text(edge.get("kind")))) {
-                continue;
-            }
-            List<String> declarations = strings(
-                    edge.get("fieldPathDeclarations"));
-            DeclaredFieldCell leaf = declarations.isEmpty() ? null
-                    : DeclaredFieldCell.parse(
-                    declarations.get(declarations.size() - 1));
-            if (leaf == null || JavaContainerTypes.shape(leaf.type)
-                    == JavaContainerTypes.Shape.NONE) {
-                continue;
-            }
-
-            String fromRegion = text(edge.get("fromRegion"));
-            String toRegion = text(edge.get("toRegion"));
-            String fromOccurrence = text(edge.get("fromOccurrenceId"));
-            String toOccurrence = text(edge.get("toOccurrenceId"));
-            Map<String, Object> producerRegion = regionsById.get(fromRegion);
-            Map<String, Object> consumerRegion = regionsById.get(toRegion);
-            Map<String, Object> output = exactRegionPort(producerRegion,
-                    "outputs", text(edge.get("fromPort")), fromOccurrence);
-            Map<String, Object> consumer = exactRegionPort(consumerRegion,
-                    "symbolicInputs", text(edge.get("toPort")), toOccurrence);
-            if (output == null || consumer == null) continue;
-            markBoundedContainerPort(output, leaf.type);
-            markBoundedContainerPort(consumer, leaf.type);
-        }
-    }
-
-    private static Map<String, Object> exactRegionPort(
-            Map<String, Object> region, String field, String portId,
-            String occurrenceId) {
-        if (region == null || portId.isEmpty() || occurrenceId.isEmpty()) {
-            return null;
-        }
-        Map<String, Object> selected = null;
-        for (Map<String, Object> port : rows(region.get(field))) {
-            if (!portId.equals(text(port.get("portId")))
-                    || !occurrenceId.equals(
-                    text(port.get("occurrenceId")))) {
-                continue;
-            }
-            if (selected != null) return null;
-            selected = port;
-        }
-        return selected;
-    }
-
-    private static void markBoundedContainerPort(
-            Map<String, Object> port, String javaType) {
-        port.put("javaType", javaType);
-        port.put("symbolicDemand", "BOUNDED_CONTAINER_STATE");
-        port.put("dependencyRole", DependencyRole.VALUE_FRONTIER);
-    }
-
-    /**
-     * Marks primitive element fields that are part of a demanded container
-     * transition rather than unrelated leaves of a transported reference.
-     */
-    private static void markBoundedMutationStateFrontiers(
-            StaticProgram program) {
-        for (Map<String, Object> region : program.regions) {
-            String regionId = text(region.get("regionId"));
-            List<Map<String, Object>> edges = program.regionGraph(regionId);
-            if (edges.isEmpty()) continue;
-
-            Set<String> semanticSites = new LinkedHashSet<>();
-            for (Map<String, Object> branch
-                    : rows(region.get("branchPolicies"))) {
-                if ("EXPLORE".equals(text(branch.get("policy")))
-                        && !Boolean.TRUE.equals(booleanValue(
-                        branch.get("loopControlGuard")))) {
-                    String site = text(branch.get("siteId"));
-                    if (!site.isEmpty()) semanticSites.add(site);
-                }
-            }
-            if (semanticSites.isEmpty()) continue;
-
-            Map<String, List<Map<String, Object>>> incoming =
-                    program.regionIncoming(regionId);
-            Map<String, List<Map<String, Object>>> inputBoundaries =
-                    new LinkedHashMap<>();
-            for (Map<String, Object> input
-                    : rows(region.get("symbolicInputs"))) {
-                for (String cell : RegionDemandIndex.boundaryCells(input)) {
-                    inputBoundaries.computeIfAbsent(cell,
-                            ignored -> new ArrayList<>()).add(input);
-                }
-            }
-
-            for (Map<String, Object> output : rows(region.get("outputs"))) {
-                if (!containerMutationPort(output)) {
-                    continue;
-                }
-                String outputPort = text(output.get("portId"));
-                for (String outputCell : mutationOutputCells(output)) {
-                    for (Map<String, Object> guard : incoming.getOrDefault(
-                            outputCell,
-                            Collections.<Map<String, Object>>emptyList())) {
-                        String guardSite = firstNonEmpty(
-                                text(guard.get("guardSiteId")),
-                                text(guard.get("siteId")));
-                        if (!"GUARD".equals(text(guard.get("transferKind")))
-                                || !semanticSites.contains(guardSite)) {
-                            continue;
-                        }
-                        markMutationValueFrontiers(
-                                text(guard.get("fromCell")), incoming,
-                                inputBoundaries, outputCell, outputPort,
-                                guardSite);
-                    }
-                }
-            }
-        }
-    }
-
-    /**
-     * Walks value sources backward from {@code seeds}, stopping at every cell
-     * {@code leaf} accepts.
-     */
-    private static Set<String> walkValueSources(
-            Collection<String> seeds,
-            Map<String, List<Map<String, Object>>> incoming,
-            Predicate<String> leaf) {
-        return StaticProgram.closure(seeds, cell -> {
-            if (leaf.test(cell)) return Collections.<String>emptyList();
-            List<String> sources = new ArrayList<>();
-            for (Map<String, Object> edge : incoming.getOrDefault(cell,
-                    Collections.<Map<String, Object>>emptyList())) {
-                if ("GUARD".equals(text(edge.get("transferKind")))) continue;
-                String from = text(edge.get("fromCell"));
-                if (!from.isEmpty()) sources.add(from);
-            }
-            return sources;
-        });
-    }
-
     /**
      * The nearest container role reachable from {@code start} over exact
      * local passes: a value frontier as soon as one container receiver
@@ -2471,42 +2325,6 @@ public final class RuntimeSelectedRegionFinalizer {
                 : DependencyRole.VALUE_FRONTIER;
     }
 
-    private static void markMutationValueFrontiers(
-            String start,
-            Map<String, List<Map<String, Object>>> incoming,
-            Map<String, List<Map<String, Object>>> inputBoundaries,
-            String outputCell, String outputPort, String guardSite) {
-        walkValueSources(start.isEmpty()
-                ? Collections.<String>emptyList()
-                : Collections.singletonList(start), incoming, cell -> {
-            boolean foundFrontier = false;
-            for (Map<String, Object> input : inputBoundaries.getOrDefault(
-                    cell, Collections.<Map<String, Object>>emptyList())) {
-                String sourceKind = text(input.get("sourceKind"));
-                if (!("ACCESSOR_RETURN".equals(sourceKind)
-                        || EXTERNAL_CALL_RETURN.equals(sourceKind))
-                        || !primitiveValuePort(input)) {
-                    continue;
-                }
-                foundFrontier = true;
-                if (text(input.get("symbolicDemand")).startsWith(
-                        "CONCRETE_")
-                        || !text(input.get(
-                        "rpcConcreteRootAuthority")).isEmpty()) {
-                    continue;
-                }
-                input.put("symbolicDemand", "BOUNDED_STATE_FRONTIER");
-                addUniqueValue(input, "boundedMutationOutputCells",
-                        outputCell);
-                addUniqueValue(input, "boundedMutationOutputPorts",
-                        outputPort);
-                addUniqueValue(input, "boundedMutationGuardSites",
-                        guardSite);
-            }
-            return foundFrontier;
-        });
-    }
-
     private static void addUniqueValue(Map<String, Object> row, String key,
                                        String value) {
         if (value.isEmpty()) return;
@@ -2528,15 +2346,6 @@ public final class RuntimeSelectedRegionFinalizer {
             }
         }
         return false;
-    }
-
-    private static boolean primitiveValuePort(Map<String, Object> port) {
-        if (primitiveLeaf(port)) return true;
-        String type = text(port.get("javaType"));
-        return "boolean".equals(type) || "byte".equals(type)
-                || "char".equals(type) || "short".equals(type)
-                || "int".equals(type) || "long".equals(type)
-                || "float".equals(type) || "double".equals(type);
     }
 
     private static List<String> mutationOutputCells(

@@ -58,8 +58,6 @@ public final class ExecutionTask extends PlanRow {
         return value;
     }
 
-    /** Member a scheduler declares this task's symbolic carriers in. */
-    public static final String SHARED_CARRIERS = "sharedCarriers";
     /** Write sites of a declared input's cell the replay must observe. */
     public static final String OBSERVED_WRITE_SITES = "observedWriteSites";
     /** Solver-selected concrete values for exact guarded primitive reads. */
@@ -482,10 +480,6 @@ public final class ExecutionTask extends PlanRow {
      */
     public List<CommunicationHandoffSpec> communicationHandoffs() {
         return CommunicationHandoffSpec.decode(encoded);
-    }
-
-    public JsonArray sharedCarriers() {
-        return array(encoded, SHARED_CARRIERS).deepCopy();
     }
 
     /**

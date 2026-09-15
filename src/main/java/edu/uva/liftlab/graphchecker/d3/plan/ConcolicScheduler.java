@@ -78,9 +78,6 @@ public final class ConcolicScheduler {
     /** A manual root still declared by a planner-minted region hash. */
     static final String REGION_ID_DECLARATION =
             "SYMBOLIC_INPUT_REGION_ID_DECLARATION";
-    /** Row kind of one refused automatic root candidate. */
-    static final String SUPPRESSED_ROOT_CANDIDATE =
-            "SUPPRESSED_ROOT_CANDIDATE";
     private static final Pattern LOCAL_CELL = Pattern.compile(
             "^(<.+>)::([^#]+)(?:#.*)?$");
     private ConcolicScheduler() {
@@ -137,16 +134,13 @@ public final class ConcolicScheduler {
     private static Result scheduleLoaded(
             Arguments arguments, LoadedInputs loaded)
             throws IOException {
-        // One slice for the whole schedule: which locations this campaign's
-        // manual roots can still reach.  Seeded from the raw proposals, so
-        // it is already answerable when materializationPlan asks whether a
-        // structure carrier is on the root's forward slice -- and every
-        // region afterwards narrows against the same answer.
-        loaded.symbolicInputs.seedCarrierSlice(loaded.refinedGraph,
-                rawProposals(loaded.regionPlans));
+        // A declaration names a value and the graph names that value once
+        // per local it is copied into, so the declared names are resolved
+        // over Soot's exact-copy edges once, before any region selects.
+        loaded.symbolicInputs.resolveDeclaredNames(loaded.refinedGraph);
         List<Candidate> candidates = candidates(arguments,
                 loaded.regionPlans, loaded.regionIndex,
-                loaded.definitions, loaded.symbolicInputs.carrierSlice());
+                loaded.definitions);
         Collections.sort(candidates, Candidate.ORDER);
 
         LoopBoundPolicy loopBound = declaredLoopBounds(
@@ -355,12 +349,6 @@ public final class ConcolicScheduler {
                 : RuntimeWorkflowDiscovery.candidateWorkflow(
                         loaded.regionPlans, arguments.targetOccurrence);
         requireRetainedRegions(arguments.retainRegions, workflow);
-        // The root-dependence slice scopes instrumentation and flips; it
-        // does not decide which occurrences are scheduled.  A replay task
-        // set is the anchor's closure, and an occurrence outside it runs
-        // concretely rather than being pruned from the plan.
-        loaded.symbolicInputs.seedCarrierSlice(loaded.refinedGraph,
-                rawProposals(loaded.regionPlans));
         if (workflow.scheduledTaskCount() > arguments.maxJobs) {
             // A bare count says only that the campaign is too big; what a
             // reader needs is which admission rule bought the rows, so the
@@ -589,26 +577,11 @@ public final class ConcolicScheduler {
         return result;
     }
 
-    /** Every action the region plan proposes, before materialization
-     *  narrows any of them, keyed by the region that proposes it. */
-    private static List<Map.Entry<String, JsonArray>> rawProposals(
-            List<RegionInstancePlan> regionPlans) {
-        List<Map.Entry<String, JsonArray>> proposals = new ArrayList<>();
-        for (RegionInstancePlan plan : regionPlans) {
-            for (Goal goal : plan.goals()) {
-                proposals.add(new AbstractMap.SimpleImmutableEntry<>(
-                        plan.regionId(), goal.symbolize()));
-            }
-        }
-        return proposals;
-    }
-
     private static List<Candidate> candidates(Arguments arguments,
                                               List<RegionInstancePlan>
                                                       regionPlans,
                                               Map<String, Region> regions,
-                                              DefinitionIndex definitions,
-                                              RootDependenceSlice slice)
+                                              DefinitionIndex definitions)
             throws IOException {
         List<Candidate> result = new ArrayList<>();
         for (RegionInstancePlan plan : regionPlans) {
@@ -633,8 +606,7 @@ public final class ConcolicScheduler {
                 if (!goal.replayable()) {
                     continue;
                 }
-                appendGoalCandidates(arguments, result, goal,
-                        definitions, slice);
+                appendGoalCandidates(arguments, result, goal, definitions);
             }
         }
         return result;
@@ -670,7 +642,7 @@ public final class ConcolicScheduler {
 
     private static void appendGoalCandidates(
             Arguments arguments, List<Candidate> result, Goal goal,
-            DefinitionIndex definitions, RootDependenceSlice slice)
+            DefinitionIndex definitions)
             throws IOException {
             Set<String> definitionMethods =
                     goal.runtimeDefinitionMethods();
@@ -678,7 +650,7 @@ public final class ConcolicScheduler {
                 JsonArray branches = goal.branches();
                 JsonArray inputActions = materializationPlan(
                         goal, goal.symbolize(), definitions, definitionMethods,
-                        branches, slice);
+                        branches);
                 result.add(new Candidate(goal, branches,
                         TargetBranch.regionPath(), true,
                         inputActions,
@@ -719,7 +691,7 @@ public final class ConcolicScheduler {
             // guarded throw.
             JsonArray targetSourceFrontier = materializationPlan(goal,
                     goal.symbolize(), definitions, definitionMethods,
-                    branches, slice);
+                    branches);
             for (int index = 0; index < branches.size(); index++) {
                 JsonElement element = branches.get(index);
                 if (!element.isJsonObject()) {
@@ -752,7 +724,7 @@ public final class ConcolicScheduler {
                         target);
                 JsonArray inputActions = materializationPlan(goal,
                         goal.symbolize(), definitions,
-                        definitionMethods, reachSlice, slice);
+                        definitionMethods, reachSlice);
                 inputActions = targetSymbolicFrontier(inputActions);
                 inputActions = mergeSymbolicFrontier(inputActions,
                         targetSourceFrontier);
@@ -908,8 +880,7 @@ public final class ConcolicScheduler {
             Goal goal, JsonArray sourceActions,
             DefinitionIndex definitions,
             Set<String> regionMethods,
-            JsonArray demandedBranches,
-            RootDependenceSlice slice) {
+            JsonArray demandedBranches) {
         JsonArray result = new JsonArray();
         Set<String> represented = new LinkedHashSet<>();
         // The frame the root-entry hooks are injected into.
@@ -917,7 +888,6 @@ public final class ConcolicScheduler {
                 "rootSelector"), "method");
         Set<String> guardDependent = definitions.guardDependentCells(
                 exploredGuardOperands(demandedBranches));
-        Set<String> declaredCarriers = declaredCarrierLocations(goal);
         for (JsonElement element : sourceActions) {
             if (!element.isJsonObject()) {
                 continue;
@@ -928,63 +898,18 @@ public final class ConcolicScheduler {
             String cell = optionalString(action, "cell");
             String dependencyRole = DependencyRole.normalize(
                     action.get("dependencyRole"));
-            // A container type describes how an admitted value frontier is
-            // materialized; it is not authority to turn a structural owner
-            // into a fresh symbolic input.  Consumer-side structural
-            // receivers keep their concrete container identity while the
-            // propagated element expressions remain symbolic.  Explicit
-            // VALUE_FRONTIER containers still use the bounded model.
-            if (DependencyRole.VALUE_FRONTIER.equals(dependencyRole)
-                    && JavaContainerTypes.shape(optionalString(action, "javaType"))
-                    != JavaContainerTypes.Shape.NONE) {
-                binding.addProperty("symbolicDemand",
-                        "BOUNDED_CONTAINER_STATE");
-            }
-            // A CONCRETE_STRUCTURE_CARRIER role says "this port names a
-            // structural owner, not a value the solver moves".  That is the
-            // right default and the wrong answer inside the root slice: the
-            // reference itself is then shared state whose writers a root
-            // decides, and the read arms over which of them wrote it.  In
-            // HDFS-17899 bug3 the wire key id is currentKey.keyId read at
-            // BlockTokenSecretManager:538 on the source DataNode, and
-            // currentKey's writers (updateKeys / setKeys) are root-dependent,
-            // so refusing the role outright loses that guarded read.  Outside
-            // the slice the role still decides, because a structural owner no
-            // root reaches is a constant for this failure.
-            boolean rootDependentStructureCarrier =
-                    !DependencyRole.VALUE_FRONTIER.equals(dependencyRole)
-                            && slice != null && slice.usable()
-                            && slice.carries(action);
+            // A structural owner is not a value the solver moves: the
+            // object graph a replay walks is replayed, and a container is
+            // symbolic only once a root-derived value is put into it, which
+            // the VM states inside the expression it then carries.
             if (concreteOnlyInput(binding)
-                    || (!DependencyRole.VALUE_FRONTIER.equals(dependencyRole)
-                    && !rootDependentStructureCarrier)) {
+                    || !DependencyRole.VALUE_FRONTIER.equals(dependencyRole)) {
                 addConcreteInputAction(result, represented, binding,
                         concreteOnlyInputReason(action, dependencyRole));
                 continue;
             }
-            if (rootDependentStructureCarrier) {
-                binding.addProperty("rootDependentStructureCarrier", true);
-            }
-            boolean boundedContainerState =
-                    supportedBoundedContainerState(binding, location);
-            // A reference-typed location on the root-dependence slice is
-            // shared state too: its writers install object identities a root
-            // decides between, and a read through it must arm over those
-            // identities instead of stopping at the scalar leaf contract.
-            boolean referenceCarrier = !boundedContainerState
-                    && slice != null && slice.usable()
-                    && slice.carries(action)
-                    && supportedReferenceCarrier(binding, location)
-                    && declaredReferenceCarrier(declaredCarriers, slice,
-                    action, cell);
-            if (referenceCarrier) {
-                binding.addProperty("symbolicDemand",
-                        REFERENCE_CARRIER_DEMAND);
-            }
-            String unsupportedLeaf = boundedContainerState ? ""
-                    : referenceCarrier
-                    ? unsupportedFieldLeafPathReason(action, location, cell)
-                    : unsupportedSymbolicLeafReason(action, location, cell);
+            String unsupportedLeaf = unsupportedSymbolicLeafReason(
+                    action, location, cell);
             if (!unsupportedLeaf.isEmpty()) {
                 addConcreteInputAction(result, represented, binding,
                         unsupportedLeaf);
@@ -1048,15 +973,12 @@ public final class ConcolicScheduler {
                     continue;
                 }
             } else if ("CALL_RETURN".equals(location)) {
-                if (!boundedContainerState
-                        && JavaPrimitiveBoxing.deterministicValueOfReturn(
-                        cell)) {
+                if (JavaPrimitiveBoxing.deterministicValueOfReturn(cell)) {
                     addConcreteInputAction(result, represented, binding,
                             "CONCRETE_DETERMINISTIC_BOXING_RETURN");
                     continue;
                 }
-                if (!boundedContainerState
-                        && JavaContainerTypes.symbolicResultReturn(cell)) {
+                if (JavaContainerTypes.symbolicResultReturn(cell)) {
                     addConcreteInputAction(result, represented, binding,
                             "CONCRETE_CONTAINER_RESULT_RETURN");
                     continue;
@@ -1229,9 +1151,7 @@ public final class ConcolicScheduler {
 
     /**
      * The exact-field-path half of the leaf contract: a field port must name
-     * one declared leaf whose name and type agree with the access.  Stated
-     * separately so a reference carrier, which is exempt from the scalar
-     * type gate, still has to satisfy it.
+     * one declared leaf whose name and type agree with the access.
      */
     static String unsupportedFieldLeafPathReason(
             JsonObject action, String location, String cell) {
@@ -1260,87 +1180,6 @@ public final class ConcolicScheduler {
             return "CONCRETE_FIELD_LEAF_TYPE_MISMATCH";
         }
         return "";
-    }
-
-    /** The {@code owner#field} keys one goal declares as shared carriers. */
-    private static Set<String> declaredCarrierLocations(Goal goal) {
-        Set<String> locations = new LinkedHashSet<>();
-        for (JsonElement element : goal.sharedCarriers()) {
-            if (!element.isJsonObject()) continue;
-            JsonObject carrier = element.getAsJsonObject();
-            String location = SharedFieldFlow.fieldKey(
-                    optionalString(carrier, "declaringClass"),
-                    optionalString(carrier, "fieldName"));
-            if (!location.isEmpty()) locations.add(location);
-        }
-        return locations;
-    }
-
-    /**
-     * Whether the replay will actually track this reference.
-     *
-     * <p>A reference port is tracked and never minted, which makes the
-     * carrier declaration the whole of its materialization: with no
-     * declaration the replay has nothing to select, the getfield resolves no
-     * writer, and the port would reach the runtime as a SYMBOLIC input it
-     * cannot serve.  The plan therefore admits the demand only where the
-     * planner declared the location and root dependence reaches it.  A
-     * plan frozen before references were declared keeps its old concrete
-     * answer rather than gaining a port with no carrier behind it.</p>
-     */
-    private static boolean declaredReferenceCarrier(
-            Set<String> declaredCarriers, RootDependenceSlice slice,
-            JsonObject action, String cell) {
-        FieldPathSpec.DeclaredField leaf = declaredLeaf(action, cell);
-        if (leaf == null) return false;
-        String location = SharedFieldFlow.fieldKey(leaf.owner(), leaf.name());
-        return !location.isEmpty() && declaredCarriers.contains(location)
-                && slice.reachesLocation(location, null);
-    }
-
-    /**
-     * The demand a reference-typed shared location carries when its object
-     * identity is the value the solver arms over.  The VM versions the field
-     * as identities (INITIAL: the referent at selection; REF_WRITE: the
-     * installed object), and a read through it resolves a dependent field of
-     * the selected object rather than of the recorded one.
-     */
-    public static final String REFERENCE_CARRIER_DEMAND = "REFERENCE_CARRIER";
-
-    /**
-     * Admits a plain object reference as an identity carrier.  The type
-     * contract is {@link JavaPrimitiveSmtSemantics#referenceIdentityCarrier},
-     * which is also what declares the location a shared carrier one stage
-     * earlier, so plan and runtime cannot disagree about which references
-     * are versioned.  Only a heap field access qualifies here: the runtime
-     * selects such a carrier at the exact getfield without minting, whereas
-     * receiver-entry and argument bindings would symbolize the object.
-     */
-    static boolean supportedReferenceCarrier(JsonObject action,
-                                             String location) {
-        return "HEAP_OBJECT_FIELD".equals(location)
-                && JavaPrimitiveSmtSemantics.referenceIdentityCarrier(
-                optionalString(action, "javaType"));
-    }
-
-    /** Admits a container identity only as a bounded relational state port. */
-    private static boolean supportedBoundedContainerState(
-            JsonObject action, String location) {
-        if (!"BOUNDED_CONTAINER_STATE".equals(
-                optionalString(action, "symbolicDemand"))) {
-            return false;
-        }
-        String javaType = optionalString(action, "javaType");
-        if (JavaContainerTypes.shape(javaType)
-                == JavaContainerTypes.Shape.NONE) {
-            return false;
-        }
-        return "ARGUMENT".equals(location)
-                || "RECEIVER_FIELD".equals(location)
-                || "ARGUMENT_FIELD".equals(location)
-                || "ARGUMENT_FIELD_PATH".equals(location)
-                || "HEAP_OBJECT_FIELD".equals(location)
-                || "CALL_RETURN".equals(location);
     }
 
     private static List<String> exactActionFieldPath(
@@ -2179,7 +2018,7 @@ public final class ConcolicScheduler {
                 : path.toAbsolutePath().normalize().toString();
     }
 
-    /** One row: which file decided the root set and what it refused. */
+    /** One row: which file decided the root set. */
     static JsonObject rootPolicyTelemetry(
             Path declarations, SymbolicInputSelection selection) {
         JsonObject row = new JsonObject();
@@ -2187,9 +2026,6 @@ public final class ConcolicScheduler {
         row.addProperty("kind", SYMBOLIC_ROOT_POLICY);
         row.addProperty("declarations",
                 declarations == null ? "" : declarations.toString());
-        JsonArray suppressed = selection.suppressedRootCandidates();
-        row.addProperty("suppressedRootCandidateCount", suppressed.size());
-        row.add("suppressedRootCandidates", suppressed);
         JsonArray decisions = selection.rootDecisions();
         int tracked = 0;
         int mintEligible = 0;
@@ -2208,15 +2044,6 @@ public final class ConcolicScheduler {
         row.addProperty("trackedActionCount", tracked);
         row.addProperty("mintEligibleActionCount", mintEligible);
         row.addProperty("declaredActionCount", declared);
-        RootDependenceSlice slice = selection.carrierSlice();
-        row.addProperty("carrierSliceApplied", slice.usable());
-        row.addProperty("carrierSliceReason", slice.usable()
-                ? "ROOT_DEPENDENT_CARRIERS" : "NO_ROOT_CELL_IN_REFINED_GRAPH");
-        row.addProperty("rootCellCount", slice.rootCellCount());
-        row.addProperty("rootDependentCellCount", slice.reachableCellCount());
-        JsonArray carriers = selection.carrierLocations();
-        row.addProperty("carrierLocationCount", carriers.size());
-        row.add("carrierLocations", carriers);
         return row;
     }
 
@@ -2238,411 +2065,72 @@ public final class ConcolicScheduler {
     }
 
     /**
-     * Which shared locations the manual roots can still reach.
+     * Every dataflow cell one proposed input action names.
      *
-     * <p>A carrier is not something an experiment declares and not "every
-     * read the recording made".  It is a location whose value this
-     * campaign's roots can still change, and the runtime-refined dataflow
-     * graph already states that relation on both of its halves:</p>
-     *
-     * <ul>
-     *   <li><b>data dependence</b> -- a value edge ({@code field_write},
-     *   {@code field_mutation}, {@code call_return}, {@code local_def_use},
-     *   {@code caller_argument}, the wire {@code handoff} kinds) carries a
-     *   root-dependent value into the cell it targets, so that cell is
-     *   root-dependent too;</li>
-     *   <li><b>control dependence</b> -- a {@code GUARD} edge
-     *   ({@code path_guard_dependency}, {@code heap_mutation_path_guard},
-     *   {@code receiver_field_effect_path_guard}) runs from the guard's
-     *   operand to the definition the guard controls, so a write whose case
-     *   partition a root decides is reached by exactly the same forward
-     *   walk.</li>
-     * </ul>
-     *
-     * <p>So one transitive forward closure from the root cells over
-     * <em>all</em> edges answers both, and the fixed point is what the
-     * design calls the carrier set: a read of a carrier that feeds another
-     * store lands on that store's cell on the next hop.</p>
-     *
-     * <p><b>Static final fields can never be carriers</b>, and that is a
-     * property of the walk rather than a case in it: a field nothing ever
-     * writes appears only as a {@code fromCell}, is the target of no edge,
-     * and is therefore unreachable from any root unless it is one.
-     * {@code aFieldNothingWritesIsNeverACarrier} pins it.</p>
-     *
-     * <p>The slice is <b>withheld</b> -- {@link #usable()} false, nothing
-     * narrowed -- when no declared root resolves to a cell of this graph.
-     * A campaign whose roots the graph does not name has no forward
-     * dependence to measure, and narrowing on an empty seed would concrete
-     * every read and delete the evidence rather than the waste (the
-     * measured HDFS-17960 collapse: 46 guarded reads to 0).</p>
+     * <p>The read's own cell is the location for a field or a call
+     * return; {@code dependencyCells} is the local the value lands in,
+     * which is the only cell an accessor read shares with the graph --
+     * a library field like {@code AtomicInteger#value} is a source cell
+     * of its own and converges with its receiver's field read only at
+     * that local.  Both are consulted so
+     * {@code SnapshotManager#numSnapshots} selects the
+     * {@code AtomicInteger#value} port the experiment used to have to
+     * name by hand.</p>
      */
-    static final class RootDependenceSlice {
-        /** Every cell a root can still reach, roots included. */
-        private final Set<String> reachable;
-        /** The root cells this graph actually named. */
-        private final Set<String> roots;
-        /**
-         * Location keys ({@code owner#field}) admitted beside the reachable
-         * cells: the fields of the proposed actions the slice carries.
-         *
-         * <p>A library leaf such as {@code AtomicInteger#value} is a source
-         * cell of its own and meets its receiver's field only at the local
-         * the accessor's value lands in, so it is on the slice as an action
-         * ({@link #carries}) without its field ever being a reachable cell.
-         * A location decision -- which shared carriers a task declares,
-         * which flows carry root dependence -- must give the same answer as
-         * the action decision, so those fields are admitted here.</p>
-         */
-        private final Set<String> admittedLocations;
-
-        private RootDependenceSlice(Set<String> reachable, Set<String> roots) {
-            this(reachable, roots, Collections.<String>emptySet());
+    static Set<String> actionCells(JsonObject action) {
+        Set<String> cells = new LinkedHashSet<>();
+        for (String member : new String[]{"cell", "declaredFieldSignature",
+                "accessFieldSignature", "leafFieldSignature"}) {
+            String value = optionalString(action, member);
+            if (!value.isEmpty()) cells.add(value);
         }
-
-        private RootDependenceSlice(Set<String> reachable, Set<String> roots,
-                                    Set<String> admittedLocations) {
-            this.reachable = reachable;
-            this.roots = roots;
-            this.admittedLocations = admittedLocations;
-        }
-
-        /** The withheld slice: it narrows nothing. */
-        static RootDependenceSlice withheld() {
-            return new RootDependenceSlice(Collections.<String>emptySet(),
-                    Collections.<String>emptySet());
-        }
-
-        /**
-         * This slice with the locations of the carried actions admitted.
-         *
-         * <p>Every action in {@code proposals} that {@link #carries} or that
-         * {@code root} calls a root contributes the fields it names -- the
-         * declared, access and leaf signatures, the last field-path
-         * declaration and the Atomic value leaf behind a declared atomic
-         * mutator -- as {@code owner#field} keys.  A withheld slice stays
-         * withheld.</p>
-         */
-        RootDependenceSlice admittingActionLocations(
-                Iterable<Map.Entry<String, JsonArray>> proposals,
-                java.util.function.BiPredicate<String, JsonObject> root) {
-            if (!usable()) return this;
-            Set<String> admitted = new LinkedHashSet<>(admittedLocations);
-            for (Map.Entry<String, JsonArray> proposal : proposals == null
-                    ? Collections.<Map.Entry<String, JsonArray>>emptyList()
-                    : proposals) {
-                for (JsonElement element : proposal.getValue()) {
-                    if (!element.isJsonObject()) continue;
-                    JsonObject action = element.getAsJsonObject();
-                    if (!carries(action)
-                            && !root.test(proposal.getKey(), action)) {
-                        continue;
-                    }
-                    admitted.addAll(actionLocations(action));
-                }
-            }
-            return new RootDependenceSlice(reachable, roots, admitted);
-        }
-
-        /**
-         * The {@code owner#field} keys of every field one action names,
-         * spelled as the planner spells a shared carrier.
-         */
-        static Set<String> actionLocations(JsonObject action) {
-            Set<String> keys = new LinkedHashSet<>();
-            List<String> declarations = new ArrayList<>();
-            for (String member : new String[]{"declaredFieldSignature",
-                    "accessFieldSignature", "leafFieldSignature"}) {
-                String value = optionalString(action, member);
-                if (!value.isEmpty()) declarations.add(value);
-            }
-            JsonArray paths = array(action, "fieldPathDeclarations");
-            if (paths.size() > 0
-                    && paths.get(paths.size() - 1).isJsonPrimitive()) {
-                declarations.add(
-                        paths.get(paths.size() - 1).getAsString().trim());
-            }
-            String callee = optionalString(action, "declaredCallee");
-            for (String declaration : declarations) {
-                FieldPathSpec.DeclaredField field =
-                        FieldPathSpec.declaredField(declaration);
-                if (field == null) continue;
-                String key = SharedFieldFlow.fieldKey(field.owner(),
-                        field.name());
-                if (!key.isEmpty()) keys.add(key);
-                FieldPathSpec.DeclaredField atomic = FieldPathSpec
-                        .declaredField(SharedFieldFlow.atomicValueField(
-                                field.signature(), callee));
-                if (atomic != null) {
-                    keys.add(SharedFieldFlow.fieldKey(atomic.owner(),
-                            atomic.name()));
-                }
-            }
-            return keys;
-        }
-
-        /**
-         * This slice narrowed to what the failing read can still consume.
-         *
-         * <p>The forward closure says which cells a root can move; it does
-         * not say which of them the failure ever looks at.  A location the
-         * roots reach but the fatal read's backward slice does not is a
-         * constant <em>for this failure</em>: the recording fixed it, every
-         * replay arm writes the value it observed, and versioning it grows
-         * the campaign without adding an arm.  Intersecting the two is what
-         * makes "carries a root" mean "carries a root <em>to the read that
-         * throws</em>".</p>
-         *
-         * <p>The admitted action locations survive the narrowing: they are
-         * the fields of the actions this slice already carries, named as
-         * {@code owner#field} keys rather than as cells, so the backward
-         * walk over cells has no opinion about them and refusing them here
-         * would narrow by an absence of evidence.  A withheld slice and an
-         * unnamed fatal read both leave the slice exactly as it was.</p>
-         */
-        RootDependenceSlice reachingFatalRead(
-                List<JsonObject> refinedGraph, Set<String> fatalCells) {
-            if (!usable() || fatalCells == null || fatalCells.isEmpty()) {
-                return this;
-            }
-            Map<String, Set<String>> backward = new LinkedHashMap<>();
-            Set<String> known = new LinkedHashSet<>();
-            for (JsonObject edge : refinedGraph == null
-                    ? Collections.<JsonObject>emptyList() : refinedGraph) {
-                String from = optionalString(edge, "fromCell");
-                String to = optionalString(edge, "toCell");
-                if (from.isEmpty() || to.isEmpty()) continue;
-                backward.computeIfAbsent(to,
-                        ignored -> new LinkedHashSet<>()).add(from);
-                known.add(from);
-                known.add(to);
-            }
-            Set<String> seeds = new LinkedHashSet<>();
-            for (String cell : fatalCells) {
-                if (known.contains(cell)) seeds.add(cell);
-            }
-            // A fatal read the graph has no cell for states nothing about
-            // what reaches it, so it narrows nothing rather than everything.
-            if (seeds.isEmpty()) return this;
-            Set<String> consumed = new LinkedHashSet<>(seeds);
-            Deque<String> pending = new ArrayDeque<>(seeds);
-            while (!pending.isEmpty()) {
-                for (String next : backward.getOrDefault(pending.removeFirst(),
-                        Collections.<String>emptySet())) {
-                    if (consumed.add(next)) pending.addLast(next);
-                }
-            }
-            Set<String> narrowed = new LinkedHashSet<>(reachable);
-            narrowed.retainAll(consumed);
-            // The roots themselves stay on the slice: a root the failure
-            // reads only through a cell the graph did not resolve is still
-            // this campaign's root.
-            narrowed.addAll(roots);
-            return new RootDependenceSlice(narrowed, roots,
-                    admittedLocations);
-        }
-
-        /**
-         * The forward closure of {@code rootCells} over the refined graph.
-         *
-         * <p>Seeds the graph does not name are dropped rather than kept as
-         * lone members: a root the dataflow graph has no cell for cannot
-         * state what it reaches, and keeping it would make the slice claim
-         * the root's own read is the whole of its influence.</p>
-         *
-         * <p><b>Every edge kind is walked, control edges included.</b>  The
-         * refined graph states a container mutation's guard as an edge from
-         * the deciding value to the mutated <em>location</em> -- a
-         * {@code heap_mutation_path_guard} or
-         * {@code receiver_field_effect_path_guard} whose {@code toCell} is
-         * the field and whose {@code guardedMutations} /
-         * {@code guardedEffects} name the mutating site.  Walking it here,
-         * and backwards in {@link #reachingFatalRead}, is what puts a value
-         * that decides whether a container is mutated on the chain of every
-         * read of that container: {@code removeExpiredKeys}'s
-         * {@code key.getExpiryDate() &lt; now} reaches
-         * {@code BlockTokenSecretManager#allKeys} over exactly such an edge,
-         * and the map's readers reach the expiry date back over it.  No edge
-         * kind is filtered, so a guard the refined graph states is never a
-         * guard this slice drops.</p>
-         *
-         * <p><b>And no edge is filtered by what the recording executed.</b>
-         * The refined graph is the static candidate graph annotated with one
-         * execution's bindings, not narrowed by them: a site the run never
-         * reached keeps its edges and is stamped
-         * {@code runtimeObserved: false}.  This walk reads {@code fromCell}
-         * and {@code toCell} only, so root dependence is what the
-         * <em>program</em> lets a root reach, not what one recording
-         * happened to take -- which is what lets a campaign be recorded on a
-         * healthy configuration and still plan the carriers of the branch a
-         * flipped root will take.  Consulting {@code runtimeObserved} here
-         * would make the plan a function of the recording's luck.</p>
-         */
-        static RootDependenceSlice forward(
-                List<JsonObject> refinedGraph, Set<String> rootCells) {
-            Map<String, Set<String>> forward = new LinkedHashMap<>();
-            Set<String> known = new LinkedHashSet<>();
-            for (JsonObject edge : refinedGraph == null
-                    ? Collections.<JsonObject>emptyList() : refinedGraph) {
-                String from = optionalString(edge, "fromCell");
-                String to = optionalString(edge, "toCell");
-                if (from.isEmpty() || to.isEmpty()) continue;
-                forward.computeIfAbsent(from,
-                        ignored -> new LinkedHashSet<>()).add(to);
-                known.add(from);
-                known.add(to);
-            }
-            Set<String> seeds = new LinkedHashSet<>();
-            for (String cell : rootCells) {
-                if (known.contains(cell)) seeds.add(cell);
-            }
-            if (seeds.isEmpty()) return withheld();
-            Set<String> reachable = new LinkedHashSet<>(seeds);
-            Deque<String> pending = new ArrayDeque<>(seeds);
-            while (!pending.isEmpty()) {
-                for (String next : forward.getOrDefault(pending.removeFirst(),
-                        Collections.<String>emptySet())) {
-                    if (reachable.add(next)) pending.addLast(next);
-                }
-            }
-            return new RootDependenceSlice(reachable, seeds);
-        }
-
-        /** False when no root resolved: the caller must narrow nothing. */
-        boolean usable() {
-            return !roots.isEmpty();
-        }
-
-        /** Whether a root can still reach the location this action reads. */
-        boolean carries(JsonObject action) {
-            for (String cell : actionCells(action)) {
-                if (reachable.contains(cell)) return true;
-            }
-            return false;
-        }
-
-        /**
-         * Whether a root can still reach one shared location.
-         *
-         * <p>A plan edge names its location twice: as the declared field
-         * signatures it flows through, which are graph cells, and as the
-         * {@code owner#field} key the runtime matched on.  Either naming a
-         * reachable cell is enough.</p>
-         */
-        boolean reachesLocation(String location,
-                                Iterable<JsonElement> fieldSignatures) {
-            for (JsonElement element : fieldSignatures == null
-                    ? Collections.<JsonElement>emptyList() : fieldSignatures) {
-                if (element.isJsonPrimitive()
-                        && reachable.contains(element.getAsString().trim())) {
-                    return true;
-                }
-            }
-            return location != null && !location.isEmpty()
-                    && reachableLocations().contains(location);
-        }
-
-        private Set<String> locations;
-
-        /**
-         * Every location a root can still reach, as {@code owner#field}
-         * keys: the reachable cells that are declared fields, and the
-         * locations admitted for the carried actions.
-         */
-        Set<String> reachableLocations() {
-            if (locations == null) {
-                Set<String> keys = new LinkedHashSet<>();
-                for (String cell : reachable) {
-                    FieldPathSpec.DeclaredField field =
-                            FieldPathSpec.declaredField(cell);
-                    if (field == null) continue;
-                    String key = SharedFieldFlow.fieldKey(field.owner(),
-                            field.name());
-                    if (!key.isEmpty()) keys.add(key);
-                }
-                keys.addAll(admittedLocations);
-                locations = Collections.unmodifiableSet(keys);
-            }
-            return locations;
-        }
-
-        int rootCellCount() {
-            return roots.size();
-        }
-
-        int reachableCellCount() {
-            return reachable.size();
-        }
-
-        /**
-         * Every dataflow cell one proposed input action names.
-         *
-         * <p>The read's own cell is the location for a field or a call
-         * return; {@code dependencyCells} is the local the value lands in,
-         * which is the only cell an accessor read shares with the graph --
-         * a library field like {@code AtomicInteger#value} is a source cell
-         * of its own and converges with its receiver's field read only at
-         * that local.  Both are consulted so
-         * {@code SnapshotManager#numSnapshots} selects the
-         * {@code AtomicInteger#value} port the experiment used to have to
-         * name by hand.</p>
-         */
-        static Set<String> actionCells(JsonObject action) {
-            Set<String> cells = new LinkedHashSet<>();
-            for (String member : new String[]{"cell", "declaredFieldSignature",
-                    "accessFieldSignature", "leafFieldSignature"}) {
-                String value = optionalString(action, member);
+        for (String member : new String[]{
+                "dependencyCells", "fieldPathDeclarations"}) {
+            for (JsonElement element : array(action, member)) {
+                if (!element.isJsonPrimitive()) continue;
+                String value = element.getAsString().trim();
                 if (!value.isEmpty()) cells.add(value);
             }
-            for (String member : new String[]{
-                    "dependencyCells", "fieldPathDeclarations"}) {
-                for (JsonElement element : array(action, member)) {
-                    if (!element.isJsonPrimitive()) continue;
-                    String value = element.getAsString().trim();
-                    if (!value.isEmpty()) cells.add(value);
-                }
-            }
-            return cells;
         }
+        return cells;
     }
 
+
     /**
-     * Optional experiment-owned declaration of which inputs may mint a root.
+     * The experiment's declaration of which inputs are symbolic at all.
      *
-     * <p>Two orthogonal decisions are taken about every proposed input
-     * action, and this file governs only the second.</p>
+     * <p>One decision per proposed input action, and one authority for it:
+     * a symbol enters the run only where the campaign said so.  Four
+     * declarations say so, and nothing else does.</p>
      *
-     * <dl>
-     *   <dt>TRACK</dt>
-     *   <dd>Keep the action {@code SYMBOLIC}, so the replay symbolizes the
-     *       read and the VM publishes its {@code ReadFrom} candidates and
-     *       container versions.  Every carrier is tracked: instance-field
-     *       reads, bounded container states, declared communication cut
-     *       ports and accessor returns.  Concretizing a carrier removes no
-     *       root -- it deletes the evidence the composition reconstructs
-     *       shared state from, because a read the plan never symbolizes
-     *       publishes no candidates for the composer to admit.</dd>
-     *   <dt>MINT</dt>
-     *   <dd>Permission to become a <em>fresh</em> root: a free symbol the
-     *       solver may move.  Three authorities carry it and nothing else
-     *       does -- an {@code EXPLICIT_SYMBOLIC_FAULT} marker the workload
-     *       wrote into its own program text, a field a
-     *       {@code CausynthSymbolicSource} hook site owns, and a name this
-     *       file declares through {@code fieldSignatures},
-     *       {@code portIds} or {@code cells} for the action's own
-     *       region.</dd>
-     * </dl>
+     * <ul>
+     *   <li>a cell, port or field signature this file names for the
+     *   action's own region -- the case declaration.  It mints: the read
+     *   is where the search starts;</li>
+     *   <li>an {@code EXPLICIT_SYMBOLIC_FAULT} marker the workload wrote
+     *   into its own program text, which is a declaration in the same
+     *   sense.  It mints;</li>
+     *   <li>a field a {@code CausynthSymbolicSource} hook site owns: the
+     *   hook mints at its own call site, so the action itself stands
+     *   down and stays concrete;</li>
+     *   <li>a {@code COMMUNICATION_SITE_PORT} the communication catalog
+     *   declared -- a wire attach point.  It is tracked and never mints:
+     *   the value is produced on the other side and installed here.</li>
+     * </ul>
      *
-     * <p>One input kind cannot be tracked without minting:
-     * {@code EXTERNAL_CALL_RETURN} (a {@code Timer.now()} return, say).
-     * Nothing inside the replayed process wrote that value, so there is no
-     * carrier expression for the read to reuse and symbolizing it <em>is</em>
-     * minting.  An undeclared one is therefore concrete.</p>
+     * <p>Every other proposed read is concrete.  A read no declaration
+     * names is not a carrier to be versioned: the expression a value
+     * carries rides with the value in the VM, so a read that observes a
+     * root-derived store gets that expression whether or not the plan
+     * named the location, and a read that observes nothing symbolic has
+     * nothing to publish.  Which branches the exploration flips is what
+     * finds the relations; a region-entry symbol for an undeclared cell
+     * only invents an input the case never declared.</p>
      *
-     * <p>Wave 3: which symbol reaches which read is decided at replay -- the
-     * VM's propagated expression is the authority -- so no selector,
-     * selected phase, producer version or output-version boundary is
-     * predicted here.</p>
+     * <p>Which symbol reaches which read is decided at replay -- the VM's
+     * propagated expression is the authority -- so no selector, selected
+     * phase, producer version or output-version boundary is predicted
+     * here.</p>
      */
     static final class SymbolicInputSelection {
         /** Decision-row member: the plan symbolizes this read. */
@@ -2651,30 +2139,22 @@ public final class ConcolicScheduler {
         static final String MINT_ELIGIBLE = "mintEligible";
         /** Row kind of one per-action verdict. */
         static final String ROOT_DECISION = "SYMBOLIC_ROOT_DECISION";
-        /** Verdict and demand of a read no root can reach. */
-        static final String NOT_ROOT_DEPENDENT = "NOT_ROOT_DEPENDENT";
-        private final boolean configured;
+        /** Verdict of a read no declaration names. */
+        static final String UNDECLARED = "UNDECLARED_SYMBOLIC_INPUT";
         /** regionId -> the field signatures, port ids and cells it admits. */
         private final Map<String, Set<String>> admitted;
         /** regionId -> sourceId -> the one field that hook site mints. */
         private final Map<String, Map<String, String>> minted;
-        /** Every automatic candidate this selection refused, first-seen order. */
-        private final Set<JsonObject> suppressed = new LinkedHashSet<>();
         /** One verdict per decided action, deduplicated, first-seen order. */
         private final Set<JsonObject> decisions = new LinkedHashSet<>();
-        /** What the roots can still reach; withheld until seeded. */
-        private RootDependenceSlice slice = RootDependenceSlice.withheld();
-        /** The locations this run kept as carriers, first-seen order. */
-        private final Set<String> carrierLocations = new LinkedHashSet<>();
 
         /** What each declaration row asked the campaign to change. */
         private final List<JsonObject> declarationDiagnostics;
 
         private SymbolicInputSelection(
-                boolean configured, Map<String, Set<String>> admitted,
+                Map<String, Set<String>> admitted,
                 Map<String, Map<String, String>> minted,
                 List<JsonObject> declarationDiagnostics) {
-            this.configured = configured;
             this.admitted = admitted;
             this.minted = minted;
             this.declarationDiagnostics = declarationDiagnostics;
@@ -2710,7 +2190,7 @@ public final class ConcolicScheduler {
             }
             Map<String, Set<String>> admitted = new LinkedHashMap<>();
             if (path == null) {
-                return new SymbolicInputSelection(!minted.isEmpty(),
+                return new SymbolicInputSelection(
                         admitted, minted, diagnostics);
             }
             requireFile(path, "symbolic input selection");
@@ -2725,7 +2205,7 @@ public final class ConcolicScheduler {
                     }
                 }
             }
-            return new SymbolicInputSelection(true, admitted, minted,
+            return new SymbolicInputSelection(admitted, minted,
                     diagnostics);
         }
 
@@ -2909,76 +2389,15 @@ public final class ConcolicScheduler {
         }
 
         /**
-         * Seeds the carrier slice from this campaign's manual roots.
-         *
-         * <p>The roots are the three authorities {@code decide} already
-         * recognises and nothing else: a field a {@code
-         * CausynthSymbolicSource} hook owns, an {@code
-         * EXPLICIT_SYMBOLIC_FAULT} marker the workload wrote, and a name
-         * this file declares.  Their cells are read off the declarations
-         * <em>and</em> off the proposed actions, because a row that
-         * declares a {@code portId} names no dataflow cell of its own --
-         * only the action it selects does.</p>
-         *
-         * <p>Called once, before any {@code select}, so every region
-         * narrows against the same slice.</p>
+         * Resolves every declared name onto the cells it is a proven exact
+         * copy of.  Called once, before any {@code select}, so every region
+         * decides against the same declarations.
          */
-        void seedCarrierSlice(
-                List<JsonObject> refinedGraph,
-                List<Map.Entry<String, JsonArray>> proposals) {
+        void resolveDeclaredNames(List<JsonObject> refinedGraph) {
             renameDeclaredNames(refinedGraph);
-            Set<String> rootCells = new LinkedHashSet<>();
-            for (Map<String, String> sites : minted.values()) {
-                rootCells.addAll(sites.values());
-            }
-            for (Set<String> names : admitted.values()) {
-                rootCells.addAll(names);
-            }
-            for (Map.Entry<String, JsonArray> proposal : proposals == null
-                    ? Collections.<Map.Entry<String, JsonArray>>emptyList()
-                    : proposals) {
-                String regionId = proposal.getKey();
-                for (JsonElement element : proposal.getValue()) {
-                    if (!element.isJsonObject()) continue;
-                    JsonObject action = element.getAsJsonObject();
-                    if (!minted(regionId, action)
-                            && !admits(regionId, action)
-                            && !workloadOwnedSymbol(action)) {
-                        continue;
-                    }
-                    rootCells.addAll(
-                            RootDependenceSlice.actionCells(action));
-                }
-            }
-            slice = RootDependenceSlice.forward(refinedGraph, rootCells)
-                    .admittingActionLocations(proposals, this::rootAction);
-        }
-
-        /** What the roots reach, for the policy artifact. */
-        RootDependenceSlice carrierSlice() {
-            return slice;
-        }
-
-        /**
-         * Whether {@code decide} would call this action a root: hook-owned,
-         * declared for its region, or a marker the workload wrote.  The
-         * same three authorities seed the carrier slice, so an occurrence
-         * that contains one is a root site by construction.
-         */
-        boolean rootAction(String regionId, JsonObject action) {
-            return minted(regionId, action) || admits(regionId, action)
-                    || workloadOwnedSymbol(action);
-        }
-
-        /** The distinct locations this run kept, in first-seen order. */
-        JsonArray carrierLocations() {
-            JsonArray rows = new JsonArray();
-            for (String location : carrierLocations) rows.add(location);
-            return rows;
         }
 
         JsonArray select(String regionId, JsonArray actions) {
-            if (!configured) return actions.deepCopy();
             JsonArray selected = new JsonArray();
             for (JsonElement element : actions) {
                 if (!element.isJsonObject()) continue;
@@ -2995,13 +2414,12 @@ public final class ConcolicScheduler {
         }
 
         /**
-         * Stamps one proposed input with its TRACK and MINT verdicts.
+         * Stamps one proposed input with the verdict of its declaration.
          *
-         * <p>The authored {@code symbolicDemand} survives a tracked action
-         * untouched: it is what tells the replay that a
-         * {@code BOUNDED_CONTAINER_STATE} port models a whole container
-         * rather than a scalar, and overwriting it with this file's verdict
-         * would silently downgrade the carrier the verdict just kept.</p>
+         * <p>Four declarations make a read symbolic and nothing else does,
+         * so there is no third state between "declared" and "concrete": a
+         * read the campaign never named publishes no port, mints no
+         * symbol and opens no version log of its own.</p>
          */
         private void decide(
                 String regionId, JsonObject action, JsonObject retained) {
@@ -3027,58 +2445,36 @@ public final class ConcolicScheduler {
                 // is how HDFS-17899 bug3 acquired four existential roots on
                 // PBHelper.convert(BlockKeyProto) -- so the declaration is
                 // not allowed to reach it.
-                retained.addProperty(MINT_ELIGIBLE, false);
-                String port = firstNonBlank(actionField(action),
-                        optionalString(action, "cell"));
-                if (!port.isEmpty()) carrierLocations.add(port);
                 record(regionId, action, true, false, false,
                         InputActionCatalog.DECLARED_COMMUNICATION_CUT_PORT);
                 return;
             }
             boolean declared = admits(regionId, action);
             // The workload wrote this symbol into its own program text; that
-            // is a declaration in the same sense a hook call is one, so an
-            // allowlist over the automatic candidates must not delete it.
+            // is a declaration in the same sense a hook call is one.
             boolean workloadOwned = workloadOwnedSymbol(action);
-            if (!declared && !workloadOwned && mintsWithoutACarrier(action)) {
-                retained.addProperty("mode", "CONCRETE");
-                retained.addProperty("symbolicDemand",
-                        "CONFIGURED_SYMBOLIC_INPUT_UNSELECTED");
-                suppressed.add(suppressedCandidate(regionId, action));
-                record(regionId, action, false, false, false,
-                        "CONFIGURED_SYMBOLIC_INPUT_UNSELECTED");
-                return;
-            }
-            if (!declared && !workloadOwned && slice.usable()
-                    && !slice.carries(action)) {
-                // No root reaches this location, so every replay arm writes
-                // the value the recording observed: it is a constant for
-                // this failure, and publishing ReadFrom candidates and
-                // container versions for it buys no behaviour.
-                retained.addProperty("mode", "CONCRETE");
-                retained.addProperty("symbolicDemand", NOT_ROOT_DEPENDENT);
-                record(regionId, action, false, false, false,
-                        NOT_ROOT_DEPENDENT);
-                return;
-            }
             if (!declared && !workloadOwned) {
-                String location = firstNonBlank(actionField(action),
-                        optionalString(action, "cell"));
-                if (!location.isEmpty()) carrierLocations.add(location);
+                // No declaration names this read, so it is not an input of
+                // this campaign.  It observes whatever the run put in the
+                // location, and the expression of a root-derived store
+                // rides with that value inside the VM: a plan-side port
+                // here would invent a symbol the case never declared, and
+                // its region-entry mint would hide the real writer behind
+                // a fresh root.
+                retained.addProperty("mode", "CONCRETE");
+                retained.addProperty("symbolicDemand", UNDECLARED);
+                record(regionId, action, false, false, false, UNDECLARED);
+                return;
             }
-            // TRACK is already stated by the surviving SYMBOLIC mode; the
-            // row carries only the verdict the replay cannot infer.
-            retained.addProperty(MINT_ELIGIBLE, declared || workloadOwned);
             if (declared) {
-                // Named by hand: the replay mints here rather than reusing
-                // whatever carrier happens to wrap the read.
+                // Named by hand: the replay mints here, which is what
+                // "the search starts at this cell" means.
                 retained.addProperty(
                         InputActionCatalog.DECLARED_SYMBOLIC_ROOT, true);
             }
-            record(regionId, action, true, declared || workloadOwned,
-                    declared, declared ? "DECLARED_SYMBOLIC_ROOT"
-                            : workloadOwned ? "WORKLOAD_DECLARED_SYMBOLIC_FAULT"
-                            : "TRACKED_CARRIER");
+            record(regionId, action, true, true, declared,
+                    declared ? "DECLARED_SYMBOLIC_ROOT"
+                            : "WORKLOAD_DECLARED_SYMBOLIC_FAULT");
         }
 
         /**
@@ -3101,45 +2497,6 @@ public final class ConcolicScheduler {
         private static boolean workloadOwnedSymbol(JsonObject action) {
             return RuntimeSelectedRegionFinalizer.EXPLICIT_SYMBOLIC_FAULT
                     .equals(optionalString(action, "sourceKind"));
-        }
-
-        /**
-         * Whether symbolizing this input can only mint.
-         *
-         * <p>A carrier read observes a value some store inside the replayed
-         * process already holds, so the VM has an expression to hand back
-         * and tracking it costs no root.  An {@code EXTERNAL_CALL_RETURN}
-         * has no such writer -- the value enters from outside the recording
-         * -- so there is nothing to carry and a symbolic one is a free root
-         * by construction.  Undeclared, it stays at its recorded value.</p>
-         */
-        private static boolean mintsWithoutACarrier(JsonObject action) {
-            return RuntimeSelectedRegionFinalizer.EXTERNAL_CALL_RETURN
-                    .equals(optionalString(action, "sourceKind"));
-        }
-
-        /** Names one automatic candidate the selection file refused, so a
-         *  root that is missing downstream can be traced to this decision
-         *  rather than to the mechanism that proposed it. */
-        private static JsonObject suppressedCandidate(
-                String regionId, JsonObject action) {
-            JsonObject row = new JsonObject();
-            row.addProperty("schemaVersion", 1);
-            row.addProperty("kind", SUPPRESSED_ROOT_CANDIDATE);
-            row.addProperty("regionId", safe(regionId));
-            row.addProperty("sourceKind",
-                    optionalString(action, "sourceKind"));
-            row.addProperty("siteId", firstNonBlank(
-                    optionalString(action, "siteId"),
-                    optionalString(action, "staticAccessSiteId")));
-            row.addProperty("declaredCallee",
-                    optionalString(action, "declaredCallee"));
-            row.addProperty("fieldSignature", actionField(action));
-            row.addProperty("cell", optionalString(action, "cell"));
-            row.addProperty("portId", actionPort(action));
-            row.addProperty("reason",
-                    "CONFIGURED_SYMBOLIC_INPUT_UNSELECTED");
-            return row;
         }
 
         /** Both verdicts for one action, so "why is this read concrete" and
@@ -3168,14 +2525,6 @@ public final class ConcolicScheduler {
             decisions.add(row);
         }
 
-        /** The refused candidates of this run, deduplicated, in first-seen
-         *  order; empty when no selection file narrowed anything. */
-        JsonArray suppressedRootCandidates() {
-            JsonArray rows = new JsonArray();
-            for (JsonObject row : suppressed) rows.add(row.deepCopy());
-            return rows;
-        }
-
         /** One row per distinct action this file decided. */
         JsonArray rootDecisions() {
             JsonArray rows = new JsonArray();
@@ -3202,7 +2551,7 @@ public final class ConcolicScheduler {
          * Whether one region admits one proposed action.
          *
          * <p>A declaration names the action's port or one of its dataflow
-         * cells, and {@link RootDependenceSlice#actionCells} is already the
+         * cells, and {@link ConcolicScheduler#actionCells} is already the
          * one answer to "which cells does this action name": the read's own
          * location <em>and</em> the local the value lands in, which is the
          * only cell an accessor read shares with the graph.  Asking the
@@ -3215,7 +2564,7 @@ public final class ConcolicScheduler {
             Set<String> names = admitted.get(safe(regionId));
             if (names == null || names.isEmpty()) return false;
             if (names.contains(actionPort(action))) return true;
-            for (String cell : RootDependenceSlice.actionCells(action)) {
+            for (String cell : actionCells(action)) {
                 if (names.contains(cell)) return true;
             }
             return false;

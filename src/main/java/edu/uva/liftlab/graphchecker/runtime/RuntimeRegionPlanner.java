@@ -1409,175 +1409,7 @@ final class RuntimeRegionPlanner {
             }
             result.regionCatalog.add(row);
         }
-        declareSharedCarriers(result, regionById);
         return result;
-    }
-
-    /** Declares every retained occurrence-local shared location. */
-    private static void declareSharedCarriers(
-            Result result,
-            Map<String, StaticProgram.RegionRow> regionById) {
-        for (Map<String, Object> plan : result.regionPlans) {
-            StaticProgram.RegionRow region = regionById.get(
-                    stringValue(plan.get("regionId")));
-            String occurrence = stringValue(plan.get("occurrenceId"));
-            if (region == null || occurrence.isEmpty()) continue;
-            List<Map<String, Object>> carriers = declaredSharedCarriers(
-                    region, occurrence);
-            if (carriers.isEmpty()) continue;
-            for (Map<String, Object> goal : rows(plan.get("closureGoals"))) {
-                goal.put(ExecutionTask.SHARED_CARRIERS, carriers);
-            }
-        }
-    }
-
-    /** One declaration per shared field selected at its exact runtime access. */
-    private static List<Map<String, Object>> declaredSharedCarriers(
-            StaticProgram.RegionRow region, String occurrence) {
-        List<Map<String, Object>> ports = new ArrayList<>();
-        ports.addAll(region.symbolicInputs);
-        ports.addAll(region.outputs);
-        Map<String, Map<String, Object>> carriers = new LinkedHashMap<>();
-        for (Map<String, Object> port : ports) {
-            String owner = stringValue(port.get("occurrenceId"));
-            if (!owner.isEmpty() && !occurrence.equals(owner)) continue;
-            addAccessOwnedCarriers(carriers, port, port);
-            for (Map<String, Object> access : rows(
-                    port.get("runtimeAccesses"))) {
-                addAccessOwnedCarriers(carriers, port, access);
-            }
-        }
-        return new ArrayList<>(carriers.values());
-    }
-
-    /** Declares the field and any VM-modeled Atomic leaf named by this access. */
-    static void addAccessOwnedCarriers(
-            Map<String, Map<String, Object>> carriers,
-            Map<String, Object> port, Map<String, Object> access) {
-        List<String> declarations = strings(access.containsKey(
-                "fieldPathDeclarations")
-                ? access.get("fieldPathDeclarations")
-                : port.get("fieldPathDeclarations"));
-        FieldPathSpec.DeclaredField field = declarations.isEmpty()
-                ? null : FieldPathSpec.declaredField(
-                declarations.get(declarations.size() - 1));
-        if (field == null
-                || SharedFieldFlow.compilerSwitchDispatchField(
-                field.name())) return;
-
-        String atomic = SharedFieldFlow.atomicValueField(field.signature(),
-                firstNonEmpty(stringValue(access.get("mutatorDeclaredCallee")),
-                        stringValue(port.get("mutatorDeclaredCallee"))));
-        FieldPathSpec.DeclaredField atomicField =
-                FieldPathSpec.declaredField(atomic);
-        if (atomicField != null) {
-            addAccessOwnedCarrier(carriers, atomicField);
-        }
-
-        // The runtime access is the final authority for whether a field is a
-        // solver value or replay structure.  A static port can conservatively
-        // carry VALUE_FRONTIER before its exact access has been classified;
-        // that broad label must not turn an object-routing map into shared
-        // symbolic map state.  effectiveDependencyRole deliberately derives
-        // the answer from explicit bounded-container demand and the semantic
-        // leaf type, while retaining an explicit concrete runtime role.
-        if (DependencyRole.VALUE_FRONTIER.equals(
-                sharedCarrierRuntimeRole(port, access, field.type()))
-                // An Atomic wrapper is not an identity to arm over: its
-                // own value leaf, declared just above, is the shared state,
-                // and versioning the holder as well would put one location
-                // in the formula twice.
-                || atomicField == null
-                && referenceIdentityCarrier(port, access, field.type())) {
-            addAccessOwnedCarrier(carriers, field);
-        }
-    }
-
-    /**
-     * Whether this access names a plain object reference whose writers a
-     * later read must be able to choose between.
-     *
-     * <p>The role above answers VALUE_FRONTIER for a semantic leaf and
-     * CONCRETE_STRUCTURE_CARRIER for everything else, which puts an object
-     * reference on the concrete side -- correct for the object graph a
-     * replay walks, and wrong for a reference that is itself shared state.
-     * {@code BlockTokenSecretManager#currentKey} is the second kind: the
-     * wire key id is {@code currentKey.keyId}, and which {@code BlockKey}
-     * {@code currentKey} holds is exactly what the failing refresh decides.
-     * Without a version here the read resolves against whichever object the
-     * run happened to leave in the field, and the writer's object is lost.
-     * </p>
-     *
-     * <p>This is a declaration, not a selection: a reference declared here
-     * and never moved by a root costs nothing.  An explicitly concrete access is still
-     * concrete -- a capture root, a loop control or a path assumption names
-     * structure the replay walks and not state a writer competes for.</p>
-     */
-    private static boolean referenceIdentityCarrier(
-            Map<String, Object> port, Map<String, Object> access,
-            String javaType) {
-        if (!JavaPrimitiveSmtSemantics.referenceIdentityCarrier(javaType)) {
-            return false;
-        }
-        Map<String, Object> semantic = new LinkedHashMap<>();
-        for (String key : new String[]{"symbolicDemand", "captureRootOnly",
-                "loopControlOnly", "controlOnly", "pathAssumptionOnly"}) {
-            if (access.containsKey(key)) {
-                semantic.put(key, access.get(key));
-            } else if (port.containsKey(key)) {
-                semantic.put(key, port.get(key));
-            }
-        }
-        return !concreteStructureCarrier(semantic);
-    }
-
-    /** Final semantic role of one access, with exact runtime facts winning. */
-    private static String sharedCarrierRuntimeRole(
-            Map<String, Object> port, Map<String, Object> access,
-            String javaType) {
-        Map<String, Object> semantic = new LinkedHashMap<>();
-        for (String key : new String[]{"symbolicDemand", "dependencyRole"}) {
-            String value = firstNonEmpty(stringValue(access.get(key)),
-                    stringValue(port.get(key)));
-            if (!value.isEmpty()) semantic.put(key, value);
-        }
-        for (String key : new String[]{"captureRootOnly", "loopControlOnly",
-                "controlOnly", "pathAssumptionOnly"}) {
-            if (access.containsKey(key)) {
-                semantic.put(key, access.get(key));
-            } else if (port.containsKey(key)) {
-                semantic.put(key, port.get(key));
-            }
-        }
-        return effectiveDependencyRole(semantic, javaType);
-    }
-
-    private static void addAccessOwnedCarrier(
-            Map<String, Map<String, Object>> carriers,
-            FieldPathSpec.DeclaredField field) {
-        String descriptor = JavaPrimitiveSmtSemantics
-                .javaTypeDescriptor(field.type());
-        if (descriptor.isEmpty()) return;
-        Map<String, Object> carrier = object(
-                "kind", SharedFieldFlow.wholeStateCarrierField(
-                        field.owner(), field.name(), field.type())
-                        ? SharedStateEvidence.LOCATION_KIND_MAP_STATE
-                        : "DECLARED_FIELD",
-                "declaringClass", field.owner(),
-                "fieldName", field.name(),
-                "descriptor", descriptor,
-                "sourceKind", "ACTIVATION_FIELD_RECEIVER",
-                "fieldPath", Collections.emptyList());
-        carriers.putIfAbsent(sharedCarrierKey(carrier), carrier);
-    }
-
-    private static String sharedCarrierKey(Map<String, Object> carrier) {
-        String field = SharedFieldFlow.fieldKey(
-                stringValue(carrier.get("declaringClass")),
-                stringValue(carrier.get("fieldName")));
-        if (field.isEmpty()) return "";
-        return stringValue(carrier.get("kind")) + "\n" + field + ":"
-                + stringValue(carrier.get("descriptor"));
     }
 
     /** The refined protocol row as the composition gate reads it, before the
@@ -2090,12 +1922,6 @@ final class RuntimeRegionPlanner {
                     .equals(sourceKind)) {
                 javaType = stringValue(port.get("javaType"));
             }
-            // A projected container carries the exact static transport type.
-            if ("BOUNDED_CONTAINER_STATE".equals(
-                    stringValue(port.get("symbolicDemand")))
-                    && !stringValue(port.get("javaType")).isEmpty()) {
-                javaType = stringValue(port.get("javaType"));
-            }
             action.put("javaType", javaType);
             if (RuntimeSelectedRegionFinalizer.EXPLICIT_SYMBOLIC_FAULT.equals(
                     sourceKind)
@@ -2227,10 +2053,6 @@ final class RuntimeRegionPlanner {
      * replay a region. */
     static String effectiveDependencyRole(Map<String, Object> port,
                                           String javaType) {
-        String demand = stringValue(port.get("symbolicDemand"));
-        if ("BOUNDED_CONTAINER_STATE".equals(demand)) {
-            return DependencyRole.VALUE_FRONTIER;
-        }
         if (concreteStructureCarrier(port)) {
             return DependencyRole.CONCRETE_STRUCTURE_CARRIER;
         }
