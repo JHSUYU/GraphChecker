@@ -41,17 +41,17 @@ public final class RuntimeWorkflowDiscovery {
     }
 
     /**
-     * The candidate scope: every occurrence the frozen region plan declares
-     * that the root-dependence slice admits, plus the target.
+     * The candidate scope: the target and the candidate closure that replays
+     * with it.
      *
-     * <p>The candidate graph is the instrumentation frontier and it is also
-     * the replay scope.  There used to be a third scope that narrowed it to
-     * the occurrences a previous iteration's summaries had observed, and
-     * re-deriving the slice from observed data flow is exactly wrong: a walk
-     * over what this healthy run happened to write keeps only the producers
-     * that produced something, and the occurrence whose root flip is the
-     * whole question is the one that produced nothing.  A counterfactual
-     * writer is invisible to a walk over what was written.</p>
+     * <p>The candidate graph is the instrumentation frontier and the replay
+     * scope both.  There used to be a third scope that narrowed it to the
+     * occurrences a previous iteration's result envelope reported as
+     * activated; the envelope is gone, and the narrowing was wrong anyway --
+     * see the comment at the closure below.  With it went the last thing that
+     * told a candidate schedule from a seed-replay one HERE: both asked for
+     * the same closure, so this is one entry rather than two names for it,
+     * and what a seed replay still varies is withSeedReplayGroup.</p>
      */
     static RankedWorkflow workflow(List<RegionInstancePlan> plans,
                                    String declaredOccurrence)
@@ -114,10 +114,22 @@ public final class RuntimeWorkflowDiscovery {
         // executing at all.
         Set<String> candidateClosure = equivalentTargetTopologyScope(target,
                 targets, byOccurrence, edges);
-        // A concrete object or container is still a carrier: its fields or
-        // elements can hold expressions propagated by an upstream region.
-        // DependencyRole classifies what this region computes; it cannot
-        // safely prune the producer which populated that structure.
+        // Which occurrences are in scope is one decision, made once over the
+        // region graph by root dependence: an occurrence is in the slice
+        // because it reads a root, carries a root-dependent value, or is the
+        // target.  A concrete object or container is still a carrier -- its
+        // fields or elements can hold expressions propagated by an upstream
+        // region -- so nothing prunes the producer that populated it.
+        //
+        // What is deliberately not re-derived is the scope, from observed
+        // data flow.  A walk backwards from the target over the writes this
+        // run happened to make keeps only the producers that produced
+        // something -- and on a healthy recording the occurrence whose root
+        // flip is the whole question is exactly the one that produced
+        // nothing.  A counterfactual writer is invisible to a walk over what
+        // was written, and narrowing the slice by that one occurrence is how
+        // a campaign comes to explore nothing at all.  That narrowing was
+        // the result envelope's last reader, and it is gone with it.
         Set<String> closure = candidateClosure;
         // An explicit fault occurrence controls whether an interaction takes
         // place; it need not produce the interaction's payload.  Keep such a
@@ -267,18 +279,6 @@ public final class RuntimeWorkflowDiscovery {
         return EXPLICIT_FAULT_ENTRY.equals(optionalString(plan.json(),
                 "rootAuthority"));
     }
-
-
-
-
-
-
-
-
-
-
-
-
 
     private static void indexEdges(Map<String, JsonObject> indexed,
                                    JsonArray candidates) throws IOException {

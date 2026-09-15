@@ -33,30 +33,23 @@ import java.util.Map;
 import java.util.Set;
 import java.util.regex.Matcher;
 
-import static edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics.javaTypeDescriptor;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.array;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.object;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalInteger;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalLongInteger;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
-import edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.ConsumerAccessAnchor;
-import edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.GuardedReadAssignment;
-import edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.ModelAssignment;
 import edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.RootHookGroup;
 import edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.SymbolizeAction;
 
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.DEFAULT_EXECUTOR_THREAD_NAME;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.DEFAULT_OBJECT_IDENTITY_THREAD_NAME;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.ROOT_ARGUMENT_PREDICATE_KIND;
-import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.SKIP_ANCHOR_SOURCE_NEVER_EXISTED;
-import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.SKIP_OCCURRENCE_ANCHOR_UNMATCHED;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.enclosingLoopRootAdmits;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicResultPublisher.registerRunTotalsHook;
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.safe;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.sameHookIdentity;
-import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.SKIP_ROOT_NEVER_EXECUTED;
-import static edu.uva.liftlab.graphchecker.runtime.ConcolicResultPublisher.writeSkipped;
+import static edu.uva.liftlab.graphchecker.runtime.ConcolicResultPublisher.taskUnanswered;
 
 /** The bounded campaign this JVM executes. */
 final class ConcolicTaskPlan {
@@ -139,17 +132,17 @@ final class ConcolicTaskPlan {
                 // different statement from "several ran and none matched",
                 // and it used to be no statement: the task published neither
                 // an activation nor a skip, and the importer met silence.
-                writeSkipped(task, SKIP_ROOT_NEVER_EXECUTED,
-                        "the planned root did not execute in this replay: no"
-                                + " compatible activation was offered for "
-                                + task.occurrenceId, null);
+                taskUnanswered(task, "ROOT_NEVER_EXECUTED: the planned root"
+                        + " did not execute in this replay: no compatible"
+                        + " activation was offered for "
+                        + task.occurrenceId);
                 continue;
             }
-            writeSkipped(task, task.rootContextSelector
+            taskUnanswered(task, (task.rootContextSelector
                             .anchorSourceNeverExisted()
-                            ? SKIP_ANCHOR_SOURCE_NEVER_EXISTED
-                            : SKIP_OCCURRENCE_ANCHOR_UNMATCHED,
-                    task.unansweredAddress(), null);
+                            ? "ANCHOR_EPOCH_NOT_REACHED: "
+                            : "OCCURRENCE_ANCHOR_UNMATCHED: ")
+                    + task.unansweredAddress());
         }
     }
 
@@ -272,13 +265,10 @@ final class ConcolicTaskPlan {
             // admitted to any address, which is how one occurrence came to
             // own two enclosing invocations.
             if (!task.acceptsRootInvocation(observed)) {
-                if (!task.addressDrifts(observed)) {
-                    task.noteUnaddressedCandidate("matching enclosing root: "
-                            + task.addressDifference(observed)
-                            + attribution(activationSource));
-                    continue;
-                }
-                task.noteAddressDrift(observed);
+                task.noteUnaddressedCandidate("matching enclosing root: "
+                        + task.addressDifference(observed)
+                        + attribution(activationSource));
+                continue;
             }
             // One occurrence, one enclosing activation.  The bodies of
             // occurrence k are the bodies of the invocation admitted for k;
@@ -353,8 +343,7 @@ final class ConcolicTaskPlan {
                     context).isEmpty()) continue;
             OccurrenceAddress observed = task.observedAddress(
                     countedLifecycle(task, activationSource));
-            if (!task.acceptsRootInvocation(observed)
-                    && !task.addressDrifts(observed)) {
+            if (!task.acceptsRootInvocation(observed)) {
                 // Said out loud, as the loop-body path already says it.  A
                 // non-loop root that ran and was refused on its address was
                 // refused in silence, and the end of the run then reported
@@ -370,9 +359,6 @@ final class ConcolicTaskPlan {
                 continue;
             }
             if (candidateLive[index]) continue;
-            if (!task.acceptsRootInvocation(observed)) {
-                task.noteAddressDrift(observed);
-            }
             candidateLive[index] = true;
             return task;
         }
@@ -550,7 +536,7 @@ final class ConcolicTaskPlan {
         boolean inheritedMatches = inherited != null
                 && RuntimeTraceContext.sameSourceIdentity(task.sourceKey,
                 inherited.key());
-        if (OccurrenceMinter.UNREGISTERED_SOURCE_KEY.equals(
+        if (OccurrenceBinding.UNREGISTERED_SOURCE_KEY.equals(
                 task.sourceKey)) {
             return registeredReceiverSource == null && inherited == null
                     ? "" : "matching root carried a registered source "
@@ -908,10 +894,10 @@ final class ConcolicTaskPlan {
                 // dn0's k, so the five genuine activations on main were
                 // numbered 1, 3, 5, 7 and the addressed activation 4 was
                 // consumed by an activation that was nobody's.
-                return OccurrenceMinter.UNREGISTERED_SOURCE_KEY.equals(
+                return OccurrenceBinding.UNREGISTERED_SOURCE_KEY.equals(
                         sourceKey) ? ""
                         : "occurrence ran on "
-                        + OccurrenceMinter.UNREGISTERED_SOURCE_KEY
+                        + OccurrenceBinding.UNREGISTERED_SOURCE_KEY
                         + " (nothing attributed it to any node), but its"
                         + " anchor names " + sourceKey;
             }
@@ -941,7 +927,7 @@ final class ConcolicTaskPlan {
          * makes the address unsatisfiable here rather than merely unmatched.
          */
         private boolean anchorSourceNeverExisted() {
-            return !OccurrenceMinter.UNREGISTERED_SOURCE_KEY.equals(sourceKey)
+            return !OccurrenceBinding.UNREGISTERED_SOURCE_KEY.equals(sourceKey)
                     && !RuntimeTraceContext.sourceIdentityRegistered(sourceKey);
         }
 
@@ -1068,8 +1054,6 @@ final class ConcolicTaskPlan {
         final Map<String, String> branchPolicies;
         final Set<String> replayLoopExitSites;
         final LoopBoundPolicy loopBound;
-        final List<ModelAssignment> modelAssignments;
-        final List<GuardedReadAssignment> guardedReadAssignments;
         final boolean capturesTargetReach;
         /** Whether this non-loop address has already completed its goal. */
         volatile boolean completedGoalReserved;
@@ -1232,8 +1216,6 @@ final class ConcolicTaskPlan {
             // bound is under); an undeclared site inherits the default.
             this.loopOccurrenceBudget = this.loopBound
                     .maxBackedgeTraversals(task.rootLoopSiteId());
-            this.modelAssignments = new ArrayList<>();
-            this.guardedReadAssignments = new ArrayList<>();
             this.capturesTargetReach =
                     task.goalKind().capturesTargetReach();
             // The plan names the propagation ledger every task of this
@@ -1277,51 +1259,6 @@ final class ConcolicTaskPlan {
                 String siteId = optionalString(branch, "siteId");
                 branchPolicies.put(siteId, optionalString(branch, "policy"));
             }
-            JsonElement encodedAssignments = task.json().get(
-                    "modelAssignments");
-            if (encodedAssignments != null
-                    && !encodedAssignments.isJsonArray()) {
-                throw new IllegalArgumentException(
-                        "modelAssignments must be an array in " + taskId);
-            }
-            for (JsonElement element : task.modelAssignments()) {
-                modelAssignments.add(new ModelAssignment(
-                        element.getAsJsonObject()));
-            }
-            Set<String> assignmentKeys = new LinkedHashSet<>();
-            for (ModelAssignment assignment : modelAssignments) {
-                if (assignment.key.isEmpty()
-                        || !assignmentKeys.add(assignment.key)) {
-                    throw new IllegalArgumentException(
-                            "model assignment keys must be nonempty and "
-                                    + "unique in " + taskId);
-                }
-            }
-            Set<String> guardedReadIdentities = new LinkedHashSet<>();
-            Set<String> guardedReadAnchors = new LinkedHashSet<>();
-            for (JsonElement element : task.guardedReadAssignments()) {
-                if (!element.isJsonObject()) {
-                    throw new IllegalArgumentException(
-                            "guardedReadAssignments must contain objects in "
-                                    + taskId);
-                }
-                GuardedReadAssignment assignment =
-                        new GuardedReadAssignment(element.getAsJsonObject(),
-                                occurrenceId);
-                String anchor = assignment.consumerSiteId + "\n"
-                        + assignment.consumerSiteOccurrence + "\n"
-                        + assignment.declaringClass + "\n"
-                        + assignment.fieldName + "\n"
-                        + assignment.descriptor;
-                if (!guardedReadIdentities.add(assignment.readIdentity)
-                        || !guardedReadAnchors.add(anchor)) {
-                    throw new IllegalArgumentException(
-                            "guarded read assignments must have unique "
-                                    + "identities and exact anchors in "
-                                    + taskId);
-                }
-                guardedReadAssignments.add(assignment);
-            }
             for (CommunicationHandoffSpec site
                     : task.communicationHandoffs()) {
                 if (!site.outgoing()) {
@@ -1336,88 +1273,7 @@ final class ConcolicTaskPlan {
                             + "in " + taskId + ": " + site.portId());
                 }
             }
-            // A configured-source model names one mint SITE of the frozen
-            // catalog.  There is no selected-source row to agree with any
-            // more: the site is the identity.
-            for (ModelAssignment assignment : modelAssignments) {
-                if (!assignment.configuredSourceAssignment()) continue;
-                // Answering a handoff IS a configured-source assignment
-                // whose phase is a HANDOFF_PHASE, so it arrives here.  It
-                // names no publish site of the frozen catalog -- H is
-                // (port, consumer occurrence, k, element path) and the
-                // phase id hashes exactly that -- so it is admitted on the
-                // one thing this task can check at load: that the phase
-                // belongs to a port this task receives on.
-                if (answersHandoffPhase(assignment)) continue;
-                ConfiguredSourcePhaseContract.Occurrence publish =
-                        configuredSourcePhasesById.get(
-                                assignment.configuredSourcePhaseId);
-                if (publish == null
-                        || publish.phase()
-                        != ConfiguredSourcePhaseContract.Phase.PUBLISH
-                        || !assignment.configuredSourceId.equals(
-                        publish.sourceId())
-                        || !assignment.configuredSourceFieldSignature.equals(
-                        publish.fieldSignature())
-                        || !assignment.matchesConfiguredSource(
-                        publish.phaseId(), publish.sourceId(),
-                        publish.fieldSignature())) {
-                    throw new IllegalArgumentException(
-                            "model assignment names an undeclared or "
-                                    + "unsupported configured source in "
-                                    + taskId + ": " + assignment.key);
-                }
-            }
             indexExportConsumerOccurrences(task, edgeBindings);
-        }
-
-        /**
-         * Whether this task can answer the handoff phase this model names.
-         *
-         * <p>The phase id is a hash of H, so it cannot be inverted -- but
-         * the VM label the mint uses is {@code engineLabelForPhase(phase,
-         * port)}, and the assignment carries it in its engine symbol.  So a
-         * phase is this task's exactly when one of the ports it receives on
-         * reproduces that label: the k-th attach and the element path are
-         * inside the hash and need no enumeration.  A phase no declared
-         * port reproduces stays rejected by name, like any other model that
-         * names something this task does not have.</p>
-         */
-        private boolean answersHandoffPhase(ModelAssignment assignment) {
-            String phaseId = assignment.configuredSourcePhaseId;
-            if (!ConcolicRegionRuntime.isHandoffMintKey(phaseId)
-                    || !assignment.matchesConfiguredSource(phaseId, phaseId,
-                    "")) {
-                return false;
-            }
-            for (CommunicationHandoffSpec site
-                    : communicationHandoffs.values()) {
-                if (site.outgoing()) continue;
-                if (assignment.engineSymbol.contains(
-                        ConcolicRegionRuntime.handoffMintLabelFor(phaseId,
-                                site.portId()))) {
-                    return true;
-                }
-            }
-            return false;
-        }
-
-        /** Solver value for the one exact getfield this hook precedes. */
-        GuardedReadAssignment guardedReadAssignment(
-                ConsumerAccessAnchor consumer, String fieldSignature) {
-            DeclaredField field = FieldPathSpec.declaredField(fieldSignature);
-            GuardedReadAssignment selected = null;
-            for (GuardedReadAssignment candidate : guardedReadAssignments) {
-                if (!candidate.matches(consumer, field)) continue;
-                if (selected != null) {
-                    throw new IllegalStateException(
-                            "two guarded read assignments match "
-                                    + consumer.siteId + " occurrence "
-                                    + consumer.occurrence);
-                }
-                selected = candidate;
-            }
-            return selected;
         }
 
         /**
@@ -1476,8 +1332,7 @@ final class ConcolicTaskPlan {
          * locator for the field alone.  The plan does distinguish those
          * receivers: every action names the exact static access site and the
          * activation-local occurrence of that site which read it.  That pair
-         * is the same replay-stable access anchor the runtime builds at each
-         * read ({@link ConsumerAccessAnchor}) and the composer already uses
+         * is the same replay-stable access anchor the composer already uses
          * to name a read independently of any object id, so it is what binds
          * one live receiver to one planned locator.  The by-field index
          * stays as the answer for a field with a single receiver, including
@@ -1637,9 +1492,16 @@ final class ConcolicTaskPlan {
             return replayLoopExitSites.contains(safe(siteId));
         }
 
-        /** The next activation ordinal of this address. */
-        synchronized int nextActivationOrdinal() {
-            return ++publishedActivations;
+        /**
+         * Counts one activation of this address against its published set.
+         *
+         * <p>Not an identity: the occurrence an activation is IS its
+         * execution index (IDENTITY-V3).  This is the count a bounded
+         * loop-body region's occurrence budget is spent against, and
+         * nothing else reads it.</p>
+         */
+        synchronized void claimActivation() {
+            publishedActivations++;
         }
 
         /**
@@ -1724,16 +1586,9 @@ final class ConcolicTaskPlan {
             return true;
         }
 
-        /**
-         * Gives back an ordinal whose activation published nothing, so the
-         * ordinals of one address stay dense and gapless.  Only one
-         * activation of an address runs at a time, so the ordinal being
-         * returned is always the last one taken.
-         */
-        synchronized void releaseActivationOrdinal(int ordinal) {
-            if (ordinal > 0 && ordinal == publishedActivations) {
-                publishedActivations--;
-            }
+        /** Gives back the count of an activation that published nothing. */
+        synchronized void releaseActivation() {
+            if (publishedActivations > 0) publishedActivations--;
         }
 
         boolean declaresTargetBranch() {
@@ -1766,10 +1621,16 @@ final class ConcolicTaskPlan {
          * matches nothing rather than half-matching on the node.</p>
          */
         OccurrenceAddress observedAddress(String lifecycle) {
-            return edu.uva.liftlab.graphchecker.runtime
-                    .OccurrenceMinterV2.mint(
-                            safe(lifecycle).isEmpty() ? sourceKey : lifecycle,
-                            regionId, liveContext(), liveIndex());
+            // Identity.occurrence, and nothing of this class's own: the
+            // address a replay computes here is the same function, over the
+            // same frame stack and scope, that the recorder ran on the stock
+            // JDK and wrote onto the activation the plan was built from.
+            // `open` is false -- admission asks the question before the
+            // session publisher opens the region, and opening it twice would
+            // move the base every endpoint inside is indexed from.
+            return edu.uva.liftlab.graphchecker.runtime.Identity.occurrence(
+                    safe(lifecycle).isEmpty() ? sourceKey : lifecycle,
+                    regionId, false);
         }
 
         /**
@@ -1800,72 +1661,10 @@ final class ConcolicTaskPlan {
             }
         }
 
-        /** The causal context this thread is in, as the minter reads it. */
-        private static edu.uva.liftlab.graphchecker.contract.CausalContext
-                liveContext() {
-            return edu.uva.liftlab.graphchecker.runtime.Identity.context(
-                    edu.uva.liftlab.graphchecker.runtime.Lineage.anchor(),
-                    edu.uva.liftlab.graphchecker.runtime.Lineage.rpcSite(),
-                    edu.uva.liftlab.graphchecker.runtime.Lineage
-                            .rootRole(),
-                    edu.uva.liftlab.graphchecker.runtime.Lineage
-                            .rootWindowIndex());
-        }
-
-        /**
-         * The execution index this activation would enter at.
-         *
-         * <p>{@code atScope()}, not {@code regionEnter()}: the same frames,
-         * and no side effect.  Admission asks the question before the
-         * session publisher opens the region, and opening it twice would
-         * move the base every endpoint inside is indexed from.</p>
-         */
-        private static edu.uva.liftlab.graphchecker.contract.ExecutionIndex
-                liveIndex() {
-            return edu.uva.liftlab.graphchecker.runtime.Identity.atScope();
-        }
-
         boolean acceptsRootInvocation(OccurrenceAddress observed) {
             return address != null && observed != null
                     && address.id().equals(observed.id());
         }
-
-        /**
-         * Whether {@code observed} is this occurrence up to what the two
-         * passes see differently.
-         *
-         * <p>The plan's address is computed offline from the recording's
-         * frames, the replay's live from its own; the node and the region
-         * are the two components both passes read from the same evidence,
-         * and a candidate that agrees on them and that this task's
-         * selector already picked out -- its receiver, its thread, its
-         * source -- is this occurrence.  Where the causal context or the
-         * execution index differ, the run does not refuse the occurrence
-         * silently: it admits it and states the drift, which is a fact
-         * about the two computations rather than about the activation.</p>
-         */
-        boolean addressDrifts(OccurrenceAddress observed) {
-            return address != null && observed != null
-                    && address.node().equals(observed.node())
-                    && address.regionId().equals(observed.regionId());
-        }
-
-        /** States one admitted activation whose address drifted. */
-        void noteAddressDrift(OccurrenceAddress observed) {
-            String difference = addressDifference(observed);
-            if (!addressDrifts.add(difference)) return;
-            edu.uva.liftlab.graphchecker.runtime.RowRuntime.gap(
-                    edu.uva.liftlab.graphchecker.contract.GapKind
-                            .LINEAGE_LOST,
-                    edu.uva.liftlab.graphchecker.contract.GapClass
-                            .DIAGNOSTIC,
-                    safe(occurrenceId),
-                    "the plan and this replay address one activation"
-                            + " differently: " + difference);
-        }
-
-        /** Drifts already stated, so one activation states one. */
-        private final Set<String> addressDrifts = new LinkedHashSet<>();
 
         /**
          * Why {@code observed} is not this task's occurrence.

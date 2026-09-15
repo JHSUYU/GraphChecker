@@ -504,10 +504,9 @@ final class RuntimeRegionPlanner {
         activation.put("selection", skeleton.selection);
         activation.put("test", root.test);
         activation.put("thread", root.threadName);
-        // Identity v3: where this activation was, as the recording stated
-        // it.  The finalizer mints the occurrence address from these two.
-        activation.put("executionIndex", root.executionIndex);
-        activation.put("causalContext", root.causalContext);
+        // Identity v3: the address the recording computed at this entry,
+        // carried verbatim.  Nothing offline re-derives it.
+        activation.put("occurrenceAddress", root.occurrenceAddress);
         putTraceContext(activation, root,
                 activationSource(root, stampedSources(calls, trace)));
         putRecordedTraceIds(activation, root);
@@ -1074,7 +1073,7 @@ final class RuntimeRegionPlanner {
         // occurrenceId is frozen evidence identity, not a replay address.
         // Replay therefore carries its own ordinal inside the exact stable
         // root/request scope.  Reserve ordinals for every observed activation
-        // before retention, just as OccurrenceMinter does for evidence ids.
+        // before retention, just as OccurrenceBinding does for evidence ids.
         Map<String, Integer> replayInvocationOrdinals =
                 new LinkedHashMap<>();
         Map<String, String> exactPorts = new LinkedHashMap<>();
@@ -1157,9 +1156,9 @@ final class RuntimeRegionPlanner {
                         + "has no retained activation seeds: " + regionId);
             }
             if (!retainedOccurrences.contains(occurrenceId)) continue;
-            OccurrenceMinter.bindOccurrence(region.json, rootCallId,
+            OccurrenceBinding.bindOccurrence(region.json, rootCallId,
                     occurrenceId);
-            OccurrenceMinter.bindEdges(regionEdges, regionId, rootCallId,
+            OccurrenceBinding.bindEdges(regionEdges, regionId, rootCallId,
                     occurrenceId);
             registerExactPorts(region, occurrenceId, exactPorts);
             List<Map<String, Object>> occurrenceSymbolize = symbolize(
@@ -1731,7 +1730,7 @@ final class RuntimeRegionPlanner {
 
     /** True when this row is the named occurrence's input-side port.
      *
-     * <p>{@link OccurrenceMinter#bindPorts} is the only thing that stamps an
+     * <p>{@link OccurrenceBinding#bindPorts} is the only thing that stamps an
      * {@code occurrenceId} on a port row, and it keys on the recorded {@code
      * rootCallId} of the access that produced the port - which a declaration
      * does not have and must not have: README section 2's {@code
@@ -2887,7 +2886,7 @@ final class RuntimeRegionPlanner {
      * <p>Both inputs are already content-addressed.  {@code occurrenceId} is
      * {@code <semantic source>/region/<regionId>#<ordinal>}, whose ordinal
      * counts the observed activations of that source and region in recorded
-     * order ({@link OccurrenceMinter}).  {@code rootSelector} is the address
+     * order ({@link OccurrenceBinding}).  {@code rootSelector} is the address
      * replay itself uses: the root method, its receiver context, the causal
      * anchor and the invocation ordinal inside that anchor's scope.  Neither
      * carries a per-run address, so two independent recordings of one
@@ -3045,16 +3044,18 @@ final class RuntimeRegionPlanner {
         final String requestKey;
         final String requestApi;
         /**
-         * Identity v3, as the recording stated it (IDENTITY-IMPL B).
+         * The occurrence address the RECORDING computed, or {@code ""}.
          *
-         * <p>{@code executionIndex} is the call path from the scope root to
-         * this event and {@code causalContext} is the scope it ran in.  PLAN
-         * mints offline, over this trace, so the address it mints can only
-         * be as precise as what the event carries -- and before these two it
-         * carried nothing an execution index could be built from.</p>
+         * <p>Identity v3, stated once, where the activation ran: {@code
+         * Identity.occurrence} on the recording's own frame stack and scope
+         * (IDENTITY-IMPL B).  Non-empty exactly on the entry of a method
+         * that opens a region.  PLAN reads it; PLAN does not re-derive it,
+         * because a second derivation is a second identity and the two
+         * disagreed -- the plan addressed {@code loadInternal} at a
+         * seven-frame path and the replay at {@code loadInternal@1}
+         * (REPORT-M2 §5).</p>
          */
-        final String executionIndex;
-        final String causalContext;
+        final String occurrenceAddress;
         MethodEvent(long seq, String test, String threadName,
                     long tid, String method, int objectId, String receiverType,
                     long callId, long parentCallId, long parentSiteId,
@@ -3065,7 +3066,7 @@ final class RuntimeRegionPlanner {
             this(seq, test, threadName, tid, method, objectId, receiverType,
                     callId, parentCallId, parentSiteId, laneId, spanId,
                     parentSpanId, remoteParentSpanId, source,
-                    receiverAttributed, requestKey, requestApi, "", "");
+                    receiverAttributed, requestKey, requestApi, "");
         }
 
         MethodEvent(long seq, String test, String threadName,
@@ -3075,9 +3076,8 @@ final class RuntimeRegionPlanner {
                     long parentSpanId, long remoteParentSpanId,
                     SourceRef source, boolean receiverAttributed,
                     String requestKey, String requestApi,
-                    String executionIndex, String causalContext) {
-            this.executionIndex = safe(executionIndex);
-            this.causalContext = safe(causalContext);
+                    String occurrenceAddress) {
+            this.occurrenceAddress = safe(occurrenceAddress);
             this.seq = seq;
             this.test = safe(test);
             this.threadName = safe(threadName);

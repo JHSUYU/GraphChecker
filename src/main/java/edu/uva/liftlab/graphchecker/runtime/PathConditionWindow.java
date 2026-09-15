@@ -111,11 +111,6 @@ final class PathConditionWindow {
         }
     }
 
-    /** Told the exact range a read is about to take, for a tracing caller. */
-    interface RangeTrace {
-        void range(int start, int end);
-    }
-
     /**
      * The condition window one VM branch event owns.  An event that named no
      * condition contributes none; an event whose condition indices are not
@@ -124,8 +119,8 @@ final class PathConditionWindow {
      * from the store.  Both branch hooks used to spell this out themselves.
      */
     static Read forEvent(VmExpressionTable.Store store, ConcolicVmBroker api,
-                         List<Integer> eventConditionIndices,
-                         RangeTrace trace) throws Exception {
+                         List<Integer> eventConditionIndices)
+            throws Exception {
         if (eventConditionIndices != null && eventConditionIndices.isEmpty()) {
             return new Read(PathConditionWindow.EMPTY, 0,
                     "CONDITIONLESS_EVENT");
@@ -137,7 +132,6 @@ final class PathConditionWindow {
         int start = eventConditionIndices.get(0);
         int end = eventConditionIndices.get(
                 eventConditionIndices.size() - 1) + 1;
-        if (trace != null) trace.range(start, end);
         return readPathConditionRange(store, api, start, end);
     }
 

@@ -89,7 +89,6 @@ final class ConcolicVmBroker {
     private Method symbolizeField;
     private Method symbolizeExactField;
     private Method observeExactPrimitiveField;
-    private Method sharedFieldVersions;
     private Method getExpression;
     private Method getFieldExpression;
     private Method finishRegion;
@@ -101,8 +100,6 @@ final class ConcolicVmBroker {
     private Method attach;
     private Method range;
     private Method trackedLocations;
-    private Method armPrimitiveFieldRead;
-    private Method confirmPrimitiveFieldRead;
     private Method installGuardedStoreSites;
 
     void requireCurrentCapabilities() {
@@ -301,24 +298,6 @@ final class ConcolicVmBroker {
         return String.valueOf(range.invoke(null, startIndex, endIndex));
     }
 
-    /** Arms the concrete operand of the immediately following getfield. */
-    long armSharedPrimitiveFieldRead(
-            Object owner, String declaringClass, String fieldName,
-            String descriptor, long valueBits) throws Exception {
-        Object status = armPrimitiveFieldRead.invoke(null, owner,
-                declaringClass, fieldName, descriptor, valueBits);
-        return status instanceof Number
-                ? ((Number) status).longValue() : Long.MIN_VALUE;
-    }
-
-    /** Consumes the VM's receipt for one armed concrete field operand. */
-    long confirmSharedPrimitiveFieldRead(long token)
-            throws Exception {
-        Object status = confirmPrimitiveFieldRead.invoke(null, token);
-        return status instanceof Number
-                ? ((Number) status).longValue() : Long.MIN_VALUE;
-    }
-
     /**
      * Every location a symbolic value reached, with its versions and reads.
      *
@@ -384,8 +363,6 @@ final class ConcolicVmBroker {
         api.observeExactPrimitiveField = method(system,
                 "observeExactPrimitiveField", Object.class, String.class,
                 String.class, String.class);
-        api.sharedFieldVersions = method(system, "getSharedFieldVersions",
-                Object.class, String.class, String.class, String.class);
         api.getExpression = method(system, "getSymbolicExpression",
                 Object.class);
         api.getFieldExpression = method(system,
@@ -407,11 +384,6 @@ final class ConcolicVmBroker {
                 "getTrackedLocationVersions", long.class, int.class);
         api.range = method(system, "getConcolicPathConditionRange",
                 int.class, int.class);
-        api.armPrimitiveFieldRead = method(system,
-                "armSharedPrimitiveFieldRead", Object.class,
-                String.class, String.class, String.class, long.class);
-        api.confirmPrimitiveFieldRead = method(system,
-                "confirmSharedPrimitiveFieldRead", long.class);
         api.installGuardedStoreSites = method(system,
                 "installGuardedStoreSites", String.class);
         return api;

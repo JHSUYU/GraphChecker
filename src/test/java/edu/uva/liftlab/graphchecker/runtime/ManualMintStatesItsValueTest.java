@@ -97,30 +97,12 @@ public class ManualMintStatesItsValueTest {
     }
 
     /**
-     * A model for a mint site is owed by the activation that minted it.
-     *
-     * <p>A model is written into the value the mint is about to symbolize,
-     * so an activation that never reached the site has nothing to write it
-     * into -- and neither has a reuse of an already symbolic root.</p>
-     */
-    @Test
-    public void theModelIsOwedOnlyByTheActivationThatMintedIt()
-            throws Exception {
-        assertFalse("nothing was minted for this phase here",
-                owesModel(false, false));
-        assertTrue("this activation minted it, so the model is its own",
-                owesModel(true, false));
-        assertFalse("a reuse is not a mint",
-                owesModel(true, true));
-    }
-
-    /**
-     * A model is applied only at a mint this run can place.
+     * The wave's value is written only at a mint this run can place.
      *
      * <p>A configured source names one mint SITE reached once per node
-     * lifecycle, so the epoch tells two mints of it apart and a model at
-     * the wrong epoch rewrites a value the solver said nothing about.  A
-     * model demands positive evidence, so an unattributed mint keeps the
+     * lifecycle, so the epoch tells two mints of it apart and an assignment
+     * at the wrong epoch rewrites a value the wave said nothing about.  A
+     * write demands positive evidence, so an unattributed mint keeps the
      * recorded value with a named gap.</p>
      */
     @Test
@@ -132,31 +114,29 @@ public class ManualMintStatesItsValueTest {
         // places this mint at epoch 0 -- not the epoch the plan addresses.
         RuntimeTraceContext.registerSource(manager,
                 new SourceRef("CLUSTER_NODE", "NAMENODE", NODE, 0L));
-        assertNull("a mint of another epoch is not modelled",
-                assignment(active, manager));
+        assertFalse("a mint of another epoch is not written",
+                placeable(active, manager));
         assertEquals("EPOCH_UNMATCHED", gap(active, "gapKind"));
 
         // The restart advances the same logical source.
         RuntimeTraceContext.restartSource(manager,
                 new SourceRef("CLUSTER_NODE", "NAMENODE", NODE, 1L));
-        assertNotNull("the epoch-1 mint is modelled",
-                assignment(active, manager));
+        assertTrue("the epoch-1 mint is placeable",
+                placeable(active, manager));
         ConcolicRegionRuntime.ActiveRegion orphan =
                 phaseRegion(NODE + "#epoch1", PLANNED);
-        assertNull("nothing places this mint, so nothing rewrites it",
-                assignment(orphan, new Object()));
+        assertFalse("nothing places this mint, so nothing rewrites it",
+                placeable(orphan, new Object()));
         assertEquals("MINT_UNATTRIBUTED", gap(orphan, "gapKind"));
         String detail = gap(orphan, "detail");
         assertTrue(detail, detail.contains("attributes this mint to no node"));
         assertTrue(detail, detail.contains("recorded value stands"));
-        assertTrue(unresolved(orphan), unresolved(orphan).contains(
-                "CONFIGURED_SOURCE_PHASE_MINT_UNATTRIBUTED"));
 
         ConcolicRegionRuntime.ActiveRegion epochless =
                 phaseRegion("workload/unregistered",
                         "workload/unregistered/region/" + REGION + "#1");
-        assertNotNull("nothing to place, nothing to refuse",
-                assignment(epochless, new Object()));
+        assertTrue("nothing to place, nothing to refuse",
+                placeable(epochless, new Object()));
     }
 
     /**
@@ -178,10 +158,10 @@ public class ManualMintStatesItsValueTest {
         assertEquals("one site, one variable, whatever reached it",
                 phaseId(PLANNED), phaseId(second));
 
-        assertNotNull("the first occurrence is modelled",
-                assignment(phaseRegion(NODE + "#epoch1", PLANNED), manager));
-        assertNotNull("and so is the second, on the same valuation",
-                assignment(phaseRegion(NODE + "#epoch1", second), manager));
+        assertTrue("the first occurrence is placeable",
+                placeable(phaseRegion(NODE + "#epoch1", PLANNED), manager));
+        assertTrue("and so is the second, on the same valuation",
+                placeable(phaseRegion(NODE + "#epoch1", second), manager));
     }
 
     /** The published row, as the runtime writes it for one manual mint. */
@@ -214,21 +194,6 @@ public class ManualMintStatesItsValueTest {
     }
 
     /** Whether an activation that minted (or reused) the root owes it. */
-    private boolean owesModel(boolean minted, boolean reused)
-            throws Exception {
-        ConcolicRegionRuntime.ActiveRegion active = manualRegion();
-        if (minted) {
-            JsonObject mint = new JsonObject();
-            mint.addProperty("sourcePhaseId", MINT_PHASE);
-            mint.addProperty("reused", reused);
-            symbolizedRows(active).add(mint);
-        }
-        Method owes = ConcolicRegionRuntime.ActiveRegion.class
-                .getDeclaredMethod("owesConfiguredSourceModel", String.class);
-        owes.setAccessible(true);
-        return (Boolean) owes.invoke(active, MINT_PHASE);
-    }
-
     @SuppressWarnings("unchecked")
     private static List<JsonObject> symbolizedRows(
             ConcolicRegionRuntime.ActiveRegion active) throws Exception {
@@ -285,14 +250,14 @@ public class ManualMintStatesItsValueTest {
         return active;
     }
 
-    private Object assignment(ConcolicRegionRuntime.ActiveRegion active,
-                              Object mintOwner) throws Exception {
+    /** Whether this run can place this mint where the plan addresses it. */
+    private static boolean placeable(
+            ConcolicRegionRuntime.ActiveRegion active, Object mintOwner)
+            throws Exception {
         Method method = active.getClass().getDeclaredMethod(
-                "configuredSourceAssignment", String.class, String.class,
-                String.class, Object.class);
+                "mintIsPlaceable", Object.class);
         method.setAccessible(true);
-        return method.invoke(active, phaseId(occurrenceId), SOURCE_ID, FIELD,
-                mintOwner);
+        return (Boolean) method.invoke(active, mintOwner);
     }
 
     /** One member of the last gap this activation filed, or "". */
@@ -306,14 +271,6 @@ public class ManualMintStatesItsValueTest {
         JsonObject last = gaps.isEmpty() ? new JsonObject()
                 : gaps.get(gaps.size() - 1);
         return last.has(member) ? last.get(member).getAsString() : "";
-    }
-
-    /** What this activation published as unresolved. */
-    private static String unresolved(
-            ConcolicRegionRuntime.ActiveRegion active) throws Exception {
-        Field field = active.getClass().getDeclaredField("unresolved");
-        field.setAccessible(true);
-        return String.valueOf(field.get(active));
     }
 
     private static String phaseId(String occurrenceId) {

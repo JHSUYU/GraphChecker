@@ -58,10 +58,6 @@ public final class ExecutionTask extends PlanRow {
 
     /** Write sites of a declared input's cell the replay must observe. */
     public static final String OBSERVED_WRITE_SITES = "observedWriteSites";
-    /** Solver-selected concrete values for exact guarded primitive reads. */
-    public static final String GUARDED_READ_ASSIGNMENTS =
-            "guardedReadAssignments";
-
     private final InputActionCatalog inputActions;
     private final LoopBoundPolicy loopBound;
     private final String rootLoopMethod;
@@ -432,14 +428,6 @@ public final class ExecutionTask extends PlanRow {
     }
 
     public LoopBoundPolicy loopBound() { return loopBound; }
-
-    public JsonArray modelAssignments() {
-        return array(encoded, "modelAssignments").deepCopy();
-    }
-
-    public JsonArray guardedReadAssignments() {
-        return array(encoded, GUARDED_READ_ASSIGNMENTS).deepCopy();
-    }
 
     public JsonArray edgeBindings() {
         return array(encoded, "edgeBindings").deepCopy();

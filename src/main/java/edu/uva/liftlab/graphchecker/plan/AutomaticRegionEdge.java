@@ -1,7 +1,7 @@
 package edu.uva.liftlab.graphchecker.plan;
 
 import com.google.gson.JsonObject;
-import edu.uva.liftlab.graphchecker.runtime.OccurrenceMinter;
+import edu.uva.liftlab.graphchecker.runtime.OccurrenceBinding;
 
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalInteger;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalLongInteger;
@@ -86,7 +86,7 @@ public final class AutomaticRegionEdge {
                 || optionalString(edge, "fromOccurrenceId").isEmpty()
                 || optionalString(edge, "toOccurrenceId").isEmpty()
                 || optionalString(edge, "sourceKey").isEmpty()
-                || OccurrenceMinter.UNREGISTERED_SOURCE_KEY.equals(
+                || OccurrenceBinding.UNREGISTERED_SOURCE_KEY.equals(
                 optionalString(edge, "sourceKey"))
                 || !optionalString(edge, "sourceKey").equals(
                 optionalString(edge, "consumerSourceKey"))

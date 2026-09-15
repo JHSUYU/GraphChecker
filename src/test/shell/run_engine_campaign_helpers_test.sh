@@ -126,9 +126,6 @@ emit_fixture() {
     topologyEpoch: "iteration-0000", sessionId: "SESSION.seed",
     rowKind: "targets", rows: 1}' \
     >"${emit_iteration}/session_census.jsonl"
-  printf '%s\n' \
-    '{"taskId":"task-target","published":true}' \
-    >"${emit_iteration}/seed-result/concolic_region_results.jsonl"
   : >"${emit_iteration}/campaign_gaps.jsonl"
   jq -n '{schemaVersion: 1, kind: "CAMPAIGN_ITERATION_MANIFEST",
     iterationId: "iteration-0000", parentIterationId: "",
@@ -679,14 +676,30 @@ done
 # it names and EXPLORE flips at them -- so which file it is belongs to the
 # configuration a campaign publishes, and both readers take it from this one
 # key rather than each deriving a path.
-# 43: `causynth_loop_default_bound` joined it when the bound an unnarrowed
+# 43: `causynth_region_skeletons` joined it with the one-identity round.  TWO
+# weaves read that file -- the recording opens an execution-index region at
+# every root it names and the concolic weave opens one at every root the
+# campaign did not select -- so which file it is belongs to the configuration
+# a campaign publishes, and a weave that read a different one would stand on
+# a different frame stack and address a different occurrence for one event.
+# 44: `causynth_loop_default_bound` joined it when the bound an unnarrowed
 # retained loop inherits stopped being a constant in LoopBoundPolicy.  It was
 # applied silently to 54 of hdfs-17960's retained loops, which README LOOP-1
 # forbids a retained condition loop doing, so the case states it and the
 # campaign publishes what it stated.
-[[ "$(print_normalized_config | wc -l)" -eq 43 ]] \
+[[ "$(print_normalized_config | wc -l)" -eq 44 ]] \
   || fail "config prints a different number of keys than it used to: \
 $(print_normalized_config | wc -l)"
+# CONFIG-3: the region skeletons are ONE path, and every weave takes them
+# from that one key.
+[[ " ${config_table_keys[*]} " == *" causynth_region_skeletons "* ]] \
+  || fail "the region skeletons are not a declared workflow key"
+grep -qF 'causynth_region_skeletons=${causynth_region_skeletons:-${causynth_output_dir}/runtime/skeleton-pass/region_skeletons.jsonl}' \
+    "${repo}/run_engine.sh" \
+  || fail "the region skeletons do not default beside the discovery artifacts"
+grep -qF '"-Dcausynth.region.skeletons=${CAUSYNTH_REGION_SKELETONS:-${causynth_region_skeletons}}"' \
+    "${repo}/run_engine.sh" \
+  || fail "the weaves are not given the region skeletons key"
 # CONFIG-2: the static scope map is ONE path, and both of its readers take it
 # from that one key.  The workload JVM installs the guard sites the map names
 # and EXPLORE flips at them, so a second derivation of the path is two stages

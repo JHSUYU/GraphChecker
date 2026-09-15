@@ -54,11 +54,6 @@ public final class RowRuntime {
             new ConcurrentHashMap<Long, OccurrenceAddress>();
     private static final Map<String, AtomicInteger> ORDINALS =
             new ConcurrentHashMap<String, AtomicInteger>();
-    /** The causal context and execution index of each live activation. */
-    private static final Map<Long, CausalContext> CONTEXTS =
-            new ConcurrentHashMap<Long, CausalContext>();
-    private static final Map<Long, ExecutionIndex> INDEXES =
-            new ConcurrentHashMap<Long, ExecutionIndex>();
     /** This replay's clock readings so far, by root id. */
     private static final Map<String, Long> CLOCKS =
             new ConcurrentHashMap<String, Long>();
@@ -166,12 +161,12 @@ public final class RowRuntime {
                                                     String nodeKey,
                                                     String regionId,
                                                     String taskId) {
-        CausalContext context = Identity.context(Lineage.anchor(),
-                Lineage.rpcSite(), Lineage.rootRole(),
-                Lineage.rootWindowIndex());
-        ExecutionIndex index = Identity.regionEnter();
-        OccurrenceAddress address = OccurrenceMinterV2.mint(nodeKey,
-                regionId, context, index);
+        // The occurrence this ENTRY already opened
+        // (ConcolicRegionRuntime.enterRegionEntry, the one hook every
+        // skeleton root carries), not a second opening of the same
+        // activation: one entry, one region, one address -- the same one
+        // the recorder computed on the stock JDK.
+        OccurrenceAddress address = Identity.currentOccurrence(nodeKey);
         SessionPublisher session = publisher;
         if (address == null) {
             if (session != null) {
@@ -183,10 +178,6 @@ public final class RowRuntime {
             return null;
         }
         if (token > 0L) ACTIVATIONS.put(token, address);
-        if (token > 0L) {
-            CONTEXTS.put(token, context);
-            INDEXES.put(token, index);
-        }
         if (session != null) {
             session.activation(ActivationRow.of(sessionId(), address,
                     Text.safe(taskId), FocusedReplay.focused(taskId,
@@ -238,8 +229,6 @@ public final class RowRuntime {
 
     public static void endActivation(long token) {
         ACTIVATIONS.remove(token);
-        CONTEXTS.remove(token);
-        INDEXES.remove(token);
     }
 
     // ------------------------------------------------------------------
@@ -311,28 +300,6 @@ public final class RowRuntime {
                 attempt);
     }
 
-    /**
-     * The endpoint of one work submission.
-     *
-     * <p>A batch submits several tasks from one point of one activation --
-     * {@code invokeAll} with three subtasks -- and the started work is
-     * addressed by the endpoint that started it, so those submissions may
-     * not share an endpoint.  The k-th submission made at one point is the
-     * k-th, in the order the run makes them, which a replay of the same
-     * prefix makes in the same order.</p>
-     */
-    public static Endpoint submission(OccurrenceAddress from) {
-        if (from == null) return null;
-        Endpoint at = endpoint(from, "SUBMIT", 0);
-        if (at == null) return null;
-        AtomicInteger made = SUBMISSIONS.get(at.id());
-        if (made == null) {
-            AtomicInteger fresh = new AtomicInteger();
-            made = SUBMISSIONS.putIfAbsent(at.id(), fresh);
-            if (made == null) made = fresh;
-        }
-        return endpoint(from, "SUBMIT#" + made.getAndIncrement(), 0);
-    }
 
     /** One v_H minted at an endpoint already allocated. */
     public static Endpoint attachedAt(Endpoint endpoint, long seq,
@@ -375,19 +342,6 @@ public final class RowRuntime {
                 answeredValue);
     }
 
-    /**
-     * Files the endpoint of one message, for the anchor its receiver states.
-     *
-     * <p>The site is the transport leg itself, so a message that carries no
-     * declared port still names its producer -- which is what a causal
-     * context needs (IDENTITY-V3 §1).</p>
-     */
-    public static void sending(OccurrenceAddress sender, String transport,
-                               String correlationId, String half) {
-        if (sender == null) return;
-        Endpoint endpoint = endpoint(sender, transport + "#" + half, 0);
-        Interactions.sent(transport, correlationId, half, endpoint.id());
-    }
 
     /**
      * The address of an activation that ran under no live occurrence: its
@@ -400,7 +354,7 @@ public final class RowRuntime {
      */
     public static OccurrenceAddress degraded(String nodeKey, String site) {
         Role role = Lineage.named() ? Lineage.role() : Role.UNKNOWN;
-        return OccurrenceMinterV2.degraded(nodeKey, role, site);
+        return Identity.roleOccurrence(nodeKey, role);
     }
 
     /**
@@ -575,7 +529,11 @@ public final class RowRuntime {
      * indexed from (IDENTITY-V3 SS1, scope transfer).</p>
      */
     public static void startWork(String startSiteId, Object carrier) {
-        Identity.startWork(startSiteId, carrier);
+        // The starter's node travels with the start frame: work whose own
+        // frames name no component belongs to the component that started
+        // it (IDENTITY-V3 §1, LogicalComponent).
+        Identity.startWork(startSiteId, carrier,
+                RuntimeTraceContext.activationSource(null).key());
     }
 
     /** Takes the start frame filed for the work this object carries. */
@@ -591,20 +549,6 @@ public final class RowRuntime {
      * not stable -- Hadoop renames DataXceiver threads per op -- so the JVM
      * thread id is the key and the name travels with it for a reader.</p>
      */
-
-    /** Endpoints that started work elsewhere, by id, for startedBy. */
-    private static final Map<String, Endpoint> STARTERS =
-            new ConcurrentHashMap<String, Endpoint>();
-
-    /** Remembers one submission endpoint so a child row can name it. */
-    public static void starting(Endpoint submission) {
-        if (submission != null) STARTERS.put(submission.id(), submission);
-    }
-
-    /** Charges one loop iteration to the running execution index. */
-    public static void loopIteration(String loopId) {
-        Identity.loopIteration(loopId);
-    }
 
     /** Files one expression and returns the ref rows name it by. */
     public static String expressionRef(JsonElement expression) {
@@ -748,14 +692,11 @@ public final class RowRuntime {
                 + Text.safe(identity), Boolean.TRUE) == null;
     }
 
-    /** Submissions already made at one point, by base endpoint id. */
-    private static final ConcurrentHashMap<String, AtomicInteger> SUBMISSIONS =
-            new ConcurrentHashMap<String, AtomicInteger>();
-
     private static Endpoint endpoint(OccurrenceAddress occurrence,
                                      String site, int attempt) {
-        return Endpoint.of(occurrence, Text.safe(site), Identity.siteIndex(),
-                attempt);
+        // Identity's, so a row's endpoint and the endpoint a message files
+        // as its producer are one computation.
+        return Identity.endpointAt(occurrence, site, attempt);
     }
 
     /**
@@ -901,20 +842,15 @@ public final class RowRuntime {
         synchronized (LOCK) {
             ACTIVATIONS.clear();
             AMBIENT.clear();
-            STARTERS.clear();
-            CONTEXTS.clear();
-            INDEXES.clear();
             ORDINALS.clear();
             CLAIMED_READS.clear();
             PLACEHOLDERS.clear();
             REFS.clear();
-            SUBMISSIONS.clear();
             Identity.resetForTests();
             CLOCKS.clear();
             LAST_SEQ.set(0L);
             publisher = null;
             sessionId = "";
-            OccurrenceMinterV2.resetForTests();
             Interactions.resetForTests();
             Lineage.resetForTests();
             FocusedReplay.resetForTests();
