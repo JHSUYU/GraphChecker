@@ -481,7 +481,7 @@ final class FlipQuery {
                             ? "unpaired|" + row.endpoint().id()
                             : "handoff|" + interaction.id();
                     String name = names.name(key, "vH_" + row.endpoint().site()
-                            + "_" + row.endpoint().ordinal());
+                            + "_" + row.endpoint().siteIndex().hash());
                     declare(name, sortOf(row.javaType(), name,
                             "handoff " + row.endpoint()),
                             "handoff " + row.endpoint() + " arrival "
@@ -494,7 +494,7 @@ final class FlipQuery {
                     String name = names.name("read|" + sessionId + "|"
                             + row.endpoint().id(), "st_"
                             + row.location().slot() + "_"
-                            + row.endpoint().ordinal());
+                            + row.endpoint().siteIndex().hash());
                     declare(name, sortOf(row.javaType(), name,
                             "read " + row.endpoint()),
                             "read " + row.endpoint() + " of " + row.location()
