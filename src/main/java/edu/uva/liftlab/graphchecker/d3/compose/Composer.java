@@ -525,10 +525,10 @@ public final class Composer {
         String selector = "path_selector__" + ordinal + "__"
                 + JsonText.digest(path.pathId(), 10);
         lowering.declare(selector, Sort.BOOL);
-        // This path's own occurrence: the reads its terms name are the
-        // ones the anchor published rows for, and a placeholder row is
-        // matched to them by occurrence and location.
-        SmtLowering.SessionJoin rows = corpus.joinOf(session, anchor);
+        // The rows of this path's session: a reader and the placeholder
+        // that answers it are matched by the MINT VERSION, which is
+        // session-unique, so the view needs no narrower scope.
+        SmtLowering.SessionJoin rows = corpus.joinOf(session);
         lowering.begin(session, rows, corpus.expressions(session));
 
         List<String> terms = new ArrayList<String>();
@@ -1018,20 +1018,24 @@ public final class Composer {
                 continue;
             }
             if (answered.contains(read.symbol())) continue;
-            // What this occurrence's OWN row says its read of this
-            // location returned: no write made the version this read
-            // observed, and a read row of the same occurrence states the
-            // read.  That is the mint the VM performed at a declared
-            // region input -- whose row carries the last real write's
-            // version, not the mint's -- and not a value chosen here.
-            String minted = SmtLowering.statedReadSymbol(join, key);
+            // What the MINT at the version this read observed gave it: no
+            // write made that version, and a placeholder row of this
+            // session states it under `mintVersion` (CONTRACT v2.4).  That
+            // is the VM's primitive at a declared region input, keyed by
+            // the version it created and by nothing else -- unique by
+            // construction, where (occurrence, location) could not choose
+            // between two ports of one occurrence.
+            String minted = SmtLowering.mintedReadSymbol(join,
+                    read.observedVersion());
             if (minted == null) {
                 refusals.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
                         GapClass.DIAGNOSTIC, key + "@"
                                 + read.observedVersion(),
-                        "this occurrence published two read rows of this "
-                                + "location under different symbols: "
-                                + join.statedReadSymbols(key)));
+                        "two placeholder rows of this session state mint "
+                                + "version " + read.observedVersion()
+                                + " under different symbols: "
+                                + join.mintedReadSymbols(
+                                read.observedVersion())));
                 continue;
             }
             if (minted.equals(read.symbol())) {
