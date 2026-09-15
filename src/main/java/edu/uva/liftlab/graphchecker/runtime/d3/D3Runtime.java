@@ -469,6 +469,32 @@ public final class D3Runtime {
         Identity.exitCall();
     }
 
+    /**
+     * This thread, as a key stable inside one session.
+     *
+     * <p>Same-thread program order is a happens-before input (R-I7.1), and
+     * two rows are on one thread iff they carry one key.  The name alone is
+     * not stable -- Hadoop renames DataXceiver threads per op -- so the JVM
+     * thread id is the key and the name travels with it for a reader.</p>
+     */
+
+    /** The submission endpoint this thread inherited its frame from. */
+    private static Endpoint startedBy() {
+        String id = Lineage.startedBy();
+        if (id.isEmpty()) return null;
+        Endpoint known = STARTERS.get(id);
+        return known;
+    }
+
+    /** Endpoints that started work elsewhere, by id, for startedBy. */
+    private static final Map<String, Endpoint> STARTERS =
+            new ConcurrentHashMap<String, Endpoint>();
+
+    /** Remembers one submission endpoint so a child row can name it. */
+    public static void starting(Endpoint submission) {
+        if (submission != null) STARTERS.put(submission.id(), submission);
+    }
+
     /** Charges one loop iteration to the running execution index. */
     public static void loopIteration(String loopId) {
         Identity.loopIteration(loopId);
@@ -611,6 +637,7 @@ public final class D3Runtime {
         synchronized (LOCK) {
             ACTIVATIONS.clear();
             AMBIENT.clear();
+            STARTERS.clear();
             CONTEXTS.clear();
             INDEXES.clear();
             ORDINALS.clear();

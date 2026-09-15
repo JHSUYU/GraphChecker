@@ -135,12 +135,18 @@ final class D3RowPublication {
             if (symbol.isEmpty()) continue;
             String rootId = optionalString(row, "sourceId");
             if (rootId.isEmpty()) rootId = optionalString(row, "portId");
+            RootKind kind = kindOf(row);
+            // A fault marker IS a declared root: the case names the cell
+            // and the search asks a question of it.  Published as declared,
+            // or Design 3 would pin the one root the claim rests on --
+            // bug2's and bug3's only marker is this cell.
+            boolean declared = kind == RootKind.MARKER
+                    || !optionalString(row, "sourceId").isEmpty();
             D3Runtime.rootMint(occurrence,
                     optionalLongInteger(row, "eventSeq", 0L), rootId, symbol,
-                    kindOf(row), optionalString(row, "recordedValue"),
+                    kind, optionalString(row, "recordedValue"),
                     optionalString(row, "domainMin"),
-                    optionalString(row, "domainMax"),
-                    !optionalString(row, "sourceId").isEmpty());
+                    optionalString(row, "domainMax"), declared);
         }
     }
 

@@ -2297,6 +2297,36 @@ public final class ConcolicRegionRuntime {
         }
     }
 
+    /**
+     * The endpoint of one Thread.start or executor submission.
+     *
+     * <p>The child's activation row names it, which is the thread-start
+     * edge of happens-before (INTERACTION-ID §7.1): without it two
+     * occurrences on two threads have only their message causality, and a
+     * task submitted inside a scope has none.</p>
+     *
+     * @return the submission endpoint's id, or {@code ""}
+     */
+    static String noteWorkSubmission(String nodeKey) {
+        if (!D3Runtime.open()) return "";
+        try {
+            ActiveRegion active = activeRegion();
+            edu.uva.liftlab.graphchecker.d3.contract.OccurrenceAddress from =
+                    active == null || active.d3Address == null
+                            ? D3Runtime.degraded(nodeKey, "submit")
+                            : active.d3Address;
+            if (from == null) return "";
+            edu.uva.liftlab.graphchecker.d3.contract.Endpoint submission =
+                    D3Runtime.nextEndpoint(from, "SUBMIT", 0);
+            if (submission == null) return "";
+            D3Runtime.starting(submission);
+            return submission.id();
+        } catch (Throwable ignored) {
+            // Work is submitted whether or not its endpoint can be named.
+            return "";
+        }
+    }
+
     /** The transport's retry number for this leg, or 0. */
     private static int attemptOf(RuntimeTraceContext.View view) {
         try {

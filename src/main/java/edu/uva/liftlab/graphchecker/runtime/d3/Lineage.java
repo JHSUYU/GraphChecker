@@ -80,10 +80,19 @@ public final class Lineage {
     public static final class Carried {
         private final List<Frame> frames;
         private final String nodeKey;
+        /** The endpoint of the submission that carried it, or "". */
+        private final String startedBy;
 
-        private Carried(List<Frame> frames, String nodeKey) {
+        private Carried(List<Frame> frames, String nodeKey,
+                        String startedBy) {
             this.frames = frames;
             this.nodeKey = nodeKey;
+            this.startedBy = startedBy;
+        }
+
+        /** The endpoint id of the start/submit that carried this. */
+        public String startedBy() {
+            return startedBy;
         }
 
         /** Whether this carries a lineage at all. */
@@ -132,9 +141,28 @@ public final class Lineage {
 
     /** The lineage of the calling thread, as a value work can carry. */
     public static Carried capture(String nodeKey) {
-        return new Carried(new ArrayList<Frame>(STACK.get()),
-                Text.safe(nodeKey));
+        return capture(nodeKey, "");
     }
+
+    /** The same, naming the endpoint of the submission that carries it. */
+    public static Carried capture(String nodeKey, String startedByEndpoint) {
+        return new Carried(new ArrayList<Frame>(STACK.get()),
+                Text.safe(nodeKey), Text.safe(startedByEndpoint));
+    }
+
+    /** The endpoint that started the work running on this thread, or "". */
+    public static String startedBy() {
+        String started = STARTED_BY.get();
+        return started == null ? "" : started;
+    }
+
+    /** States which submission's frame this thread inherited. */
+    public static void startedBy(String endpointId) {
+        STARTED_BY.set(Text.safe(endpointId));
+    }
+
+    private static final ThreadLocal<String> STARTED_BY =
+            new ThreadLocal<String>();
 
     /**
      * Installs a carried lineage and opens one hop inside it.
@@ -151,6 +179,7 @@ public final class Lineage {
         long token;
         if (carried instanceof Carried && ((Carried) carried).names()) {
             Carried scope = (Carried) carried;
+            if (!scope.startedBy().isEmpty()) startedBy(scope.startedBy());
             stack.clear();
             stack.addAll(scope.frames);
             String node = Text.safe(nodeKey).isEmpty()
@@ -317,5 +346,6 @@ public final class Lineage {
         COUNTERS.clear();
         STACK.remove();
         RESTORED.remove();
+        STARTED_BY.remove();
     }
 }

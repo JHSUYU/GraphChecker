@@ -185,8 +185,12 @@ final class RuntimeTraceContext {
         // The lineage travels with the work, exactly as the request scope
         // does: a pool thread created before the scope existed inherits
         // neither, and both are facts about the work rather than the thread.
-        Object lineage = Lineage.capture(
-                view.source == null ? "" : view.source.key());
+        // The submission itself is an endpoint: the thread that runs this
+        // work inherits the frame from it, and its activation row names it
+        // as startedBy (R-I7.1's thread-start edge).
+        String nodeKey = view.source == null ? "" : view.source.key();
+        Object lineage = Lineage.capture(nodeKey,
+                ConcolicRegionRuntime.noteWorkSubmission(nodeKey));
         synchronized (LOCK) {
             ASYNC_SEEDS.put(carrier, new Seed(view.spanId,
                     view.source, view.requestKey, view.requestApi,
