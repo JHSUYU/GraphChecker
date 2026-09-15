@@ -89,7 +89,7 @@ final class JsonText {
     }
 
     /** Lowercase hex sha256, untruncated. */
-    static String sha256(String text) {
+    public static String sha256(String text) {
         return digest(text, 0);
     }
 

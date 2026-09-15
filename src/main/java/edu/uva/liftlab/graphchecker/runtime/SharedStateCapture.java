@@ -5,8 +5,8 @@ import edu.uva.liftlab.graphchecker.d3.smt.JsonFields;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
-import edu.uva.liftlab.graphchecker.concolic.RecordedEvidenceIdentity;
-import edu.uva.liftlab.graphchecker.concolic.SharedStateEvidence;
+import edu.uva.liftlab.graphchecker.d3.plan.RecordedEvidenceIdentity;
+import edu.uva.liftlab.graphchecker.d3.plan.SharedStateEvidence;
 import edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.ActiveRegion;
 
 import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.array;

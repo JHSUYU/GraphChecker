@@ -2,10 +2,10 @@ package edu.uva.liftlab.graphchecker.causynth;
 
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.d3.smt.JsonFields;
-import edu.uva.liftlab.graphchecker.contract.SiteId;
-import edu.uva.liftlab.graphchecker.contract.StaticSymbolicSourceDeclaration;
-import edu.uva.liftlab.graphchecker.contract.FieldPathSpec;
-import edu.uva.liftlab.graphchecker.contract.ConfiguredSourcePhaseContract;
+import edu.uva.liftlab.graphchecker.d3.plan.SiteId;
+import edu.uva.liftlab.graphchecker.d3.plan.StaticSymbolicSourceDeclaration;
+import edu.uva.liftlab.graphchecker.d3.plan.FieldPathSpec;
+import edu.uva.liftlab.graphchecker.d3.plan.ConfiguredSourcePhaseContract;
 import soot.Body;
 import soot.Local;
 import soot.SootMethod;

@@ -1,21 +1,23 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
+import edu.uva.liftlab.graphchecker.d3.plan.ConcolicScheduler;
+
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.google.gson.JsonPrimitive;
-import edu.uva.liftlab.graphchecker.concolic.BranchReplayContract;
-import edu.uva.liftlab.graphchecker.concolic.SharedStateEvidence;
-import edu.uva.liftlab.graphchecker.contract.CommunicationHandoffSpec;
-import edu.uva.liftlab.graphchecker.contract.ConfiguredSourcePhaseContract;
+import edu.uva.liftlab.graphchecker.d3.plan.BranchReplayContract;
+import edu.uva.liftlab.graphchecker.d3.plan.SharedStateEvidence;
+import edu.uva.liftlab.graphchecker.d3.plan.CommunicationHandoffSpec;
+import edu.uva.liftlab.graphchecker.d3.plan.ConfiguredSourcePhaseContract;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
-import edu.uva.liftlab.graphchecker.contract.ExecutionTask;
-import edu.uva.liftlab.graphchecker.contract.FieldPathSpec;
-import edu.uva.liftlab.graphchecker.contract.FieldPathSpec.DeclaredField;
-import edu.uva.liftlab.graphchecker.contract.InputActionCatalog;
+import edu.uva.liftlab.graphchecker.d3.plan.ExecutionTask;
+import edu.uva.liftlab.graphchecker.d3.plan.FieldPathSpec;
+import edu.uva.liftlab.graphchecker.d3.plan.FieldPathSpec.DeclaredField;
+import edu.uva.liftlab.graphchecker.d3.plan.InputActionCatalog;
 import edu.uva.liftlab.graphchecker.d3.smt.JavaContainerTypes;
-import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
+import edu.uva.liftlab.graphchecker.d3.plan.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceId;
 import java.io.BufferedReader;
 import java.io.IOException;
