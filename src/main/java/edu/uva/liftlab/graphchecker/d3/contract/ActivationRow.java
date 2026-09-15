@@ -18,10 +18,22 @@ import java.util.Objects;
  *
  * <p>{@code threadKey} is the recording's stable key for the executing thread
  * inside this session: two rows with the same key ran in program order, which
- * is the same-thread half of happens-before (sec 7.1).  {@code startedBy} is
- * the {@code Thread.start} or executor-submission endpoint that started this
- * activation's thread, when there is one -- the other half, and null for a
- * thread nothing in the recording started.</p>
+ * is the same-thread half of happens-before (sec 7.1).</p>
+ *
+ * <p>{@code startedBy} is the other half, and ONLY that: the intra-node
+ * thread-creation edge -- the {@code Thread.start} or executor-submission
+ * {@link Endpoint} whose frame this activation's thread inherited.  It is null
+ * for a thread that already existed (a handler pool takes work off a queue; no
+ * event in this recording started it) and null for an activation a message
+ * started.  Message causality is the occurrence's
+ * {@link CausalContext.Anchor} and stays there.</p>
+ *
+ * <p>The two are different happens-before relations -- thread start against
+ * message receive -- and both may hold of one activation without disagreeing:
+ * a thread started here can go on to receive a message, and an ancestor walk
+ * ({@code Arms.ancestor}) follows both.  Reading {@code startedBy} as "who
+ * caused this work" would collapse them and lose the message edge on every
+ * pooled handler, which has no starter at all.</p>
  */
 public final class ActivationRow {
     private final String sessionId;
