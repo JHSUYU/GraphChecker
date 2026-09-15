@@ -235,6 +235,25 @@ final class D3RowPublication {
                             + " read: " + optionalString(row, "portId"));
             return;
         }
+        String declared = javaDescriptor(optionalString(row, "javaType"));
+        String minted = mintedSort(symbol);
+        if (!minted.isEmpty() && !minted.equals(declared)) {
+            // The mint symbolized the OBJECT, not the cell: on hdfs-17960
+            // REGION.9492ec77 declares <Snapshot: int id> and the row came
+            // back with the VM's reference symbol P_L'...Snapshot'_ beside
+            // javaType I, so one row stated an int read and a reference
+            // unknown.  A reader that declares the symbol by the row's type
+            // and resolves it by the table's gets two sorts for one name,
+            // which no lowering can hold; the run states the disagreement
+            // instead of a row that hides it.
+            D3Runtime.gap(GapKind.DECLARATION_MISSING, GapClass.DIAGNOSTIC,
+                    symbol, "a declared region input minted a " + minted
+                            + "-sorted symbol for a " + declared + " cell ("
+                            + optionalString(row, "fieldSignature")
+                            + "), so this read states no one sort: "
+                            + optionalString(row, "portId"));
+            return;
+        }
         String value = optionalString(row, "observedValue");
         if (value.isEmpty()) value = optionalString(row, "recordedValue");
         if (observed < 0L && literal(value).isEmpty()) {
@@ -257,8 +276,31 @@ final class D3RowPublication {
                 optionalLongInteger(row, "eventSeq", 0L),
                 Endpoint.stateSite(locationKey, "PLACEHOLDER", 0, false),
                 location, observed, symbol,
-                javaDescriptor(optionalString(row, "javaType")),
-                literal(value), optionalString(row, "siteIndex"));
+                declared, literal(value),
+                optionalString(row, "siteIndex"));
+    }
+
+    /**
+     * The sort the VM spelled into one of its symbols, or {@code ""}.
+     *
+     * <p>A VM symbol carries its own sort: {@code M_I_field_...},
+     * {@code M_Z_field_...}, {@code P_L'org/apache/...'_}.  A symbol the
+     * runtime made instead ({@code INSTANCE_FIELD/2#24@v178}) spells none
+     * and claims none, so nothing is inferred from its absence.</p>
+     */
+    private static String mintedSort(String symbol) {
+        String name = safe(symbol);
+        if (name.length() < 4 || name.charAt(1) != '_') return "";
+        char sort = name.charAt(2);
+        char after = name.charAt(3);
+        if (after != '_' && after != '\'') return "";
+        if (sort == 'L') {
+            int open = name.indexOf('\'');
+            int close = name.indexOf('\'', open + 1);
+            return open < 0 || close < 0 ? "Ljava/lang/Object;"
+                    : "L" + name.substring(open + 1, close) + ";";
+        }
+        return "ZBCSIJFD".indexOf(sort) < 0 ? "" : String.valueOf(sort);
     }
 
     /**

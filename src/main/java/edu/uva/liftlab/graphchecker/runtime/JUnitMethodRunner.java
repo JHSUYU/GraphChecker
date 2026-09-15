@@ -51,6 +51,16 @@ public final class JUnitMethodRunner {
         // region that is still a session member, and closing under it would
         // be refused anyway.
         ConcolicResultPublisher.awaitSelectedResultPublications();
+        // And then what only the end of a run can state, on the one exit
+        // path every replay takes.  The seed replay reached this through the
+        // halt after its selected result settled; a focused replay does not
+        // halt, and the shutdown hook that would have done it is registered
+        // only when some candidate went unaddressed -- so a focused session
+        // whose every candidate was addressed closed with no expression
+        // table at all (2 bytes, the "{}" written when the session dir was
+        // created) while its rows cited 28 refs.  One publication path for
+        // both kinds of session; publishRunTotals is once per JVM.
+        ConcolicResultPublisher.publishRunTotals();
         reportWorkloadSessionClose();
         System.exit(status);
     }

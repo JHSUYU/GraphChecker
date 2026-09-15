@@ -255,6 +255,12 @@ public class D3RuntimeTest {
                 Collections.<String, String[]>emptyMap());
         placeholder(occurrence, placeholderRow("b", null), "M_I_unversioned",
                 Collections.<String, String[]>emptyMap());
+        // The mint symbolized the object, not the int cell: one row cannot
+        // state an int read and a reference unknown, so it states neither.
+        placeholder(occurrence, placeholderRow("f", null),
+                "P_L'org/apache/hadoop/hdfs/server/namenode/snapshot/"
+                        + "Snapshot'_",
+                Collections.<String, String[]>emptyMap());
         // The mint's own shadow store is not a write, so the version this
         // read OBSERVED is the last real write before it -- version 125,
         // which the WriteRow above states -- and the row is the anchor's
@@ -322,6 +328,8 @@ public class D3RuntimeTest {
         assertEquals("no write precedes the mint: -1 and the decimal",
                 ReadRow.UNKNOWN_VERSION, reads.get(4).observedVersion());
         assertEquals("2", reads.get(4).concreteValue());
+        assertEquals("a reference-sorted mint for an int cell states no row",
+                5, reads.size());
         List<RootMintRow> roots = RowCodec.readAll(dir.roots(),
                 RowCodec::readRootMint);
         // The corpus invariant: a decision whose term is over declared root
