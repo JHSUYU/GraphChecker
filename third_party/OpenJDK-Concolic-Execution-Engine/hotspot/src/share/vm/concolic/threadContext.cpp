@@ -69,6 +69,7 @@ ThreadContext::ThreadContext(JavaThread *jt, jlong context_id)
       _pending_branch_active(false),
       _pending_branch_event_id(0), _pending_branch_owner_frame(NULL),
       _pending_branch_occurrence(0) {
+  _pending_view_removal_argument = NULL;
   guarantee(GlobalSymbolicSession::is_open(),
             "a thread context requires an open symbolic session");
 }

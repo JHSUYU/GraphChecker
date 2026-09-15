@@ -254,6 +254,45 @@ oop OopUtils::bigd_to_java_string(oop bigd) {
   return res;
 }
 
+jint OopUtils::int_field_by_name(oop obj, const std::string &name,
+                                 bool *found) {
+  if (found != NULL) *found = false;
+  if (obj == NULL) return 0;
+  fieldDescriptor fd;
+  if (get_fd_by_name(obj, name, "I", fd) == NULL) return 0;
+  if (found != NULL) *found = true;
+  return obj->int_field(fd.offset());
+}
+
+oop OopUtils::list_of_iterator(oop iterator_obj) {
+  if (iterator_obj == NULL) return NULL;
+  oop owner = obj_field_by_name(iterator_obj, "this$0",
+                                "Ljava/util/ArrayList;");
+  if (owner != NULL) return owner;
+  return obj_field_by_name(iterator_obj, "this$0",
+                           "Ljava/util/AbstractList;");
+}
+
+jint OopUtils::last_returned_index(oop iterator_obj, bool *found) {
+  return int_field_by_name(iterator_obj, "lastRet", found);
+}
+
+oop OopUtils::map_of_view(oop view_obj) {
+  if (view_obj == NULL) return NULL;
+  oop owner = obj_field_by_name(view_obj, "this$0", "Ljava/util/HashMap;");
+  if (owner != NULL) return owner;
+  return obj_field_by_name(view_obj, "this$0", "Ljava/util/LinkedHashMap;");
+}
+
+oop OopUtils::current_node_of_iterator(oop iterator_obj) {
+  if (iterator_obj == NULL) return NULL;
+  oop node = obj_field_by_name(iterator_obj, "current",
+                               "Ljava/util/HashMap$Node;");
+  if (node != NULL) return node;
+  return obj_field_by_name(iterator_obj, "current",
+                           "Ljava/util/LinkedHashMap$Entry;");
+}
+
 oop OopUtils::key_of_map_node(oop node_obj) {
   if (node_obj == NULL) {
     return NULL;

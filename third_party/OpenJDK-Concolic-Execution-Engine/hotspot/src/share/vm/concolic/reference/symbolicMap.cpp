@@ -170,8 +170,24 @@ bool SymMap::invoke_method_helper(MethodSymbolizerHandle &handle) {
     if (recording) {
       handle.general_prepare_param();
       // Before the body runs: state what the container already holds, while
-      // the receiver is still untouched by this operation.
-      ContainerSupport::state_base_before_operation(handle.get_param<oop>(0));
+      // the receiver is still untouched by this operation.  A view is not a
+      // location, so the container whose base this is is the one the view
+      // belongs to.
+      oop target = handle.get_param<oop>(0);
+      oop backing = OopUtils::map_of_view(target);
+      ContainerSupport::state_base_before_operation(
+          backing != NULL ? backing : target);
+      // A removal through a view names the entry the iterator last returned,
+      // and the iterator forgets it inside remove(); read it here, while the
+      // body has not run, and let the publisher consume it.
+      if (backing != NULL && callee_name == "remove") {
+        oop key_object = OopUtils::key_of_map_node(
+            OopUtils::current_node_of_iterator(target));
+        if (key_object != NULL) {
+          ConcolicMngr::ctx->note_view_removal_argument(
+              ContainerSupport::concrete_value(key_object));
+        }
+      }
     }
     return recording;
   }
@@ -300,6 +316,47 @@ Expression *SymMap::finish_method_helper(MethodSymbolizerHandle &handle) {
     return NULL;
   }
   if (method == "remove" && !root_map && arguments.empty()) {
+    // A view is never a location of its own, so this is a mutation of the
+    // backing map.  When the walk was never modelled -- every read concrete,
+    // so entrySet()/iterator()/next() were not admitted and the cursor has no
+    // chain at all -- the removal still has everything it needs, and both
+    // halves are concrete in the iterator's own fields: the map it walks, and
+    // the entry it last returned.  That is HDFS-11741's removeExpiredKeys(),
+    // whose loop is entirely concrete and whose only symbolic thing is the
+    // `expiryDate < now` decision that guards the remove.
+    if (ConcolicMngr::ctx->find_container_state(receiver_object) == NULL) {
+      oop backing_map = OopUtils::map_of_view(receiver_object);
+      Expression *base = backing_map == NULL ? NULL
+          : ConcolicMngr::ctx->container_state(backing_map, "ASSOCIATIVE");
+      Expression *removed_key =
+          ConcolicMngr::ctx->take_view_removal_argument();
+      // One named reason per cause: which half of the removal could not be
+      // stated is the whole difference between a view this engine does not
+      // know how to follow and an entry it could not name.
+      if (backing_map == NULL) {
+        ConcolicMngr::ctx->abort_symbolic_execution(
+            "ASSOCIATIVE_VIEW_OWNER_MISSING");
+        return NULL;
+      }
+      if (base == NULL) {
+        ConcolicMngr::ctx->abort_symbolic_execution(
+            "ASSOCIATIVE_VIEW_OWNER_STATE_MISSING");
+        return NULL;
+      }
+      if (removed_key == NULL) {
+        ConcolicMngr::ctx->abort_symbolic_execution(
+            "ASSOCIATIVE_VIEW_REMOVED_KEY_MISSING");
+        return NULL;
+      }
+      exp_list_t removed;
+      removed.push_back(removed_key);
+      Expression *next = new ContainerExpression(
+          "ASSOCIATIVE", "REMOVE", base, removed);
+      ConcolicMngr::ctx->set_container_state(backing_map, next);
+      ContainerSupport::publish_state(backing_map, next, "REMOVE");
+      ConcolicMngr::ctx->clear_conditional_removal();
+      return NULL;
+    }
     int position = ConcolicMngr::ctx->next_container_removal_position(
         receiver_object);
     Expression *root = ConcolicMngr::ctx->container_state(
