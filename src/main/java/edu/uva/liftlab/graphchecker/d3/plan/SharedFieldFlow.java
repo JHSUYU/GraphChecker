@@ -1,6 +1,6 @@
-package edu.uva.liftlab.graphchecker.concolic;
+package edu.uva.liftlab.graphchecker.d3.plan;
 
-import edu.uva.liftlab.graphchecker.contract.FieldPathSpec;
+import edu.uva.liftlab.graphchecker.d3.plan.FieldPathSpec;
 import edu.uva.liftlab.graphchecker.d3.smt.JavaContainerTypes;
 
 /** Stable vocabulary for shared-location replay-scope edges. */

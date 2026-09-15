@@ -1,5 +1,7 @@
 package edu.uva.liftlab.graphchecker.concolic;
 
+import edu.uva.liftlab.graphchecker.d3.smt.CanonicalJson;
+
 import com.google.gson.JsonElement;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;

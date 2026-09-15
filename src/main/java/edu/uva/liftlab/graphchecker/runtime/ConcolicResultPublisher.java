@@ -5,7 +5,7 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.concolic.RecordedEvidenceIdentity;
 import edu.uva.liftlab.graphchecker.concolic.SymbolicSourceEvidence;
-import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
+import edu.uva.liftlab.graphchecker.d3.plan.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.ActiveRegion;
 import edu.uva.liftlab.graphchecker.runtime.ConcolicTaskPlan.RuntimeTask;
 import edu.uva.liftlab.graphchecker.runtime.SharedStateCapture.RawSharedStateReadOut;

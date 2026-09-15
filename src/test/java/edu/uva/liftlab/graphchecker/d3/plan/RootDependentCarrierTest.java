@@ -1,11 +1,9 @@
-package edu.uva.liftlab.graphchecker.concolic;
+package edu.uva.liftlab.graphchecker.d3.plan;
+
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
-import edu.uva.liftlab.graphchecker.contract.DependencyRole;
-import edu.uva.liftlab.graphchecker.contract.FieldPathSpec;
-import edu.uva.liftlab.graphchecker.contract.RegionInstancePlan;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;

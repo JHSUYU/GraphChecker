@@ -1,5 +1,7 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
+import edu.uva.liftlab.graphchecker.d3.plan.ConcolicScheduler;
+
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.safe;
 
 import com.google.gson.Gson;
@@ -14,7 +16,7 @@ import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
 import edu.uva.liftlab.graphchecker.concolic.BranchPredicateAlgebra;
 import edu.uva.liftlab.graphchecker.concolic.BranchReplayContract;
 import edu.uva.liftlab.graphchecker.concolic.BranchWitness;
-import edu.uva.liftlab.graphchecker.concolic.CanonicalJson;
+import edu.uva.liftlab.graphchecker.d3.smt.CanonicalJson;
 import edu.uva.liftlab.graphchecker.concolic.ClockRootPhysics;
 import edu.uva.liftlab.graphchecker.concolic.ExactConcreteBranchObservation;
 import edu.uva.liftlab.graphchecker.concolic.RecordedEvidenceIdentity;
@@ -24,17 +26,17 @@ import edu.uva.liftlab.graphchecker.concolic.SymbolicSourceEvidence;
 import edu.uva.liftlab.graphchecker.d3.smt.VmExpressionIr;
 import edu.uva.liftlab.graphchecker.concolic.VmExpressionTable;
 import edu.uva.liftlab.graphchecker.concolic.SmtModelValueCodec;
-import edu.uva.liftlab.graphchecker.contract.CommunicationHandoffSpec;
-import edu.uva.liftlab.graphchecker.contract.ConfiguredSourcePhaseContract;
-import edu.uva.liftlab.graphchecker.contract.FieldPathSpec;
-import edu.uva.liftlab.graphchecker.contract.FieldPathSpec.DeclaredField;
-import edu.uva.liftlab.graphchecker.contract.InputActionCatalog;
+import edu.uva.liftlab.graphchecker.d3.plan.CommunicationHandoffSpec;
+import edu.uva.liftlab.graphchecker.d3.plan.ConfiguredSourcePhaseContract;
+import edu.uva.liftlab.graphchecker.d3.plan.FieldPathSpec;
+import edu.uva.liftlab.graphchecker.d3.plan.FieldPathSpec.DeclaredField;
+import edu.uva.liftlab.graphchecker.d3.plan.InputActionCatalog;
 import edu.uva.liftlab.graphchecker.d3.smt.JavaPrimitiveBoxing;
-import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
+import edu.uva.liftlab.graphchecker.d3.plan.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceId;
 
-import edu.uva.liftlab.graphchecker.contract.SiteId;
+import edu.uva.liftlab.graphchecker.d3.plan.SiteId;
 import edu.uva.liftlab.graphchecker.runtime.ConcolicTaskPlan.RuntimeTask;
 import edu.uva.liftlab.graphchecker.runtime.SharedStateCapture.RawSharedStateReadOut;
 import edu.uva.liftlab.graphchecker.runtime.SharedStateCapture.SharedStateResult;

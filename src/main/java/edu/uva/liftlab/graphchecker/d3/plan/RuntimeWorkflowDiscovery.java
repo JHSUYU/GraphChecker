@@ -1,13 +1,16 @@
-package edu.uva.liftlab.graphchecker.concolic;
+package edu.uva.liftlab.graphchecker.d3.plan;
+
+import edu.uva.liftlab.graphchecker.d3.smt.ArtifactIO;
+import edu.uva.liftlab.graphchecker.d3.smt.CanonicalJson;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
-import edu.uva.liftlab.graphchecker.contract.ExecutionTask;
+import edu.uva.liftlab.graphchecker.d3.plan.ExecutionTask;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceId;
-import edu.uva.liftlab.graphchecker.contract.RegionInstancePlan;
-import edu.uva.liftlab.graphchecker.contract.RegionInstancePlan.Goal;
+import edu.uva.liftlab.graphchecker.d3.plan.RegionInstancePlan;
+import edu.uva.liftlab.graphchecker.d3.plan.RegionInstancePlan.Goal;
 
 import java.io.IOException;
 import java.util.ArrayDeque;

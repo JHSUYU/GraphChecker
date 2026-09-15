@@ -1,4 +1,4 @@
-package edu.uva.liftlab.graphchecker.contract;
+package edu.uva.liftlab.graphchecker.d3.plan;
 
 import edu.uva.liftlab.graphchecker.d3.smt.JsonFields;
 

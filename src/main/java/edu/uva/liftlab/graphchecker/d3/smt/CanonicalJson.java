@@ -1,4 +1,4 @@
-package edu.uva.liftlab.graphchecker.concolic;
+package edu.uva.liftlab.graphchecker.d3.smt;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;

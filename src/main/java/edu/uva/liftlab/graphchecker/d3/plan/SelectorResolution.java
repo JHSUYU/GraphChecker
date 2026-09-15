@@ -1,5 +1,6 @@
 package edu.uva.liftlab.graphchecker.d3.plan;
 
+
 import edu.uva.liftlab.graphchecker.d3.contract.ActivationRow;
 import edu.uva.liftlab.graphchecker.d3.contract.CausalContext;
 import edu.uva.liftlab.graphchecker.d3.contract.ExecutionIndex;

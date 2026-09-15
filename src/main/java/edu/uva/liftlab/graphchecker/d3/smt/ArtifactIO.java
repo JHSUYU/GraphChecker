@@ -1,4 +1,4 @@
-package edu.uva.liftlab.graphchecker.concolic;
+package edu.uva.liftlab.graphchecker.d3.smt;
 
 import edu.uva.liftlab.graphchecker.d3.smt.JsonFields;
 
@@ -157,11 +157,11 @@ public final class ArtifactIO {
         void writeTo(BufferedWriter output) throws IOException;
     }
 
-    static void replace(Path path, String value) throws IOException {
+    public static void replace(Path path, String value) throws IOException {
         atomicReplace(path, output -> output.write(value));
     }
 
-    static void replaceJsonl(Path path, Iterable<JsonObject> rows)
+    public static void replaceJsonl(Path path, Iterable<JsonObject> rows)
             throws IOException {
         atomicReplace(path, output -> {
             if (rows != null) {
@@ -198,7 +198,7 @@ public final class ArtifactIO {
         return result;
     }
 
-    static String sha256(Path path) throws IOException {
+    public static String sha256(Path path) throws IOException {
         MessageDigest digest = digest();
         byte[] buffer = new byte[8192];
         try (java.io.InputStream input = Files.newInputStream(path)) {
@@ -210,11 +210,11 @@ public final class ArtifactIO {
         return hex(digest.digest());
     }
 
-    static String sha256(String value) {
+    public static String sha256(String value) {
         return sha256(utf8(value == null ? "" : value));
     }
 
-    static String sha256(byte[] value) {
+    public static String sha256(byte[] value) {
         return hex(digest().digest(value == null ? new byte[0] : value));
     }
 
@@ -237,7 +237,7 @@ public final class ArtifactIO {
         return result;
     }
 
-    static Path sibling(Path path, String name) {
+    public static Path sibling(Path path, String name) {
         Path parent = path.toAbsolutePath().getParent();
         return parent == null ? Paths.get(name) : parent.resolve(name);
     }

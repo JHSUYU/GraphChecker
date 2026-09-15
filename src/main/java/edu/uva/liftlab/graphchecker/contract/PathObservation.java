@@ -1,9 +1,12 @@
 package edu.uva.liftlab.graphchecker.contract;
 
+import edu.uva.liftlab.graphchecker.d3.plan.ClosureGoalKind;
+import edu.uva.liftlab.graphchecker.d3.plan.LoopBoundPolicy;
+
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
-import edu.uva.liftlab.graphchecker.concolic.CanonicalJson;
+import edu.uva.liftlab.graphchecker.d3.smt.CanonicalJson;
 import edu.uva.liftlab.graphchecker.concolic.LocalCaseIdentity;
 import edu.uva.liftlab.graphchecker.concolic.SummaryBranchMapping;
 

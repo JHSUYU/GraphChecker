@@ -2,9 +2,9 @@ package edu.uva.liftlab.graphchecker.runtime;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
-import edu.uva.liftlab.graphchecker.contract.ConfiguredSourcePhaseContract;
-import edu.uva.liftlab.graphchecker.contract.ExecutionTask;
-import edu.uva.liftlab.graphchecker.contract.SiteId;
+import edu.uva.liftlab.graphchecker.d3.plan.ConfiguredSourcePhaseContract;
+import edu.uva.liftlab.graphchecker.d3.plan.ExecutionTask;
+import edu.uva.liftlab.graphchecker.d3.plan.SiteId;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;

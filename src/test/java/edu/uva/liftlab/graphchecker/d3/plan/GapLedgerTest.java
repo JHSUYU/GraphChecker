@@ -1,4 +1,5 @@
-package edu.uva.liftlab.graphchecker.contract;
+package edu.uva.liftlab.graphchecker.d3.plan;
+
 
 import org.junit.Test;
 

@@ -1,4 +1,4 @@
-package edu.uva.liftlab.graphchecker.contract;
+package edu.uva.liftlab.graphchecker.d3.plan;
 
 /**
  * Static declaration emitted for an explicit application-side symbolize hook.

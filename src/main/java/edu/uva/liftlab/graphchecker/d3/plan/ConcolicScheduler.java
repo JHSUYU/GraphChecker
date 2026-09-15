@@ -1,4 +1,11 @@
-package edu.uva.liftlab.graphchecker.concolic;
+package edu.uva.liftlab.graphchecker.d3.plan;
+
+import edu.uva.liftlab.graphchecker.concolic.BranchReplayContract;
+import edu.uva.liftlab.graphchecker.concolic.SharedExpressionTable;
+import edu.uva.liftlab.graphchecker.concolic.SummaryBranchMapping;
+
+import edu.uva.liftlab.graphchecker.d3.smt.ArtifactIO;
+import edu.uva.liftlab.graphchecker.d3.smt.CanonicalJson;
 
 import edu.uva.liftlab.graphchecker.d3.smt.JavaPrimitiveSmtSemantics;
 import edu.uva.liftlab.graphchecker.d3.smt.JsonFields;
@@ -7,22 +14,22 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
-import edu.uva.liftlab.graphchecker.contract.ClosureGoalKind;
-import edu.uva.liftlab.graphchecker.contract.CommunicationHandoffSpec;
-import edu.uva.liftlab.graphchecker.contract.DependencyRole;
-import edu.uva.liftlab.graphchecker.contract.FieldPathSpec;
-import edu.uva.liftlab.graphchecker.contract.ExecutionTask;
-import edu.uva.liftlab.graphchecker.contract.InputActionCatalog;
+import edu.uva.liftlab.graphchecker.d3.plan.ClosureGoalKind;
+import edu.uva.liftlab.graphchecker.d3.plan.CommunicationHandoffSpec;
+import edu.uva.liftlab.graphchecker.d3.plan.DependencyRole;
+import edu.uva.liftlab.graphchecker.d3.plan.FieldPathSpec;
+import edu.uva.liftlab.graphchecker.d3.plan.ExecutionTask;
+import edu.uva.liftlab.graphchecker.d3.plan.InputActionCatalog;
 import edu.uva.liftlab.graphchecker.d3.smt.JavaContainerTypes;
 import edu.uva.liftlab.graphchecker.d3.smt.JavaPrimitiveBoxing;
-import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
+import edu.uva.liftlab.graphchecker.d3.plan.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceId;
 import edu.uva.liftlab.graphchecker.contract.PathObservation;
-import edu.uva.liftlab.graphchecker.contract.RegionInstancePlan;
-import edu.uva.liftlab.graphchecker.contract.RegionInstancePlan.Goal;
-import edu.uva.liftlab.graphchecker.contract.RuntimePlanArtifact;
-import edu.uva.liftlab.graphchecker.contract.StaticSymbolicSourceDeclaration;
-import edu.uva.liftlab.graphchecker.contract.SiteId;
+import edu.uva.liftlab.graphchecker.d3.plan.RegionInstancePlan;
+import edu.uva.liftlab.graphchecker.d3.plan.RegionInstancePlan.Goal;
+import edu.uva.liftlab.graphchecker.d3.plan.RuntimePlanArtifact;
+import edu.uva.liftlab.graphchecker.d3.plan.StaticSymbolicSourceDeclaration;
+import edu.uva.liftlab.graphchecker.d3.plan.SiteId;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -1210,7 +1217,7 @@ public final class ConcolicScheduler {
      * installed object), and a read through it resolves a dependent field of
      * the selected object rather than of the recorded one.
      */
-    static final String REFERENCE_CARRIER_DEMAND = "REFERENCE_CARRIER";
+    public static final String REFERENCE_CARRIER_DEMAND = "REFERENCE_CARRIER";
 
     /**
      * Admits a plain object reference as an identity carrier.  The type

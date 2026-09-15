@@ -1,9 +1,11 @@
-package edu.uva.liftlab.graphchecker.concolic;
+package edu.uva.liftlab.graphchecker.d3.plan;
+
+import edu.uva.liftlab.graphchecker.d3.smt.CanonicalJson;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
-import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
+import edu.uva.liftlab.graphchecker.d3.plan.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceId;
 
 import java.util.ArrayList;
@@ -430,7 +432,7 @@ public final class BoundedLoopComposition {
      * composer's acceptance gate names a refusal by that member; publishing
      * all of them under one {@code BOUNDED_LOOP_COMPOSITION_GAP} would have
      * made 28 distinct findings one row, and would have hidden the reason
-     * from {@link edu.uva.liftlab.graphchecker.contract.GapLedger}.</p>
+     * from {@link edu.uva.liftlab.graphchecker.d3.plan.GapLedger}.</p>
      */
     public List<JsonObject> compositionGaps() {
         List<JsonObject> rows = new ArrayList<>();

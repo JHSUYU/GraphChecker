@@ -1,4 +1,6 @@
-package edu.uva.liftlab.graphchecker.contract;
+package edu.uva.liftlab.graphchecker.d3.plan;
+
+import edu.uva.liftlab.graphchecker.d3.plan.BoundedLoopComposition;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
@@ -26,7 +28,7 @@ public final class RegionInstancePlan extends PlanRow {
             ConfiguredSourcePhaseContract.PLAN_FIELD,
             // Declared communication ports this occurrence exports/attaches.
             CommunicationHandoffSpec.FIELD,
-            edu.uva.liftlab.graphchecker.concolic.BoundedLoopComposition
+            edu.uva.liftlab.graphchecker.d3.plan.BoundedLoopComposition
                     .PLAN_FIELD
     };
     private final List<Goal> goals;

@@ -1,9 +1,11 @@
 package edu.uva.liftlab.graphchecker.concolic;
 
+import edu.uva.liftlab.graphchecker.d3.smt.CanonicalJson;
+
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
-import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
+import edu.uva.liftlab.graphchecker.d3.plan.LoopBoundPolicy;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -121,7 +123,7 @@ public final class BranchReplayContract {
         throw new IllegalArgumentException("target branch mapping is missing");
     }
 
-    static BranchReplayContract fromSummary(
+    public static BranchReplayContract fromSummary(
             JsonObject summary, List<SummaryBranchMapping> mappings,
             SummaryBranchMapping selected) {
         if (selected == null || !selected.isWitnessed()) {
@@ -546,7 +548,7 @@ public final class BranchReplayContract {
     }
 
     /** Artifact-builder view which preserves decoder-owned expression DAGs. */
-    JsonObject toImmutableJsonView() {
+    public JsonObject toImmutableJsonView() {
         return toJson(false);
     }
 

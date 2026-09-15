@@ -1,4 +1,4 @@
-package edu.uva.liftlab.graphchecker.contract;
+package edu.uva.liftlab.graphchecker.d3.plan;
 
 /** Failure-directed role of one exact region input port. */
 public final class DependencyRole {

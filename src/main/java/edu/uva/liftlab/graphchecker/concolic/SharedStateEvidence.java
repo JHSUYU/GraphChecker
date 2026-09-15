@@ -5,7 +5,7 @@ import edu.uva.liftlab.graphchecker.d3.smt.JsonFields;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
-import edu.uva.liftlab.graphchecker.contract.FieldPathSpec;
+import edu.uva.liftlab.graphchecker.d3.plan.FieldPathSpec;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;

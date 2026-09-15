@@ -566,7 +566,7 @@ do_schedule() {
   args+=(--closure-mode "${schedule_closure_mode}")
   [[ -z "${declared_target_occurrence}" ]] \
     || args+=(--target-occurrence "${declared_target_occurrence}")
-  run_java_main edu.uva.liftlab.graphchecker.concolic.ConcolicScheduler \
+  run_java_main edu.uva.liftlab.graphchecker.d3.plan.ConcolicScheduler \
     "${args[@]}"
 }
 
@@ -2305,7 +2305,7 @@ campaign_artifact_digests() {
 # ledger, which defaults an unregistered code to BLOCKING in both readers.
 campaign_write_gap_ledger() {
   local output=$1
-  run_java_main edu.uva.liftlab.graphchecker.contract.GapLedger \
+  run_java_main edu.uva.liftlab.graphchecker.d3.plan.GapLedger \
     --output "${output}"
   require_nonempty "gap ledger" "${output}"
   campaign_require_json "gap ledger" "${output}" \

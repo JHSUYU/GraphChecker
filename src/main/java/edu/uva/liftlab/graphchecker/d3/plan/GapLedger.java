@@ -1,4 +1,8 @@
-package edu.uva.liftlab.graphchecker.contract;
+package edu.uva.liftlab.graphchecker.d3.plan;
+
+import edu.uva.liftlab.graphchecker.concolic.SymbolicPropagationClosure;
+
+import edu.uva.liftlab.graphchecker.d3.plan.BoundedLoopComposition;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;

@@ -1,4 +1,4 @@
-package edu.uva.liftlab.graphchecker.contract;
+package edu.uva.liftlab.graphchecker.d3.plan;
 
 import java.nio.charset.StandardCharsets;
 import java.util.UUID;
