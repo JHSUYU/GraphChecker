@@ -262,30 +262,27 @@ final class D3RowPublication {
                             + " read: " + optionalString(row, "portId"));
             return;
         }
-        // One row per (occurrence, location).  A cell holds one value at a
-        // time, so one occurrence's read of it is one statement -- and the
-        // key is the occurrence this row is published under, not the
-        // planned occurrenceId the mint carried: two mints of one cell in
-        // one activation carry different planned ids, so keying on that let
-        // both through (the anchor stated INSTANCE/2#24 twice in every
-        // session of the P2f' corpus, seed seq 242/308 and focused
-        // 185/209).  Worse, REGION.f0132fca declares the cell under two
-        // ports -- getNumSnapshots() is called twice -- so one occurrence
-        // could state it under two symbols (in.6dbe2027 and in.2f41e4ec in
-        // session 412e284c), and a ReadFrom naming that version then
-        // resolves to two symbols and the composer refuses the path
-        // (22 UNSTATED_VALUE).  The suppressed mint is named, never silent.
-        if (!D3Runtime.claimEvent("placeholder",
-                occurrence.id() + "#" + locationKey)) {
+        // One row per read EVENT.  Each declared port's mint is its own
+        // read -- two calls of a declared accessor in one occurrence are two
+        // values, and a `<Timer: long now()>.return` cell proves it -- so
+        // the key is the event, not the cell: the occurrence, the location
+        // and the event this mint is.  Keying it on the cell alone would
+        // discard the second port's statement; keying it on the PLANNED
+        // occurrenceId (what it did before) let one event through twice,
+        // because two mints in one activation carry different planned ids,
+        // and the anchor stated INSTANCE/2#24 twice in every session of the
+        // P2f' corpus (seed seq 242/308, focused 185/209 and 208/210).
+        long event = optionalLongInteger(row, "eventSeq", 0L);
+        if (!D3Runtime.claimEvent("placeholder", occurrence.id() + "#"
+                + locationKey + "#" + event)) {
             D3Runtime.gap(GapKind.DECLARATION_MISSING, GapClass.DIAGNOSTIC,
-                    symbol, "this occurrence already states a read of "
-                            + locationKey + ", so this declared input's mint"
-                            + " publishes no second row for it: "
-                            + optionalString(row, "portId"));
+                    symbol, "this occurrence already states read event "
+                            + event + " of " + locationKey
+                            + ", so this mint publishes no second row for"
+                            + " it: " + optionalString(row, "portId"));
             return;
         }
-        D3Runtime.read(occurrence,
-                optionalLongInteger(row, "eventSeq", 0L),
+        D3Runtime.read(occurrence, event,
                 Endpoint.stateSite(locationKey, "PLACEHOLDER", 0, false),
                 location, observed, symbol,
                 declared, literal(value),

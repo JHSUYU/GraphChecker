@@ -270,12 +270,17 @@ public class D3RuntimeTest {
         placeholder(occurrence, placeholderRow("c", null), "M_I_installed",
                 Collections.singletonMap("M_I_installed",
                         new String[]{"INSTANCE_FIELD/22#28", "126", "125"}));
-        // A second declared port of a cell this occurrence already states:
-        // a cell holds one value at a time, so one occurrence's read of it
-        // is one row, and the suppressed port is named.
-        placeholder(occurrence, placeholderRow("g", null), "M_I_second",
+        // A second declared port of the SAME cell is a second read event
+        // and states its own row: two calls of a declared accessor in one
+        // occurrence are two values.
+        placeholder(occurrence, secondPortRow(), "M_I_second",
                 Collections.singletonMap("M_I_second",
                         new String[]{"INSTANCE_FIELD/22#28", "127", "125"}));
+        // The SAME read event reached again -- the same mint row, from an
+        // activation the read also ran inside -- states no second row.
+        placeholder(occurrence, placeholderRow("c", null), "M_I_installed",
+                Collections.singletonMap("M_I_installed",
+                        new String[]{"INSTANCE_FIELD/22#28", "126", "125"}));
         // A mint with no write before it states -1 and pins the decimal.
         placeholder(occurrence, placeholderRow("e", null), "M_I_unwritten",
                 Collections.singletonMap("M_I_unwritten",
@@ -333,12 +338,18 @@ public class D3RuntimeTest {
         assertEquals(LocationKind.INSTANCE, reads.get(3).location().kind());
         assertEquals(125L, reads.get(3).observedVersion());
         assertEquals("2", reads.get(3).concreteValue());
+        ReadRow unwritten = null;
+        for (ReadRow read : reads) {
+            if ("M_I_unwritten".equals(read.symbol())) unwritten = read;
+        }
+        assertNotNull("the unwritten mint states a row", unwritten);
         assertEquals("no write precedes the mint: -1 and the decimal",
-                ReadRow.UNKNOWN_VERSION, reads.get(4).observedVersion());
-        assertEquals("2", reads.get(4).concreteValue());
-        assertEquals("a reference-sorted mint for an int cell states no row,"
-                        + " and one occurrence states one read per location",
-                5, reads.size());
+                ReadRow.UNKNOWN_VERSION, unwritten.observedVersion());
+        assertEquals("2", unwritten.concreteValue());
+        assertEquals("a reference-sorted mint states no row; a second port"
+                        + " of one cell is a second read event and states"
+                        + " one; the same event reached twice states one",
+                6, reads.size());
         List<RootMintRow> roots = RowCodec.readAll(dir.roots(),
                 RowCodec::readRootMint);
         // The corpus invariant: a decision whose term is over declared root
@@ -532,6 +543,13 @@ public class D3RuntimeTest {
         binary.addProperty("_op", "+");
         binary.add("_right", right);
         return binary;
+    }
+
+    /** A second declared port of one cell: another read, another event. */
+    private static JsonObject secondPortRow() {
+        JsonObject row = placeholderRow("g", null);
+        row.addProperty("eventSeq", 19L);
+        return row;
     }
 
     /** One manual mint row, as {@code recordManualSymbolization} writes it. */
