@@ -64,7 +64,8 @@ public final class Identity {
                 new HashMap<String, Integer>();
         private String loop = "";
         private int scopeBase;
-        private int regionBase;
+        /** The region activations open on this thread, innermost last. */
+        private final List<Region> regions = new ArrayList<Region>();
 
         private State copy() {
             State child = new State();
@@ -76,8 +77,61 @@ public final class Identity {
             child.loops.putAll(loops);
             child.loop = loop;
             child.scopeBase = scopeBase;
-            child.regionBase = regionBase;
+            for (Region region : regions) {
+                // The depth carries over -- a child thread's frames continue
+                // its parent's -- but not the journal: a journal is one
+                // thread's clock readings in order, and a second writer would
+                // interleave two threads' events into one sequence.
+                child.regions.add(new Region(region.base));
+            }
             return child;
+        }
+
+        /** The frame depth an endpoint inside the innermost region is from. */
+        private int regionBase() {
+            return regions.isEmpty() ? 0
+                    : regions.get(regions.size() - 1).base;
+        }
+
+        private Region region() {
+            return regions.isEmpty() ? null
+                    : regions.get(regions.size() - 1);
+        }
+
+        /**
+         * Journals the frames now standing, for the VM's logged events.
+         *
+         * <p>Every open region, not only the innermost: an enclosing
+         * activation's journal has to be current when a nested one returns
+         * and its events start being stamped with the enclosing entry
+         * again.  One clock reading serves them all -- it is the same
+         * instant -- and each journal measures from its own entry.</p>
+         */
+        private void journal() {
+            boolean journalled = false;
+            for (int index = 0; index < regions.size(); index++) {
+                if (regions.get(index).journal != null) journalled = true;
+            }
+            // Reading the clock costs a call into the VM, so a thread with no
+            // journal of its own -- a child that inherited only the depth,
+            // any thread outside a selected region -- never pays for it.
+            if (!journalled) return;
+            long now = CLOCK.now();
+            if (now < 0L) return;
+            for (int index = 0; index < regions.size(); index++) {
+                Region region = regions.get(index);
+                if (region.journal == null) continue;
+                region.journal.note(now, snapshot(region.base));
+            }
+        }
+
+        private Frame[] snapshot(int base) {
+            int start = Math.max(0, Math.min(base, frames.size()));
+            Frame[] standing = new Frame[frames.size() - start];
+            for (int index = start; index < frames.size(); index++) {
+                standing[index - start] = frames.get(index);
+            }
+            return standing;
         }
 
         private ExecutionIndex from(int base) {
@@ -109,6 +163,7 @@ public final class Identity {
         siblings.put(site, iteration + 1);
         state.frames.add(Frame.of(site, iteration));
         state.entries.add(new HashMap<String, Integer>());
+        state.journal();
     }
 
     /** Leaves the innermost call site. */
@@ -123,6 +178,7 @@ public final class Identity {
         if (!state.entries.isEmpty()) {
             state.entries.remove(state.entries.size() - 1);
         }
+        state.journal();
     }
 
     /** Charges one iteration of {@code loopId} to the current frame. */
@@ -155,14 +211,37 @@ public final class Identity {
     public static ExecutionIndex regionEnter() {
         State state = CURRENT.get();
         ExecutionIndex index = state.from(state.scopeBase);
-        state.regionBase = state.frames.size();
+        state.regions.add(new Region(state.frames.size()));
         return index;
+    }
+
+    /**
+     * Files the innermost open region's journal under the VM's own key.
+     *
+     * <p>The key is the region-enter event id the VM stamps on every version
+     * and every read it logs from inside this activation, so an event and the
+     * frames it stood on are joined by the VM's statement rather than by the
+     * runtime guessing which activation was live.</p>
+     */
+    public static void regionKey(long vmRegionEnterEventId) {
+        State state = CURRENT.get();
+        Region region = state.region();
+        if (region == null || vmRegionEnterEventId <= 0L) return;
+        region.journal = FrameJournal.open(vmRegionEnterEventId,
+                state.snapshot(region.base));
+    }
+
+    /** Closes the innermost open region. */
+    public static void regionExit() {
+        State state = CURRENT.get();
+        if (state.regions.isEmpty()) return;
+        state.regions.remove(state.regions.size() - 1);
     }
 
     /** The site-local index of one event inside the region. */
     public static ExecutionIndex siteIndex() {
         State state = CURRENT.get();
-        return state.from(state.regionBase);
+        return state.from(state.regionBase());
     }
 
     /** The whole path this thread is at, for a degraded address. */
@@ -193,7 +272,40 @@ public final class Identity {
         return CausalContext.of(role == null ? Role.UNKNOWN : role);
     }
 
+    /**
+     * The VM's session event clock, which the frame journal samples.
+     *
+     * <p>Installed by the runtime that owns the VM bindings: this package
+     * states identity and holds no reflective view of the engine, and a run
+     * with no such clock journals nothing rather than inventing readings.</p>
+     */
+    public static void clock(FrameJournal.Clock source) {
+        CLOCK = source == null ? UNAVAILABLE : source;
+    }
+
+    private static final FrameJournal.Clock UNAVAILABLE =
+            new FrameJournal.Clock() {
+                @Override
+                public long now() {
+                    return -1L;
+                }
+            };
+
+    private static volatile FrameJournal.Clock CLOCK = UNAVAILABLE;
+
+    /** One open region activation: where its endpoints are indexed from. */
+    private static final class Region {
+        private final int base;
+        private FrameJournal journal;
+
+        private Region(int base) {
+            this.base = base;
+        }
+    }
+
     public static void resetForTests() {
         CURRENT.remove();
+        CLOCK = UNAVAILABLE;
+        FrameJournal.resetForTests();
     }
 }

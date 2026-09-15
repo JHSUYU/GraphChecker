@@ -1885,15 +1885,6 @@ public final class CausynthPipeline {
                     StringConstant.v(target.siteId),
                     StringConstant.v(target.cell), receiver);
             insertBeforeSequence(body, selected, before);
-
-            List<Unit> after = new ArrayList<>();
-            Value written = objectArg(body,
-                    ((InstanceInvokeExpr) invocation).getBase(), after);
-            refs.bracket(after, Hook.RECORD_DECLARED_WRITE_SITE,
-                    StringConstant.v(target.siteId),
-                    StringConstant.v(target.cell), written);
-            // insertAfter: only a normal return published a version.
-            insertAfterSequence(body, selected, after);
         }
     }
 
@@ -3408,7 +3399,6 @@ public final class CausynthPipeline {
         ENTER_ACCESSOR_CALL_CONTEXT,
         EXIT_ACCESSOR_CALL_CONTEXT,
         OBSERVE_DECLARED_WRITE_SITE,
-        RECORD_DECLARED_WRITE_SITE,
         MATERIALIZE_ARGUMENT,
         SYMBOLIZE_ARGUMENT,
         MATERIALIZE_METHOD_ARGUMENT,
@@ -3551,9 +3541,6 @@ public final class CausynthPipeline {
                             "exitAccessorCallContext", VoidType.v(), LongType.v())
                     .add(Hook.OBSERVE_DECLARED_WRITE_SITE, runtime,
                             "observeDeclaredWriteSite", VoidType.v(), string,
-                            string, object)
-                    .add(Hook.RECORD_DECLARED_WRITE_SITE, runtime,
-                            "recordDeclaredWriteSite", VoidType.v(), string,
                             string, object)
                     .add(Hook.MATERIALIZE_ARGUMENT, runtime,
                             "materializeArgument", object, LongType.v(),

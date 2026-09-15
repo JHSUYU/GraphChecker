@@ -21,6 +21,7 @@ import edu.uva.liftlab.graphchecker.d3.contract.RowCodec;
 import edu.uva.liftlab.graphchecker.d3.contract.SessionDir;
 import edu.uva.liftlab.graphchecker.d3.contract.TargetRow;
 import edu.uva.liftlab.graphchecker.d3.contract.WriteRow;
+import edu.uva.liftlab.graphchecker.runtime.d3.FrameJournal;
 import edu.uva.liftlab.graphchecker.runtime.d3.D3Runtime;
 import edu.uva.liftlab.graphchecker.runtime.d3.Identity;
 import edu.uva.liftlab.graphchecker.runtime.d3.Interactions;
@@ -216,10 +217,18 @@ public class D3RuntimeTest {
         D3Runtime.attachedAt(endpoint, 9L, "XCH.port", 7L, "c1", "v_H", "J",
                 "1", true, "2");
         LocationId location = LocationId.of(LocationKind.INSTANCE, "22", "24");
-        D3Runtime.write(occurrence, 10L, "L#w#0:WRITE", location, 125L,
-                expression, "J");
-        D3Runtime.read(occurrence, 14L, "L#r#0:READ", location, 125L, "s",
-                "J", "9");
+        // The site is spelled once, by the contract's renderer, from what the
+        // VM's log states about the event -- including the descriptor, so two
+        // overloads of one name are two sites.
+        D3Runtime.write(occurrence, 10L,
+                Endpoint.stateSite("java.util.concurrent.atomic.AtomicInteger",
+                        "getAndIncrement", "()I", 12, true),
+                location, 125L, rmwExpression(), "",
+                "Caller.body()#u9@1");
+        D3Runtime.read(occurrence, 14L,
+                Endpoint.stateSite("java.util.concurrent.atomic.AtomicInteger",
+                        "get", "()I", 2, false),
+                location, 125L, "s", "J", "9", "");
         D3Runtime.rootMint(occurrence, 11L, "HDFS.BLOCK_KEY.SERIAL_NO",
                 "M_I_1", RootKind.INTEGRAL, "3", "3", "6", true);
         D3Runtime.target(occurrence, 15L, "Klass.m()#u8", expression, true,
@@ -265,6 +274,14 @@ public class D3RuntimeTest {
                 RowCodec::readWrite);
         assertEquals(125L, writes.get(0).version());
         assertEquals(10L, writes.get(0).seq());
+        assertEquals("java.util.concurrent.atomic.AtomicInteger"
+                        + "#getAndIncrement()I#12:WRITE",
+                writes.get(0).endpoint().site());
+        assertEquals("Caller.body()#u9@1",
+                writes.get(0).endpoint().siteIndex().render());
+        // An operator node states no type of its own; the run states the
+        // operands', so an int RMW is not published as an Object.
+        assertEquals("I", writes.get(0).javaType());
         List<ReadRow> reads = RowCodec.readAll(dir.reads(),
                 RowCodec::readRead);
         assertEquals(125L, reads.get(0).observedVersion());
@@ -311,6 +328,24 @@ public class D3RuntimeTest {
         assertTrue(Files.exists(dir.expressions()));
         assertTrue(RowCodec.readExpressions(dir.expressions())
                 .refs().contains(exports.get(0).expressionRef()));
+    }
+
+    /** {@code Y_I_0 + Y_I_1}, as the VM publishes a linearized RMW. */
+    private static JsonObject rmwExpression() {
+        JsonObject left = new JsonObject();
+        left.addProperty("_type", "ConstExpr");
+        left.addProperty("_java_type", "I");
+        left.addProperty("_exp", "Y_I_0");
+        JsonObject right = new JsonObject();
+        right.addProperty("_type", "ConstExpr");
+        right.addProperty("_java_type", "I");
+        right.addProperty("_exp", "Y_I_1");
+        JsonObject binary = new JsonObject();
+        binary.addProperty("_type", "BinaryExpression");
+        binary.add("_left", left);
+        binary.addProperty("_op", "+");
+        binary.add("_right", right);
+        return binary;
     }
 
     /** One manual mint row, as {@code recordManualSymbolization} writes it. */
@@ -447,6 +482,53 @@ public class D3RuntimeTest {
         assertTrue(Identity.siteIndex().isEmpty());
         Identity.enterCall("Region.port()#u2");
         assertEquals("Region.port()#u2@0", Identity.siteIndex().render());
+
+        // The frame journal: a VM-logged event takes the frames the thread
+        // stood on when the VM's event clock was below its id.  The clock is
+        // the VM's; the frames are this stack's; nothing is an ordinal.
+        Identity.resetForTests();
+        // The region-enter event is the newest when the region opens.
+        final long[] clock = {41L};
+        Identity.clock(new FrameJournal.Clock() {
+            @Override
+            public long now() {
+                return clock[0];
+            }
+        });
+        Identity.scopeStart();
+        Identity.regionEnter();
+        Identity.regionKey(41L);
+        // No event between the region entry and this call, so the entry the
+        // clock stood at is replaced rather than duplicated.
+        Identity.enterCall("Saver.save()#u1");
+        clock[0] = 44L;
+        Identity.enterCall("Manager.count()#u2");
+        clock[0] = 48L;
+        // Event 45..48 happened inside count(): the last entry below it is
+        // the one the clock read when count() was entered.
+        assertEquals("Saver.save()#u1@0/Manager.count()#u2@0",
+                FrameJournal.framesAt(41L, 45L).render());
+        assertEquals("Saver.save()#u1@0/Manager.count()#u2@0",
+                FrameJournal.framesAt(41L, 48L).render());
+        // Event 42..44 happened after save() was entered and before count()
+        // was, so it stands one frame shallower.
+        assertEquals("Saver.save()#u1@0",
+                FrameJournal.framesAt(41L, 43L).render());
+        // Entered and left with no event in between: the interval holds
+        // nothing, so the collapsed entry is the one that stood at 48.
+        Identity.exitCall();
+        Identity.enterCall("Manager.count()#u2");
+        assertEquals("Saver.save()#u1@0/Manager.count()#u2@1",
+                FrameJournal.framesAt(41L, 49L).render());
+        // Not this activation's journal, and below the region entry: unplaced
+        // rather than answered with someone else's frames.
+        assertNull(FrameJournal.framesAt(99L, 49L));
+        assertNull(FrameJournal.framesAt(41L, 41L));
+        Identity.resetForTests();
+        Identity.scopeStart();
+        Identity.enterCall("Caller.run()#u3");
+        Identity.enterCall("Caller.step()#u7");
+        Identity.enterCall("Caller.body()#u9");
 
         // The three causal contexts, and the one that is not an ordinal.
         assertEquals("Root:HEARTBEAT_TICK#4", Identity.context("", "",

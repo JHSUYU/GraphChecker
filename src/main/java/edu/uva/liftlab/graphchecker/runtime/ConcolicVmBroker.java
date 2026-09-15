@@ -84,6 +84,7 @@ final class ConcolicVmBroker {
     private Method startRegion;
     private Method currentContextId;
     private Method currentRegionEnterEventId;
+    private Method currentEventId;
     private Method symbolizeWithPrefix;
     private Method symbolizeField;
     private Method symbolizeExactField;
@@ -168,6 +169,20 @@ final class ConcolicVmBroker {
         Object value = currentRegionEnterEventId.invoke(null);
         return value instanceof Number
                 ? ((Number) value).longValue() : 0L;
+    }
+
+    /**
+     * The id of the last event the VM's symbolic session published.
+     *
+     * <p>Versions, reads and region entries are numbered from one monotone
+     * session counter, so this reading brackets the events that happened
+     * while the caller stood where it stood -- which is what aligns the
+     * runtime's frame journal with the VM's log (FrameJournal).</p>
+     */
+    long currentEventId() throws Exception {
+        Object value = currentEventId.invoke(null);
+        return value instanceof Number
+                ? ((Number) value).longValue() : -1L;
     }
 
     void symbolize(Object value, String prefix) throws Exception {
@@ -364,6 +379,7 @@ final class ConcolicVmBroker {
                 "getCurrentConcolicContextId");
         api.currentRegionEnterEventId = method(system,
                 "getCurrentConcolicRegionEnterEventId");
+        api.currentEventId = method(system, "currentSymbolicEventId");
         api.symbolizeWithPrefix = method(system, "symbolize",
                 Object.class, String.class);
         api.symbolizeField = method(system, "symbolizeField",
