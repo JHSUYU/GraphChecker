@@ -126,61 +126,6 @@ final class SmtText {
         return JavaPrimitiveSmtSemantics.integralLiteral(text);
     }
 
-    /**
-     * The sort one JVM descriptor lowers to, or "" for one this query cannot
-     * state.
-     *
-     * <p>The descriptor is what the runtime declared the value at
-     * (CONTRACT-SPEC v1.1 {@code javaType}); reading the sort off the
-     * recorded value instead was a second opinion about a fact the recording
-     * already states, and the width conflicts the old encoder hit came from
-     * exactly that.  A descriptor this query has no sort for -- a reference,
-     * a string, a float -- is refused by its caller under its own name
-     * rather than lowered as an integer.</p>
-     */
-    static String sortOfJavaType(String javaType) {
-        String descriptor = javaType == null ? "" : javaType.trim();
-        if ("Z".equals(descriptor) || "boolean".equals(descriptor)) {
-            return "Bool";
-        }
-        if ("B".equals(descriptor) || "C".equals(descriptor)
-                || "S".equals(descriptor) || "I".equals(descriptor)
-                || "J".equals(descriptor) || "byte".equals(descriptor)
-                || "char".equals(descriptor) || "short".equals(descriptor)
-                || "int".equals(descriptor) || "long".equals(descriptor)) {
-            return "Int";
-        }
-        return "";
-    }
-
-    /** {@code (and a b ...)}, or the one conjunct, or "true". */
-    static String conjoin(Iterable<String> terms) {
-        StringBuilder text = new StringBuilder();
-        int count = 0;
-        for (String term : terms) {
-            if (term == null || term.isEmpty()) continue;
-            text.append(' ').append(term);
-            count++;
-        }
-        if (count == 0) return "true";
-        if (count == 1) return text.toString().trim();
-        return "(and" + text + ")";
-    }
-
-    /** {@code (or a b ...)}, or the one disjunct, or "false". */
-    static String disjoin(Iterable<String> terms) {
-        StringBuilder text = new StringBuilder();
-        int count = 0;
-        for (String term : terms) {
-            if (term == null || term.isEmpty()) continue;
-            text.append(' ').append(term);
-            count++;
-        }
-        if (count == 0) return "false";
-        if (count == 1) return text.toString().trim();
-        return "(or" + text + ")";
-    }
-
     /** Allocates one unique variable name per keyed quantity. */
     static final class Names {
         private final Map<String, String> byKey =

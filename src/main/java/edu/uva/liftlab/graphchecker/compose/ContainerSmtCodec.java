@@ -783,7 +783,7 @@ public final class ContainerSmtCodec {
             }
             Term value = host.box(observed.get(0));
             if (value == null) return null;
-            String observedJavaType = expressionJavaType(observed.get(0));
+            String observedJavaType = VmTermLowering.expressionJavaType(observed.get(0));
             Term selected = associativeEntryValue(entry,
                     "OBSERVE_KEY".equals(operation)
                             ? "KEY_VIEW" : "VALUE_VIEW",
@@ -1121,11 +1121,6 @@ public final class ContainerSmtCodec {
         return new Term(("KEY_VIEW".equals(viewKind)
                 ? "(assoc_key_at " : "(assoc_value_at ") + state.text + " "
                 + index.text + ")", Sort.VALUE);
-    }
-
-    private static String expressionJavaType(JsonElement expression) {
-        return expression != null && expression.isJsonObject()
-                ? optionalString(expression.getAsJsonObject(), "_java_type") : "";
     }
 
     private static Term associativeHas(

@@ -3,7 +3,6 @@ package edu.uva.liftlab.graphchecker.smt;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
-import java.math.BigInteger;
 import java.util.ArrayDeque;
 import java.util.Collections;
 import java.util.Deque;
@@ -78,19 +77,6 @@ public final class VmRows {
         if (owner == 0L) return "";
         return kind + "/" + owner + "#"
                 + optionalLongInteger(location, "slot", 0L);
-    }
-
-    /** One decimal integer as SMT-LIB spells it, or null. */
-    public static String integerLiteral(String value) {
-        String raw = value == null ? "" : value.trim();
-        if (raw.isEmpty() || raw.length() > 1024) return null;
-        try {
-            BigInteger parsed = new BigInteger(raw);
-            return parsed.signum() < 0 ? "(- " + parsed.negate() + ")"
-                    : parsed.toString();
-        } catch (NumberFormatException malformed) {
-            return null;
-        }
     }
 
     /**

@@ -22,6 +22,8 @@ import edu.uva.liftlab.graphchecker.contract.RootDomain;
 import edu.uva.liftlab.graphchecker.contract.RootKind;
 import edu.uva.liftlab.graphchecker.contract.RowCodec;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;
+import edu.uva.liftlab.graphchecker.smt.JsonFields;
+import edu.uva.liftlab.graphchecker.explore.Corpus;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -94,7 +96,10 @@ public final class ComposeMain {
     }
 
     public static Result run(Arguments arguments) throws IOException {
-        CorpusIndex corpus = CorpusIndex.of(arguments.iteration);
+        // The one corpus view, read without the case's root domains: what
+        // the CASE declares is read once, here, and handed to the composer,
+        // so the composition holds one copy of that declaration and not two.
+        Corpus corpus = Corpus.read(arguments.iteration, null);
         OccurrenceAddress anchor = anchorOf(arguments.anchor, corpus);
         Composer.Composition composition = Composer.compose(corpus, anchor,
                 declaredDomains(arguments.rootDomains),
@@ -132,9 +137,9 @@ public final class ComposeMain {
      * equal, so the composition answers DECLARATION_MISSING and the campaign
      * reads why out of the artifact instead of out of a stack trace.</p>
      */
-    static OccurrenceAddress anchorOf(String declared, CorpusIndex corpus) {
+    static OccurrenceAddress anchorOf(String declared, Corpus corpus) {
         String seed = corpus.seedSessionId();
-        SessionReader session = seed == null ? null : corpus.session(seed);
+        SessionReader session = seed.isEmpty() ? null : corpus.session(seed);
         return SelectorResolution.resolve(declared,
                 session == null ? null : session.activations());
     }
@@ -400,10 +405,10 @@ public final class ComposeMain {
             answer.add("moved",
                     GSON.toJsonTree(outcome.valuation().moved()));
             answer.addProperty("selectedPathId", outcome.selected() == null
-                    ? "" : outcome.selected().path().pathId());
+                    ? "" : outcome.selected().path().pathId);
             answer.addProperty("selectedSessionId",
                     outcome.selected() == null ? ""
-                            : outcome.selected().path().sessionId());
+                            : outcome.selected().path().sessionId);
             answer.addProperty("fatalObserved", outcome.selected() != null
                     && outcome.selected().fatalObserved());
             JsonArray core = new JsonArray();
@@ -498,15 +503,15 @@ public final class ComposeMain {
                 new LinkedHashMap<String, RootDomain>();
         if (file == null || !Files.isRegularFile(file)) return domains;
         for (JsonObject row : RowCodec.readJsonl(file)) {
-            String key = JsonText.firstNonBlank(
+            String key = JsonFields.firstNonBlank(
                     JsonText.string(row, "rootId"),
                     JsonText.string(row, "symbol"),
                     JsonText.string(row, "sourceId"));
             if (key.isEmpty()) continue;
-            String min = JsonText.firstNonBlank(
+            String min = JsonFields.firstNonBlank(
                     JsonText.string(row, "min"),
                     JsonText.string(row, "declaredDomainMin"));
-            String max = JsonText.firstNonBlank(
+            String max = JsonFields.firstNonBlank(
                     JsonText.string(row, "max"),
                     JsonText.string(row, "declaredDomainMax"));
             domains.put(key, RootDomain.of(key, RootKind.INTEGRAL, "",

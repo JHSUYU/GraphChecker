@@ -85,7 +85,7 @@ public final class ClaimPolicy {
         public String toString() {
             return valuation + " -> " + answer.status()
                     + (selected == null ? ""
-                    : " (" + selected.path().pathId() + ")");
+                    : " (" + selected.path().pathId + ")");
         }
     }
 
@@ -186,10 +186,10 @@ public final class ClaimPolicy {
         if (recorded != null && recorded.answer().sat()
                 && recorded.selected() != null
                 && !recorded.selected().fatalObserved()) {
-            gaps.add(GapRow.of(recorded.selected().path().sessionId(),
+            gaps.add(GapRow.of(recorded.selected().path().sessionId,
                     GapKind.FORMULA_SAT_AT_RECORDED_VALUATION,
                     GapClass.BLOCKING,
-                    recorded.selected().path().pathId(),
+                    recorded.selected().path().pathId,
                     "this disjunct is satisfiable with every declared root "
                             + "at its recorded value, and its own recording "
                             + "took the healthy arm"));
@@ -212,7 +212,7 @@ public final class ClaimPolicy {
             }
             Set<String> refused = unattested(composition, outcome);
             if (!refused.isEmpty()) {
-                gaps.add(GapRow.of(outcome.selected().path().sessionId(),
+                gaps.add(GapRow.of(outcome.selected().path().sessionId,
                         GapKind.UNATTESTED_ARM, GapClass.BLOCKING,
                         refused.toString(),
                         "this witness moves a root that occurs inside an "
@@ -255,7 +255,7 @@ public final class ClaimPolicy {
         if (recorded != null && recorded.answer().sat()
                 && recorded.selected() != null
                 && recorded.selected().fatalObserved()) {
-            String session = recorded.selected().path().sessionId();
+            String session = recorded.selected().path().sessionId;
             boolean seed = session.equals(composition.seedSessionId());
             if (seed && flipsRefuted(outcomes)) {
                 ClaimKind kind = pairing(composition, solver, recorded,
@@ -299,7 +299,7 @@ public final class ClaimPolicy {
         }
         gaps.add(GapRow.of(recorded == null || recorded.selected() == null
                         ? "composition"
-                        : recorded.selected().path().sessionId(),
+                        : recorded.selected().path().sessionId,
                 GapKind.FORMULA_SAT_AT_RECORDED_VALUATION,
                 GapClass.BLOCKING, kind.name(),
                 "the formula shows " + kind + ", and it is satisfiable with "
@@ -328,7 +328,7 @@ public final class ClaimPolicy {
                                      Solver solver, Outcome outcome,
                                      ClaimKind otherwise) {
         if (outcome == null || outcome.selected() == null) return otherwise;
-        String pathId = outcome.selected().path().pathId();
+        String pathId = outcome.selected().path().pathId;
         if (unsatWith(composition, solver, outcome,
                 composition.observedReads(pathId))) {
             return ClaimKind.STATE_PAIRING_FLIPPED;
@@ -468,10 +468,10 @@ public final class ClaimPolicy {
         if (recorded != null) pinned.addAll(recorded.assertions());
         boolean found = false;
         for (Composer.Disjunct disjunct : composition.disjuncts()) {
-            if (!disjunct.path().sessionId().equals(seed)) continue;
+            if (!disjunct.path().sessionId.equals(seed)) continue;
             pinned.add("(assert (! " + disjunct.selector()
                     + " :named seed_disjunct__"
-                    + ArtifactIO.digest(disjunct.path().pathId(), 10) + "))");
+                    + ArtifactIO.digest(disjunct.path().pathId, 10) + "))");
             found = true;
         }
         if (!found) return false;

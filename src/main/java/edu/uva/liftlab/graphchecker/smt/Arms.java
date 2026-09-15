@@ -619,6 +619,24 @@ public final class Arms {
     }
 
     /**
+     * Whether a published term states a predicate at all.
+     *
+     * <p>A CONCRETE branch is published with an empty term: the VM had no
+     * symbolic value at the site, so the arm the run took depends on no
+     * root and constrains no variable.  Omitting it is exact -- and the two
+     * spellings an empty term reaches a consumer in, {@code ""} and
+     * {@code "(not )"}, are not SMT, so conjoining either voids the whole
+     * query rather than adding a tautology to it.  Beside
+     * {@link #conjunct}, because the two questions a consumer asks of a
+     * recorded term -- is it a predicate, and in which polarity -- are one
+     * rule and were two copies.</p>
+     */
+    public static boolean predicate(String term) {
+        String text = term == null ? "" : term.trim();
+        return !text.isEmpty() && !"(not )".equals(text);
+    }
+
+    /**
      * One path condition, with each decision's polarity applied.
      *
      * <p>{@code DecisionRow.term} is the branch PREDICATE as written at the

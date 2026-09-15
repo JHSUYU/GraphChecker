@@ -6,9 +6,9 @@ import edu.uva.liftlab.graphchecker.contract.ActivationRow;
 import edu.uva.liftlab.graphchecker.contract.AttachRow;
 import edu.uva.liftlab.graphchecker.contract.DecisionRow;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
+import edu.uva.liftlab.graphchecker.contract.ExpressionTable;
 import edu.uva.liftlab.graphchecker.contract.ExportRow;
 import edu.uva.liftlab.graphchecker.contract.Interaction;
-import edu.uva.liftlab.graphchecker.contract.InteractionKind;
 import edu.uva.liftlab.graphchecker.contract.LocationId;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
@@ -17,7 +17,9 @@ import edu.uva.liftlab.graphchecker.contract.RootKind;
 import edu.uva.liftlab.graphchecker.contract.RootMintRow;
 import com.google.gson.JsonObject;
 
+import edu.uva.liftlab.graphchecker.compose.JavaSmtSorts;
 import edu.uva.liftlab.graphchecker.compose.SmtLowering;
+import edu.uva.liftlab.graphchecker.compose.VmTermLowering.Sort;
 import edu.uva.liftlab.graphchecker.smt.Arms;
 import edu.uva.liftlab.graphchecker.contract.RowCodec;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;
@@ -37,9 +39,9 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * One iteration's sessions, indexed for exploration.
+ * One iteration's sessions, indexed: the ONE corpus view both stages read.
  *
- * <p>Everything exploration asks of a recording is asked here: which paths an
+ * <p>Everything either stage asks of a recording is asked here: which paths an
  * occurrence has, which interaction an attach belongs to, what some producer
  * exported at an endpoint, which write a read observed, and what a case
  * declares a root may be.  The indexes are keyed the way the contract says
@@ -47,6 +49,13 @@ import java.util.Set;
  * replay-stable {@link LocationId}, a symbol by the session that minted it,
  * because a raw symbol, a version id and an expression ref are all
  * session-local names.</p>
+ *
+ * <p>There was a second one (the composer's own {@code CorpusIndex}), and the
+ * two minted a PATH IDENTITY differently -- one digested
+ * {@code occurrence.render()}, this one {@code OccurrenceAddress.id()} -- so
+ * the same path had two names depending on which stage was speaking, and a
+ * selector, a manifest row and an obligation could not be joined.  One
+ * spelling, and it is the contract's id: {@link #pathId}.</p>
  */
 public final class Corpus implements Arms.Rows {
     /** One occurrence's decisions in one session: a path, as it ran. */
@@ -70,6 +79,8 @@ public final class Corpus implements Arms.Rows {
     /** What one raw symbol of one session names. */
     public enum SymbolKind { ROOT, HANDOFF, READ, UNKNOWN }
 
+    /** The iteration these sessions were read from, or null. */
+    private final Path iteration;
     private final List<SessionReader> sessions;
     private final Map<String, SessionReader> sessionById =
             new LinkedHashMap<String, SessionReader>();
@@ -110,6 +121,18 @@ public final class Corpus implements Arms.Rows {
     /** interaction id -> the attaches whose own pairing names it. */
     private final Map<String, List<AttachRow>> attachesByInteraction =
             new LinkedHashMap<String, List<AttachRow>>();
+    /** interaction id -> the interaction itself, for every pairing stated. */
+    private final Map<String, Interaction> interactions =
+            new LinkedHashMap<String, Interaction>();
+    /** Every symbol the runtime declared, at the sort it minted it at. */
+    private final Map<String, Sort> declaredSymbols =
+            new LinkedHashMap<String, Sort>();
+    /** Clock cell symbol -> session id -> the instant it read. */
+    private final Map<String, Map<String, Long>> clockCells =
+            new LinkedHashMap<String, Map<String, Long>>();
+    /** Root symbol -> every root id declared under it. */
+    private final Map<String, Set<String>> rootIdsBySymbol =
+            new LinkedHashMap<String, Set<String>>();
     /** endpoint id -> the endpoint, so an anchor's producer can be found. */
     /** session|occurrence -> that session's activation of it. */
     private final Map<String, ActivationRow> activationByOccurrence =
@@ -133,7 +156,8 @@ public final class Corpus implements Arms.Rows {
 
     private final Arms arms;
 
-    private Corpus(List<SessionReader> sessions) {
+    private Corpus(Path iteration, List<SessionReader> sessions) {
+        this.iteration = iteration;
         this.sessions = Collections.unmodifiableList(sessions);
         for (SessionReader session : sessions) index(session);
         this.arms = new Arms(this);
@@ -142,7 +166,8 @@ public final class Corpus implements Arms.Rows {
     /** Reads an iteration and its case-declared root domains. */
     public static Corpus read(Path iteration, Path rootDomains)
             throws IOException {
-        Corpus corpus = new Corpus(SessionReader.readAll(iteration));
+        Corpus corpus = new Corpus(iteration,
+                SessionReader.readAll(iteration));
         if (rootDomains != null && Files.isRegularFile(rootDomains)) {
             for (RootDomain domain : RowCodec.readAll(rootDomains,
                     ExploreCodec::readDomain)) {
@@ -154,9 +179,15 @@ public final class Corpus implements Arms.Rows {
         return corpus;
     }
 
-    /** A corpus over sessions already in memory (tests, and one-shot runs). */
-    public static Corpus of(List<SessionReader> sessions) {
-        return new Corpus(new ArrayList<SessionReader>(sessions));
+    /**
+     * The directory the sessions were read from.
+     *
+     * <p>What else the epoch published sits beside them -- the slot table is
+     * the one this stage reads -- so a corpus states where it came from
+     * rather than having every caller carry the path a second time.</p>
+     */
+    public Path iteration() {
+        return iteration;
     }
 
     private void index(SessionReader session) {
@@ -171,6 +202,19 @@ public final class Corpus implements Arms.Rows {
         for (DecisionRow row : session.decisions()) {
             remember(occurrenceById, row.occurrence());
             add(decisions, session.sessionId() + "|" + row.occurrence().id(), row);
+            // A decision carries the clock cells it read: the cell is a
+            // symbol of the corpus, at Int, and what each session read of it
+            // is what a clock claim is about.
+            for (Map.Entry<String, Long> reading
+                    : row.clockReadings().entrySet()) {
+                Map<String, Long> cells = clockCells.get(reading.getKey());
+                if (cells == null) {
+                    cells = new LinkedHashMap<String, Long>();
+                    clockCells.put(reading.getKey(), cells);
+                }
+                cells.put(session.sessionId(), reading.getValue());
+                declaredSymbols.put(reading.getKey(), Sort.INT);
+            }
         }
         for (ExportRow row : session.exports()) {
             remember(occurrenceById, row.endpoint().occurrence());
@@ -189,12 +233,16 @@ public final class Corpus implements Arms.Rows {
                 remember(occurrenceById, row.producer().occurrence());
             }
             attachBySymbol.put(session.sessionId() + "|" + row.symbol(), row);
-            if (row.producer() != null) {
-                add(attachesByInteraction, Interaction.of(
-                        InteractionKind.WIRE, row.producer(),
-                        row.endpoint()).id(), row);
+            Interaction interaction = row.interaction();
+            if (interaction != null) {
+                interactions.put(interaction.id(), interaction);
+                add(attachesByInteraction, interaction.id(), row);
             }
             add(attachesOn, row.endpoint().occurrence().id(), row);
+            // The JVM descriptor the mint states, never the spelling of one
+            // value it carried: one variable has one sort.
+            declaredSymbols.put(row.symbol(),
+                    JavaSmtSorts.sortOfJava(row.javaType()));
         }
         for (RootMintRow row : session.roots()) {
             remember(occurrenceById, row.occurrence());
@@ -205,12 +253,21 @@ public final class Corpus implements Arms.Rows {
                 rootsById.put(row.rootId(), bySession);
             }
             bySession.put(session.sessionId(), row);
+            Set<String> ids = rootIdsBySymbol.get(row.symbol());
+            if (ids == null) {
+                ids = new LinkedHashSet<String>();
+                rootIdsBySymbol.put(row.symbol(), ids);
+            }
+            ids.add(row.rootId());
+            declaredSymbols.put(row.symbol(),
+                    row.kind() == RootKind.MARKER ? Sort.BOOL : Sort.INT);
         }
         for (WriteRow row : session.writes()) {
             remember(occurrenceById, row.endpoint().occurrence());
             seqByEndpoint.put(session.sessionId() + "|"
                     + row.endpoint().id(), row.seq());
-            writeByVersion.put(versionKey(session.sessionId(), row.location(),
+            writeByVersion.put(versionKey(session.sessionId(),
+                    SmtLowering.locationKey(row.location()),
                     row.version()), row);
             add(writesOn, row.endpoint().occurrence().id(), row);
             add(writesByLocation, session.sessionId() + "|"
@@ -236,7 +293,8 @@ public final class Corpus implements Arms.Rows {
     }
 
     private void touch(OccurrenceAddress occurrence, LocationId location) {
-        String key = occurrence.node().render() + "|" + location.toString();
+        String key = occurrence.node().render() + "|"
+                + SmtLowering.locationKey(location);
         Set<String> occurrences = locationTouches.get(key);
         if (occurrences == null) {
             occurrences = new LinkedHashSet<String>();
@@ -259,9 +317,17 @@ public final class Corpus implements Arms.Rows {
         rows.add(row);
     }
 
-    private static String versionKey(String sessionId, LocationId location,
+    /**
+     * One version of one location, inside one session.
+     *
+     * <p>{@link SmtLowering#locationKey} is the one spelling of a location
+     * in this tree -- the write log, the VM's own location node and every
+     * index here -- because a key that differed between them would silently
+     * make a state join miss.</p>
+     */
+    private static String versionKey(String sessionId, String locationKey,
                                      long version) {
-        return sessionId + "|" + location.toString() + "|" + version;
+        return sessionId + "|" + locationKey + "|" + version;
     }
 
     /** One path's id: the session it ran in and the occurrence it ran. */
@@ -313,25 +379,37 @@ public final class Corpus implements Arms.Rows {
     }
 
     /**
-     * Every path of one occurrence: one per session that activated it.
+     * Every path of one occurrence: one per session that ran it.
      *
      * <p>A session that activated the occurrence but decided nothing still
      * has a path -- an empty one -- because "this occurrence ran here" is
-     * what admission is about, and its absence is what a divergence is.</p>
+     * what admission is about, and its absence is what a divergence is.
+     * Three kinds of row say it ran: the activation, a decision taken in
+     * it, and a TARGET row published at it -- a session that reached an
+     * anchor deciding nothing on the way has a path there, the empty
+     * conjunction, and the target row is what says so.</p>
      */
     public List<RecordedPath> pathsOf(OccurrenceAddress occurrence) {
         List<RecordedPath> paths = new ArrayList<RecordedPath>();
         for (SessionReader session : sessions) {
-            ActivationRow activation = activation(session.sessionId(),
-                    occurrence);
-            List<DecisionRow> path = decisions.get(
-                    session.sessionId() + "|" + occurrence.id());
-            if (activation == null && path == null) continue;
-            paths.add(new RecordedPath(session.sessionId(), occurrence,
-                    path == null ? new ArrayList<DecisionRow>() : path,
-                    activation != null && activation.focused()));
+            RecordedPath path = path(session.sessionId(), occurrence);
+            if (path != null) paths.add(path);
         }
         return paths;
+    }
+
+    /** One session's path at one occurrence, or null when it never ran it. */
+    public RecordedPath path(String sessionId, OccurrenceAddress occurrence) {
+        ActivationRow activation = activation(sessionId, occurrence);
+        List<DecisionRow> taken = decisions.get(
+                sessionId + "|" + occurrence.id());
+        if (activation == null && taken == null
+                && target(sessionId, occurrence) == null) {
+            return null;
+        }
+        return new RecordedPath(sessionId, occurrence,
+                taken == null ? new ArrayList<DecisionRow>() : taken,
+                activation != null && activation.focused());
     }
 
     public ActivationRow activation(String sessionId,
@@ -369,9 +447,37 @@ public final class Corpus implements Arms.Rows {
         return rows == null ? Collections.<TargetRow>emptyList() : rows;
     }
 
+    /** One session's target row at one occurrence, or null. */
+    public TargetRow target(String sessionId, OccurrenceAddress occurrence) {
+        for (TargetRow row : targetsOn(occurrence)) {
+            if (row.sessionId().equals(sessionId)) return row;
+        }
+        return null;
+    }
+
     public List<ReadRow> readsOn(OccurrenceAddress occurrence) {
         List<ReadRow> rows = readsOn.get(occurrence.id());
         return rows == null ? Collections.<ReadRow>emptyList() : rows;
+    }
+
+    /** Every attach of ONE session whose consumer sits at this occurrence. */
+    public List<AttachRow> attachesOn(String sessionId,
+                                      OccurrenceAddress occurrence) {
+        List<AttachRow> own = new ArrayList<AttachRow>();
+        for (AttachRow row : attachesOn(occurrence)) {
+            if (row.sessionId().equals(sessionId)) own.add(row);
+        }
+        return own;
+    }
+
+    /** Every read ONE session made at this occurrence, in recorded order. */
+    public List<ReadRow> readsOn(String sessionId,
+                                 OccurrenceAddress occurrence) {
+        List<ReadRow> own = new ArrayList<ReadRow>();
+        for (ReadRow row : readsOn(occurrence)) {
+            if (row.sessionId().equals(sessionId)) own.add(row);
+        }
+        return own;
     }
 
     public List<WriteRow> writesOn(OccurrenceAddress occurrence) {
@@ -386,6 +492,61 @@ public final class Corpus implements Arms.Rows {
         SessionReader session = sessionById.get(sessionId);
         return session == null || expressionRef == null ? null
                 : session.expressions().expression(expressionRef);
+    }
+
+    /** One session's expression table, as its own terms name it. */
+    public ExpressionTable expressions(String sessionId) {
+        SessionReader session = sessionById.get(sessionId);
+        return session == null ? null : session.expressions();
+    }
+
+    /**
+     * Whether this session explored that occurrence symbolically.
+     *
+     * <p>The rule is {@link Arms#attested}: instrumented, and symbolic in
+     * this session.  Asked through the same object both stages ask, so an
+     * arm the explorer treats as attested is not one the composition reads
+     * as concrete.</p>
+     */
+    public boolean attested(String sessionId,
+                            OccurrenceAddress occurrence) {
+        return arms.attested(sessionId, occurrence);
+    }
+
+    /** Every interaction any session's own pairing states. */
+    public Map<String, Interaction> interactions() {
+        return Collections.unmodifiableMap(interactions);
+    }
+
+    /** Every symbol the runtime declared, at the sort it minted it at. */
+    public Map<String, Sort> declaredSymbols() {
+        return Collections.unmodifiableMap(declaredSymbols);
+    }
+
+    /** Clock cell symbol -> session id -> the instant that session read. */
+    public Map<String, Map<String, Long>> clockCells() {
+        return Collections.unmodifiableMap(clockCells);
+    }
+
+    /**
+     * Root symbols naming more than one root: a name collision.
+     *
+     * <p>One solver name for two roots makes one term carry two quantities,
+     * and every path that read them both is then unsatisfiable at its own
+     * valuation.  It is the runtime's to fix and the composition's to
+     * refuse, so the corpus states it rather than either stage deriving
+     * it.</p>
+     */
+    public Map<String, Set<String>> collidingRootSymbols() {
+        Map<String, Set<String>> collisions =
+                new LinkedHashMap<String, Set<String>>();
+        for (Map.Entry<String, Set<String>> entry
+                : rootIdsBySymbol.entrySet()) {
+            if (entry.getValue().size() > 1) {
+                collisions.put(entry.getKey(), entry.getValue());
+            }
+        }
+        return collisions;
     }
 
     @Override
@@ -459,15 +620,22 @@ public final class Corpus implements Arms.Rows {
     /** The write one read observed, inside that read's own session. */
     public WriteRow writeOf(String sessionId, LocationId location,
                             long version) {
-        return version < 0 ? null
-                : writeByVersion.get(versionKey(sessionId, location, version));
+        return writeOf(sessionId, SmtLowering.locationKey(location), version);
+    }
+
+    /** The same, for a caller that already holds the location's key. */
+    public WriteRow writeOf(String sessionId, String locationKey,
+                            long version) {
+        return version < 0 ? null : writeByVersion.get(
+                versionKey(sessionId, locationKey, version));
     }
 
     /** Every occurrence of one node that writes or reads one location. */
     public Set<String> touching(OccurrenceAddress occurrence,
                                 LocationId location) {
         Set<String> found = locationTouches.get(
-                occurrence.node().render() + "|" + location.toString());
+                occurrence.node().render() + "|"
+                        + SmtLowering.locationKey(location));
         return found == null ? Collections.<String>emptySet() : found;
     }
 
@@ -505,20 +673,11 @@ public final class Corpus implements Arms.Rows {
         return bySession == null ? null : bySession.get(sessionId);
     }
 
-    /**
-     * Whether the sessions of this corpus read one root differently.
-     *
-     * <p>A root every replay read the same way separates no family arm from
-     * another, so an arm states no equality for it.</p>
-     */
-    public boolean varied(String rootId) {
+    /** Any mint row for one root, for the facts every session agrees on. */
+    public RootMintRow anyRoot(String rootId) {
         Map<String, RootMintRow> bySession = rootsById.get(rootId);
-        if (bySession == null) return false;
-        Set<String> readings = new LinkedHashSet<String>();
-        for (RootMintRow row : bySession.values()) {
-            readings.add(row.recordedValue());
-        }
-        return readings.size() > 1;
+        return bySession == null || bySession.isEmpty() ? null
+                : bySession.values().iterator().next();
     }
 
     /**

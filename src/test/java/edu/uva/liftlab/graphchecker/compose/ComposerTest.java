@@ -29,6 +29,7 @@ import edu.uva.liftlab.graphchecker.contract.RowCodec;
 import edu.uva.liftlab.graphchecker.contract.SessionDir;
 import edu.uva.liftlab.graphchecker.contract.TargetRow;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
+import edu.uva.liftlab.graphchecker.explore.Corpus;
 
 import org.junit.Assume;
 import org.junit.Rule;
@@ -149,7 +150,7 @@ public class ComposerTest {
                 decision.claim().movedRoots());
         assertEquals("the witness rests on the session that observed the "
                         + "fatal arm", "s1",
-                decision.outcomes().get(1).selected().path().sessionId());
+                decision.outcomes().get(1).selected().path().sessionId);
 
         // The same composition, answered by a solver that ERRORS.  An
         // "(error ...)" is z3 saying it could not READ the query, so
@@ -339,7 +340,7 @@ public class ComposerTest {
             session.write();
         }
 
-        Composer.Composition all = Composer.compose(CorpusIndex.of(three),
+        Composer.Composition all = Composer.compose(Corpus.read(three, null),
                 saver, Collections.<String,
                         edu.uva.liftlab.graphchecker.contract.RootDomain>
                         emptyMap(), 8);
@@ -401,7 +402,7 @@ public class ComposerTest {
                 three3.claim().movedRoots());
         assertTrue(three3.claim().polarityDecides());
         assertTrue("and the witness is one of the replays that reached it",
-                three3.outcomes().get(1).selected().path().sessionId()
+                three3.outcomes().get(1).selected().path().sessionId
                         .startsWith("s"));
 
         // 1c. The negative: two replays that minted the marker the SAME
@@ -643,7 +644,7 @@ public class ComposerTest {
                     composition.valuations().get(0).assertions());
             pinned.add("(assert " + disjunct.selector() + ")");
             assertEquals("each path is satisfiable as the execution that "
-                            + "made it: " + disjunct.path().sessionId(),
+                            + "made it: " + disjunct.path().sessionId,
                     "sat", solver.ask(composition.body(), pinned,
                             Collections.<String>emptyList(), false).status());
         }
@@ -724,8 +725,8 @@ public class ComposerTest {
             String status = solver.ask(composition.body(), pinned,
                     Collections.<String>emptyList(), false).status();
             assertEquals("three rotations past its own reading, on "
-                            + disjunct.path().sessionId(),
-                    "s1".equals(disjunct.path().sessionId())
+                            + disjunct.path().sessionId,
+                    "s1".equals(disjunct.path().sessionId)
                             ? "sat" : "unsat", status);
         }
     }
@@ -952,7 +953,7 @@ public class ComposerTest {
         session.occurrence = first;
         session.target("true", false, true);
         session.write();
-        CorpusIndex corpus = CorpusIndex.of(iteration);
+        Corpus corpus = Corpus.read(iteration, null);
 
         assertEquals("the k-th activation of the region, in seed order",
                 second.id(), ComposeMain.anchorOf(
@@ -1042,7 +1043,7 @@ public class ComposerTest {
         session.write();
 
         Composer.Composition composition = Composer.compose(
-                CorpusIndex.of(iteration), reader,
+                Corpus.read(iteration, null), reader,
                 Collections.<String,
                         edu.uva.liftlab.graphchecker.contract.RootDomain>
                         emptyMap(), 4);
@@ -1055,11 +1056,11 @@ public class ComposerTest {
         // it and is never an interleaving the reader could have taken.
         assertFalse("an ancestor of the reader is not an alternative",
                 new edu.uva.liftlab.graphchecker.smt.Arms(
-                        CorpusIndex.of(iteration))
+                        Corpus.read(iteration, null))
                         .concurrent(reader, UPSTREAM, "s0"));
         assertTrue("a heartbeat tick beside it is",
                 new edu.uva.liftlab.graphchecker.smt.Arms(
-                        CorpusIndex.of(iteration))
+                        Corpus.read(iteration, null))
                         .concurrent(reader, concurrent, "s0"));
         // IDENTITY-V3 sec 5: alternatives need an owner that names the
         // storage.  The class-owned copy of the same state gets the
@@ -1129,7 +1130,7 @@ public class ComposerTest {
         }
 
         Composer.Composition composition = Composer.compose(
-                CorpusIndex.of(iteration), reader,
+                Corpus.read(iteration, null), reader,
                 Collections.<String,
                         edu.uva.liftlab.graphchecker.contract.RootDomain>
                         emptyMap(), 4);
@@ -1487,8 +1488,8 @@ public class ComposerTest {
                         "(= |INSTANCE/Snapshot#40@e-1| nullRef)"));
 
         // And the one routine says the same of either row.
-        List<DecisionRow> rows = CorpusIndex.of(iteration)
-                .path("s0", ANCHOR).decisions();
+        List<DecisionRow> rows = Corpus.read(iteration, null)
+                .path("s0", ANCHOR).decisions;
         List<String> pi = edu.uva.liftlab.graphchecker.smt.Arms
                 .pathCondition(rows, Long.MAX_VALUE);
         assertEquals(MARKER, pi.get(0));
@@ -1539,7 +1540,7 @@ public class ComposerTest {
 
         edu.uva.liftlab.graphchecker.smt.Arms rule =
                 new edu.uva.liftlab.graphchecker.smt.Arms(
-                        CorpusIndex.of(iteration));
+                        Corpus.read(iteration, null));
         assertTrue("one thread is one order, whatever the occurrence",
                 rule.ancestor(first, second, "s0"));
         assertFalse("and it runs one way",
@@ -1562,7 +1563,7 @@ public class ComposerTest {
 
     private Composer.Composition compose(Path iteration, int maxValuations)
             throws IOException {
-        return Composer.compose(CorpusIndex.of(iteration), ANCHOR,
+        return Composer.compose(Corpus.read(iteration, null), ANCHOR,
                 Collections.<String,
                         edu.uva.liftlab.graphchecker.contract.RootDomain>
                         emptyMap(), maxValuations);

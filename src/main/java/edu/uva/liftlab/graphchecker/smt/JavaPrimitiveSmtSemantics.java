@@ -147,7 +147,11 @@ public final class JavaPrimitiveSmtSemantics {
      */
     public static String integralLiteral(String value) {
         String text = value == null ? "" : value.trim();
-        if (text.isEmpty()) return "";
+        // The stricter of the two copies this replaced: a decimal run
+        // longer than any Java integral width could hold is not a literal,
+        // and lowering it would put a number no execution produced into a
+        // query.  Refused as every caller refuses an absent one.
+        if (text.isEmpty() || text.length() > 1024) return "";
         try {
             java.math.BigInteger number = new java.math.BigInteger(text);
             return number.signum() < 0

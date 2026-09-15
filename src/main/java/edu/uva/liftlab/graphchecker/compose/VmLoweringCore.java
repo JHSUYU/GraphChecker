@@ -615,8 +615,9 @@ public abstract class VmLoweringCore implements VmTermLowering.Policy {
                     : result(literal, sort);
         }
         if (sort == Sort.INT) {
-            String literal = VmRows.integerLiteral(value);
-            return literal == null
+            String literal = JavaPrimitiveSmtSemantics
+                    .integralLiteral(value);
+            return literal.isEmpty()
                     ? refuse(Reason.INVALID_NUMERIC_LITERAL, origin,
                     sort + ":" + firstNonBlank(raw, "MISSING"), sort)
                     : result(literal, Sort.INT, JavaPrimitiveSmtSemantics

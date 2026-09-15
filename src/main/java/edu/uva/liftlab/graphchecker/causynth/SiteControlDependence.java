@@ -42,6 +42,17 @@ import java.util.Set;
  * edges leave almost nothing post-dominating anything, and an exception is
  * not a branch a flip can take -- the annotated throw is the target, not a
  * guard of it.</p>
+ *
+ * <p>Every index here is the ORIGINAL one
+ * ({@link CausynthPipeline#originalUnitIndex}), which is the numbering every
+ * published site id is in: the graph's write sites, the plan's branches and
+ * the branch sites INSTRUMENT weaves are all {@code <method>#u<original>}.
+ * Read off a woven body by POSITION instead, a guard id is shifted by
+ * however many units the hooks before it added -- 17960's target guard came
+ * out {@code #u63} for the branch the replay decides as {@code #u61}, and
+ * nothing in the session was ever decided at a published guard id.  A woven
+ * unit has no original index and so can never BE a guard: it is a CFG node
+ * like any other, and no DecisionRow can stand at a site no plan named.</p>
  */
 public final class SiteControlDependence {
     private SiteControlDependence() {
@@ -91,26 +102,46 @@ public final class SiteControlDependence {
                 CausynthStaticFacts.method(method));
         if (body == null) return guards;
         List<Unit> units = new ArrayList<Unit>(body.getUnits());
+        // The original index of each unit, by which every site id is spelled.
+        // An untagged body was never woven, and there its position IS its
+        // original index; a body with tags has them on exactly its original
+        // units.
+        boolean tagged = false;
+        for (Unit unit : units) {
+            tagged |= CausynthPipeline.originalUnitIndex(unit) >= 0;
+        }
+        Map<Unit, Integer> original = new LinkedHashMap<Unit, Integer>();
+        Map<Integer, Unit> byIndex = new LinkedHashMap<Integer, Unit>();
+        for (int position = 0; position < units.size(); position++) {
+            Unit unit = units.get(position);
+            int index = tagged
+                    ? CausynthPipeline.originalUnitIndex(unit) : position;
+            original.put(unit, Integer.valueOf(index));
+            if (index >= 0 && !byIndex.containsKey(index)) {
+                byIndex.put(Integer.valueOf(index), unit);
+            }
+        }
         UnitGraph cfg = new BriefUnitGraph(body);
         MHGPostDominatorsFinder<Unit> post =
                 new MHGPostDominatorsFinder<Unit>(cfg);
-        List<Integer> branches = new ArrayList<Integer>();
-        for (int index = 0; index < units.size(); index++) {
-            if (cfg.getSuccsOf(units.get(index)).size() > 1) {
-                branches.add(Integer.valueOf(index));
+        List<Unit> branches = new ArrayList<Unit>();
+        for (Unit unit : units) {
+            if (cfg.getSuccsOf(unit).size() > 1
+                    && original.get(unit).intValue() >= 0) {
+                branches.add(unit);
             }
         }
         for (String siteId : siteIds) {
-            int unitIndex = SiteId.unitIndexOf(siteId);
-            if (unitIndex < 0 || unitIndex >= units.size()) continue;
-            Unit site = units.get(unitIndex);
+            Unit site = byIndex.get(
+                    Integer.valueOf(SiteId.unitIndexOf(siteId)));
+            if (site == null) continue;
             Set<String> found = new LinkedHashSet<String>();
-            for (Integer index : branches) {
-                Unit branch = units.get(index.intValue());
+            for (Unit branch : branches) {
                 if (post.isDominatedBy(branch, site)) continue;
                 for (Unit successor : cfg.getSuccsOf(branch)) {
                     if (post.isDominatedBy(successor, site)) {
-                        found.add(SiteId.of(method, index.intValue()));
+                        found.add(SiteId.of(method,
+                                original.get(branch).intValue()));
                         break;
                     }
                 }
