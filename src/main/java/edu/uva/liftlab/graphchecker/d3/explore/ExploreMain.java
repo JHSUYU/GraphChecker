@@ -56,6 +56,9 @@ import java.util.Set;
  * ({@link ObligationSolverMain}).</p>
  */
 public final class ExploreMain {
+    /** What tells a resolved occurrence id from a case's v1 selector. */
+    private static final String RESOLVED_MARKER = "/ctx:";
+
     private ExploreMain() {
     }
 
@@ -204,6 +207,21 @@ public final class ExploreMain {
         List<OccurrenceAddress> roots = new ArrayList<OccurrenceAddress>();
         Set<String> resolved = new LinkedHashSet<String>();
         for (String text : selectors) {
+            if (text.contains(RESOLVED_MARKER)) {
+                // Already an id: the scheduler resolved it, or a re-run
+                // passed back what an earlier manifest published.
+                try {
+                    OccurrenceAddress address = OccurrenceAddress.parse(text);
+                    if (resolved.add(address.id())) roots.add(address);
+                    continue;
+                } catch (IllegalArgumentException malformed) {
+                    gaps.add(GapRow.of(seed, GapKind.DECLARATION_MISSING,
+                            GapClass.BLOCKING, text,
+                            "not an occurrence id: "
+                                    + malformed.getMessage()));
+                    continue;
+                }
+            }
             Selector selector;
             try {
                 selector = OccurrenceAddress.parseSelector(text);
@@ -232,44 +250,48 @@ public final class ExploreMain {
                                            List<OccurrenceAddress> seed) {
         int matched = 0;
         for (OccurrenceAddress occurrence : seed) {
-            if (!matches(selector, occurrence)) continue;
+            if (!selector.matches(occurrence, apiOf(selector, occurrence))) {
+                continue;
+            }
             if (++matched == selector.k()) return occurrence;
         }
         return null;
     }
 
     /**
-     * Whether one occurrence answers a selector.
+     * The api of the message that started this occurrence, or "".
      *
-     * <p>The contract will not guess an api out of an RPC static site, so the
-     * caller offers the spellings a case may have used: the site itself, and
-     * its tail after the last {@code #} or {@code /} -- a case declares
-     * {@code striped-file-checksum} where a deployment records
-     * {@code ClientNamenodeProtocol#striped-file-checksum}.  Region, node and
-     * k are the contract's own test.</p>
+     * <p>The contract will not guess an api out of a deployment's RPC static
+     * site spelling, and it is right not to; this is the rule for the one
+     * spelling the cases meet, and it is the composer's rule verbatim, so
+     * that one declaration elects one occurrence in both stages.  A v1
+     * declaration writes the api as the tail of the source it came from, so
+     * the two are compared on their last path segment; an exact site
+     * spelling still matches itself.</p>
      */
-    private static boolean matches(Selector selector,
-                                   OccurrenceAddress occurrence) {
-        for (String api : apis(occurrence)) {
-            if (selector.matches(occurrence, api)) return true;
+    private static String apiOf(Selector selector,
+                                OccurrenceAddress occurrence) {
+        if (occurrence.context().form() != CausalContext.Form.ANCHOR) {
+            return "";
         }
-        return false;
+        String site = ((CausalContext.Anchor) occurrence.context()).rpcSite();
+        if (selector.api() == null) return site;
+        // Answer the selector's own spelling where the two name one api, so
+        // that the contract's equality decides and this rule only says which
+        // spellings are the same api.
+        return sameApi(selector.api(), site) ? selector.api() : site;
     }
 
-    /** Every spelling of the api that started one occurrence. */
-    private static List<String> apis(OccurrenceAddress occurrence) {
-        List<String> apis = new ArrayList<String>();
-        apis.add(null);
-        if (occurrence.context() instanceof CausalContext.Anchor) {
-            String site = ((CausalContext.Anchor) occurrence.context())
-                    .rpcSite();
-            apis.add(site);
-            int hash = site.lastIndexOf('#');
-            if (hash >= 0) apis.add(site.substring(hash + 1));
-            int slash = site.lastIndexOf('/');
-            if (slash >= 0) apis.add(site.substring(slash + 1));
-        }
-        return apis;
+    private static boolean sameApi(String declared, String site) {
+        if (declared.equals(site)) return true;
+        String left = tail(declared);
+        String right = tail(site);
+        return !left.isEmpty() && left.equals(right);
+    }
+
+    private static String tail(String value) {
+        int slash = value.lastIndexOf('/');
+        return slash < 0 ? value : value.substring(slash + 1);
     }
 
     /** What the seed session ran that region as, for a refusal to name. */
