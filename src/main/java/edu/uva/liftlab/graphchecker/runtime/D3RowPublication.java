@@ -518,22 +518,26 @@ final class D3RowPublication {
      * <p>The write log is by location and version; the reads are the
      * {@code ReadFromExpression} nodes inside the expressions this
      * activation published, each of which names the version it observed.
-     * The VM's log states no bytecode site for a write, so the site the
-     * endpoint carries is the location itself and the loss is named once
-     * per activation rather than silently rendered as a site.</p>
+     * Both halves of an endpoint come from the run itself: the VM states the
+     * bytecode site of every version and read it logs (REPORT-VM21), and the
+     * frames those events stood on come from the activation's own frame
+     * journal, aligned to the event id (FrameJournal).</p>
      */
     private static void writes(ActiveRegion active,
                                OccurrenceAddress occurrence) {
-        boolean namedSiteMissing = false;
         // One activation, one population of reads: the same node is reached
         // from many versions of one location, and a row per reachable path
         // would count one read many times.
         Set<String> published = new LinkedHashSet<String>();
         Map<JsonElement, Boolean> seen =
                 new IdentityHashMap<JsonElement, Boolean>();
-        // Locations whose read events no woven site could be stated for.
-        Set<String> unstamped = new LinkedHashSet<String>();
         Set<String> mints = placeholderSymbols(active);
+        // The read log first, and for every location: a read node inside one
+        // location's value is a read OF ANOTHER location, and the activation
+        // that logged it is what its own log record states.
+        for (JsonObject record : active.sharedStateRecords.values()) {
+            indexLoggedEvents(record);
+        }
         for (JsonObject record : active.sharedStateRecords.values()) {
             String locationKey = optionalString(record, "locationKey");
             LocationId location = location(locationKey);
@@ -551,51 +555,153 @@ final class D3RowPublication {
                 JsonObject written =
                         expression != null && expression.isJsonObject()
                                 ? expression.getAsJsonObject() : null;
-                // The site the write stood on, when a declared write site
-                // stamped it at the store (D3Runtime.writeSite); otherwise
-                // the location, and the gap below says why.
-                String[] stamped = D3Runtime.writeSiteOf(locationKey, id);
-                if (stamped == null) namedSiteMissing = true;
                 D3Runtime.write(occurrence, id,
-                        stamped != null ? stamped[0]
-                                : Endpoint.stateSite(locationKey,
-                                optionalString(version, "versionKind"), 0,
-                                true),
-                        location, id, written,
-                        written == null ? "" : optionalString(written,
-                                "_java_type"),
-                        stamped != null ? stamped[1] : "");
-                collect(expression, occurrence, published, seen, unstamped);
+                        loggedSite(version, locationKey, id, true),
+                        location, id, written, "",
+                        loggedFrames(version, locationKey, id, true));
+                collect(expression, occurrence, published, seen);
             }
         }
         for (JsonObject mapping : active.branchMappings) {
-            collect(mapping.get("witness"), occurrence, published, seen,
-                    unstamped);
+            collect(mapping.get("witness"), occurrence, published, seen);
         }
-        if (namedSiteMissing) {
+    }
+
+    /**
+     * What the VM's log says about every event of one location.
+     *
+     * <p>Session-wide and keyed by event id, which is one monotone counter
+     * for versions and reads alike: a {@code ReadFromExpression} node names
+     * its read event id but not the activation that ran it, and the log
+     * record of the same event does.  Populated from the read-out every
+     * activation already performs -- the VM returns each selected location's
+     * complete version and read log -- so nothing is asked of the engine
+     * twice and no event is looked up before its log is seen.</p>
+     */
+    private static void indexLoggedEvents(JsonObject record) {
+        JsonObject envelope = object(record, "envelope");
+        for (JsonElement element : array(envelope, "versions")) {
+            if (!element.isJsonObject()) continue;
+            index(element.getAsJsonObject(), "fieldVersionId");
+        }
+        for (JsonElement element : array(envelope, "reads")) {
+            if (!element.isJsonObject()) continue;
+            index(element.getAsJsonObject(), "readEventId");
+        }
+    }
+
+    private static void index(JsonObject node, String idKey) {
+        long id = optionalLongInteger(node, idKey, -1L);
+        if (id < 0L) return;
+        LOGGED.putIfAbsent(Long.valueOf(id), new Logged(node));
+    }
+
+    /**
+     * What one logged event states about itself: where, and under which
+     * activation.
+     *
+     * <p>Only these fields, not the log record: a record carries the whole
+     * value expression of its version, and keeping every record of the
+     * session alive to answer "which activation ran event 77" would retain
+     * every expression tree the run ever published.</p>
+     */
+    private static final class Logged {
+        private final long activation;
+        private final String className;
+        private final String method;
+        private final String descriptor;
+        private final int bci;
+
+        private Logged(JsonObject node) {
+            this.activation = optionalLongInteger(node,
+                    "regionEnterEventId", -1L);
+            JsonObject site = object(node, "site");
+            this.className = site == null ? ""
+                    : optionalString(site, "className");
+            this.method = site == null ? ""
+                    : optionalString(site, "methodName");
+            this.descriptor = site == null ? ""
+                    : optionalString(site, "methodDescriptor");
+            this.bci = site == null ? -1
+                    : optionalInteger(site, "bci", -1);
+        }
+
+        private boolean states() {
+            return !className.isEmpty() && !method.isEmpty();
+        }
+    }
+
+    /** Every logged event of this session, by version or read event id. */
+    private static final Map<Long, Logged> LOGGED =
+            new java.util.concurrent.ConcurrentHashMap<Long, Logged>();
+
+    /**
+     * The one spelling of a logged event's site.
+     *
+     * <p>The components are the VM's own ({@code site} on every version,
+     * read record and {@code ReadFromExpression}); the class is put in source
+     * form here, which is the one place a VM name is converted, and the
+     * descriptor travels because two overloads of one name are two methods.
+     * An event the VM states no site for is named as a gap and spelled by
+     * its location, which distinguishes nothing and says so.</p>
+     */
+    private static String loggedSite(JsonObject node, String locationKey,
+                                     long eventId, boolean write) {
+        Logged site = statedSite(node, eventId);
+        if (site == null) {
             D3Runtime.gap(GapKind.DECLARATION_MISSING, GapClass.DIAGNOSTIC,
-                    occurrence.render(),
-                    "the VM write log states no bytecode site for a version"
-                            + " and no declared write site stamped it, so a"
-                            + " write endpoint's site is its location and"
-                            + " its site index is empty");
+                    locationKey + "#" + eventId,
+                    "the VM states no bytecode site for this "
+                            + (write ? "version" : "read")
+                            + ", so the endpoint's site is its location and"
+                            + " distinguishes no event of it");
+            return Endpoint.stateSite(locationKey, "UNSTATED_SITE", 0, write);
         }
-        // The same absence on the read side, named rather than left silent:
-        // a ReadFromExpression carries the version it observed and its own
-        // read event id, and no bytecode site (readFromExpression.hpp), so
-        // the runtime has nothing to index these endpoints by and two reads
-        // of one location inside one occurrence share an endpoint id.  The
-        // VM item is that a read record states no site.
-        if (!unstamped.isEmpty()) {
-            D3Runtime.gap(GapKind.DECLARATION_MISSING, GapClass.DIAGNOSTIC,
-                    occurrence.render(),
-                    "the VM read log states no bytecode site for a read and"
-                            + " no woven call site of this run contained it,"
-                            + " so these endpoints carry the empty site"
-                            + " index and reads of one location in one"
-                            + " occurrence share an endpoint id: "
-                            + unstamped);
+        return Endpoint.stateSite(site.className.replace('/', '.'),
+                site.method, site.descriptor, Math.max(0, site.bci), write);
+    }
+
+    /** The site this event states: its own, or its log record's. */
+    private static Logged statedSite(JsonObject node, long eventId) {
+        Logged own = node == null ? null : new Logged(node);
+        if (own != null && own.states()) return own;
+        Logged record = eventId < 0L ? null
+                : LOGGED.get(Long.valueOf(eventId));
+        return record != null && record.states() ? record : null;
+    }
+
+    /**
+     * The frames one logged event stood on, or {@code ""} with a gap.
+     *
+     * <p>The event states the activation it ran inside
+     * ({@code regionEnterEventId}) and its own id; the journal of that
+     * activation states the frames its thread stood on at that point of the
+     * session's event clock.  A node that carries no log record of its own
+     * takes the activation from the record of the same event id.</p>
+     */
+    private static String loggedFrames(JsonObject node, String locationKey,
+                                       long eventId, boolean write) {
+        long activation = optionalLongInteger(node, "regionEnterEventId", -1L);
+        if (activation <= 0L) {
+            Logged record = eventId < 0L ? null
+                    : LOGGED.get(Long.valueOf(eventId));
+            activation = record == null ? -1L : record.activation;
         }
+        String frames = D3Runtime.framesOf(activation, eventId);
+        // "" is placed on no frames -- the store or read is in the region's
+        // own method -- and the bci of the site is then what distinguishes
+        // it.  Only an event the journal could not place is a gap.
+        if (frames != null) return frames;
+        D3Runtime.gap(GapKind.LINEAGE_LOST, GapClass.DIAGNOSTIC,
+                locationKey + "#" + eventId,
+                "this " + (write ? "version" : "read")
+                        + (activation <= 0L
+                        ? " states no region activation, so no frame journal"
+                        + " can place it"
+                        : " ran under activation " + activation
+                        + " with no frame journal entry below its event id")
+                        + "; the endpoint carries the empty site index");
+        return "";
     }
 
     /**
@@ -609,8 +715,7 @@ final class D3RowPublication {
      */
     private static void collect(JsonElement root, OccurrenceAddress occurrence,
                                 Set<String> published,
-                                Map<JsonElement, Boolean> seen,
-                                Set<String> unstamped) {
+                                Map<JsonElement, Boolean> seen) {
         if (root == null) return;
         java.util.Deque<JsonElement> pending =
                 new java.util.ArrayDeque<JsonElement>();
@@ -631,9 +736,9 @@ final class D3RowPublication {
             JsonObject object = node.getAsJsonObject();
             String type = optionalString(object, "_type");
             if ("ReadFromExpression".equals(type)) {
-                readFrom(object, occurrence, published, unstamped);
+                readFrom(object, occurrence, published);
             } else if ("FieldAccessExpression".equals(type)) {
-                fieldAccess(object, occurrence, published, unstamped);
+                fieldAccess(object, occurrence, published);
             }
             for (Map.Entry<String, JsonElement> member : object.entrySet()) {
                 pending.push(member.getValue());
@@ -644,8 +749,7 @@ final class D3RowPublication {
     /** A read the write log covers: the location, and the version it saw. */
     private static void readFrom(JsonObject node,
                                  OccurrenceAddress occurrence,
-                                 Set<String> published,
-                                 Set<String> unstamped) {
+                                 Set<String> published) {
         JsonObject where = object(node, "location");
         String locationKey = locationKey(where);
         LocationId location = location(locationKey);
@@ -670,15 +774,11 @@ final class D3RowPublication {
             return;
         }
         if (!D3Runtime.claimRead(identity)) return;
-        String[] stamped = D3Runtime.readSiteOf(locationKey, event);
-        if (stamped == null) unstamped.add(locationKey);
         D3Runtime.read(occurrence, event >= 0L ? event : Math.max(0L, observed),
-                stamped != null ? stamped[0]
-                        : Endpoint.stateSite(locationKey, "READ_FROM", 0,
-                        false),
+                loggedSite(node, locationKey, event, false),
                 location, observed, symbol,
                 optionalString(node, "_java_type"), value,
-                stamped != null ? stamped[1] : "");
+                loggedFrames(node, locationKey, event, false));
     }
 
     /**
@@ -695,8 +795,7 @@ final class D3RowPublication {
      */
     private static void fieldAccess(JsonObject node,
                                     OccurrenceAddress occurrence,
-                                    Set<String> published,
-                                    Set<String> unstamped) {
+                                    Set<String> published) {
         JsonElement value = node.get("concreteValue");
         if (value == null || value.isJsonNull()) return;
         String ownerClass = optionalString(node, "ownerClass");
@@ -734,15 +833,11 @@ final class D3RowPublication {
                     : "@e" + event);
         }
         if (!D3Runtime.claimRead(identity)) return;
-        String[] stamped = D3Runtime.readSiteOf(locationKey, event);
-        if (stamped == null) unstamped.add(locationKey);
         D3Runtime.read(occurrence, event >= 0L ? event : Math.max(0L, observed),
-                stamped != null ? stamped[0]
-                        : Endpoint.stateSite(locationKey, "FIELD",
-                        Math.max(0, offset), false),
+                loggedSite(node, locationKey, event, false),
                 location, observed, projected,
                 optionalString(node, "_java_type"), stated,
-                stamped != null ? stamped[1] : "");
+                loggedFrames(node, locationKey, event, false));
     }
 
     /**

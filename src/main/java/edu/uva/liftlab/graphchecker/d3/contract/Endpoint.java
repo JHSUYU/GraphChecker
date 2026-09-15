@@ -46,16 +46,33 @@ public final class Endpoint {
                 Fields.count(attempt, "attempt"));
     }
 
-    /** The one spelling of a STATE endpoint's site. */
+    /** The one spelling of a STATE endpoint's site, no descriptor stated. */
     public static String stateSite(String className, String method, int bci,
                                    boolean write) {
-        return site(className, method, bci, write ? "WRITE" : "READ");
+        return stateSite(className, method, "", bci, write);
+    }
+
+    /**
+     * The one spelling of a STATE endpoint's site.
+     *
+     * <p>{@code descriptor} is the JVM method descriptor of the method the
+     * event stood in, as the VM's log states it ({@code ()I}), and it is part
+     * of the member because two overloads of one name are two methods: a site
+     * spelled without it would merge the reads of {@code get()} and
+     * {@code get(int)} into one endpoint.  The empty descriptor is a site the
+     * run states no descriptor for, not a claim about the signature.</p>
+     */
+    public static String stateSite(String className, String method,
+                                   String descriptor, int bci, boolean write) {
+        return site(className, method, descriptor, bci,
+                write ? "WRITE" : "READ");
     }
 
     /** The one spelling of an allocation site (IDENTITY-V3 sec 5). */
     public static String allocationSite(String className, String method,
                                         int bci, boolean array) {
-        return site(className, method, bci, array ? "NEWARRAY" : "NEW");
+        return site(className, method, "", bci,
+                array ? "NEWARRAY" : "NEW");
     }
 
     public OccurrenceAddress occurrence() {
@@ -108,10 +125,20 @@ public final class Endpoint {
         return render();
     }
 
-    private static String site(String className, String method, int bci,
-                               String kind) {
+    /**
+     * The one renderer of every read/write/allocation site.
+     *
+     * <p>{@code <class>#<member>#<bci>:<KIND>}, where the member is the
+     * method name followed by its descriptor when the run states one.  It
+     * renders what it is given and normalizes nothing: the one place that
+     * reads a site out of the VM's log puts the class in source form there,
+     * so a name is converted once rather than at every render.</p>
+     */
+    private static String site(String className, String method,
+                               String descriptor, int bci, String kind) {
+        String stated = descriptor == null ? "" : descriptor.trim();
         return Fields.text(className, "className") + "#"
-                + Fields.text(method, "method") + "#"
+                + Fields.text(method, "method") + stated + "#"
                 + Fields.count(bci, "bci") + ":" + kind;
     }
 }

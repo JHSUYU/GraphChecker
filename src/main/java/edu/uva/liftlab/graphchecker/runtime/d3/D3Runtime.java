@@ -417,23 +417,16 @@ public final class D3Runtime {
         return OccurrenceMinterV2.degraded(nodeKey, role, site);
     }
 
-    public static void write(OccurrenceAddress occurrence, long seq,
-                             String site, LocationId location, long version,
-                             JsonObject expression, String javaType) {
-        write(occurrence, seq, site, location, version, expression, javaType,
-                null);
-    }
-
     /**
      * One write, at the site index the event itself stood on.
      *
-     * <p>{@code siteIndex} is the rendered execution index captured WHERE
-     * the write happened, not where the row is published: the write log is
-     * read out at the end of the activation, by which point the thread has
-     * returned to the region entry and {@code Identity.siteIndex()} would
-     * answer "no frames" for every event in the region.  A null index means
-     * no site stamped this event and the endpoint says so by carrying the
-     * empty index -- never a fabricated one.</p>
+     * <p>{@code siteIndex} is the rendered execution index of the frames the
+     * writing thread stood on WHEN the write ran, not where the row is
+     * published: the write log is read out at the end of the activation, by
+     * which point the thread has returned to the region entry.  The frames
+     * come from that activation's {@link FrameJournal}, aligned to the
+     * version's own event id.  An empty index is an event the run could not
+     * place, and the caller names that gap -- nothing here fabricates one.</p>
      */
     public static void write(OccurrenceAddress occurrence, long seq,
                              String site, LocationId location, long version,
@@ -441,17 +434,11 @@ public final class D3Runtime {
                              String siteIndex) {
         SessionPublisher session = publisher;
         if (session == null || occurrence == null || location == null) return;
-        session.write(WriteRow.of(sessionId(), sequence(seq),
-                endpoint(occurrence, site, 0, siteIndex), location, version,
-                expressionRef(expression), javaType(javaType, expression)));
-    }
-
-    public static void read(OccurrenceAddress occurrence, long seq,
-                            String site, LocationId location,
-                            long observedVersion, String symbol,
-                            String javaType, String concreteValue) {
-        read(occurrence, seq, site, location, observedVersion, symbol,
-                javaType, concreteValue, null);
+        Endpoint at = endpoint(occurrence, site, 0, siteIndex);
+        distinct(at, "write#" + location + "#" + version);
+        session.write(WriteRow.of(sessionId(), sequence(seq), at, location,
+                version, expressionRef(expression),
+                javaType(javaType, expression)));
     }
 
     /** One read, at the site index the event itself stood on. */
@@ -462,12 +449,39 @@ public final class D3Runtime {
                             String siteIndex) {
         SessionPublisher session = publisher;
         if (session == null || occurrence == null || location == null) return;
-        session.read(ReadRow.of(sessionId(), sequence(seq),
-                endpoint(occurrence, site, 0, siteIndex), location,
+        Endpoint at = endpoint(occurrence, site, 0, siteIndex);
+        distinct(at, "read#" + location + "#" + seq);
+        session.read(ReadRow.of(sessionId(), sequence(seq), at, location,
                 observedVersion, Text.safe(symbol), javaType(javaType, null),
                 Text.safe(concreteValue).isEmpty() ? null
                         : Text.safe(concreteValue)));
     }
+
+    /**
+     * Names two events of one site that one occurrence cannot tell apart.
+     *
+     * <p>An endpoint is {@code (occurrence, site, siteIndex, attempt)}.  Two
+     * events of one site whose frames are identical are two events of the
+     * same site in the same call path at the same loop iteration -- a genuine
+     * repeat inside one iteration, e.g. a field read twice in one basic
+     * block.  The identity states so rather than separating them by a
+     * counter: an ordinal moves when an unrelated earlier event is inserted,
+     * which is exactly what a branch flip does, and two replays would then
+     * disagree about which event is which (IDENTITY-V3 sec 1).</p>
+     */
+    private static void distinct(Endpoint at, String event) {
+        if (at == null) return;
+        String first = ENDPOINTS.putIfAbsent(at.id(), Text.safe(event));
+        if (first == null || first.equals(Text.safe(event))) return;
+        gap(GapKind.LINEAGE_LOST, GapClass.DIAGNOSTIC, at.render(),
+                "two events of this site inside one occurrence stand on the"
+                        + " same frames, so the site index cannot"
+                        + " distinguish them: " + first + " and " + event);
+    }
+
+    /** The first event each read/write endpoint id was minted for. */
+    private static final Map<String, String> ENDPOINTS =
+            new ConcurrentHashMap<String, String>();
 
     /** One root minted, with its kind and the domain it resolved to. */
     public static void rootMint(OccurrenceAddress occurrence, long seq,
@@ -637,20 +651,41 @@ public final class D3Runtime {
     }
 
     /**
-     * The JVM descriptor a row states, from the declaration where there is
-     * one and from the expression the VM published otherwise.
+     * The JVM descriptor a row states: the declaration where there is one,
+     * and otherwise the type the expression the VM published states.
+     *
+     * <p>An operator node states no type of its own -- the VM's
+     * {@code BinaryExpression} carries only its operands -- so the type of
+     * {@code Y_I_0 + Y_I_1} is read off the operands, which say {@code I}.
+     * The alternative was the unstated fallback, and the snapshot counter's
+     * RMW versions went out as {@code Ljava/lang/Object;} while the run knew
+     * they were ints (REPORT-P2CD follow-up).  Depth-first in the tree's own
+     * member order, so one tree always answers the same type.</p>
      */
     private static String javaType(String declared, JsonObject expression) {
         String type = Text.safe(declared);
         if (!type.isEmpty()) return type;
-        if (expression != null && expression.has("_java_type")) {
-            String published =
-                    Text.safe(expression.get("_java_type").getAsString());
-            if (!published.isEmpty()) return published;
-        }
+        String stated = statedType(expression, 0);
+        if (!stated.isEmpty()) return stated;
         // Never blank: the contract refuses one, and "the type was not
         // stated" is a fact about the row, not an absence of a member.
         return "Ljava/lang/Object;";
+    }
+
+    private static String statedType(JsonElement node, int depth) {
+        if (node == null || depth > 64 || !node.isJsonObject()) return "";
+        JsonObject object = node.getAsJsonObject();
+        JsonElement own = object.get("_java_type");
+        if (own != null && own.isJsonPrimitive()) {
+            String stated = Text.safe(own.getAsString());
+            if (!stated.isEmpty()) return stated;
+        }
+        for (java.util.Map.Entry<String, JsonElement> member
+                : object.entrySet()) {
+            String found = statedType(member.getValue(), depth + 1);
+            if (!found.isEmpty()) return found;
+        }
+        return "";
     }
 
     private static Long longOrNull(String value) {
@@ -661,13 +696,6 @@ public final class D3Runtime {
         }
     }
 
-    /**
-     * The endpoint of one event: where in the occurrence the site ran.
-     *
-     * <p>The site-local execution index, not a k-th-event ordinal: an
-     * ordinal moves when an unrelated event of the same site is inserted
-     * earlier, and two replays then disagree about which event is which.</p>
-     */
     /** Expression refs already computed, by the tree they name. */
     private static final Map<JsonObject, String> REFS =
             java.util.Collections.synchronizedMap(
@@ -723,18 +751,15 @@ public final class D3Runtime {
      *
      * <p>Every endpoint the runtime mints AT its site takes the live index;
      * an event the VM logged and the runtime publishes afterwards takes the
-     * index that was stamped for it when it ran, and the empty index when
-     * nothing stamped it.</p>
+     * index the journal states for it.  An index that was not stated is
+     * empty, never the live one: the publishing thread's frames are not the
+     * frames of an event some other activation performed.</p>
      */
     private static Endpoint endpoint(OccurrenceAddress occurrence,
                                      String site, int attempt,
                                      String siteIndex) {
-        if (siteIndex == null) {
-            return Endpoint.of(occurrence, Text.safe(site),
-                    Identity.siteIndex(), attempt);
-        }
         return Endpoint.of(occurrence, Text.safe(site),
-                ExecutionIndex.parse(siteIndex), attempt);
+                ExecutionIndex.parse(Text.safe(siteIndex)), attempt);
     }
 
     /** The frames from the region entry to the site running right now. */
@@ -743,59 +768,47 @@ public final class D3Runtime {
     }
 
     /**
-     * Where one version of one tracked location was written.
+     * Files this activation's frame journal under the VM's own key.
      *
-     * <p>A version the VM publishes carries no bytecode site of its own
-     * (the write log states the location and the value, not the store), so
-     * the site and its execution index come from the hook that stood at the
-     * write.  Session-wide, because the location is shared and the
-     * publishing activation is not always the one whose frames were
-     * captured -- the row's endpoint must say where the WRITE ran.</p>
+     * <p>Called once the engine has stated the region-enter event id, which
+     * is what every version and read it logs from inside this activation
+     * carries.  Until then the activation journals nothing: an entry with no
+     * key could not be found again.</p>
      */
-    public static void writeSite(String locationKey, long version,
-                                 String siteId, String siteIndex) {
-        if (Text.safe(locationKey).isEmpty() || version < 0L) return;
-        WRITE_SITES.put(Text.safe(locationKey) + "#" + version,
-                new String[]{Text.safe(siteId), Text.safe(siteIndex)});
+    public static void journalRegion(long vmRegionEnterEventId) {
+        Identity.regionKey(vmRegionEnterEventId);
     }
 
-    /** {@code {siteId, siteIndex}} for one version, or null. */
-    public static String[] writeSiteOf(String locationKey, long version) {
-        return WRITE_SITES.get(Text.safe(locationKey) + "#" + version);
+    /** Leaves the innermost region of the execution index. */
+    public static void exitRegionIndex() {
+        Identity.regionExit();
     }
 
-    /** The site of every version a declared write site stamped. */
-    private static final Map<String, String[]> WRITE_SITES =
-            new ConcurrentHashMap<String, String[]>();
+    /** Installs the VM's event clock the frame journal samples. */
+    public static void clock(FrameJournal.Clock source) {
+        Identity.clock(source);
+    }
 
     /**
-     * Where one read event of one tracked location happened.
+     * The rendered site index of one event the VM logged, or null.
      *
-     * <p>Same absence as a version's: a {@code ReadFromExpression} carries
-     * the version it observed and its own read event id, and no bytecode
-     * site (readFromExpression.hpp).  What the runtime CAN state is the
-     * woven call site the read ran inside -- the accessor call context is a
-     * frame of the execution index (IDENTITY-IMPL sec B), and a read with no
-     * woven frame of its own belongs to the deepest woven frame that
-     * contains it, which is exactly what an execution index means for
-     * unwoven code.  The VM's read log names which read events happened
-     * inside that call, so this is a fact of the run and not an ordinal.</p>
+     * <p>{@code activationKey} is the {@code regionEnterEventId} the logged
+     * event states and {@code eventId} its version id or read event id; both
+     * are the VM's own statements, and the frames are the journal's
+     * (FrameJournal).</p>
+     *
+     * <p>Null is an event this run cannot place; {@code ""} is an event the
+     * journal DID place on no frames at all, which is where most stores are
+     * -- the region's own method, with no woven call between its entry and
+     * the store.  The two are different answers and the row would read the
+     * same for both, so the caller gets to tell them apart: an index that is
+     * empty because the event stood at the region entry is stated, and only
+     * an unplaced event is a gap.</p>
      */
-    public static void readSite(String locationKey, long event,
-                                String siteId, String siteIndex) {
-        if (Text.safe(locationKey).isEmpty() || event < 0L) return;
-        READ_SITES.putIfAbsent(Text.safe(locationKey) + "#" + event,
-                new String[]{Text.safe(siteId), Text.safe(siteIndex)});
+    public static String framesOf(long activationKey, long eventId) {
+        ExecutionIndex index = FrameJournal.framesAt(activationKey, eventId);
+        return index == null ? null : index.render();
     }
-
-    /** {@code {siteId, siteIndex}} for one read event, or null. */
-    public static String[] readSiteOf(String locationKey, long event) {
-        return READ_SITES.get(Text.safe(locationKey) + "#" + event);
-    }
-
-    /** The site of every read event an accessor call window stamped. */
-    private static final Map<String, String[]> READ_SITES =
-            new ConcurrentHashMap<String, String[]>();
 
     /**
      * Publishes what only the end of a replay can state, and closes.
