@@ -10,7 +10,7 @@ import edu.uva.liftlab.graphchecker.d3.smt.JsonFields;
 import edu.uva.liftlab.graphchecker.causynth.StaticProgram;
 import edu.uva.liftlab.graphchecker.d3.smt.JavaContainerTypes;
 
-import edu.uva.liftlab.graphchecker.contract.SiteId;
+import edu.uva.liftlab.graphchecker.d3.plan.SiteId;
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
 import java.io.File;

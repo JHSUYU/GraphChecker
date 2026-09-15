@@ -1,5 +1,7 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
+import edu.uva.liftlab.graphchecker.d3.plan.BoundedLoopComposition;
+
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
@@ -10,23 +12,23 @@ import edu.uva.liftlab.graphchecker.causynth.MapFields;
 import edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts;
 import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
 import edu.uva.liftlab.graphchecker.causynth.StaticProgram;
-import edu.uva.liftlab.graphchecker.concolic.AutomaticRegionEdge;
-import edu.uva.liftlab.graphchecker.concolic.ExactConcreteBranchObservation;
+import edu.uva.liftlab.graphchecker.d3.plan.AutomaticRegionEdge;
+import edu.uva.liftlab.graphchecker.d3.plan.ExactConcreteBranchObservation;
 import edu.uva.liftlab.graphchecker.d3.smt.JavaPrimitiveSmtSemantics;
-import edu.uva.liftlab.graphchecker.concolic.SharedFieldFlow;
-import edu.uva.liftlab.graphchecker.concolic.SharedStateEvidence;
-import edu.uva.liftlab.graphchecker.contract.CommunicationCatalogContract;
-import edu.uva.liftlab.graphchecker.contract.CommunicationHandoffSpec;
-import edu.uva.liftlab.graphchecker.contract.ConfiguredSourcePhaseContract;
+import edu.uva.liftlab.graphchecker.d3.plan.SharedFieldFlow;
+import edu.uva.liftlab.graphchecker.d3.plan.SharedStateEvidence;
+import edu.uva.liftlab.graphchecker.d3.plan.CommunicationCatalogContract;
+import edu.uva.liftlab.graphchecker.d3.plan.CommunicationHandoffSpec;
+import edu.uva.liftlab.graphchecker.d3.plan.ConfiguredSourcePhaseContract;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
-import edu.uva.liftlab.graphchecker.contract.ExecutionTask;
-import edu.uva.liftlab.graphchecker.contract.DependencyRole;
-import edu.uva.liftlab.graphchecker.contract.FieldPathSpec;
-import edu.uva.liftlab.graphchecker.contract.MaterializationSpec;
-import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
-import edu.uva.liftlab.graphchecker.contract.RuntimePlanArtifact;
-import edu.uva.liftlab.graphchecker.contract.StaticSymbolicSourceDeclaration;
-import edu.uva.liftlab.graphchecker.contract.SiteId;
+import edu.uva.liftlab.graphchecker.d3.plan.ExecutionTask;
+import edu.uva.liftlab.graphchecker.d3.plan.DependencyRole;
+import edu.uva.liftlab.graphchecker.d3.plan.FieldPathSpec;
+import edu.uva.liftlab.graphchecker.d3.plan.MaterializationSpec;
+import edu.uva.liftlab.graphchecker.d3.plan.LoopBoundPolicy;
+import edu.uva.liftlab.graphchecker.d3.plan.RuntimePlanArtifact;
+import edu.uva.liftlab.graphchecker.d3.plan.StaticSymbolicSourceDeclaration;
+import edu.uva.liftlab.graphchecker.d3.plan.SiteId;
 
 import java.io.File;
 import java.nio.charset.StandardCharsets;
@@ -2605,7 +2607,7 @@ final class RuntimeRegionPlanner {
 
     /** Task member carrying the retained loops of one occurrence. */
     static final String RETAINED_LOOPS_FIELD =
-            edu.uva.liftlab.graphchecker.concolic.BoundedLoopComposition
+            edu.uva.liftlab.graphchecker.d3.plan.BoundedLoopComposition
                     .PLAN_FIELD;
 
     static final class RefinedFlowIndex {
