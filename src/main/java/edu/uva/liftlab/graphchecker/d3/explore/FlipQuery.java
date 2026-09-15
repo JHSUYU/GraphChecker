@@ -111,24 +111,30 @@ final class FlipQuery {
      * asks for a world the execution does not have -- and one over a value
      * nothing declares cannot be asked for either.</p>
      */
+    /**
+     * Whether one recorded decision is a flip candidate at all.
+     *
+     * <p>Owner's ruling, 2026-09-15: a branch that carries a symbol IS a
+     * flip target.  Every symbol a term can name is a declared root, a
+     * handoff a family binds, or a placeholder its own row states, so
+     * pre-filtering on "does it name a ROOT or a HANDOFF" refused flips over
+     * state the recording states perfectly well -- and whether a flip is
+     * PRODUCIBLE is the solver's verdict, not the planner's guess:
+     * {@link Builder#unbound} refuses a model that would land on a symbol
+     * nothing binds, by name, as UNPRODUCIBLE_ANSWER (HANDOVER SS1.5).</p>
+     *
+     * <p>What is left is the one thing that is not a predicate: a CONCRETE
+     * branch, published with no term because the VM had no symbolic value at
+     * the site.  There is nothing to negate and no valuation that could take
+     * the other arm; asking anyway asserted {@code "(not )"}, which is not
+     * SMT at all.  This is the ONE rule -- the closure's own task test
+     * ({@link ClosurePlanner#symbolicDecision}) and the obligation factory
+     * both call it, so a decision cannot be a task's reason and not its
+     * candidate.</p>
+     */
     static boolean flippable(Corpus corpus, String sessionId,
                              DecisionRow decision) {
-        // A CONCRETE branch is published with no term: the VM had no
-        // symbolic value at the site, so there is no predicate to negate
-        // and no valuation that could take the other arm.  Asking anyway
-        // asserted "(not )", which is not SMT at all.
-        if (!predicate(decision.term())) return false;
-        if (!decision.clockReadings().isEmpty()) return true;
-        for (String token : SmtText.symbols(statedTerm(corpus, sessionId,
-                        decision.term()),
-                new LinkedHashSet<String>())) {
-            Corpus.SymbolKind kind = corpus.symbolKind(sessionId, token);
-            if (kind == Corpus.SymbolKind.ROOT
-                    || kind == Corpus.SymbolKind.HANDOFF) {
-                return true;
-            }
-        }
-        return false;
+        return predicate(decision.term());
     }
 
     /**

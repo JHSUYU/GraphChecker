@@ -768,20 +768,43 @@ public class D3ExploreTest {
                 "CLOSURE_MEMBER", whyTask.get(target.render()));
         assertEquals("and the deferring region is a task on its decision, "
                         + "with the manifest saying which: " + whyTask,
-                "ROOT_DEPENDENT_DECISION", whyTask.get(deferring.render()));
-        assertFalse("a root the case did NOT declare makes no task: " + whyTask,
-                whyTask.containsKey(undeclared.render()));
-        assertFalse("nor does an occurrence that decided nothing: " + whyTask,
+                ExploreMain.SYMBOLIC_DECISION,
+                whyTask.get(deferring.render()));
+        // Owner's ruling: a branch that carries a SYMBOL is a flip target.
+        // Whether the flip is producible is the solver's verdict, not a
+        // pre-filter, so a decision over a root the case did not declare is
+        // a task too -- and refused by name below rather than never asked.
+        assertEquals("a decision over an undeclared symbol is a task: "
+                        + whyTask, ExploreMain.SYMBOLIC_DECISION,
+                whyTask.get(undeclared.render()));
+        assertFalse("an occurrence that decided nothing is not: " + whyTask,
                 whyTask.containsKey(silent.render()));
         // It is a task, not a closure member: it opens no slot, so the
         // skeleton still counts its interactions as outside the closure.
         List<Obligation> beyond = obligations(asideWave);
-        assertEquals("one flip, on the root-dependent decision: " + beyond,
-                1, beyond.size());
-        assertEquals("SnapshotManager#u7", beyond.get(0).siteId());
-        assertTrue(beyond.get(0).flippedOutcome());
-        assertTrue("a wave proposes no model: the worker solves it",
-                beyond.get(0).rootAssignments().isEmpty());
+        assertEquals("one flip per symbolic decision: " + beyond, 2,
+                beyond.size());
+        for (Obligation flip : beyond) {
+            assertEquals("SnapshotManager#u7", flip.siteId());
+            assertTrue(flip.flippedOutcome());
+            assertTrue("a wave proposes no model: the worker solves it",
+                    flip.rootAssignments().isEmpty());
+        }
+        // And the one over the undeclared symbol is refused where the design
+        // says it is refused: by the solver, naming it, never as a model that
+        // answers with a value the chain does not reach (HANDOVER SS1.5).
+        if (z3Available()) {
+            Path asideOut = tree.newFolder("closure-root-dependent-out")
+                    .toPath();
+            String pinned = ClosurePlanner.taskId(undeclared);
+            for (Obligation flip : beyond) {
+                if (!flip.taskId().equals(pinned)) continue;
+                Worker refused = solve(aside, asideWave, flip, asideOut, "wu");
+                assertEquals("a flip over a symbol nothing binds is refused "
+                                + "by the solver, not by a pre-filter",
+                        Verdict.NOT_ADMITTED, refused.verdict);
+            }
+        }
 
         // Two reads of ONE location at one endpoint id that observed
         // DIFFERENT versions are two events the identity cannot separate --
