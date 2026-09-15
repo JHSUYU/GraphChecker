@@ -8,7 +8,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.trimmed;
+import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.trimmed;
 
 /**
  * Canonical parser for Soot field declarations and structured field paths.

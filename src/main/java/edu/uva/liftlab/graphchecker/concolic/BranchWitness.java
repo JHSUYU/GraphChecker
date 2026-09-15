@@ -3,10 +3,10 @@ package edu.uva.liftlab.graphchecker.concolic;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.primitiveInteger;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.primitiveString;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.requireText;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.requiredObject;
+import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.primitiveInteger;
+import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.primitiveString;
+import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.requireText;
+import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.requiredObject;
 
 /**
  * Immutable authority for one observed binary branch.

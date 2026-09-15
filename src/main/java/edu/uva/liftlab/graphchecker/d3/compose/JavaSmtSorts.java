@@ -1,8 +1,10 @@
 package edu.uva.liftlab.graphchecker.d3.compose;
 
+import edu.uva.liftlab.graphchecker.d3.smt.JavaContainerTypes;
+
 import edu.uva.liftlab.graphchecker.d3.compose.VmTermLowering.Sort;
 
-import static edu.uva.liftlab.graphchecker.d3.compose.JsonFields.firstNonBlank;
+import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.firstNonBlank;
 
 /**
  * The Java type vocabulary the SMT lowering names, in one place.

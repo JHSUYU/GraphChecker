@@ -101,6 +101,10 @@ workflow_config_keys=(
   # returned.  Cross-node skew is a failure mechanism the checker explores,
   # so this bounds it rather than pinning a clock to its recording.
   "clock_skew_ms CAUSYNTH_CLOCK_SKEW_MS krp 300000"
+  # How many root valuations the composer enumerates around the recorded one.
+  # The composer runs z3 per valuation while it composes, so this bounds the
+  # solving a campaign does, not a separate stage's budget.
+  "compose_max_valuations CAUSYNTH_COMPOSE_MAX_VALUATIONS krp 16"
   # The occurrence of the annotated site this campaign is about, as the case
   # declares it: an occurrence address.  A campaign is target-directed -- the
   # case knows which instance can fail -- and the declaration is what says
@@ -417,7 +421,7 @@ validate_config() {
   local key
   for key in solver_timeout_ms schedule_max_jobs \
       concolic_worker_count campaign_max_iterations \
-      region_path_max_waves; do
+      region_path_max_waves compose_max_valuations; do
     require_positive_integer "${key}"
   done
   # A zero skew is meaningful -- it pins every clock to its recording -- so
@@ -582,6 +586,7 @@ do_compose() {
     --manifest "${composition_manifest}" \
     --clock-skew-ms "${clock_skew_ms}" \
     --timeout-ms "${solver_timeout_ms}" \
+    --max-valuations "${compose_max_valuations}" \
     --z3 "${z3_bin}" \
     "${selection[@]}"
 }

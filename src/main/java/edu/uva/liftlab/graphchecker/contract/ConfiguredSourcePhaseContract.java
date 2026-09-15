@@ -16,9 +16,9 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.required;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.text;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.trimmed;
+import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.required;
+import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.text;
+import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.trimmed;
 
 /**
  * Static hook sites and their exact dynamic executions for configured sources.

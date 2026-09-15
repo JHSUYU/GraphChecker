@@ -7,9 +7,9 @@ import edu.uva.liftlab.graphchecker.concolic.VmExpressionTable;
 import java.util.ArrayList;
 import java.util.List;
 
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalInteger;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalLongInteger;
+import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.array;
+import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.optionalInteger;
+import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.optionalLongInteger;
 
 /**
  * Indexed access to a serialized path condition without materializing

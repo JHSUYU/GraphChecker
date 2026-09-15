@@ -1,7 +1,7 @@
 package edu.uva.liftlab.graphchecker.causynth;
 
 import com.google.gson.JsonObject;
-import edu.uva.liftlab.graphchecker.concolic.JsonFields;
+import edu.uva.liftlab.graphchecker.d3.smt.JsonFields;
 import edu.uva.liftlab.graphchecker.contract.SiteId;
 import edu.uva.liftlab.graphchecker.contract.StaticSymbolicSourceDeclaration;
 import edu.uva.liftlab.graphchecker.contract.FieldPathSpec;

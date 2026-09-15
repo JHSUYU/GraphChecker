@@ -2,11 +2,11 @@ package edu.uva.liftlab.graphchecker.concolic;
 
 import com.google.gson.JsonObject;
 
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalInteger;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalLongInteger;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.nonNull;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
+import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.optionalInteger;
+import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.optionalLongInteger;
+import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.nonNull;
+import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.object;
+import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.optionalString;
 
 /** Who recorded one piece of VM evidence, in which run, and when. */
 public final class RecordedEvidenceIdentity {

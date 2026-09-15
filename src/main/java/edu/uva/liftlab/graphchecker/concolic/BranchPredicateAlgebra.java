@@ -1,5 +1,7 @@
 package edu.uva.liftlab.graphchecker.concolic;
 
+import edu.uva.liftlab.graphchecker.d3.smt.VmExpressionIr;
+
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonNull;
@@ -14,7 +16,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
 
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
+import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.optionalString;
 
 /** The single polarity algebra for binary concolic branch predicates. */
 public final class BranchPredicateAlgebra {

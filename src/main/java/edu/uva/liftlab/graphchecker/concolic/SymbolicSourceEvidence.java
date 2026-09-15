@@ -1,5 +1,8 @@
 package edu.uva.liftlab.graphchecker.concolic;
 
+import edu.uva.liftlab.graphchecker.d3.smt.JavaPrimitiveSmtSemantics;
+import edu.uva.liftlab.graphchecker.d3.smt.JsonFields;
+
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
@@ -15,10 +18,10 @@ import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.required;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.shallowCopy;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
+import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.array;
+import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.required;
+import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.shallowCopy;
+import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.optionalString;
 
 /**
  * Exact VM roots minted at an explicitly configured program source.

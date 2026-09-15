@@ -11,10 +11,10 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.exactInteger;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.requireText;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.requiredObject;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.textString;
+import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.exactInteger;
+import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.requireText;
+import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.requiredObject;
+import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.textString;
 
 /**
  * Immutable VM-attested branch event that added no symbolic path predicate.

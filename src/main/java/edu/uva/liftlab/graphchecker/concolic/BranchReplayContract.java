@@ -13,9 +13,9 @@ import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
 
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.primitiveInteger;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.primitiveString;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.requiredObject;
+import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.primitiveInteger;
+import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.primitiveString;
+import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.requiredObject;
 
 /** Immutable natural replay request derived from one source branch witness. */
 public final class BranchReplayContract {

@@ -6,9 +6,9 @@ import com.google.gson.JsonObject;
 import java.util.Collection;
 import java.util.List;
 
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalLongInteger;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
+import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.object;
+import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.optionalLongInteger;
+import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.optionalString;
 
 /**
  * What a wall clock can physically have returned.

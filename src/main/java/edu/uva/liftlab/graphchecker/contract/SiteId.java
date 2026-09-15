@@ -1,6 +1,6 @@
 package edu.uva.liftlab.graphchecker.contract;
 
-import edu.uva.liftlab.graphchecker.concolic.JsonFields;
+import edu.uva.liftlab.graphchecker.d3.smt.JsonFields;
 
 /**
  * {@code <method>#u<unitIndex>}: the project-wide name of one bytecode

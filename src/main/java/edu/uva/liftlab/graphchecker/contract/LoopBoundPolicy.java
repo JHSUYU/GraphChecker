@@ -8,8 +8,8 @@ import java.util.Map;
 import java.util.SortedMap;
 import java.util.TreeMap;
 
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalInteger;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
+import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.optionalInteger;
+import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.object;
 
 /**
  * Canonical bounds for bounded concolic execution, and the loop vocabulary

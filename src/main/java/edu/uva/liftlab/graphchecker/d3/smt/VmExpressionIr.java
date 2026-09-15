@@ -1,4 +1,4 @@
-package edu.uva.liftlab.graphchecker.concolic;
+package edu.uva.liftlab.graphchecker.d3.smt;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
@@ -8,10 +8,10 @@ import java.util.List;
 import java.util.function.Predicate;
 import java.util.regex.Pattern;
 
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalBool;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.firstNonBlank;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
+import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.array;
+import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.optionalBool;
+import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.firstNonBlank;
+import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.optionalString;
 
 /**
  * The one reading of the custom VM's expression IR the Composer and the
@@ -27,10 +27,10 @@ public final class VmExpressionIr {
     /** The VM's spelling of a symbolic null reference. */
     public static final String SYMBOLIC_NULL = "N";
     /** Transparent VM marker installed at a consumer-side value boundary. */
-    static final String CONSUMER_BOUNDARY_TYPE =
+    public static final String CONSUMER_BOUNDARY_TYPE =
             "ConsumerBoundaryExpression";
     /** Persisted reference to one replay-independent boundary family. */
-    static final String CONSUMER_BOUNDARY_REFERENCE_TYPE =
+    public static final String CONSUMER_BOUNDARY_REFERENCE_TYPE =
             "ConsumerBoundaryReference";
     static final String RPC_ATTACH = "RPC_ATTACH";
     static final String FIELD_READ = "FIELD_READ";
@@ -38,7 +38,7 @@ public final class VmExpressionIr {
     static final String EVENT_ID = "eventId";
     static final String FAMILY_KEY = "familyKey";
     static final String TOPOLOGY_EPOCH = "topologyEpoch";
-    static final String EXPRESSION = "expression";
+    public static final String EXPRESSION = "expression";
 
     /**
      * Exact serialization of {@code InstanceSymbolExp}: the VM can only
@@ -144,17 +144,17 @@ public final class VmExpressionIr {
         return SYMBOL_TYPE.equals(optionalString(root, "_type"))
                 && !optionalString(root, "_exp").isEmpty()
                 && !optionalString(root, "_java_type").isEmpty()
-                && !SharedStateEvidence.containsVmSerializationTruncation(
+                && !VmRows.truncated(
                 root) ? root : null;
     }
 
-    static boolean isConsumerBoundary(JsonElement expression) {
+    public static boolean isConsumerBoundary(JsonElement expression) {
         return expression != null && expression.isJsonObject()
                 && CONSUMER_BOUNDARY_TYPE.equals(optionalString(
                 expression.getAsJsonObject(), "_type"));
     }
 
-    static boolean isConsumerBoundaryReference(JsonElement expression) {
+    public static boolean isConsumerBoundaryReference(JsonElement expression) {
         return expression != null && expression.isJsonObject()
                 && CONSUMER_BOUNDARY_REFERENCE_TYPE.equals(optionalString(
                 expression.getAsJsonObject(), "_type"));
@@ -195,7 +195,7 @@ public final class VmExpressionIr {
                 || !payload.isJsonObject()) {
             return "consumer boundary carries no expression payload";
         }
-        if (SharedStateEvidence.containsVmSerializationTruncation(payload)) {
+        if (VmRows.truncated(payload)) {
             return "consumer boundary payload was truncated";
         }
         return "";
@@ -239,13 +239,13 @@ public final class VmExpressionIr {
             Pattern.compile("^P_L'[^']+'_$");
 
     /** Whether the VM left this reference operand unnamed (no shadow). */
-    static boolean isUntrackedReferencePlaceholder(String raw) {
+    public static boolean isUntrackedReferencePlaceholder(String raw) {
         return raw != null
                 && UNTRACKED_REFERENCE_PLACEHOLDER.matcher(raw).matches();
     }
 
     /** Whether runtime carrier evidence gave this state a replay-stable id. */
-    static boolean isCanonicalMapStateReference(String raw) {
+    public static boolean isCanonicalMapStateReference(String raw) {
         return raw != null
                 && CANONICAL_MAP_STATE_REFERENCE.matcher(raw).matches();
     }
@@ -263,15 +263,15 @@ public final class VmExpressionIr {
 
 
 
-    static boolean isJavaParseInt(String name) {
+    public static boolean isJavaParseInt(String name) {
         return "java/lang/Integer parseInt".equals(firstNonBlank(name));
     }
 
-    static boolean isJavaSplitElement(String name) {
+    public static boolean isJavaSplitElement(String name) {
         return "java/lang/String splitElement".equals(firstNonBlank(name));
     }
 
-    static String comparison(String operator) {
+    public static String comparison(String operator) {
         if ("<".equals(operator) || ">".equals(operator)
                 || "<=".equals(operator) || ">=".equals(operator)) {
             return operator;
@@ -279,48 +279,48 @@ public final class VmExpressionIr {
         return "";
     }
 
-    static String arithmetic(String operator) {
+    public static String arithmetic(String operator) {
         if ("+".equals(operator) || "-".equals(operator)
                 || "*".equals(operator)) return operator;
         return "";
     }
 
-    static boolean arithmeticOperator(String operator) {
+    public static boolean arithmeticOperator(String operator) {
         return "+".equals(operator) || "-".equals(operator)
                 || "*".equals(operator) || "@".equals(operator)
                 || "/".equals(operator) || "%".equals(operator);
     }
 
-    static boolean bitwiseOperator(String operator) {
+    public static boolean bitwiseOperator(String operator) {
         return "&".equals(operator) || "|".equals(operator)
                 || "^".equals(operator);
     }
 
-    static boolean shiftOperator(String operator) {
+    public static boolean shiftOperator(String operator) {
         return "<<".equals(operator) || ">>".equals(operator)
                 || ">>>".equals(operator);
     }
 
-    static String quote(String value) {
+    public static String quote(String value) {
         String exact = value == null ? "" : value;
         return "\"" + exact.replace("\"", "\"\"") + "\"";
     }
 
-    static String constantPayload(String raw) {
+    public static String constantPayload(String raw) {
         if (raw == null) return "0";
         int first = raw.indexOf('_');
         int second = first < 0 ? -1 : raw.indexOf('_', first + 1);
         return second < 0 ? raw : raw.substring(second + 1);
     }
 
-    static boolean isPrimitiveIntExpression(JsonElement expression) {
+    public static boolean isPrimitiveIntExpression(JsonElement expression) {
         if (expression == null || !expression.isJsonObject()) return false;
         JsonObject object = expression.getAsJsonObject();
         String javaType = optionalString(object, "_java_type");
         return "I".equals(javaType) || "int".equals(javaType);
     }
 
-    static Integer exactIntLiteral(JsonElement expression) {
+    public static Integer exactIntLiteral(JsonElement expression) {
         if (expression == null || !expression.isJsonObject()) return null;
         JsonObject object = expression.getAsJsonObject();
         String type = optionalString(object, "_type");
@@ -340,7 +340,7 @@ public final class VmExpressionIr {
         }
     }
 
-    static String exactStringLiteral(JsonElement expression,
+    public static String exactStringLiteral(JsonElement expression,
                                      Predicate<String> stringTyped) {
         if (expression == null || !expression.isJsonObject()) return null;
         JsonObject object = expression.getAsJsonObject();
