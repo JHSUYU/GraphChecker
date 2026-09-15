@@ -47,7 +47,6 @@ final class RowPublication {
         publishKind("roots", active, occurrence);
         publishKind("state", active, occurrence);
         publishKind("target", active, occurrence);
-        RowRuntime.endActivation(active.token);
     }
 
     /**

@@ -38,7 +38,6 @@ public final class FocusedReplay {
     private static Task task;
     private static final List<Obligation> OBLIGATIONS =
             new ArrayList<Obligation>();
-    private static final Set<String> OBSERVED = new LinkedHashSet<String>();
     private static final Map<String, String> REFUSALS =
             new LinkedHashMap<String, String>();
     private static final Set<String> FLIPPED = new LinkedHashSet<String>();
@@ -248,15 +247,6 @@ public final class FocusedReplay {
         }
     }
 
-    /** States one interaction endpoint the focused occurrence reached. */
-    public static void observeInteraction(String endpointRender) {
-        load();
-        if (task == null) return;
-        synchronized (LOCK) {
-            OBSERVED.add(Text.safe(endpointRender));
-        }
-    }
-
     /**
      * What this replay settled, one row per obligation.
      *
@@ -446,7 +436,6 @@ public final class FocusedReplay {
             task = null;
             OBLIGATIONS.clear();
             CLOCK_DELTAS.clear();
-            OBSERVED.clear();
             REFUSALS.clear();
             FLIPPED.clear();
             FOCUSED_TASKS.clear();

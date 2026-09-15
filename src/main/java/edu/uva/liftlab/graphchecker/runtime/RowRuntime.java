@@ -32,7 +32,6 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * The one door between the replay and the row set.
@@ -44,16 +43,10 @@ import java.util.concurrent.atomic.AtomicInteger;
  * gap, which is why {@link #gap} sits beside every other method here.</p>
  */
 public final class RowRuntime {
-    /** Where the wave names this replay's session, when it does. */
-    public static final String SESSION_PROPERTY = "causynth.session";
     /** Where the campaign's REPLAY stage puts every worker's session. */
-    public static final String SESSIONS_PROPERTY = "causynth.sessions";
+    public static final String SESSIONS_ENV = "CAUSYNTH_CONCOLIC_SESSIONS";
 
     private static final Object LOCK = new Object();
-    private static final Map<Long, OccurrenceAddress> ACTIVATIONS =
-            new ConcurrentHashMap<Long, OccurrenceAddress>();
-    private static final Map<String, AtomicInteger> ORDINALS =
-            new ConcurrentHashMap<String, AtomicInteger>();
     /** This replay's clock readings so far, by root id. */
     private static final Map<String, Long> CLOCKS =
             new ConcurrentHashMap<String, Long>();
@@ -108,15 +101,12 @@ public final class RowRuntime {
     /**
      * The sessions directory the campaign named, or null.
      *
-     * <p>{@code CAUSYNTH_CONCOLIC_SESSIONS} is what REPLAY passes every
-     * worker; deriving it from the result file is the fallback for a run
-     * nothing told.</p>
+     * <p>{@link #SESSIONS_ENV} is what REPLAY passes every worker, and it is
+     * the one spelling; deriving the directory from the result file is what
+     * a run nothing told does instead.</p>
      */
     private static Path declaredSessionsRoot() {
-        String declared = Text.safe(System.getProperty(SESSIONS_PROPERTY));
-        if (declared.isEmpty()) {
-            declared = Text.safe(System.getenv("CAUSYNTH_CONCOLIC_SESSIONS"));
-        }
+        String declared = Text.safe(System.getenv(SESSIONS_ENV));
         return declared.isEmpty() ? null
                 : java.nio.file.Paths.get(declared).toAbsolutePath();
     }
@@ -136,9 +126,14 @@ public final class RowRuntime {
         return parent == null ? inside.toAbsolutePath() : parent;
     }
 
+    /**
+     * This session's id: where the campaign put it, and what ran it.
+     *
+     * <p>Derived and never declared -- a replay that was handed an id it
+     * shares with another worker of the same iteration writes into that
+     * worker's rows.</p>
+     */
     private static String sessionId(Path resultFile) {
-        String declared = Text.safe(System.getProperty(SESSION_PROPERTY));
-        if (!declared.isEmpty()) return declared;
         Path parent = resultFile.toAbsolutePath().getParent();
         String where = parent == null || parent.getFileName() == null
                 ? "session" : parent.getFileName().toString();
@@ -177,7 +172,6 @@ public final class RowRuntime {
             }
             return null;
         }
-        if (token > 0L) ACTIVATIONS.put(token, address);
         if (session != null) {
             session.activation(ActivationRow.of(sessionId(), address,
                     Text.safe(taskId), FocusedReplay.focused(taskId,
@@ -225,10 +219,6 @@ public final class RowRuntime {
     private static String threadKey() {
         Thread thread = Thread.currentThread();
         return thread.getName() + "#" + thread.getId();
-    }
-
-    public static void endActivation(long token) {
-        ACTIVATIONS.remove(token);
     }
 
     // ------------------------------------------------------------------
@@ -283,7 +273,6 @@ public final class RowRuntime {
                     ref, javaType(javaType, expression), handle,
                     Text.safe(recordedValue)));
         }
-        FocusedReplay.observeInteraction(endpoint.id());
         return endpoint;
     }
 
@@ -325,21 +314,7 @@ public final class RowRuntime {
                                 + " was paired with no export of this run"));
             }
         }
-        FocusedReplay.observeInteraction(endpoint.id());
         return endpoint;
-    }
-
-    /** One v_H minted at a declared port, paired to its producer. */
-    public static Endpoint attached(OccurrenceAddress consumer, long seq,
-                                    String portId, long handle,
-                                    String correlationId, int attempt,
-                                    String symbol, String javaType,
-                                    String arrival, boolean answered,
-                                    String answeredValue) {
-        if (consumer == null) return null;
-        return attachedAt(endpoint(consumer, portId, attempt), seq, portId,
-                handle, correlationId, symbol, javaType, arrival, answered,
-                answeredValue);
     }
 
 
@@ -540,15 +515,6 @@ public final class RowRuntime {
     public static void claimStart(Object carrier) {
         Identity.claimStart(carrier);
     }
-
-    /**
-     * This thread, as a key stable inside one session.
-     *
-     * <p>Same-thread program order is a happens-before input (R-I7.1), and
-     * two rows are on one thread iff they carry one key.  The name alone is
-     * not stable -- Hadoop renames DataXceiver threads per op -- so the JVM
-     * thread id is the key and the name travels with it for a reader.</p>
-     */
 
     /** Files one expression and returns the ref rows name it by. */
     public static String expressionRef(JsonElement expression) {
@@ -840,9 +806,7 @@ public final class RowRuntime {
 
     public static void resetForTests() {
         synchronized (LOCK) {
-            ACTIVATIONS.clear();
             AMBIENT.clear();
-            ORDINALS.clear();
             CLAIMED_READS.clear();
             PLACEHOLDERS.clear();
             REFS.clear();

@@ -191,8 +191,9 @@ public class RowRuntimeTest {
         OccurrenceAddress consumer = RowRuntime.degraded(
                 "hdfs-17899/target-dn#epoch0", "XCH.resp.block-key-id");
         assertTrue(consumer.lineageLost());
-        Endpoint attached = RowRuntime.attached(consumer, 62L,
-                "XCH.resp.block-key-id", 4242L, "hadoop-ipc-7", 0,
+        Endpoint attached = RowRuntime.attachedAt(
+                RowRuntime.nextEndpoint(consumer, "XCH.resp.block-key-id", 0),
+                62L, "XCH.resp.block-key-id", 4242L, "hadoop-ipc-7",
                 "HOFF.5e10236f", "J", "119981", false, "");
         RowRuntime.closeSession();
 
@@ -900,7 +901,6 @@ public class RowRuntimeTest {
                 .resolve("iteration-0000").resolve("seed-result")
                 .resolve("concolic_region_results.jsonl");
         Files.createDirectories(results.getParent());
-        System.setProperty(RowRuntime.SESSION_PROPERTY, "seed");
         return results;
     }
 
