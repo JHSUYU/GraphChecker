@@ -715,8 +715,10 @@ public final class CausynthPipeline {
                                        String regionId) {
         Local entryToken = newTraceLocal(body, LongType.v(),
                 "$causynthRegionEntry");
+        // The entry hook IS the token's store, and the trap opens after it,
+        // so there is nothing for a `= 0L` ahead of it to make safe: it was
+        // the false comfort that let the trap open at it.
         List<Unit> entry = new ArrayList<>();
-        entry.add(Jimple.v().newAssignStmt(entryToken, LongConstant.v(0L)));
         refs.bracket(entry, entryToken, Hook.ENTER_REGION_ENTRY,
                 StringConstant.v(regionId),
                 StringConstant.v(method.getSignature()), receiver);
