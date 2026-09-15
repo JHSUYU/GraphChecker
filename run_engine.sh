@@ -592,8 +592,13 @@ do_schedule() {
     --region-plan "${region_plan}"
     --output-dir "${schedule_output_dir}"
   )
-  require_file "runtime-refined graph" "${refined_graph}"
-  args+=(--refined-graph "${refined_graph}")
+  # PLAN reads the STATIC candidate graph, for one thing: the exact-copy
+  # relation a declaration is renamed over, which Soot proved and stamped on
+  # those rows.  It used to read the runtime-refined graph; the other three
+  # things it took from there are static facts of the candidate graph or of
+  # the static scope map, and are read from the map now.
+  require_file "candidate data-flow graph" "${candidate_graph}"
+  args+=(--candidate-graph "${candidate_graph}")
   # The one guard authority's publication: the scheduler reads the fatal arm
   # of the declared target branch off the TARGET_SITE row rather than
   # re-deriving a polarity from the graph.

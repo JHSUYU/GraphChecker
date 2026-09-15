@@ -101,16 +101,19 @@ public class SymbolicRootPolicyTest {
                 + "\",\"method\":\"" + DELETE + "\",\"siteId\":\""
                 + DELETE + "#u35\",\"unitIndex\":35,\"invoke\":\""
                 + DECREMENT + "\"}");
-        JsonArray sites = ConcolicScheduler.observedWriteSites(
-                Collections.singletonList(mutation),
+        // One owner: the static scope map already names every write site of
+        // the slice with the cell it stores into and the callee that
+        // performs it, so the answer is a join over its rows and not a
+        // second walk of a graph.
+        StaticScopeMap map = writeSiteMap(mutation);
+        JsonArray sites = map.writeSitesOf(
                 Collections.singleton(ATOMIC_VALUE));
         assertEquals("one write site of the declared cell", 1, sites.size());
         assertEquals(DELETE + "#u35", member(sites, 0, "siteId"));
         assertEquals(ATOMIC_VALUE, member(sites, 0, "cell"));
+        assertEquals(DECREMENT, member(sites, 0, "declaredCallee"));
         assertEquals("no declared cell, no observation", 0,
-                ConcolicScheduler.observedWriteSites(
-                        Collections.singletonList(mutation),
-                        Collections.singleton(KEY_ID)).size());
+                map.writeSitesOf(Collections.singleton(KEY_ID)).size());
         assertTrue("the declared cell is read off the declared action alone",
                 ConcolicScheduler.declaredInputCells(null).isEmpty());
 
@@ -128,6 +131,37 @@ public class SymbolicRootPolicyTest {
         assertFalse("an edge Soot did not prove a copy is not a rename",
                 renamed(plainCopy()).select(NN, actions(accessorPort))
                         .get(0).getAsJsonObject().has(ROOT));
+    }
+
+    /**
+     * The published static scope map of one write edge, through the artifact
+     * the way PLAN publishes it and EXPLORE reads it.
+     */
+    private StaticScopeMap writeSiteMap(JsonObject mutation)
+            throws IOException {
+        java.util.Map<String, Object> edge =
+                new java.util.LinkedHashMap<String, Object>();
+        for (java.util.Map.Entry<String, com.google.gson.JsonElement> member
+                : mutation.entrySet()) {
+            edge.put(member.getKey(), member.getValue().isJsonPrimitive()
+                    && member.getValue().getAsJsonPrimitive().isNumber()
+                    ? member.getValue().getAsInt()
+                    : member.getValue().getAsString());
+        }
+        java.util.Map<String, Object> region =
+                new java.util.LinkedHashMap<String, Object>();
+        region.put("regionId", NN);
+        region.put("methods", Collections.singletonList(DELETE));
+        List<StaticScopeMap.Site> found = StaticScopeMap.sites(
+                Collections.singletonList(edge),
+                Collections.singletonList(region));
+        StringBuilder text = new StringBuilder();
+        for (JsonObject row : StaticScopeMap.rows(found, null)) {
+            text.append(row.toString()).append('\n');
+        }
+        Path file = folder.newFolder().toPath().resolve(StaticScopeMap.FILE);
+        Files.write(file, text.toString().getBytes(StandardCharsets.UTF_8));
+        return StaticScopeMap.read(file);
     }
 
     /** The accessor's return cell, as a case declares a manual read. */

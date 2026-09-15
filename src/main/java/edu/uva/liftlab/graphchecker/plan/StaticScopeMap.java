@@ -40,6 +40,14 @@ import java.util.Set;
  *       wire port, with that {@code portId} -- the producer half of an
  *       interaction whose consumer attaches the port.</li>
  *   <li>{@code TARGET_SITE}: the annotated throw the slice starts at.</li>
+ *   <li>{@code ROOT_SITE}: where a root cell is DEFINED -- for a
+ *       {@code <callee>.return} cell, every call site of it the slice
+ *       reaches, with the {@code local} the return lands in.  That is what
+ *       INSTRUMENT binds a {@code LOCAL_DEFINITION} symbol at, and it
+ *       replaces {@code ConcolicScheduler.DefinitionIndex.returnSites},
+ *       which read the same static fact off the runtime-refined graph.  A
+ *       definition site is a fact about a method, so a ROOT_SITE row names
+ *       no region.</li>
  * </ul>
  *
  * <p>Every row carries {@code guards}: the branch sites its own site is
@@ -64,6 +72,11 @@ public final class StaticScopeMap {
     public static final String WRITE_SITE = "WRITE_SITE";
     public static final String EXPORT_SITE = "EXPORT_SITE";
     public static final String TARGET_SITE = "TARGET_SITE";
+    public static final String ROOT_SITE = "ROOT_SITE";
+
+    /** A Jimple local cell: {@code <method>::local[#suffix]}. */
+    private static final java.util.regex.Pattern LOCAL_CELL =
+            java.util.regex.Pattern.compile("^(<.+>)::([^#]+)(?:#.*)?$");
 
     /** Graph edge kinds that store into a location. */
     private static final String[] WRITE_KINDS = {"field_write",
@@ -126,6 +139,10 @@ public final class StaticScopeMap {
         public final String carrier;
         /** The declared wire port, for an EXPORT_SITE. */
         public final String portId;
+        /** The callee that performs the store, for a WRITE_SITE. */
+        public final String declaredCallee;
+        /** The local the value lands in, for a ROOT_SITE. */
+        public final String local;
         public final List<String> guards;
         /**
          * The arm of each {@link #guards} entry that reaches this site, in
@@ -135,6 +152,7 @@ public final class StaticScopeMap {
 
         Site(String role, String regionId, String siteId, String vmSite,
              String cell, String carrier, String portId,
+             String declaredCallee, String local,
              List<String> guards, List<Boolean> guardOutcomes) {
             this.role = role;
             this.regionId = regionId;
@@ -143,6 +161,8 @@ public final class StaticScopeMap {
             this.cell = cell;
             this.carrier = carrier;
             this.portId = portId;
+            this.declaredCallee = declaredCallee;
+            this.local = local;
             this.guards = Collections.unmodifiableList(
                     new ArrayList<String>(guards));
             this.guardOutcomes = Collections.unmodifiableList(
@@ -157,7 +177,7 @@ public final class StaticScopeMap {
                 outcomes.add(guard.outcome());
             }
             return new Site(role, regionId, siteId, vmSite, cell, carrier,
-                    portId, sites, outcomes);
+                    portId, declaredCallee, local, sites, outcomes);
         }
 
         /** The arm of {@code guardSiteId} that reaches this site, or null. */
@@ -205,16 +225,17 @@ public final class StaticScopeMap {
             if (method.isEmpty() || unitIndex < 0) continue;
             if (THROW_KIND.equals(kind)) {
                 add(found, seen, retained, TARGET_SITE, method, unitIndex,
-                        "", "", "");
+                        "", "", "", "");
                 continue;
             }
+            addRootSite(found, seen, edge, method, unitIndex);
             if (!write(kind)) continue;
             String carrier = signature(text(edge.get("toCell")));
             if (carrier.isEmpty()) continue;
-            String leaf = SharedFieldFlow.atomicValueField(carrier,
-                    text(edge.get("invoke")));
+            String invoke = text(edge.get("invoke"));
+            String leaf = SharedFieldFlow.atomicValueField(carrier, invoke);
             add(found, seen, retained, WRITE_SITE, method, unitIndex,
-                    leaf.isEmpty() ? carrier : leaf, carrier, "");
+                    leaf.isEmpty() ? carrier : leaf, carrier, "", invoke);
         }
         for (Region region : retained) {
             for (Map<String, Object> port : region.ports) {
@@ -232,7 +253,7 @@ public final class StaticScopeMap {
                     continue;
                 }
                 found.add(new Site(EXPORT_SITE, region.regionId, siteId,
-                        vmSite(method), "", "", portId,
+                        vmSite(method), "", "", portId, "", "",
                         Collections.<String>emptyList(),
                         Collections.<Boolean>emptyList()));
             }
@@ -271,6 +292,12 @@ public final class StaticScopeMap {
         row.addProperty("cell", site.cell);
         row.addProperty("carrier", site.carrier);
         row.addProperty("portId", site.portId);
+        if (!site.declaredCallee.isEmpty()) {
+            row.addProperty("declaredCallee", site.declaredCallee);
+        }
+        if (!site.local.isEmpty()) {
+            row.addProperty("local", site.local);
+        }
         JsonArray guards = new JsonArray();
         for (String guard : site.guards) guards.add(guard);
         row.add("guards", guards);
@@ -290,10 +317,39 @@ public final class StaticScopeMap {
         return row;
     }
 
+    /**
+     * The ROOT_SITE row of one edge that DEFINES a local from a call return.
+     *
+     * <p>The rule {@code ConcolicScheduler.DefinitionIndex} applied to the
+     * refined graph, applied here to the candidate graph it was already a
+     * static fact of: the edge's target is a local of the edge's own method,
+     * the edge is that local's definition site, and its source is a
+     * {@code <callee>.return} cell.</p>
+     */
+    private static void addRootSite(List<Site> into, Set<String> seen,
+                                    Map<String, Object> edge, String method,
+                                    int unitIndex) {
+        if (!Boolean.TRUE.equals(edge.get("definitionSite"))) return;
+        String source = text(edge.get("fromCell"));
+        if (!source.contains(">.return")) return;
+        java.util.regex.Matcher local = LOCAL_CELL.matcher(
+                text(edge.get("toCell")));
+        if (!local.matches() || !local.group(1).equals(method)) return;
+        String siteId = SiteId.of(method, unitIndex);
+        if (!seen.add(ROOT_SITE + "|" + siteId + "|" + source + "|"
+                + local.group(2))) {
+            return;
+        }
+        into.add(new Site(ROOT_SITE, "", siteId, vmSite(method), source,
+                "", "", "", local.group(2),
+                Collections.<String>emptyList(),
+                Collections.<Boolean>emptyList()));
+    }
+
     private static void add(List<Site> into, Set<String> seen,
                             List<Region> retained, String role, String method,
                             int unitIndex, String cell, String carrier,
-                            String portId) {
+                            String portId, String declaredCallee) {
         String siteId = SiteId.of(method, unitIndex);
         for (String regionId : holders(retained, method)) {
             if (!seen.add(role + "|" + regionId + "|" + siteId + "|"
@@ -301,7 +357,8 @@ public final class StaticScopeMap {
                 continue;
             }
             into.add(new Site(role, regionId, siteId, vmSite(method), cell,
-                    carrier, portId, Collections.<String>emptyList(),
+                    carrier, portId, declaredCallee, "",
+                    Collections.<String>emptyList(),
                     Collections.<Boolean>emptyList()));
         }
     }
@@ -411,7 +468,8 @@ public final class StaticScopeMap {
             sites.add(new Site(string(row, "role"), string(row, "regionId"),
                     string(row, "siteId"), string(row, "vmSite"),
                     string(row, "cell"), string(row, "carrier"),
-                    string(row, "portId"), guards, outcomes));
+                    string(row, "portId"), string(row, "declaredCallee"),
+                    string(row, "local"), guards, outcomes));
         }
         return new StaticScopeMap(sites);
     }
@@ -496,6 +554,66 @@ public final class StaticScopeMap {
             }
         }
         return found;
+    }
+
+    /**
+     * The stores of a declared cell the replay must observe.
+     *
+     * <p>Scoping only: which sites store into a cell the campaign declared,
+     * never what any of them wrote.  It generalises {@code declaredInputCells
+     * -> observedWriteSites} (REPORT-P2N) to the map, which already names
+     * every write site of the slice with the cell it stores into and the
+     * callee that performs it -- the scheduler used to read the same rows off
+     * the runtime-refined graph's {@code field_mutation} edges.</p>
+     */
+    public JsonArray writeSitesOf(Collection<String> declaredCells) {
+        JsonArray found = new JsonArray();
+        if (declaredCells == null || declaredCells.isEmpty()) return found;
+        Set<String> seen = new LinkedHashSet<String>();
+        for (Site site : sites) {
+            if (!WRITE_SITE.equals(site.role)
+                    || !declaredCells.contains(site.cell)
+                    || site.declaredCallee.isEmpty()
+                    || !seen.add(site.siteId)) {
+                continue;
+            }
+            JsonObject row = new JsonObject();
+            row.addProperty("method", methodOfSite(site));
+            row.addProperty("unitIndex", SiteId.unitIndexOf(site.siteId));
+            row.addProperty("siteId", site.siteId);
+            row.addProperty("declaredCallee", site.declaredCallee);
+            row.addProperty("cell", site.cell);
+            found.add(row);
+        }
+        return found;
+    }
+
+    /**
+     * The definition sites of one root cell, restricted to the methods a
+     * task instruments.
+     */
+    public JsonArray rootSitesOf(String cell, Set<String> allowedMethods) {
+        JsonArray found = new JsonArray();
+        String named = cell == null ? "" : cell;
+        for (Site site : sites) {
+            if (!ROOT_SITE.equals(site.role) || !named.equals(site.cell)) {
+                continue;
+            }
+            String method = methodOfSite(site);
+            if (allowedMethods != null && !allowedMethods.contains(method)) {
+                continue;
+            }
+            JsonObject row = new JsonObject();
+            row.addProperty("method", method);
+            row.addProperty("local", site.local);
+            row.addProperty("unitIndex", SiteId.unitIndexOf(site.siteId));
+            found.add(row);
+        }
+        return found;
+    }
+
+    private static String methodOfSite(Site site) {
+        return SiteId.methodOf(site.siteId);
     }
 
     /** The annotated target sites this map states. */

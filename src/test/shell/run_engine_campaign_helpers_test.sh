@@ -838,11 +838,13 @@ epoch2_dir="${test_tmp}/epoch2"
 mkdir -p "${epoch2_dir}/out"
 : >"${epoch2_dir}/region_plan.jsonl"
 : >"${epoch2_dir}/refined.jsonl.gz"
+: >"${epoch2_dir}/candidate.jsonl.gz"
 : >"${epoch2_dir}/static_scope_map.jsonl"
 scheduler_args=""
 run_java_main() { scheduler_args="$*"; }
 runtime_region_plan="${epoch2_dir}/region_plan.jsonl"
 refined_graph="${epoch2_dir}/refined.jsonl.gz"
+candidate_graph="${epoch2_dir}/candidate.jsonl.gz"
 causynth_static_scope_map="${epoch2_dir}/static_scope_map.jsonl"
 schedule_output_dir="${epoch2_dir}/out"
 schedule_max_jobs=8
@@ -863,6 +865,13 @@ writes: ${scheduler_args}"
 # to hand it the same file EXPLORE and the workload JVM are handed.
 [[ "${scheduler_args}" == *"--static-scope-map ${epoch2_dir}/static_scope_map.jsonl"* ]] \
   || fail "PLAN did not hand the scheduler the static scope map: \
+${scheduler_args}"
+# GRAPH-1: PLAN reads the STATIC candidate graph and no runtime-refined one.
+[[ "${scheduler_args}" == *"--candidate-graph ${epoch2_dir}/candidate.jsonl.gz"* ]] \
+  || fail "PLAN did not hand the scheduler the candidate graph: \
+${scheduler_args}"
+[[ "${scheduler_args}" != *"--refined-graph"* ]] \
+  || fail "PLAN still passes the runtime-refined graph to the scheduler: \
 ${scheduler_args}"
 [[ "$(type -t campaign_seeding_results)" != function ]] \
   || fail "campaign_seeding_results survived the option it fed"

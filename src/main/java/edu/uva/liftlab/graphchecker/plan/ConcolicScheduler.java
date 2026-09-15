@@ -55,8 +55,6 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 /** Builds graph-directed concolic jobs from static regions and concrete
  * runtime-selected region instance plans. */
 public final class ConcolicScheduler {
-    private static final Pattern LOCAL_CELL = Pattern.compile(
-            "^(<.+>)::([^#]+)(?:#.*)?$");
     private ConcolicScheduler() {
     }
 
@@ -67,14 +65,14 @@ public final class ConcolicScheduler {
     private static LoadedInputs loadInputs(Arguments arguments)
             throws IOException {
         requireFile(arguments.regionPlan, "region plan");
-        requireFile(arguments.refinedGraph, "runtime-refined graph");
+        requireFile(arguments.candidateGraph, "candidate data-flow graph");
         requireFile(arguments.staticScopeMap, "static scope map");
         Files.createDirectories(arguments.outputDirectory);
 
         JsonObject regionPlanIdentity = artifactIdentity(
                 arguments.regionPlan);
-        JsonObject refinedGraphIdentity = artifactIdentity(
-                arguments.refinedGraph);
+        JsonObject candidateGraphIdentity = artifactIdentity(
+                arguments.candidateGraph);
         JsonObject symbolicInputsIdentity = arguments.symbolicInputs == null
                 ? null : artifactIdentity(arguments.symbolicInputs);
         RuntimePlanArtifact runtimePlan = RuntimePlanArtifact.read(
@@ -89,10 +87,9 @@ public final class ConcolicScheduler {
             throw new IOException("runtime plan contains no region plans: "
                     + arguments.regionPlan);
         }
-        List<JsonObject> refinedGraph = ArtifactIO.readJsonl(
-                arguments.refinedGraph);
-        requireRefinedGraph(refinedGraph);
-        DefinitionIndex definitions = DefinitionIndex.from(refinedGraph);
+        List<JsonObject> candidateGraph = ArtifactIO.readJsonl(
+                arguments.candidateGraph);
+        requireCandidateGraph(candidateGraph);
         SymbolicInputSelection symbolicInputs =
                 SymbolicInputSelection.read(arguments.symbolicInputs,
                         regions, regionPlans);
@@ -106,9 +103,9 @@ public final class ConcolicScheduler {
         // The identities recorded here are verified once, against the same
         // files, at the point the schedule index commits them.
         return new LoadedInputs(regionPlans, regionIndex,
-                definitions, refinedGraph, staticScopeMap,
+                candidateGraph, staticScopeMap,
                 regionPlanIdentity,
-                refinedGraphIdentity, symbolicInputsIdentity,
+                candidateGraphIdentity, symbolicInputsIdentity,
                 symbolicInputs);
     }
 
@@ -118,10 +115,10 @@ public final class ConcolicScheduler {
         // A declaration names a value and the graph names that value once
         // per local it is copied into, so the declared names are resolved
         // over Soot's exact-copy edges once, before any region selects.
-        loaded.symbolicInputs.resolveDeclaredNames(loaded.refinedGraph);
+        loaded.symbolicInputs.resolveDeclaredNames(loaded.candidateGraph);
         List<Candidate> candidates = candidates(arguments,
                 loaded.regionPlans, loaded.regionIndex,
-                loaded.definitions, loaded.staticScopeMap);
+                loaded.staticScopeMap);
         Collections.sort(candidates, Candidate.ORDER);
 
         LoopBoundPolicy loopBound = declaredLoopBounds(
@@ -173,7 +170,7 @@ public final class ConcolicScheduler {
         // task because a location is shared and the first write of it in
         // the window is what starts its log -- whichever occurrence makes
         // it.  json() is the live row by decision (PlanRow).
-        JsonArray writeSites = observedWriteSites(loaded.refinedGraph,
+        JsonArray writeSites = loaded.staticScopeMap.writeSitesOf(
                 declaredInputCells(result.executionTasks));
         if (writeSites.size() > 0) {
             for (ExecutionTask task : result.executionTasks) {
@@ -212,51 +209,6 @@ public final class ConcolicScheduler {
             }
         }
         return cells;
-    }
-
-    /**
-     * The stores of a declared cell the replay must observe, from the graph.
-     *
-     * <p>The runtime-refined graph already states every heap write as a
-     * {@code field_mutation} edge carrying the bytecode site and the callee
-     * that performed it, so this reads the writer sites off the graph rather
-     * than inferring them.  The only writers it admits are the ones the VM
-     * has a linearization for -- {@link SharedFieldFlow#atomicValueField} is
-     * that surface, and it also proves the carrier field's type owns the
-     * cell -- because a store the VM does not model publishes no version
-     * however early the location is tracked.  Scoping only: which sites are
-     * observed, never what any of them wrote.</p>
-     */
-    static JsonArray observedWriteSites(List<JsonObject> refinedGraph,
-                                        Set<String> declaredCells) {
-        JsonArray sites = new JsonArray();
-        if (declaredCells == null || declaredCells.isEmpty()) return sites;
-        Set<String> seen = new LinkedHashSet<>();
-        for (JsonObject edge : refinedGraph == null
-                ? Collections.<JsonObject>emptyList() : refinedGraph) {
-            if (!"field_mutation".equals(optionalString(edge, "kind"))) {
-                continue;
-            }
-            String invoke = optionalString(edge, "invoke");
-            String cell = SharedFieldFlow.atomicValueField(
-                    optionalString(edge, "toCell"), invoke);
-            if (cell.isEmpty() || !declaredCells.contains(cell)) continue;
-            String method = optionalString(edge, "method");
-            String siteId = optionalString(edge, "siteId");
-            int unitIndex = optionalInteger(edge, "unitIndex", -1);
-            if (method.isEmpty() || siteId.isEmpty() || unitIndex < 0
-                    || !seen.add(siteId)) {
-                continue;
-            }
-            JsonObject site = new JsonObject();
-            site.addProperty("method", method);
-            site.addProperty("unitIndex", unitIndex);
-            site.addProperty("siteId", siteId);
-            site.addProperty("declaredCallee", invoke);
-            site.addProperty("cell", cell);
-            sites.add(site);
-        }
-        return sites;
     }
 
     /**
@@ -415,9 +367,9 @@ public final class ConcolicScheduler {
         requireArtifactIdentity(arguments.regionPlan,
                 loaded.regionPlanIdentity,
                 "region plan changed while scheduling");
-        requireArtifactIdentity(arguments.refinedGraph,
-                loaded.refinedGraphIdentity,
-                "runtime-refined graph changed while scheduling");
+        requireArtifactIdentity(arguments.candidateGraph,
+                loaded.candidateGraphIdentity,
+                "candidate data-flow graph changed while scheduling");
         if (arguments.symbolicInputs != null) {
             requireArtifactIdentity(arguments.symbolicInputs,
                     loaded.symbolicInputsIdentity,
@@ -571,7 +523,6 @@ public final class ConcolicScheduler {
                                               List<RegionInstancePlan>
                                                       regionPlans,
                                               Set<String> regions,
-                                              DefinitionIndex definitions,
                                               StaticScopeMap scopeMap)
             throws IOException {
         List<Candidate> result = new ArrayList<>();
@@ -596,8 +547,7 @@ public final class ConcolicScheduler {
                 if (!goal.replayable()) {
                     continue;
                 }
-                appendGoalCandidates(arguments, result, goal, definitions,
-                        scopeMap);
+                appendGoalCandidates(arguments, result, goal, scopeMap);
             }
         }
         return result;
@@ -645,12 +595,12 @@ public final class ConcolicScheduler {
      */
     private static void appendGoalCandidates(
             Arguments arguments, List<Candidate> result, Goal goal,
-            DefinitionIndex definitions, StaticScopeMap scopeMap)
+            StaticScopeMap scopeMap)
             throws IOException {
         Set<String> definitionMethods = goal.runtimeDefinitionMethods();
         JsonArray branches = goal.branches();
         JsonArray inputActions = materializationPlan(goal, goal.symbolize(),
-                definitions, definitionMethods);
+                scopeMap, definitionMethods);
         if (goal.kind().capturesRegionPath()) {
             result.add(new Candidate(goal, branches, "", 1, false,
                     inputActions, goal.plan().occurrenceId()));
@@ -743,7 +693,7 @@ public final class ConcolicScheduler {
      */
     static JsonArray materializationPlan(
             Goal goal, JsonArray sourceActions,
-            DefinitionIndex definitions,
+            StaticScopeMap scopeMap,
             Set<String> regionMethods) {
         JsonArray result = new JsonArray();
         Set<String> represented = new LinkedHashSet<>();
@@ -801,7 +751,7 @@ public final class ConcolicScheduler {
                     if (!callee.isEmpty()) returnCell = callee + ".return";
                 }
                 JsonArray sites = exactCallReturnSite(action,
-                        definitions.returnSites(returnCell, regionMethods));
+                        scopeMap.rootSitesOf(returnCell, regionMethods));
                 if (sites.size() == 0) {
                     addConcreteInputAction(result, represented, binding,
                             NO_BINDING_MODE);
@@ -975,81 +925,31 @@ public final class ConcolicScheduler {
         }
     }
 
-    private static void requireRefinedGraph(List<JsonObject> rows) {
+    /**
+     * The static candidate graph, which the scheduler reads for exactly one
+     * thing: the exact-copy relation a declaration is renamed over.
+     *
+     * <p>It used to read the runtime-refined graph, for four things.  Three
+     * of them were static facts of this same graph or of the static scope
+     * map -- the declared cells' write sites, a root cell's definition
+     * sites, and the guard-dependent cells of the deleted cost heuristic --
+     * so PLAN no longer takes a runtime artifact for any of them.</p>
+     */
+    private static void requireCandidateGraph(List<JsonObject> rows) {
         if (rows.isEmpty()) {
             throw new IllegalArgumentException(
-                    "runtime-refined graph must not be empty");
+                    "candidate data-flow graph must not be empty");
         }
         for (JsonObject row : rows) {
-            if (optionalInteger(row, "schemaVersion", -1) != 3
-                    || optionalInteger(row, "refinementSchemaVersion", -1) != 1
-                    || !"RUNTIME_REFINED_DATAFLOW".equals(
-                    optionalString(row, "graphKind"))) {
+            if (optionalInteger(row, "schemaVersion", -1) != 3) {
                 throw new IllegalArgumentException(
-                        "scheduler accepts only the runtime-refined graph");
+                        "scheduler accepts only the schema-3 candidate graph");
             }
         }
     }
 
     private static String safe(String value) {
         return value == null ? "" : value;
-    }
-
-    /** Exact Jimple definitions for live-in locals, recovered from the static graph. */
-    static final class DefinitionIndex {
-        private final Map<String, List<JsonObject>> byCallReturn =
-                new LinkedHashMap<>();
-        static DefinitionIndex from(List<JsonObject> edges) {
-            DefinitionIndex result = new DefinitionIndex();
-            Set<String> seenCallReturns = new LinkedHashSet<>();
-            for (JsonObject edge : edges) {
-                String source = optionalString(edge, "fromCell");
-                String cell = optionalString(edge, "toCell");
-                Matcher localCell = LOCAL_CELL.matcher(cell);
-                if (!localCell.matches()) {
-                    continue;
-                }
-                String method = optionalString(edge, "method");
-                int unitIndex = optionalInteger(edge, "unitIndex", -1);
-                if (!localCell.group(1).equals(method) || unitIndex < 0
-                        || !optionalBool(edge, "definitionSite", false)) {
-                    continue;
-                }
-                JsonObject site = new JsonObject();
-                site.addProperty("method", method);
-                site.addProperty("local", localCell.group(2));
-                site.addProperty("unitIndex", unitIndex);
-                if (source.contains(">.return")) {
-                    String returnKey = source + "\n"
-                            + SiteId.of(method, unitIndex)
-                            + "\n" + localCell.group(2);
-                    if (seenCallReturns.add(returnKey)) {
-                        result.byCallReturn.computeIfAbsent(source,
-                                ignored -> new ArrayList<>())
-                                .add(site.deepCopy());
-                    }
-                }
-            }
-            return result;
-        }
-
-        private JsonArray returnSites(String callReturnCell,
-                                      Set<String> allowedMethods) {
-            return filteredSites(byCallReturn.get(callReturnCell),
-                    allowedMethods);
-        }
-
-        private JsonArray filteredSites(
-                List<JsonObject> sites, Set<String> allowedMethods) {
-            JsonArray source = new JsonArray();
-            for (JsonObject site : sites == null
-                    ? Collections.<JsonObject>emptyList() : sites) {
-                source.add(site);
-            }
-            return copyMatching(source, site -> allowedMethods.contains(
-                    optionalString(site, "method")));
-        }
-
     }
 
     private static final class Candidate {
@@ -1258,7 +1158,7 @@ public final class ConcolicScheduler {
                 + " admissionState=" + display(state)
                 + " blockers=" + display(blockers)
                 + " artifacts={runtimePlan=" + artifact(arguments.regionPlan)
-                + ",refinedGraph=" + artifact(arguments.refinedGraph)
+                + ",candidateGraph=" + artifact(arguments.candidateGraph)
                 + "}";
     }
 
@@ -1578,8 +1478,8 @@ public final class ConcolicScheduler {
          * copy of.  Called once, before any {@code select}, so every region
          * decides against the same declarations.
          */
-        void resolveDeclaredNames(List<JsonObject> refinedGraph) {
-            renameDeclaredNames(refinedGraph);
+        void resolveDeclaredNames(List<JsonObject> candidateGraph) {
+            renameDeclaredNames(candidateGraph);
         }
 
         JsonArray select(String regionId, JsonArray actions) {
@@ -1750,15 +1650,15 @@ public final class ConcolicScheduler {
          * {@code dependencyCells}.  Idempotent, and a graph with no such
          * edge leaves every declaration exactly as the case wrote it.</p>
          */
-        private void renameDeclaredNames(List<JsonObject> refinedGraph) {
+        private void renameDeclaredNames(List<JsonObject> candidateGraph) {
             if (admitted.isEmpty()) return;
             // Both name sets are renamed: a declared clock cell and the
             // exact copies of it are the same read under different Jimple
             // names, so the flag travels with the declaration.
 
             Map<String, Set<String>> copies = new LinkedHashMap<>();
-            for (JsonObject edge : refinedGraph == null
-                    ? Collections.<JsonObject>emptyList() : refinedGraph) {
+            for (JsonObject edge : candidateGraph == null
+                    ? Collections.<JsonObject>emptyList() : candidateGraph) {
                 if (!EXACT_VALUE_COPY_AUTHORITIES.contains(
                         optionalString(edge, "valueFlowAuthority"))) {
                     continue;
@@ -1801,31 +1701,28 @@ public final class ConcolicScheduler {
     private static final class LoadedInputs {
         private final List<RegionInstancePlan> regionPlans;
         private final Set<String> regionIndex;
-        private final DefinitionIndex definitions;
-        private final List<JsonObject> refinedGraph;
+        private final List<JsonObject> candidateGraph;
         private final StaticScopeMap staticScopeMap;
         private final JsonObject regionPlanIdentity;
-        private final JsonObject refinedGraphIdentity;
+        private final JsonObject candidateGraphIdentity;
         private final JsonObject symbolicInputsIdentity;
         private final SymbolicInputSelection symbolicInputs;
 
         private LoadedInputs(List<RegionInstancePlan> regionPlans,
 
                              Set<String> regionIndex,
-                             DefinitionIndex definitions,
-                             List<JsonObject> refinedGraph,
+                             List<JsonObject> candidateGraph,
                              StaticScopeMap staticScopeMap,
                              JsonObject regionPlanIdentity,
-                             JsonObject refinedGraphIdentity,
+                             JsonObject candidateGraphIdentity,
                              JsonObject symbolicInputsIdentity,
                              SymbolicInputSelection symbolicInputs) {
             this.regionPlans = regionPlans;
             this.regionIndex = regionIndex;
-            this.definitions = definitions;
-            this.refinedGraph = refinedGraph;
+            this.candidateGraph = candidateGraph;
             this.staticScopeMap = staticScopeMap;
             this.regionPlanIdentity = regionPlanIdentity;
-            this.refinedGraphIdentity = refinedGraphIdentity;
+            this.candidateGraphIdentity = candidateGraphIdentity;
             this.symbolicInputsIdentity = symbolicInputsIdentity;
             this.symbolicInputs = symbolicInputs;
         }
@@ -1896,7 +1793,7 @@ public final class ConcolicScheduler {
 
     public static final class Arguments {
         public final Path regionPlan;
-        public final Path refinedGraph;
+        public final Path candidateGraph;
         /** The static scope map: the one guard authority's publication. */
         public final Path staticScopeMap;
         public final Path outputDirectory;
@@ -1911,7 +1808,7 @@ public final class ConcolicScheduler {
         public final java.util.Set<String> retainRegions;
         private final ClosureMode closureMode;
 
-        private Arguments(Path regionPlan, Path refinedGraph,
+        private Arguments(Path regionPlan, Path candidateGraph,
                           Path staticScopeMap,
                           Path outputDirectory, String regionId,
                           String occurrenceId, String goalId,
@@ -1924,7 +1821,7 @@ public final class ConcolicScheduler {
                     : java.util.Collections.unmodifiableSet(
                             new LinkedHashSet<>(retainRegions));
             this.regionPlan = regionPlan;
-            this.refinedGraph = refinedGraph;
+            this.candidateGraph = candidateGraph;
             this.staticScopeMap = staticScopeMap;
             this.outputDirectory = outputDirectory;
             this.regionId = safe(regionId);
@@ -1937,21 +1834,26 @@ public final class ConcolicScheduler {
         }
 
         public static Arguments parse(String[] args) {
+            // "retain-regions" was missing from this list while
+            // run_engine.sh passed it on every epoch after the first, so the
+            // scheduler died with "Unknown scheduler option
+            // --retain-regions" the moment a divergence asked for a grown
+            // retained set.  Every option the shell passes is declared here.
             Map<String, String> values = parseArgs(args, "region-plan",
-                    "refined-graph", "static-scope-map", "output-dir",
-                    "max-jobs", "symbolic-inputs",
+                    "candidate-graph", "static-scope-map", "output-dir",
+                    "max-jobs", "symbolic-inputs", "retain-regions",
                     "closure-mode", "target-occurrence");
             Path regionPlan = requiredPath(values, "region-plan");
             Path output = Paths.get(firstNonBlank(values.get("output-dir"),
                     ArtifactIO.sibling(regionPlan,
                             "concolic-schedule").toString()));
-            Path refinedGraph = requiredPath(values, "refined-graph");
+            Path candidateGraph = requiredPath(values, "candidate-graph");
             Path staticScopeMap = requiredPath(values, "static-scope-map");
             Path symbolicInputs = optionalPath(
                     values.get("symbolic-inputs"));
             ClosureMode closureMode = ClosureMode.parse(
                     values.get("closure-mode"));
-            return new Arguments(regionPlan, refinedGraph, staticScopeMap,
+            return new Arguments(regionPlan, candidateGraph, staticScopeMap,
                     output, "", "", "",
                     parseInt(values.get("max-jobs"), 1),
                     symbolicInputs, closureMode,
@@ -2009,7 +1911,7 @@ public final class ConcolicScheduler {
 
         private Arguments forSelection(
                 RuntimeWorkflowDiscovery.Selection selection) {
-            return new Arguments(regionPlan, refinedGraph, staticScopeMap,
+            return new Arguments(regionPlan, candidateGraph, staticScopeMap,
                     outputDirectory,
                     selection.regionId, selection.occurrenceId,
                     selection.goalId, 1,
