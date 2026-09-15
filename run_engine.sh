@@ -1865,7 +1865,7 @@ campaign_obligation_worker() {
   # are recorded terminal verdicts, not process failures, and the next wave
   # reads them so the obligation is not proposed again.
   case "${outcome}" in
-    UNSAT|NOT_ADMITTED|DIVERGED) return 0 ;;
+    UNSAT|NOT_ADMITTED) return 0 ;;
   esac
   [[ "${outcome}" == "SAT_MODEL_READY" ]] \
     || die "the obligation verdict is not solver-backed: ${outcome}"

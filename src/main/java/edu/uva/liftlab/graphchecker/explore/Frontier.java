@@ -73,10 +73,9 @@ public final class Frontier {
      *
      * <p>Every verdict closes its own query. An ADMITTED replay's session is
      * in the corpus by now, where the path it recorded is what the next
-     * proposal is cut from; NOT_ADMITTED and DIVERGED are recorded and not
-     * retried, the first saying this task's own prefix did not match, the
-     * second that the replay left the epoch's topology -- neither a question
-     * the same query can answer a second time.</p>
+     * proposal is cut from; NOT_ADMITTED is recorded and not retried,
+     * saying this task's own prefix did not match -- not a question the
+     * same query can answer a second time.</p>
      */
     public void consume(Collection<ObligationResult> results) {
         for (ObligationResult result : results) {
