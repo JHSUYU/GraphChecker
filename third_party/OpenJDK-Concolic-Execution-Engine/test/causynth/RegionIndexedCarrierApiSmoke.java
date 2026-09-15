@@ -1,5 +1,4 @@
 import java.util.ArrayList;
-import java.util.HashSet;
 import java.util.List;
 
 /**
@@ -7,10 +6,11 @@ import java.util.List;
  *
  * <p>A List field versioned as a reference slot publishes one write for its
  * construction and nothing at all for any later add or remove, so the
- * contents a reader observes are unconstrained.  Selected as a whole-state
- * carrier it publishes one immutable state per mutation, spelled at the same
- * {@code MAP_STATE} whole-state slot a map uses, with the indexed algebra's
- * own operations.</p>
+ * contents a reader observes are unconstrained.  Versioned whole it publishes
+ * one immutable state per mutation, spelled at the same {@code MAP_STATE}
+ * whole-state slot a map uses, with the indexed algebra's own operations.
+ * The log starts at the first symbolic touch of the container; nothing
+ * declares it.</p>
  */
 public final class RegionIndexedCarrierApiSmoke {
     private static final class State {
@@ -25,11 +25,6 @@ public final class RegionIndexedCarrierApiSmoke {
                 "REGION.indexed-carrier", "TASK.indexed-carrier") == 0L,
                 "region start rejected");
         System.symbolizeField(state, "rows", "indexed_input_rows");
-
-        require(System.selectSharedMapCarrier(state.rows) > 0L,
-                "indexed carrier selection rejected");
-        require(System.selectSharedMapCarrier(state.rows) == 0L,
-                "indexed carrier selection is not idempotent");
 
         // One version per mutation, in the indexed algebra's own vocabulary.
         state.rows.add(new Object());                 // APPEND
@@ -46,8 +41,9 @@ public final class RegionIndexedCarrierApiSmoke {
         require(evidence.contains("\"locationKind\":\"MAP_STATE\""),
                 evidence);
         require(evidence.contains("\"slot\":-3"), evidence);
-        // Selecting publishes the state the list started in, so the state a
-        // read observes before any tracked mutation is an ordinary candidate.
+        // The base the recorder walked before the first tracked mutation is
+        // published as a version of its own, so the state a read observes
+        // before any of them is an ordinary entry in the log.
         require(evidence.contains("\"versionKind\":\"INITIAL\""), evidence);
         require(evidence.contains("\"versionKind\":\"STATE_APPEND\""),
                 evidence);
@@ -71,31 +67,13 @@ public final class RegionIndexedCarrierApiSmoke {
         require(cleared.contains("\"versionKind\":\"STATE_CLEAR\""), cleared);
         require(count(cleared, "\"fieldVersionId\"") == 6, cleared);
 
-        // A read of the selected list resolves over the retained writer
-        // states rather than being pinned to the one value this run returned.
+        // A read of the list is logged against the location, so a later
+        // question can say which states were live when it ran.
         int size = state.rows.size();
         require(size == 0, "concrete size diverged: " + size);
         String read = System.getSharedMapVersions(state.rows);
         require(read.contains("\"readEventId\""), read);
 
-        System.endConcolic();
-
-        // What is refused, and refused by name rather than selected and then
-        // silently never versioned.
-        require(System.startConcolicRegion(
-                "REGION.indexed-refusal", "TASK.indexed-refusal") == 0L,
-                "second region start rejected");
-        Object[] array = new Object[2];
-        require(System.selectSharedMapCarrier(array) == -4L,
-                "an array must keep its own element locations");
-        // A set has the associative whole-state algebra and a model that
-        // publishes its ADD/REMOVE/CLEAR states, so the VM selects it.  What
-        // declines to version a set whole is the Java classifier that decides
-        // which fields are declared as carriers at all.
-        require(System.selectSharedMapCarrier(new HashSet<Object>()) > 0L,
-                "a modeled set has the whole-state algebra");
-        require(System.selectSharedMapCarrier(new Object()) == -4L,
-                "a non-container must not be selectable");
         System.endConcolic();
 
         System.out.println("CAUSYNTH_REGION_INDEXED_CARRIER_API_SMOKE_OK");

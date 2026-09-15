@@ -26,8 +26,8 @@ public final class RegionNestedRegionArmedReadSmoke {
                 "outer region start rejected");
 
         Holder holder = new Holder();
-        select(holder, "outerField", "NESTED.OUTER");
-        select(holder, "innerField", "NESTED.INNER");
+        mint(holder, "outerField", "NESTED.OUTER");
+        mint(holder, "innerField", "NESTED.INNER");
 
         long outerReceipt = System.armSharedPrimitiveFieldRead(holder,
                 Holder.class.getName(), "outerField", "I", 41L);
@@ -66,12 +66,9 @@ public final class RegionNestedRegionArmedReadSmoke {
         System.out.println("RegionNestedRegionArmedReadSmoke OK");
     }
 
-    private static void select(Holder holder, String field, String symbol) {
+    private static void mint(Holder holder, String field, String symbol) {
         System.symbolizeExactField(holder, Holder.class.getName(), field,
                 "I", symbol);
-        require(System.selectSharedFieldCarrier(holder,
-                Holder.class.getName(), field, "I") > 0L,
-                "carrier selection rejected for " + field);
     }
 
     private static void require(boolean condition, String message) {

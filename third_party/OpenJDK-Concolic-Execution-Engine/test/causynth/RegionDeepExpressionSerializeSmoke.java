@@ -118,9 +118,6 @@ public final class RegionDeepExpressionSerializeSmoke {
      */
     private static String deepPathGuard() throws Exception {
         final Holder holder = new Holder();
-        require(System.selectSharedFieldCarrier(
-                        holder, Holder.class.getName(), "shared", "I") > 0L,
-                "carrier selection rejected");
 
         final CountDownLatch done = new CountDownLatch(1);
         Thread writer = new Thread(new Runnable() {
@@ -162,17 +159,15 @@ public final class RegionDeepExpressionSerializeSmoke {
     }
 
     /**
-     * A guarded read, whose candidate values are each named twice.
+     * A read of a location two writers reached with the same value.
      *
-     * Two equal-valued writers leave a read the run cannot attribute, so the
-     * reader gets a ReadFromExpression.  It serializes every candidate once
-     * under `candidates`; the Java composer builds the guarded selected value.
+     * The run still performed one read, and the node it produced names the
+     * version that read observed and carries its value.  The other writer
+     * stays in the location's log, where RegionSharedReadFromSmoke asserts
+     * it; nothing about it is republished here.
      */
     private static String guardedRead() throws Exception {
         final Holder holder = new Holder();
-        require(System.selectSharedFieldCarrier(
-                        holder, Holder.class.getName(), "shared", "I") > 0L,
-                "carrier selection rejected");
 
         // Wait until both writes are retained. Read-from selection deliberately
         // does not use join or other schedule evidence to discard candidates.
@@ -279,28 +274,35 @@ public final class RegionDeepExpressionSerializeSmoke {
         requireNoTruncation(json);
     }
 
-    /** (3) (4): a guarded read, with each candidate serialized once. */
+    /** (3) (4): a read of a multiply-written location, whole and unexploded. */
     private static void checkGuardedRead(String json) {
         requireDagArtifact(json);
         require(json.contains("\"_type\":\"ReadFromExpression\""), head(json));
-        require(json.contains(
-                "\"exactlyOne\":[\"rf1\",\"rf2\",\"rf3\"]"), head(json));
+        require(json.contains("\"writerSetComplete\":true"), head(json));
+        // Two read nodes: the reader's read of the shared field, and, inside
+        // the value it carries, the observed writer's own read of its seed.
+        // Each names exactly one version -- one real read, one answer.
+        int reads = count(json, "\"_type\":\"ReadFromExpression\"");
+        int observed = count(json, "\"observedVersion\"");
+        require(reads == 2, "expected two read nodes, got " + reads + ": "
+                + head(json));
+        require(observed == reads,
+                "every read must name one observed version: " + reads
+                        + " reads, " + observed + " versions named: "
+                        + head(json));
         // The VM no longer duplicates candidate values in a nested ite tree.
         int arms = count(json, "\"_type\":\"IteExpression\"");
         require(arms == 0,
                 "expected no serialized ite for recorded writers, got " + arms + ": "
                         + head(json));
-        require(json.contains("REGION.rf1") && json.contains("REGION.rf2"),
-                head(json));
-        require(count(json, "\"selector\":\"rf1\"") == 1,
-                "candidate rf1 should be named exactly once, was "
-                        + count(json, "\"selector\":\"rf1\""));
-        require(count(json, "\"selector\":\"rf2\"") == 1,
-                "candidate rf2 should be named once, was "
-                        + count(json, "\"selector\":\"rf2\""));
-        require(count(json, "\"selector\":\"rf3\"") == 1,
-                "candidate rf3 should be named once, was "
-                        + count(json, "\"selector\":\"rf3\""));
+        // The value it carries is that one writer's, seed and all -- and the
+        // writer it did not read is not in the read.  Which of the two ran
+        // last is the schedule's business, so this counts rather than names.
+        int first = count(json, "REGION.rf1.V");
+        int second = count(json, "REGION.rf2.V");
+        require(first + second == 1,
+                "the read should carry exactly one writer's seed, carried "
+                        + first + " and " + second + ": " + head(json));
         requireWellFormed(json);
         requireNoTruncation(json);
     }
@@ -311,9 +313,12 @@ public final class RegionDeepExpressionSerializeSmoke {
         require(json.length() <= MAX_DAG_ARTIFACT_BYTES,
                 "linear shared DAG artifact is unexpectedly large: "
                         + json.length());
+        // One definition per operator, plus three for the seed itself: its
+        // symbol, the read node the seed's getfield produced, and that read's
+        // boundary.  A tree rather than a DAG would be 2^SHARED_DAG_DEPTH.
         require(count(json, "\"_type\":\"VmExpressionDefinition\"")
-                        == SHARED_DAG_DEPTH + 1,
-                "expected one definition per operator plus the seed: "
+                        == SHARED_DAG_DEPTH + 3,
+                "expected one definition per operator plus the seed's read: "
                         + head(json));
         require(count(json, "\"_left\"") == SHARED_DAG_DEPTH,
                 "shared DAG lost operator definitions: " + head(json));
