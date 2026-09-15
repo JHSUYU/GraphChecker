@@ -318,6 +318,17 @@ public class D3ComposerTest {
         assertTrue("and it says the declaration was never reached",
                 named(decision.claim().gaps(), GapKind.DECLARATION_MISSING));
         assertFalse("nothing was composed", composition.disjuncts().size() > 0);
+        // And the FILE says so as well.  A composition with no path
+        // asserts nothing about the anchor, and a query that asserts
+        // nothing is satisfiable -- so a reader running `z3` on the
+        // artifact by hand read "sat" off a composition that had refused
+        // to answer.  The blocker is asserted false, by name.
+        String candidate = ComposeMain.candidate(composition, decision);
+        assertTrue("the blocked candidate closes the question: " + candidate,
+                candidate.contains("(assert false) ; fail closed: "
+                        + GapKind.DECLARATION_MISSING.name() + ":"));
+        assertTrue("with check-sat after it and nothing else",
+                candidate.endsWith("(check-sat)\n"));
     }
 
     // ------------------------------------------------------------------
@@ -421,6 +432,17 @@ public class D3ComposerTest {
                     symbol("M_L'java/util/HashMap'_4", "java/util/HashMap"));
             session.expression("EXPR.00000000000000b2", binary("==",
                     read("MAP_STATE", 4L, -3L, 1L, "I"), integer("I", 7L)));
+            // And a reference-typed field read the VM valued NEITHER way:
+            // no version to join to and no identity to pin to, so it is
+            // refused by name -- naming the class and the offset -- and
+            // never left free for the solver to define as it likes.
+            session.expression("EXPR.00000000000000b3", binary("==",
+                    fieldRead("org/apache/Store", 48L,
+                            symbol("M_L'org/apache/Store'_4",
+                                    "org/apache/Store"), null),
+                    vmNull()));
+            session.decision(ANCHOR, "anchor#u10", true,
+                    "EXPR.00000000000000b3");
             session.write(Endpoint.of(ANCHOR, "Keys#put#9:WRITE",
                             at("put#1", 0), 0),
                     LocationId.of(LocationKind.MAP, "4", "-3"), 1L,
@@ -443,6 +465,10 @@ public class D3ComposerTest {
         assertTrue("a cell the location does not name is refused by name, "
                         + "naming the location, the version and both sorts",
                 named(gaps, "ContainerElement:MAP/4#-3@1:MAP!=INT"));
+        assertTrue("a reference projection the VM valued neither way is "
+                        + "refused by name, naming the class and offset",
+                named(gaps, "UNSTATED_FIELD_PROJECTION:"
+                        + "org/apache/Store@48:L"));
         assertFalse("the unplaceable symbol is not in the formula",
                 composition.body().contains("vh_ref"));
     }
@@ -695,6 +721,36 @@ public class D3ComposerTest {
         session.write(store, LocationId.of(LocationKind.ARRAY, "7", "2"),
                 1L, "EXPR.00000000000000a1");
         session.decision(ANCHOR, "anchor#u3", true, "EXPR.00000000000000c1");
+        // Two reference-typed field reads, each asked the question every
+        // key case's predicate asks of one: is what it returned null?  A
+        // reference read states what it returned exactly as a primitive
+        // read does -- concreteOwner and concreteValue in the VM's own rid
+        // spelling, or "N" for null -- so the first projection IS the
+        // identity of object 9, the SAME name an ordinary identity leaf of
+        // that rid gets (which is what an OWNER is lowered as, so one
+        // read's reference can be equated with another read's owner), and
+        // the second is nullRef and not an identity of its own.
+        //
+        // The first one's OWNER is a read this session's write log does not
+        // cover.  The projection does not rest on it -- what the read
+        // returned is stated on the node -- so the owner is not lowered and
+        // its refusal is not this path's.  Lowering it anyway refused a
+        // projection the recording states exactly, which is what took 12
+        // Snapshot@32 projections and the whole 17960 anchor path with them.
+        session.expression("EXPR.00000000000000d1", binary("==",
+                fieldRead("org/apache/Store", 24L,
+                        read("MAP_STATE", 4L, -3L, 9L, "L"),
+                        symbol("M_L'org/apache/Held'_9",
+                                "org/apache/Held")),
+                vmNull()));
+        session.expression("EXPR.00000000000000d2", binary("==",
+                fieldRead("org/apache/Store", 32L,
+                        symbol("M_L'org/apache/Store'_4",
+                                "org/apache/Store"),
+                        vmNull()),
+                symbol("M_L'org/apache/Held'_9", "org/apache/Held")));
+        session.decision(ANCHOR, "anchor#u4", true, "EXPR.00000000000000d1");
+        session.decision(ANCHOR, "anchor#u5", true, "EXPR.00000000000000d2");
         // And phi: a null test, which is what every key case's fatal
         // predicate is.  The VM spells null "N" on a symbolic leaf.
         session.expression("EXPR.00000000000000f1", binary("!=",
@@ -713,6 +769,14 @@ public class D3ComposerTest {
                 composition.body().contains("(valueInt (indexed_read "));
         assertTrue("and the cell it read is the slot the location names",
                 composition.body().contains(" 2)) 5)"));
+        assertTrue("a reference read the VM valued is the identity of the "
+                        + "object it names, under the SAME name an ordinary "
+                        + "identity leaf of that rid gets -- and one it "
+                        + "valued \"N\" is nullRef, not an identity of its "
+                        + "own: " + fatalArm(composition),
+                fatalArm(composition).matches(
+                        ".*\\(= (identity__[0-9a-f]+) nullRef\\)"
+                                + ".*\\(= nullRef \\1\\).*"));
         assertTrue("x != null compares against the null encoding, and not "
                         + "against an opaque identity of its own session: "
                         + fatalArm(composition),
@@ -911,6 +975,31 @@ public class D3ComposerTest {
         node.addProperty("expressionAuthority", "VM_GUARDED_READ_FROM_V1");
         node.add("location", location);
         node.add("observedVersion", observed);
+        return node;
+    }
+
+    /**
+     * One reference-typed field read, as the VM serializes it.
+     *
+     * <p>The owner it read from, and -- when the VM stated them -- the
+     * pair that says what the read returned: the owner's identity and the
+     * identity of the object read, both in the rid spelling an identity
+     * leaf carries.  {@code concreteValue} null here is the VM stating
+     * neither, which is the projection no evidence values.</p>
+     */
+    private static JsonObject fieldRead(String ownerClass, long offset,
+                                        JsonObject owner,
+                                        JsonObject concreteValue) {
+        JsonObject node = new JsonObject();
+        node.addProperty("_type", "FieldAccessExpression");
+        node.addProperty("_java_type", "L");
+        node.addProperty("ownerClass", ownerClass);
+        node.addProperty("fieldOffset", offset);
+        node.add("owner", owner);
+        if (concreteValue != null) {
+            node.add("concreteOwner", owner);
+            node.add("concreteValue", concreteValue);
+        }
         return node;
     }
 

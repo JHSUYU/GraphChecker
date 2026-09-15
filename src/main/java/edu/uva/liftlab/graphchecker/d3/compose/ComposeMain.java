@@ -105,7 +105,7 @@ public final class ComposeMain {
         ClaimPolicy.Decision decision = ClaimPolicy.decide(composition,
                 solver);
 
-        Solver.save(arguments.output, candidate(composition));
+        Solver.save(arguments.output, candidate(composition, decision));
         CompositionManifest composed = CompositionManifest.of(anchor,
                 composition.paths(), composition.families(),
                 composition.roots(), composition.valuations().size(),
@@ -148,8 +148,18 @@ public final class ComposeMain {
      * as the list of the things that closed it.  The other valuations
      * differ from this file by their {@code valuation__*} assertions alone,
      * and the manifest lists every one of them beside the verdict it got.</p>
+     *
+     * <p>A BLOCKED composition closes the question instead of leaving it
+     * open.  A file with no path in it, or one whose claim a blocking gap
+     * withheld, asserts nothing about the anchor -- and a query that
+     * asserts nothing is satisfiable, so a reader who ran {@code z3} on the
+     * file by hand read "sat" off a composition that had refused to answer.
+     * The blocker is asserted false, so the file answers the way the claim
+     * does, and it is NAMED in the comment beside it, so the reader gets the
+     * reason and not just the verdict.</p>
      */
-    private static String candidate(Composer.Composition composition) {
+    static String candidate(Composer.Composition composition,
+                            ClaimPolicy.Decision decision) {
         StringBuilder query = new StringBuilder(composition.body());
         if (!composition.valuations().isEmpty()) {
             query.append("; valuation 0: the run as it happened\n");
@@ -158,7 +168,40 @@ public final class ComposeMain {
                 query.append(assertion).append('\n');
             }
         }
+        String blocker = blocker(composition, decision);
+        if (!blocker.isEmpty()) {
+            query.append("(assert false) ; fail closed: ")
+                    .append(blocker).append('\n');
+        }
         return query.append("(check-sat)\n").toString();
+    }
+
+    /**
+     * What closed this composition, as one comment line, or "".
+     *
+     * <p>The first BLOCKING gap, by the name it was recorded under: the
+     * manifest and the claim carry every one of them, and this is the one
+     * the file's own verdict is about.  A composition with no path and no
+     * blocking gap is named by the declaration it reached nothing for,
+     * because a refusal nobody can read is the silence the process rules
+     * forbid.  CR and LF are folded to a space: the name rides in a
+     * comment, and a comment is one line.</p>
+     */
+    private static String blocker(Composer.Composition composition,
+                                  ClaimPolicy.Decision decision) {
+        boolean pathless = composition.disjuncts().isEmpty();
+        if (!pathless && !decision.claim().blocked()) return "";
+        for (GapRow gap : decision.claim().gaps()) {
+            if (!gap.blocking()) continue;
+            return oneLine(gap.kind().name() + ":" + gap.subject());
+        }
+        return pathless
+                ? oneLine(decision.claim().kind().name() + ":"
+                + composition.anchor().render()) : "";
+    }
+
+    private static String oneLine(String text) {
+        return text.replace('\r', ' ').replace('\n', ' ');
     }
 
     // ------------------------------------------------------------------

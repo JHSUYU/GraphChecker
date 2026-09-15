@@ -368,45 +368,55 @@ public final class ContainerSmtCodec {
             "UNSTATED_FIELD_PROJECTION:";
 
     /**
-     * One field projection, by the one rule both queries lower it under.
+     * One field projection, by the one rule both queries lower it under:
+     * JOIN, then PIN, then REFUSE by name.
      *
-     * <p>A read whose location this replay's write log covers is not a
-     * projection by the time it reaches here: {@link InSessionReadResolver}
-     * has already replaced it with the expression of the write version the
-     * read observed, which is what carries a value from a root, or from a
-     * handoff variable, through the object it was stored in and on to the
-     * branch that reads it.  What is left is a read the log does not cover,
-     * and for that the VM states the pair -- the object read from and what
-     * its field then held -- so the projection is that value.</p>
+     * <p>JOIN is the read's own {@code observedVersion}, and the VM
+     * publishes it ON the value it states: {@code concreteValue} for a
+     * primitive read is the read node itself, so the guarded-read lowering
+     * joins it to the version's expression -- which is what carries a value
+     * from a root, or from a handoff variable, through the object it was
+     * stored in and on to the branch that reads it.</p>
      *
-     * <p>Neither query may leave it free.  An accessor over an
-     * uninterpreted Ref is a function the solver may define however it
-     * likes, which lets a model hold by a value no execution produced: a
-     * composed query answered that way names no cause, and a flip model
-     * answered that way is not materializable.  So a projection with no
-     * stated value is refused by name instead, in the composition and in
-     * the flip query alike.</p>
+     * <p>PIN is what that pair states when the log covers no version: the
+     * object read from and what its field then held.  A reference-typed
+     * read states the same pair as a primitive one -- {@code concreteOwner}
+     * and {@code concreteValue} in the VM's rid spelling, or {@code "N"} for
+     * null -- so the host mints the SAME identity name for the object read
+     * as it does for an owner of that identity, and one read's reference can
+     * be equated with another read's owner.  There is one step: a value the
+     * host refuses is refused, never replaced by a second guess.</p>
+     *
+     * <p>REFUSE is the rest.  Neither query may leave a projection free: an
+     * accessor over an uninterpreted Ref is a function the solver may define
+     * however it likes, which lets a model hold by a value no execution
+     * produced -- a composed query answered that way names no cause, and a
+     * flip model answered that way is not materializable.  So a projection
+     * with no stated value is refused by name, in the composition and in the
+     * flip query alike.</p>
      */
     public static Term field(JsonObject expression, Host host) {
-        Term owner = host.operand(expression.get("owner"), Sort.REF);
-        if (owner == null) return null;
         String ownerClass = optionalString(expression, "ownerClass");
         String javaType = optionalString(expression, "_java_type");
-        if (boxedPrimitiveValue(owner, ownerClass, javaType)) {
-            return owner;
+        // The owner term is the projection in exactly one case, and is
+        // asked for in no other: lowering it would lower the whole read
+        // chain the owner came out of, and a refusal anywhere inside that
+        // chain refuses a projection this node states exactly.
+        Sort boxed = boxedPayloadSort(ownerClass, javaType);
+        if (boxed != null) {
+            Term owner = host.operand(expression.get("owner"), Sort.REF);
+            if (owner == null) return null;
+            if (owner.sort == boxed) return owner;
         }
         // Both members are written together by the VM or not at all; a
         // half-present pair is a payload this codec does not recognise and
         // is refused rather than guessed at.
         JsonElement concreteOwner = expression.get("concreteOwner");
         JsonElement concreteValue = expression.get("concreteValue");
-        if (concreteOwner != null && concreteValue != null
-                && !concreteOwner.isJsonNull()
-                && !concreteValue.isJsonNull()) {
+        if (stated(concreteOwner) && stated(concreteValue)) {
             // No expectation: the observed value carries its own Java type
             // and the host's own table is the authority on its sort.
-            Term value = host.operand(concreteValue, null);
-            if (value != null) return value;
+            return host.operand(concreteValue, null);
         }
         host.unsupported(UNSTATED_FIELD_PROJECTION + ownerClass + "@"
                 + JsonFields.optionalInteger(expression, "fieldOffset", -1)
@@ -414,18 +424,30 @@ public final class ContainerSmtCodec {
         return null;
     }
 
-    private static boolean boxedPrimitiveValue(
-            Term owner, String ownerClass, String javaType) {
+    /** Whether the VM wrote this member at all. */
+    private static boolean stated(JsonElement member) {
+        return member != null && !member.isJsonNull();
+    }
+
+    /**
+     * The sort a boxed primitive's payload field holds, or null.
+     *
+     * <p>{@code Integer.value} IS the int the box holds, so a read of it is
+     * the owner term itself -- the one field whose projection is the object
+     * it was read from.  The sort answered here is the sort that owner must
+     * already have lowered to; anything else is not that box.</p>
+     */
+    private static Sort boxedPayloadSort(String ownerClass, String javaType) {
         if ("java/lang/Boolean".equals(ownerClass)) {
-            return "Z".equals(javaType) && owner.sort == Sort.BOOL;
+            return "Z".equals(javaType) ? Sort.BOOL : null;
         }
         if ("java/lang/Float".equals(ownerClass)) {
-            return "F".equals(javaType) && owner.sort == Sort.FLOAT32;
+            return "F".equals(javaType) ? Sort.FLOAT32 : null;
         }
         if ("java/lang/Double".equals(ownerClass)) {
-            return "D".equals(javaType) && owner.sort == Sort.FLOAT64;
+            return "D".equals(javaType) ? Sort.FLOAT64 : null;
         }
-        return ("java/lang/Byte".equals(ownerClass)
+        boolean integral = "java/lang/Byte".equals(ownerClass)
                 && "B".equals(javaType)
                 || "java/lang/Character".equals(ownerClass)
                 && "C".equals(javaType)
@@ -434,8 +456,8 @@ public final class ContainerSmtCodec {
                 || "java/lang/Integer".equals(ownerClass)
                 && "I".equals(javaType)
                 || "java/lang/Long".equals(ownerClass)
-                && "J".equals(javaType))
-                && owner.sort == Sort.INT;
+                && "J".equals(javaType);
+        return integral ? Sort.INT : null;
     }
 
     /**
