@@ -29,9 +29,12 @@ import static org.junit.Assert.fail;
  * names a writer.</p>
  */
 public class RegionGraphOccurrenceKeyTest {
+    /** One planned occurrence, as identity v3 addresses it. */
     private static final String PLANNED =
             "hdfs-17960/nn0#epoch1/region/"
-                    + "REGION.9492ec77-0f65-34ba-a3af-14753ac7347d#1";
+                    + "REGION.9492ec77-0f65-34ba-a3af-14753ac7347d"
+                    + "/ctx:Root:KEY_MANAGER_TICK#1"
+                    + "/idx:o.a.h.h.s.n.FSNamesystem#saveNamespace#12@0";
 
     @After
     public void resetSoot() {
@@ -118,9 +121,9 @@ public class RegionGraphOccurrenceKeyTest {
                         long.class, long.class, long.class);
         edge.setAccessible(true);
         Map<String, Object> result = (Map<String, Object>) edge.invoke(null,
-                row("occurrenceId", "hdfs-17899/nn0#epoch0/region/REGION.f#1",
+                row("occurrenceId", "hdfs-17899/nn0#epoch0/region/REGION.f/ctx:Root:KEY_MANAGER_TICK#1/idx:o.a.h.h.s.n.FSNamesystem#saveNamespace#12@0",
                         "regionId", "REGION.f", "rootCallId", 11L),
-                row("occurrenceId", "hdfs-17899/nn0#epoch0/region/REGION.c#1",
+                row("occurrenceId", "hdfs-17899/nn0#epoch0/region/REGION.c/ctx:Root:KEY_MANAGER_TICK#1/idx:o.a.h.h.s.n.FSNamesystem#saveNamespace#12@0",
                         "regionId", "REGION.c", "rootCallId", 12L),
                 row("portId", "REGION.c.in.port", "symbolicName", "S1"),
                 row("edgeId", "RPC.request", "requestKey", "rk",

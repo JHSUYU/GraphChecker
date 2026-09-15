@@ -691,25 +691,10 @@ public final class ConcolicRegionRuntime {
      */
     private static boolean boundedLoopOccurrenceCut(RuntimeTask admitted) {
         if (!admitted.cutsBoundedLoopOccurrence()) return false;
-        // The bound records turns; the plan addresses one of them by k.  A k
-        // past the bound names an activation no replay can reach, which is a
-        // gap rather than a turn quietly missed.
-        if (admitted.addressesOccurrenceBeyondBound()
-                && admitted.claimLoopBoundGapMarker()) {
-            JsonObject beyond = new JsonObject();
-            beyond.addProperty("plannedOccurrenceId", admitted.occurrenceId);
-            beyond.addProperty("regionId", admitted.regionId);
-            beyond.addProperty("addressedOccurrence",
-                    admitted.address.ordinal());
-            beyond.addProperty("boundedAt", admitted.loopOccurrenceBudget);
-            writeSkipped(admitted, SKIP_LOOP_OCCURRENCE_BEYOND_BOUND,
-                    "this task addresses activation "
-                            + admitted.address.ordinal() + " of a loop the "
-                            + "instrumentation records "
-                            + admitted.loopOccurrenceBudget + " turns of, so "
-                            + "the activation it names cannot be reached",
-                    beyond);
-        }
+        // The "k past the bound" gap went with the ordinal: identity v3
+        // addresses a loop body by the execution index it ran at, and
+        // whether that index is reachable inside K_L is not a comparison of
+        // two numbers.  The bound itself still cuts, below.
         if (admitted.claimLoopBoundCutMarker()) {
             int bound = admitted.loopOccurrenceBudget;
             JsonObject evidence = new JsonObject();

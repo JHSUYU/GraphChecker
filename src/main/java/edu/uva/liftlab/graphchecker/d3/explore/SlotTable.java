@@ -194,12 +194,12 @@ public final class SlotTable {
                     continue;
                 }
                 // R-I7.1: what contradicts is not "a later version by seq"
-                // -- two activations of one session interleave, so seq orders
-                // events only inside one of them.  A pairing contradicts the
-                // run when the read observed a version its own activation
-                // wrote later, or one written by an occurrence the reader
-                // itself caused: a message cannot be answered before it is
-                // sent.
+                // -- two activations that no order relates interleave, so a
+                // session's event counter alone orders nothing.  A pairing
+                // contradicts the run when the read HAPPENED BEFORE the write
+                // it claims to have observed, which is the one question
+                // Arms.ancestor answers: same thread (one occurrence or two),
+                // the causal-anchor chain, and thread start/join.
                 if (contradictsOrder(corpus, read, writer)) {
                     gaps.add(GapRow.of(session.sessionId(),
                             GapKind.TOPOLOGY_DIVERGENCE, GapClass.BLOCKING,
@@ -227,13 +227,15 @@ public final class SlotTable {
     /**
      * Whether the recorded pairing contradicts the run's own order.
      *
-     * <p>Not "an earlier version by seq": two activations of one session
-     * interleave, so seq orders events only INSIDE one of them.  What
-     * contradicts is a read that observed a version its own activation wrote
-     * later, or one written by an occurrence the reader itself caused -- a
-     * message cannot be answered before it is sent.  Both are the one
-     * question {@code Arms.ancestor} answers: did the READ happen before the
-     * write it claims to have observed.</p>
+     * <p>Not "an earlier version by seq": two activations that no order
+     * relates interleave, so a session's event counter alone orders nothing.
+     * What contradicts is a read that HAPPENED BEFORE the write it claims to
+     * have observed -- because its own thread wrote later, because the
+     * writing activation ran on that same thread afterwards, because the
+     * reader caused the writer through the message it sent, or because the
+     * reader started the thread the writer ran on.  All four are the one
+     * question {@code Arms.ancestor} answers, and this stage asks it rather
+     * than keeping a fifth opinion about happens-before.</p>
      */
     private static boolean contradictsOrder(Corpus corpus, ReadRow read,
                                             WriteRow observed) {
@@ -269,29 +271,21 @@ public final class SlotTable {
      *
      * <p>INTERACTION-ID SS8 case 2: a replay reaches a region of the static
      * candidate graph that the workload never RETAINED -- the lightweight
-     * entry hook publishes its activation and nothing else can exist for it,
-     * because it was not instrumented.  That is not growth the skeleton can
+     * entry hook publishes its activation, and the row says so
+     * ({@code instrumented == false}).  That is not growth the skeleton can
      * absorb: no endpoint of that region exists, so no interaction can name
      * it and no slot can open for it.  The epoch has to be re-cut with the
      * region retained, which is the campaign's to do; this stage states the
-     * fact under the name run_engine acts on.</p>
-     *
-     * <p>The test is "no session of this epoch published ANY detailed row for
-     * that occurrence" -- one replay having nothing to say about a region it
-     * ran is ordinary, a whole epoch having nothing is the retained set being
-     * too small.  It would be exact rather than inferred if the activation
-     * row said whether its region was instrumented; that marker is M2's to
-     * add, and this reading is stated here until it does.  Case 3 needs
-     * nothing: a region outside the static candidate graph publishes no
-     * activation at all.</p>
+     * fact under the name run_engine acts on.  Case 3 needs nothing: a region
+     * outside the static candidate graph publishes no activation at all.</p>
      */
     private static boolean unretained(Corpus corpus, List<GapRow> gaps) {
         Set<String> named = new LinkedHashSet<String>();
         boolean divergence = false;
         for (SessionReader session : corpus.sessions()) {
             for (ActivationRow activation : session.activations()) {
+                if (activation.instrumented()) continue;
                 OccurrenceAddress occurrence = activation.occurrence();
-                if (corpus.detailed(occurrence)) continue;
                 if (!named.add(occurrence.regionId())) continue;
                 gaps.add(GapRow.of(session.sessionId(),
                         GapKind.TOPOLOGY_DIVERGENCE, GapClass.BLOCKING,
