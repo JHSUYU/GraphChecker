@@ -509,13 +509,15 @@ public class D3ExploreTest {
         pairedMembers.add(writer.id());
         SlotTable.Reconciliation contradiction = new SlotTable()
                 .reconcile(Corpus.read(twoWays, null), pairedMembers, 2);
-        assertTrue("a consumer paired with another producer is a replacement",
+        assertTrue("a LATER SESSION pairing one consumer with another "
+                        + "producer than the catalog's is a replacement",
                 contradiction.replaced);
         boolean blocking = false;
         for (GapRow gap : contradiction.gaps) {
             blocking |= gap.kind() == GapKind.TOPOLOGY_DIVERGENCE
                     && gap.cls() == GapClass.BLOCKING
-                    && gap.detail().contains("already paired");
+                    && gap.detail().contains("the catalog pairs this consumer")
+                    && gap.detail().contains("opened by s-seed");
         }
         assertTrue("and it is BLOCKING: the campaign opens an epoch",
                 blocking);
@@ -679,6 +681,125 @@ public class D3ExploreTest {
         }
 
         theClosureHasOneRoot(iteration, writer);
+
+        // The static graph decides only what to TRACK -- carriers,
+        // occurrences to replay, BRANCHES TO FLIP -- so a decision resting on
+        // a DECLARED root is a flip candidate wherever in G_S^W it sits, and
+        // no row has to place it in the anchor's closure first.  On 17960 no
+        // row ever could: the seed runs the marker's true arm, where
+        // deleteSnapshot defers and the counter decrement never executes, so
+        // the anchor's dependence on the deletion region exists only on the
+        // arm the flip creates.
+        Path aside = tree.newFolder("closure-root-dependent").toPath();
+        OccurrenceAddress deferring = occurrence("hdfs-case/dn0",
+                "REGION.deferring", CausalContext.of(Role.CLIENT, 1),
+                "o.a.h.h.s.n.SnapshotManager#deleteSnapshot#7");
+        OccurrenceAddress undeclared = occurrence("hdfs-case/dn0",
+                "REGION.undeclared", CausalContext.of(Role.CLIENT, 2),
+                "o.a.h.h.s.n.SnapshotManager#renameSnapshot#7");
+        Session apart = new Session(aside, "s-seed");
+        apart.activation(target, false);
+        apart.activation(deferring, false);
+        apart.activation(undeclared, false);
+        // An occurrence that decided nothing is not a task: the rows, not the
+        // graph, say what a declared root's value decides.
+        OccurrenceAddress silent = occurrence("hdfs-case/dn0",
+                "REGION.silent", CausalContext.of(Role.CLIENT, 3),
+                "o.a.h.h.s.n.SnapshotManager#deleteSnapshot#9");
+        apart.activation(silent, false);
+        apart.root(deferring, "CASE.MARKER", "M_MARKER", RootKind.MARKER,
+                "true", null, null, true);
+        apart.root(undeclared, "CASE.UNDECLARED", "M_UNDECLARED",
+                RootKind.MARKER, "true", null, null, false);
+        apart.symbolic("EXPR.0000000000000003", "M_MARKER", "Z");
+        apart.decision(deferring, "SnapshotManager#u7", 1, false,
+                "EXPR.0000000000000003");
+        apart.decision(undeclared, "SnapshotManager#u7", 1, false,
+                "M_UNDECLARED");
+        apart.target(target, "BlockTokenSecretManager#get#3",
+                "(= M_READ_KEY 0)");
+        apart.flush();
+        Path asideWave = tree.newFolder("closure-root-dependent-wave")
+                .toPath();
+        JsonObject beside = ExploreMain.plan(aside, TARGET_SELECTOR, null,
+                aside.resolve("results.jsonl"), asideWave, 0, "epoch0",
+                ClosurePlanner.DEFAULT_MAX_TASKS,
+                ObligationFactory.Bounds.defaults());
+        Map<String, String> whyTask = new LinkedHashMap<String, String>();
+        for (JsonElement element : beside.getAsJsonArray("taskRows")) {
+            JsonObject row = element.getAsJsonObject();
+            whyTask.put(row.get("focused").getAsString(),
+                    row.get("why").getAsString());
+        }
+        assertEquals("the anchor is a closure member",
+                "CLOSURE_MEMBER", whyTask.get(target.render()));
+        assertEquals("and the deferring region is a task on its decision, "
+                        + "with the manifest saying which: " + whyTask,
+                "ROOT_DEPENDENT_DECISION", whyTask.get(deferring.render()));
+        assertFalse("a root the case did NOT declare makes no task: " + whyTask,
+                whyTask.containsKey(undeclared.render()));
+        assertFalse("nor does an occurrence that decided nothing: " + whyTask,
+                whyTask.containsKey(silent.render()));
+        // It is a task, not a closure member: it opens no slot, so the
+        // skeleton still counts its interactions as outside the closure.
+        List<Obligation> beyond = obligations(asideWave);
+        assertEquals("one flip, on the root-dependent decision: " + beyond,
+                1, beyond.size());
+        assertEquals("SnapshotManager#u7", beyond.get(0).siteId());
+        assertTrue(beyond.get(0).flippedOutcome());
+        assertTrue("a wave proposes no model: the worker solves it",
+                beyond.get(0).rootAssignments().isEmpty());
+
+        // Two reads of ONE location at one endpoint id that observed
+        // DIFFERENT versions are two events the identity cannot separate --
+        // a read the runtime does not stand at carries no site index.  That
+        // is not a replacement (a run does not contradict itself): no slot
+        // for either, one DIAGNOSTIC, and the wave still asks its questions.
+        Path collided = tree.newFolder("closure-no-site-index").toPath();
+        Endpoint twice = at(target, Endpoint.stateSite(
+                "BlockTokenSecretManager", "get", 3, false),
+                "BlockTokenSecretManager#get#3");
+        Session loop = new Session(collided, "s-seed");
+        loop.activation(target, false);
+        loop.activation(writer, false);
+        loop.symbolic("e.first", "M_FIRST");
+        loop.symbolic("e.second", "M_SECOND");
+        loop.write(at(writer, Endpoint.stateSite("BlockTokenSecretManager",
+                        "addKeys", 12, true), "BlockTokenSecretManager"
+                        + "#addKeys#12"), allKeys, 5L, "e.first");
+        loop.write(at(writer, Endpoint.stateSite("BlockTokenSecretManager",
+                        "addKeys", 13, true), "BlockTokenSecretManager"
+                        + "#addKeys#13"), allKeys, 6L, "e.second");
+        loop.read(twice, allKeys, 5L, "M_READ_KEY", "119992");
+        loop.read(twice, allKeys, 6L, "M_READ_KEY", "119993");
+        loop.target(target, "BlockTokenSecretManager#get#3",
+                "(= M_READ_KEY 0)");
+        loop.flush();
+        Set<String> both = new LinkedHashSet<String>();
+        both.add(target.id());
+        both.add(writer.id());
+        SlotTable.Reconciliation ambiguous = new SlotTable().reconcile(
+                Corpus.read(collided, null), both, 7);
+        assertFalse("one session does not contradict itself",
+                ambiguous.replaced);
+        boolean unsayable = false;
+        for (GapRow gap : ambiguous.gaps) {
+            unsayable |= gap.kind() == GapKind.LINEAGE_LOST
+                    && gap.cls() == GapClass.DIAGNOSTIC
+                    && gap.detail().contains("site index missing")
+                    && gap.detail().contains("observe v5 and v6");
+        }
+        assertTrue("and the missing site index is named", unsayable);
+        for (SlotTable.Slot slot : slotsOf(ambiguous)) {
+            assertFalse("neither read opens a slot",
+                    slot.consumer.id().equals(twice.id()));
+        }
+    }
+
+    /** The slots one reconciliation opened, for an assertion to look at. */
+    private static List<SlotTable.Slot> slotsOf(
+            SlotTable.Reconciliation reconciliation) {
+        return new ArrayList<SlotTable.Slot>(reconciliation.opened);
     }
 
     // ---- (5b) the closure has ONE root: the case's declared anchor -------

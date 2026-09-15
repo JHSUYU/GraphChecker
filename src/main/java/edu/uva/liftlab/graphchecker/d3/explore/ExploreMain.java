@@ -56,6 +56,11 @@ import java.util.Set;
  * ({@link ObligationSolverMain}).</p>
  */
 public final class ExploreMain {
+    /** A task the anchor's closure holds: it opens slots and joins families. */
+    static final String CLOSURE_MEMBER = "CLOSURE_MEMBER";
+    /** A task because a DECLARED root's value decides something in it. */
+    static final String ROOT_DEPENDENT_DECISION = "ROOT_DEPENDENT_DECISION";
+
     private ExploreMain() {
     }
 
@@ -114,14 +119,33 @@ public final class ExploreMain {
         List<GapRow> gaps = new ArrayList<GapRow>();
         List<OccurrenceAddress> roots = resolve(corpus, declaredAnchor, gaps);
         List<Task> tasks = new ArrayList<Task>();
+        Map<String, String> why = new LinkedHashMap<String, String>();
         Set<String> opened = new LinkedHashSet<String>();
         for (OccurrenceAddress root : roots) {
             ClosurePlanner.Plan plan = ClosurePlanner.plan(corpus, root,
                     maxTasks);
             gaps.addAll(plan.gaps);
             for (Task task : plan.tasks) {
-                if (opened.add(task.taskId())) tasks.add(task);
+                if (!opened.add(task.taskId())) continue;
+                tasks.add(task);
+                why.put(task.taskId(), CLOSURE_MEMBER);
             }
+        }
+        // The closure's own members, and nothing about slots or families,
+        // come from the rows.  A decision that rests on a DECLARED root is a
+        // flip candidate by definition -- the static graph's only job is to
+        // decide what to track, branches to flip included -- and on 17960 no
+        // row of the seed could ever put the deletion region in the anchor's
+        // closure: the seed runs the marker's true arm, where deleteSnapshot
+        // defers and the decrement never executes.  So those occurrences are
+        // tasks too, and stay OUTSIDE the closure until their own rows
+        // connect them (INTERACTION-ID SS8 case 1, which the next wave's
+        // recomputation does by itself).
+        Set<String> closure = closureOf(tasks);
+        for (Task task : ClosurePlanner.rootDependent(corpus, opened)) {
+            if (!opened.add(task.taskId())) continue;
+            tasks.add(task);
+            why.put(task.taskId(), ROOT_DEPENDENT_DECISION);
         }
         // The epoch's skeleton, reconciled against everything the replays
         // have said so far.  It is taken AFTER the closure is planned,
@@ -129,8 +153,8 @@ public final class ExploreMain {
         // a closure member, and before the obligations, because a
         // replacement contradicts the skeleton the wave would be cut from.
         SlotTable slots = SlotTable.read(iteration);
-        SlotTable.Reconciliation skeleton = slots.reconcile(corpus,
-                closureOf(tasks), wave);
+        SlotTable.Reconciliation skeleton = slots.reconcile(corpus, closure,
+                wave);
         gaps.addAll(skeleton.gaps);
         slots.write(iteration);
 
@@ -158,7 +182,7 @@ public final class ExploreMain {
                 ExploreCodec::writeObligation);
         RowCodec.writeAll(out.resolve("gaps.jsonl"), distinct(gaps),
                 RowCodec::writeGap);
-        JsonObject manifest = manifest(roots, tasks, frontier, open,
+        JsonObject manifest = manifest(roots, tasks, why, frontier, open,
                 topologyEpoch, gaps, slots, skeleton);
         Files.write(out.resolve("explore_manifest.json"),
                 (pretty(manifest) + System.lineSeparator())
@@ -307,7 +331,9 @@ public final class ExploreMain {
     }
 
     private static JsonObject manifest(List<OccurrenceAddress> roots,
-                                       List<Task> tasks, Frontier frontier,
+                                       List<Task> tasks,
+                                       Map<String, String> why,
+                                       Frontier frontier,
                                        Frontier.Wave open,
                                        String topologyEpoch,
                                        List<GapRow> gaps, SlotTable slots,
@@ -340,6 +366,9 @@ public final class ExploreMain {
             row.addProperty("focused", task.focused().render());
             row.addProperty("factor", task.factor().size());
             row.addProperty("seedSessionId", task.seedSessionId());
+            // Why this occurrence is a task at all: a reader of the manifest
+            // must not have to re-derive the closure to find out.
+            row.addProperty("why", why.get(task.taskId()));
             row.addProperty("proposed", counts == null ? 0 : counts[1]);
             rows.add(row);
         }

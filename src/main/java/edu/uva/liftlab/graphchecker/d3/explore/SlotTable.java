@@ -1,5 +1,6 @@
 package edu.uva.liftlab.graphchecker.d3.explore;
 
+import edu.uva.liftlab.graphchecker.d3.compose.SmtLowering;
 import edu.uva.liftlab.graphchecker.d3.contract.ActivationRow;
 import edu.uva.liftlab.graphchecker.d3.contract.AttachRow;
 import edu.uva.liftlab.graphchecker.d3.contract.Endpoint;
@@ -99,9 +100,9 @@ public final class SlotTable {
 
     private final Map<String, Slot> byInteraction =
             new LinkedHashMap<String, Slot>();
-    /** consumer endpoint id -> the producer the skeleton pairs it with. */
-    private final Map<String, String> producerOfConsumer =
-            new LinkedHashMap<String, String>();
+    /** consumer endpoint id -> the slot the skeleton pairs it in. */
+    private final Map<String, Slot> slotOfConsumer =
+            new LinkedHashMap<String, Slot>();
 
     /** An epoch that has opened no slot yet. */
     SlotTable() {
@@ -140,7 +141,7 @@ public final class SlotTable {
 
     private void hold(Slot slot) {
         byInteraction.put(slot.interactionId(), slot);
-        producerOfConsumer.put(slot.consumer.id(), slot.producer.id());
+        slotOfConsumer.put(slot.consumer.id(), slot);
     }
 
     /**
@@ -181,11 +182,17 @@ public final class SlotTable {
                     default: break;
                 }
             }
+            Set<String> indistinct = indistinct(corpus, session, gaps);
             for (ReadRow read : session.reads()) {
                 Endpoint consumer = read.endpoint();
                 WriteRow writer = corpus.writeOf(read.sessionId(),
                         read.location(), read.observedVersion());
                 if (writer == null) continue;
+                // Two reads of one location at one endpoint id that observed
+                // DIFFERENT versions: the session states two state edges its
+                // identity cannot separate, so neither takes a slot.  Said
+                // once, above, as a DIAGNOSTIC.
+                if (indistinct.contains(stateKey(read))) continue;
                 if (!closure.contains(consumer.occurrence().id())) {
                     if (outside.add(consumer.id())) {
                         gaps.add(GapRow.of(session.sessionId(),
@@ -228,6 +235,58 @@ public final class SlotTable {
     }
 
     /**
+     * The state edges of one session that its own identities cannot separate.
+     *
+     * <p>A read endpoint is {@code (occurrence, site, siteIndex, attempt)}
+     * and the site index is what distinguishes repeated events of one site
+     * (IDENTITY-IMPL A).  A read the runtime does not stand at carries none,
+     * so two reads of one field in one occurrence share an endpoint id; when
+     * they observed DIFFERENT versions of that location, keying the skeleton
+     * by the consumer read the run's own loop as a contradiction of itself.
+     * It is not one: it is a lineage the rows cannot yet state.  Neither read
+     * opens a slot -- a slot whose consumer stands for two events would offer
+     * the composition an arm under the wrong path condition -- and the loss
+     * is named once per endpoint and location.</p>
+     */
+    private static Set<String> indistinct(Corpus corpus,
+                                          SessionReader session,
+                                          List<GapRow> gaps) {
+        Map<String, Long> first = new LinkedHashMap<String, Long>();
+        Set<String> found = new LinkedHashSet<String>();
+        for (ReadRow read : session.reads()) {
+            if (corpus.writeOf(read.sessionId(), read.location(),
+                    read.observedVersion()) == null) {
+                continue;
+            }
+            String key = stateKey(read);
+            Long seen = first.get(key);
+            if (seen == null) {
+                first.put(key, read.observedVersion());
+                continue;
+            }
+            if (seen.longValue() == read.observedVersion()) continue;
+            if (!found.add(key)) continue;
+            gaps.add(GapRow.of(session.sessionId(), GapKind.LINEAGE_LOST,
+                    GapClass.DIAGNOSTIC, read.endpoint().toString(),
+                    "site index missing: two reads of "
+                            + read.endpoint().site() + " in "
+                            + read.endpoint().occurrence().render()
+                            + " observe v" + seen + " and v"
+                            + read.observedVersion()
+                            + " of the same location, so this session states "
+                            + "two state edges one endpoint id cannot tell "
+                            + "apart; neither opens a slot"));
+        }
+        return found;
+    }
+
+    /** One read's (consumer endpoint, location) pair. */
+    private static String stateKey(ReadRow read) {
+        return read.endpoint().id() + "|"
+                + SmtLowering.locationKey(read.location());
+    }
+
+    /**
      * Whether the recorded pairing contradicts the run's own order.
      *
      * <p>Not "an earlier version by seq": two activations that no order
@@ -246,23 +305,52 @@ public final class SlotTable {
                 read.sessionId());
     }
 
-    private enum Outcome { OPENED, FILLED, REPLACED }
+    private enum Outcome { OPENED, FILLED, REPLACED, AMBIGUOUS }
 
-    /** One pair against the skeleton: grow it, fill it, or contradict it. */
+    /**
+     * One pair against the skeleton: grow it, fill it, or contradict it.
+     *
+     * <p>The decision is per SLOT.  {@code byInteraction} answers it for the
+     * pair itself, and the consumer-keyed map answers the R-I6 question that
+     * a slot id cannot: whether a REPLAY has paired a consumer endpoint with
+     * a producer other than the one the CATALOG holds it against.  That is a
+     * cross-session statement, and only that is a replacement.</p>
+     *
+     * <p>Two pairings of one consumer endpoint id inside ONE session are not
+     * a contradiction -- a run does not contradict itself.  They are two
+     * events the identity cannot yet tell apart, because an endpoint is
+     * {@code (occurrence, site, siteIndex, attempt)} and a read the runtime
+     * does not stand at carries no site index to separate them.  Neither
+     * takes a slot, and the loss is named where a reader will see it, rather
+     * than forked into an epoch that no retained set could fix.</p>
+     */
     private Outcome take(InteractionKind kind, Endpoint producer,
                          Endpoint consumer, String sessionId, int wave,
                          List<Slot> opened, List<GapRow> gaps) {
         Slot slot = new Slot(kind, producer, consumer, sessionId, wave);
         String interaction = slot.interactionId();
         if (byInteraction.containsKey(interaction)) return Outcome.FILLED;
-        String held = producerOfConsumer.get(consumer.id());
-        if (held != null && !held.equals(producer.id())) {
-            gaps.add(GapRow.of(sessionId, GapKind.TOPOLOGY_DIVERGENCE,
-                    GapClass.BLOCKING, consumer.toString(),
-                    "this consumer is already paired with producer endpoint "
-                            + held + " and this replay pairs it with "
-                            + producer.id() + ": a replacement, not growth"));
-            return Outcome.REPLACED;
+        Slot held = slotOfConsumer.get(consumer.id());
+        if (held != null && !held.producer.id().equals(producer.id())) {
+            if (!held.openedBySession.equals(sessionId)) {
+                gaps.add(GapRow.of(sessionId, GapKind.TOPOLOGY_DIVERGENCE,
+                        GapClass.BLOCKING, consumer.toString(),
+                        "the catalog pairs this consumer with producer "
+                                + "endpoint " + held.producer.id()
+                                + ", opened by " + held.openedBySession
+                                + ", and this replay pairs it with "
+                                + producer.id()
+                                + ": a replacement, not growth"));
+                return Outcome.REPLACED;
+            }
+            gaps.add(GapRow.of(sessionId, GapKind.LINEAGE_LOST,
+                    GapClass.DIAGNOSTIC, consumer.toString(),
+                    "site index missing: this one session pairs this consumer "
+                            + "endpoint with producer endpoints "
+                            + held.producer.id() + " and " + producer.id()
+                            + ", so its events cannot be told apart and "
+                            + "neither opens a slot"));
+            return Outcome.AMBIGUOUS;
         }
         hold(slot);
         opened.add(slot);
