@@ -15,6 +15,7 @@ import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
 import edu.uva.liftlab.graphchecker.plan.BranchPredicateAlgebra;
 import edu.uva.liftlab.graphchecker.plan.BranchWitness;
 import edu.uva.liftlab.graphchecker.smt.CanonicalJson;
+import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 import edu.uva.liftlab.graphchecker.plan.ClockRootPhysics;
 import edu.uva.liftlab.graphchecker.plan.SharedStateEvidence;
 import edu.uva.liftlab.graphchecker.plan.SymbolicSourceEvidence;
@@ -57,6 +58,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics;
 import static edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics.javaTypeDescriptor;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.array;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalBool;
@@ -2590,7 +2592,7 @@ public final class ConcolicRegionRuntime {
     }
 
     private static String handoffMintLabel(String mintKey, String portId) {
-        return "HOFF." + CanonicalJson.sha256(mintKey + "\n"
+        return "HOFF." + ArtifactIO.sha256(mintKey + "\n"
                 + safe(portId));
     }
 
@@ -4044,7 +4046,8 @@ public final class ConcolicRegionRuntime {
         }
         api.symbolizeExactField(owner, leafFieldSignature,
                 manualMintLabel(symbol, active.activation.occurrenceId,
-                        primitiveDescriptor(field.type())));
+                        JavaPrimitiveSmtSemantics.primitive(
+                                field.type())));
         ensurePathRecordingStarted(active);
         return engineExpression(api.fieldExpression(owner, field.owner(),
                 field.name(), javaTypeDescriptor(field.type()), value));
@@ -4379,7 +4382,7 @@ public final class ConcolicRegionRuntime {
                     "manual primitive mint requires symbol and occurrence");
         }
         return requested + ".occ."
-                + CanonicalJson.sha256(occurrence);
+                + ArtifactIO.sha256(occurrence);
     }
 
     /**
@@ -4401,7 +4404,7 @@ public final class ConcolicRegionRuntime {
     static boolean carriesInputAuthority(
             SymbolizeAction action, JsonElement expression) {
         return action != null && action.declaredSymbolicRoot
-                && primitiveDescriptor(action.javaType)
+                && JavaPrimitiveSmtSemantics.primitive(action.javaType)
                 ? VmExpressionIr.carriesSymbolicValue(expression)
                 : VmExpressionIr.carriesPropagatedValue(expression);
     }
@@ -4439,12 +4442,6 @@ public final class ConcolicRegionRuntime {
     /** Diagnostic name of one refused mint at a declared cut port. */
     static final String DECLARED_CUT_PORT_MINT_REFUSED =
             "DECLARED_CUT_PORT_MINT_REFUSED";
-
-    private static boolean primitiveDescriptor(String javaType) {
-        String descriptor = javaTypeDescriptor(javaType);
-        return descriptor.length() == 1
-                && "ZBCSIJFD".contains(descriptor);
-    }
 
     private static Object readField(Object receiver, String name) {
         if (receiver == null || name == null || name.isEmpty()) {

@@ -1,6 +1,7 @@
 package edu.uva.liftlab.graphchecker.plan;
 
 import edu.uva.liftlab.graphchecker.smt.CanonicalJson;
+import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 
 import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics;
 import edu.uva.liftlab.graphchecker.smt.JsonFields;
@@ -99,7 +100,7 @@ public final class SymbolicSourceEvidence {
     /** Stable semantic VM label shared by seed and every source replay. */
     public static String engineLabelForPhase(String sourcePhaseId,
                                              String sourceId) {
-        return "SRC." + CanonicalJson.sha256(
+        return "SRC." + ArtifactIO.sha256(
                 requiredPhaseId(sourcePhaseId) + "\n"
                         + required(sourceId, "sourceId"));
     }

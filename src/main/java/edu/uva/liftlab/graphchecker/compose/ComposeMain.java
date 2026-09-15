@@ -488,7 +488,7 @@ public final class ComposeMain {
                 .getBytes(StandardCharsets.UTF_8));
     }
 
-    /** The CLI, in both the campaign's spelling and the brief's. */
+    /** The CLI: one spelling per option, the one the campaign passes. */
     public static final class Arguments {
         /** The iteration directory; {@code --sessions} names its child. */
         public Path iteration;
@@ -512,15 +512,16 @@ public final class ComposeMain {
                 values.put(name, value);
             }
             Arguments arguments = new Arguments();
-            // --sessions names <iteration>/sessions; --iteration names the
-            // directory that holds it.  Both spellings, one corpus.
+            // --sessions names <iteration>/sessions, so the iteration is its
+            // parent.  One spelling: --iteration, --target-occurrence and
+            // --out were alternate spellings of these three, passed by
+            // nothing, and an option with two spellings is an option a
+            // reader has to check both of.
             Path sessions = path(values.get("sessions"));
-            arguments.iteration = sessions != null
-                    ? sessions.getParent() == null ? sessions
-                    : sessions.getParent()
-                    : path(values.get("iteration"));
-            arguments.anchor = text(values, "anchor",
-                    text(values, "target-occurrence", ""));
+            arguments.iteration = sessions == null ? null
+                    : sessions.getParent() == null ? sessions
+                    : sessions.getParent();
+            arguments.anchor = text(values, "anchor", "");
             arguments.rootDomains = path(values.get("root-domains"));
             arguments.z3 = values.containsKey("z3")
                     && !values.get("z3").isEmpty()
@@ -530,29 +531,19 @@ public final class ComposeMain {
             arguments.timeoutMillis = integer(
                     values.get("solver-timeout-ms"),
                     (int) Z3.DEFAULT_TIMEOUT_MILLIS);
-            Path out = path(values.get("out"));
             arguments.output = path(values.get("output"));
             arguments.manifest = path(values.get("manifest"));
-            if (out != null) {
-                if (arguments.output == null) {
-                    arguments.output = out.resolve("candidate.smt2");
-                }
-                if (arguments.manifest == null) {
-                    arguments.manifest = out.resolve("manifest.json");
-                }
-            }
             if (arguments.iteration == null) {
-                throw new IllegalArgumentException(
-                        "--sessions (or --iteration) is required");
+                throw new IllegalArgumentException("--sessions is required");
             }
             if (arguments.anchor.isEmpty()) {
                 throw new IllegalArgumentException(
-                        "--anchor (or --target-occurrence) is required: the"
-                                + " declared occurrence is the anchor");
+                        "--anchor is required: the declared occurrence is"
+                                + " the anchor");
             }
             if (arguments.output == null || arguments.manifest == null) {
                 throw new IllegalArgumentException(
-                        "--output and --manifest (or --out) are required");
+                        "--output and --manifest are required");
             }
             return arguments;
         }

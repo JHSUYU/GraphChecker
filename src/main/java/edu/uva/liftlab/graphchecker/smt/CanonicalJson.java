@@ -49,8 +49,4 @@ public final class CanonicalJson {
     public static String sha256(JsonElement value) {
         return ArtifactIO.sha256(render(value));
     }
-
-    public static String sha256(String value) {
-        return ArtifactIO.sha256(value);
-    }
 }
