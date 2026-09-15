@@ -1,5 +1,6 @@
 package edu.uva.liftlab.graphchecker.d3.explore;
 
+import edu.uva.liftlab.graphchecker.d3.contract.ActivationRow;
 import edu.uva.liftlab.graphchecker.d3.contract.AttachRow;
 import edu.uva.liftlab.graphchecker.d3.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.d3.contract.GapClass;
@@ -155,6 +156,7 @@ public final class SlotTable {
         Set<String> outside = new LinkedHashSet<String>();
         int filled = 0;
         boolean replaced = contextChanged(corpus, closure, gaps);
+        replaced |= unretained(corpus, gaps);
         for (SessionReader session : corpus.sessions()) {
             for (AttachRow attach : session.attaches()) {
                 if (attach.producer() == null) continue;
@@ -260,6 +262,45 @@ public final class SlotTable {
         hold(slot);
         opened.add(slot);
         return Outcome.OPENED;
+    }
+
+    /**
+     * A region that ran and that this epoch cannot see inside.
+     *
+     * <p>INTERACTION-ID SS8 case 2: a replay reaches a region of the static
+     * candidate graph that the workload never RETAINED -- the lightweight
+     * entry hook publishes its activation and nothing else can exist for it,
+     * because it was not instrumented.  That is not growth the skeleton can
+     * absorb: no endpoint of that region exists, so no interaction can name
+     * it and no slot can open for it.  The epoch has to be re-cut with the
+     * region retained, which is the campaign's to do; this stage states the
+     * fact under the name run_engine acts on.</p>
+     *
+     * <p>The test is "no session of this epoch published ANY detailed row for
+     * that occurrence" -- one replay having nothing to say about a region it
+     * ran is ordinary, a whole epoch having nothing is the retained set being
+     * too small.  It would be exact rather than inferred if the activation
+     * row said whether its region was instrumented; that marker is M2's to
+     * add, and this reading is stated here until it does.  Case 3 needs
+     * nothing: a region outside the static candidate graph publishes no
+     * activation at all.</p>
+     */
+    private static boolean unretained(Corpus corpus, List<GapRow> gaps) {
+        Set<String> named = new LinkedHashSet<String>();
+        boolean divergence = false;
+        for (SessionReader session : corpus.sessions()) {
+            for (ActivationRow activation : session.activations()) {
+                OccurrenceAddress occurrence = activation.occurrence();
+                if (corpus.detailed(occurrence)) continue;
+                if (!named.add(occurrence.regionId())) continue;
+                gaps.add(GapRow.of(session.sessionId(),
+                        GapKind.TOPOLOGY_DIVERGENCE, GapClass.BLOCKING,
+                        occurrence.render(),
+                        "retained set must grow: " + occurrence.regionId()));
+                divergence = true;
+            }
+        }
+        return divergence;
     }
 
     /**
