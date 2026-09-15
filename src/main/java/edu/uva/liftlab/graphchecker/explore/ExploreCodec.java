@@ -8,8 +8,6 @@ import edu.uva.liftlab.graphchecker.contract.InteractionKind;
 import edu.uva.liftlab.graphchecker.contract.Obligation;
 import edu.uva.liftlab.graphchecker.contract.ObligationResult;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
-import edu.uva.liftlab.graphchecker.contract.RootDomain;
-import edu.uva.liftlab.graphchecker.contract.RootKind;
 import edu.uva.liftlab.graphchecker.contract.RowCodec;
 import edu.uva.liftlab.graphchecker.contract.Task;
 import edu.uva.liftlab.graphchecker.contract.Verdict;
@@ -19,6 +17,12 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.array;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.object;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalBool;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalInteger;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
+
 /**
  * The JSON of the exploration contract: tasks, obligations, results.
  *
@@ -27,6 +31,11 @@ import java.util.Map;
  * obligation is fixed.  Addresses go through {@link RowCodec}'s own
  * occurrence form, so a task names an occurrence exactly as every row does
  * and the two join on the rendered address.</p>
+ *
+ * <p>Reading a field of a row is NOT fixed here: the forgiving accessors are
+ * {@code smt.JsonFields}', statically imported, because "what does this
+ * member hold when the writer left it out" is one answer for every row kind
+ * and this file used to hold a third copy of it.</p>
  */
 public final class ExploreCodec {
     /**
@@ -75,10 +84,12 @@ public final class ExploreCodec {
     }
 
     public static Obligation readObligation(JsonObject json) {
-        return Obligation.of(string(json, "obligationId"),
-                string(json, "taskId"), string(json, "pathId"),
-                string(json, "siteId"), integer(json, "ordinal"),
-                bool(json, "flippedOutcome"),
+        return Obligation.of(optionalString(json, "obligationId"),
+                optionalString(json, "taskId"),
+                optionalString(json, "pathId"),
+                optionalString(json, "siteId"),
+                optionalInteger(json, "ordinal", 0),
+                optionalBool(json, "flippedOutcome", false),
                 map(object(json, "rootAssignments")),
                 map(object(json, "answers")),
                 list(array(json, "unproducible")));
@@ -94,9 +105,10 @@ public final class ExploreCodec {
     }
 
     public static ObligationResult readResult(JsonObject json) {
-        return ObligationResult.of(string(json, "obligationId"),
-                Verdict.valueOf(string(json, "verdict")),
-                string(json, "sessionId"), string(json, "detail"));
+        return ObligationResult.of(optionalString(json, "obligationId"),
+                Verdict.valueOf(optionalString(json, "verdict")),
+                optionalString(json, "sessionId"),
+                optionalString(json, "detail"));
     }
 
     /** One slot of the epoch's skeleton. */
@@ -115,45 +127,12 @@ public final class ExploreCodec {
 
     public static SlotTable.Slot readSlot(JsonObject json) {
         return new SlotTable.Slot(
-                InteractionKind.valueOf(string(json, "interactionKind")),
+                InteractionKind.valueOf(
+                        optionalString(json, "interactionKind")),
                 RowCodec.readEndpoint(object(json, "producer")),
                 RowCodec.readEndpoint(object(json, "consumer")),
-                string(json, "openedBySession"),
-                integer(json, "openedAtWave"));
-    }
-
-    /**
-     * One row of the case's {@code root-domains.jsonl}.
-     *
-     * <p>TWO spellings, one reader, because one file has two readers: the
-     * case writes {@code sourceId} with {@code declaredDomainMin/Max}, and
-     * a manifest writes {@code rootId} with {@code min/max}.  The composer
-     * already accepts both (ComposeMain); an explorer that accepted only
-     * one threw on the very file the case declares.</p>
-     */
-    public static RootDomain readDomain(JsonObject json) {
-        String kind = string(json, "kind");
-        String rootId = has(json, "rootId") ? string(json, "rootId")
-                : string(json, "sourceId");
-        String min = has(json, "min") ? string(json, "min")
-                : has(json, "declaredDomainMin")
-                ? string(json, "declaredDomainMin") : null;
-        String max = has(json, "max") ? string(json, "max")
-                : has(json, "declaredDomainMax")
-                ? string(json, "declaredDomainMax") : null;
-        return RootDomain.of(rootId,
-                kind.isEmpty() ? RootKind.INTEGRAL : RootKind.valueOf(kind),
-                string(json, "recordedValue"), min, max);
-    }
-
-    public static JsonObject writeDomain(RootDomain domain) {
-        JsonObject json = new JsonObject();
-        json.addProperty("rootId", domain.rootId());
-        json.addProperty("kind", domain.kind().name());
-        json.addProperty("recordedValue", domain.recordedValue());
-        if (domain.min() != null) json.addProperty("min", domain.min());
-        if (domain.max() != null) json.addProperty("max", domain.max());
-        return json;
+                optionalString(json, "openedBySession"),
+                optionalInteger(json, "openedAtWave", 0));
     }
 
     private static JsonObject strings(Map<String, String> values) {
@@ -178,32 +157,4 @@ public final class ExploreCodec {
         return values;
     }
 
-    static boolean has(JsonObject json, String member) {
-        JsonElement value = json.get(member);
-        return value != null && !value.isJsonNull();
-    }
-
-    static String string(JsonObject json, String member) {
-        return has(json, member) ? json.get(member).getAsString() : "";
-    }
-
-    static int integer(JsonObject json, String member) {
-        return has(json, member) ? json.get(member).getAsInt() : 0;
-    }
-
-    static boolean bool(JsonObject json, String member) {
-        return has(json, member) && json.get(member).getAsBoolean();
-    }
-
-    static JsonObject object(JsonObject json, String member) {
-        JsonElement value = json.get(member);
-        return value != null && value.isJsonObject()
-                ? value.getAsJsonObject() : new JsonObject();
-    }
-
-    static JsonArray array(JsonObject json, String member) {
-        JsonElement value = json.get(member);
-        return value != null && value.isJsonArray()
-                ? value.getAsJsonArray() : new JsonArray();
-    }
 }

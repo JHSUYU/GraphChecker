@@ -35,6 +35,24 @@ public final class VmTermLowering {
     private VmTermLowering() {
     }
 
+    /** One recorded value as an SMT literal of its own sort, or "". */
+    public static String smtLiteral(String value) {
+        String text = value == null ? "" : value.trim();
+        if ("true".equals(text) || "false".equals(text)) return text;
+        return JavaPrimitiveSmtSemantics.integralLiteral(text);
+    }
+
+    /** The same text, spelled the way an SMT symbol may be spelled. */
+    public static String smtName(String value) {
+        String normalized = (value == null || value.trim().isEmpty()
+                ? "anonymous" : value).replaceAll("[^A-Za-z0-9_]", "_");
+        if (normalized.isEmpty()) normalized = "anonymous";
+        if (Character.isDigit(normalized.charAt(0))) {
+            normalized = "n_" + normalized;
+        }
+        return normalized;
+    }
+
     /** The SMT sort one lowered Java value carries. */
     public enum Sort {
         BOOL("Bool"), INT("Int"),
@@ -240,10 +258,10 @@ public final class VmTermLowering {
         JsonElement sourceExpression = expression.get("_exp");
         Term source = policy.lower(sourceExpression, null,
                 origin + ":castSource");
-        String sourceType = JavaPrimitiveSmtSemantics.primitiveDescriptor(
+        String sourceType = JavaPrimitiveSmtSemantics.javaTypeDescriptor(
                 firstNonBlank(optionalString(expression, "sourceJavaType"),
                         expressionJavaType(sourceExpression)));
-        String targetType = JavaPrimitiveSmtSemantics.primitiveDescriptor(
+        String targetType = JavaPrimitiveSmtSemantics.javaTypeDescriptor(
                 firstNonBlank(optionalString(expression, "targetJavaType"),
                         optionalString(expression, "_java_type")));
         Sort sourceSort = policy.castSort(sourceType);
