@@ -27,6 +27,7 @@ import edu.uva.liftlab.graphchecker.d3.contract.RootMintRow;
 import edu.uva.liftlab.graphchecker.d3.contract.RowCodec;
 import edu.uva.liftlab.graphchecker.d3.contract.SessionDir;
 import edu.uva.liftlab.graphchecker.d3.contract.Role;
+import edu.uva.liftlab.graphchecker.d3.contract.TargetRow;
 import edu.uva.liftlab.graphchecker.d3.contract.Task;
 import edu.uva.liftlab.graphchecker.d3.contract.Verdict;
 import edu.uva.liftlab.graphchecker.d3.contract.WriteRow;
@@ -44,8 +45,10 @@ import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -182,11 +185,17 @@ public class D3ExploreTest {
         // asserting it would make the arm unsatisfiable.
         Session rotated = new Session(iteration, "s-rot");
         rotated.activation(producer, true);
+        // The consumer received it in that replay too, running concretely:
+        // R-I2 admits an arm only from a run whose OWN pairing named this
+        // consumer, which is what makes a family the deliveries of one
+        // interaction rather than of one port.
+        rotated.activation(target, false);
         rotated.root(producer, "CASE.SERIAL", "M_SERIAL", RootKind.INTEGRAL,
                 "119995", null, null, false);
         rotated.decision(producer, "Rotate#u3", 1, true, "(> M_SERIAL 0)");
         rotated.constant("e.119995", "119995");
         rotated.export(exported, "e.119995", 12L, "119995");
+        rotated.attach(attached, "M_HOFF_KEY", "119995", exported);
         rotated.decision(producer, "After#u9", 1, true,
                 "(> M_SERIAL 1000000)");
         rotated.flush();
@@ -340,16 +349,21 @@ public class D3ExploreTest {
         seed.activation(writer, false);
         seed.activation(producer, false);
         seed.constant("e.119992", "119992");
+        seed.symbolic("e.stored", "M_HOFF_KEY");
         seed.export(exported, "e.119992", 11L, "119992");
         seed.attach(attached, "M_HOFF_KEY", "119992", exported);
         seed.write(at(writer, Endpoint.stateSite("BlockTokenSecretManager",
                         "addKeys", 12, true), "BlockTokenSecretManager"
-                        + "#addKeys#12"), allKeys, 5L, "e.119992");
+                        + "#addKeys#12"), allKeys, 5L, "e.stored");
         seed.read(at(target, Endpoint.stateSite("BlockTokenSecretManager",
                         "retrieveDataEncryptionKey", 8, false),
                         "BlockTokenSecretManager"
                                 + "#retrieveDataEncryptionKey#8"), allKeys,
                 5L, "M_READ_KEY", "119992");
+        // What makes this occurrence an anchor: the predicate whose fatal arm
+        // the composition asks about, over the value it read.
+        seed.target(target, "BlockTokenSecretManager"
+                + "#retrieveDataEncryptionKey#8", "(= M_READ_KEY 0)");
         seed.flush();
 
         Corpus corpus = Corpus.read(iteration, null);
@@ -393,9 +407,18 @@ public class D3ExploreTest {
         other.activation(confused, false);
         other.activation(producer, false);
         other.constant("e.119992", "119992");
+        other.symbolic("e.stored", "M_HOFF_KEY");
         other.export(exported, "e.119992", 11L, "119992");
         other.attach(at(confused, "XCH.resp.block-key-id",
                 "PBHelper#convert#9"), "M_HOFF_KEY", "119992", exported);
+        other.write(at(confused, Endpoint.stateSite("BlockTokenSecretManager",
+                        "addKeys", 12, true), "BlockTokenSecretManager"
+                        + "#addKeys#12"), allKeys, 5L, "e.stored");
+        other.read(at(confused, Endpoint.stateSite("BlockTokenSecretManager",
+                        "get", 3, false), "BlockTokenSecretManager#get#3"),
+                allKeys, 5L, "M_READ_KEY", "119992");
+        other.target(confused, "BlockTokenSecretManager#get#3",
+                "(= M_READ_KEY 0)");
         other.flush();
         ClosurePlanner.Plan divergent = ClosurePlanner.plan(
                 Corpus.read(split, null), confused);
@@ -413,6 +436,59 @@ public class D3ExploreTest {
                     && gap.detail().contains(exported.id());
         }
         assertTrue("and the disagreement is named", told);
+
+        // The epoch's skeleton, over the same corpus: a pair no slot covers
+        // OPENS one (growth, and the producer is a task of this same wave);
+        // the same pair from any later replay FILLS it; and a consumer
+        // endpoint paired with a different producer REPLACES -- which is the
+        // only one of the three that forks an epoch.
+        Set<String> members = new LinkedHashSet<String>();
+        members.add(target.id());
+        members.add(writer.id());
+        SlotTable table = new SlotTable();
+        SlotTable.Reconciliation first = table.reconcile(corpus, members, 0);
+        assertFalse("growth is not a divergence", first.replaced);
+        assertTrue("the wire delivery and the state edge both open slots: "
+                + first.opened.size(), first.opened.size() >= 2);
+        SlotTable.Reconciliation again = table.reconcile(corpus, members, 1);
+        assertTrue("the same pairs fill the slots they opened",
+                again.opened.isEmpty() && again.filled >= 2);
+        assertFalse(again.replaced);
+
+        // A REPLACEMENT is one consumer endpoint pairing with a DIFFERENT
+        // producer: the two pairings cannot both be this epoch's.
+        Path twoWays = tree.newFolder("closure-replaced").toPath();
+        Endpoint otherPort = at(producer, "XCH.resp.block-key-expiry",
+                "PBHelper#convert#12");
+        Session paired = new Session(twoWays, "s-seed");
+        paired.activation(target, false);
+        paired.activation(writer, false);
+        paired.activation(producer, false);
+        paired.constant("e.119992", "119992");
+        paired.export(exported, "e.119992", 11L, "119992");
+        paired.attach(attached, "M_HOFF_KEY", "119992", exported);
+        paired.flush();
+        Session repaired = new Session(twoWays, "s-two");
+        repaired.activation(writer, false);
+        repaired.activation(producer, false);
+        repaired.constant("e.119993", "119993");
+        repaired.export(otherPort, "e.119993", 13L, "119993");
+        repaired.attach(attached, "M_HOFF_KEY", "119993", otherPort);
+        repaired.flush();
+        Set<String> pairedMembers = new LinkedHashSet<String>();
+        pairedMembers.add(writer.id());
+        SlotTable.Reconciliation contradiction = new SlotTable()
+                .reconcile(Corpus.read(twoWays, null), pairedMembers, 2);
+        assertTrue("a consumer paired with another producer is a replacement",
+                contradiction.replaced);
+        boolean blocking = false;
+        for (GapRow gap : contradiction.gaps) {
+            blocking |= gap.kind() == GapKind.TOPOLOGY_DIVERGENCE
+                    && gap.cls() == GapClass.BLOCKING
+                    && gap.detail().contains("already paired");
+        }
+        assertTrue("and it is BLOCKING: the campaign opens an epoch",
+                blocking);
     }
 
     // ---- driving the stage the way the campaign drives it -------------
@@ -539,6 +615,7 @@ public class D3ExploreTest {
         private final List<WriteRow> writes = new ArrayList<>();
         private final List<ReadRow> reads = new ArrayList<>();
         private final List<RootMintRow> roots = new ArrayList<>();
+        private final List<TargetRow> targets = new ArrayList<>();
         private final Map<String, JsonObject> expressions =
                 new LinkedHashMap<>();
         /** The session's own event order: every row takes the next one. */
@@ -567,6 +644,13 @@ public class D3ExploreTest {
          * before every decision that can mention it, because a value is read
          * before it is branched on.
          */
+        /** The anchor's own predicate, in the fatal polarity. */
+        private void target(OccurrenceAddress occurrence, String site,
+                            String phi) {
+            targets.add(TargetRow.of(sessionId, ++seq, occurrence, site, phi,
+                    false, true));
+        }
+
         private void root(OccurrenceAddress occurrence, String rootId,
                           String symbol, RootKind kind, String recorded,
                           String min, String max, boolean declared) {
@@ -599,6 +683,15 @@ public class D3ExploreTest {
                     symbol, "I", concrete));
         }
 
+        /** The value a handoff minted, as the VM propagated it. */
+        private void symbolic(String ref, String symbol) {
+            JsonObject expression = new JsonObject();
+            expression.addProperty("_type", "SymbolExpression");
+            expression.addProperty("_exp", symbol);
+            expression.addProperty("_java_type", "I");
+            expressions.put(ref, expression);
+        }
+
         /** One literal the VM recorded as a delivered constant. */
         private void constant(String ref, String value) {
             JsonObject expression = new JsonObject();
@@ -619,6 +712,7 @@ public class D3ExploreTest {
             RowCodec.writeAll(dir.writes(), writes, RowCodec::writeWrite);
             RowCodec.writeAll(dir.reads(), reads, RowCodec::writeRead);
             RowCodec.writeAll(dir.roots(), roots, RowCodec::writeRootMint);
+            RowCodec.writeAll(dir.targets(), targets, RowCodec::writeTarget);
             RowCodec.writeExpressions(dir.expressions(),
                     ExpressionTable.of(expressions));
         }

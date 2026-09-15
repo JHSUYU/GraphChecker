@@ -1,8 +1,10 @@
 package edu.uva.liftlab.graphchecker.d3.explore;
 
 import edu.uva.liftlab.graphchecker.d3.compose.SmtLowering;
+import edu.uva.liftlab.graphchecker.d3.smt.Arms;
 import edu.uva.liftlab.graphchecker.d3.contract.AttachRow;
 import edu.uva.liftlab.graphchecker.d3.contract.CausalContext;
+import edu.uva.liftlab.graphchecker.d3.contract.DecisionRow;
 import edu.uva.liftlab.graphchecker.d3.contract.ExportRow;
 import edu.uva.liftlab.graphchecker.d3.contract.GapClass;
 import edu.uva.liftlab.graphchecker.d3.contract.GapKind;
@@ -10,6 +12,8 @@ import edu.uva.liftlab.graphchecker.d3.contract.GapRow;
 import edu.uva.liftlab.graphchecker.d3.contract.LocationId;
 import edu.uva.liftlab.graphchecker.d3.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.d3.contract.ReadRow;
+import edu.uva.liftlab.graphchecker.d3.contract.SessionReader;
+import edu.uva.liftlab.graphchecker.d3.contract.TargetRow;
 import edu.uva.liftlab.graphchecker.d3.contract.Task;
 import edu.uva.liftlab.graphchecker.d3.contract.WriteRow;
 
@@ -84,10 +88,14 @@ public final class ClosurePlanner {
             }
         }
         if (!pending.isEmpty()) {
-            gaps.add(GapRow.of("", GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
+            // A truncated closure composes a formula that is missing
+            // producers the anchor's paths read, and a composition missing an
+            // arm is not a weaker claim -- it is an unsound one.
+            gaps.add(GapRow.of("", GapKind.ADMISSION_GAP, GapClass.BLOCKING,
                     anchor.render(), "closure truncated at " + maxTasks
                             + " tasks; " + pending.size() + " occurrences "
-                            + "were not planned"));
+                            + "were not planned, so this anchor's closure is "
+                            + "incomplete"));
         }
         return new Plan(tasks, gaps);
     }
@@ -127,19 +135,117 @@ public final class ClosurePlanner {
         List<OccurrenceAddress> group = new ArrayList<OccurrenceAddress>();
         group.add(occurrence);
         group.addAll(factor);
+        // The group is ONE symbolic unit -- a factor member exists because
+        // its writes feed the focused occurrence's reads -- so what "the
+        // admitted paths read" is asked of the group, not of each member
+        // alone: the addKeys activation decides nothing itself, and the
+        // handoff it writes into the map is read by the occurrence beside it.
+        Set<String> read = readSymbols(corpus, group);
         for (OccurrenceAddress member : group) {
             if (!member.equals(occurrence)) next.add(member);
             for (AttachRow attach : corpus.attachesOn(member)) {
+                if (!read.contains(attach.symbol())) {
+                    unread(gaps, attach.sessionId(), attach.endpoint()
+                            .toString(), "handoff");
+                    continue;
+                }
                 producers(corpus, attach, next, gaps,
                         new LinkedHashSet<String>());
             }
-            for (ReadRow read : corpus.readsOn(member)) {
-                WriteRow writer = corpus.writeOf(read.sessionId(), read.location(),
-                        read.observedVersion());
-                if (writer != null) next.add(writer.endpoint().occurrence());
+            for (ReadRow row : corpus.readsOn(member)) {
+                if (!read.contains(row.symbol())) {
+                    unread(gaps, row.sessionId(), row.endpoint().toString(),
+                            "state read");
+                    continue;
+                }
+                for (WriteRow write : eligibleWrites(corpus, row)) {
+                    next.add(write.endpoint().occurrence());
+                }
             }
         }
         return next;
+    }
+
+    /**
+     * Every symbol the admitted paths of one occurrence actually read.
+     *
+     * <p>The closure is what the anchor's failure CAN depend on, and an
+     * activation's rows are not all of that: a port the region attached but
+     * no path ever branched on, and no value it read ever rested on, is a
+     * delivery this anchor does not use.  Planning its producer as a task
+     * spends replays on a region the composition will not name.</p>
+     *
+     * <p>The set is the same closure the query takes: the symbols the
+     * decisions and the target predicate name, then the symbols the writes
+     * behind the reads among them name, to a fixed point -- a read joins a
+     * write whose expression may itself be a handoff the producer
+     * forwarded.  An attach or a read outside it is recorded as a diagnostic
+     * rather than dropped in silence, because "the closure did not grow" and
+     * "the closure grew and I did not say why" read the same in a report.</p>
+     */
+    private static Set<String> readSymbols(Corpus corpus,
+                                           List<OccurrenceAddress> group) {
+        Set<String> named = new LinkedHashSet<String>();
+        List<ReadRow> reads = new ArrayList<ReadRow>();
+        for (OccurrenceAddress member : group) {
+            for (Corpus.RecordedPath path : corpus.pathsOf(member)) {
+                for (DecisionRow decision : path.decisions) {
+                    SmtText.symbols(decision.term(), named);
+                }
+            }
+            for (TargetRow target : corpus.targetsOn(member)) {
+                SmtText.symbols(target.phiTerm(), named);
+            }
+            reads.addAll(corpus.readsOn(member));
+        }
+        Set<String> settled = new LinkedHashSet<String>();
+        boolean grew = true;
+        while (grew) {
+            grew = false;
+            for (String symbol : new ArrayList<String>(named)) {
+                if (!settled.add(symbol)) continue;
+                for (ReadRow row : reads) {
+                    if (!symbol.equals(row.symbol())) continue;
+                    for (WriteRow write : eligibleWrites(corpus, row)) {
+                        SmtLowering.Lowered lowered =
+                                corpus.lowering(write.sessionId())
+                                        .lower(write.expressionRef());
+                        grew |= named.addAll(lowered.declarations().keySet());
+                    }
+                }
+            }
+        }
+        return named;
+    }
+
+    /**
+     * The writes one read could have taken its value from.
+     *
+     * <p>The observed one, and every write by an occurrence HB-CONCURRENT
+     * with the reader (R-I7.1).  The concurrency rule is
+     * {@code d3.smt.Arms}', so the closure grows by exactly the writers the
+     * composition will offer the solver as alternatives.</p>
+     */
+    private static List<WriteRow> eligibleWrites(Corpus corpus, ReadRow row) {
+        List<WriteRow> eligible = new ArrayList<WriteRow>();
+        for (WriteRow write : corpus.writesOf(row.sessionId(),
+                SmtLowering.locationKey(row.location()))) {
+            if (write.version() == row.observedVersion()
+                    || corpus.arms().concurrent(row.endpoint().occurrence(),
+                            write.endpoint().occurrence(), row.sessionId())) {
+                eligible.add(write);
+            }
+        }
+        return eligible;
+    }
+
+    /** A delivery this anchor's paths never read: recorded, not planned. */
+    private static void unread(List<GapRow> gaps, String sessionId,
+                               String subject, String what) {
+        gaps.add(GapRow.of(sessionId, GapKind.ADMISSION_GAP,
+                GapClass.DIAGNOSTIC, subject,
+                "no admitted path of this occurrence reads this " + what
+                        + ", so its producer is not a task"));
     }
 
     /**
@@ -164,13 +270,13 @@ public final class ClosurePlanner {
         }
         crossCheck(attach, gaps);
         into.add(attach.producer().occurrence());
-        SessionReader.Session session = corpus.session(attach.sessionId());
+        SessionReader session = corpus.session(attach.sessionId());
         if (session == null) return;
         for (ExportRow export : corpus.exportsAt(attach.producer())) {
-            SessionReader.Session exporting = corpus.session(export.sessionId());
+            SessionReader exporting = corpus.session(export.sessionId());
             if (exporting == null) continue;
-            SmtLowering.Lowered lowered =
-                    exporting.lowering().lower(export.expressionRef());
+            SmtLowering.Lowered lowered = corpus.lowering(export.sessionId())
+                    .lower(export.expressionRef());
             for (Map.Entry<String, String> symbol
                     : lowered.declarations().entrySet()) {
                 AttachRow nested = corpus.attach(export.sessionId(),
@@ -242,11 +348,11 @@ public final class ClosurePlanner {
     /** The session an occurrence was first recorded in. */
     private static String seedSession(Corpus corpus,
                                       OccurrenceAddress occurrence) {
-        for (SessionReader.Session session : corpus.sessions()) {
-            if (corpus.activation(session.sessionId, occurrence) != null
-                    || !corpus.decisionsOf(session.sessionId, occurrence)
+        for (SessionReader session : corpus.sessions()) {
+            if (corpus.activation(session.sessionId(), occurrence) != null
+                    || !corpus.decisionsOf(session.sessionId(), occurrence)
                     .isEmpty()) {
-                return session.sessionId;
+                return session.sessionId();
             }
         }
         return "";
