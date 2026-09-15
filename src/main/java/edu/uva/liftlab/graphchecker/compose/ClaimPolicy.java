@@ -1,6 +1,7 @@
 package edu.uva.liftlab.graphchecker.compose;
 
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
+import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics;
 import edu.uva.liftlab.graphchecker.smt.Z3;
 
 import edu.uva.liftlab.graphchecker.contract.Claim;
@@ -17,6 +18,8 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+
+import static edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics.integralLiteral;
 
 /**
  * What a composed, solved query supports -- and what it refuses to say.
@@ -407,7 +410,7 @@ public final class ClaimPolicy {
             Long reading = composition.clockReadings().get(cell);
             if (reading == null) continue;
             pinned.add("(assert (! (= " + cell + " "
-                    + JsonText.smtInteger(Long.toString(reading))
+                    + integralLiteral(Long.toString(reading))
                     + ") :named clock_pinned__"
                     + ArtifactIO.digest(cell, 10) + "))");
         }

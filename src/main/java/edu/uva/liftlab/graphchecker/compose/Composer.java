@@ -34,7 +34,6 @@ import edu.uva.liftlab.graphchecker.contract.WriteRow;
 
 import java.math.BigInteger;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -42,6 +41,10 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+
+import static edu.uva.liftlab.graphchecker.compose.VmTermLowering.smtLiteral;
+import static edu.uva.liftlab.graphchecker.compose.VmTermLowering.smtName;
+import static edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics.integralLiteral;
 
 /**
  * One composed query per anchor, factorized per path.
@@ -715,7 +718,7 @@ public final class Composer {
                 valuation.add(window);
                 continue;
             }
-            String literal = JsonText.smtLiteral(row.recordedValue());
+            String literal = smtLiteral(row.recordedValue());
             if (literal.isEmpty()) continue;
             valuation.add("(= " + row.symbol() + " " + literal + ")");
         }
@@ -728,12 +731,12 @@ public final class Composer {
         RootDomain domain = domainOf(row);
         String min = domain.min();
         String max = domain.max();
-        if (min == null || max == null || JsonText.smtInteger(min).isEmpty()
-                || JsonText.smtInteger(max).isEmpty()) {
+        if (min == null || max == null || integralLiteral(min).isEmpty()
+                || integralLiteral(max).isEmpty()) {
             return "";
         }
-        return "(and (>= " + row.symbol() + " " + JsonText.smtInteger(min)
-                + ") (<= " + row.symbol() + " " + JsonText.smtInteger(max)
+        return "(and (>= " + row.symbol() + " " + integralLiteral(min)
+                + ") (<= " + row.symbol() + " " + integralLiteral(max)
                 + "))";
     }
 
@@ -771,7 +774,7 @@ public final class Composer {
                 unpaired(session, attach);
             }
             if (attach.answered()) {
-                String literal = JsonText.smtLiteral(attach.answeredValue());
+                String literal = smtLiteral(attach.answeredValue());
                 if (literal.isEmpty()) {
                     refusals.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
                             GapClass.DIAGNOSTIC, attach.symbol(),
@@ -789,7 +792,7 @@ public final class Composer {
                 reads.add("(= " + attach.symbol() + " " + paired + ")");
                 continue;
             }
-            String arrival = JsonText.smtLiteral(attach.arrival());
+            String arrival = smtLiteral(attach.arrival());
             if (arrival.isEmpty()) {
                 refusals.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
                         GapClass.DIAGNOSTIC, attach.symbol(),
@@ -1006,7 +1009,7 @@ public final class Composer {
                     joins.put(read.symbol(), "(= " + read.symbol() + " "
                             + value.text + ")");
                     joined.add(read);
-                    String literal = JsonText.smtLiteral(
+                    String literal = smtLiteral(
                             read.concreteValue());
                     if (!literal.isEmpty()) {
                         // What the read RETURNED, kept beside the join: the
@@ -1116,7 +1119,7 @@ public final class Composer {
         Set<String> seen = new LinkedHashSet<String>();
         for (AttachRow attach : corpus.attachesOn(session, anchor)) {
             if (!seen.add(attach.symbol())) continue;
-            String literal = JsonText.smtLiteral(JsonFields.firstNonBlank(
+            String literal = smtLiteral(JsonFields.firstNonBlank(
                     attach.answeredValue(), attach.arrival()));
             if (literal.isEmpty()) continue;
             stated.add("(assert (! (= " + attach.symbol() + " " + literal
@@ -1179,7 +1182,7 @@ public final class Composer {
         List<String> conjuncts = prefix(arm);
         if (conjuncts == null) return "";
         for (Map.Entry<String, String> guard : arm.guard().entrySet()) {
-            String literal = JsonText.smtLiteral(guard.getValue());
+            String literal = smtLiteral(guard.getValue());
             if (literal.isEmpty()) continue;
             // The name has to be IN the query.  A guard names a root the
             // arm's own expression need not mention -- the delivering
@@ -1474,9 +1477,9 @@ public final class Composer {
                     && !max.isEmpty()) {
                 lowering.assertNamed("root_domain__" + ordinal++,
                         "(and (>= " + row.symbol() + " "
-                                + JsonText.smtInteger(min) + ") (<= "
+                                + integralLiteral(min) + ") (<= "
                                 + row.symbol() + " "
-                                + JsonText.smtInteger(max) + "))");
+                                + integralLiteral(max) + "))");
                 continue;
             }
             // A root with no domain is pinned to what the recording read
@@ -1493,7 +1496,7 @@ public final class Composer {
                                 + "what it is and the mint pins nothing");
                 continue;
             }
-            String literal = JsonText.smtLiteral(row.recordedValue());
+            String literal = smtLiteral(row.recordedValue());
             if (literal.isEmpty()) continue;
             lowering.assertNamed("root_domain__" + ordinal++,
                     "(= " + row.symbol() + " " + literal + ")");
@@ -1703,10 +1706,10 @@ public final class Composer {
         for (Map.Entry<String, String> entry : assignment.entrySet()) {
             RootMintRow row = corpus.anyRoot(entry.getKey());
             if (row == null) continue;
-            String literal = JsonText.smtLiteral(entry.getValue());
+            String literal = smtLiteral(entry.getValue());
             if (literal.isEmpty()) continue;
             assertions.add("(assert (! (= " + row.symbol() + " " + literal
-                    + ") :named valuation__" + JsonText.smtName(row.symbol())
+                    + ") :named valuation__" + smtName(row.symbol())
                     + "))");
         }
         return new Valuation(ordinal, assignment, moved, assertions);
@@ -1725,13 +1728,13 @@ public final class Composer {
         if (domain.pinned()) return values;
         String min = domain.min();
         String max = domain.max();
-        if (min == null || max == null || JsonText.smtInteger(min).isEmpty()
-                || JsonText.smtInteger(max).isEmpty()) {
+        if (min == null || max == null || integralLiteral(min).isEmpty()
+                || integralLiteral(max).isEmpty()) {
             return values;
         }
         BigInteger low = new BigInteger(min.trim());
         BigInteger high = new BigInteger(max.trim());
-        BigInteger centre = JsonText.smtInteger(recorded).isEmpty()
+        BigInteger centre = integralLiteral(recorded).isEmpty()
                 ? low : new BigInteger(recorded);
         List<BigInteger> candidates = new ArrayList<BigInteger>();
         for (BigInteger value = low; value.compareTo(high) <= 0;

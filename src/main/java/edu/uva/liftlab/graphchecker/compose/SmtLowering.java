@@ -31,6 +31,11 @@ import java.util.Collection;
 import java.util.Set;
 import java.util.function.Predicate;
 
+import static edu.uva.liftlab.graphchecker.compose.VmTermLowering.smtLiteral;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalInteger;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalLongInteger;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.primitiveString;
+
 /**
  * The ONE SMT lowering: the composer's and the flip solver's.
  *
@@ -766,7 +771,7 @@ public final class SmtLowering extends VmLoweringCore {
     @Override
     public Term symbolTerm(JsonObject expression, Sort expected,
                            String origin) {
-        String raw = JsonText.string(expression, "_exp");
+        String raw = primitiveString(expression, "_exp");
         // Java null, which the VM spells "N" on a SymbolExpression leaf
         // exactly as it does on a constant one (VmExpressionIr
         // .SYMBOLIC_NULL).  Read as a NAME instead, it minted an opaque
@@ -777,7 +782,7 @@ public final class SmtLowering extends VmLoweringCore {
             return nullLeaf(expected);
         }
         if ("V".equals(raw)) return Term.of("true", Sort.BOOL);
-        String javaType = JsonText.string(expression, "_java_type");
+        String javaType = primitiveString(expression, "_java_type");
         Sort encoded = JavaSmtSorts.sortOfJava(javaType);
         Sort sort = expected == Sort.MAP || expected == Sort.ARRAY_VALUE
                 ? expected
@@ -838,8 +843,8 @@ public final class SmtLowering extends VmLoweringCore {
 
     @Override
     public Term placeholderTerm(JsonObject expression, String origin) {
-        String function = JsonText.string(expression, "_place_holder_func");
-        int count = JsonText.integer(expression, "_count", -1);
+        String function = primitiveString(expression, "_place_holder_func");
+        int count = optionalInteger(expression, "_count", -1);
         if (!"currentTimeMills".equals(function) || count < 1) {
             refuse("PlaceholderExpression:"
                     + (function.isEmpty() ? "unknown" : function)
@@ -926,7 +931,7 @@ public final class SmtLowering extends VmLoweringCore {
             }
             if (!minted.isEmpty()) {
                 return symbolTerm(symbolNode(minted,
-                                JsonText.string(expression, "_java_type")),
+                                primitiveString(expression, "_java_type")),
                         expected, origin + ":minted");
             }
         }
@@ -982,7 +987,7 @@ public final class SmtLowering extends VmLoweringCore {
                 || VmRows.referencedObjectRid(text) > 0L) {
             return symbolTerm(symbolNode(text, javaType), null, origin);
         }
-        String literal = JsonText.smtLiteral(text);
+        String literal = smtLiteral(text);
         if (literal.isEmpty()) return null;
         Sort sort = JavaSmtSorts.sortOfJava(javaType);
         if (sort != Sort.BOOL && sort != Sort.INT && sort != Sort.FLOAT32
@@ -1018,16 +1023,16 @@ public final class SmtLowering extends VmLoweringCore {
                          JsonObject location, String key, long version,
                          Sort expected, String origin) {
         if (value == null || !value.sort.containerState()) return value;
-        String javaType = JsonText.string(expression, "_java_type");
+        String javaType = primitiveString(expression, "_java_type");
         Sort cell = JavaSmtSorts.sortOfJava(javaType);
         // The read IS of the container: the value is what it read.
         if (cell.containerState() || cell == Sort.UNKNOWN
                 || expected != null && expected.containerState()) {
             return value;
         }
-        long slot = JsonText.longInteger(location, "slot", -1L);
+        long slot = optionalLongInteger(location, "slot", -1L);
         boolean indexed = value.sort == Sort.ARRAY_VALUE && slot >= 0L
-                && locationKind(JsonText.string(location, "locationKind"))
+                && locationKind(primitiveString(location, "locationKind"))
                 == LocationKind.ARRAY;
         if (indexed) {
             Term cellValue = Term.of("(indexed_read " + value.text + " "
@@ -1056,18 +1061,18 @@ public final class SmtLowering extends VmLoweringCore {
             // carried it on.  A field projection states no operation, so
             // naming the operation alone left the row blank -- a refusal
             // nobody can read is the silence rule 8 forbids.
-            String named = JsonText.string(expression, "operation");
+            String named = primitiveString(expression, "operation");
             if (named.isEmpty()) {
                 named = field
-                        ? "FIELD:" + JsonText.string(expression, "ownerClass")
-                        + "@" + JsonText.longInteger(expression,
+                        ? "FIELD:" + primitiveString(expression, "ownerClass")
+                        + "@" + optionalLongInteger(expression,
                         "fieldOffset", -1L)
-                        : JsonText.string(expression, "shape");
+                        : primitiveString(expression, "shape");
             }
             refuse("ContainerRelation:" + (named.isEmpty() ? "unnamed"
                     : named), "");
             return free(JavaSmtSorts.sortOfJava(
-                    JsonText.string(expression, "_java_type")));
+                    primitiveString(expression, "_java_type")));
         }
         Sort sort = VmTermLowering.sortOfContainer(value.sort);
         if (sort == Sort.UNKNOWN) {
@@ -1150,7 +1155,7 @@ public final class SmtLowering extends VmLoweringCore {
                         origin + ":container-state");
                 if (reference == null || reference.sort != Sort.REF) {
                     if (identity != null && identity.isJsonObject()) {
-                        String raw = JsonText.string(
+                        String raw = primitiveString(
                                 identity.getAsJsonObject(), "_exp");
                         if (!raw.isEmpty()) {
                             String name = symbols.mint("container__",
@@ -2077,17 +2082,17 @@ public final class SmtLowering extends VmLoweringCore {
     /** The join key of one VM location node, in the same spelling. */
     public static String locationKey(JsonObject location) {
         if (location == null || location.size() == 0) return "";
-        String kind = JsonText.string(location, "locationKind");
+        String kind = primitiveString(location, "locationKind");
         if (kind.isEmpty()) return "";
-        String owner = JsonText.string(location, "ownerSymRid");
+        String owner = primitiveString(location, "ownerSymRid");
         if (owner.isEmpty()) {
-            long rid = JsonText.longInteger(location, "ownerSymRid", 0L);
+            long rid = optionalLongInteger(location, "ownerSymRid", 0L);
             owner = rid == 0L ? "" : Long.toString(rid);
         }
         if (owner.isEmpty()) return "";
-        String slot = JsonText.string(location, "slot");
+        String slot = primitiveString(location, "slot");
         if (slot.isEmpty()) {
-            slot = Long.toString(JsonText.longInteger(location, "slot", 0L));
+            slot = Long.toString(optionalLongInteger(location, "slot", 0L));
         }
         return locationKey(LocationId.of(locationKind(kind), owner, slot));
     }
@@ -2117,7 +2122,7 @@ public final class SmtLowering extends VmLoweringCore {
                 VmRows.OBSERVED_VERSION);
         if (observed == null || observed.isJsonNull()) return -1L;
         if (observed.isJsonObject()) {
-            return JsonText.longInteger(observed.getAsJsonObject(),
+            return optionalLongInteger(observed.getAsJsonObject(),
                     "fieldVersionId", -1L);
         }
         try {
