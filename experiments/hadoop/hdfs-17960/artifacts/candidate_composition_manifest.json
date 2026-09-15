@@ -1,0 +1,208 @@
+{
+  "anchor": "hdfs-17960/nn0#epoch1/region/REGION.f0132fca-8c1f-3f7c-93e7-dc41bfc20f40/ctx:Anchor:1b019df56f339972@HADOOP_IPC/checkpoint-namespace/idx:\u003corg.apache.hadoop.hdfs.server.namenode.NameNodeRpcServer: boolean saveNamespace(long,long)\u003e@0/\u003corg.apache.hadoop.hdfs.server.namenode.FSNamesystem: boolean saveNamespace(long,long)\u003e@0/\u003corg.apache.hadoop.hdfs.server.namenode.FSImage: void saveNamespace(org.apache.hadoop.hdfs.server.namenode.FSNamesystem,org.apache.hadoop.hdfs.server.namenode.NNStorage$NameNodeFile,org.apache.hadoop.hdfs.util.Canceler)\u003e@0/\u003corg.apache.hadoop.hdfs.server.namenode.FSImage: void saveFSImageInAllDirs(org.apache.hadoop.hdfs.server.namenode.FSNamesystem,org.apache.hadoop.hdfs.server.namenode.NNStorage$NameNodeFile,long,org.apache.hadoop.hdfs.util.Canceler)\u003e@0/\u003corg.apache.hadoop.hdfs.server.namenode.FSImage$FSImageSaver: void run()\u003e@0/\u003corg.apache.hadoop.hdfs.server.namenode.FSImage$FSImageSaver: void run()\u003e@0/\u003corg.apache.hadoop.hdfs.server.namenode.FSImage: void saveFSImage(org.apache.hadoop.hdfs.server.namenode.SaveNamespaceContext,org.apache.hadoop.hdfs.server.common.Storage$StorageDirectory,org.apache.hadoop.hdfs.server.namenode.NNStorage$NameNodeFile)\u003e@0/\u003corg.apache.hadoop.hdfs.server.namenode.FSImage: void saveFSImage(org.apache.hadoop.hdfs.server.namenode.SaveNamespaceContext,org.apache.hadoop.hdfs.server.common.Storage$StorageDirectory,org.apache.hadoop.hdfs.server.namenode.NNStorage$NameNodeFile)\u003e@0/\u003corg.apache.hadoop.hdfs.server.namenode.FSImageFormatProtobuf$Saver: long saveInternal(java.io.FileOutputStream,org.apache.hadoop.hdfs.server.namenode.FSImageCompression,java.lang.String)\u003e@0/\u003corg.apache.hadoop.hdfs.server.namenode.FSImageFormatProtobuf$Saver: long saveInternal(java.io.FileOutputStream,org.apache.hadoop.hdfs.server.namenode.FSImageCompression,java.lang.String)\u003e@0/\u003corg.apache.hadoop.hdfs.server.namenode.FSImageFormatProtobuf$Saver: long saveSnapshots(org.apache.hadoop.hdfs.server.namenode.FsImageProto$FileSummary$Builder)\u003e@0/\u003corg.apache.hadoop.hdfs.server.namenode.FSImageFormatProtobuf$Saver: long saveSnapshots(org.apache.hadoop.hdfs.server.namenode.FsImageProto$FileSummary$Builder)\u003e@0/\u003corg.apache.hadoop.hdfs.server.namenode.snapshot.FSImageFormatPBSnapshot$Saver: void serializeSnapshotSection(java.io.OutputStream)\u003e@0",
+  "paths": [
+    {
+      "pathId": "45697fcaa1ab2d77",
+      "sessionId": "48822195e08fa831-8b311d7b",
+      "selector": "path_selector__0__35c34b0f74",
+      "fatalObserved": true
+    },
+    {
+      "pathId": "45697fcaa1ab2d77",
+      "sessionId": "48822195e08fa831-8b311d7b",
+      "selector": "path_selector__1__35c34b0f74",
+      "fatalObserved": true
+    },
+    {
+      "pathId": "92006ccf9116588b",
+      "sessionId": "631c6aab4f9c2e01-0c87f52a",
+      "selector": "path_selector__2__668feba288",
+      "fatalObserved": true
+    },
+    {
+      "pathId": "92006ccf9116588b",
+      "sessionId": "631c6aab4f9c2e01-0c87f52a",
+      "selector": "path_selector__3__668feba288",
+      "fatalObserved": true
+    },
+    {
+      "pathId": "43ef34de33f4eb10",
+      "sessionId": "seed-result-a4cc1f5b",
+      "selector": "path_selector__4__fe8277cefd",
+      "fatalObserved": false
+    },
+    {
+      "pathId": "43ef34de33f4eb10",
+      "sessionId": "seed-result-a4cc1f5b",
+      "selector": "path_selector__5__fe8277cefd",
+      "fatalObserved": false
+    }
+  ],
+  "families": [],
+  "roots": [
+    {
+      "rootId": "HDFS.CONFIG.SNAPSHOT_DELETION_ORDERED",
+      "kind": "MARKER",
+      "recordedValue": "true"
+    }
+  ],
+  "valuations": 2,
+  "claim": {
+    "kind": "MARKER_FLIPPED",
+    "valuationOrdinal": 1,
+    "movedRoots": {
+      "HDFS.CONFIG.SNAPSHOT_DELETION_ORDERED": "false"
+    },
+    "polarityDecides": true,
+    "gaps": [
+      {
+        "sessionId": "composition",
+        "kind": "DECLARATION_MISSING",
+        "cls": "DIAGNOSTIC",
+        "subject": "INSTANCE/1#24",
+        "detail": "the owner on this location\u0027s rows is neither an allocation endpoint id nor the preWindow form, so it names no storage across replays: this read is delivered as its own run delivered it and gets no alternative writers"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "DECLARATION_MISSING",
+        "cls": "DIAGNOSTIC",
+        "subject": "INSTANCE/3#64",
+        "detail": "the owner on this location\u0027s rows is neither an allocation endpoint id nor the preWindow form, so it names no storage across replays: this read is delivered as its own run delivered it and gets no alternative writers"
+      },
+      {
+        "sessionId": "composition",
+        "kind": "DECLARATION_MISSING",
+        "cls": "DIAGNOSTIC",
+        "subject": "INSTANCE/5#64",
+        "detail": "the owner on this location\u0027s rows is neither an allocation endpoint id nor the preWindow form, so it names no storage across replays: this read is delivered as its own run delivered it and gets no alternative writers"
+      }
+    ]
+  },
+  "smt2Path": "/tmp/claude-20003/-opt-GraphChecker/10153a9a-290a-45d1-b3c9-072f259e090e/scratchpad/laneA8/out/hdfs-17960/schedule/iteration-0000/final/candidate.smt2",
+  "schemaVersion": 1,
+  "kind": "D3_COMPOSITION_MANIFEST",
+  "anchorId": "eb16a550cc44b9b0",
+  "seedSessionId": "seed-result-a4cc1f5b",
+  "symbolicPropagationComplete": true,
+  "finalStatus": "FINAL_READY",
+  "finalStatusRefusals": [],
+  "gaps": [
+    {
+      "sessionId": "composition",
+      "kind": "DECLARATION_MISSING",
+      "cls": "DIAGNOSTIC",
+      "subject": "INSTANCE/1#24",
+      "detail": "the owner on this location\u0027s rows is neither an allocation endpoint id nor the preWindow form, so it names no storage across replays: this read is delivered as its own run delivered it and gets no alternative writers"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "DECLARATION_MISSING",
+      "cls": "DIAGNOSTIC",
+      "subject": "INSTANCE/3#64",
+      "detail": "the owner on this location\u0027s rows is neither an allocation endpoint id nor the preWindow form, so it names no storage across replays: this read is delivered as its own run delivered it and gets no alternative writers"
+    },
+    {
+      "sessionId": "composition",
+      "kind": "DECLARATION_MISSING",
+      "cls": "DIAGNOSTIC",
+      "subject": "INSTANCE/5#64",
+      "detail": "the owner on this location\u0027s rows is neither an allocation endpoint id nor the preWindow form, so it names no storage across replays: this read is delivered as its own run delivered it and gets no alternative writers"
+    }
+  ],
+  "solver": {
+    "state": "sat",
+    "reachability": "EXACT_REACHABLE",
+    "unsatClosureComplete": false,
+    "solverRuns": 5,
+    "symbolicVariableModels": [
+      {
+        "schemaVersion": 1,
+        "kind": "SYMBOLIC_VARIABLE_MODEL",
+        "valuationOrdinal": 1,
+        "variables": [
+          {
+            "inputKind": "CONFIGURED_SOURCE_FIELD",
+            "sourceKey": "HDFS.CONFIG.SNAPSHOT_DELETION_ORDERED",
+            "sourceId": "HDFS.CONFIG.SNAPSHOT_DELETION_ORDERED",
+            "sourcePhaseId": "hdfs-17960/nn0#epoch1/region/REGION.f0132fca-8c1f-3f7c-93e7-dc41bfc20f40/ctx:Anchor:1b019df56f339972@HADOOP_IPC/checkpoint-namespace/idx:\u003corg.apache.hadoop.hdfs.server.namenode.NameNodeRpcServer: boolean saveNamespace(long,long)\u003e@0/\u003corg.apache.hadoop.hdfs.server.namenode.FSNamesystem: boolean saveNamespace(long,long)\u003e@0/\u003corg.apache.hadoop.hdfs.server.namenode.FSImage: void saveNamespace(org.apache.hadoop.hdfs.server.namenode.FSNamesystem,org.apache.hadoop.hdfs.server.namenode.NNStorage$NameNodeFile,org.apache.hadoop.hdfs.util.Canceler)\u003e@0/\u003corg.apache.hadoop.hdfs.server.namenode.FSImage: void saveFSImageInAllDirs(org.apache.hadoop.hdfs.server.namenode.FSNamesystem,org.apache.hadoop.hdfs.server.namenode.NNStorage$NameNodeFile,long,org.apache.hadoop.hdfs.util.Canceler)\u003e@0/\u003corg.apache.hadoop.hdfs.server.namenode.FSImage$FSImageSaver: void run()\u003e@0/\u003corg.apache.hadoop.hdfs.server.namenode.FSImage$FSImageSaver: void run()\u003e@0/\u003corg.apache.hadoop.hdfs.server.namenode.FSImage: void saveFSImage(org.apache.hadoop.hdfs.server.namenode.SaveNamespaceContext,org.apache.hadoop.hdfs.server.common.Storage$StorageDirectory,org.apache.hadoop.hdfs.server.namenode.NNStorage$NameNodeFile)\u003e@0/\u003corg.apache.hadoop.hdfs.server.namenode.FSImage: void saveFSImage(org.apache.hadoop.hdfs.server.namenode.SaveNamespaceContext,org.apache.hadoop.hdfs.server.common.Storage$StorageDirectory,org.apache.hadoop.hdfs.server.namenode.NNStorage$NameNodeFile)\u003e@0/\u003corg.apache.hadoop.hdfs.server.namenode.FSImageFormatProtobuf$Saver: long saveInternal(java.io.FileOutputStream,org.apache.hadoop.hdfs.server.namenode.FSImageCompression,java.lang.String)\u003e@0/\u003corg.apache.hadoop.hdfs.server.namenode.FSImageFormatProtobuf$Saver: long saveInternal(java.io.FileOutputStream,org.apache.hadoop.hdfs.server.namenode.FSImageCompression,java.lang.String)\u003e@0/\u003corg.apache.hadoop.hdfs.server.namenode.FSImageFormatProtobuf$Saver: long saveSnapshots(org.apache.hadoop.hdfs.server.namenode.FsImageProto$FileSummary$Builder)\u003e@0/\u003corg.apache.hadoop.hdfs.server.namenode.FSImageFormatProtobuf$Saver: long saveSnapshots(org.apache.hadoop.hdfs.server.namenode.FsImageProto$FileSummary$Builder)\u003e@0/\u003corg.apache.hadoop.hdfs.server.namenode.snapshot.FSImageFormatPBSnapshot$Saver: void serializeSnapshotSection(java.io.OutputStream)\u003e@0",
+            "fieldSignature": "MARKER",
+            "value": "false"
+          }
+        ]
+      }
+    ],
+    "valuations": [
+      {
+        "ordinal": 0,
+        "status": "unsat",
+        "assignment": {
+          "HDFS.CONFIG.SNAPSHOT_DELETION_ORDERED": "true"
+        },
+        "moved": {},
+        "selectedPathId": "",
+        "selectedSessionId": "",
+        "fatalObserved": false,
+        "unsatCore": [
+          "path_fatal__0",
+          "path_fatal__1",
+          "path_fatal__2",
+          "path_fatal__3",
+          "path_fatal__4",
+          "path_fatal__5",
+          "fatal_target",
+          "valuation__M_Z_field_SRC_50c885b36ada5c1b9c4715f97f1d56b8ffd06bd94c83e91d476e32c8ef09b8cb_org_apache_hadoop_hdfs_server_namenode_snapshot_SnapshotManager"
+        ]
+      },
+      {
+        "ordinal": 1,
+        "status": "sat",
+        "assignment": {
+          "HDFS.CONFIG.SNAPSHOT_DELETION_ORDERED": "false"
+        },
+        "moved": {
+          "HDFS.CONFIG.SNAPSHOT_DELETION_ORDERED": "false"
+        },
+        "selectedPathId": "92006ccf9116588b",
+        "selectedSessionId": "631c6aab4f9c2e01-0c87f52a",
+        "fatalObserved": true,
+        "unsatCore": []
+      }
+    ],
+    "campaignClaim": {
+      "claim": "SAT_CANDIDATE",
+      "claimReason": "valuation 1 reaches the fatal arm: MARKER_FLIPPED {HDFS.CONFIG.SNAPSHOT_DELETION_ORDERED\u003dfalse}, and the recorded valuation refutes the recording",
+      "findingKind": "MARKER_FLIPPED",
+      "valuationOrdinal": 1,
+      "polarityDecides": true,
+      "movedRoots": {
+        "HDFS.CONFIG.SNAPSHOT_DELETION_ORDERED": "false"
+      },
+      "blockers": [],
+      "blockerCount": 0,
+      "whyNotAccepted": "",
+      "witnessFindings": [
+        {
+          "findingKind": "MARKER_FLIPPED",
+          "valuationOrdinal": 1,
+          "movedRoots": {
+            "HDFS.CONFIG.SNAPSHOT_DELETION_ORDERED": "false"
+          },
+          "polarityDecides": true
+        }
+      ],
+      "rootSpace": {
+        "acceptedFindingKind": "MARKER_FLIPPED",
+        "reportedFindings": [
+          {
+            "findingKind": "MARKER_FLIPPED",
+            "valuationOrdinal": 1,
+            "movedRoots": {
+              "HDFS.CONFIG.SNAPSHOT_DELETION_ORDERED": "false"
+            },
+            "polarityDecides": true
+          }
+        ]
+      }
+    }
+  }
+}
