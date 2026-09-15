@@ -200,6 +200,25 @@ public final class D3Runtime {
         return address;
     }
 
+    /**
+     * States one activation that no plan selected.
+     *
+     * <p>Every activation of every region publishes a row, focused or not:
+     * the explorer reads "this occurrence ran, and these are its decisions"
+     * from the rows, so an activation with no row silently downgrades an
+     * arm that rests on it.  Once per occurrence per session -- an ambient
+     * occurrence publishes at its first delivery, not at every leaf.</p>
+     */
+    public static void ambientActivation(OccurrenceAddress address) {
+        SessionPublisher session = publisher;
+        if (session == null || address == null) return;
+        if (AMBIENT.putIfAbsent(address.id(), Boolean.TRUE) != null) return;
+        session.activation(ActivationRow.of(sessionId(), address, "", false));
+    }
+
+    private static final Map<String, Boolean> AMBIENT =
+            new ConcurrentHashMap<String, Boolean>();
+
     /** The address minted for this activation, or {@code null}. */
     public static OccurrenceAddress addressOf(long token) {
         return ACTIVATIONS.get(token);
@@ -422,6 +441,16 @@ public final class D3Runtime {
                 Text.safe(detail)));
     }
 
+    /** Enters one frame of the execution index: a woven control site. */
+    public static void enterFrame(String callSiteId) {
+        Identity.enterCall(callSiteId);
+    }
+
+    /** Leaves the innermost frame. */
+    public static void exitFrame() {
+        Identity.exitCall();
+    }
+
     /** Charges one loop iteration to the running execution index. */
     public static void loopIteration(String loopId) {
         Identity.loopIteration(loopId);
@@ -524,6 +553,7 @@ public final class D3Runtime {
     public static void resetForTests() {
         synchronized (LOCK) {
             ACTIVATIONS.clear();
+            AMBIENT.clear();
             CONTEXTS.clear();
             INDEXES.clear();
             ORDINALS.clear();

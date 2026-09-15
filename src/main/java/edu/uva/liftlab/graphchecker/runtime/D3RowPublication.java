@@ -43,19 +43,40 @@ final class D3RowPublication {
         if (active == null || !D3Runtime.open()) return;
         OccurrenceAddress occurrence = active.d3Address;
         if (occurrence == null) return;
+        publishKind("decisions", active, occurrence);
+        publishKind("roots", active, occurrence);
+        publishKind("state", active, occurrence);
+        publishKind("target", active, occurrence);
+        D3Runtime.endActivation(active.token);
+    }
+
+    /**
+     * One kind, and its own refusal.
+     *
+     * <p>A row kind that cannot be built is that kind's gap: publishing them
+     * under one try left a refused read suppressing the anchor row of the
+     * same activation, which reads afterwards as an occurrence that never
+     * reached its target.</p>
+     */
+    private static void publishKind(String kind, ActiveRegion active,
+                                    OccurrenceAddress occurrence) {
         try {
-            decisions(active, occurrence);
-            roots(active, occurrence);
-            writes(active, occurrence);
-            target(active, occurrence);
-            D3Runtime.endActivation(active.token);
+            if ("decisions".equals(kind)) {
+                decisions(active, occurrence);
+            } else if ("roots".equals(kind)) {
+                roots(active, occurrence);
+            } else if ("state".equals(kind)) {
+                writes(active, occurrence);
+            } else {
+                target(active, occurrence);
+            }
         } catch (RuntimeException failure) {
             // The rows describe a run; a translation that throws must not
             // end one.  It says so instead, which is the difference between
             // "this run published no writes" and "this run made none".
             D3Runtime.gap(GapKind.DECLARATION_MISSING, GapClass.DIAGNOSTIC,
                     occurrence.render(),
-                    "the Design 3 rows of this activation could not be"
+                    "the " + kind + " rows of this activation could not be"
                             + " published: "
                             + ConcolicRegionRuntime.rootCause(failure));
         }
@@ -246,9 +267,15 @@ final class D3RowPublication {
         }
         String identity = locationKey + "#" + observed;
         if (!published.add(identity)) return;
+        String symbol = optionalString(node, "_exp");
+        if (symbol.isEmpty()) {
+            // A guarded read names no symbol of its own: what it read is
+            // the version of the location, and that is what the row says.
+            symbol = locationKey + "@v" + observed;
+        }
         D3Runtime.read(occurrence, Math.max(0L, observed),
                 Endpoint.stateSite(locationKey, "READ_FROM", 0, false),
-                location, observed, optionalString(node, "_exp"),
+                location, observed, symbol,
                 optionalString(node, "_java_type"), "");
     }
 
@@ -269,10 +296,11 @@ final class D3RowPublication {
         LocationId location = LocationId.of(LocationKind.INSTANCE,
                 ownerClass.isEmpty() ? "<unstated>" : ownerClass,
                 String.valueOf(offset));
+        String projected = optionalString(node, "_exp");
         D3Runtime.read(occurrence, 0L,
                 Endpoint.stateSite(locationKey, "FIELD", offset, false),
                 location, ReadRow.UNKNOWN_VERSION,
-                optionalString(node, "_exp"),
+                projected.isEmpty() ? locationKey + "@concrete" : projected,
                 optionalString(node, "_java_type"),
                 value.isJsonObject()
                         ? optionalString(value.getAsJsonObject(), "_exp")

@@ -471,6 +471,7 @@ public final class ConcolicRegionRuntime {
     public static long enterAccessorCallContext(
             String callerMethod, int callUnitIndex, String callSiteId,
             String declaredCallee, Object receiver) {
+        D3Runtime.enterFrame(safe(callSiteId));
         try {
             ActiveRegion active = activeRegion();
             String caller = safe(callerMethod);
@@ -508,6 +509,7 @@ public final class ConcolicRegionRuntime {
 
     /** Closes a lightweight accessor scope on normal or exceptional return. */
     public static void exitAccessorCallContext(long contextToken) {
+        D3Runtime.exitFrame();
         if (contextToken == 0L) return;
         try {
             AccessorCallContext current =
@@ -842,6 +844,11 @@ public final class ConcolicRegionRuntime {
                                         String rootMethod,
                                         Object receiver,
                                         Object[] rootArguments) {
+        // The execution index's frame stack.  In a replay the woven hooks
+        // are the region frames and the accessor call contexts -- the trace
+        // recorder's call-site hooks belong to the recording pass -- so
+        // this is where the control path is seen (IDENTITY-IMPL §B).
+        D3Runtime.enterFrame(safe(rootMethod));
         ConcolicTaskPlan config = configuration();
         RootHookGroup group = config.rootHookGroup(
                 instrumentationSelector, rootMethod);
@@ -2223,6 +2230,9 @@ public final class ConcolicRegionRuntime {
                     producer = active == null || active.d3Address == null
                     ? D3Runtime.degraded(nodeKey, site.portId())
                     : active.d3Address;
+            if (active == null || active.d3Address == null) {
+                D3Runtime.ambientActivation(producer);
+            }
             JsonObject exported = null;
             String recordedValue = "";
             try {
@@ -2853,6 +2863,7 @@ public final class ConcolicRegionRuntime {
                             + " the delivery has no consumer address");
             return;
         }
+        D3Runtime.ambientActivation(consumer);
         Field element = declaredInstanceField(owner, declaringClass,
                 fieldName, descriptor);
         List<HandoffLeaf> leaves = handoffLeaves(owner, element);
@@ -3123,6 +3134,7 @@ public final class ConcolicRegionRuntime {
      */
     public static void exitRegionFrame(String instrumentationSelector,
                                        String rootMethod) {
+        D3Runtime.exitFrame();
         try {
             RootInvocationFrame frame = popRootInvocationFrame(
                     instrumentationSelector, rootMethod);
@@ -3142,6 +3154,7 @@ public final class ConcolicRegionRuntime {
     public static void throwRegionFrame(String instrumentationSelector,
                                         String rootMethod,
                                         Throwable throwable) {
+        D3Runtime.exitFrame();
         try {
             RootInvocationFrame frame = popRootInvocationFrame(
                     instrumentationSelector, rootMethod);

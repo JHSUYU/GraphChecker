@@ -2,7 +2,6 @@ package edu.uva.liftlab.graphchecker.runtime.d3;
 
 import edu.uva.liftlab.graphchecker.d3.contract.Role;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
