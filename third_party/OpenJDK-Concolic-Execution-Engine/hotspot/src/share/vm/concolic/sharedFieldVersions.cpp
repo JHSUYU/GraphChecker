@@ -146,9 +146,23 @@ jlong SharedFieldVersions::publish_value(const Location &location,
   // landed, every later store -- concrete ones included -- must be versioned,
   // or a read would go on resolving to an expression the program has since
   // overwritten.
-  if (!symbolic && (!has_carriers() || !is_tracked(location))) return 0;
+  // A concrete store is symbolic evidence too when it is control-dependent
+  // on a symbolic decision: the store happened BECAUSE a symbolic predicate
+  // came out one way, so what the location holds afterwards is a function of
+  // that predicate and a reader of it is reading a symbolic value.  HDFS-11741
+  // is the case that needs it: removeExpiredKeys() removes concrete, pre-
+  // recording keys from a concrete map under `expiryDate < now` where `now` is
+  // a declared CLOCK root, and the removal of the Balancer's key -- the causal
+  // crux -- left no version at all while only a symbolic *value* could start a
+  // log.  A non-empty path guard is exactly that condition, and the guard the
+  // version carries is the predicate it is a function of.
+  const bool guarded = path_guard != NULL;
+  if (!symbolic && !guarded
+      && (!has_carriers() || !is_tracked(location))) {
+    return 0;
+  }
   return publish(location, value, path_guard, version_kind, operation,
-                 symbolic);
+                 symbolic || guarded);
 }
 
 jlong SharedFieldVersions::publish(const Location &location, Expression *value,

@@ -205,6 +205,14 @@ public:
   // Folded here so that a caller can obtain it before taking any engine lock.
   Expression *path_guard();
 
+  // Whether that conjunction is non-empty: at least one instrumented branch
+  // has been taken in the CURRENT region frame, so anything this thread does
+  // from here is control-dependent on a symbolic decision.  The same notion
+  // path_guard() folds, asked without folding it -- this runs on every
+  // modelled container call, and no Expression may be built to answer a
+  // question about whether one is needed.
+  bool path_guarded() const;
+
   inline bool is_aborted() const { return _aborted; }
   inline const std::string &get_abort_reason() const { return _abort_reason; }
   void abort_symbolic_execution(const char *reason);

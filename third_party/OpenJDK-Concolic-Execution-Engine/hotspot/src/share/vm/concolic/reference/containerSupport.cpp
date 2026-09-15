@@ -588,6 +588,13 @@ void ContainerSupport::snapshot_for_receiver(
       unsupported == NULL ? "UNREADABLE_CONTAINER" : unsupported;
 }
 
+bool ContainerSupport::guarded_mutation(const std::string &callee) {
+  if (ConcolicMngr::ctx == NULL) return false;
+  if (!ConcolicMngr::ctx->path_guarded()) return false;
+  return callee == "put" || callee == "remove" || callee == "clear"
+      || callee == "add" || callee == "offer" || callee == "set";
+}
+
 jlong ContainerSupport::publish_state(oop container, Expression *new_state,
                                       const char *operation) {
   // A container state expression exists only because something symbolic went

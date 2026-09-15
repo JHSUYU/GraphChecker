@@ -38,7 +38,11 @@ void SymSet::init_register_class(MethodSymbolizer *m_symbolizer) {
 bool SymSet::invoke_method_helper(MethodSymbolizerHandle &handle) {
   const std::string &callee_name = handle.get_callee_name();
   if (handle_method_names.find(callee_name) != handle_method_names.end()) {
-    bool recording = handle.general_check_param_symbolized();
+    // A symbolic value admits the model, and so does a mutation this thread
+    // is performing because of a symbolic decision: see
+    // ContainerSupport::guarded_mutation.
+    bool recording = handle.general_check_param_symbolized()
+        || ContainerSupport::guarded_mutation(callee_name);
     if (recording) {
       handle.general_prepare_param();
       // Before the body runs: state what the container already holds, while

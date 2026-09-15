@@ -73,6 +73,11 @@ ThreadContext::ThreadContext(JavaThread *jt, jlong context_id)
             "a thread context requires an open symbolic session");
 }
 
+bool ThreadContext::path_guarded() const {
+  return !_region_stack.empty()
+      && _region_stack.back()->branch_path_condition.size() > 0;
+}
+
 Expression *ThreadContext::path_guard() {
   return _region_stack.empty()
       ? NULL : _region_stack.back()->branch_path_condition.conjunction();
