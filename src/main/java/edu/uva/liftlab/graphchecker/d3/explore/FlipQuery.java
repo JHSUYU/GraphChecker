@@ -14,7 +14,6 @@ import edu.uva.liftlab.graphchecker.d3.contract.SessionReader;
 import edu.uva.liftlab.graphchecker.d3.contract.RootKind;
 import edu.uva.liftlab.graphchecker.d3.contract.RootMintRow;
 import edu.uva.liftlab.graphchecker.d3.contract.Task;
-import edu.uva.liftlab.graphchecker.d3.contract.WriteRow;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -145,6 +144,18 @@ final class FlipQuery {
         }
     }
 
+    /** One eligible writer occurrence, and the selector that picks it. */
+    private static final class Choice {
+        private final String selector;
+        private final StateEligibility.Alternative alternative;
+
+        private Choice(String selector,
+                       StateEligibility.Alternative alternative) {
+            this.selector = selector;
+            this.alternative = alternative;
+        }
+    }
+
     private static final class Builder {
         private final Corpus corpus;
         private final Task task;
@@ -160,6 +171,9 @@ final class FlipQuery {
         private final Set<String> queued = new LinkedHashSet<String>();
         private final Map<String, Control> controls =
                 new LinkedHashMap<String, Control>();
+        /** reader occurrence + location -> its one choice of writer. */
+        private final Map<String, List<Choice>> choicesByReader =
+                new LinkedHashMap<String, List<Choice>>();
         private final Map<String, String> rootVariables =
                 new LinkedHashMap<String, String>();
         private final List<GapRow> gaps = new ArrayList<GapRow>();
@@ -319,33 +333,103 @@ final class FlipQuery {
         private void read(ReadRow row) {
             String variable = variable(row.sessionId(), row.symbol());
             if (!explained.add(variable)) return;
-            WriteRow writer = corpus.writeOf(row.sessionId(), row.location(),
-                    row.observedVersion());
-            if (writer != null) {
-                SmtLowering.Lowered lowered =
-                        corpus.lowering(row.sessionId())
-                                .lower(writer.expressionRef());
-                Set<String> unknown = new LinkedHashSet<String>();
-                if (lowered.ok()) {
-                    String value = rename(lowered.text(), row.sessionId(),
-                            new LinkedHashSet<String>(), unknown);
-                    if (unknown.isEmpty()) {
-                        assertions.add("(= " + variable + " " + value + ")");
-                        return;
-                    }
+            List<StateEligibility.Alternative> eligible =
+                    StateEligibility.alternatives(corpus, row);
+            gaps.add(GapRow.of(row.sessionId(), GapKind.UNSTATED_VALUE,
+                    GapClass.DIAGNOSTIC, row.endpoint().toString(),
+                    "eligible writers of " + row.location() + ": "
+                            + StateEligibility.render(eligible)));
+            if (eligible.isEmpty()) {
+                stated(row, variable);
+                return;
+            }
+            // R-I7.1: a writer occurrence's writes move as a BLOCK relative
+            // to this reader, and every read of this location inside this
+            // occurrence takes the same choice.  One selector per writer
+            // occurrence, shared by those reads, is what says so.
+            String choiceKey = row.endpoint().occurrence().id() + "|"
+                    + row.location();
+            List<Choice> choices = choicesByReader.get(choiceKey);
+            if (choices == null) {
+                choices = new ArrayList<Choice>();
+                for (StateEligibility.Alternative alternative : eligible) {
+                    String selector = names.name("choice|" + choiceKey + "|"
+                                    + alternative.writer().id(),
+                            "wchoice_" + row.location().slot() + "_"
+                                    + alternative.writer().regionId());
+                    declare(selector, "Bool", "this read takes "
+                            + row.location() + " from "
+                            + alternative.writer().render()
+                            + (alternative.observed ? " (observed)" : ""));
+                    choices.add(new Choice(selector, alternative));
+                }
+                choicesByReader.put(choiceKey, choices);
+                assertions.add(exactlyOne(choices));
+            }
+            List<String> bindings = new ArrayList<String>();
+            for (Choice choice : choices) {
+                String value = delivered(choice.alternative, variable);
+                if (value.isEmpty()) continue;
+                bindings.add("(=> " + choice.selector + " (= " + variable
+                        + " " + value + "))");
+                if (!choice.alternative.attested) {
+                    gaps.add(GapRow.of(choice.alternative.write.sessionId(),
+                            GapKind.UNATTESTED_ARM, GapClass.DIAGNOSTIC,
+                            choice.alternative.write.endpoint().toString(),
+                            "the writer ran concretely: this arm states what "
+                                    + "it wrote, not why"));
                 }
             }
-            String stated = SmtText.literal(row.concreteValue(),
+            if (bindings.isEmpty()) {
+                stated(row, variable);
+                return;
+            }
+            for (String binding : bindings) assertions.add(binding);
+        }
+
+        /** What one eligible writer delivers, as this query spells it. */
+        private String delivered(StateEligibility.Alternative alternative,
+                                 String variable) {
+            SmtLowering.Lowered lowered =
+                    corpus.lowering(alternative.write.sessionId())
+                            .lower(alternative.write.expressionRef());
+            if (!lowered.ok()) return "";
+            Set<String> unknown = new LinkedHashSet<String>();
+            String value = rename(lowered.text(),
+                    alternative.write.sessionId(),
+                    new LinkedHashSet<String>(), unknown);
+            return unknown.isEmpty() ? value : "";
+        }
+
+        /** The value the recording states for a read nothing else explains. */
+        private void stated(ReadRow row, String variable) {
+            String literal = SmtText.literal(row.concreteValue(),
                     sorts.get(variable));
-            if (!stated.isEmpty()) {
-                assertions.add("(= " + variable + " " + stated + ")");
+            if (!literal.isEmpty()) {
+                assertions.add("(= " + variable + " " + literal + ")");
                 return;
             }
             refusal = "UNSTATED_VALUE:" + row.endpoint();
             gaps.add(GapRow.of(row.sessionId(), GapKind.UNSTATED_VALUE,
                     GapClass.BLOCKING, row.endpoint().toString(),
-                    "the read joins no write version and the recording "
+                    "the read joins no eligible write and the recording "
                             + "states no value for it"));
+        }
+
+        /** Exactly one of the eligible writers delivered this location. */
+        private static String exactlyOne(List<Choice> choices) {
+            List<String> selectors = new ArrayList<String>();
+            for (Choice choice : choices) selectors.add(choice.selector);
+            if (selectors.size() == 1) return selectors.get(0);
+            List<String> atMostOne = new ArrayList<String>();
+            atMostOne.add(SmtText.disjoin(selectors));
+            for (int left = 0; left < selectors.size(); left++) {
+                for (int right = left + 1; right < selectors.size(); right++) {
+                    atMostOne.add("(not (and " + selectors.get(left) + " "
+                            + selectors.get(right) + "))");
+                }
+            }
+            return SmtText.conjoin(atMostOne);
         }
 
         /**

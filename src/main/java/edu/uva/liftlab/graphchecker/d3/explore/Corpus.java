@@ -14,6 +14,7 @@ import edu.uva.liftlab.graphchecker.d3.contract.RootMintRow;
 import edu.uva.liftlab.graphchecker.d3.compose.SmtLowering;
 import edu.uva.liftlab.graphchecker.d3.contract.RowCodec;
 import edu.uva.liftlab.graphchecker.d3.contract.SessionReader;
+import edu.uva.liftlab.graphchecker.d3.contract.TargetRow;
 import edu.uva.liftlab.graphchecker.d3.contract.WriteRow;
 
 import java.io.IOException;
@@ -89,11 +90,19 @@ public final class Corpus {
             new LinkedHashMap<String, List<AttachRow>>();
     private final Map<String, List<ReadRow>> readsOn =
             new LinkedHashMap<String, List<ReadRow>>();
+    private final Map<String, List<TargetRow>> targetsOn =
+            new LinkedHashMap<String, List<TargetRow>>();
     private final Map<String, List<WriteRow>> writesOn =
             new LinkedHashMap<String, List<WriteRow>>();
     /** session|location|version -> the write that produced it. */
     private final Map<String, WriteRow> writeByVersion =
             new LinkedHashMap<String, WriteRow>();
+    /** location -> every write of it, in any session. */
+    private final Map<String, List<WriteRow>> writesByLocation =
+            new LinkedHashMap<String, List<WriteRow>>();
+    /** endpoint id -> the endpoint, so an anchor's producer can be found. */
+    private final Map<String, Endpoint> endpointById =
+            new LinkedHashMap<String, Endpoint>();
     /** node|location -> every occurrence of that node touching it. */
     private final Map<String, Set<String>> locationTouches =
             new LinkedHashMap<String, Set<String>>();
@@ -144,10 +153,16 @@ public final class Corpus {
         }
         for (ExportRow row : session.exports()) {
             remember(occurrenceById, row.endpoint().occurrence());
+            endpointById.put(row.endpoint().id(), row.endpoint());
             add(exports, row.endpoint().id(), row);
         }
         for (AttachRow row : session.attaches()) {
             remember(occurrenceById, row.endpoint().occurrence());
+            endpointById.put(row.endpoint().id(), row.endpoint());
+            if (row.producer() != null) {
+                endpointById.put(row.producer().id(), row.producer());
+                remember(occurrenceById, row.producer().occurrence());
+            }
             attachBySymbol.put(session.sessionId() + "|" + row.symbol(), row);
             add(attachesOn, row.endpoint().occurrence().id(), row);
         }
@@ -166,7 +181,13 @@ public final class Corpus {
             writeByVersion.put(versionKey(session.sessionId(), row.location(),
                     row.version()), row);
             add(writesOn, row.endpoint().occurrence().id(), row);
+            add(writesByLocation, row.location().toString(), row);
+            endpointById.put(row.endpoint().id(), row.endpoint());
             touch(row.endpoint().occurrence(), row.location());
+        }
+        for (TargetRow row : session.targets()) {
+            remember(occurrenceById, row.occurrence());
+            add(targetsOn, row.occurrence().id(), row);
         }
         for (ReadRow row : session.reads()) {
             remember(occurrenceById, row.endpoint().occurrence());
@@ -174,6 +195,7 @@ public final class Corpus {
                 readBySymbol.put(session.sessionId() + "|" + row.symbol(), row);
             }
             add(readsOn, row.endpoint().occurrence().id(), row);
+            endpointById.put(row.endpoint().id(), row.endpoint());
             touch(row.endpoint().occurrence(), row.location());
         }
     }
@@ -313,6 +335,12 @@ public final class Corpus {
         return rows == null ? Collections.<AttachRow>emptyList() : rows;
     }
 
+    /** Every target row published for one occurrence, in any session. */
+    public List<TargetRow> targetsOn(OccurrenceAddress occurrence) {
+        List<TargetRow> rows = targetsOn.get(occurrence.id());
+        return rows == null ? Collections.<TargetRow>emptyList() : rows;
+    }
+
     public List<ReadRow> readsOn(OccurrenceAddress occurrence) {
         List<ReadRow> rows = readsOn.get(occurrence.id());
         return rows == null ? Collections.<ReadRow>emptyList() : rows;
@@ -321,6 +349,17 @@ public final class Corpus {
     public List<WriteRow> writesOn(OccurrenceAddress occurrence) {
         List<WriteRow> rows = writesOn.get(occurrence.id());
         return rows == null ? Collections.<WriteRow>emptyList() : rows;
+    }
+
+    /** Every write of one location, across every session of the corpus. */
+    public List<WriteRow> writesOf(LocationId location) {
+        List<WriteRow> writes = writesByLocation.get(location.toString());
+        return writes == null ? Collections.<WriteRow>emptyList() : writes;
+    }
+
+    /** One endpoint of this corpus by its id: the anchor chain's join. */
+    public Endpoint endpoint(String endpointId) {
+        return endpointById.get(endpointId);
     }
 
     /** The write one read observed, inside that read's own session. */

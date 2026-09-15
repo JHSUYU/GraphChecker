@@ -190,18 +190,22 @@ public final class SlotTable {
                     }
                     continue;
                 }
-                // R-I7: the versions a reader could have observed are the
-                // ones written before it in its own session.  A pairing
-                // outside that range is not an interleaving this run could
-                // have had -- it contradicts the run's own order.
-                if (writer.seq() >= read.seq()) {
+                // R-I7.1: what contradicts is not "a later version by seq"
+                // -- two activations of one session interleave, so seq orders
+                // events only inside one of them.  A pairing contradicts the
+                // run when the read observed a version its own activation
+                // wrote later, or one written by an occurrence the reader
+                // itself caused: a message cannot be answered before it is
+                // sent.
+                if (StateEligibility.contradictsOrder(corpus, read, writer)) {
                     gaps.add(GapRow.of(session.sessionId(),
                             GapKind.TOPOLOGY_DIVERGENCE, GapClass.BLOCKING,
                             consumer.toString(),
-                            "the read observed version " + read.observedVersion()
-                                    + ", written at seq " + writer.seq()
-                                    + " which is not before the read at seq "
-                                    + read.seq()));
+                            "the read observed version "
+                                    + read.observedVersion() + ", written by "
+                                    + writer.endpoint()
+                                    + ", which this run orders after the "
+                                    + "read"));
                     replaced = true;
                     continue;
                 }

@@ -27,6 +27,7 @@ import edu.uva.liftlab.graphchecker.d3.contract.RootMintRow;
 import edu.uva.liftlab.graphchecker.d3.contract.RowCodec;
 import edu.uva.liftlab.graphchecker.d3.contract.SessionDir;
 import edu.uva.liftlab.graphchecker.d3.contract.Role;
+import edu.uva.liftlab.graphchecker.d3.contract.TargetRow;
 import edu.uva.liftlab.graphchecker.d3.contract.Task;
 import edu.uva.liftlab.graphchecker.d3.contract.Verdict;
 import edu.uva.liftlab.graphchecker.d3.contract.WriteRow;
@@ -340,6 +341,7 @@ public class D3ExploreTest {
         seed.activation(writer, false);
         seed.activation(producer, false);
         seed.constant("e.119992", "119992");
+        seed.symbolic("e.stored", "M_HOFF_KEY");
         seed.export(exported, "e.119992", 11L, "119992");
         seed.attach(attached, "M_HOFF_KEY", "119992", exported);
         seed.write(at(writer, Endpoint.stateSite("BlockTokenSecretManager",
@@ -350,6 +352,10 @@ public class D3ExploreTest {
                         "BlockTokenSecretManager"
                                 + "#retrieveDataEncryptionKey#8"), allKeys,
                 5L, "M_READ_KEY", "119992");
+        // What makes this occurrence an anchor: the predicate whose fatal arm
+        // the composition asks about, over the value it read.
+        seed.target(target, "BlockTokenSecretManager"
+                + "#retrieveDataEncryptionKey#8", "(= M_READ_KEY 0)");
         seed.flush();
 
         Corpus corpus = Corpus.read(iteration, null);
@@ -393,9 +399,18 @@ public class D3ExploreTest {
         other.activation(confused, false);
         other.activation(producer, false);
         other.constant("e.119992", "119992");
+        other.symbolic("e.stored", "M_HOFF_KEY");
         other.export(exported, "e.119992", 11L, "119992");
         other.attach(at(confused, "XCH.resp.block-key-id",
                 "PBHelper#convert#9"), "M_HOFF_KEY", "119992", exported);
+        other.write(at(confused, Endpoint.stateSite("BlockTokenSecretManager",
+                        "addKeys", 12, true), "BlockTokenSecretManager"
+                        + "#addKeys#12"), allKeys, 5L, "e.119992");
+        other.read(at(confused, Endpoint.stateSite("BlockTokenSecretManager",
+                        "get", 3, false), "BlockTokenSecretManager#get#3"),
+                allKeys, 5L, "M_READ_KEY", "119992");
+        other.target(confused, "BlockTokenSecretManager#get#3",
+                "(= M_READ_KEY 0)");
         other.flush();
         ClosurePlanner.Plan divergent = ClosurePlanner.plan(
                 Corpus.read(split, null), confused);
@@ -539,6 +554,7 @@ public class D3ExploreTest {
         private final List<WriteRow> writes = new ArrayList<>();
         private final List<ReadRow> reads = new ArrayList<>();
         private final List<RootMintRow> roots = new ArrayList<>();
+        private final List<TargetRow> targets = new ArrayList<>();
         private final Map<String, JsonObject> expressions =
                 new LinkedHashMap<>();
         /** The session's own event order: every row takes the next one. */
@@ -567,6 +583,13 @@ public class D3ExploreTest {
          * before every decision that can mention it, because a value is read
          * before it is branched on.
          */
+        /** The anchor's own predicate, in the fatal polarity. */
+        private void target(OccurrenceAddress occurrence, String site,
+                            String phi) {
+            targets.add(TargetRow.of(sessionId, ++seq, occurrence, site, phi,
+                    false, true));
+        }
+
         private void root(OccurrenceAddress occurrence, String rootId,
                           String symbol, RootKind kind, String recorded,
                           String min, String max, boolean declared) {
@@ -599,6 +622,15 @@ public class D3ExploreTest {
                     symbol, "I", concrete));
         }
 
+        /** The value a handoff minted, as the VM propagated it. */
+        private void symbolic(String ref, String symbol) {
+            JsonObject expression = new JsonObject();
+            expression.addProperty("_type", "SymbolExpression");
+            expression.addProperty("_exp", symbol);
+            expression.addProperty("_java_type", "I");
+            expressions.put(ref, expression);
+        }
+
         /** One literal the VM recorded as a delivered constant. */
         private void constant(String ref, String value) {
             JsonObject expression = new JsonObject();
@@ -619,6 +651,7 @@ public class D3ExploreTest {
             RowCodec.writeAll(dir.writes(), writes, RowCodec::writeWrite);
             RowCodec.writeAll(dir.reads(), reads, RowCodec::writeRead);
             RowCodec.writeAll(dir.roots(), roots, RowCodec::writeRootMint);
+            RowCodec.writeAll(dir.targets(), targets, RowCodec::writeTarget);
             RowCodec.writeExpressions(dir.expressions(),
                     ExpressionTable.of(expressions));
         }

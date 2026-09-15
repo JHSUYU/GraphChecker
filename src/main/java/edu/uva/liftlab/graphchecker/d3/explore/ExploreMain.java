@@ -121,6 +121,17 @@ public final class ExploreMain {
                 if (planned.add(task.taskId())) tasks.add(task);
             }
         }
+        // The epoch's skeleton, reconciled against everything the replays
+        // have said so far.  It is taken AFTER the closure is planned,
+        // because a slot is opened only for an interaction whose consumer is
+        // a closure member, and before the obligations, because a
+        // replacement contradicts the skeleton the wave would be cut from.
+        SlotTable slots = SlotTable.read(iteration);
+        SlotTable.Reconciliation skeleton = slots.reconcile(corpus,
+                closureOf(tasks), wave);
+        gaps.addAll(skeleton.gaps);
+        slots.write(iteration);
+
         Frontier frontier = new Frontier(tasks);
         frontier.consume(RowCodec.readAll(results,
                 ExploreCodec::readResult));
@@ -130,7 +141,10 @@ public final class ExploreMain {
             candidates.addAll(ObligationFactory.candidates(corpus, task,
                     bounds, frontier::asked));
         }
-        Frontier.Wave open = frontier.open(wave, candidates);
+        Frontier.Wave open = skeleton.replaced
+                ? frontier.open(wave,
+                        new ArrayList<ObligationFactory.Candidate>())
+                : frontier.open(wave, candidates);
 
         Files.createDirectories(out);
         RowCodec.writeAll(out.resolve("tasks.jsonl"), tasks,
@@ -143,7 +157,7 @@ public final class ExploreMain {
         RowCodec.writeAll(out.resolve("gaps.jsonl"), distinct(gaps),
                 RowCodec::writeGap);
         JsonObject manifest = manifest(roots, tasks, frontier, open,
-                topologyEpoch, gaps);
+                topologyEpoch, gaps, slots, skeleton);
         Files.write(out.resolve("explore_manifest.json"),
                 (pretty(manifest) + System.lineSeparator())
                         .getBytes(StandardCharsets.UTF_8));
@@ -194,17 +208,22 @@ public final class ExploreMain {
                                                    List<String> selectors,
                                                    List<GapRow> gaps) {
         String seed = corpus.seedSessionId();
+        if (seed.isEmpty()) {
+            // The contract's rule, and no fallback under it: the seed is the
+            // session that focused nothing, and a corpus with none of those
+            // or with several does not state which recording a declaration
+            // was written about.  Naming an exploration replay as the
+            // recording is how a claim comes to be about the wrong execution.
+            gaps.add(GapRow.of("", GapKind.ADMISSION_GAP, GapClass.BLOCKING,
+                    String.join(", ", selectors),
+                    "this corpus states no single seed session: "
+                            + corpus.unfocusedSessionIds().size()
+                            + " of its " + corpus.sessions().size()
+                            + " sessions focused nothing"));
+            return new ArrayList<OccurrenceAddress>();
+        }
         List<OccurrenceAddress> occurrences = seedOccurrences(corpus, seed);
         String scope = "the seed session " + seed;
-        if (occurrences.isEmpty()) {
-            // A corpus of flips alone -- an offline re-plan, a seed whose
-            // activations were not published -- still has occurrences, and
-            // refusing every selector because one session is missing would
-            // stop exploration over a bookkeeping fact.  Which order the
-            // k-th was counted in is then part of the refusal.
-            occurrences = everyOccurrence(corpus);
-            scope = "no session of this corpus is a seed, so every session";
-        }
         List<OccurrenceAddress> roots = new ArrayList<OccurrenceAddress>();
         Set<String> resolved = new LinkedHashSet<String>();
         for (String text : selectors) {
@@ -312,21 +331,6 @@ public final class ExploreMain {
                 : String.join(", ", named);
     }
 
-    /** Every occurrence of the corpus, in session then activation order. */
-    private static List<OccurrenceAddress> everyOccurrence(Corpus corpus) {
-        List<OccurrenceAddress> occurrences =
-                new ArrayList<OccurrenceAddress>();
-        Set<String> seen = new LinkedHashSet<String>();
-        for (SessionReader session : corpus.sessions()) {
-            for (ActivationRow activation : session.activations()) {
-                if (seen.add(activation.occurrence().id())) {
-                    occurrences.add(activation.occurrence());
-                }
-            }
-        }
-        return occurrences;
-    }
-
     /** The seed session's occurrences, in the order it activated them. */
     private static List<OccurrenceAddress> seedOccurrences(Corpus corpus,
                                                            String seed) {
@@ -343,19 +347,40 @@ public final class ExploreMain {
         return occurrences;
     }
 
+    /** Every occurrence this wave's tasks hold: focused, and their factors. */
+    private static Set<String> closureOf(List<Task> tasks) {
+        Set<String> closure = new LinkedHashSet<String>();
+        for (Task task : tasks) {
+            closure.add(task.focused().id());
+            for (OccurrenceAddress member : task.factor()) {
+                closure.add(member.id());
+            }
+        }
+        return closure;
+    }
+
     private static JsonObject manifest(List<OccurrenceAddress> roots,
                                        List<Task> tasks, Frontier frontier,
                                        Frontier.Wave open,
                                        String topologyEpoch,
-                                       List<GapRow> gaps) {
+                                       List<GapRow> gaps, SlotTable slots,
+                                       SlotTable.Reconciliation skeleton) {
         JsonObject manifest = new JsonObject();
         JsonArray anchors = new JsonArray();
         for (OccurrenceAddress root : roots) anchors.add(root.render());
         manifest.add("anchors", anchors);
         manifest.addProperty("topologyEpoch", topologyEpoch);
         manifest.addProperty("wave", open.index);
-        manifest.addProperty("state", open.empty()
-                ? "FIXED_POINT" : "OBLIGATIONS_PROPOSED");
+        manifest.addProperty("state", skeleton.replaced
+                ? "TOPOLOGY_DIVERGENCE"
+                : open.empty() ? "FIXED_POINT" : "OBLIGATIONS_PROPOSED");
+        JsonObject skeletonRow = new JsonObject();
+        skeletonRow.addProperty("slots", slots.size());
+        skeletonRow.addProperty("opened", skeleton.opened.size());
+        skeletonRow.addProperty("filled", skeleton.filled);
+        skeletonRow.addProperty("outsideTheClosure", skeleton.outside);
+        skeletonRow.addProperty("replaced", skeleton.replaced);
+        manifest.add("skeleton", skeletonRow);
         manifest.addProperty("tasks", tasks.size());
         manifest.addProperty("proposed", open.obligations.size());
         manifest.addProperty("answered", frontier.answeredCount());
