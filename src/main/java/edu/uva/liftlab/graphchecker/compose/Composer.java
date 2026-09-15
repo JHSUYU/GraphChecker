@@ -34,7 +34,6 @@ import edu.uva.liftlab.graphchecker.contract.WriteRow;
 
 import java.math.BigInteger;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -42,6 +41,10 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+
+import static edu.uva.liftlab.graphchecker.compose.VmTermLowering.smtLiteral;
+import static edu.uva.liftlab.graphchecker.compose.VmTermLowering.smtName;
+import static edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics.integralLiteral;
 
 /**
  * One composed query per anchor, factorized per path.
@@ -204,6 +207,31 @@ public final class Composer {
         /** Declarations and assertions; no {@code check-sat}. */
         public String body() {
             return body;
+        }
+
+        /**
+         * One question's text: this body with those assertions conjoined.
+         *
+         * <p>The body is the program and the extra assertions are the
+         * question, so the body is rendered once and every valuation, probe
+         * and pairing test appends only its own lines: re-rendering per
+         * question would put a copy of one formula in the solver for each.
+         * Legal spelling is applied here because a pin names recorded
+         * symbols -- a clock cell is spelled {@code CLOCK/...#...} -- and
+         * {@code #} opens a bit-vector literal, so a pin written bare makes
+         * z3 answer the whole query "invalid bit-vector literal" instead of
+         * a verdict.  {@link SmtLowering#legalSymbols} is idempotent, so a
+         * body that already passed through it is the text it was.</p>
+         */
+        public String query(List<String> assertions) {
+            StringBuilder text = new StringBuilder(body);
+            if (assertions != null) {
+                for (String assertion : assertions) {
+                    if (assertion == null || assertion.isEmpty()) continue;
+                    text.append(assertion).append('\n');
+                }
+            }
+            return SmtLowering.legalSymbols(text.toString());
         }
 
         public List<Disjunct> disjuncts() {
@@ -432,7 +460,7 @@ public final class Composer {
                 selectors.add(disjunct.selector());
             }
             lowering.assertNamed("target_path_partition",
-                    exactlyOne(selectors));
+                    Arms.exactlyOne(selectors));
             // The disjunction is over the SELECTORS: each path already
             // asserts "selector => (pi and phi)", so asserting that some
             // selector holds says exactly OR_p (pi_p and phi_p), without
@@ -690,7 +718,7 @@ public final class Composer {
                 valuation.add(window);
                 continue;
             }
-            String literal = JsonText.smtLiteral(row.recordedValue());
+            String literal = smtLiteral(row.recordedValue());
             if (literal.isEmpty()) continue;
             valuation.add("(= " + row.symbol() + " " + literal + ")");
         }
@@ -703,12 +731,12 @@ public final class Composer {
         RootDomain domain = domainOf(row);
         String min = domain.min();
         String max = domain.max();
-        if (min == null || max == null || JsonText.smtInteger(min).isEmpty()
-                || JsonText.smtInteger(max).isEmpty()) {
+        if (min == null || max == null || integralLiteral(min).isEmpty()
+                || integralLiteral(max).isEmpty()) {
             return "";
         }
-        return "(and (>= " + row.symbol() + " " + JsonText.smtInteger(min)
-                + ") (<= " + row.symbol() + " " + JsonText.smtInteger(max)
+        return "(and (>= " + row.symbol() + " " + integralLiteral(min)
+                + ") (<= " + row.symbol() + " " + integralLiteral(max)
                 + "))";
     }
 
@@ -746,7 +774,7 @@ public final class Composer {
                 unpaired(session, attach);
             }
             if (attach.answered()) {
-                String literal = JsonText.smtLiteral(attach.answeredValue());
+                String literal = smtLiteral(attach.answeredValue());
                 if (literal.isEmpty()) {
                     refusals.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
                             GapClass.DIAGNOSTIC, attach.symbol(),
@@ -764,7 +792,7 @@ public final class Composer {
                 reads.add("(= " + attach.symbol() + " " + paired + ")");
                 continue;
             }
-            String arrival = JsonText.smtLiteral(attach.arrival());
+            String arrival = smtLiteral(attach.arrival());
             if (arrival.isEmpty()) {
                 refusals.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
                         GapClass.DIAGNOSTIC, attach.symbol(),
@@ -981,7 +1009,7 @@ public final class Composer {
                     joins.put(read.symbol(), "(= " + read.symbol() + " "
                             + value.text + ")");
                     joined.add(read);
-                    String literal = JsonText.smtLiteral(
+                    String literal = smtLiteral(
                             read.concreteValue());
                     if (!literal.isEmpty()) {
                         // What the read RETURNED, kept beside the join: the
@@ -1091,7 +1119,7 @@ public final class Composer {
         Set<String> seen = new LinkedHashSet<String>();
         for (AttachRow attach : corpus.attachesOn(session, anchor)) {
             if (!seen.add(attach.symbol())) continue;
-            String literal = JsonText.smtLiteral(JsonFields.firstNonBlank(
+            String literal = smtLiteral(JsonFields.firstNonBlank(
                     attach.answeredValue(), attach.arrival()));
             if (literal.isEmpty()) continue;
             stated.add("(assert (! (= " + attach.symbol() + " " + literal
@@ -1154,7 +1182,7 @@ public final class Composer {
         List<String> conjuncts = prefix(arm);
         if (conjuncts == null) return "";
         for (Map.Entry<String, String> guard : arm.guard().entrySet()) {
-            String literal = JsonText.smtLiteral(guard.getValue());
+            String literal = smtLiteral(guard.getValue());
             if (literal.isEmpty()) continue;
             // The name has to be IN the query.  A guard names a root the
             // arm's own expression need not mention -- the delivering
@@ -1449,9 +1477,9 @@ public final class Composer {
                     && !max.isEmpty()) {
                 lowering.assertNamed("root_domain__" + ordinal++,
                         "(and (>= " + row.symbol() + " "
-                                + JsonText.smtInteger(min) + ") (<= "
+                                + integralLiteral(min) + ") (<= "
                                 + row.symbol() + " "
-                                + JsonText.smtInteger(max) + "))");
+                                + integralLiteral(max) + "))");
                 continue;
             }
             // A root with no domain is pinned to what the recording read
@@ -1468,7 +1496,7 @@ public final class Composer {
                                 + "what it is and the mint pins nothing");
                 continue;
             }
-            String literal = JsonText.smtLiteral(row.recordedValue());
+            String literal = smtLiteral(row.recordedValue());
             if (literal.isEmpty()) continue;
             lowering.assertNamed("root_domain__" + ordinal++,
                     "(= " + row.symbol() + " " + literal + ")");
@@ -1550,36 +1578,7 @@ public final class Composer {
 
     /** The case's declaration where there is one, the mint's otherwise. */
     private RootDomain domainOf(RootMintRow row) {
-        RootDomain declared = declaredDomains.get(row.rootId());
-        if (declared == null) declared = declaredDomains.get(row.symbol());
-        String min = declared == null ? row.domainMin() : declared.min();
-        String max = declared == null ? row.domainMax() : declared.max();
-        return RootDomain.of(row.rootId(), row.kind(), row.recordedValue(),
-                resolve(min, row.recordedValue()),
-                resolve(max, row.recordedValue()));
-    }
-
-    /**
-     * One bound, absolute.
-     *
-     * <p>Two spellings, one notion: an absolute bound is the value itself,
-     * and a bound written {@code +k} or {@code -k} is that many steps from
-     * what the recording read -- the only way a case can state the domain
-     * of a counter whose zero nobody chose.</p>
-     */
-    private static String resolve(String bound, String recorded) {
-        String stated = bound == null ? "" : bound.trim();
-        if (stated.isEmpty()) return null;
-        if (!stated.startsWith("+") && !stated.startsWith("-")) {
-            return JsonText.smtInteger(stated).isEmpty() ? null : stated;
-        }
-        String offset = stated.startsWith("+") ? stated.substring(1) : stated;
-        if (JsonText.smtInteger(offset).isEmpty()
-                || JsonText.smtInteger(recorded).isEmpty()) {
-            return null;
-        }
-        return new BigInteger(recorded.trim())
-                .add(new BigInteger(offset.trim())).toString();
+        return RootDomain.resolved(row, declaredDomains);
     }
 
     /**
@@ -1707,10 +1706,10 @@ public final class Composer {
         for (Map.Entry<String, String> entry : assignment.entrySet()) {
             RootMintRow row = corpus.anyRoot(entry.getKey());
             if (row == null) continue;
-            String literal = JsonText.smtLiteral(entry.getValue());
+            String literal = smtLiteral(entry.getValue());
             if (literal.isEmpty()) continue;
             assertions.add("(assert (! (= " + row.symbol() + " " + literal
-                    + ") :named valuation__" + JsonText.smtName(row.symbol())
+                    + ") :named valuation__" + smtName(row.symbol())
                     + "))");
         }
         return new Valuation(ordinal, assignment, moved, assertions);
@@ -1729,13 +1728,13 @@ public final class Composer {
         if (domain.pinned()) return values;
         String min = domain.min();
         String max = domain.max();
-        if (min == null || max == null || JsonText.smtInteger(min).isEmpty()
-                || JsonText.smtInteger(max).isEmpty()) {
+        if (min == null || max == null || integralLiteral(min).isEmpty()
+                || integralLiteral(max).isEmpty()) {
             return values;
         }
         BigInteger low = new BigInteger(min.trim());
         BigInteger high = new BigInteger(max.trim());
-        BigInteger centre = JsonText.smtInteger(recorded).isEmpty()
+        BigInteger centre = integralLiteral(recorded).isEmpty()
                 ? low : new BigInteger(recorded);
         List<BigInteger> candidates = new ArrayList<BigInteger>();
         for (BigInteger value = low; value.compareTo(high) <= 0;
@@ -1804,7 +1803,7 @@ public final class Composer {
                             String subject) {
         List<String> free = new ArrayList<String>();
         for (String token : SmtLowering.names(term)) {
-            if (BUILTIN.contains(token)) continue;
+            if (SmtLowering.BUILTIN.contains(token)) continue;
             if (lowering.defined(token)) continue;
             // The one registry says whether the recording states it, and
             // at what sort: a published term can name a recorded symbol
@@ -1819,54 +1818,6 @@ public final class Composer {
                     "this term names symbols nothing declares: " + free));
         }
         return true;
-    }
-
-    /**
-     * Every name the query's own logic gives a meaning to.
-     *
-     * <p>The operators belong here for the same reason the datatype
-     * selectors do: in SMT-LIB {@code =} and {@code <=} are SYMBOLS, and
-     * the one tokenizer reads them as such, so a caller asking "which
-     * names does nothing declare" must be told that the theory declares
-     * these.  Left out, the check reported {@code =} as a free symbol of
-     * every term it read.</p>
-     */
-    private static final Set<String> BUILTIN = new LinkedHashSet<String>(
-            Arrays.asList("=", "=>", "+", "-", "*", "/", "<", "<=", ">",
-                    ">=", "!", "_",
-                    "and", "or", "not", "xor", "ite", "let", "forall",
-                    "exists", "distinct", "true", "false", "div", "mod",
-                    "abs", "rem", "select", "store", "as", "const", "lambda",
-                    "is", "bvadd", "bvsub", "bvmul", "bvand", "bvor",
-                    "bvxor", "bvnot", "bvshl", "bvlshr", "bvashr", "bvsdiv",
-                    "bvudiv", "bvsrem", "bvurem", "bvule", "bvult", "bvsle",
-                    "bvslt", "bvuge", "bvugt", "bvsge", "bvsgt", "concat",
-                    "extract", "zero_extend", "sign_extend", "Int", "Bool",
-                    "Real", "String", "Ref", "Value", "AssocState",
-                    "IndexedState", "FloatingPoint", "RoundingMode",
-                    "roundNearestTiesToEven", "RNE", "RTZ", "RTP", "RTN",
-                    "RNA", "nullRef", "java_int_wrap", "java_long_wrap",
-                    "java_int_to_string", "indexed_state_of",
-                    "assoc_state_of", "indexed_read", "indexed_write",
-                    "indexed_append", "indexed_insert", "indexed_remove",
-                    "indexed_contains", "indexed_size", "indexed_elements",
-                    "assoc_has", "assoc_read", "assoc_key_at",
-                    "assoc_value_at", "assoc_put", "assoc_remove",
-                    "assoc_size", "assoc_present", "assoc_values",
-                    "assoc_order", "assoc_position", "VByte", "VChar",
-                    "VShort", "VInt", "VLong", "VFloat", "VDouble", "VBool",
-                    "VRef", "VString", "valueByte", "valueChar", "valueShort",
-                    "valueInt", "valueLong", "valueFloat", "valueDouble",
-                    "valueBool", "valueRef", "valueString", "str", "fp",
-                    "to_real", "to_int", "divisible"));
-
-    private static String exactlyOne(List<String> selectors) {
-        if (selectors.size() == 1) return selectors.get(0);
-        StringBuilder sum = new StringBuilder("(= (+");
-        for (String selector : selectors) {
-            sum.append(" (ite ").append(selector).append(" 1 0)");
-        }
-        return sum.append(") 1)").toString();
     }
 
     /**

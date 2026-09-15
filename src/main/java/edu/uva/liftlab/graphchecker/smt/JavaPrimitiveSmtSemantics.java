@@ -79,6 +79,26 @@ public final class JavaPrimitiveSmtSemantics {
         return result.append(descriptor).toString();
     }
 
+    /**
+     * One Java type with its descriptor shell removed: THE normalisation.
+     *
+     * <p>{@code Ljava/lang/Integer;} and {@code java/lang/Integer} and
+     * {@code java.lang.Integer} are three spellings of one class, and this
+     * is the one that answers with: the class's own name, dotted, or the
+     * one-character descriptor of a primitive, or an array spelling left as
+     * it was.  It replaces three private copies -- here, in
+     * {@link JavaPrimitiveBoxing} and in {@link JavaContainerTypes} -- whose
+     * callers all key tables by the dotted name, and which differed only in
+     * the order they stripped and dotted in.</p>
+     */
+    public static String typeName(String javaType) {
+        String value = javaType == null ? "" : javaType.trim();
+        if (value.startsWith("L") && value.endsWith(";")) {
+            value = value.substring(1, value.length() - 1);
+        }
+        return value.replace('/', '.');
+    }
+
     /** Reference descriptors the scalar leaf contract already represents. */
     private static final java.util.Set<String> SCALAR_REFERENCE_DESCRIPTORS =
             java.util.Collections.unmodifiableSet(
@@ -126,10 +146,10 @@ public final class JavaPrimitiveSmtSemantics {
 
     static FloatingKind floatingKindOfJavaType(String javaType) {
         String type = normalize(javaType);
-        if ("F".equals(type) || "java/lang/Float".equals(type)) {
+        if ("F".equals(type) || "java.lang.Float".equals(type)) {
             return FloatingKind.JAVA_FLOAT;
         }
-        if ("D".equals(type) || "java/lang/Double".equals(type)) {
+        if ("D".equals(type) || "java.lang.Double".equals(type)) {
             return FloatingKind.JAVA_DOUBLE;
         }
         return FloatingKind.NONE;
@@ -263,8 +283,8 @@ public final class JavaPrimitiveSmtSemantics {
      */
     public static String primitiveCast(String value, String sourceJavaType,
                                 String targetJavaType) {
-        String source = primitiveDescriptor(sourceJavaType);
-        String target = primitiveDescriptor(targetJavaType);
+        String source = javaTypeDescriptor(sourceJavaType);
+        String target = javaTypeDescriptor(targetJavaType);
         if (value == null || !primitiveNumericDescriptor(source)
                 || !primitiveNumericDescriptor(target)) {
             return null;
@@ -292,12 +312,6 @@ public final class JavaPrimitiveSmtSemantics {
             return floatingToIntegral(value, sourceFloating, target);
         }
         return null;
-    }
-
-    public static String primitiveDescriptor(String javaType) {
-        String type = javaType == null ? ""
-                : javaType.trim().replace('.', '/');
-        return javaTypeDescriptor(type);
     }
 
     public static boolean primitiveNumericDescriptor(String descriptor) {
@@ -385,26 +399,26 @@ public final class JavaPrimitiveSmtSemantics {
     /** Returns the runtime value domain of an explicitly typed Java leaf. */
     public static IntegralDomain domainOfJavaType(String javaType) {
         String type = normalize(javaType);
-        if ("Z".equals(type) || "java/lang/Boolean".equals(type)) {
+        if ("Z".equals(type) || "java.lang.Boolean".equals(type)) {
             return new IntegralDomain("0", "1", IntegralWidth.JAVA_INT);
         }
-        if ("B".equals(type) || "java/lang/Byte".equals(type)) {
+        if ("B".equals(type) || "java.lang.Byte".equals(type)) {
             return new IntegralDomain("(- 128)", "127",
                     IntegralWidth.JAVA_INT);
         }
-        if ("C".equals(type) || "java/lang/Character".equals(type)) {
+        if ("C".equals(type) || "java.lang.Character".equals(type)) {
             return new IntegralDomain("0", "65535",
                     IntegralWidth.JAVA_INT);
         }
-        if ("S".equals(type) || "java/lang/Short".equals(type)) {
+        if ("S".equals(type) || "java.lang.Short".equals(type)) {
             return new IntegralDomain("(- 32768)", "32767",
                     IntegralWidth.JAVA_INT);
         }
-        if ("I".equals(type) || "java/lang/Integer".equals(type)) {
+        if ("I".equals(type) || "java.lang.Integer".equals(type)) {
             return new IntegralDomain("(- 2147483648)", "2147483647",
                     IntegralWidth.JAVA_INT);
         }
-        if ("J".equals(type) || "java/lang/Long".equals(type)) {
+        if ("J".equals(type) || "java.lang.Long".equals(type)) {
             return new IntegralDomain("(- 9223372036854775808)",
                     "9223372036854775807", IntegralWidth.JAVA_LONG);
         }
@@ -611,12 +625,8 @@ public final class JavaPrimitiveSmtSemantics {
         }
     }
 
+    /** This class's question: the descriptor, with its shell removed. */
     private static String normalize(String javaType) {
-        String type = primitiveDescriptor(javaType);
-        if (type.startsWith("L") && type.endsWith(";")
-                && type.length() > 2) {
-            return type.substring(1, type.length() - 1);
-        }
-        return type;
+        return typeName(javaTypeDescriptor(javaType));
     }
 }

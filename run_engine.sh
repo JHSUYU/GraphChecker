@@ -615,7 +615,7 @@ do_compose() {
     --sessions "${compose_sessions_dir}" \
     --output "${composed_smt}" \
     --manifest "${composition_manifest}" \
-    --timeout-ms "${solver_timeout_ms}" \
+    --solver-timeout-ms "${solver_timeout_ms}" \
     --max-valuations "${compose_max_valuations}" \
     --z3 "${z3_bin}" \
     "${selection[@]}"
