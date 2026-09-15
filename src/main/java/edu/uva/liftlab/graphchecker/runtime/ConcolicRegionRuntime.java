@@ -837,11 +837,31 @@ public final class ConcolicRegionRuntime {
         RuntimeTask task = active.activation;
         symbolizeReceiverFields(active, task, engine());
     }
+    /**
+     * Files the execution-index frame of one work start.
+     *
+     * <p>Woven at every {@code Thread.start}, executor submission and
+     * fork-join fork inside the campaign's selected methods.  It pushes
+     * nothing on the starter: the frame belongs to the work that was
+     * started, which takes it when it runs.</p>
+     */
+    public static void startWork(String startSiteId, Object carrier) {
+        try {
+            RowRuntime.startWork(safe(startSiteId), carrier);
+        } catch (Throwable ignored) {
+            // Work is started whether or not its frame can be named.
+        }
+    }
+
     /** Instrumentation-facing root entry. */
     public static long enterRegionFrame(String instrumentationSelector,
                                         String rootMethod,
                                         Object receiver,
                                         Object[] rootArguments) {
+        // A pool thread was created before the work it is running, so it
+        // inherits no frame from the submission: the start filed for THIS
+        // task is claimed here, on the object the region was entered on.
+        RowRuntime.claimStart(receiver);
         // The execution index's frame stack.  In a replay the woven hooks
         // are the region frames and the accessor call contexts -- the trace
         // recorder's call-site hooks belong to the recording pass -- so

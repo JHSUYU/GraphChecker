@@ -4,10 +4,14 @@ import edu.uva.liftlab.graphchecker.contract.CausalContext;
 import edu.uva.liftlab.graphchecker.contract.ExecutionIndex;
 import edu.uva.liftlab.graphchecker.contract.Frame;
 import edu.uva.liftlab.graphchecker.contract.Role;
+import java.lang.ref.Reference;
+import java.lang.ref.ReferenceQueue;
+import java.lang.ref.WeakReference;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * The execution index of the running thread: one stack, O(1) per event.
@@ -64,6 +68,13 @@ public final class Identity {
                 new HashMap<String, Integer>();
         private String loop = "";
         private int scopeBase;
+        /** Whether this thread has looked for the start that created it. */
+        private boolean claimed;
+        /**
+         * Where the frame of the start this thread's work runs under sits,
+         * or -1 on a thread that runs its own work.
+         */
+        private int startDepth = -1;
         /** The region activations open on this thread, innermost last. */
         private final List<Region> regions = new ArrayList<Region>();
 
@@ -77,6 +88,11 @@ public final class Identity {
             child.loops.putAll(loops);
             child.loop = loop;
             child.scopeBase = scopeBase;
+            // The start frame of the work THIS thread runs is not the start
+            // frame of the work the child will run: the child claims its
+            // own, at the site that started it.
+            child.claimed = false;
+            child.startDepth = -1;
             for (Region region : regions) {
                 // The depth carries over -- a child thread's frames continue
                 // its parent's -- but not the journal: a journal is one
@@ -85,6 +101,30 @@ public final class Identity {
                 child.regions.add(new Region(region.base));
             }
             return child;
+        }
+
+        /**
+         * Opens the frame of the start this thread's work runs under.
+         *
+         * <p>The inherited stack GAINS one frame -- the start site and the
+         * iteration of that start inside the starter's activation -- so two
+         * siblings started from one site in one loop differ by it and by
+         * nothing else (IDENTITY-V3 SS1, scope transfer).  It sits at the
+         * boundary between the frames the starter stood on and the frames
+         * the work itself pushes, which is where the start happened.</p>
+         */
+        private void openStart(Frame frame) {
+            // A pool thread that finished its last task drops that task's
+            // start frame before it takes the next: the work that frame
+            // named is over, and the next task was started elsewhere.  A
+            // task started from inside another one nests instead.
+            if (startDepth >= 0 && startDepth == frames.size() - 1) {
+                frames.remove(startDepth);
+                if (!entries.isEmpty()) entries.remove(entries.size() - 1);
+            }
+            startDepth = frames.size();
+            frames.add(frame);
+            entries.add(new HashMap<String, Integer>());
         }
 
         /** The frame depth an endpoint inside the innermost region is from. */
@@ -143,6 +183,123 @@ public final class Identity {
     }
 
     /**
+     * The frames filed at a start site, by the object that carries the work.
+     *
+     * <p>A start is not an event of the thread that runs the work: it is an
+     * event of the STARTER, at the starter's call site and inside the
+     * starter's activation.  The frame is computed there, filed under the
+     * Thread or the task the start named, and taken by the work when it
+     * runs -- which is the only way a child can carry it, since a thread
+     * inherits its creator's state when it is CONSTRUCTED and the start
+     * happens afterwards.</p>
+     */
+    private static final Map<Carrier, Frame> STARTS =
+            new ConcurrentHashMap<Carrier, Frame>();
+
+    private static final ReferenceQueue<Object> COLLECTED =
+            new ReferenceQueue<Object>();
+
+    /**
+     * One pending start's carrier, held weakly and keyed by identity.
+     *
+     * <p>Weakly, so a submission nothing ever runs is collected rather than
+     * retained for the run; by identity, because two equal task objects are
+     * two submissions and the frame of one is not the frame of the
+     * other.</p>
+     */
+    private static final class Carrier extends WeakReference<Object> {
+        private final int identity;
+
+        private Carrier(Object value, ReferenceQueue<Object> queue) {
+            super(value, queue);
+            this.identity = System.identityHashCode(value);
+        }
+
+        @Override
+        public int hashCode() {
+            return identity;
+        }
+
+        @Override
+        public boolean equals(Object other) {
+            if (this == other) return true;
+            if (!(other instanceof Carrier)) return false;
+            Object held = get();
+            return held != null && held == ((Carrier) other).get();
+        }
+    }
+
+    /**
+     * This thread's state, having claimed the start that created it once.
+     *
+     * <p>The claim is lazy because the start is filed after the thread's
+     * state was inherited (at construction) and before the thread runs
+     * anything: its first frame, its first region, its first event -- all
+     * go through here.</p>
+     */
+    private static State state() {
+        State state = CURRENT.get();
+        if (!state.claimed) {
+            state.claimed = true;
+            adopt(state, Thread.currentThread());
+        }
+        return state;
+    }
+
+    private static void adopt(State state, Object carrier) {
+        if (carrier == null || STARTS.isEmpty()) return;
+        Frame frame = STARTS.remove(new Carrier(carrier, null));
+        if (frame != null) state.openStart(frame);
+    }
+
+    /**
+     * Files the frame of one {@code Thread.start} or work submission.
+     *
+     * <p>The iteration is the number of starts already made AT THIS SITE
+     * inside the starter's current activation: the count lives in that
+     * frame's own counters and is gone when the frame pops, exactly as a
+     * loop iteration is (IDENTITY-V3 SS1: "two siblings started from one
+     * site in one loop differ by the loop iteration of the start site").
+     * It is a structural count of starts, never a thread id, an address or
+     * a session ordinal.</p>
+     */
+    public static void startWork(String startSiteId, Object carrier) {
+        String site = Text.safe(startSiteId);
+        if (site.isEmpty() || carrier == null) return;
+        State state = state();
+        Map<String, Integer> starts = state.children();
+        String key = STARTED + site;
+        Integer made = starts.get(key);
+        int iteration = made == null ? 0 : made;
+        starts.put(key, iteration + 1);
+        sweep();
+        STARTS.put(new Carrier(carrier, COLLECTED), Frame.of(site, iteration));
+    }
+
+    /**
+     * Takes the start frame filed for {@code carrier}, if there is one.
+     *
+     * <p>The other half of {@link #startWork}: a thread claims the start
+     * filed for ITSELF the first time it does anything, and a pool thread
+     * that was created before the work claims the start filed for the task
+     * it is running -- the task object the region was entered on.</p>
+     */
+    public static void claimStart(Object carrier) {
+        if (carrier == null || STARTS.isEmpty()) return;
+        adopt(state(), carrier);
+    }
+
+    /** Drops the entries of carriers nothing runs any more. */
+    private static void sweep() {
+        for (Reference<?> dead = COLLECTED.poll(); dead != null;
+                dead = COLLECTED.poll()) {
+            STARTS.remove(dead);
+        }
+    }
+
+    private static final String STARTED = "start\u0000";
+
+    /**
      * Enters one instrumented call site.
      *
      * <p>The frame's iteration is the k-th entry of THIS call site under
@@ -155,7 +312,7 @@ public final class Identity {
      * different points for one execution point.</p>
      */
     public static void enterCall(String callSiteId) {
-        State state = CURRENT.get();
+        State state = state();
         String site = Text.safe(callSiteId);
         Map<String, Integer> siblings = state.children();
         Integer seen = siblings.get(site);
@@ -168,9 +325,14 @@ public final class Identity {
 
     /** Leaves the innermost call site. */
     public static void exitCall() {
-        State state = CURRENT.get();
+        State state = state();
         int depth = state.frames.size();
         if (depth == 0) return;
+        // The frame of the start this thread's work runs under was pushed by
+        // no call of that work, so no return of it may pop it: an unbalanced
+        // exit would otherwise take the one frame that tells two siblings
+        // apart.
+        if (depth - 1 <= state.startDepth) return;
         state.frames.remove(depth - 1);
         // The frame's own children are gone with it; the counters of the
         // frame it returns to stay, which is what makes the next turn of a
@@ -185,7 +347,7 @@ public final class Identity {
     public static void loopIteration(String loopId) {
         String loop = Text.safe(loopId);
         if (loop.isEmpty()) return;
-        State state = CURRENT.get();
+        State state = state();
         state.loop = loop;
         Integer charged = state.loops.get(loop);
         state.loops.put(loop, charged == null ? 1 : charged + 1);
@@ -193,13 +355,13 @@ public final class Identity {
 
     /** Opens a scope: the execution index of what runs inside starts here. */
     public static void scopeStart() {
-        State state = CURRENT.get();
+        State state = state();
         state.scopeBase = state.frames.size();
     }
 
     /** The index from the scope root to here: an occurrence's own index. */
     public static ExecutionIndex atScope() {
-        State state = CURRENT.get();
+        State state = state();
         return state.from(state.scopeBase);
     }
 
@@ -209,7 +371,7 @@ public final class Identity {
      * @return the index from the scope root to this region entry
      */
     public static ExecutionIndex regionEnter() {
-        State state = CURRENT.get();
+        State state = state();
         ExecutionIndex index = state.from(state.scopeBase);
         state.regions.add(new Region(state.frames.size()));
         return index;
@@ -224,7 +386,7 @@ public final class Identity {
      * runtime guessing which activation was live.</p>
      */
     public static void regionKey(long vmRegionEnterEventId) {
-        State state = CURRENT.get();
+        State state = state();
         Region region = state.region();
         if (region == null || vmRegionEnterEventId <= 0L) return;
         region.journal = FrameJournal.open(vmRegionEnterEventId,
@@ -233,20 +395,20 @@ public final class Identity {
 
     /** Closes the innermost open region. */
     public static void regionExit() {
-        State state = CURRENT.get();
+        State state = state();
         if (state.regions.isEmpty()) return;
         state.regions.remove(state.regions.size() - 1);
     }
 
     /** The site-local index of one event inside the region. */
     public static ExecutionIndex siteIndex() {
-        State state = CURRENT.get();
+        State state = state();
         return state.from(state.regionBase());
     }
 
     /** The whole path this thread is at, for a degraded address. */
     public static ExecutionIndex here() {
-        State state = CURRENT.get();
+        State state = state();
         return state.from(0);
     }
 
@@ -261,7 +423,8 @@ public final class Identity {
         // its endpoint is the anchor, exactly as a message's producer is.
         // Two sibling threads doing the same work under one request -- the
         // two FSImageSaver threads on hdfs-17960 -- share a role, a window
-        // index and a call path, and are told apart by nothing else.
+        // index and a call path, and are told apart by the frame of the
+        // start that created each of them (see #startWork).
         String started = Lineage.startedBy();
         if (!started.isEmpty()) {
             return CausalContext.of(started, "THREAD_START");
@@ -305,6 +468,7 @@ public final class Identity {
 
     public static void resetForTests() {
         CURRENT.remove();
+        STARTS.clear();
         CLOCK = UNAVAILABLE;
         FrameJournal.resetForTests();
     }

@@ -65,8 +65,10 @@ import soot.jimple.SwitchStmt;
 import soot.tagkit.Tag;
 
 import java.io.IOException;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Deque;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.EnumMap;
@@ -589,6 +591,7 @@ public final class CausynthPipeline {
         for (InstrumentationPlan plan : campaign) {
             instrumentConcolicRegion(plan, refs, envelope);
         }
+        instrumentConcolicWorkStarts(envelope.methods, refs);
         instrumentConcolicConfiguredSourceCallContexts(
                 envelope.configuredSourcePhaseSites.values(), refs);
         instrumentConcolicAccessorCallContexts(envelope.materializations,
@@ -1671,6 +1674,125 @@ public final class CausynthPipeline {
             body.getTraps().addFirst(Jimple.v().newTrap(throwable, selected,
                     normalExit, handler));
         }
+    }
+
+    /**
+     * Files the start-site frame of every work start in the selected methods.
+     *
+     * <p>A thread inherits its creator's execution index when it is
+     * CONSTRUCTED, which is before the start that made it run; and a pool
+     * thread inherits it from whatever created the pool, which has nothing
+     * to do with the work.  So the start itself is the frame: the site the
+     * work was started at and the iteration of that start inside the
+     * starter's activation, filed here for the work to take when it runs
+     * (IDENTITY-V3 SS1 "scope transfer: Thread.start / executor ...").
+     * Without it two siblings started from one site in one loop -- the two
+     * {@code FSImageSaver} threads of hdfs-17960 -- stand on the same frames
+     * and mint one address for two occurrences.</p>
+     *
+     * <p>One hook, and no frame on the starter: a start is an event of the
+     * starter, not a call it returns from.</p>
+     */
+    private void instrumentConcolicWorkStarts(Set<String> methods,
+                                              HookCatalog refs) {
+        int filed = 0;
+        for (String signature : methods) {
+            Body body;
+            try {
+                body = CausynthStaticFacts.activeBody(
+                        CausynthStaticFacts.method(signature));
+            } catch (RuntimeException unavailable) {
+                // A body no pass can retrieve is instrumented by none.
+                continue;
+            }
+            if (body == null) continue;
+            tagOriginalUnits(snapshotUnits(body));
+            for (Unit unit : snapshotUnits(body)) {
+                int unitIndex = originalUnitIndex(unit);
+                if (unitIndex < 0 || !(unit instanceof Stmt)) continue;
+                Stmt stmt = (Stmt) unit;
+                if (!stmt.containsInvokeExpr()) continue;
+                Value carried = startedWork(stmt.getInvokeExpr());
+                if (carried == null) continue;
+                List<Unit> before = new ArrayList<>();
+                Value carrier = objectArg(body, carried, before);
+                if (carrier instanceof NullConstant) continue;
+                emit(before, refs.ref(Hook.PAUSE_OBSERVATION));
+                emit(before, refs.ref(Hook.START_WORK),
+                        StringConstant.v(SiteId.of(signature, unitIndex)),
+                        carrier);
+                emit(before, refs.ref(Hook.RESUME_OBSERVATION));
+                insertBeforeSequence(body, stmt, before);
+                filed++;
+            }
+        }
+        LOG.info("Instrumented {} work-start site(s) across {} selected "
+                + "method(s) for the execution index", filed, methods.size());
+    }
+
+    /**
+     * The object that carries the work one invocation starts, or null.
+     *
+     * <p>The same three shapes the recorder's own carry recognizes: a
+     * {@code Thread.start} starts its receiver, an executor submission
+     * starts its first argument, and a fork-join {@code fork}/{@code
+     * invoke} starts its receiver.</p>
+     */
+    private static Value startedWork(InvokeExpr invoke) {
+        SootMethodRef callee = invoke.getMethodRef();
+        String name = callee.name();
+        Value receiver = invoke instanceof InstanceInvokeExpr
+                && !"<init>".equals(name)
+                ? ((InstanceInvokeExpr) invoke).getBase() : null;
+        if (receiver == null) return null;
+        SootClass declaring = callee.declaringClass();
+        if (invoke.getArgCount() == 0 && "start".equals(name)
+                && declares(declaring, "java.lang.Thread")) {
+            return receiver;
+        }
+        if (invoke.getArgCount() == 0
+                && ("fork".equals(name) || "invoke".equals(name))
+                && declares(declaring, "java.util.concurrent.ForkJoinTask")) {
+            return receiver;
+        }
+        if (invoke.getArgCount() >= 1 && executorFamily(declaring)
+                && ("execute".equals(name) || "submit".equals(name)
+                        || "schedule".equals(name))) {
+            return invoke.getArg(0);
+        }
+        return null;
+    }
+
+    /** Whether this type is, or inherits, the named one. */
+    private static boolean declares(SootClass type, String name) {
+        Set<String> seen = new LinkedHashSet<>();
+        Deque<SootClass> pending = new ArrayDeque<>();
+        if (type != null) pending.push(type);
+        while (!pending.isEmpty()) {
+            SootClass current = pending.pop();
+            if (!seen.add(current.getName())) continue;
+            if (current.getName().equals(name)) return true;
+            if (current.hasSuperclass()) pending.push(current.getSuperclass());
+            for (SootClass implemented : current.getInterfaces()) {
+                pending.push(implemented);
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Whether a submission call is an executor's.
+     *
+     * <p>{@code java.util.concurrent.Executor} by inheritance where the
+     * hierarchy is resolved, and the package where a JDK interface is a
+     * phantom class with no interfaces of its own: {@code execute} on some
+     * application object is not a submission and may not file a frame for
+     * an argument that is nobody's work.</p>
+     */
+    private static boolean executorFamily(SootClass type) {
+        return type != null
+                && (declares(type, "java.util.concurrent.Executor")
+                || type.getName().startsWith("java.util.concurrent."));
     }
 
     /**
@@ -3324,6 +3446,7 @@ public final class CausynthPipeline {
         EXIT_LOOP_ROOT_INVOCATION_FRAME,
         THROW_LOOP_ROOT_INVOCATION_FRAME,
         ENTER_REGION_FRAME,
+        START_WORK,
         ENTER_CONFIGURED_SOURCE_PHASE_SITE,
         EXIT_CONFIGURED_SOURCE_PHASE_SITE,
         THROW_CONFIGURED_SOURCE_PHASE_SITE,
@@ -3455,6 +3578,8 @@ public final class CausynthPipeline {
                     .add(Hook.ENTER_REGION_FRAME, runtime, "enterRegionFrame",
                             LongType.v(), string, string, object,
                             ArrayType.v(object, 1))
+                    .add(Hook.START_WORK, runtime, "startWork",
+                            VoidType.v(), string, object)
                     .add(Hook.ENTER_CONFIGURED_SOURCE_PHASE_SITE, runtime,
                             "enterConfiguredSourcePhaseCallSite",
                             LongType.v(), string, IntType.v(), string)

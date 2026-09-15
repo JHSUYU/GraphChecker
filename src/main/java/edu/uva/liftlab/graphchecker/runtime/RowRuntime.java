@@ -568,6 +568,22 @@ public final class RowRuntime {
     }
 
     /**
+     * Files the frame of one work start, for the work it started.
+     *
+     * <p>The starter's own frames are unchanged: a start is an event, not a
+     * call, and what it leaves behind is the frame the STARTED work is
+     * indexed from (IDENTITY-V3 SS1, scope transfer).</p>
+     */
+    public static void startWork(String startSiteId, Object carrier) {
+        Identity.startWork(startSiteId, carrier);
+    }
+
+    /** Takes the start frame filed for the work this object carries. */
+    public static void claimStart(Object carrier) {
+        Identity.claimStart(carrier);
+    }
+
+    /**
      * This thread, as a key stable inside one session.
      *
      * <p>Same-thread program order is a happens-before input (R-I7.1), and

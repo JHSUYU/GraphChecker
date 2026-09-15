@@ -755,6 +755,68 @@ public class RowRuntimeTest {
         Identity.enterCall("Caller.step()#u7");
         Identity.enterCall("Caller.body()#u9");
 
+        // The thread-start handover (P2h): the child's inherited stack
+        // GAINS the frame of the start that created it, and two siblings
+        // started from one site inside one starter frame -- hdfs-17960's two
+        // FSImageSaver threads -- differ by that start's iteration and by
+        // nothing else.  No thread id, no address, no session counter.
+        Identity.resetForTests();
+        Identity.scopeStart();
+        Identity.enterCall("FSImage.saveFSImageInAllDirs()#u12");
+        String first = startedWorkIndex("FSImage.saveFSImageInAllDirs()#u40");
+        String second = startedWorkIndex("FSImage.saveFSImageInAllDirs()#u40");
+        assertEquals("FSImage.saveFSImageInAllDirs()#u12@0"
+                + "/FSImage.saveFSImageInAllDirs()#u40@0"
+                + "/FSImageSaver.run()#u1@0", first);
+        assertEquals("FSImage.saveFSImageInAllDirs()#u12@0"
+                + "/FSImage.saveFSImageInAllDirs()#u40@1"
+                + "/FSImageSaver.run()#u1@0", second);
+        // The count lives in the starter FRAME and is gone with it: the next
+        // activation of the starter starts its starts again at 0, exactly as
+        // a loop iteration count does.
+        Identity.exitCall();
+        Identity.enterCall("FSImage.saveFSImageInAllDirs()#u12");
+        assertEquals("FSImage.saveFSImageInAllDirs()#u12@1"
+                + "/FSImage.saveFSImageInAllDirs()#u40@0"
+                + "/FSImageSaver.run()#u1@0",
+                startedWorkIndex("FSImage.saveFSImageInAllDirs()#u40"));
+
+        // A pool thread was created before the work it runs, so it inherits
+        // nothing from the submission: the start filed for the TASK is
+        // claimed on the object the region is entered on, and the next task
+        // replaces that frame instead of nesting under it.
+        Identity.resetForTests();
+        final List<String> ran =
+                Collections.synchronizedList(new ArrayList<String>());
+        final Object[] tasks = {new Object(), new Object()};
+        Thread worker = poolThreadCreatedOutsideAnyScope(new Runnable() {
+            @Override
+            public void run() {
+                for (Object task : tasks) {
+                    Identity.claimStart(task);
+                    Identity.enterCall("Task.run()#u1");
+                    ran.add(Identity.atScope().render());
+                    Identity.exitCall();
+                }
+            }
+        });
+        Identity.scopeStart();
+        Identity.enterCall("Pool.submitAll()#u5");
+        Identity.startWork("Pool.submitAll()#u9", tasks[0]);
+        Identity.startWork("Pool.submitAll()#u9", tasks[1]);
+        worker.start();
+        try {
+            worker.join();
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+        }
+        assertEquals("Pool.submitAll()#u9@0/Task.run()#u1@0", ran.get(0));
+        assertEquals("Pool.submitAll()#u9@1/Task.run()#u1@0", ran.get(1));
+
+        Identity.resetForTests();
+        Identity.scopeStart();
+        Identity.enterCall("Caller.run()#u3");
+
         // The three causal contexts, and the one that is not an ordinal.
         assertEquals("Root:HEARTBEAT_TICK#4", Identity.context("", "",
                 Role.HEARTBEAT_TICK, 4).render());
@@ -763,6 +825,32 @@ public class RowRuntimeTest {
                         Role.IPC_HANDLER, 2).render());
         assertEquals("Lost:DATA_XCEIVER",
                 Identity.context("", "", Role.DATA_XCEIVER, 0).render());
+    }
+
+    /**
+     * The index of the work one start site started, on its own thread.
+     *
+     * <p>The child is CONSTRUCTED before the start is filed, which is the
+     * real order -- {@code new Thread(saver)} then {@code start()} -- and the
+     * reason the frame cannot travel by inheritance.</p>
+     */
+    private static String startedWorkIndex(String startSite) {
+        final AtomicReference<String> onChild = new AtomicReference<>("");
+        Thread child = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                Identity.enterCall("FSImageSaver.run()#u1");
+                onChild.set(Identity.atScope().render());
+            }
+        });
+        Identity.startWork(startSite, child);
+        child.start();
+        try {
+            child.join();
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+        }
+        return onChild.get();
     }
 
     /** A thread a pool created before any scope existed. */
