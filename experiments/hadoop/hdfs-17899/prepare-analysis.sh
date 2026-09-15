@@ -35,6 +35,7 @@ copy_family "${common}" org/apache/hadoop/security/token/delegation/DelegationKe
 copy_family "${client}" org/apache/hadoop/hdfs/protocol/datatransfer/sasl/DataTransferSaslUtil
 copy_family "${client}" org/apache/hadoop/hdfs/protocol/datatransfer/sasl/SaslDataTransferClient
 copy_family "${client}" org/apache/hadoop/hdfs/security/token/block/DataEncryptionKey
+copy_family "${client}" org/apache/hadoop/hdfs/protocolPB/PBHelperClient
 copy_family "${hdfs}" org/apache/hadoop/hdfs/protocol/datatransfer/sasl/SaslDataTransferServer
 copy_family "${hdfs}" org/apache/hadoop/hdfs/protocolPB/PBHelper
 copy_family "${hdfs}" org/apache/hadoop/hdfs/security/token/block/BlockKey
