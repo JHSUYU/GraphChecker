@@ -447,6 +447,23 @@ public final class D3Runtime {
                             long observedVersion, String symbol,
                             String javaType, String concreteValue,
                             String siteIndex) {
+        read(occurrence, seq, site, location, observedVersion, symbol,
+                javaType, concreteValue, siteIndex,
+                ReadRow.UNKNOWN_VERSION);
+    }
+
+    /**
+     * One read, also stating the version its mint's store published.
+     *
+     * <p>Only a placeholder has one: the term that consumes the read names
+     * the mint's version, and this is what a reader follows from that
+     * version back to this row (CONTRACT v2.4).</p>
+     */
+    public static void read(OccurrenceAddress occurrence, long seq,
+                            String site, LocationId location,
+                            long observedVersion, String symbol,
+                            String javaType, String concreteValue,
+                            String siteIndex, long mintVersion) {
         SessionPublisher session = publisher;
         if (session == null || occurrence == null || location == null) return;
         Endpoint at = endpoint(occurrence, site, 0, siteIndex);
@@ -454,7 +471,7 @@ public final class D3Runtime {
         session.read(ReadRow.of(sessionId(), sequence(seq), at, location,
                 observedVersion, Text.safe(symbol), javaType(javaType, null),
                 Text.safe(concreteValue).isEmpty() ? null
-                        : Text.safe(concreteValue)));
+                        : Text.safe(concreteValue), mintVersion));
     }
 
     /**

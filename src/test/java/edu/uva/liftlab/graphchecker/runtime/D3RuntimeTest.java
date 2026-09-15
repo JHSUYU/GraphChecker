@@ -343,6 +343,12 @@ public class D3RuntimeTest {
             if ("M_I_unwritten".equals(read.symbol())) unwritten = read;
         }
         assertNotNull("the unwritten mint states a row", unwritten);
+        // CONTRACT v2.4: the placeholder states the version its own mint
+        // published, which is what a term's ReadFrom names, beside the last
+        // real write it observed, which is the join to the writer.
+        assertEquals(126L, unwritten.mintVersion());
+        assertEquals(ReadRow.UNKNOWN_VERSION,
+                reads.get(0).mintVersion());
         assertEquals("no write precedes the mint: -1 and the decimal",
                 ReadRow.UNKNOWN_VERSION, unwritten.observedVersion());
         assertEquals("2", unwritten.concreteValue());
