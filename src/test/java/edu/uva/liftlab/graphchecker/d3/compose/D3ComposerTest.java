@@ -103,6 +103,14 @@ public class D3ComposerTest {
      */
     private static final String MINTED_JOINED =
             "M_I_field_REGION.target.in.counter2";
+    /**
+     * One occurrence's SECOND declared port on one cell.
+     *
+     * <p>Two ports, two mints, two symbols -- and one location, which is
+     * why the location cannot be what a reader is matched by.</p>
+     */
+    private static final String PLACEHOLDER_TWO =
+            "M_I_field_REGION.target.in.count.port2";
 
     // ------------------------------------------------------------------
     // 1. Polarity: the recording is refuted, the flip reaches the failure.
@@ -297,20 +305,35 @@ public class D3ComposerTest {
                                 "Manager#delete#31:WRITE", at("w#141", 0), 0),
                         counter, 141L, "EXPR.000000000000c141");
             }
-            // The anchor's declared input: one placeholder row per
-            // activation, stating the version the mint was laid over and
-            // the value the read returned.
+            // The anchor's declared input, the way laneA4 found it: ONE
+            // occurrence declaring ONE cell under TWO ports, so two
+            // placeholder rows of the same location -- each with its own
+            // MINT VERSION, and each read's ReadFrom naming its own.  The
+            // (occurrence, location) bridge could not choose between them
+            // and refused both, taking the flip paths with it; the mint
+            // version is unique by construction, so each resolves to its
+            // own symbol and both paths stand.
+            String[] port = {PLACEHOLDER, PLACEHOLDER_TWO};
             for (int activation = 0; activation < 2; activation++) {
-                session.read(Endpoint.of(saver,
-                                "INSTANCE_FIELD/counter#PLACEHOLDER#0:READ",
+                session.placeholder(Endpoint.of(saver,
+                                "INSTANCE_FIELD/counter#PLACEHOLDER#"
+                                        + activation + ":READ",
                                 at("count#" + activation, 0), 0),
-                        counter, Long.parseLong(each[2]), PLACEHOLDER, "I",
-                        each[3]);
+                        counter, Long.parseLong(each[2]),
+                        500L + activation, port[activation], "I", each[3]);
+                // phi over the version the MINT created, not over the
+                // symbol: the composer has to get there through the row.
+                session.expression("EXPR.0000000000000fe" + activation,
+                        binary("!=", integer("I", 2L),
+                                read("INSTANCE_FIELD", owner, "value",
+                                        500L + activation, "I")));
             }
-            session.expression("EXPR.0000000000000fe1", binary("!=",
-                    integer("I", 2L), symbol(PLACEHOLDER, "I")));
-            session.target("EXPR.0000000000000fe1", flip, true);
-            session.target("EXPR.0000000000000fe1", flip, true);
+            // One phi, naming BOTH ports' reads: a fatal arm that rests on
+            // the counter however the occurrence declared it.
+            session.target("(and EXPR.0000000000000fe0 "
+                    + "EXPR.0000000000000fe1)", flip, true);
+            session.target("(and EXPR.0000000000000fe0 "
+                    + "EXPR.0000000000000fe1)", flip, true);
             session.write();
         }
 
@@ -328,6 +351,16 @@ public class D3ComposerTest {
                         + "made: " + fatalArm(all),
                 fatalArm(all).contains("(java_int_wrap (+ (java_int_wrap "
                         + "(+ 0 1)) 1))"));
+        assertTrue("and each port's ReadFrom resolves to ITS OWN mint, so "
+                        + "one cell declared twice states two reads and "
+                        + "not a contradiction: " + fatalArm(all),
+                all.body().contains(SmtLowering.legalSymbols(
+                        "(not (= 2 " + PLACEHOLDER + "))"))
+                        && all.body().contains(SmtLowering.legalSymbols(
+                        "(not (= 2 " + PLACEHOLDER_TWO + "))")));
+        assertFalse("nothing is refused for two rows of one location",
+                says(all.gaps(), GapKind.UNSTATED_VALUE,
+                        "under different symbols"));
         // The counter read's writer is delivered and registered -- one
         // arm per exploration replay, the deleteSnapshot occurrence whose
         // write the anchor's placeholder joined -- and it gets NO
@@ -770,22 +803,23 @@ public class D3ComposerTest {
                     symbol(NO_ROW, "I"), integer("I", 4L)));
             session.decision(ANCHOR, "anchor#u11", true,
                     "EXPR.00000000000000b4");
-            // ONE occurrence, ONE location, and TWO read rows of it
-            // stating a value under DIFFERENT symbols -- at two versions,
-            // because the version is not what the reader and the row are
-            // matched by.  What this occurrence's read of the location
-            // returned then has no answer: taking either one would put
-            // one read's value on another read, so the ReadFrom is
-            // refused by name -- and so is the reader whose own row
-            // states nothing.
-            session.read(Endpoint.of(ANCHOR, "Counter#a#1:READ",
+            // TWO placeholder rows stating ONE mint version under
+            // DIFFERENT symbols.  A mint version is unique by
+            // construction, so this is the recording contradicting itself
+            // and what the read that version made returned has no answer:
+            // taking either one would put one read's value on another
+            // read, so the ReadFrom naming it is refused by name -- and so
+            // is the reader whose own row states nothing.  Two rows at two
+            // DIFFERENT mint versions are two reads, not a conflict, and
+            // are not refused (the 17960 anchor's two ports).
+            session.placeholder(Endpoint.of(ANCHOR, "Counter#a#1:READ",
                             at("two#1", 0), 0),
                     LocationId.of(LocationKind.INSTANCE, "9", "16"), 7L,
-                    "two_a", "I", "1");
-            session.read(Endpoint.of(ANCHOR, "Counter#b#1:READ",
+                    11L, "two_a", "I", "1");
+            session.placeholder(Endpoint.of(ANCHOR, "Counter#b#1:READ",
                             at("two#2", 0), 0),
                     LocationId.of(LocationKind.INSTANCE, "9", "16"), 9L,
-                    "two_b", "I", "2");
+                    11L, "two_b", "I", "2");
             session.read(Endpoint.of(ANCHOR, "Counter#r#1:READ",
                             at("two#3", 0), 0),
                     LocationId.of(LocationKind.INSTANCE, "9", "16"), 11L,
@@ -860,15 +894,15 @@ public class D3ComposerTest {
                         + "refused by name, naming the class and offset",
                 named(gaps, "UNSTATED_FIELD_PROJECTION:"
                         + "org/apache/Store@48:L"));
-        assertTrue("two rows of one occurrence stating different symbols "
-                        + "for one location state nothing about its read "
-                        + "of it, and the ReadFrom is refused by name",
-                named(gaps, "UNSTATED_VALUE:ReadVersion:INSTANCE/9#16@11:"
+        assertTrue("two placeholder rows stating one mint version under "
+                        + "different symbols state nothing about the read "
+                        + "it made, and the ReadFrom is refused by name",
+                named(gaps, "UNSTATED_VALUE:MintVersion:INSTANCE/9#16@11:"
                         + "[two_a, two_b]"));
         assertTrue("and so is the reader whose own row states no value",
                 says(gaps, GapKind.UNSTATED_VALUE,
-                        "this occurrence published two read rows of this "
-                                + "location under different symbols: "
+                        "two placeholder rows of this session state mint "
+                                + "version 11 under different symbols: "
                                 + "[two_a, two_b]"));
         assertTrue("a row citing an expression its session's table does "
                         + "not hold is BLOCKING, by the ref it names",
@@ -1240,15 +1274,16 @@ public class D3ComposerTest {
         // its shadow, so the tracked-location log gets a new version whose
         // value is the minted symbol.  Nobody wrote it, so the row
         // contract publishes no write -- and a ReadFrom naming that
-        // version is then valued by the READ row of the same location and
-        // version, bound by that row's own pin.  Taken from the copy of
-        // the version's expression the node carries, the binding would
-        // rest on no row at all.
-        session.read(Endpoint.of(ANCHOR,
+        // version is then valued by the placeholder row whose mintVersion
+        // IS that version, bound by that row's own pin -- this one was
+        // laid over no write at all, so it has no join of its own.  Taken
+        // from the copy of the version's expression the node carries, the
+        // binding would rest on no row at all.
+        session.placeholder(Endpoint.of(ANCHOR,
                         "INSTANCE_FIELD/22#24#PLACEHOLDER#0:READ",
                         at("count#2", 0), 0),
                 LocationId.of(LocationKind.INSTANCE, "22", "24"),
-                174L, MINTED, "I", "2");
+                -1L, 174L, MINTED, "I", "2");
         // And the reader of that version, as the runtime publishes it: its
         // own row states no value, and the version's does.
         session.read(Endpoint.of(ANCHOR,
@@ -1258,23 +1293,23 @@ public class D3ComposerTest {
                 174L, "INSTANCE/22#24@v174", "I", null);
         // The same shape where the mint was laid over a REAL write: the
         // counter's RMW at v77 is in the write log, the placeholder row
-        // states v77 (the version it was laid over) and the term's
-        // ReadFrom names v178 (the version the mint gave the read).  The
-        // row and the term are matched by THIS OCCURRENCE and the
-        // location, so the row's symbol is the read's value -- and the
-        // row's own value comes from the JOIN to v77, which is the
-        // writer's chain, not from the pin to what it happened to read.
+        // states v77 as the version it was laid over -- its OWN join --
+        // and v178 as the version the mint created, which is the one the
+        // term's ReadFrom names.  The two are matched by that mint
+        // version, so the row's symbol is the read's value, and the row's
+        // own value comes from the JOIN to v77: the writer's chain, not
+        // the pin to what it happened to read.
         session.expression("EXPR.00000000000000e2", binary("+",
                 symbol(SERIAL, "I"), integer("I", 1L)));
         session.write(Endpoint.of(PRODUCER, "Manager#createSnapshot#27:WRITE",
                         at("rmw#1", 0), 0),
                 LocationId.of(LocationKind.INSTANCE, "2", "24"), 77L,
                 "EXPR.00000000000000e2");
-        session.read(Endpoint.of(ANCHOR,
+        session.placeholder(Endpoint.of(ANCHOR,
                         "INSTANCE_FIELD/2#24#PLACEHOLDER#0:READ",
                         at("count#4", 0), 0),
                 LocationId.of(LocationKind.INSTANCE, "2", "24"),
-                77L, MINTED_JOINED, "I", "2");
+                77L, 178L, MINTED_JOINED, "I", "2");
         session.read(Endpoint.of(ANCHOR,
                         "<Manager: int getNumSnapshots()>#u2:READ",
                         at("count#5", 0), 0),
@@ -1831,6 +1866,20 @@ public class D3ComposerTest {
                   String symbol, String javaType, String concrete) {
             reads.add(ReadRow.of(id, ++seq, endpoint, location, version,
                     symbol, javaType, concrete));
+        }
+
+        /**
+         * A PLACEHOLDER read, stating both of its versions.
+         *
+         * <p>{@code version} is the last real write the mint was laid over
+         * -- this row's own join -- and {@code mint} is the version the
+         * mint created, which is the one a reader's ReadFrom names.</p>
+         */
+        void placeholder(Endpoint endpoint, LocationId location,
+                         long version, long mint, String symbol,
+                         String javaType, String concrete) {
+            reads.add(ReadRow.of(id, ++seq, endpoint, location, version,
+                    symbol, javaType, concrete, mint));
         }
 
         void decision(OccurrenceAddress at, String site, String term) {

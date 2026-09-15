@@ -420,31 +420,15 @@ public final class CorpusIndex implements Arms.Rows {
     /**
      * The rows of one session, as the state join reads them.
      *
-     * <p>Session-wide: for a caller with no occurrence to ask as, whose
-     * reads of a location two occurrences may state differently -- in
-     * which case the rows state nothing and the read is refused by
-     * name.</p>
+     * <p>One view per session and no scope inside it: the write log is
+     * the session's, because versions are session-local counters, and a
+     * mint version is unique in it by construction.</p>
      */
     public SmtLowering.SessionJoin joinOf(final String sessionId) {
-        return joinOf(sessionId, null);
-    }
-
-    /**
-     * The same, as ONE occurrence's reads state it.
-     *
-     * <p>The write log is the session's -- versions are session-local
-     * counters -- and which symbol a read of a location returned is the
-     * READING occurrence's own statement, because the version a
-     * placeholder row carries is the last real write the mint was laid
-     * over rather than the version the mint gave the read.</p>
-     */
-    public SmtLowering.SessionJoin joinOf(final String sessionId,
-                                          OccurrenceAddress occurrence) {
         final Map<String, WriteRow> writes = writesBySession.get(sessionId);
         final SessionReader session = bySessionId.get(sessionId);
-        final Map<String, Set<String>> stated = SmtLowering.statedReadIndex(
-                readsBySession.get(sessionId),
-                occurrence == null ? "" : occurrence.id());
+        final Map<Long, Set<String>> minted =
+                SmtLowering.mintedReadIndex(readsBySession.get(sessionId));
         return new SmtLowering.SessionJoin() {
             @Override
             public JsonElement writeExpression(String locationKey,
@@ -458,8 +442,8 @@ public final class CorpusIndex implements Arms.Rows {
             }
 
             @Override
-            public Set<String> statedReadSymbols(String locationKey) {
-                Set<String> symbols = stated.get(locationKey);
+            public Set<String> mintedReadSymbols(long version) {
+                Set<String> symbols = minted.get(Long.valueOf(version));
                 return symbols == null
                         ? Collections.<String>emptySet() : symbols;
             }
