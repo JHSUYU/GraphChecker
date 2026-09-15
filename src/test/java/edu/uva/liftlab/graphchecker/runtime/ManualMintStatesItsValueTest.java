@@ -2,12 +2,18 @@ package edu.uva.liftlab.graphchecker.runtime;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
+import edu.uva.liftlab.graphchecker.contract.GapKind;
+import edu.uva.liftlab.graphchecker.contract.GapRow;
+import edu.uva.liftlab.graphchecker.contract.RowCodec;
+import edu.uva.liftlab.graphchecker.contract.SessionDir;
 import edu.uva.liftlab.graphchecker.plan.ConfiguredSourcePhaseContract;
 import edu.uva.liftlab.graphchecker.plan.ExecutionTask;
 import edu.uva.liftlab.graphchecker.plan.SiteId;
 import org.junit.After;
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
+import org.junit.rules.TemporaryFolder;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
@@ -32,6 +38,9 @@ import static org.junit.Assert.assertTrue;
  * registry can place this mint at the address the plan named.</p>
  */
 public class ManualMintStatesItsValueTest {
+    @Rule
+    public final TemporaryFolder session = new TemporaryFolder();
+
     private static final String METHOD = "<a.B: void run()>";
     private static final String MANUAL_REGION = "REGION.aaa1cfd7";
     private static final String MANUAL_SOURCE = "hdfs-17899/nn0#epoch0";
@@ -53,6 +62,7 @@ public class ManualMintStatesItsValueTest {
     @Before
     public void clearRegistry() {
         RuntimeTraceContext.resetForTests();
+        RowRuntime.resetForTests();
     }
 
     @After
@@ -61,7 +71,7 @@ public class ManualMintStatesItsValueTest {
         opened.clear();
         RuntimeTraceContext.resetForTests();
         System.clearProperty(FocusedReplay.PLAN_PROPERTY);
-        FocusedReplay.resetForTests();
+        RowRuntime.resetForTests();
     }
 
     /**
@@ -162,6 +172,7 @@ public class ManualMintStatesItsValueTest {
      */
     @Test
     public void aModelIsAppliedOnlyAtAMintThisRunCanPlace() throws Exception {
+        openSession();
         ConcolicRegionRuntime.ActiveRegion active =
                 phaseRegion(NODE + "#epoch1", PLANNED);
         Object manager = new Object();
@@ -171,7 +182,9 @@ public class ManualMintStatesItsValueTest {
                 new SourceRef("CLUSTER_NODE", "NAMENODE", NODE, 0L));
         assertFalse("a mint of another epoch is not written",
                 placeable(active, manager));
-        assertEquals("EPOCH_UNMATCHED", gap(active, "gapKind"));
+        assertEquals(GapKind.EPOCH_UNMATCHED, gap().kind());
+        assertTrue("a mint the wave's value was not written at blocks",
+                gap().blocking());
 
         // The restart advances the same logical source.
         RuntimeTraceContext.restartSource(manager,
@@ -182,8 +195,8 @@ public class ManualMintStatesItsValueTest {
                 phaseRegion(NODE + "#epoch1", PLANNED);
         assertFalse("nothing places this mint, so nothing rewrites it",
                 placeable(orphan, new Object()));
-        assertEquals("MINT_UNATTRIBUTED", gap(orphan, "gapKind"));
-        String detail = gap(orphan, "detail");
+        assertEquals(GapKind.MINT_UNATTRIBUTED, gap().kind());
+        String detail = gap().detail();
         assertTrue(detail, detail.contains("attributes this mint to no node"));
         assertTrue(detail, detail.contains("recorded value stands"));
 
@@ -192,6 +205,8 @@ public class ManualMintStatesItsValueTest {
                         "workload/unregistered/region/" + REGION + "#1");
         assertTrue("nothing to place, nothing to refuse",
                 placeable(epochless, new Object()));
+        assertEquals("and files nothing", GapKind.MINT_UNATTRIBUTED,
+                gap().kind());
     }
 
     /**
@@ -316,17 +331,22 @@ public class ManualMintStatesItsValueTest {
         return (Boolean) method.invoke(active, mintOwner);
     }
 
-    /** One member of the last gap this activation filed, or "". */
-    @SuppressWarnings("unchecked")
-    private static String gap(ConcolicRegionRuntime.ActiveRegion active,
-                              String member) throws Exception {
-        Field field = active.getClass().getDeclaredField(
-                "configuredSourcePhaseGaps");
-        field.setAccessible(true);
-        List<JsonObject> gaps = (List<JsonObject>) field.get(active);
-        JsonObject last = gaps.isEmpty() ? new JsonObject()
-                : gaps.get(gaps.size() - 1);
-        return last.has(member) ? last.get(member).getAsString() : "";
+    /** The last gap ROW this session published: one gap vocabulary. */
+    private GapRow gap() throws Exception {
+        List<GapRow> rows = RowCodec.readAll(SessionDir.of(
+                        session.getRoot().toPath().resolve("iteration-0000"),
+                        RowRuntime.sessionId()).gaps(),
+                RowCodec::readGap);
+        return rows.isEmpty() ? null : rows.get(rows.size() - 1);
+    }
+
+    /** Opens the session the refusals are published into. */
+    private void openSession() throws Exception {
+        java.nio.file.Path results = session.getRoot().toPath()
+                .resolve("iteration-0000").resolve("seed-result")
+                .resolve("concolic_region_results.jsonl");
+        java.nio.file.Files.createDirectories(results.getParent());
+        RowRuntime.configure(results);
     }
 
     private static String phaseId(String occurrenceId) {

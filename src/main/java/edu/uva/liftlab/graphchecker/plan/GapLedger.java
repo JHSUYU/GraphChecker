@@ -438,6 +438,22 @@ public final class GapLedger {
                         + " that did are missing");
 
         // ------------------------------------------------------------------
+        // REPLAY / MINT -- the wave's value was not written at the mint the
+        // obligation is about, so the replay answered about a valuation
+        // nobody asked for.
+        // ------------------------------------------------------------------
+        blocking("REPLAY/MINT", "MINT_UNATTRIBUTED",
+                "this run could attribute the mint to no node, so the"
+                        + " wave's value was not written and the replay ran"
+                        + " the recording's value under an obligation that"
+                        + " asked for another one");
+        blocking("REPLAY/MINT", "EPOCH_UNMATCHED",
+                "the mint site was reached at another node epoch than the"
+                        + " plan addresses, so the assignment would rewrite"
+                        + " a value the wave said nothing about and was not"
+                        + " written");
+
+        // ------------------------------------------------------------------
         // REPLAY / TASK_ADMISSION -- the one row a replay publishes about a
         // planned task no activation of it answered.
         // ------------------------------------------------------------------

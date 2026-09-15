@@ -40,5 +40,21 @@ public enum GapKind {
      * was wrong.  A leak cannot be reported as a diagnostic, because every
      * row published after it is addressed by the wrong occurrence.</p>
      */
-    FRAME_UNBALANCED
+    FRAME_UNBALANCED,
+    /**
+     * A mint this run could attribute to no node, so nothing was written.
+     *
+     * <p>BLOCKING for the session that met it: the wave's value for this
+     * root was NOT written, so the replay ran the recording's value under an
+     * obligation that asked for another one.</p>
+     */
+    MINT_UNATTRIBUTED,
+    /**
+     * A mint of the right site at the wrong node epoch.
+     *
+     * <p>Same consequence, and the same class: a configured source is
+     * reached once per node lifecycle, so an assignment applied at another
+     * epoch rewrites a value the wave said nothing about.</p>
+     */
+    EPOCH_UNMATCHED
 }
