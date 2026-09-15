@@ -1,5 +1,8 @@
 package edu.uva.liftlab.graphchecker.runtime.d3;
 
+import edu.uva.liftlab.graphchecker.d3.contract.CausalContext;
+import edu.uva.liftlab.graphchecker.d3.contract.ExecutionIndex;
+import edu.uva.liftlab.graphchecker.d3.contract.Frame;
 import edu.uva.liftlab.graphchecker.d3.contract.Role;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -43,8 +46,8 @@ public final class Identity {
 
     /** One thread's frame stack, its prefix hashes and its loop counters. */
     private static final class State {
-        private final List<ExecutionIndex.Frame> frames =
-                new ArrayList<ExecutionIndex.Frame>();
+        private final List<Frame> frames =
+                new ArrayList<Frame>();
         private final List<String> hashes = new ArrayList<String>();
         /** loop id -> iterations charged inside the innermost frame. */
         private final Map<String, Integer> loops =
@@ -70,8 +73,8 @@ public final class Identity {
 
         private ExecutionIndex from(int base) {
             int start = Math.max(0, Math.min(base, frames.size()));
-            return start >= frames.size() ? ExecutionIndex.EMPTY
-                    : ExecutionIndex.of(new ArrayList<ExecutionIndex.Frame>(
+            return start >= frames.size() ? ExecutionIndex.empty()
+                    : ExecutionIndex.of(new ArrayList<Frame>(
                             frames.subList(start, frames.size())));
         }
     }
@@ -82,8 +85,7 @@ public final class Identity {
         int iteration = state.loop.isEmpty() ? 0
                 : state.loops.containsKey(state.loop)
                         ? state.loops.get(state.loop) : 0;
-        ExecutionIndex.Frame frame =
-                ExecutionIndex.Frame.of(callSiteId, iteration);
+        Frame frame = Frame.of(callSiteId, iteration);
         state.frames.add(frame);
         state.hashes.add(Text.sha16(
                 state.hashAt(state.hashes.size()) + "/" + frame.render()));
@@ -149,12 +151,12 @@ public final class Identity {
                                         String rpcSite, Role role,
                                         int windowIndex) {
         if (!Text.safe(anchorEndpointId).isEmpty()) {
-            return CausalContext.anchor(anchorEndpointId, rpcSite);
+            return CausalContext.of(anchorEndpointId, Text.safe(rpcSite));
         }
         if (role != null && role != Role.UNKNOWN && windowIndex > 0) {
-            return CausalContext.root(role, windowIndex);
+            return CausalContext.of(role, windowIndex);
         }
-        return CausalContext.lost(role == null ? Role.UNKNOWN : role);
+        return CausalContext.of(role == null ? Role.UNKNOWN : role);
     }
 
     public static void resetForTests() {

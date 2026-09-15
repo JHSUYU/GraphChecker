@@ -50,16 +50,35 @@ import static org.junit.Assert.assertTrue;
  * a formula that was satisfiable all along.</p>
  */
 public class D3ComposerTest {
+    /** Identity v3: a v1 case spelling, as the address it now resolves to. */
+    private static edu.uva.liftlab.graphchecker.d3.contract.OccurrenceAddress
+            address(String node, String regionId, int windowIndex) {
+        return edu.uva.liftlab.graphchecker.d3.contract.OccurrenceAddress.of(
+                edu.uva.liftlab.graphchecker.d3.contract.NodeId.parse(node),
+                regionId,
+                edu.uva.liftlab.graphchecker.d3.contract.CausalContext.of(
+                        edu.uva.liftlab.graphchecker.d3.contract.Role.CLIENT,
+                        windowIndex),
+                edu.uva.liftlab.graphchecker.d3.contract.ExecutionIndex.parse(
+                        regionId + ".entry()#u1@0"));
+    }
+
+    /** Identity v3: a k-th-event ordinal is a one-frame site index. */
+    private static edu.uva.liftlab.graphchecker.d3.contract.ExecutionIndex
+            siteIndex(int ordinal) {
+        return edu.uva.liftlab.graphchecker.d3.contract.ExecutionIndex.parse(
+                "Site.at()#u" + ordinal + "@0");
+    }
+
 
     @Rule
     public TemporaryFolder folder = new TemporaryFolder();
 
-    private static final OccurrenceAddress ANCHOR = OccurrenceAddress.parse(
-            "case/dn0#epoch0/region/REGION.target#1");
+    private static final OccurrenceAddress ANCHOR = address("case/dn0#epoch0", "REGION.target", 1);
     private static final OccurrenceAddress PRODUCER =
-            OccurrenceAddress.parse("case/nn0#epoch0/region/REGION.nn#1");
+            address("case/nn0#epoch0", "REGION.nn", 1);
     private static final OccurrenceAddress UPSTREAM =
-            OccurrenceAddress.parse("case/nn1#epoch0/region/REGION.up#1");
+            address("case/nn1#epoch0", "REGION.up", 1);
     private static final String ANCHOR_SITE = "BlockManager#get#8:READ";
     private static final String MARKER = "marker_m";
     private static final String MARKER_ROOT = "ROOT.MARKER";
@@ -74,8 +93,8 @@ public class D3ComposerTest {
     public void theHealthyRecordingIsRefutedAndTheFlipIsTheWitness()
             throws Exception {
         Path iteration = folder.newFolder("marker").toPath();
-        Endpoint producer = Endpoint.of(PRODUCER, "PORT.key", 1, 0);
-        Endpoint consumer = Endpoint.of(ANCHOR, "PORT.key", 1, 0);
+        Endpoint producer = Endpoint.of(PRODUCER, "PORT.key", siteIndex(1), 0);
+        Endpoint consumer = Endpoint.of(ANCHOR, "PORT.key", siteIndex(1), 0);
         session(iteration, "s0", false, "false", producer, consumer,
                 "vh", "false", null, true, false, "EXPR.v1.marker");
         session(iteration, "s1", true, "true", producer, consumer,
@@ -109,8 +128,8 @@ public class D3ComposerTest {
     @Test
     public void twoProducersOnOnePortAreTwoFamilies() throws Exception {
         Path iteration = folder.newFolder("families").toPath();
-        Endpoint first = Endpoint.of(PRODUCER, "PORT.key", 1, 0);
-        Endpoint second = Endpoint.of(PRODUCER, "PORT.key", 2, 0);
+        Endpoint first = Endpoint.of(PRODUCER, "PORT.key", siteIndex(1), 0);
+        Endpoint second = Endpoint.of(PRODUCER, "PORT.key", siteIndex(2), 0);
         Session session = new Session(iteration, "s0", false);
         session.marker("false");
         session.expression("EXPR.v1.marker", symbol(MARKER, "Z"));
@@ -118,9 +137,9 @@ public class D3ComposerTest {
                 + MARKER + "))");
         session.export(first, "EXPR.v1.marker", 1L, "false");
         session.export(second, "EXPR.v1.marker", 2L, "false");
-        session.attach(Endpoint.of(ANCHOR, "PORT.key", 1, 0), "vh1",
+        session.attach(Endpoint.of(ANCHOR, "PORT.key", siteIndex(1), 0), "vh1",
                 "false", first);
-        session.attach(Endpoint.of(ANCHOR, "PORT.key", 2, 0), "vh2",
+        session.attach(Endpoint.of(ANCHOR, "PORT.key", siteIndex(2), 0), "vh2",
                 "false", second);
         session.target("(and vh1 vh2)", false, true);
         session.write();
@@ -140,8 +159,8 @@ public class D3ComposerTest {
     public void aWitnessMayNotMoveARootInsideAnUnattestedArm()
             throws Exception {
         Path iteration = folder.newFolder("unattested").toPath();
-        Endpoint producer = Endpoint.of(PRODUCER, "PORT.key", 1, 0);
-        Endpoint consumer = Endpoint.of(ANCHOR, "PORT.key", 1, 0);
+        Endpoint producer = Endpoint.of(PRODUCER, "PORT.key", siteIndex(1), 0);
+        Endpoint consumer = Endpoint.of(ANCHOR, "PORT.key", siteIndex(1), 0);
         // The producer ran concretely in both sessions: no decision of its
         // occurrence is recorded anywhere, so every arm is unattested.
         session(iteration, "s0", false, "false", producer, consumer,
@@ -170,10 +189,10 @@ public class D3ComposerTest {
     @Test
     public void aNestedHandoffIsClosedTransitively() throws Exception {
         Path iteration = folder.newFolder("nested").toPath();
-        Endpoint upstream = Endpoint.of(UPSTREAM, "PORT.up", 1, 0);
-        Endpoint forwarded = Endpoint.of(PRODUCER, "PORT.up", 1, 0);
-        Endpoint producer = Endpoint.of(PRODUCER, "PORT.key", 1, 0);
-        Endpoint consumer = Endpoint.of(ANCHOR, "PORT.key", 1, 0);
+        Endpoint upstream = Endpoint.of(UPSTREAM, "PORT.up", siteIndex(1), 0);
+        Endpoint forwarded = Endpoint.of(PRODUCER, "PORT.up", siteIndex(1), 0);
+        Endpoint producer = Endpoint.of(PRODUCER, "PORT.key", siteIndex(1), 0);
+        Endpoint consumer = Endpoint.of(ANCHOR, "PORT.key", siteIndex(1), 0);
 
         Session session = new Session(iteration, "s0", false);
         session.marker("false");
@@ -206,8 +225,8 @@ public class D3ComposerTest {
     @Test
     public void eachPathCarriesItsOwnSessionsArrival() throws Exception {
         Path iteration = folder.newFolder("arrivals").toPath();
-        Endpoint producer = Endpoint.of(PRODUCER, "PORT.id", 1, 0);
-        Endpoint consumer = Endpoint.of(ANCHOR, "PORT.id", 1, 0);
+        Endpoint producer = Endpoint.of(PRODUCER, "PORT.id", siteIndex(1), 0);
+        Endpoint consumer = Endpoint.of(ANCHOR, "PORT.id", siteIndex(1), 0);
         for (String[] each : new String[][]{{"s0", "10", "false"},
                 {"s1", "20", "true"}}) {
             Session session = new Session(iteration, each[0],
@@ -339,8 +358,8 @@ public class D3ComposerTest {
     @Test
     public void whatTheRecordingDoesNotStateIsNamed() throws Exception {
         Path iteration = folder.newFolder("named").toPath();
-        Endpoint consumer = Endpoint.of(ANCHOR, "PORT.key", 1, 0);
-        Endpoint other = Endpoint.of(ANCHOR, "PORT.ref", 1, 0);
+        Endpoint consumer = Endpoint.of(ANCHOR, "PORT.key", siteIndex(1), 0);
+        Endpoint other = Endpoint.of(ANCHOR, "PORT.ref", siteIndex(1), 0);
         // Two sessions, neither of which focused anything: two recordings.
         for (String each : new String[]{"s0", "s1"}) {
             Session session = new Session(iteration, each, false);

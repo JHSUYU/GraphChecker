@@ -57,6 +57,26 @@ import static org.junit.Assert.assertTrue;
  * so an assertion about SAT or UNSAT is an assertion about the query.</p>
  */
 public class D3ExploreTest {
+    /** Identity v3: a v1 case spelling, as the address it now resolves to. */
+    private static edu.uva.liftlab.graphchecker.d3.contract.OccurrenceAddress
+            address(String node, String regionId, int windowIndex) {
+        return edu.uva.liftlab.graphchecker.d3.contract.OccurrenceAddress.of(
+                edu.uva.liftlab.graphchecker.d3.contract.NodeId.parse(node),
+                regionId,
+                edu.uva.liftlab.graphchecker.d3.contract.CausalContext.of(
+                        edu.uva.liftlab.graphchecker.d3.contract.Role.CLIENT,
+                        windowIndex),
+                edu.uva.liftlab.graphchecker.d3.contract.ExecutionIndex.parse(
+                        regionId + ".entry()#u1@0"));
+    }
+
+    /** Identity v3: a k-th-event ordinal is a one-frame site index. */
+    private static edu.uva.liftlab.graphchecker.d3.contract.ExecutionIndex
+            siteIndex(int ordinal) {
+        return edu.uva.liftlab.graphchecker.d3.contract.ExecutionIndex.parse(
+                "Site.at()#u" + ordinal + "@0");
+    }
+
     private static final String TARGET =
             "hdfs-case/dn0#epoch0/region/REGION.target#1";
     private static final String WRITER =
@@ -73,7 +93,7 @@ public class D3ExploreTest {
     public void nestedGuardChainDeepensOneDecisionPerWave() throws Exception {
         Assume.assumeTrue(z3Available());
         Path iteration = tree.newFolder("depth").toPath();
-        OccurrenceAddress target = OccurrenceAddress.parse(TARGET);
+        OccurrenceAddress target = address("hdfs-case/dn0#epoch0", "REGION.target", 1);
         Session seed = new Session(iteration, "s-seed");
         seed.activation(target, true);
         seed.root(target, "CASE.MARKER", "M_MARKER", RootKind.MARKER, "false",
@@ -145,10 +165,10 @@ public class D3ExploreTest {
             throws Exception {
         Assume.assumeTrue(z3Available());
         Path iteration = tree.newFolder("family").toPath();
-        OccurrenceAddress target = OccurrenceAddress.parse(TARGET);
-        OccurrenceAddress producer = OccurrenceAddress.parse(PRODUCER);
-        Endpoint exported = Endpoint.of(producer, "XCH.resp.block-key-id", 1, 0);
-        Endpoint attached = Endpoint.of(target, "XCH.resp.block-key-id", 1, 0);
+        OccurrenceAddress target = address("hdfs-case/dn0#epoch0", "REGION.target", 1);
+        OccurrenceAddress producer = address("hdfs-case/nn0#epoch0", "REGION.rotate", 1);
+        Endpoint exported = Endpoint.of(producer, "XCH.resp.block-key-id", siteIndex(1), 0);
+        Endpoint attached = Endpoint.of(target, "XCH.resp.block-key-id", siteIndex(1), 0);
 
         Session seed = new Session(iteration, "s-seed");
         seed.activation(target, true);
@@ -219,8 +239,8 @@ public class D3ExploreTest {
     public void controlWithNoArmIsUnproducible() throws Exception {
         Assume.assumeTrue(z3Available());
         Path iteration = tree.newFolder("unproducible").toPath();
-        OccurrenceAddress target = OccurrenceAddress.parse(TARGET);
-        Endpoint attached = Endpoint.of(target, "XCH.req.key-id", 1, 0);
+        OccurrenceAddress target = address("hdfs-case/dn0#epoch0", "REGION.target", 1);
+        Endpoint attached = Endpoint.of(target, "XCH.req.key-id", siteIndex(1), 0);
         Session seed = new Session(iteration, "s-seed");
         seed.activation(target, true);
         // Unpaired: the value arrived from outside this corpus.
@@ -252,7 +272,7 @@ public class D3ExploreTest {
     @Test
     public void rootWithoutADomainCannotBeMoved() throws Exception {
         Assume.assumeTrue(z3Available());
-        OccurrenceAddress target = OccurrenceAddress.parse(TARGET);
+        OccurrenceAddress target = address("hdfs-case/dn0#epoch0", "REGION.target", 1);
         Path pinned = tree.newFolder("pinned").toPath();
         Session seed = new Session(pinned, "s-seed");
         seed.activation(target, true);
@@ -303,13 +323,13 @@ public class D3ExploreTest {
     public void closureHoldsTheWriterOfAReadVersionAndTheWireProducer()
             throws Exception {
         Path iteration = tree.newFolder("closure").toPath();
-        OccurrenceAddress target = OccurrenceAddress.parse(TARGET);
-        OccurrenceAddress writer = OccurrenceAddress.parse(WRITER);
-        OccurrenceAddress producer = OccurrenceAddress.parse(PRODUCER);
+        OccurrenceAddress target = address("hdfs-case/dn0#epoch0", "REGION.target", 1);
+        OccurrenceAddress writer = address("hdfs-case/dn0#epoch0", "REGION.addkeys", 1);
+        OccurrenceAddress producer = address("hdfs-case/nn0#epoch0", "REGION.rotate", 1);
         LocationId allKeys = LocationId.of(LocationKind.MAP,
                 "BlockTokenSecretManager", "allKeys");
-        Endpoint exported = Endpoint.of(producer, "XCH.resp.block-key-id", 1, 0);
-        Endpoint attached = Endpoint.of(writer, "XCH.resp.block-key-id", 1, 0);
+        Endpoint exported = Endpoint.of(producer, "XCH.resp.block-key-id", siteIndex(1), 0);
+        Endpoint attached = Endpoint.of(writer, "XCH.resp.block-key-id", siteIndex(1), 0);
 
         Session seed = new Session(iteration, "s-seed");
         seed.activation(target, true);
@@ -319,9 +339,9 @@ public class D3ExploreTest {
         seed.export(exported, "e.119992", 11L, "119992");
         seed.attach(attached, "M_HOFF_KEY", "119992", exported);
         seed.write(Endpoint.of(writer, "BlockTokenSecretManager#addKeys#12"
-                + ":WRITE", 1, 0), allKeys, 5L, "e.119992");
+                + ":WRITE", siteIndex(1), 0), allKeys, 5L, "e.119992");
         seed.read(Endpoint.of(target, "BlockTokenSecretManager"
-                + "#retrieveDataEncryptionKey#8:READ", 1, 0), allKeys, 5L,
+                + "#retrieveDataEncryptionKey#8:READ", siteIndex(1), 0), allKeys, 5L,
                 "M_READ_KEY", "119992");
         seed.flush();
 
@@ -480,7 +500,7 @@ public class D3ExploreTest {
                             Endpoint producer) {
             attaches.add(AttachRow.of(sessionId, ++seq, endpoint, symbol, "I",
                     arrival, false, null, producer,
-                    "corr-" + endpoint.ordinal()));
+                    "corr-" + endpoint.siteIndex().hash()));
         }
 
         private void write(Endpoint endpoint, LocationId location,

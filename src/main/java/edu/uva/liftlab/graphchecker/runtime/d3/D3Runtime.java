@@ -5,7 +5,9 @@ import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.d3.contract.ActivationRow;
 import edu.uva.liftlab.graphchecker.d3.contract.AttachRow;
 import edu.uva.liftlab.graphchecker.d3.contract.DecisionRow;
+import edu.uva.liftlab.graphchecker.d3.contract.CausalContext;
 import edu.uva.liftlab.graphchecker.d3.contract.Endpoint;
+import edu.uva.liftlab.graphchecker.d3.contract.ExecutionIndex;
 import edu.uva.liftlab.graphchecker.d3.contract.ExportRow;
 import edu.uva.liftlab.graphchecker.d3.contract.GapClass;
 import edu.uva.liftlab.graphchecker.d3.contract.GapKind;
@@ -162,8 +164,12 @@ public final class D3Runtime {
                                                     String nodeKey,
                                                     String regionId,
                                                     String taskId) {
-        OccurrenceAddress address =
-                OccurrenceMinterV2.mint(nodeKey, regionId);
+        CausalContext context = Identity.context(Lineage.anchor(),
+                Lineage.rpcSite(), Lineage.rootRole(),
+                Lineage.rootWindowIndex());
+        ExecutionIndex index = Identity.regionEnter();
+        OccurrenceAddress address = OccurrenceMinterV2.mint(nodeKey,
+                regionId, context, index);
         SessionPublisher session = publisher;
         if (address == null) {
             if (session != null) {
@@ -175,20 +181,11 @@ public final class D3Runtime {
             return null;
         }
         if (token > 0L) ACTIVATIONS.put(token, address);
-        // IDENTITY-V3: why it ran, and where in the component's control
-        // structure.  Published beside the row until the contract carries
-        // them (v2.0): a computed identity nobody can read is not one.
-        CausalContext context = Identity.context(Lineage.anchor(),
-                Lineage.rpcSite(), Lineage.rootRole(),
-                Lineage.rootWindowIndex());
-        ExecutionIndex index = Identity.regionEnter();
         if (token > 0L) {
             CONTEXTS.put(token, context);
             INDEXES.put(token, index);
         }
         if (session != null) {
-            session.identity(address, context, index, Text.safe(regionId),
-                    Text.safe(taskId));
             session.activation(ActivationRow.of(sessionId(), address,
                     Text.safe(taskId), FocusedReplay.focused(taskId,
                             address)));
@@ -501,27 +498,17 @@ public final class D3Runtime {
         }
     }
 
-    /** The k-th event of one site inside one occurrence. */
+    /**
+     * The endpoint of one event: where in the occurrence the site ran.
+     *
+     * <p>The site-local execution index, not a k-th-event ordinal: an
+     * ordinal moves when an unrelated event of the same site is inserted
+     * earlier, and two replays then disagree about which event is which.</p>
+     */
     private static Endpoint endpoint(OccurrenceAddress occurrence,
                                      String site, int attempt) {
-        String scope = occurrence.render() + "\n" + Text.safe(site);
-        AtomicInteger counter = ORDINALS.get(scope);
-        if (counter == null) {
-            AtomicInteger fresh = new AtomicInteger();
-            AtomicInteger raced = ORDINALS.putIfAbsent(scope, fresh);
-            counter = raced == null ? fresh : raced;
-        }
-        Endpoint endpoint = Endpoint.of(occurrence, Text.safe(site),
-                counter.incrementAndGet(), attempt);
-        // IDENTITY-V3: the site-local execution index replaces the k-th
-        // ordinal when the contract carries it (v2.0); until then the row
-        // keeps the ordinal and the index is stated beside it.
-        SessionPublisher session = publisher;
-        if (session != null) {
-            session.siteIdentity(endpoint.id(), Text.safe(site),
-                    Identity.siteIndex());
-        }
-        return endpoint;
+        return Endpoint.of(occurrence, Text.safe(site), Identity.siteIndex(),
+                attempt);
     }
 
     /** Publishes what only the end of a replay can state, and closes. */

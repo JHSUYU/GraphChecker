@@ -8,11 +8,12 @@ import edu.uva.liftlab.graphchecker.d3.contract.ExportRow;
 import edu.uva.liftlab.graphchecker.d3.contract.GapClass;
 import edu.uva.liftlab.graphchecker.d3.contract.GapKind;
 import edu.uva.liftlab.graphchecker.d3.contract.GapRow;
-import edu.uva.liftlab.graphchecker.d3.contract.LineageHop;
 import edu.uva.liftlab.graphchecker.d3.contract.LocationId;
 import edu.uva.liftlab.graphchecker.d3.contract.LocationKind;
 import edu.uva.liftlab.graphchecker.d3.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.d3.contract.ReadRow;
+import edu.uva.liftlab.graphchecker.d3.contract.CausalContext;
+import edu.uva.liftlab.graphchecker.d3.contract.ExecutionIndex;
 import edu.uva.liftlab.graphchecker.d3.contract.Role;
 import edu.uva.liftlab.graphchecker.d3.contract.RootKind;
 import edu.uva.liftlab.graphchecker.d3.contract.RootMintRow;
@@ -21,8 +22,6 @@ import edu.uva.liftlab.graphchecker.d3.contract.SessionDir;
 import edu.uva.liftlab.graphchecker.d3.contract.TargetRow;
 import edu.uva.liftlab.graphchecker.d3.contract.WriteRow;
 import edu.uva.liftlab.graphchecker.runtime.d3.D3Runtime;
-import edu.uva.liftlab.graphchecker.runtime.d3.CausalContext;
-import edu.uva.liftlab.graphchecker.runtime.d3.ExecutionIndex;
 import edu.uva.liftlab.graphchecker.runtime.d3.Identity;
 import edu.uva.liftlab.graphchecker.runtime.d3.Interactions;
 import edu.uva.liftlab.graphchecker.runtime.d3.Lineage;
@@ -79,7 +78,7 @@ public class D3RuntimeTest {
         Object anchor = new Object();
         RuntimeTraceContext.registerSource(anchor, NN);
         long request = RuntimeTraceContext.beginRequest(NN, "balance-block");
-        assertEquals("CLIENT@balance-block#1", render(Lineage.hops()));
+        assertEquals("CLIENT@balance-block#1", Lineage.path());
 
         // The IPC Server.Call queue: captured at enqueue on this thread,
         // restored at dequeue on a handler that never saw the request.
@@ -90,7 +89,7 @@ public class D3RuntimeTest {
             public void run() {
                 long scope = RuntimeTraceContext.enterCarriedScope(carried,
                         "IPC_HANDLER", "balance-block");
-                onHandler.set(render(Lineage.hops()));
+                onHandler.set(Lineage.path());
                 RuntimeTraceContext.exitCarriedScope(scope);
             }
         });
@@ -109,7 +108,7 @@ public class D3RuntimeTest {
             public void run() {
                 RuntimeTraceContext.View entered =
                         RuntimeTraceContext.enterRoot(task);
-                onWorker.set(render(Lineage.hops()));
+                onWorker.set(Lineage.path());
                 RuntimeTraceContext.exitRoot(entered.spanId);
             }
         });
@@ -118,7 +117,7 @@ public class D3RuntimeTest {
         assertEquals("CLIENT@balance-block#1/EXECUTOR_TASK#1",
                 onWorker.get());
         RuntimeTraceContext.endRequest(request);
-        assertEquals("", render(Lineage.hops()));
+        assertEquals("", Lineage.path());
     }
 
     /**
@@ -130,28 +129,32 @@ public class D3RuntimeTest {
     public void aDaemonTickIsAddressedByItsRoleAndItsWindowLocalK() {
         Object anchor = new Object();
         RuntimeTraceContext.registerSource(anchor, NN);
-        List<String> addresses = new ArrayList<>();
+        List<OccurrenceAddress> addresses = new ArrayList<>();
         for (int tick = 0; tick < 2; tick++) {
             long token = CausynthTraceRecorder.beginDaemonTick(anchor,
                     "HEARTBEAT_TICK");
             addresses.add(OccurrenceMinterV2.mint("hdfs-17899/nn0#epoch0",
-                    "REGION.aaa1cfd7").render());
+                    "REGION.aaa1cfd7",
+                    CausalContext.of(Role.HEARTBEAT_TICK,
+                            Lineage.rootWindowIndex()),
+                    ExecutionIndex.empty()));
             CausynthTraceRecorder.endDaemonTick(token);
         }
-        assertEquals("hdfs-17899/nn0#epoch0/HEARTBEAT_TICK#1"
-                + "/region/REGION.aaa1cfd7#1", addresses.get(0));
-        assertEquals("hdfs-17899/nn0#epoch0/HEARTBEAT_TICK#2"
-                + "/region/REGION.aaa1cfd7#1", addresses.get(1));
-        // Two ticks, two addresses: k counts inside the parent hop, so the
-        // second tick's activation cannot take the first one's address.
-        assertFalse(addresses.get(0).equals(addresses.get(1)));
+        assertEquals("Root:HEARTBEAT_TICK#1",
+                addresses.get(0).context().render());
+        assertEquals("Root:HEARTBEAT_TICK#2",
+                addresses.get(1).context().render());
+        // Two ticks, two identities: the window index is the tick's own
+        // ordinal, which is inherent to the role.
+        assertFalse(addresses.get(0).id().equals(addresses.get(1).id()));
 
-        // An unattributable hop degrades rather than disappearing.
+        // An unattributable scope degrades rather than disappearing.
         OccurrenceAddress lost = OccurrenceMinterV2.degraded(
                 "hdfs-17899/nn0#epoch0", Role.KEY_MANAGER_TICK, "XCH.port");
         assertTrue(lost.lineageLost());
         assertEquals("ROLE.KEY_MANAGER_TICK", lost.regionId());
-        assertNull(OccurrenceMinterV2.mint("", "REGION.aaa1cfd7"));
+        assertNull(OccurrenceMinterV2.mint("", "REGION.aaa1cfd7",
+                CausalContext.of(Role.UNKNOWN), ExecutionIndex.empty()));
         executionIndexIsStableUnderUnrelatedCalls();
     }
 
@@ -165,8 +168,8 @@ public class D3RuntimeTest {
         D3Runtime.configure(sessionFile());
         OccurrenceAddress producer = OccurrenceMinterV2.mint(
                 "hdfs-17899/nn0#epoch0", "REGION.2392e4b7",
-                Collections.singletonList(
-                        LineageHop.of(Role.HEARTBEAT_TICK, "", 3)), false);
+                CausalContext.of(Role.HEARTBEAT_TICK, 3),
+                ExecutionIndex.parse("PBHelper.convert()#u2@0"));
         Endpoint exported = D3Runtime.exported(producer, 61L,
                 "XCH.resp.block-key-id", 4242L, "hadoop-ipc-7", 0, null, "J",
                 "119981");
@@ -198,7 +201,9 @@ public class D3RuntimeTest {
     public void theSessionRoundTripsEveryRowKind() throws Exception {
         D3Runtime.configure(sessionFile());
         OccurrenceAddress occurrence = OccurrenceMinterV2.mint(
-                "hdfs-17899/target-dn#epoch0", "REGION.53092d3e");
+                "hdfs-17899/target-dn#epoch0", "REGION.53092d3e",
+                CausalContext.of("producer-endpoint-id", "HDFS_SASL#replace"),
+                ExecutionIndex.parse("DataXceiver.run()#u9@0"));
         Endpoint endpoint = D3Runtime.nextEndpoint(occurrence, "XCH.port", 0);
         JsonObject expression = new JsonObject();
         expression.addProperty("_type", "SymbolExpression");
@@ -271,7 +276,9 @@ public class D3RuntimeTest {
             throws Exception {
         D3Runtime.configure(sessionFile());
         OccurrenceAddress occurrence = OccurrenceMinterV2.mint(
-                "hdfs-17899/target-dn#epoch0", "REGION.53092d3e");
+                "hdfs-17899/target-dn#epoch0", "REGION.53092d3e",
+                CausalContext.of("producer-endpoint-id", "HDFS_SASL#replace"),
+                ExecutionIndex.parse("DataXceiver.run()#u9@0"));
         JsonObject condition = new JsonObject();
         condition.addProperty("_type", "BinaryExpression");
         condition.addProperty("_exp", "allKeys.get(id) == null");
@@ -370,12 +377,4 @@ public class D3RuntimeTest {
                 .resolve("iteration-0000"), D3Runtime.sessionId());
     }
 
-    private static String render(List<LineageHop> hops) {
-        StringBuilder rendered = new StringBuilder();
-        for (LineageHop hop : hops) {
-            if (rendered.length() > 0) rendered.append('/');
-            rendered.append(hop.render());
-        }
-        return rendered.toString();
-    }
 }

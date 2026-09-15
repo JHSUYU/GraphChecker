@@ -1,6 +1,5 @@
 package edu.uva.liftlab.graphchecker.runtime.d3;
 
-import edu.uva.liftlab.graphchecker.d3.contract.LineageHop;
 import edu.uva.liftlab.graphchecker.d3.contract.Role;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -73,8 +72,8 @@ public final class Lineage {
             this.lost = lost;
         }
 
-        private LineageHop hop() {
-            return LineageHop.of(role, api, k);
+        private String render() {
+            return role.name() + (api.isEmpty() ? "" : "@" + api) + "#" + k;
         }
     }
 
@@ -185,14 +184,6 @@ public final class Lineage {
                 }
             };
 
-    /** The hops of the calling thread, outermost first. */
-    public static List<LineageHop> hops() {
-        List<Frame> stack = STACK.get();
-        List<LineageHop> hops = new ArrayList<LineageHop>(stack.size());
-        for (Frame frame : stack) hops.add(frame.hop());
-        return Collections.unmodifiableList(hops);
-    }
-
     /** Whether any hop of the current lineage is unattributable. */
     public static boolean lost() {
         for (Frame frame : STACK.get()) {
@@ -301,7 +292,7 @@ public final class Lineage {
         StringBuilder rendered = new StringBuilder();
         for (Frame frame : stack) {
             if (rendered.length() > 0) rendered.append('/');
-            rendered.append(frame.hop().render());
+            rendered.append(frame.render());
         }
         return rendered.toString();
     }
