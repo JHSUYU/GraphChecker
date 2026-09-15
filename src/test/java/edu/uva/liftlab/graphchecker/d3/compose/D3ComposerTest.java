@@ -468,7 +468,14 @@ public class D3ComposerTest {
         OccurrenceAddress concurrent = occurrence("case/dn0",
                 "REGION.heartbeat", CausalContext.of(Role.HEARTBEAT_TICK, 1),
                 frame("Heartbeat#run#9", 0));
-        LocationId keys = LocationId.of(LocationKind.MAP,
+        // IDENTITY-V3 sec 5: the map is named by the endpoint that
+        // ALLOCATED it, which is the same name in every replay.
+        LocationId keys = LocationId.allocated(Endpoint.of(UPSTREAM,
+                "KeyManager#<init>#1:NEW", at("alloc#1", 0), 0),
+                LocationKind.MAP, "allKeys");
+        // The same storage named by its class instead: one name for every
+        // instance, so it names none of them.
+        LocationId aliased = LocationId.of(LocationKind.MAP,
                 "BlockTokenSecretManager", "allKeys");
 
         Session session = new Session(iteration, "s0", false);
@@ -498,6 +505,14 @@ public class D3ComposerTest {
                 at("w#1", 0), 0), keys, 2L, "EXPR.v1.second");
         session.read(Endpoint.of(reader, "Reader#get#5:READ",
                 at("r#1", 0), 0), keys, 1L, "read_k", "false");
+        // The same two writers and the same read, on storage whose rows
+        // name only the CLASS.
+        session.write(Endpoint.of(UPSTREAM, "KeyManager#put#4:WRITE",
+                at("w#2", 0), 0), aliased, 3L, "EXPR.v1.ancestor");
+        session.write(Endpoint.of(concurrent, "Heartbeat#put#8:WRITE",
+                at("w#2", 0), 0), aliased, 4L, "EXPR.v1.second");
+        session.read(Endpoint.of(reader, "Reader#get#6:READ",
+                at("r#2", 0), 0), aliased, 3L, "read_a", "false");
         session.target("read_k", false, true);
         session.write();
 
@@ -521,6 +536,23 @@ public class D3ComposerTest {
                 new edu.uva.liftlab.graphchecker.d3.smt.Arms(
                         CorpusIndex.of(iteration))
                         .concurrent(reader, concurrent, "s0"));
+        // IDENTITY-V3 sec 5: alternatives need an owner that names the
+        // storage.  The class-owned copy of the same state gets the
+        // delivery its own run gave it, and says so.
+        assertTrue("an allocation endpoint names the storage",
+                edu.uva.liftlab.graphchecker.d3.smt.Arms.namedOwner(keys));
+        assertFalse("a class on a heap location names every instance",
+                edu.uva.liftlab.graphchecker.d3.smt.Arms.namedOwner(aliased));
+        String aliasedKey = SmtLowering.locationKey(aliased);
+        boolean named = false;
+        for (GapRow gap : composition.gaps()) {
+            named |= gap.kind() == GapKind.DECLARATION_MISSING
+                    && gap.subject().equals(aliasedKey);
+        }
+        assertTrue("and the aliasing owner is named, not used", named);
+        assertFalse("so no family chooses a writer for it",
+                composition.body().contains("state_family__0__"
+                        + JsonText.digest(aliasedKey, 12)));
     }
 
     // ------------------------------------------------------------------
@@ -540,8 +572,9 @@ public class D3ComposerTest {
         OccurrenceAddress second = occurrence("case/dn0", "REGION.second",
                 CausalContext.of(Role.HEARTBEAT_TICK, 1),
                 frame("Heartbeat#run#9", 0));
-        LocationId keys = LocationId.of(LocationKind.MAP,
-                "BlockTokenSecretManager", "allKeys");
+        LocationId keys = LocationId.allocated(Endpoint.of(first,
+                "KeyManager#<init>#1:NEW", at("alloc#1", 0), 0),
+                LocationKind.MAP, "allKeys");
 
         for (String[] each : new String[][]{{"s0", "false", "false"},
                 {"s1", "true", "true"}}) {

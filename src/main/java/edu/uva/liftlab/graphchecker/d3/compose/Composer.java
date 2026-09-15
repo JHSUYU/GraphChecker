@@ -313,6 +313,10 @@ public final class Composer {
     private final Set<String> replacing = new LinkedHashSet<String>();
     /** Interactions already remarked on, so one row says it once. */
     private final Set<String> slotNamed = new LinkedHashSet<String>();
+    /** What refused the first path that reached the anchor, or "". */
+    private String firstRefusal = "";
+    /** Locations already named as aliasing, so one row says it once. */
+    private final Set<String> aliasingNamed = new LinkedHashSet<String>();
 
     private Composer(CorpusIndex corpus, OccurrenceAddress anchor,
                      Map<String, RootDomain> declaredDomains,
@@ -401,9 +405,18 @@ public final class Composer {
             }
         }
         if (disjuncts.isEmpty()) {
+            // Two different absences, and the row says which.  "Nothing
+            // reached the anchor" and "everything that reached it was
+            // refused" send a reader to opposite ends of the pipeline, and
+            // the second one was reported as the first.
             gap(GapKind.ADMISSION_GAP, GapClass.BLOCKING, anchor.render(),
-                    "no session of this corpus published a path that "
-                            + "reached the declared occurrence");
+                    admitted.isEmpty()
+                            ? "no session of this corpus published a path "
+                            + "that reached the declared occurrence"
+                            : admitted.size() + " paths reached the anchor "
+                            + "and all were refused: " + (firstRefusal
+                            .isEmpty() ? "no refusal was named"
+                            : firstRefusal));
         } else {
             List<String> selectors = new ArrayList<String>();
             for (Disjunct disjunct : disjuncts) {
@@ -493,7 +506,8 @@ public final class Composer {
         String selector = "path_selector__" + ordinal + "__"
                 + JsonText.digest(path.pathId(), 10);
         lowering.declare(selector, Sort.BOOL);
-        lowering.begin(session, corpus.joinOf(session));
+        lowering.begin(session, corpus.joinOf(session),
+                corpus.expressions(session));
 
         List<String> terms = new ArrayList<String>();
         List<GapRow> refusals = new ArrayList<GapRow>();
@@ -529,24 +543,40 @@ public final class Composer {
                 Long.MAX_VALUE);
         for (int index = 0; index < pi.size(); index++) {
             DecisionRow decision = path.decisions().get(index);
-            if (unknown(pi.get(index), refusals, "decision "
-                    + decision.siteId() + "#" + decision.ordinal())) {
-                continue;
-            }
-            terms.add(pi.get(index));
+            String subject = "decision " + decision.siteId() + "#"
+                    + decision.ordinal();
+            // The published term names the session's EXPRESSIONS by
+            // reference; the one lowering resolves them, and what is left
+            // has to be a name something declares.
+            String conjunct = lowering.statedTerm(pi.get(index),
+                    "pi:" + subject);
+            if (!predicate(conjunct)) continue;
+            if (unknown(conjunct, refusals, subject)) continue;
+            terms.add(conjunct);
         }
 
         // (5) phi_p is the FATAL arm as published; the composer never
         //     re-derives the polarity.  Re-deriving it negated a term that
         //     was already the complement, and every healthy-observed path
         //     was handed its own observation back.
-        String phi = target.phiTerm();
-        if (!unknown(phi, refusals, "phi of " + anchor.render())) {
-            terms.add(phi);
+        String subject = "phi of " + anchor.render();
+        if (target.phiTerm() != null && !target.phiTerm().isEmpty()) {
+            String phi = lowering.statedTerm(target.phiTerm(),
+                    "phi:" + subject);
+            if (!phi.isEmpty() && !unknown(phi, refusals, subject)) {
+                terms.add(phi);
+            }
         }
 
+        // BEFORE end(), which closes the conjunction and forgets them: a
+        // refusal raised while this path was lowered is the reason the
+        // path is not in the disjunction, and a path that kept the rest of
+        // its conjunction would rest on the free constant the refusal
+        // left behind.
+        List<String> refused = new ArrayList<String>(
+                lowering.openRefusals());
         terms.addAll(lowering.end());
-        for (String refusal : lowering.openRefusals()) {
+        for (String refusal : refused) {
             refusals.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
                     GapClass.DIAGNOSTIC, refusal,
                     "this path rests on a value the recording does not "
@@ -554,6 +584,9 @@ public final class Composer {
         }
         if (!refusals.isEmpty()) {
             gaps.addAll(refusals);
+            if (firstRefusal.isEmpty()) {
+                firstRefusal = refusals.get(0).subject();
+            }
             return null;
         }
 
@@ -906,11 +939,8 @@ public final class Composer {
         Term delivered = lower(arm.sessionId(), arm.expressionRef(),
                 "arm:" + arm.slotId());
         if (delivered == null) return "";
-        List<String> conjuncts = new ArrayList<String>();
-        for (String term : arm.pi()) {
-            if (unknown(term, null, "")) continue;
-            conjuncts.add(term);
-        }
+        List<String> conjuncts = prefix(arm);
+        if (conjuncts == null) return "";
         for (Map.Entry<String, String> guard : arm.guard().entrySet()) {
             String literal = JsonText.smtLiteral(guard.getValue());
             if (literal.isEmpty()) continue;
@@ -935,6 +965,50 @@ public final class Composer {
                             + "inside it");
         }
         return VmTermLowering.and(conjuncts);
+    }
+
+    /**
+     * The producer path's prefix, in the producer session's own scope.
+     *
+     * <p>Null when a conjunct of it cannot be stated: an arm missing one
+     * of the decisions its producer took claims a delivery under weaker
+     * conditions than the run had, and a family is a disjunction -- one
+     * arm fewer refuses a witness, one arm too wide invents one.</p>
+     */
+    private List<String> prefix(Arms.Arm arm) {
+        List<String> conjuncts = new ArrayList<String>();
+        String session = arm.sessionId();
+        lowering.begin(session, corpus.joinOf(session),
+                corpus.expressions(session));
+        boolean stated = true;
+        for (String term : arm.pi()) {
+            String conjunct = lowering.statedTerm(term,
+                    "arm-pi:" + arm.slotId());
+            if (!predicate(conjunct)) continue;
+            if (unknown(conjunct, null, "")) {
+                stated = false;
+                break;
+            }
+            conjuncts.add(conjunct);
+        }
+        stated = stated && lowering.openRefusals().isEmpty();
+        conjuncts.addAll(lowering.end());
+        return stated ? conjuncts : null;
+    }
+
+    /**
+     * Whether a decision's published term states a predicate at all.
+     *
+     * <p>A CONCRETE branch is published with an empty term: the VM had no
+     * symbolic value at the site, so the arm the run took depends on no
+     * root and constrains no variable.  Omitting it is exact -- and the
+     * two spellings an empty term reaches here in, {@code ""} and
+     * {@code "(not )"}, are not SMT, so conjoining them voids the whole
+     * query rather than adding a tautology to it.</p>
+     */
+    private static boolean predicate(String conjunct) {
+        String text = conjunct == null ? "" : conjunct.trim();
+        return !text.isEmpty() && !"(not )".equals(text);
     }
 
     /** One arm as the manifest states it. */
@@ -1035,6 +1109,25 @@ public final class Composer {
         for (Map.Entry<String, List<ReadRow>> entry
                 : byLocation.entrySet()) {
             List<ReadRow> reads = entry.getValue();
+            // Alternatives need an owner that NAMES the storage across
+            // replays (IDENTITY-V3 sec 5).  A session rid is that run's
+            // counter and a class on a heap location is every instance of
+            // it at once: either one turns "another writer of L" into
+            // "a writer of something else", so such a read keeps the
+            // delivery its own run gave it and is named here.
+            if (!Arms.namedOwner(reads.get(0).location())) {
+                if (aliasingNamed.add(entry.getKey())) {
+                    gap(GapKind.DECLARATION_MISSING, GapClass.DIAGNOSTIC,
+                            entry.getKey(), "the owner on this location's "
+                                    + "rows is neither an allocation "
+                                    + "endpoint id nor the preWindow form, "
+                                    + "so it names no storage across "
+                                    + "replays: this read is delivered as "
+                                    + "its own run delivered it and gets "
+                                    + "no alternative writers");
+                }
+                continue;
+            }
             List<String> symbols = new ArrayList<String>();
             for (ReadRow read : reads) symbols.add(read.symbol());
             List<String> armTerms = new ArrayList<String>();
@@ -1145,11 +1238,48 @@ public final class Composer {
                                 + JsonText.smtInteger(max) + "))");
                 continue;
             }
+            // A root with no domain is pinned to what the recording read
+            // -- UNLESS the same symbol is also a READ of its own session,
+            // in which case the mint is a region INPUT published twice and
+            // the read's join is the truth about it.  Pinning it here
+            // would fix a value the join is free to move, and the two
+            // statements about one symbol would close the path.
+            if (placeholder(row)) {
+                gap(GapKind.DECLARATION_MISSING, GapClass.DIAGNOSTIC,
+                        row.rootId(), "placeholder published as root: this "
+                                + "symbol is also a read of session "
+                                + row.sessionId() + ", so the read states "
+                                + "what it is and the mint pins nothing");
+                continue;
+            }
             String literal = JsonText.smtLiteral(row.recordedValue());
             if (literal.isEmpty()) continue;
             lowering.assertNamed("root_domain__" + ordinal++,
                     "(= " + row.symbol() + " " + literal + ")");
         }
+    }
+
+    /**
+     * Whether a mint is a declared region INPUT wearing a root's clothes.
+     *
+     * <p>A region's declared inputs are published as symbols the region
+     * READS; publishing the same symbol as a RootMintRow as well states it
+     * twice, and the two statements are not the same -- a root is pinned
+     * to its recording, a read joins to whatever wrote it.  Where both
+     * rows exist the read is the truth and the mint pins nothing; the row
+     * is named so the double publication is visible rather than
+     * arbitrated in silence.</p>
+     */
+    private boolean placeholder(RootMintRow row) {
+        if (row.declared()) return false;
+        RootDomain domain = domainOf(row);
+        if (!domain.pinned()) return false;
+        for (RootMintRow mint : corpus.roots().get(row.rootId())) {
+            if (corpus.readSymbol(mint.sessionId(), mint.symbol())) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -1419,7 +1549,7 @@ public final class Composer {
         List<String> free = new ArrayList<String>();
         for (String token : tokens(term)) {
             if (BUILTIN.contains(token)) continue;
-            if (lowering.declared(token)) continue;
+            if (lowering.defined(token)) continue;
             if (corpus.declaredSymbols().containsKey(token)) {
                 lowering.declare(token,
                         corpus.declaredSymbols().get(token));

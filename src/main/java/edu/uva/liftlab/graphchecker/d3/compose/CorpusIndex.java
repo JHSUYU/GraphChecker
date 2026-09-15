@@ -10,6 +10,7 @@ import edu.uva.liftlab.graphchecker.d3.contract.ActivationRow;
 import edu.uva.liftlab.graphchecker.d3.contract.AttachRow;
 import edu.uva.liftlab.graphchecker.d3.contract.DecisionRow;
 import edu.uva.liftlab.graphchecker.d3.contract.Endpoint;
+import edu.uva.liftlab.graphchecker.d3.contract.ExpressionTable;
 import edu.uva.liftlab.graphchecker.d3.contract.ExportRow;
 import edu.uva.liftlab.graphchecker.d3.contract.Interaction;
 import edu.uva.liftlab.graphchecker.d3.contract.OccurrenceAddress;
@@ -110,6 +111,9 @@ public final class CorpusIndex implements Arms.Rows {
     private final Map<String, Map<String, WriteRow>> writesBySession =
             new LinkedHashMap<String, Map<String, WriteRow>>();
     /** session id -> its reads, in file order. */
+    /** Session -> the symbols its READ rows minted. */
+    private final Map<String, Set<String>> readSymbolsBySession =
+            new LinkedHashMap<String, Set<String>>();
     private final Map<String, List<ReadRow>> readsBySession =
             new LinkedHashMap<String, List<ReadRow>>();
     /** root id -> its mint rows, one per session that minted it. */
@@ -270,12 +274,17 @@ public final class CorpusIndex implements Arms.Rows {
         }
         writesBySession.put(sessionId, writes);
         readsBySession.put(sessionId, session.reads());
+        Set<String> readSymbols = new LinkedHashSet<String>();
         for (ReadRow read : session.reads()) {
+            if (read.symbol() != null && !read.symbol().isEmpty()) {
+                readSymbols.add(read.symbol());
+            }
             occurrenceByEndpoint.put(read.endpoint().id(),
                     read.endpoint().occurrence());
             seqByEndpoint.put(sessionId + "|" + read.endpoint().id(),
                     read.seq());
         }
+        readSymbolsBySession.put(sessionId, readSymbols);
 
         for (RootMintRow root : session.roots()) {
             add(rootsById, root.rootId(), root);
@@ -495,6 +504,18 @@ public final class CorpusIndex implements Arms.Rows {
         SessionReader session = bySessionId.get(sessionId);
         return session == null ? null
                 : session.expressions().expression(expressionRef);
+    }
+
+    /** One session's expression table, as its own terms name it. */
+    public ExpressionTable expressions(String sessionId) {
+        SessionReader session = bySessionId.get(sessionId);
+        return session == null ? null : session.expressions();
+    }
+
+    /** Whether one session published a READ under this symbol. */
+    public boolean readSymbol(String sessionId, String symbol) {
+        Set<String> symbols = readSymbolsBySession.get(sessionId);
+        return symbols != null && symbols.contains(symbol);
     }
 
     @Override

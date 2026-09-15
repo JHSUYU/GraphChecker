@@ -124,15 +124,16 @@ public final class Solver {
             }
             query.append("))\n");
         }
-        String output = run(query.toString());
+        String output = run(SmtLowering.legalSymbols(query.toString()));
         String status = firstLine(output);
         Map<String, String> values = "sat".equals(status)
                 ? parseValues(output)
                 : Collections.<String, String>emptyMap();
         List<String> core = Collections.emptyList();
         if (wantCore && "unsat".equals(status)) {
-            String coreOutput = run(body
-                    + join(assumptions) + "(check-sat)\n(get-unsat-core)\n");
+            String coreOutput = run(SmtLowering.legalSymbols(body
+                    + join(assumptions)
+                    + "(check-sat)\n(get-unsat-core)\n"));
             core = parseCore(coreOutput);
         }
         return new Answer(status, values, core, output);
@@ -271,10 +272,20 @@ public final class Solver {
                     Math.max(1, matching(pair, 0))).trim();
             int split = inner.indexOf(' ');
             if (split < 0) continue;
-            values.put(inner.substring(0, split).trim(),
+            // z3 answers with the name as the query spelled it, quoted
+            // bars and all; the caller asked about the name itself.
+            values.put(unquoted(inner.substring(0, split).trim()),
                     normalize(inner.substring(split + 1).trim()));
         }
         return values;
+    }
+
+    /** {@code |x|} is how SMT-LIB spells the name {@code x}. */
+    static String unquoted(String name) {
+        String text = name == null ? "" : name.trim();
+        return text.length() >= 2 && text.startsWith("|")
+                && text.endsWith("|")
+                ? text.substring(1, text.length() - 1) : text;
     }
 
     /** {@code (- 5)} is what a model says; {@code -5} is what Java says. */
