@@ -678,51 +678,62 @@ public class D3ExploreTest {
                             && gap.detail().contains("no admitted path"));
         }
 
-        rootsAreOccurrencesTheRecordingRan(iteration, writer, occurrence(
-                "hdfs-case/dn0", "REGION.planonly",
-                CausalContext.of(Role.DATA_XCEIVER, 3),
-                "o.a.h.h.s.d.DataXceiver#run#96"));
+        theClosureHasOneRoot(iteration, writer);
     }
 
-    // ---- (5b) a root the recording never ran is refused, not planned ----
+    // ---- (5b) the closure has ONE root: the case's declared anchor -------
 
     /**
-     * Folded into the closure case: what a WAVE does with the declarations it
-     * is handed.  A v1 selector resolves against the seed's activations, but
-     * a declaration already written as a full address resolves by PARSING --
-     * so the seed replay plan's own occurrenceIds, which are the PLAN side's
-     * addresses, became closure roots that no row of the recording named.
-     * In the first real 17960 wave 43 of 45 of them did.
+     * Folded into the closure case: a wave's roots are the anchor and nothing
+     * else (HANDOVER SS1.5).  The seed replay's task plan was a second source
+     * of them, and a plan row is the PLAN side's own address for a region: in
+     * the first real 17960 wave 43 of its 45 rows named an address no row of
+     * the recording published, each became a closure root, and the wave died
+     * on the empty {@code Task.seedSessionId} that follows from one.  An
+     * address the seed did run is still not a root unless the case declared
+     * it, and a declared anchor the seed did NOT run is refused by name.
      */
-    private void rootsAreOccurrencesTheRecordingRan(Path iteration,
-                                                    OccurrenceAddress ran,
-                                                    OccurrenceAddress never)
+    private void theClosureHasOneRoot(Path iteration, OccurrenceAddress ran)
             throws IOException {
         Path waveDir = tree.newFolder("roots-wave").toPath();
         JsonObject manifest = ExploreMain.plan(iteration, TARGET_SELECTOR,
-                java.util.Arrays.asList(ran.render(), never.render()), null,
-                iteration.resolve("results.jsonl"), waveDir, 0, "epoch0",
-                ClosurePlanner.DEFAULT_MAX_TASKS,
+                null, iteration.resolve("results.jsonl"), waveDir, 0,
+                "epoch0", ClosurePlanner.DEFAULT_MAX_TASKS,
                 ObligationFactory.Bounds.defaults());
         List<String> anchors = new ArrayList<String>();
         for (JsonElement element : manifest.getAsJsonArray("anchors")) {
             anchors.add(element.getAsString());
         }
-        assertTrue("the declared anchor resolves: " + anchors,
-                anchors.contains(TARGET.render()));
-        assertTrue("a plan address the seed DID run is a root too: " + anchors,
+        assertEquals("one declaration, one root: " + anchors, 1,
+                anchors.size());
+        assertEquals(TARGET.render(), anchors.get(0));
+        // The writer IS in the closure -- as the anchor's reach, not as a
+        // root of its own; nothing outside that reach is planned.
+        assertTrue("the closure still reaches the writer",
+                manifest.get("tasks").getAsInt() >= 2);
+        assertFalse("and a run's own address is not a second root: " + anchors,
                 anchors.contains(ran.render()));
-        assertFalse("one it never ran is not: " + anchors,
-                anchors.contains(never.render()));
+
+        // A declared anchor the seed session never ran: BLOCKING, and the
+        // refusal names the address rather than leaving "no tasks".
+        Path elsewhere = tree.newFolder("roots-absent").toPath();
+        Session only = new Session(elsewhere, "s-seed");
+        only.activation(WRITER, false);
+        only.flush();
+        Path absentWave = tree.newFolder("roots-absent-wave").toPath();
+        ExploreMain.plan(elsewhere, TARGET.render(), null,
+                elsewhere.resolve("results.jsonl"), absentWave, 0, "epoch0",
+                ClosurePlanner.DEFAULT_MAX_TASKS,
+                ObligationFactory.Bounds.defaults());
         boolean named = false;
-        for (GapRow gap : RowCodec.readAll(waveDir.resolve("gaps.jsonl"),
+        for (GapRow gap : RowCodec.readAll(absentWave.resolve("gaps.jsonl"),
                 RowCodec::readGap)) {
             named |= gap.kind() == GapKind.ADMISSION_GAP
-                    && gap.cls() == GapClass.DIAGNOSTIC
-                    && gap.subject().equals(never.render())
+                    && gap.cls() == GapClass.BLOCKING
+                    && gap.subject().equals(TARGET.render())
                     && gap.detail().contains("published no activation");
         }
-        assertTrue("and the wave says so instead of planning it", named);
+        assertTrue("the anchor's absence is BLOCKING and named", named);
     }
 
     // ---- driving the stage the way the campaign drives it -------------
@@ -731,8 +742,7 @@ public class D3ExploreTest {
     private JsonObject plan(Path iteration, String selector, Path domains,
                             Path results, Path waveDir, int wave)
             throws IOException {
-        return ExploreMain.plan(iteration, selector,
-                Collections.<String>emptyList(), domains, results,
+        return ExploreMain.plan(iteration, selector, domains, results,
                 waveDir, wave, "epoch0", ClosurePlanner.DEFAULT_MAX_TASKS,
                 ObligationFactory.Bounds.defaults());
     }
