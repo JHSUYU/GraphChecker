@@ -78,10 +78,26 @@ public final class ClosurePlanner {
         visited.add(anchor.id());
         while (!pending.isEmpty() && tasks.size() < maxTasks) {
             OccurrenceAddress occurrence = pending.remove();
+            String seed = seedSession(corpus, occurrence);
+            if (seed.isEmpty()) {
+                // A closure member is explored by ONE focused replay of the
+                // recording it was planned from, so an address no session
+                // activated and no session decided anything at is not a task
+                // -- there is no run to focus, and no rows to walk further
+                // from.  It is BLOCKING for the same reason a truncated
+                // closure is: the composition would offer the solver an arm
+                // whose path condition nothing attests.
+                gaps.add(GapRow.of(ExploreCodec.EXPLORATION,
+                        GapKind.ADMISSION_GAP, GapClass.BLOCKING,
+                        occurrence.render(),
+                        "no session of this corpus activated this occurrence "
+                                + "or recorded a decision of it, so no replay "
+                                + "can be focused on it and it is not a task"));
+                continue;
+            }
             List<OccurrenceAddress> factor = stateConnected(corpus,
                     occurrence);
-            tasks.add(Task.of(taskId(occurrence), occurrence, factor,
-                    seedSession(corpus, occurrence)));
+            tasks.add(Task.of(taskId(occurrence), occurrence, factor, seed));
             for (OccurrenceAddress next
                     : successors(corpus, occurrence, factor, gaps)) {
                 if (visited.add(next.id())) pending.add(next);
@@ -116,8 +132,13 @@ public final class ClosurePlanner {
         if (taskId == null || taskId.isEmpty()) return null;
         for (OccurrenceAddress occurrence : corpus.occurrences()) {
             if (!taskId.equals(taskId(occurrence))) continue;
+            String seed = seedSession(corpus, occurrence);
+            // The wave never published a task for such an occurrence (it said
+            // so as a BLOCKING gap), so "no task" is the honest answer here
+            // too, rather than a Task with an empty recording behind it.
+            if (seed.isEmpty()) return null;
             return Task.of(taskId, occurrence, stateConnected(corpus,
-                    occurrence), seedSession(corpus, occurrence));
+                    occurrence), seed);
         }
         return null;
     }
@@ -188,13 +209,22 @@ public final class ClosurePlanner {
         Set<String> named = new LinkedHashSet<String>();
         List<ReadRow> reads = new ArrayList<ReadRow>();
         for (OccurrenceAddress member : group) {
+            // The runtime publishes a predicate over a propagated value as a
+            // REFERENCE into the session's expression table -- "(not
+            // EXPR.7e13ce0f9e7944ea)" -- so reading the token as a name asks
+            // about nothing: every read the path really rests on looks
+            // unread, and the closure says so in rows that are not true.
+            // The ONE lowering resolves it, the same routine the composer
+            // and the flip query run (CONTRACT-SPEC: one lowering, shared).
             for (Corpus.RecordedPath path : corpus.pathsOf(member)) {
                 for (DecisionRow decision : path.decisions) {
-                    SmtText.symbols(decision.term(), named);
+                    SmtText.symbols(FlipQuery.statedTerm(corpus,
+                            path.sessionId, decision.term()), named);
                 }
             }
             for (TargetRow target : corpus.targetsOn(member)) {
-                SmtText.symbols(target.phiTerm(), named);
+                SmtText.symbols(FlipQuery.statedTerm(corpus,
+                        target.sessionId(), target.phiTerm()), named);
             }
             reads.addAll(corpus.readsOn(member));
         }

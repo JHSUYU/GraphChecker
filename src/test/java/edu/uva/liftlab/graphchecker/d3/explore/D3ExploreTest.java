@@ -1,5 +1,6 @@
 package edu.uva.liftlab.graphchecker.d3.explore;
 
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
 import edu.uva.liftlab.graphchecker.d3.compose.SmtLowering;
@@ -605,6 +606,123 @@ public class D3ExploreTest {
                 new SlotTable().reconcile(Corpus.read(instead, null),
                         Collections.singleton(firstRequest.id()), 6)
                         .replaced);
+
+        // An occurrence the corpus names ONLY in a write row -- no
+        // activation, no decision -- cannot be a task: there is no recorded
+        // run to focus a replay on.  It used to reach Task.of with an empty
+        // seedSessionId and abort the whole wave with
+        // "seedSessionId is required"; the closure now refuses it by name.
+        Path unrun = tree.newFolder("closure-unrun").toPath();
+        OccurrenceAddress ghost = occurrence("hdfs-case/dn0",
+                "REGION.unrun", CausalContext.of(Role.DATA_XCEIVER, 7),
+                "o.a.h.h.s.d.DataXceiver#run#88");
+        Session partialRun = new Session(unrun, "s-seed");
+        partialRun.activation(target, false);
+        partialRun.symbolic("e.ghost", "M_GHOST");
+        partialRun.write(at(ghost, Endpoint.stateSite(
+                        "BlockTokenSecretManager", "addKeys", 12, true),
+                        "BlockTokenSecretManager#addKeys#12"), allKeys, 9L,
+                "e.ghost");
+        partialRun.read(at(target, Endpoint.stateSite(
+                        "BlockTokenSecretManager", "get", 3, false),
+                        "BlockTokenSecretManager#get#3"), allKeys, 9L,
+                "M_READ_KEY", "119992");
+        partialRun.target(target, "BlockTokenSecretManager#get#3",
+                "(= M_READ_KEY 0)");
+        partialRun.flush();
+        ClosurePlanner.Plan withGhost = ClosurePlanner.plan(
+                Corpus.read(unrun, null), target);
+        for (Task task : withGhost.tasks) {
+            assertFalse("an occurrence no session ran is not a task",
+                    task.focused().id().equals(ghost.id()));
+            assertFalse("and a task always names the recording it was "
+                    + "planned from", task.seedSessionId().isEmpty());
+        }
+        boolean unplannable = false;
+        for (GapRow gap : withGhost.gaps) {
+            unplannable |= gap.kind() == GapKind.ADMISSION_GAP
+                    && gap.cls() == GapClass.BLOCKING
+                    && gap.subject().equals(ghost.render())
+                    && gap.detail().contains("no replay can be focused");
+        }
+        assertTrue("and the refusal names it", unplannable);
+
+        // A fatal predicate published as a REFERENCE into the session's
+        // expression table names the read it rests on, through the one
+        // lowering the composer and the flip query also use.  Reading the
+        // token as a name admitted nothing, so the closure said "no
+        // admitted path reads this" about the anchor's own read.
+        Path viaRef = tree.newFolder("closure-phi-ref").toPath();
+        Endpoint refRead = at(target, Endpoint.stateSite(
+                "BlockTokenSecretManager", "get", 3, false),
+                "BlockTokenSecretManager#get#3");
+        Session stated = new Session(viaRef, "s-seed");
+        stated.activation(target, false);
+        stated.activation(writer, false);
+        stated.symbolic("e.stored", "M_HOFF_KEY");
+        stated.symbolic("EXPR.0000000000000002", "M_READ_KEY");
+        stated.write(at(writer, Endpoint.stateSite(
+                        "BlockTokenSecretManager", "addKeys", 12, true),
+                        "BlockTokenSecretManager#addKeys#12"), allKeys, 5L,
+                "e.stored");
+        stated.read(refRead, allKeys, 5L, "M_READ_KEY", "119992");
+        stated.target(target, "BlockTokenSecretManager#get#3",
+                "(not EXPR.0000000000000002)");
+        stated.flush();
+        ClosurePlanner.Plan lowered = ClosurePlanner.plan(
+                Corpus.read(viaRef, null), target);
+        for (GapRow gap : lowered.gaps) {
+            assertFalse("the anchor's own read is what its phi rests on: "
+                            + gap.detail(),
+                    gap.subject().equals(refRead.toString())
+                            && gap.detail().contains("no admitted path"));
+        }
+
+        rootsAreOccurrencesTheRecordingRan(iteration, writer, occurrence(
+                "hdfs-case/dn0", "REGION.planonly",
+                CausalContext.of(Role.DATA_XCEIVER, 3),
+                "o.a.h.h.s.d.DataXceiver#run#96"));
+    }
+
+    // ---- (5b) a root the recording never ran is refused, not planned ----
+
+    /**
+     * Folded into the closure case: what a WAVE does with the declarations it
+     * is handed.  A v1 selector resolves against the seed's activations, but
+     * a declaration already written as a full address resolves by PARSING --
+     * so the seed replay plan's own occurrenceIds, which are the PLAN side's
+     * addresses, became closure roots that no row of the recording named.
+     * In the first real 17960 wave 43 of 45 of them did.
+     */
+    private void rootsAreOccurrencesTheRecordingRan(Path iteration,
+                                                    OccurrenceAddress ran,
+                                                    OccurrenceAddress never)
+            throws IOException {
+        Path waveDir = tree.newFolder("roots-wave").toPath();
+        JsonObject manifest = ExploreMain.plan(iteration, TARGET_SELECTOR,
+                java.util.Arrays.asList(ran.render(), never.render()), null,
+                iteration.resolve("results.jsonl"), waveDir, 0, "epoch0",
+                ClosurePlanner.DEFAULT_MAX_TASKS,
+                ObligationFactory.Bounds.defaults());
+        List<String> anchors = new ArrayList<String>();
+        for (JsonElement element : manifest.getAsJsonArray("anchors")) {
+            anchors.add(element.getAsString());
+        }
+        assertTrue("the declared anchor resolves: " + anchors,
+                anchors.contains(TARGET.render()));
+        assertTrue("a plan address the seed DID run is a root too: " + anchors,
+                anchors.contains(ran.render()));
+        assertFalse("one it never ran is not: " + anchors,
+                anchors.contains(never.render()));
+        boolean named = false;
+        for (GapRow gap : RowCodec.readAll(waveDir.resolve("gaps.jsonl"),
+                RowCodec::readGap)) {
+            named |= gap.kind() == GapKind.ADMISSION_GAP
+                    && gap.cls() == GapClass.DIAGNOSTIC
+                    && gap.subject().equals(never.render())
+                    && gap.detail().contains("published no activation");
+        }
+        assertTrue("and the wave says so instead of planning it", named);
     }
 
     // ---- driving the stage the way the campaign drives it -------------
@@ -613,8 +731,8 @@ public class D3ExploreTest {
     private JsonObject plan(Path iteration, String selector, Path domains,
                             Path results, Path waveDir, int wave)
             throws IOException {
-        return ExploreMain.plan(iteration,
-                Collections.singletonList(selector), domains, results,
+        return ExploreMain.plan(iteration, selector,
+                Collections.<String>emptyList(), domains, results,
                 waveDir, wave, "epoch0", ClosurePlanner.DEFAULT_MAX_TASKS,
                 ObligationFactory.Bounds.defaults());
     }
