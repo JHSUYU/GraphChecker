@@ -13,12 +13,9 @@ import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
 import edu.uva.liftlab.graphchecker.plan.ClosureGoalKind;
 import edu.uva.liftlab.graphchecker.plan.CommunicationHandoffSpec;
-import edu.uva.liftlab.graphchecker.plan.DependencyRole;
 import edu.uva.liftlab.graphchecker.plan.FieldPathSpec;
 import edu.uva.liftlab.graphchecker.plan.ExecutionTask;
 import edu.uva.liftlab.graphchecker.plan.InputActionCatalog;
-import edu.uva.liftlab.graphchecker.smt.JavaContainerTypes;
-import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveBoxing;
 import edu.uva.liftlab.graphchecker.plan.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.plan.RegionInstancePlan;
 import edu.uva.liftlab.graphchecker.plan.RegionInstancePlan.Goal;
@@ -34,7 +31,6 @@ import java.util.AbstractMap;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.Deque;
@@ -654,7 +650,7 @@ public final class ConcolicScheduler {
         Set<String> definitionMethods = goal.runtimeDefinitionMethods();
         JsonArray branches = goal.branches();
         JsonArray inputActions = materializationPlan(goal, goal.symbolize(),
-                definitions, definitionMethods, branches);
+                definitions, definitionMethods);
         if (goal.kind().capturesRegionPath()) {
             result.add(new Candidate(goal, branches, "", 1, false,
                     inputActions, goal.plan().occurrenceId()));
@@ -724,19 +720,36 @@ public final class ConcolicScheduler {
         return selected;
     }
 
-    /** Package-visible for the structure-carrier admission contract. */
+    /**
+     * The binding mode of each proposed input: how the VM would present that
+     * location as a symbol, or the one reason it cannot.
+     *
+     * <p>No admission decision is made here.  {@code
+     * SymbolicInputSelection.decide} is the ONE admission rule -- declared,
+     * workload-owned, hook-minted or a declared cut port, and
+     * UNDECLARED_SYMBOLIC_INPUT otherwise -- and this used to run a
+     * fourteen-name refusal taxonomy in front of it: a cost heuristic
+     * ("symbolic freedom is only worth its cost when some explored decision
+     * can read the value"), a structure-carrier role test, an enum-ordinal
+     * and container-cardinality classifier, a JDK-name test, a regex, and an
+     * unobserved-input rule.  Measured on the 17960 seed, the taxonomy
+     * changed no action's mode -- all 106 rows it labelled were undeclared
+     * anyway -- while it could and did drop a DECLARED cell before the one
+     * rule saw the declaration.</p>
+     *
+     * <p>The two refusals that remain are not policy.  A location the VM has
+     * no presentation for cannot carry a symbol however it is declared, and
+     * neither can a value whose type the SMT layer has no term for.</p>
+     */
     static JsonArray materializationPlan(
             Goal goal, JsonArray sourceActions,
             DefinitionIndex definitions,
-            Set<String> regionMethods,
-            JsonArray demandedBranches) {
+            Set<String> regionMethods) {
         JsonArray result = new JsonArray();
         Set<String> represented = new LinkedHashSet<>();
         // The frame the root-entry hooks are injected into.
         String planRootMethod = optionalString(object(goal.plan().json(),
                 "rootSelector"), "method");
-        Set<String> guardDependent = definitions.guardDependentCells(
-                exploredGuardOperands(demandedBranches));
         for (JsonElement element : sourceActions) {
             if (!element.isJsonObject()) {
                 continue;
@@ -745,52 +758,9 @@ public final class ConcolicScheduler {
             JsonObject binding = action.deepCopy();
             String location = optionalString(action, "location");
             String cell = optionalString(action, "cell");
-            String dependencyRole = DependencyRole.normalize(
-                    action.get("dependencyRole"));
-            // A structural owner is not a value the solver moves: the
-            // object graph a replay walks is replayed, and a container is
-            // symbolic only once a root-derived value is put into it, which
-            // the VM states inside the expression it then carries.
-            if (concreteOnlyInput(binding)
-                    || !DependencyRole.VALUE_FRONTIER.equals(dependencyRole)) {
+            if (!supportedSymbolicLeafType(action)) {
                 addConcreteInputAction(result, represented, binding,
-                        concreteOnlyInputReason(action, dependencyRole));
-                continue;
-            }
-            String unsupportedLeaf = unsupportedSymbolicLeafReason(
-                    action, location, cell);
-            if (!unsupportedLeaf.isEmpty()) {
-                addConcreteInputAction(result, represented, binding,
-                        unsupportedLeaf);
-                continue;
-            }
-            if (staticSyntheticConstant(action)) {
-                addConcreteInputAction(result, represented, binding,
-                        "CONCRETE_STATIC_SYNTHETIC_CONSTANT");
-                continue;
-            }
-            String structureControl = structureControlReason(action);
-            if (!structureControl.isEmpty()) {
-                // These values describe the concrete execution structure
-                // selected for replay.
-                binding.addProperty("structureControlReason",
-                        structureControl);
-                addConcreteInputAction(result, represented, binding,
-                        "CONCRETE_STRUCTURE_CONTROL");
-                continue;
-            }
-            if (unguardedPayloadLeaf(action, definitions,
-                    guardDependent)) {
-                // Symbolic freedom is only worth its cost when some explored
-                // decision can read the value.
-                addConcreteInputAction(result, represented, binding,
-                        "CONCRETE_UNGUARDED_PAYLOAD");
-                continue;
-            }
-            if (action.has("observed")
-                    && !optionalBool(action, "observed", false)) {
-                addConcreteInputAction(result, represented, binding,
-                        "CONCRETE_UNOBSERVED_INPUT");
+                        UNSUPPORTED_LEAF_TYPE);
                 continue;
             }
             if ("ARGUMENT".equals(location)
@@ -814,24 +784,13 @@ public final class ConcolicScheduler {
                     binding.addProperty("bindingMode", "ROOT_ENTRY");
                 }
             } else if ("ARGUMENT_FIELD_PATH".equals(location)) {
-                if (FieldPathSpec.hasNonEmptyPaths(action, "fieldPaths")) {
-                    binding.addProperty("bindingMode", "ROOT_ENTRY");
-                } else {
+                if (!FieldPathSpec.hasNonEmptyPaths(action, "fieldPaths")) {
                     addConcreteInputAction(result, represented, binding,
-                            "CONCRETE_UNRESOLVED_ARGUMENT_FIELD_PATH");
+                            NO_BINDING_MODE);
                     continue;
                 }
+                binding.addProperty("bindingMode", "ROOT_ENTRY");
             } else if ("CALL_RETURN".equals(location)) {
-                if (JavaPrimitiveBoxing.deterministicValueOfReturn(cell)) {
-                    addConcreteInputAction(result, represented, binding,
-                            "CONCRETE_DETERMINISTIC_BOXING_RETURN");
-                    continue;
-                }
-                if (JavaContainerTypes.symbolicResultReturn(cell)) {
-                    addConcreteInputAction(result, represented, binding,
-                            "CONCRETE_CONTAINER_RESULT_RETURN");
-                    continue;
-                }
                 String returnCell = cell;
                 String sourceKind = optionalString(action, "sourceKind");
                 if (RuntimeSelectedRegionFinalizer.EXPLICIT_SYMBOLIC_FAULT
@@ -841,12 +800,11 @@ public final class ConcolicScheduler {
                     String callee = optionalString(action, "declaredCallee");
                     if (!callee.isEmpty()) returnCell = callee + ".return";
                 }
-                JsonArray sites = definitions.returnSites(returnCell,
-                        regionMethods);
-                sites = exactCallReturnSite(action, sites);
+                JsonArray sites = exactCallReturnSite(action,
+                        definitions.returnSites(returnCell, regionMethods));
                 if (sites.size() == 0) {
                     addConcreteInputAction(result, represented, binding,
-                            "CONCRETE_NO_RESOLVED_RETURN_SITE");
+                            NO_BINDING_MODE);
                     continue;
                 }
                 for (JsonElement siteElement : sites) {
@@ -869,7 +827,7 @@ public final class ConcolicScheduler {
                 binding.addProperty("bindingMode", "FIELD_ACCESS");
             } else {
                 addConcreteInputAction(result, represented, binding,
-                        "CONCRETE_UNSUPPORTED_INPUT_LOCATION");
+                        NO_BINDING_MODE);
                 continue;
             }
             addInputAction(result, represented, binding,
@@ -886,6 +844,40 @@ public final class ConcolicScheduler {
                     InputActionCatalog.Mode.DECLARATION_ONLY);
         }
         return result;
+    }
+
+    /** The VM can present no symbol for this location, however declared. */
+    static final String NO_BINDING_MODE = "NO_SYMBOLIC_BINDING_MODE";
+    /** The SMT layer has no term for a value of this type. */
+    static final String UNSUPPORTED_LEAF_TYPE =
+            "UNSUPPORTED_SYMBOLIC_LEAF_TYPE";
+
+    /**
+     * Whether the SMT layer has a term for this value: a primitive, a
+     * String, or an array of primitives.
+     *
+     * <p>A mechanism fact and the whole of what is left of the leaf
+     * contract.  The four field-path spellings it used to check after this
+     * -- ambiguous path, undeclared leaf, leaf name mismatch, leaf type
+     * mismatch -- named four ways for one plan row to be malformed and
+     * demoted a declared cell for each of them.</p>
+     */
+    private static boolean supportedSymbolicLeafType(JsonObject action) {
+        String descriptor = JavaPrimitiveSmtSemantics.javaTypeDescriptor(
+                optionalString(action, "javaType"));
+        if (descriptor.length() == 1 && "ZBCSIJFD".contains(descriptor)) {
+            return true;
+        }
+        if ("Ljava/lang/String;".equals(descriptor)) {
+            return true;
+        }
+        int component = 0;
+        while (component < descriptor.length()
+                && descriptor.charAt(component) == '[') {
+            component++;
+        }
+        return component > 0 && component + 1 == descriptor.length()
+                && "ZBCSIJFD".indexOf(descriptor.charAt(component)) >= 0;
     }
 
     static JsonArray exactCallReturnSite(
@@ -912,255 +904,6 @@ public final class ConcolicScheduler {
         return exact;
     }
 
-    /** Operands of the decisions this task actually reopens. */
-    private static Set<String> exploredGuardOperands(JsonArray branches) {
-        Set<String> result = new LinkedHashSet<>();
-        if (branches == null) {
-            return result;
-        }
-        for (JsonElement element : branches) {
-            if (!element.isJsonObject()) continue;
-            JsonObject branch = element.getAsJsonObject();
-            for (JsonElement operand : array(branch, "operandCells")) {
-                String cell = operand.isJsonPrimitive()
-                        ? operand.getAsString().trim() : "";
-                if (!cell.isEmpty()) result.add(cell);
-            }
-        }
-        return result;
-    }
-
-    /** R1: a leaf earns a solver dimension only by being able to move some
-     * explored decision. */
-    private static boolean unguardedPayloadLeaf(
-            JsonObject action, DefinitionIndex definitions,
-            Set<String> guardDependent) {
-        if (guardDependent.isEmpty()) {
-            return false;
-        }
-        boolean represented = false;
-        for (String cell : dependenceOrigins(action)) {
-            if (guardDependent.contains(cell)) {
-                return false;
-            }
-            represented |= definitions.knownCell(cell);
-        }
-        return represented;
-    }
-
-    private static List<String> dependenceOrigins(JsonObject action) {
-        List<String> result = new ArrayList<>();
-        for (JsonElement element : array(action, "dependencyCells")) {
-            if (element.isJsonPrimitive()) {
-                result.add(element.getAsString().trim());
-            }
-        }
-        String cell = optionalString(action, "cell");
-        if (!cell.isEmpty() && !result.contains(cell)) {
-            result.add(cell);
-        }
-        return result;
-    }
-
-    private static boolean concreteOnlyInput(JsonObject action) {
-        String demand = optionalString(action, "symbolicDemand");
-        return optionalBool(action, "captureRootOnly", false)
-                || optionalBool(action, "loopControlOnly", false)
-                || optionalBool(action, "controlOnly", false)
-                || optionalBool(action, "pathAssumptionOnly", false)
-                || demand.startsWith("CONCRETE_");
-    }
-
-    /** Admits only values for which the current VM/SMT contract has a compact
-     * scalar representation. */
-    static String unsupportedSymbolicLeafReason(
-            JsonObject action, String location, String cell) {
-        String javaType = optionalString(action, "javaType");
-        String descriptor = JavaPrimitiveSmtSemantics.javaTypeDescriptor(
-                javaType);
-        boolean supportedScalar = (descriptor.length() == 1
-                && "ZBCSIJFD".contains(descriptor))
-                || "Ljava/lang/String;".equals(descriptor);
-        boolean supportedPrimitiveArray = false;
-        int component = 0;
-        while (component < descriptor.length()
-                && descriptor.charAt(component) == '[') {
-            component++;
-        }
-        if (component > 0 && component + 1 == descriptor.length()) {
-            supportedPrimitiveArray = "ZBCSIJFD".indexOf(
-                    descriptor.charAt(component)) >= 0;
-        }
-        if (!supportedScalar && !supportedPrimitiveArray) {
-            return "CONCRETE_UNSUPPORTED_LEAF_TYPE";
-        }
-        return unsupportedFieldLeafPathReason(action, location, cell);
-    }
-
-    /**
-     * The exact-field-path half of the leaf contract: a field port must name
-     * one declared leaf whose name and type agree with the access.
-     */
-    static String unsupportedFieldLeafPathReason(
-            JsonObject action, String location, String cell) {
-        String descriptor = JavaPrimitiveSmtSemantics.javaTypeDescriptor(
-                optionalString(action, "javaType"));
-        if (!("RECEIVER_FIELD".equals(location)
-                || "ARGUMENT_FIELD".equals(location)
-                || "ARGUMENT_FIELD_PATH".equals(location)
-                || "HEAP_OBJECT_FIELD".equals(location))) {
-            return "";
-        }
-
-        List<String> path = exactActionFieldPath(action, cell);
-        if (path.isEmpty()) {
-            return "CONCRETE_AMBIGUOUS_FIELD_PATH";
-        }
-        FieldPathSpec.DeclaredField leaf = declaredLeaf(action, cell);
-        if (leaf == null) {
-            return "CONCRETE_UNDECLARED_FIELD_LEAF";
-        }
-        if (!leaf.name().equals(path.get(path.size() - 1))) {
-            return "CONCRETE_FIELD_LEAF_NAME_MISMATCH";
-        }
-        if (!descriptor.equals(
-                JavaPrimitiveSmtSemantics.javaTypeDescriptor(leaf.type()))) {
-            return "CONCRETE_FIELD_LEAF_TYPE_MISMATCH";
-        }
-        return "";
-    }
-
-    private static List<String> exactActionFieldPath(
-            JsonObject action, String cell) {
-        List<List<String>> paths = FieldPathSpec.paths(action, "fieldPaths");
-        if (action.has("fieldPaths")) {
-            return paths.size() == 1
-                    ? paths.get(0) : Collections.<String>emptyList();
-        }
-        List<String> path = FieldPathSpec.stringArray(action, "fieldPath");
-        if (action.has("fieldPath")) return path;
-        return FieldPathSpec.path(cell);
-    }
-
-    private static FieldPathSpec.DeclaredField declaredLeaf(
-            JsonObject action, String cell) {
-        // The declared field path states the leaf exactly; the root signature
-        // is the leaf only when the path is one hop.  Order says so.
-        for (String signature : new String[]{
-                pathLeafFieldSignature(action, cell),
-                firstNonBlank(optionalString(action, "accessFieldSignature"),
-                        optionalString(action, "leafFieldSignature")), cell}) {
-            FieldPathSpec.DeclaredField declared =
-                    FieldPathSpec.declaredField(signature);
-            if (declared != null) return declared;
-        }
-        return null;
-    }
-
-    /** The declaration of the last hop of a receiver/heap field path. */
-    private static String pathLeafFieldSignature(JsonObject action,
-                                                 String cell) {
-        JsonArray declarations = array(action, "fieldPathDeclarations");
-        List<String> path = exactActionFieldPath(action, cell);
-        if (declarations.size() == 0 || declarations.size() != path.size()) {
-            return "";
-        }
-        JsonElement last = declarations.get(declarations.size() - 1);
-        return last != null && last.isJsonPrimitive()
-                ? last.getAsString() : "";
-    }
-
-    private static boolean staticSyntheticConstant(JsonObject action) {
-        if ("CONSTANT".equals(optionalString(action, "sourceKind"))) {
-            return true;
-        }
-        List<String> path = exactActionFieldPath(action,
-                optionalString(action, "cell"));
-        return !path.isEmpty()
-                && "$assertionsDisabled".equals(
-                path.get(path.size() - 1));
-    }
-
-    /** Classifies compiler/runtime structure projections, not application
-     * values. */
-    private static String structureControlReason(JsonObject action) {
-        List<String> path = exactActionFieldPath(action,
-                optionalString(action, "cell"));
-        String leaf = path.isEmpty() ? "" : path.get(path.size() - 1);
-        if (compilerSwitchDispatchTable(leaf)) {
-            return "COMPILER_SWITCH_DISPATCH_TABLE";
-        }
-        if (enumOrdinalProjection(action)) {
-            return "ENUM_DISPATCH_ORDINAL";
-        }
-        if (structuralContainerCardinality(action, leaf)) {
-            return "FIXED_CONTAINER_CARDINALITY";
-        }
-        return "";
-    }
-
-    private static boolean compilerSwitchDispatchTable(String leaf) {
-        return SharedFieldFlow.compilerSwitchDispatchField(leaf);
-    }
-
-    private static boolean enumOrdinalProjection(JsonObject action) {
-        for (String signature : accessorSignatures(action)) {
-            if ("<java.lang.Enum: int ordinal()>".equals(signature)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private static boolean structuralContainerCardinality(
-            JsonObject action, String leaf) {
-        for (String signature : accessorSignatures(action)) {
-            if (JavaContainerTypes.structuralCardinalityOperation(
-                    signature)) {
-                return true;
-            }
-            // Custom collection implementations commonly expose their exact
-            // backing cardinality through a direct size() accessor.
-            if ("size".equals(leaf)
-                    && signature.matches("^<[^:>]+: int size\\(\\)>$")) {
-                return true;
-            }
-        }
-        if (!"size".equals(leaf)
-                || !"I".equals(JavaPrimitiveSmtSemantics
-                .javaTypeDescriptor(optionalString(action, "javaType")))) {
-            return false;
-        }
-        // A direct read of an owner's exact `int size` backing field is the
-        // same cardinality projection even when no accessor call is present.
-        FieldPathSpec.DeclaredField declared = declaredLeaf(action,
-                optionalString(action, "cell"));
-        return declared != null && "size".equals(declared.name())
-                && "I".equals(JavaPrimitiveSmtSemantics
-                .javaTypeDescriptor(declared.type()));
-    }
-
-    private static List<String> accessorSignatures(JsonObject action) {
-        List<String> result = new ArrayList<>();
-        for (String field : new String[]{"declaredCallee",
-                "accessorDeclaredCallee", "implementationMethod",
-                "accessorImplementationMethod"}) {
-            String signature = optionalString(action, field);
-            if (!signature.isEmpty() && !result.contains(signature)) {
-                result.add(signature);
-            }
-        }
-        JsonObject materialization = object(action, "materialization");
-        for (String field : new String[]{"declaredCallee",
-                "implementationMethod"}) {
-            String signature = optionalString(materialization, field);
-            if (!signature.isEmpty() && !result.contains(signature)) {
-                result.add(signature);
-            }
-        }
-        return result;
-    }
-
     private static void addInputAction(
             JsonArray result, Set<String> represented,
             JsonObject action, InputActionCatalog.Mode mode) {
@@ -1173,37 +916,9 @@ public final class ConcolicScheduler {
     static void addConcreteInputAction(
             JsonArray result, Set<String> represented,
             JsonObject binding, String reason) {
-        binding.addProperty("symbolicDemand",
-                reason == null || reason.trim().isEmpty()
-                        ? "CONCRETE_UNNAMED_REFUSAL" : reason.trim());
+        binding.addProperty("symbolicDemand", reason);
         addInputAction(result, represented, binding,
                 InputActionCatalog.Mode.CONCRETE);
-    }
-
-    /** Names why an action was concrete before any leaf support was examined:
-     * either the producing stage already declared it concrete-only, or its
-     * dependency role is not a value frontier at all. */
-    static String concreteOnlyInputReason(
-            JsonObject action, String dependencyRole) {
-        String authored = optionalString(action, "symbolicDemand");
-        if (authored.startsWith("CONCRETE_")) {
-            return authored;
-        }
-        if (optionalBool(action, "captureRootOnly", false)) {
-            return "CONCRETE_CAPTURE_ROOT_ONLY";
-        }
-        if (optionalBool(action, "loopControlOnly", false)) {
-            return "CONCRETE_LOOP_CONTROL_ONLY";
-        }
-        if (optionalBool(action, "controlOnly", false)) {
-            return "CONCRETE_CONTROL_ONLY";
-        }
-        if (optionalBool(action, "pathAssumptionOnly", false)) {
-            return "CONCRETE_PATH_ASSUMPTION_ONLY";
-        }
-        return "CONCRETE_NON_VALUE_FRONTIER_ROLE:"
-                + (dependencyRole == null || dependencyRole.isEmpty()
-                ? "NONE" : dependencyRole);
     }
 
     /** The static region schema version this build reads. */
@@ -1284,23 +999,11 @@ public final class ConcolicScheduler {
     static final class DefinitionIndex {
         private final Map<String, List<JsonObject>> byCallReturn =
                 new LinkedHashMap<>();
-        private final Map<String, List<String>> transferSources =
-                new LinkedHashMap<>();
-        private final Set<String> transferCells = new LinkedHashSet<>();
         static DefinitionIndex from(List<JsonObject> edges) {
             DefinitionIndex result = new DefinitionIndex();
             Set<String> seenCallReturns = new LinkedHashSet<>();
             for (JsonObject edge : edges) {
                 String source = optionalString(edge, "fromCell");
-                if (!"GUARD".equals(optionalString(edge, "transferKind"))) {
-                    String target = optionalString(edge, "toCell");
-                    if (!source.isEmpty() && !target.isEmpty()) {
-                        result.transferSources.computeIfAbsent(target,
-                                ignored -> new ArrayList<>()).add(source);
-                        result.transferCells.add(source);
-                        result.transferCells.add(target);
-                    }
-                }
                 String cell = optionalString(edge, "toCell");
                 Matcher localCell = LOCAL_CELL.matcher(cell);
                 if (!localCell.matches()) {
@@ -1326,24 +1029,6 @@ public final class ConcolicScheduler {
                                 .add(site.deepCopy());
                     }
                 }
-            }
-            return result;
-        }
-
-        private boolean knownCell(String cell) {
-            return transferCells.contains(cell);
-        }
-
-        /** Cells from which one of the given guard operands is still
-         * reachable. */
-        private Set<String> guardDependentCells(Collection<String> operands) {
-            Set<String> result = new LinkedHashSet<>();
-            Deque<String> work = new ArrayDeque<>(operands);
-            while (!work.isEmpty()) {
-                String cell = work.removeFirst();
-                if (!result.add(cell)) continue;
-                work.addAll(transferSources.getOrDefault(cell,
-                        Collections.<String>emptyList()));
             }
             return result;
         }
