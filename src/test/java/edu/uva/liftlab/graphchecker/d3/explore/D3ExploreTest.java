@@ -4,14 +4,19 @@ import com.google.gson.JsonObject;
 
 import edu.uva.liftlab.graphchecker.d3.contract.ActivationRow;
 import edu.uva.liftlab.graphchecker.d3.contract.AttachRow;
+import edu.uva.liftlab.graphchecker.d3.contract.CausalContext;
 import edu.uva.liftlab.graphchecker.d3.contract.DecisionRow;
 import edu.uva.liftlab.graphchecker.d3.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.d3.contract.ExportRow;
+import edu.uva.liftlab.graphchecker.d3.contract.ExecutionIndex;
 import edu.uva.liftlab.graphchecker.d3.contract.ExpressionTable;
+import edu.uva.liftlab.graphchecker.d3.contract.Frame;
+import edu.uva.liftlab.graphchecker.d3.contract.GapClass;
 import edu.uva.liftlab.graphchecker.d3.contract.GapKind;
 import edu.uva.liftlab.graphchecker.d3.contract.GapRow;
 import edu.uva.liftlab.graphchecker.d3.contract.LocationId;
 import edu.uva.liftlab.graphchecker.d3.contract.LocationKind;
+import edu.uva.liftlab.graphchecker.d3.contract.NodeId;
 import edu.uva.liftlab.graphchecker.d3.contract.Obligation;
 import edu.uva.liftlab.graphchecker.d3.contract.ObligationResult;
 import edu.uva.liftlab.graphchecker.d3.contract.OccurrenceAddress;
@@ -21,6 +26,7 @@ import edu.uva.liftlab.graphchecker.d3.contract.RootKind;
 import edu.uva.liftlab.graphchecker.d3.contract.RootMintRow;
 import edu.uva.liftlab.graphchecker.d3.contract.RowCodec;
 import edu.uva.liftlab.graphchecker.d3.contract.SessionDir;
+import edu.uva.liftlab.graphchecker.d3.contract.Role;
 import edu.uva.liftlab.graphchecker.d3.contract.Task;
 import edu.uva.liftlab.graphchecker.d3.contract.Verdict;
 import edu.uva.liftlab.graphchecker.d3.contract.WriteRow;
@@ -57,12 +63,22 @@ import static org.junit.Assert.assertTrue;
  * so an assertion about SAT or UNSAT is an assertion about the query.</p>
  */
 public class D3ExploreTest {
-    private static final String TARGET =
+    /** What a case declares: a v1 selector, resolved against the seed. */
+    private static final String TARGET_SELECTOR =
             "hdfs-case/dn0#epoch0/region/REGION.target#1";
-    private static final String WRITER =
-            "hdfs-case/dn0#epoch0/region/REGION.addkeys#1";
-    private static final String PRODUCER =
-            "hdfs-case/nn0#epoch0/region/REGION.rotate#1";
+    /** The NameNode's key rotation: a daemon tick, nobody's request. */
+    private static final OccurrenceAddress PRODUCER = occurrence("hdfs-case/nn0",
+            "REGION.rotate", CausalContext.of(Role.KEY_MANAGER_TICK, 1),
+            "o.a.h.h.s.b.BlockManager#run#8");
+    /** The data node's fatal read: its own DataXceiver op. */
+    private static final OccurrenceAddress TARGET = occurrence("hdfs-case/dn0",
+            "REGION.target", CausalContext.of(Role.DATA_XCEIVER, 1),
+            "o.a.h.h.s.d.DataXceiver#run#12");
+    /** addKeys on the same node: started by the rotation's own delivery. */
+    private static final OccurrenceAddress WRITER = occurrence("hdfs-case/dn0",
+            "REGION.addkeys", CausalContext.of(exportedId(),
+                    "DatanodeProtocol#registerDatanode"),
+            "o.a.h.h.s.d.BPServiceActor#offerService#41");
 
     @Rule
     public TemporaryFolder tree = new TemporaryFolder();
@@ -73,9 +89,9 @@ public class D3ExploreTest {
     public void nestedGuardChainDeepensOneDecisionPerWave() throws Exception {
         Assume.assumeTrue(z3Available());
         Path iteration = tree.newFolder("depth").toPath();
-        OccurrenceAddress target = OccurrenceAddress.parse(TARGET);
+        OccurrenceAddress target = TARGET;
         Session seed = new Session(iteration, "s-seed");
-        seed.activation(target, true);
+        seed.activation(target, false);
         seed.root(target, "CASE.MARKER", "M_MARKER", RootKind.MARKER, "false",
                 null, null, true);
         seed.root(target, "CASE.COUNT", "M_COUNT", RootKind.INTEGRAL, "0",
@@ -89,7 +105,7 @@ public class D3ExploreTest {
         Files.write(results, new byte[0]);
 
         Path wave0 = out.resolve("obligations-0000");
-        JsonObject first = plan(iteration, target, null, results, wave0, 0);
+        JsonObject first = plan(iteration, TARGET_SELECTOR, null, results, wave0, 0);
         assertEquals("OBLIGATIONS_PROPOSED", first.get("state").getAsString());
         List<Obligation> proposed = obligations(wave0);
         assertEquals(1, proposed.size());
@@ -115,7 +131,7 @@ public class D3ExploreTest {
                 Verdict.VALIDATED, "s-flip", "the flip ran"));
 
         Path wave1 = out.resolve("obligations-0001");
-        plan(iteration, target, null, results, wave1, 1);
+        plan(iteration, TARGET_SELECTOR, null, results, wave1, 1);
         List<Obligation> next = obligations(wave1);
         List<String> sites = new ArrayList<String>();
         for (Obligation obligation : next) sites.add(obligation.siteId());
@@ -145,13 +161,15 @@ public class D3ExploreTest {
             throws Exception {
         Assume.assumeTrue(z3Available());
         Path iteration = tree.newFolder("family").toPath();
-        OccurrenceAddress target = OccurrenceAddress.parse(TARGET);
-        OccurrenceAddress producer = OccurrenceAddress.parse(PRODUCER);
-        Endpoint exported = Endpoint.of(producer, "XCH.resp.block-key-id", 1, 0);
-        Endpoint attached = Endpoint.of(target, "XCH.resp.block-key-id", 1, 0);
+        OccurrenceAddress target = TARGET;
+        OccurrenceAddress producer = PRODUCER;
+        Endpoint exported = at(producer, "XCH.resp.block-key-id",
+                "PBHelper#convert#9");
+        Endpoint attached = at(target, "XCH.resp.block-key-id",
+                "PBHelper#convert#9");
 
         Session seed = new Session(iteration, "s-seed");
-        seed.activation(target, true);
+        seed.activation(target, false);
         seed.activation(producer, false);
         seed.constant("e.119992", "119992");
         seed.export(exported, "e.119992", 11L, "119992");
@@ -176,7 +194,7 @@ public class D3ExploreTest {
         Path out = tree.newFolder("family-out").toPath();
         Path results = out.resolve("obligation_results.jsonl");
         Path wave0 = out.resolve("obligations-0000");
-        plan(iteration, target, null, results, wave0, 0);
+        plan(iteration, TARGET_SELECTOR, null, results, wave0, 0);
         List<Obligation> proposed = obligations(wave0);
         // The producer ran symbolically in the rotated session, so it is a
         // task of its own and its own decisions are flips too -- the NN
@@ -197,7 +215,7 @@ public class D3ExploreTest {
         // corpus delivers is UNSAT, not answered out of the family.
         Path other = tree.newFolder("family-unsat").toPath();
         Session lone = new Session(other, "s-seed");
-        lone.activation(target, true);
+        lone.activation(target, false);
         lone.activation(producer, false);
         lone.constant("e.119992", "119992");
         lone.export(exported, "e.119992", 11L, "119992");
@@ -206,8 +224,8 @@ public class D3ExploreTest {
         lone.flush();
         Path unsatOut = tree.newFolder("family-unsat-out").toPath();
         Path unsatWave = unsatOut.resolve("obligations-0000");
-        plan(other, target, null, unsatOut.resolve("results.jsonl"),
-                unsatWave, 0);
+        plan(other, TARGET_SELECTOR, null,
+                unsatOut.resolve("results.jsonl"), unsatWave, 0);
         Worker refused = solve(other, unsatWave,
                 named(obligations(unsatWave), "Lookup#u8"), unsatOut, "w0");
         assertEquals(Verdict.UNSAT, refused.verdict);
@@ -219,10 +237,11 @@ public class D3ExploreTest {
     public void controlWithNoArmIsUnproducible() throws Exception {
         Assume.assumeTrue(z3Available());
         Path iteration = tree.newFolder("unproducible").toPath();
-        OccurrenceAddress target = OccurrenceAddress.parse(TARGET);
-        Endpoint attached = Endpoint.of(target, "XCH.req.key-id", 1, 0);
+        OccurrenceAddress target = TARGET;
+        Endpoint attached = at(target, "XCH.req.key-id",
+                "DataXceiver#readBlock#22");
         Session seed = new Session(iteration, "s-seed");
-        seed.activation(target, true);
+        seed.activation(target, false);
         // Unpaired: the value arrived from outside this corpus.
         seed.attach(attached, "M_HOFF_REQ", "119992", null);
         seed.decision(target, "Lookup#u8", 1, false, "(= M_HOFF_REQ 5)");
@@ -230,7 +249,7 @@ public class D3ExploreTest {
 
         Path out = tree.newFolder("unproducible-out").toPath();
         Path wave0 = out.resolve("obligations-0000");
-        plan(iteration, target, null, out.resolve("results.jsonl"), wave0, 0);
+        plan(iteration, TARGET_SELECTOR, null, out.resolve("results.jsonl"), wave0, 0);
         List<Obligation> proposed = obligations(wave0);
         assertEquals(1, proposed.size());
         Worker worker = solve(iteration, wave0, proposed.get(0), out, "w0");
@@ -252,18 +271,18 @@ public class D3ExploreTest {
     @Test
     public void rootWithoutADomainCannotBeMoved() throws Exception {
         Assume.assumeTrue(z3Available());
-        OccurrenceAddress target = OccurrenceAddress.parse(TARGET);
+        OccurrenceAddress target = TARGET;
         Path pinned = tree.newFolder("pinned").toPath();
         Session seed = new Session(pinned, "s-seed");
-        seed.activation(target, true);
+        seed.activation(target, false);
         seed.root(target, "CASE.SERIAL", "M_SERIAL", RootKind.INTEGRAL, "7",
                 null, null, false);
         seed.decision(target, "Arrival#u8", 1, false, "(> M_SERIAL 10)");
         seed.flush();
         Path pinnedOut = tree.newFolder("pinned-out").toPath();
         Path pinnedWave = pinnedOut.resolve("obligations-0000");
-        plan(pinned, target, null, pinnedOut.resolve("results.jsonl"),
-                pinnedWave, 0);
+        plan(pinned, TARGET_SELECTOR, null,
+                pinnedOut.resolve("results.jsonl"), pinnedWave, 0);
         Worker refused = solve(pinned, pinnedWave,
                 obligations(pinnedWave).get(0), pinnedOut, "w0");
         assertEquals(Verdict.UNSAT, refused.verdict);
@@ -272,7 +291,7 @@ public class D3ExploreTest {
         // whose bounds the case states RELATIVE to the recording.
         Path declared = tree.newFolder("declared").toPath();
         Session open = new Session(declared, "s-seed");
-        open.activation(target, true);
+        open.activation(target, false);
         open.root(target, "CASE.SERIAL", "M_SERIAL", RootKind.INTEGRAL, "7",
                 null, null, true);
         open.decision(target, "Arrival#u8", 1, false, "(> M_SERIAL 10)");
@@ -283,8 +302,8 @@ public class D3ExploreTest {
                 ExploreCodec::writeDomain);
         Path declaredOut = tree.newFolder("declared-out").toPath();
         Path declaredWave = declaredOut.resolve("obligations-0000");
-        plan(declared, target, domains, declaredOut.resolve("results.jsonl"),
-                declaredWave, 0);
+        plan(declared, TARGET_SELECTOR, domains,
+                declaredOut.resolve("results.jsonl"), declaredWave, 0);
         // The worker is handed the same declaration the wave was planned
         // under, exactly as the campaign hands it.
         Worker moved = solve(declared, domains, declaredWave,
@@ -301,26 +320,36 @@ public class D3ExploreTest {
     public void closureHoldsTheWriterOfAReadVersionAndTheWireProducer()
             throws Exception {
         Path iteration = tree.newFolder("closure").toPath();
-        OccurrenceAddress target = OccurrenceAddress.parse(TARGET);
-        OccurrenceAddress writer = OccurrenceAddress.parse(WRITER);
-        OccurrenceAddress producer = OccurrenceAddress.parse(PRODUCER);
-        LocationId allKeys = LocationId.of(LocationKind.MAP,
-                "BlockTokenSecretManager", "allKeys");
-        Endpoint exported = Endpoint.of(producer, "XCH.resp.block-key-id", 1, 0);
-        Endpoint attached = Endpoint.of(writer, "XCH.resp.block-key-id", 1, 0);
+        OccurrenceAddress target = TARGET;
+        OccurrenceAddress writer = WRITER;
+        OccurrenceAddress producer = PRODUCER;
+        // Memory Indexing: the map is owned by the endpoint that allocated
+        // it, never by a session address (IDENTITY-V3 SS5).
+        LocationId allKeys = LocationId.allocated(at(writer,
+                        Endpoint.allocationSite("BlockTokenSecretManager",
+                                "<init>", 4, false),
+                        "BlockTokenSecretManager#<init>#4"),
+                LocationKind.MAP, "allKeys");
+        Endpoint exported = at(producer, "XCH.resp.block-key-id",
+                "PBHelper#convert#9");
+        Endpoint attached = at(writer, "XCH.resp.block-key-id",
+                "PBHelper#convert#9");
 
         Session seed = new Session(iteration, "s-seed");
-        seed.activation(target, true);
+        seed.activation(target, false);
         seed.activation(writer, false);
         seed.activation(producer, false);
         seed.constant("e.119992", "119992");
         seed.export(exported, "e.119992", 11L, "119992");
         seed.attach(attached, "M_HOFF_KEY", "119992", exported);
-        seed.write(Endpoint.of(writer, "BlockTokenSecretManager#addKeys#12"
-                + ":WRITE", 1, 0), allKeys, 5L, "e.119992");
-        seed.read(Endpoint.of(target, "BlockTokenSecretManager"
-                + "#retrieveDataEncryptionKey#8:READ", 1, 0), allKeys, 5L,
-                "M_READ_KEY", "119992");
+        seed.write(at(writer, Endpoint.stateSite("BlockTokenSecretManager",
+                        "addKeys", 12, true), "BlockTokenSecretManager"
+                        + "#addKeys#12"), allKeys, 5L, "e.119992");
+        seed.read(at(target, Endpoint.stateSite("BlockTokenSecretManager",
+                        "retrieveDataEncryptionKey", 8, false),
+                        "BlockTokenSecretManager"
+                                + "#retrieveDataEncryptionKey#8"), allKeys,
+                5L, "M_READ_KEY", "119992");
         seed.flush();
 
         Corpus corpus = Corpus.read(iteration, null);
@@ -344,16 +373,57 @@ public class D3ExploreTest {
         Task recovered = ClosurePlanner.taskOf(corpus, anchor.taskId());
         assertNotNull(recovered);
         assertEquals(anchor.focused(), recovered.focused());
+        // The recorded pairing and the consumer's own causal anchor agree
+        // here, so there is nothing to tell anybody.
+        for (GapRow gap : plan.gaps) {
+            assertFalse(gap.kind() == GapKind.TOPOLOGY_DIVERGENCE);
+        }
+
+        // Where they disagree, the closure follows the ROW and the reader is
+        // told: the writer below was started by some other delivery than the
+        // one its attach row names.
+        Path split = tree.newFolder("closure-split").toPath();
+        OccurrenceAddress confused = occurrence("hdfs-case/dn0",
+                "REGION.addkeys", CausalContext.of(at(producer,
+                                "XCH.resp.block-key-expiry", "PBHelper#convert#12")
+                                .id(), "DatanodeProtocol#registerDatanode"),
+                "o.a.h.h.s.d.BPServiceActor#offerService#41");
+        Session other = new Session(split, "s-seed");
+        other.activation(target, false);
+        other.activation(confused, false);
+        other.activation(producer, false);
+        other.constant("e.119992", "119992");
+        other.export(exported, "e.119992", 11L, "119992");
+        other.attach(at(confused, "XCH.resp.block-key-id",
+                "PBHelper#convert#9"), "M_HOFF_KEY", "119992", exported);
+        other.flush();
+        ClosurePlanner.Plan divergent = ClosurePlanner.plan(
+                Corpus.read(split, null), confused);
+        List<String> divergentFocused = new ArrayList<String>();
+        for (Task task : divergent.tasks) {
+            divergentFocused.add(task.focused().render());
+        }
+        assertTrue("the closure follows the recorded pairing: "
+                        + divergentFocused,
+                divergentFocused.contains(producer.render()));
+        boolean told = false;
+        for (GapRow gap : divergent.gaps) {
+            told |= gap.kind() == GapKind.TOPOLOGY_DIVERGENCE
+                    && gap.cls() == GapClass.DIAGNOSTIC
+                    && gap.detail().contains(exported.id());
+        }
+        assertTrue("and the disagreement is named", told);
     }
 
     // ---- driving the stage the way the campaign drives it -------------
 
-    private JsonObject plan(Path iteration, OccurrenceAddress anchor,
-                            Path domains, Path results, Path waveDir,
-                            int wave) throws IOException {
+    /** One wave, planned from the case's own selector as the stage does. */
+    private JsonObject plan(Path iteration, String selector, Path domains,
+                            Path results, Path waveDir, int wave)
+            throws IOException {
         return ExploreMain.plan(iteration,
-                Collections.singletonList(anchor), domains, results, waveDir,
-                wave, "epoch0", ClosurePlanner.DEFAULT_MAX_TASKS,
+                Collections.singletonList(selector), domains, results,
+                waveDir, wave, "epoch0", ClosurePlanner.DEFAULT_MAX_TASKS,
                 ObligationFactory.Bounds.defaults());
     }
 
@@ -417,6 +487,36 @@ public class D3ExploreTest {
             if (obligation.siteId().equals(site)) return obligation;
         }
         return null;
+    }
+
+    /** One occurrence: a component, a region, why it ran, and where. */
+    private static OccurrenceAddress occurrence(String node, String region,
+                                                CausalContext context,
+                                                String callSite) {
+        return OccurrenceAddress.of(NodeId.of(node, 0), region, context,
+                ExecutionIndex.of(Collections.singletonList(
+                        Frame.of(callSite, 0))));
+    }
+
+    /** One endpoint of an occurrence, at the first execution of its site. */
+    private static Endpoint at(OccurrenceAddress occurrence, String site,
+                               String callSite) {
+        return Endpoint.of(occurrence, site, ExecutionIndex.of(
+                Collections.singletonList(Frame.of(callSite, 0))), 0);
+    }
+
+    /**
+     * The rotation's export endpoint, which the writer's causal anchor names.
+     *
+     * <p>Built the long way because it is a static initialiser that the
+     * writer's own address depends on: the anchor IS the producer's endpoint
+     * id, so the consumer's identity contains the producer's.</p>
+     */
+    private static String exportedId() {
+        return at(occurrence("hdfs-case/nn0", "REGION.rotate",
+                        CausalContext.of(Role.KEY_MANAGER_TICK, 1),
+                        "o.a.h.h.s.b.BlockManager#run#8"),
+                "XCH.resp.block-key-id", "PBHelper#convert#9").id();
     }
 
     private static boolean z3Available() {
@@ -484,7 +584,7 @@ public class D3ExploreTest {
                             Endpoint producer) {
             attaches.add(AttachRow.of(sessionId, ++seq, endpoint, symbol, "I",
                     arrival, false, null, producer,
-                    "corr-" + endpoint.ordinal()));
+                    "corr-" + endpoint.siteIndex().hash()));
         }
 
         private void write(Endpoint endpoint, LocationId location,

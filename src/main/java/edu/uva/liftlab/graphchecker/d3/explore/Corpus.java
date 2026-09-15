@@ -207,6 +207,28 @@ public final class Corpus {
         return ExploreIds.sha16(sessionId + "|" + occurrence.id());
     }
 
+    /**
+     * The session the recording itself wrote.
+     *
+     * <p>The seed replay runs everything concretely and focuses nothing; an
+     * exploration replay focuses exactly the occurrence its task names.  So
+     * "was this the recording, or a counterfactual" is a fact of the rows and
+     * needs no naming convention -- the same reading the composer applies.
+     * A corpus in which every session focused something (an offline corpus of
+     * flips alone) falls back to its first session, because a selector that
+     * cannot be resolved would otherwise stop exploration outright.</p>
+     */
+    public String seedSessionId() {
+        for (SessionReader.Session session : sessions) {
+            boolean explored = false;
+            for (ActivationRow activation : session.activations) {
+                explored |= activation.focused();
+            }
+            if (!explored) return session.sessionId;
+        }
+        return sessions.isEmpty() ? "" : sessions.get(0).sessionId;
+    }
+
     public List<SessionReader.Session> sessions() {
         return sessions;
     }
