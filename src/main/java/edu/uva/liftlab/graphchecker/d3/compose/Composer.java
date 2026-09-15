@@ -21,6 +21,7 @@ import edu.uva.liftlab.graphchecker.d3.contract.ReadRow;
 import edu.uva.liftlab.graphchecker.d3.contract.RootKind;
 import edu.uva.liftlab.graphchecker.d3.contract.RootDomain;
 import edu.uva.liftlab.graphchecker.d3.contract.RootMintRow;
+import edu.uva.liftlab.graphchecker.d3.contract.SessionReader;
 import edu.uva.liftlab.graphchecker.d3.contract.TargetRow;
 import edu.uva.liftlab.graphchecker.d3.contract.WriteRow;
 
@@ -314,14 +315,15 @@ public final class Composer {
         // sessions that focused nothing are two recordings, and
         // RECORDED_FAILURE_EXPLAINED and MESSAGE_PAIRING_FLIPPED would each
         // pick whichever came first.
-        List<String> seeds = new ArrayList<String>();
-        for (SessionReader session : corpus.sessions()) {
-            if (!session.explored()) seeds.add(session.sessionId());
-        }
-        if (seeds.size() > 1) {
+        List<String> seeds = corpus.unfocusedSessionIds();
+        if (seeds.size() != 1 && !corpus.sessions().isEmpty()) {
             gap(GapKind.UNSTATED_VALUE, GapClass.BLOCKING, seeds.toString(),
-                    "more than one session of this corpus focused nothing, "
-                            + "so which one is the recording has no answer");
+                    seeds.isEmpty()
+                            ? "every session of this corpus focused an "
+                            + "occurrence, so none of them is the recording"
+                            : "more than one session of this corpus focused "
+                            + "nothing, so which one is the recording has "
+                            + "no answer");
         }
 
         List<Disjunct> disjuncts = new ArrayList<Disjunct>();

@@ -14,6 +14,7 @@ import edu.uva.liftlab.graphchecker.d3.contract.ReadRow;
 import edu.uva.liftlab.graphchecker.d3.contract.RootKind;
 import edu.uva.liftlab.graphchecker.d3.contract.RootMintRow;
 import edu.uva.liftlab.graphchecker.d3.contract.SessionDir;
+import edu.uva.liftlab.graphchecker.d3.contract.SessionReader;
 import edu.uva.liftlab.graphchecker.d3.contract.TargetRow;
 import edu.uva.liftlab.graphchecker.d3.contract.WriteRow;
 
@@ -476,17 +477,19 @@ public final class CorpusIndex {
     }
 
     /**
-     * The session that recorded the run, or null when every session
-     * explored something.
+     * The session that recorded the run, or null when that has no answer.
      *
-     * <p>Which recording a claim is about is a fact of the rows: the seed
-     * replay focused nothing.</p>
+     * <p>The rule is the contract's, stated once there; what a corpus with
+     * no seed or two seeds MEANS is this stage's, and the composer answers
+     * it with a BLOCKING gap.</p>
      */
     public String seedSessionId() {
-        for (SessionReader session : sessions) {
-            if (!session.explored()) return session.sessionId();
-        }
-        return null;
+        return SessionReader.seedSessionId(sessions);
+    }
+
+    /** Every session that focused nothing: what that gap names. */
+    public List<String> unfocusedSessionIds() {
+        return SessionReader.unfocusedSessionIds(sessions);
     }
 
     @Override
