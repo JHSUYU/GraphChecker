@@ -312,36 +312,6 @@ public final class Identity {
                                 : node()));
     }
 
-    /**
-     * The site-local index of one export, with the export itself as its
-     * innermost frame.
-     *
-     * <p>IDENTITY-V3 §1: an Endpoint's ordinal is replaced by a site-local
-     * execution index, and two exports of one occurrence at one site are
-     * two points of its control structure -- the k-th turn of whatever
-     * loop or sequence made them, counted in the frame they stand in
-     * exactly as a start site's iteration is (#startWork).  Without that
-     * frame the five {@code record-ordered-deletes} calls one client
-     * occurrence makes at one site are one producer endpoint, so the five
-     * NameNode occurrences they start share one causal context and one
-     * address; with it they are five.  It is a structural count inside a
-     * frame that dies with the frame, never a session ordinal.</p>
-     */
-    private static ExecutionIndex exportIndex(String site) {
-        State state = state();
-        Map<String, Integer> exports = state.children();
-        String key = EXPORTED + site;
-        Integer made = exports.get(key);
-        int iteration = made == null ? 0 : made;
-        exports.put(key, iteration + 1);
-        List<Frame> frames = new ArrayList<Frame>(
-                state.from(state.regionBase()).frames());
-        frames.add(Frame.of(site, iteration));
-        return ExecutionIndex.of(frames);
-    }
-
-    private static final String EXPORTED = "export\u0000";
-
     /** Whether a node key names a component rather than the degraded one. */
     private static boolean attributable(String nodeKey) {
         String key = Text.safe(nodeKey);
@@ -594,10 +564,8 @@ public final class Identity {
      */
     public static String messageSent(String nodeKey, String transport,
                                      String correlationId, String half) {
-        OccurrenceAddress occurrence = currentOccurrence(nodeKey);
-        String site = Text.safe(transport) + "#" + Text.safe(half);
-        Endpoint producer = occurrence == null ? null
-                : Endpoint.of(occurrence, site, exportIndex(site), 0);
+        Endpoint producer = endpoint(nodeKey,
+                Text.safe(transport) + "#" + Text.safe(half), 0);
         if (producer == null) return "";
         Interactions.sent(Text.safe(transport), Text.safe(correlationId),
                 Text.safe(half), producer.id());
