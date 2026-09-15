@@ -117,6 +117,34 @@ public class D3ComposerTest {
         assertEquals("the witness rests on the session that observed the "
                         + "fatal arm", "s1",
                 decision.outcomes().get(1).selected().path().sessionId());
+
+        // The same composition, answered by a solver that ERRORS.  An
+        // "(error ...)" is z3 saying it could not READ the query, so
+        // nothing it printed is a verdict about this recording: the claim
+        // is refused by name and blocks, instead of being read off the
+        // answers as if an undecided valuation.
+        ClaimPolicy.Decision errored = ClaimPolicy.decide(composition,
+                new Solver(erroringSolver(), 30000L));
+        assertEquals("an error is not a finding",
+                ClaimKind.NO_SUPPORTED_WITNESS, errored.claim().kind());
+        assertTrue("and it is named and blocking",
+                errored.claim().blocked() && says(errored.claim().gaps(),
+                        GapKind.DECLARATION_MISSING,
+                        "z3 answered the composed query with an error"));
+        assertFalse("nothing about the recording is decided by it",
+                errored.claim().polarityDecides());
+    }
+
+    /** A solver that answers every question with an SMT-LIB read error. */
+    private Path erroringSolver() throws IOException {
+        Path script = folder.newFile("z3-error.sh").toPath();
+        Files.write(script, Arrays.asList("#!/bin/sh",
+                "cat > /dev/null",
+                "echo '(error \"line 32 column 27: invalid bit-vector "
+                        + "literal, expecting x or b\")'"));
+        assertTrue("the fixture solver is executable",
+                script.toFile().setExecutable(true));
+        return script;
     }
 
     // ------------------------------------------------------------------
@@ -383,6 +411,22 @@ public class D3ComposerTest {
             // pair, and one whose Java type names no scalar.
             session.attach(consumer, "vh", "I", "7", null);
             session.attach(other, "vh_ref", "Lorg/apache/Foo;", "7", null);
+            // A read of ONE associative cell, joined to a write of the
+            // WHOLE map at the version it observed.  The location names
+            // its key by hash, so which entry the read returned is not
+            // stated: that is refused by name, and not by passing a
+            // container on to the operator over it, which named the
+            // operator and not the projection.
+            session.expression("EXPR.00000000000000b1",
+                    symbol("M_L'java/util/HashMap'_4", "java/util/HashMap"));
+            session.expression("EXPR.00000000000000b2", binary("==",
+                    read("MAP_STATE", 4L, -3L, 1L, "I"), integer("I", 7L)));
+            session.write(Endpoint.of(ANCHOR, "Keys#put#9:WRITE",
+                            at("put#1", 0), 0),
+                    LocationId.of(LocationKind.MAP, "4", "-3"), 1L,
+                    "EXPR.00000000000000b1");
+            session.decision(ANCHOR, "anchor#u9", true,
+                    "EXPR.00000000000000b2");
             session.target("true", false, true);
             session.write();
         }
@@ -396,6 +440,9 @@ public class D3ComposerTest {
                 says(gaps, GapKind.UNSTATED_VALUE, "names no scalar"));
         assertTrue("and two recordings are not one",
                 says(gaps, GapKind.UNSTATED_VALUE, "focused nothing"));
+        assertTrue("a cell the location does not name is refused by name, "
+                        + "naming the location, the version and both sorts",
+                named(gaps, "ContainerElement:MAP/4#-3@1:MAP!=INT"));
         assertFalse("the unplaceable symbol is not in the formula",
                 composition.body().contains("vh_ref"));
     }
@@ -635,7 +682,25 @@ public class D3ComposerTest {
         // PREDICATE both times and the outcome says which arm ran.
         session.decision(ANCHOR, "anchor#u1", true, MARKER);
         session.decision(ANCHOR, "anchor#u2", false, MARKER);
-        session.target("true", false, true);
+        // Two leaves the same path is made of, published by reference.
+        // The array a store wrote WHOLE at version 1, and a read of ONE
+        // cell of it at that version: the read is of the element, so the
+        // conjunct is the element -- not the array, which an operator over
+        // it would refuse as a sort conflict naming the operator.
+        session.expression("EXPR.00000000000000a1", symbol("A[I_7-1", "[I"));
+        session.expression("EXPR.00000000000000c1", binary("==",
+                read("ARRAY_ELEMENT", 7L, 2L, 1L, "I"), integer("I", 5L)));
+        Endpoint store = Endpoint.of(ANCHOR, "Saver#store#3:WRITE",
+                at("store#1", 0), 0);
+        session.write(store, LocationId.of(LocationKind.ARRAY, "7", "2"),
+                1L, "EXPR.00000000000000a1");
+        session.decision(ANCHOR, "anchor#u3", true, "EXPR.00000000000000c1");
+        // And phi: a null test, which is what every key case's fatal
+        // predicate is.  The VM spells null "N" on a symbolic leaf.
+        session.expression("EXPR.00000000000000f1", binary("!=",
+                symbol("P_L'org/apache/Foo'_", "Lorg/apache/Foo;"),
+                vmNull()));
+        session.target("EXPR.00000000000000f1", false, true);
         session.write();
 
         Composer.Composition composition = compose(iteration, 4);
@@ -644,6 +709,16 @@ public class D3ComposerTest {
                 composition.body().contains(MARKER));
         assertTrue("the arm it did not take is the negation",
                 composition.body().contains("(not " + MARKER + ")"));
+        assertTrue("an element read is the element, at the element's sort",
+                composition.body().contains("(valueInt (indexed_read "));
+        assertTrue("and the cell it read is the slot the location names",
+                composition.body().contains(" 2)) 5)"));
+        assertTrue("x != null compares against the null encoding, and not "
+                        + "against an opaque identity of its own session: "
+                        + fatalArm(composition),
+                fatalArm(composition).matches(
+                        ".*\\(not \\(= identity__[0-9a-f]+ "
+                                + "nullRef\\)\\).*"));
 
         // And the one routine says the same of either row.
         List<DecisionRow> rows = CorpusIndex.of(iteration)
@@ -735,6 +810,22 @@ public class D3ComposerTest {
         return new Solver(z3, 30000L);
     }
 
+    /** The one assertion that carries a path's own conjunction. */
+    private static String fatalArm(Composer.Composition composition) {
+        for (String line : composition.body().split("\n")) {
+            if (line.contains("path_fatal__0")) return line;
+        }
+        return "";
+    }
+
+    /** Whether some gap names this subject. */
+    private static boolean named(List<GapRow> gaps, String subject) {
+        for (GapRow gap : gaps) {
+            if (gap.subject().endsWith(subject)) return true;
+        }
+        return false;
+    }
+
     private static boolean named(List<GapRow> gaps, GapKind kind) {
         for (GapRow gap : gaps) {
             if (gap.kind() == kind) return true;
@@ -785,6 +876,50 @@ public class D3ComposerTest {
         node.addProperty("_type", "SymbolExpression");
         node.addProperty("_exp", name);
         node.addProperty("_java_type", javaType);
+        return node;
+    }
+
+    /** Java null, exactly as the VM serializes it on a symbolic leaf. */
+    private static JsonObject vmNull() {
+        return symbol("N", "");
+    }
+
+    /** One recorded binary relation. */
+    private static JsonObject binary(String operator, JsonObject left,
+                                     JsonObject right) {
+        JsonObject node = new JsonObject();
+        node.addProperty("_type", "BinaryExpression");
+        node.addProperty("_op", operator);
+        node.add("_left", left);
+        node.add("_right", right);
+        return node;
+    }
+
+    /** One read of one cell, naming the version it observed and nothing else. */
+    private static JsonObject read(String kind, long owner, long slot,
+                                   long version, String javaType) {
+        JsonObject location = new JsonObject();
+        location.addProperty("locationKind", kind);
+        location.addProperty("ownerSymRid", owner);
+        location.addProperty("slot", slot);
+        JsonObject observed = new JsonObject();
+        observed.addProperty("fieldVersionId", version);
+        observed.addProperty("versionKind", "WRITE");
+        JsonObject node = new JsonObject();
+        node.addProperty("_type", "ReadFromExpression");
+        node.addProperty("_java_type", javaType);
+        node.addProperty("expressionAuthority", "VM_GUARDED_READ_FROM_V1");
+        node.add("location", location);
+        node.add("observedVersion", observed);
+        return node;
+    }
+
+    /** One integer literal, as the VM serializes it. */
+    private static JsonObject integer(String javaType, long value) {
+        JsonObject node = new JsonObject();
+        node.addProperty("_type", "ConstExpr");
+        node.addProperty("_java_type", javaType);
+        node.addProperty("_exp", "Y_" + javaType + "_" + value);
         return node;
     }
 

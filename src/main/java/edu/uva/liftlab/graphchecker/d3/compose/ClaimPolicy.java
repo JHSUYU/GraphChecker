@@ -112,6 +112,32 @@ public final class ClaimPolicy {
     /** Solves every valuation of one composition and reads the claim off. */
     public static Decision decide(Composer.Composition composition,
                                   Solver solver) {
+        Decision decision = read(composition, solver);
+        // AFTER the asks, over all of them: a solver error is not a verdict
+        // it answered with, it is the solver saying it could not read the
+        // query -- so the claim read off the other answers is a claim about
+        // a formula that was never asked, and the composition refuses by
+        // name instead of publishing it.
+        List<String> errors = solver.errors();
+        if (errors.isEmpty()) return decision;
+        List<GapRow> gaps = new ArrayList<GapRow>(decision.claim().gaps());
+        for (String error : errors) {
+            gaps.add(GapRow.of(Composer.COMPOSITION,
+                    GapKind.DECLARATION_MISSING, GapClass.BLOCKING, error,
+                    "z3 answered the composed query with an error instead "
+                            + "of a verdict: the lowering wrote a name or a "
+                            + "literal SMT-LIB does not spell, which is a "
+                            + "bug in the composition and not an answer "
+                            + "about the recording"));
+        }
+        return new Decision(Claim.of(ClaimKind.NO_SUPPORTED_WITNESS,
+                decision.claim().valuationOrdinal(),
+                Collections.<String, String>emptyMap(), false, gaps),
+                decision.outcomes());
+    }
+
+    private static Decision read(Composer.Composition composition,
+                                 Solver solver) {
         List<GapRow> gaps = new ArrayList<GapRow>(composition.gaps());
         List<Outcome> outcomes = new ArrayList<Outcome>();
         if (composition.disjuncts().isEmpty()) {

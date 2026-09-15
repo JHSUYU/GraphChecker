@@ -1,6 +1,7 @@
 package edu.uva.liftlab.graphchecker.d3.compose;
 
 import edu.uva.liftlab.graphchecker.d3.smt.JavaPrimitiveSmtSemantics;
+import edu.uva.liftlab.graphchecker.d3.smt.VmExpressionIr;
 import edu.uva.liftlab.graphchecker.d3.smt.VmRows;
 
 import com.google.gson.JsonElement;
@@ -624,7 +625,15 @@ public final class SmtLowering extends VmLoweringCore {
     public Term symbolTerm(JsonObject expression, Sort expected,
                            String origin) {
         String raw = JsonText.string(expression, "_exp");
-        if ("SYMBOLIC_NULL".equals(raw)) return Term.of("nullRef", Sort.REF);
+        // Java null, which the VM spells "N" on a SymbolExpression leaf
+        // exactly as it does on a constant one (VmExpressionIr
+        // .SYMBOLIC_NULL).  Read as a NAME instead, it minted an opaque
+        // identity, so "x != null" came out as "x is not this other
+        // object" -- satisfiable whatever x is, and silent about nullness,
+        // which is what every key case's fatal predicate tests.
+        if (VmExpressionIr.SYMBOLIC_NULL.equals(raw)) {
+            return nullLeaf(expected);
+        }
         if ("V".equals(raw)) return Term.of("true", Sort.BOOL);
         String javaType = JsonText.string(expression, "_java_type");
         Sort encoded = JavaSmtSorts.sortOfJava(javaType);
@@ -656,6 +665,30 @@ public final class SmtLowering extends VmLoweringCore {
         return cut("UndeclaredFreeSymbol:" + raw,
                 "no root mint, attach or decision of this corpus declares "
                         + "this symbol", sort);
+    }
+
+    /**
+     * Java null, at the sort the relation it stands in is written in.
+     *
+     * <p>A reference is {@code nullRef}; a boxed container cell is the
+     * {@code (VRef nullRef)} cell, which is the encoding the container
+     * codec already gives a cell that holds null.  A container STATE
+     * cannot hold null -- the state IS the contents the VM propagated, and
+     * a reference that was null has no state -- so a null compared against
+     * one is refused by name rather than folded to a constant by the
+     * mixed-sort rule.</p>
+     */
+    private Term nullLeaf(Sort expected) {
+        if (expected == Sort.VALUE) {
+            return Term.of(ContainerSmtCodec.NULL_CELL, Sort.VALUE);
+        }
+        if (expected != null && expected.containerState()) {
+            return unstated("NullComparedToContainerState:" + expected,
+                    "a container state is the contents this replay "
+                            + "propagated, and nothing states whether the "
+                            + "reference holding it was null", expected);
+        }
+        return Term.of("nullRef", Sort.REF);
     }
 
     @Override
@@ -701,12 +734,15 @@ public final class SmtLowering extends VmLoweringCore {
         // version, same session, same join -- one step further along.
         JsonElement stated = observedVersionExpression(expression);
         if (stated != null && !stated.isJsonNull()) {
-            return dispatch(stated, expected, origin + ":observed");
+            return element(dispatch(stated, expected, origin + ":observed"),
+                    expression, location, key, version, expected, origin);
         }
         if (!key.isEmpty() && version >= 0L) {
             JsonElement written = join.writeExpression(key, version);
             if (written != null && !written.isJsonNull()) {
-                return dispatch(written, expected, origin + ":join");
+                return element(dispatch(written, expected,
+                                origin + ":join"), expression, location,
+                        key, version, expected, origin);
             }
         }
         JsonElement concrete = expression.get("concreteValue");
@@ -720,6 +756,58 @@ public final class SmtLowering extends VmLoweringCore {
                 "no write of this location at this version in this session, "
                         + "and the recording states no value it returned",
                 expected);
+    }
+
+    /**
+     * The CELL a read of one element observed, out of a whole-container
+     * value the join handed back.
+     *
+     * <p>A read of one cell can join to a version whose expression is the
+     * whole container -- the runtime publishes whatever the writing
+     * instruction produced, and for an array store that can be the array
+     * state.  The read is of the cell, and the cell's index is the
+     * LOCATION's own slot, so the element is
+     * {@code indexed_read(state, slot)}: the projection the execution
+     * performed, read off the location, not a choice made here.  Handing
+     * the state back instead is what put a whole {@code IndexedState} into
+     * the index arithmetic of a binary search and refused 1,532 nodes of
+     * the 17960 seed as {@code BinarySortConflict:-:ARRAY_VALUE!=INT} --
+     * an operator named for a projection that had been thrown away.</p>
+     *
+     * <p>An associative location names its key by HASH and not by the
+     * key's value, so no projection here can state which entry was read:
+     * that one is refused by name, naming the location, the version and
+     * the two sorts, rather than passed on to collide in an operator.</p>
+     */
+    private Term element(Term value, JsonObject expression,
+                         JsonObject location, String key, long version,
+                         Sort expected, String origin) {
+        if (value == null || !value.sort.containerState()) return value;
+        String javaType = JsonText.string(expression, "_java_type");
+        Sort cell = JavaSmtSorts.sortOfJava(javaType);
+        // The read IS of the container: the value is what it read.
+        if (cell.containerState() || cell == Sort.UNKNOWN
+                || expected != null && expected.containerState()) {
+            return value;
+        }
+        long slot = JsonText.longInteger(location, "slot", -1L);
+        boolean indexed = value.sort == Sort.ARRAY_VALUE && slot >= 0L
+                && locationKind(JsonText.string(location, "locationKind"))
+                == LocationKind.ARRAY;
+        if (indexed) {
+            Term cellValue = Term.of("(indexed_read " + value.text + " "
+                    + slot + ")", Sort.VALUE);
+            Term unboxed = fromValue(cellValue, javaType, origin);
+            if (unboxed != null && !unboxed.sort.containerState()) {
+                return dependent(unboxed, value);
+            }
+        }
+        return unstated("ContainerElement:" + (key.isEmpty()
+                        ? VmRows.sessionLocation(location) : key)
+                        + "@" + version + ":" + value.sort + "!=" + cell,
+                "the write this read joined to states the whole container "
+                        + "at that version, and this location does not say "
+                        + "which cell of it the read returned", cell);
     }
 
     /** A merge over another region's cases is a cross-session object. */
@@ -739,8 +827,20 @@ public final class SmtLowering extends VmLoweringCore {
                 ? ContainerSmtCodec.field(expression, host(origin))
                 : ContainerSmtCodec.term(expression, host(origin));
         if (value == null) {
-            refuse("ContainerRelation:"
-                    + JsonText.string(expression, "operation"), "");
+            // The codec has already named WHY; this row says WHICH node
+            // carried it on.  A field projection states no operation, so
+            // naming the operation alone left the row blank -- a refusal
+            // nobody can read is the silence rule 8 forbids.
+            String named = JsonText.string(expression, "operation");
+            if (named.isEmpty()) {
+                named = field
+                        ? "FIELD:" + JsonText.string(expression, "ownerClass")
+                        + "@" + JsonText.longInteger(expression,
+                        "fieldOffset", -1L)
+                        : JsonText.string(expression, "shape");
+            }
+            refuse("ContainerRelation:" + (named.isEmpty() ? "unnamed"
+                    : named), "");
             return free(JavaSmtSorts.sortOfJava(
                     JsonText.string(expression, "_java_type")));
         }
@@ -876,9 +976,17 @@ public final class SmtLowering extends VmLoweringCore {
                 Term value = dispatch(expression,
                         VmTermLowering.sortOfContainer(expected),
                         origin + ":container-operand");
+                // WITH the Java width it was lowered at: the JVM's shift
+                // and bitwise instructions are typed (ISHR is not LSHR),
+                // so an operand that arrives through the codec without its
+                // width makes the operator over it ambiguous and refuses a
+                // projection the recording states exactly -- 14 of the
+                // 17960 seed's expressions, as
+                // AmbiguousJavaIntegralShift:>>:NONE:JAVA_INT.
                 return value == null ? null : new ContainerSmtCodec.Term(
                         value.text,
-                        VmTermLowering.containerSortOf(value.sort));
+                        VmTermLowering.containerSortOf(value.sort),
+                        value.integralWidth);
             }
 
             @Override
