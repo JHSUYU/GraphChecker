@@ -923,7 +923,5 @@ resolvable with `@config`, `@repo` and `@project`:
 
 `workflow.properties` holds the knobs: `schedule_max_jobs` (workload JVMs per
 stage), `solver_timeout_ms` (per-query Z3 budget), `region_path_max_waves`
-(EXPLORE wave budget, default 12), `clock_skew_ms` (how far a witness may move
-a wall clock from the value that read returned, default 300000),
-`reach_max_inputs` and `reach_max_valuations` (the Boolean enumeration bounds),
+(EXPLORE wave budget, default 12), `reach_max_inputs` and `reach_max_valuations` (the Boolean enumeration bounds),
 `concolic_worker_count`, and the output, cache, classpath and VM paths.

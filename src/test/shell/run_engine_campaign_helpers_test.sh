@@ -648,7 +648,11 @@ done
 # key, in place of the undeclared CAUSYNTH_CAMPAIGN_STOP_AFTER env switch
 # b70e1c7eb deleted.  Where a run stopped is part of the configuration a
 # campaign publishes, so `config` prints it whether or not it is set.
-[[ "$(print_normalized_config | wc -l)" -eq 42 ]] \
+# 41: `clock_skew_ms` left.  A clock root is free above zero and has no
+# window -- the composer and the flip query both assert `(>= clock 0)` and
+# nothing else -- so no stage read the key, and both invocations that passed
+# `--clock-skew-ms` handed it to a main that did not read it either.
+[[ "$(print_normalized_config | wc -l)" -eq 41 ]] \
   || fail "config prints a different number of keys than it used to: \
 $(print_normalized_config | wc -l)"
 
@@ -834,7 +838,6 @@ stop_after_config() {
   campaign_max_iterations=1
   region_path_max_waves=1
   compose_max_valuations=1
-  clock_skew_ms=0
   region_path_max_paths_per_region=""
   region_path_max_flips_per_path=""
   region_path_max_tasks=""

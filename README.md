@@ -101,10 +101,7 @@ campaigns at once.
 
 `schedule_max_jobs` caps how many workload JVMs a stage starts at once. The
 members of one linked replay bundle always run in one JVM, so this bounds
-concurrent bundles, not concurrent regions. `clock_skew_ms` (default 300000)
-bounds how far a witness may move a wall clock from the value that read
-returned; cross-node skew is a failure mechanism the checker explores, so it is
-bounded rather than pinned.
+concurrent bundles, not concurrent regions.
 
 `region_path_max_waves` (default 12, override
 `CAUSYNTH_REGION_PATH_MAX_WAVES`) bounds the EXPLORE closure loop. That loop
