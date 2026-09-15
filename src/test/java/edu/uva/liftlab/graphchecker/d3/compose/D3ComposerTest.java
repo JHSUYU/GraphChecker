@@ -2,21 +2,21 @@ package edu.uva.liftlab.graphchecker.d3.compose;
 
 import com.google.gson.JsonObject;
 
-import edu.uva.liftlab.graphchecker.d3.contract.Role;
-import edu.uva.liftlab.graphchecker.d3.contract.CausalContext;
-import edu.uva.liftlab.graphchecker.d3.contract.NodeId;
-import edu.uva.liftlab.graphchecker.d3.contract.Frame;
-import edu.uva.liftlab.graphchecker.d3.contract.ExecutionIndex;
 import edu.uva.liftlab.graphchecker.d3.contract.ActivationRow;
+import edu.uva.liftlab.graphchecker.d3.contract.CausalContext;
 import edu.uva.liftlab.graphchecker.d3.contract.AttachRow;
 import edu.uva.liftlab.graphchecker.d3.contract.ClaimKind;
 import edu.uva.liftlab.graphchecker.d3.contract.DecisionRow;
 import edu.uva.liftlab.graphchecker.d3.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.d3.contract.ExportRow;
+import edu.uva.liftlab.graphchecker.d3.contract.ExecutionIndex;
 import edu.uva.liftlab.graphchecker.d3.contract.ExpressionTable;
+import edu.uva.liftlab.graphchecker.d3.contract.Frame;
 import edu.uva.liftlab.graphchecker.d3.contract.GapKind;
 import edu.uva.liftlab.graphchecker.d3.contract.GapRow;
+import edu.uva.liftlab.graphchecker.d3.contract.NodeId;
 import edu.uva.liftlab.graphchecker.d3.contract.OccurrenceAddress;
+import edu.uva.liftlab.graphchecker.d3.contract.Role;
 import edu.uva.liftlab.graphchecker.d3.contract.RootKind;
 import edu.uva.liftlab.graphchecker.d3.contract.RootMintRow;
 import edu.uva.liftlab.graphchecker.d3.contract.RowCodec;
@@ -33,6 +33,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -59,15 +60,22 @@ public class D3ComposerTest {
     @Rule
     public TemporaryFolder folder = new TemporaryFolder();
 
-    private static final OccurrenceAddress ANCHOR =
-            occurrence("case/dn0#epoch0", "REGION.target", 1);
-    private static final OccurrenceAddress PRODUCER =
-            occurrence("case/nn0#epoch0", "REGION.nn", 1);
-    private static final OccurrenceAddress UPSTREAM =
-            occurrence("case/nn1#epoch0", "REGION.up", 1);
+    /** The target region, started by the request the case is about. */
+    private static final OccurrenceAddress ANCHOR = occurrence("case/dn0",
+            "REGION.target",
+            CausalContext.of("producer-endpoint", "case/client/read-block"),
+            frame("DataXceiver#run#12", 0));
+    private static final OccurrenceAddress PRODUCER = occurrence("case/nn0",
+            "REGION.nn", CausalContext.of(Role.IPC_HANDLER, 1),
+            frame("Server#call#40", 0));
+    private static final OccurrenceAddress UPSTREAM = occurrence("case/nn1",
+            "REGION.up", CausalContext.of(Role.KEY_MANAGER_TICK, 1),
+            frame("KeyManager#tick#8", 0));
     private static final String ANCHOR_SITE = "BlockManager#get#8:READ";
     private static final String MARKER = "marker_m";
     private static final String MARKER_ROOT = "ROOT.MARKER";
+    private static final String SERIAL = "serial_s";
+    private static final String SERIAL_ROOT = "ROOT.SERIAL";
 
     // ------------------------------------------------------------------
     // 1. Polarity: the recording is refuted, the flip reaches the failure.
@@ -77,8 +85,10 @@ public class D3ComposerTest {
     public void theHealthyRecordingIsRefutedAndTheFlipIsTheWitness()
             throws Exception {
         Path iteration = folder.newFolder("marker").toPath();
-        Endpoint producer = Endpoint.of(PRODUCER, "PORT.key", siteIndex(1), 0);
-        Endpoint consumer = Endpoint.of(ANCHOR, "PORT.key", siteIndex(1), 0);
+        Endpoint producer = Endpoint.of(PRODUCER, "PORT.key",
+                at("export#1", 0), 0);
+        Endpoint consumer = Endpoint.of(ANCHOR, "PORT.key",
+                at("attach#1", 0), 0);
         session(iteration, "s0", false, "false", producer, consumer,
                 "vh", "false", null, true, false, "EXPR.v1.marker");
         session(iteration, "s1", true, "true", producer, consumer,
@@ -112,8 +122,12 @@ public class D3ComposerTest {
     @Test
     public void twoProducersOnOnePortAreTwoFamilies() throws Exception {
         Path iteration = folder.newFolder("families").toPath();
-        Endpoint first = Endpoint.of(PRODUCER, "PORT.key", siteIndex(1), 0);
-        Endpoint second = Endpoint.of(PRODUCER, "PORT.key", siteIndex(2), 0);
+        // Two exports at ONE port: two site-local execution indexes, so two
+        // endpoints, so two interactions.
+        Endpoint first = Endpoint.of(PRODUCER, "PORT.key",
+                at("export#1", 0), 0);
+        Endpoint second = Endpoint.of(PRODUCER, "PORT.key",
+                at("export#2", 0), 0);
         Session session = new Session(iteration, "s0", false);
         session.marker("false");
         session.expression("EXPR.v1.marker", symbol(MARKER, "Z"));
@@ -121,10 +135,10 @@ public class D3ComposerTest {
                 + MARKER + "))");
         session.export(first, "EXPR.v1.marker", 1L, "false");
         session.export(second, "EXPR.v1.marker", 2L, "false");
-        session.attach(Endpoint.of(ANCHOR, "PORT.key", siteIndex(1), 0), "vh1",
-                "false", first);
-        session.attach(Endpoint.of(ANCHOR, "PORT.key", siteIndex(2), 0), "vh2",
-                "false", second);
+        session.attach(Endpoint.of(ANCHOR, "PORT.key", at("attach#1", 0), 0),
+                "vh1", "false", first);
+        session.attach(Endpoint.of(ANCHOR, "PORT.key", at("attach#2", 0), 0),
+                "vh2", "false", second);
         session.target("(and vh1 vh2)", false, true);
         session.write();
 
@@ -143,8 +157,10 @@ public class D3ComposerTest {
     public void aWitnessMayNotMoveARootInsideAnUnattestedArm()
             throws Exception {
         Path iteration = folder.newFolder("unattested").toPath();
-        Endpoint producer = Endpoint.of(PRODUCER, "PORT.key", siteIndex(1), 0);
-        Endpoint consumer = Endpoint.of(ANCHOR, "PORT.key", siteIndex(1), 0);
+        Endpoint producer = Endpoint.of(PRODUCER, "PORT.key",
+                at("export#1", 0), 0);
+        Endpoint consumer = Endpoint.of(ANCHOR, "PORT.key",
+                at("attach#1", 0), 0);
         // The producer ran concretely in both sessions: no decision of its
         // occurrence is recorded anywhere, so every arm is unattested.
         session(iteration, "s0", false, "false", producer, consumer,
@@ -173,10 +189,14 @@ public class D3ComposerTest {
     @Test
     public void aNestedHandoffIsClosedTransitively() throws Exception {
         Path iteration = folder.newFolder("nested").toPath();
-        Endpoint upstream = Endpoint.of(UPSTREAM, "PORT.up", siteIndex(1), 0);
-        Endpoint forwarded = Endpoint.of(PRODUCER, "PORT.up", siteIndex(1), 0);
-        Endpoint producer = Endpoint.of(PRODUCER, "PORT.key", siteIndex(1), 0);
-        Endpoint consumer = Endpoint.of(ANCHOR, "PORT.key", siteIndex(1), 0);
+        Endpoint upstream = Endpoint.of(UPSTREAM, "PORT.up",
+                at("export#1", 0), 0);
+        Endpoint forwarded = Endpoint.of(PRODUCER, "PORT.up",
+                at("attach#1", 0), 0);
+        Endpoint producer = Endpoint.of(PRODUCER, "PORT.key",
+                at("export#1", 0), 0);
+        Endpoint consumer = Endpoint.of(ANCHOR, "PORT.key",
+                at("attach#1", 0), 0);
 
         Session session = new Session(iteration, "s0", false);
         session.marker("false");
@@ -209,8 +229,10 @@ public class D3ComposerTest {
     @Test
     public void eachPathCarriesItsOwnSessionsArrival() throws Exception {
         Path iteration = folder.newFolder("arrivals").toPath();
-        Endpoint producer = Endpoint.of(PRODUCER, "PORT.id", siteIndex(1), 0);
-        Endpoint consumer = Endpoint.of(ANCHOR, "PORT.id", siteIndex(1), 0);
+        Endpoint producer = Endpoint.of(PRODUCER, "PORT.id",
+                at("export#1", 0), 0);
+        Endpoint consumer = Endpoint.of(ANCHOR, "PORT.id",
+                at("attach#1", 0), 0);
         for (String[] each : new String[][]{{"s0", "10", "false"},
                 {"s1", "20", "true"}}) {
             Session session = new Session(iteration, each[0],
@@ -264,6 +286,165 @@ public class D3ComposerTest {
     }
 
     // ------------------------------------------------------------------
+    // 7. A relative domain is relative to the reading it was declared on.
+    // ------------------------------------------------------------------
+
+    @Test
+    public void aDeclaredWindowIsResolvedAgainstEachPathsOwnReading()
+            throws Exception {
+        Path iteration = folder.newFolder("window").toPath();
+        // The NameNode's serial advances between replays, so "up to three
+        // rotations ahead of what this run read" is three different windows.
+        for (String[] each : new String[][]{{"s0", "119994", "false"},
+                {"s1", "119997", "true"}}) {
+            Session session = new Session(iteration, each[0],
+                    "true".equals(each[2]));
+            session.serial(each[1], "+0", "+3");
+            session.target("true", false, true);
+            session.write();
+        }
+
+        Composer.Composition composition = compose(iteration, 8);
+        assertEquals(2, composition.disjuncts().size());
+        assertFalse("a root two sessions read differently gets no "
+                        + "corpus-wide window",
+                composition.body().contains("root_domain__"));
+        assertTrue("the seed's own window is on the seed's path",
+                composition.body().contains("(>= " + SERIAL + " 119994)"));
+        assertTrue("and the later session's own window is on its path",
+                composition.body().contains("(>= " + SERIAL + " 119997)"));
+
+        // The value the old corpus-wide window excluded: legal for the
+        // session that read 119997, and for no other.
+        Solver solver = solver();
+        for (Composer.Disjunct disjunct : composition.disjuncts()) {
+            List<String> pinned = new ArrayList<String>();
+            pinned.add("(assert " + disjunct.selector() + ")");
+            pinned.add("(assert (= " + SERIAL + " 120000))");
+            String status = solver.ask(composition.body(), pinned,
+                    Collections.<String>emptyList(), false).status();
+            assertEquals("three rotations past its own reading, on "
+                            + disjunct.path().sessionId(),
+                    "s1".equals(disjunct.path().sessionId())
+                            ? "sat" : "unsat", status);
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // 8. A mechanism the recording does not decide is not a finding.
+    // ------------------------------------------------------------------
+
+    @Test
+    public void aWitnessWithoutPolarityIsNotAFinding() throws Exception {
+        Path iteration = folder.newFolder("polarity").toPath();
+        Session session = new Session(iteration, "s0", false);
+        session.marker("false");
+        // phi holds whatever the marker is: the run as it happened reaches
+        // the arm too, so moving the marker explains no difference.
+        session.target("(or " + MARKER + " (not " + MARKER + "))", false,
+                true);
+        session.write();
+
+        Composer.Composition composition = compose(iteration, 4);
+        ClaimPolicy.Decision decision = ClaimPolicy.decide(composition,
+                solver());
+        assertEquals("sat", decision.outcomes().get(0).answer().status());
+        assertEquals("sat", decision.outcomes().get(1).answer().status());
+        assertEquals("the flip is satisfiable and explains nothing",
+                ClaimKind.NO_SUPPORTED_WITNESS, decision.claim().kind());
+        assertTrue("and the alarm says why",
+                named(decision.claim().gaps(),
+                        GapKind.FORMULA_SAT_AT_RECORDED_VALUATION));
+    }
+
+    // ------------------------------------------------------------------
+    // 9. What the recording does not state is named, never dropped.
+    // ------------------------------------------------------------------
+
+    @Test
+    public void whatTheRecordingDoesNotStateIsNamed() throws Exception {
+        Path iteration = folder.newFolder("named").toPath();
+        Endpoint consumer = Endpoint.of(ANCHOR, "PORT.key",
+                at("attach#1", 0), 0);
+        Endpoint other = Endpoint.of(ANCHOR, "PORT.ref",
+                at("attach#1", 0), 0);
+        // Two sessions, neither of which focused anything: two recordings.
+        for (String each : new String[]{"s0", "s1"}) {
+            Session session = new Session(iteration, each, false);
+            session.marker("false");
+            // An attach the wire delivered to and the recording cannot
+            // pair, and one whose Java type names no scalar.
+            session.attach(consumer, "vh", "I", "7", null);
+            session.attach(other, "vh_ref", "Lorg/apache/Foo;", "7", null);
+            session.target("true", false, true);
+            session.write();
+        }
+
+        Composer.Composition composition = compose(iteration, 4);
+        List<GapRow> gaps = composition.gaps();
+        assertTrue("an unpaired attach is a named row",
+                says(gaps, GapKind.UNSTATED_VALUE,
+                        "names no producer endpoint"));
+        assertTrue("a Java type this lowering cannot place is refused",
+                says(gaps, GapKind.UNSTATED_VALUE, "names no scalar"));
+        assertTrue("and two recordings are not one",
+                says(gaps, GapKind.UNSTATED_VALUE, "focused nothing"));
+        assertFalse("the unplaceable symbol is not in the formula",
+                composition.body().contains("vh_ref"));
+    }
+
+    // ------------------------------------------------------------------
+    // 10. A case declares a selector; the seed session resolves it.
+    // ------------------------------------------------------------------
+
+    @Test
+    public void aCaseSelectorIsResolvedAgainstTheSeedSession()
+            throws Exception {
+        Path iteration = folder.newFolder("selector").toPath();
+        // Three activations of one region on one node, two of them started
+        // by the api the case names.
+        OccurrenceAddress first = occurrence("case/dn0", "REGION.sel",
+                CausalContext.of("p1", "case/client#epoch0/checksum"),
+                frame("DataXceiver#run#12", 0));
+        OccurrenceAddress second = occurrence("case/dn0", "REGION.sel",
+                CausalContext.of("p2", "case/client#epoch0/read-block"),
+                frame("DataXceiver#run#12", 1));
+        OccurrenceAddress third = occurrence("case/dn0", "REGION.sel",
+                CausalContext.of("p3", "case/client#epoch0/checksum"),
+                frame("DataXceiver#run#12", 2));
+        Session session = new Session(iteration, "s0", false);
+        session.activation(first);
+        session.activation(second);
+        session.activation(third);
+        session.marker("false");
+        session.occurrence = first;
+        session.target("true", false, true);
+        session.write();
+        CorpusIndex corpus = CorpusIndex.of(iteration);
+
+        assertEquals("the k-th activation of the region, in seed order",
+                second.id(), ComposeMain.anchorOf(
+                        "case/dn0#epoch0/region/REGION.sel#2", corpus)
+                        .id());
+        assertEquals("and with an api, the k-th that api started",
+                third.id(), ComposeMain.anchorOf(
+                        "case/dn0#epoch0/region/REGION.sel@"
+                                + "case/client#epoch0/checksum#2", corpus)
+                        .id());
+        assertEquals("a full id is taken as one, not re-resolved",
+                third.id(),
+                ComposeMain.anchorOf(third.render(), corpus).id());
+        assertEquals("another node's declaration matches nothing here",
+                "REGION.sel", ComposeMain.anchorOf(
+                        "case/dn9#epoch0/region/REGION.sel#1", corpus)
+                        .regionId());
+        assertTrue("and an unresolved declaration is degraded, not thrown",
+                ComposeMain.anchorOf(
+                        "case/dn9#epoch0/region/REGION.sel#1", corpus)
+                        .context().isLost());
+    }
+
+    // ------------------------------------------------------------------
     // Fixture.
     // ------------------------------------------------------------------
 
@@ -288,6 +469,35 @@ public class D3ComposerTest {
             if (gap.kind() == kind) return true;
         }
         return false;
+    }
+
+    /** Whether some gap of this kind says this. */
+    private static boolean says(List<GapRow> gaps, GapKind kind,
+                                String fragment) {
+        for (GapRow gap : gaps) {
+            if (gap.kind() == kind && gap.detail().contains(fragment)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** One occurrence: component, region, why it ran, where in the code. */
+    private static OccurrenceAddress occurrence(String node, String region,
+                                                CausalContext context,
+                                                Frame... frames) {
+        return OccurrenceAddress.of(NodeId.of(node, 0), region, context,
+                ExecutionIndex.of(Arrays.asList(frames)));
+    }
+
+    private static Frame frame(String callSite, int iteration) {
+        return Frame.of(callSite, iteration);
+    }
+
+    /** One site-local execution index, the k-th event's stand-in. */
+    private static ExecutionIndex at(String callSite, int iteration) {
+        return ExecutionIndex.of(Collections.singletonList(
+                Frame.of(callSite, iteration)));
     }
 
     private static JsonObject symbol(String name, String javaType) {
@@ -327,9 +537,21 @@ public class D3ComposerTest {
             this.seq = 0L;
         }
 
+        /** One more activation of this session, in its own order. */
+        void activation(OccurrenceAddress at) {
+            activations.add(ActivationRow.of(id, at,
+                    explored ? "task-flip" : "task-seed", explored));
+        }
+
         void marker(String recorded) {
             roots.add(RootMintRow.of(id, ++seq, PRODUCER, MARKER_ROOT, MARKER,
                     RootKind.MARKER, recorded, null, null, true));
+        }
+
+        /** A declared counter, with the window the CASE states around it. */
+        void serial(String recorded, String min, String max) {
+            roots.add(RootMintRow.of(id, ++seq, PRODUCER, SERIAL_ROOT,
+                    SERIAL, RootKind.INTEGRAL, recorded, min, max, true));
         }
 
         void expression(String ref, JsonObject node) {
@@ -406,35 +628,4 @@ public class D3ComposerTest {
         session.write();
         assertNotNull(answered == null ? "" : answered);
     }
-
-    /**
-     * The site index of the k-th event at one site, for a fixture.
-     *
-     * <p>Contract v2.0 replaced the site ordinal with the execution index of
-     * the frames between the region and the event (IDENTITY-IMPL section A).
-     * A fixture has no real stack, so one frame carrying k is what "the k-th
-     * event of this site" means here: distinct per k, stable across runs.</p>
-     */
-    private static ExecutionIndex siteIndex(int k) {
-        return ExecutionIndex.of(Collections.singletonList(
-                Frame.of("Fixture#site#0", k)));
-    }
-
-
-    /**
-     * One occurrence of a region on a node, as contract v2.0 addresses it.
-     *
-     * <p>The fixture states the causal context a real recording would carry
-     * from its scope -- a daemon tick of the region's role, the k-th of the
-     * window -- and one frame of execution index, which is what "the k-th
-     * activation" meant before the index replaced the ordinal.</p>
-     */
-    private static OccurrenceAddress occurrence(String node, String region,
-                                                int k) {
-        return OccurrenceAddress.of(NodeId.parse(node), region,
-                CausalContext.of(Role.BP_SERVICE_ACTOR, k),
-                ExecutionIndex.of(Collections.singletonList(
-                        Frame.of("Fixture#" + region + "#0", 0))));
-    }
-
 }

@@ -9,7 +9,6 @@ import edu.uva.liftlab.graphchecker.d3.contract.GapClass;
 import edu.uva.liftlab.graphchecker.d3.contract.GapKind;
 import edu.uva.liftlab.graphchecker.d3.contract.GapRow;
 import edu.uva.liftlab.graphchecker.d3.contract.OccurrenceAddress;
-import edu.uva.liftlab.graphchecker.d3.contract.RootDomain;
 import edu.uva.liftlab.graphchecker.d3.contract.RowCodec;
 import edu.uva.liftlab.graphchecker.d3.contract.Task;
 
@@ -132,24 +131,13 @@ public final class ExploreMain {
         Files.createDirectories(out);
         RowCodec.writeAll(out.resolve("tasks.jsonl"), tasks,
                 ExploreCodec::writeTask);
-        List<JsonObject> rows = new ArrayList<JsonObject>();
-        for (edu.uva.liftlab.graphchecker.d3.contract.Obligation obligation
-                : open.obligations) {
-            rows.add(ExploreCodec.writeObligation(obligation));
-        }
-        if (rows.isEmpty()) {
-            rows.add(ExploreCodec.fixedPoint(wave, frontier.answeredCount()));
-        }
-        RowCodec.writeJsonl(out.resolve("obligations.jsonl"), rows);
+        // An empty file IS the frontier closing: the stage breaks its loop
+        // on it, and a wave that has nothing to ask must not have to say so
+        // in a row that nothing executes.
+        RowCodec.writeAll(out.resolve("obligations.jsonl"), open.obligations,
+                ExploreCodec::writeObligation);
         RowCodec.writeAll(out.resolve("gaps.jsonl"), distinct(gaps),
                 RowCodec::writeGap);
-        // The domains the CASE declares, beside the obligations they were
-        // planned under: the worker that solves one is handed the wave
-        // directory and nothing else, and a root whose domain it cannot see
-        // is a root it must pin -- which is exploration refusing to vary the
-        // very quantity the case says may move.
-        RowCodec.writeAll(out.resolve(ObligationSolverMain.DOMAINS),
-                domains(corpus, rootDomains), ExploreCodec::writeDomain);
         JsonObject manifest = manifest(roots, tasks, frontier, open,
                 topologyEpoch, gaps);
         Files.write(out.resolve("explore_manifest.json"),
@@ -192,16 +180,6 @@ public final class ExploreMain {
                     + "name an occurrenceId");
         }
         return roots;
-    }
-
-    /** Every root of this corpus with the domain the case declares for it. */
-    private static List<RootDomain> domains(Corpus corpus, Path declared)
-            throws IOException {
-        List<RootDomain> domains = new ArrayList<RootDomain>();
-        if (declared == null || !Files.isRegularFile(declared)) {
-            return domains;
-        }
-        return RowCodec.readAll(declared, ExploreCodec::readDomain);
     }
 
     private static JsonObject manifest(List<OccurrenceAddress> roots,

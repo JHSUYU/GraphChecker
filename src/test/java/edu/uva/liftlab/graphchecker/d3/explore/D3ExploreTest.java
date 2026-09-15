@@ -2,24 +2,24 @@ package edu.uva.liftlab.graphchecker.d3.explore;
 
 import com.google.gson.JsonObject;
 
-import edu.uva.liftlab.graphchecker.d3.contract.Role;
-import edu.uva.liftlab.graphchecker.d3.contract.CausalContext;
-import edu.uva.liftlab.graphchecker.d3.contract.NodeId;
-import edu.uva.liftlab.graphchecker.d3.contract.Frame;
-import edu.uva.liftlab.graphchecker.d3.contract.ExecutionIndex;
 import edu.uva.liftlab.graphchecker.d3.contract.ActivationRow;
+import edu.uva.liftlab.graphchecker.d3.contract.CausalContext;
 import edu.uva.liftlab.graphchecker.d3.contract.AttachRow;
 import edu.uva.liftlab.graphchecker.d3.contract.DecisionRow;
 import edu.uva.liftlab.graphchecker.d3.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.d3.contract.ExportRow;
+import edu.uva.liftlab.graphchecker.d3.contract.ExecutionIndex;
 import edu.uva.liftlab.graphchecker.d3.contract.ExpressionTable;
+import edu.uva.liftlab.graphchecker.d3.contract.Frame;
 import edu.uva.liftlab.graphchecker.d3.contract.GapKind;
 import edu.uva.liftlab.graphchecker.d3.contract.GapRow;
 import edu.uva.liftlab.graphchecker.d3.contract.LocationId;
 import edu.uva.liftlab.graphchecker.d3.contract.LocationKind;
 import edu.uva.liftlab.graphchecker.d3.contract.Obligation;
 import edu.uva.liftlab.graphchecker.d3.contract.ObligationResult;
+import edu.uva.liftlab.graphchecker.d3.contract.NodeId;
 import edu.uva.liftlab.graphchecker.d3.contract.OccurrenceAddress;
+import edu.uva.liftlab.graphchecker.d3.contract.Role;
 import edu.uva.liftlab.graphchecker.d3.contract.ReadRow;
 import edu.uva.liftlab.graphchecker.d3.contract.RootDomain;
 import edu.uva.liftlab.graphchecker.d3.contract.RootKind;
@@ -62,12 +62,31 @@ import static org.junit.Assert.assertTrue;
  * so an assertion about SAT or UNSAT is an assertion about the query.</p>
  */
 public class D3ExploreTest {
-    private static final OccurrenceAddress TARGET =
-            occurrence("hdfs-case/dn0#epoch0", "REGION.target", 1);
-    private static final OccurrenceAddress WRITER =
-            occurrence("hdfs-case/dn0#epoch0", "REGION.addkeys", 1);
-    private static final OccurrenceAddress PRODUCER =
-            occurrence("hdfs-case/nn0#epoch0", "REGION.rotate", 1);
+    // IDENTITY-V3 addresses.  These are fixture identities: what every
+    // assertion below needs of them is that they are well formed and
+    // distinct, which is what the v1 strings gave before.
+    private static final OccurrenceAddress TARGET = occurrence(
+            "hdfs-case/dn0", "REGION.target", Role.DATA_XCEIVER,
+            "DataXceiver#run#12");
+    private static final OccurrenceAddress WRITER = occurrence(
+            "hdfs-case/dn0", "REGION.addkeys", Role.BP_SERVICE_ACTOR,
+            "BPServiceActor#offerService#40");
+    private static final OccurrenceAddress PRODUCER = occurrence(
+            "hdfs-case/nn0", "REGION.rotate", Role.KEY_MANAGER_TICK,
+            "BlockKeyUpdater#run#8");
+
+    private static OccurrenceAddress occurrence(String node, String region,
+                                                Role role, String callSite) {
+        return OccurrenceAddress.of(NodeId.of(node, 0), region,
+                CausalContext.of(role, 1), ExecutionIndex.of(
+                        Collections.singletonList(Frame.of(callSite, 0))));
+    }
+
+    /** One site-local execution index: what the k-th event is now. */
+    private static ExecutionIndex at(String callSite) {
+        return ExecutionIndex.of(Collections.singletonList(
+                Frame.of(callSite, 0)));
+    }
 
     @Rule
     public TemporaryFolder tree = new TemporaryFolder();
@@ -152,8 +171,8 @@ public class D3ExploreTest {
         Path iteration = tree.newFolder("family").toPath();
         OccurrenceAddress target = TARGET;
         OccurrenceAddress producer = PRODUCER;
-        Endpoint exported = Endpoint.of(producer, "XCH.resp.block-key-id", siteIndex(1), 0);
-        Endpoint attached = Endpoint.of(target, "XCH.resp.block-key-id", siteIndex(1), 0);
+        Endpoint exported = Endpoint.of(producer, "XCH.resp.block-key-id", at("XCH.resp.block-key-id"), 0);
+        Endpoint attached = Endpoint.of(target, "XCH.resp.block-key-id", at("XCH.resp.block-key-id"), 0);
 
         Session seed = new Session(iteration, "s-seed");
         seed.activation(target, true);
@@ -225,7 +244,7 @@ public class D3ExploreTest {
         Assume.assumeTrue(z3Available());
         Path iteration = tree.newFolder("unproducible").toPath();
         OccurrenceAddress target = TARGET;
-        Endpoint attached = Endpoint.of(target, "XCH.req.key-id", siteIndex(1), 0);
+        Endpoint attached = Endpoint.of(target, "XCH.req.key-id", at("XCH.req.key-id"), 0);
         Session seed = new Session(iteration, "s-seed");
         seed.activation(target, true);
         // Unpaired: the value arrived from outside this corpus.
@@ -290,11 +309,9 @@ public class D3ExploreTest {
         Path declaredWave = declaredOut.resolve("obligations-0000");
         plan(declared, target, domains, declaredOut.resolve("results.jsonl"),
                 declaredWave, 0);
-        // The planner wrote the domains beside the obligations, so the worker
-        // solves under the same declaration without being told twice.
-        assertTrue(Files.isRegularFile(
-                declaredWave.resolve("root-domains.jsonl")));
-        Worker moved = solve(declared, declaredWave,
+        // The worker is handed the same declaration the wave was planned
+        // under, exactly as the campaign hands it.
+        Worker moved = solve(declared, domains, declaredWave,
                 obligations(declaredWave).get(0), declaredOut, "w0");
         assertEquals(Verdict.SAT_MODEL_READY, moved.verdict);
         String value = moved.obligation.rootAssignments().get("CASE.SERIAL");
@@ -313,8 +330,8 @@ public class D3ExploreTest {
         OccurrenceAddress producer = PRODUCER;
         LocationId allKeys = LocationId.of(LocationKind.MAP,
                 "BlockTokenSecretManager", "allKeys");
-        Endpoint exported = Endpoint.of(producer, "XCH.resp.block-key-id", siteIndex(1), 0);
-        Endpoint attached = Endpoint.of(writer, "XCH.resp.block-key-id", siteIndex(1), 0);
+        Endpoint exported = Endpoint.of(producer, "XCH.resp.block-key-id", at("XCH.resp.block-key-id"), 0);
+        Endpoint attached = Endpoint.of(writer, "XCH.resp.block-key-id", at("XCH.resp.block-key-id"), 0);
 
         Session seed = new Session(iteration, "s-seed");
         seed.activation(target, true);
@@ -324,9 +341,11 @@ public class D3ExploreTest {
         seed.export(exported, "e.119992", 11L, "119992");
         seed.attach(attached, "M_HOFF_KEY", "119992", exported);
         seed.write(Endpoint.of(writer, "BlockTokenSecretManager#addKeys#12"
-                + ":WRITE", siteIndex(1), 0), allKeys, 5L, "e.119992");
+                + ":WRITE", at("BlockTokenSecretManager#addKeys#12"
+                + ":WRITE"), 0), allKeys, 5L, "e.119992");
         seed.read(Endpoint.of(target, "BlockTokenSecretManager"
-                + "#retrieveDataEncryptionKey#8:READ", siteIndex(1), 0), allKeys, 5L,
+                + "#retrieveDataEncryptionKey#8:READ", at("BlockTokenSecretManager"
+                + "#retrieveDataEncryptionKey#8:READ"), 0), allKeys, 5L,
                 "M_READ_KEY", "119992");
         seed.flush();
 
@@ -380,9 +399,15 @@ public class D3ExploreTest {
 
     private Worker solve(Path iteration, Path waveDir, Obligation proposal,
                          Path out, String name) throws IOException {
+        return solve(iteration, null, waveDir, proposal, out, name);
+    }
+
+    /** One worker, given the same case declaration the wave was planned under. */
+    private Worker solve(Path iteration, Path domains, Path waveDir,
+                         Obligation proposal, Path out, String name)
+            throws IOException {
         Path worker = out.resolve(name);
-        ObligationSolverMain.solve(iteration,
-                waveDir.resolve("root-domains.jsonl"),
+        ObligationSolverMain.solve(iteration, domains,
                 waveDir.resolve("obligations.jsonl"),
                 proposal.obligationId(), worker, Paths.get("z3"), 10_000L);
         List<ObligationResult> rows = RowCodec.readAll(
@@ -408,8 +433,8 @@ public class D3ExploreTest {
 
     private static List<Obligation> obligations(Path waveDir)
             throws IOException {
-        return ExploreCodec.readObligations(
-                waveDir.resolve("obligations.jsonl"));
+        return RowCodec.readAll(waveDir.resolve("obligations.jsonl"),
+                ExploreCodec::readObligation);
     }
 
     private static Obligation named(List<Obligation> obligations,
@@ -463,11 +488,16 @@ public class D3ExploreTest {
                     Collections.<String, Long>emptyMap()));
         }
 
+        /**
+         * One root minted, at the point of the session where it is minted:
+         * before every decision that can mention it, because a value is read
+         * before it is branched on.
+         */
         private void root(OccurrenceAddress occurrence, String rootId,
                           String symbol, RootKind kind, String recorded,
                           String min, String max, boolean declared) {
-            roots.add(RootMintRow.of(sessionId, ++seq, occurrence, rootId, symbol,
-                    kind, recorded, min, max, declared));
+            roots.add(RootMintRow.of(sessionId, ++seq, occurrence, rootId,
+                    symbol, kind, recorded, min, max, declared));
         }
 
         private void export(Endpoint endpoint, String ref, long handle,
@@ -519,35 +549,4 @@ public class D3ExploreTest {
                     ExpressionTable.of(expressions));
         }
     }
-
-    /**
-     * The site index of the k-th event at one site, for a fixture.
-     *
-     * <p>Contract v2.0 replaced the site ordinal with the execution index of
-     * the frames between the region and the event (IDENTITY-IMPL section A).
-     * A fixture has no real stack, so one frame carrying k is what "the k-th
-     * event of this site" means here: distinct per k, stable across runs.</p>
-     */
-    private static ExecutionIndex siteIndex(int k) {
-        return ExecutionIndex.of(Collections.singletonList(
-                Frame.of("Fixture#site#0", k)));
-    }
-
-
-    /**
-     * One occurrence of a region on a node, as contract v2.0 addresses it.
-     *
-     * <p>The fixture states the causal context a real recording would carry
-     * from its scope -- a daemon tick of the region's role, the k-th of the
-     * window -- and one frame of execution index, which is what "the k-th
-     * activation" meant before the index replaced the ordinal.</p>
-     */
-    private static OccurrenceAddress occurrence(String node, String region,
-                                                int k) {
-        return OccurrenceAddress.of(NodeId.parse(node), region,
-                CausalContext.of(Role.BP_SERVICE_ACTOR, k),
-                ExecutionIndex.of(Collections.singletonList(
-                        Frame.of("Fixture#" + region + "#0", 0))));
-    }
-
 }
