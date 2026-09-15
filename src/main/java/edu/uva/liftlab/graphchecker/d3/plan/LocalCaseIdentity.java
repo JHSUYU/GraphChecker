@@ -1,4 +1,4 @@
-package edu.uva.liftlab.graphchecker.concolic;
+package edu.uva.liftlab.graphchecker.d3.plan;
 
 import edu.uva.liftlab.graphchecker.d3.smt.CanonicalJson;
 
@@ -6,7 +6,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.d3.plan.LoopBoundPolicy;
-import edu.uva.liftlab.graphchecker.contract.PathObservation;
+import edu.uva.liftlab.graphchecker.d3.plan.PathObservation;
 
 import java.util.ArrayList;
 import java.util.Collections;

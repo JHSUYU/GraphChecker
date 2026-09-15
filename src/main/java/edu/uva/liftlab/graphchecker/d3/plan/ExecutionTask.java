@@ -5,8 +5,8 @@ import edu.uva.liftlab.graphchecker.contract.OccurrenceId;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
-import edu.uva.liftlab.graphchecker.concolic.BranchReplayContract;
-import edu.uva.liftlab.graphchecker.concolic.SharedExpressionTable;
+import edu.uva.liftlab.graphchecker.d3.plan.BranchReplayContract;
+import edu.uva.liftlab.graphchecker.d3.plan.SharedExpressionTable;
 
 import java.util.ArrayList;
 import java.util.Collections;

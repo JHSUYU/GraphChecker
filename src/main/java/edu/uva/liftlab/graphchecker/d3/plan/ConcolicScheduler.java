@@ -1,8 +1,8 @@
 package edu.uva.liftlab.graphchecker.d3.plan;
 
-import edu.uva.liftlab.graphchecker.concolic.BranchReplayContract;
-import edu.uva.liftlab.graphchecker.concolic.SharedExpressionTable;
-import edu.uva.liftlab.graphchecker.concolic.SummaryBranchMapping;
+import edu.uva.liftlab.graphchecker.d3.plan.BranchReplayContract;
+import edu.uva.liftlab.graphchecker.d3.plan.SharedExpressionTable;
+import edu.uva.liftlab.graphchecker.d3.plan.SummaryBranchMapping;
 
 import edu.uva.liftlab.graphchecker.d3.smt.ArtifactIO;
 import edu.uva.liftlab.graphchecker.d3.smt.CanonicalJson;
@@ -24,7 +24,7 @@ import edu.uva.liftlab.graphchecker.d3.smt.JavaContainerTypes;
 import edu.uva.liftlab.graphchecker.d3.smt.JavaPrimitiveBoxing;
 import edu.uva.liftlab.graphchecker.d3.plan.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceId;
-import edu.uva.liftlab.graphchecker.contract.PathObservation;
+import edu.uva.liftlab.graphchecker.d3.plan.PathObservation;
 import edu.uva.liftlab.graphchecker.d3.plan.RegionInstancePlan;
 import edu.uva.liftlab.graphchecker.d3.plan.RegionInstancePlan.Goal;
 import edu.uva.liftlab.graphchecker.d3.plan.RuntimePlanArtifact;

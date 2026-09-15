@@ -1,4 +1,4 @@
-package edu.uva.liftlab.graphchecker.contract;
+package edu.uva.liftlab.graphchecker.d3.plan;
 
 import edu.uva.liftlab.graphchecker.d3.plan.ClosureGoalKind;
 import edu.uva.liftlab.graphchecker.d3.plan.LoopBoundPolicy;
@@ -7,8 +7,8 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.d3.smt.CanonicalJson;
-import edu.uva.liftlab.graphchecker.concolic.LocalCaseIdentity;
-import edu.uva.liftlab.graphchecker.concolic.SummaryBranchMapping;
+import edu.uva.liftlab.graphchecker.d3.plan.LocalCaseIdentity;
+import edu.uva.liftlab.graphchecker.d3.plan.SummaryBranchMapping;
 
 import java.math.BigDecimal;
 import java.util.ArrayList;

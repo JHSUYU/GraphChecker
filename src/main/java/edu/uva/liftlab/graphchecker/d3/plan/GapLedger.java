@@ -1,6 +1,6 @@
 package edu.uva.liftlab.graphchecker.d3.plan;
 
-import edu.uva.liftlab.graphchecker.concolic.SymbolicPropagationClosure;
+import edu.uva.liftlab.graphchecker.d3.plan.SymbolicPropagationClosure;
 
 import edu.uva.liftlab.graphchecker.d3.plan.BoundedLoopComposition;
 

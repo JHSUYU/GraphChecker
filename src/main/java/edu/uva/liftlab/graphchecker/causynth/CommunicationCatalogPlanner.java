@@ -6,7 +6,7 @@ import edu.uva.liftlab.graphchecker.d3.plan.BoundedLoopComposition;
 
 import edu.uva.liftlab.graphchecker.d3.plan.CommunicationCatalogContract;
 import edu.uva.liftlab.graphchecker.d3.plan.LoopBoundPolicy;
-import edu.uva.liftlab.graphchecker.concolic.ExactConcreteBranchObservation;
+import edu.uva.liftlab.graphchecker.d3.plan.ExactConcreteBranchObservation;
 import edu.uva.liftlab.graphchecker.d3.plan.SiteId;
 import soot.Body;
 import soot.Unit;
