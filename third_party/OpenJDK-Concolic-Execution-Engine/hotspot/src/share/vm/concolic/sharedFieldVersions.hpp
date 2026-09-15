@@ -569,6 +569,37 @@ public:
    */
   static std::string version_label(const Version &version);
 
+  /**
+   * Installs the guarded-store table for this session and returns how many
+   * store methods it names.
+   *
+   * A concrete store is evidence only when it is CONTROL-DEPENDENT on a
+   * symbolic decision -- the store a flipped branch would change.  "Anything
+   * after any symbolic branch" is not that: on 17960's seed it logged
+   * DigestBase#engineUpdate, HeapByteBuffer#_put and nine more protobuf
+   * serialization internals reached from the anchor's own decision, and the
+   * explorer read those versions as six BLOCKING TOPOLOGY_DIVERGENCE.
+   *
+   * Control dependence is a static fact the PLAN stage already computes by
+   * post-dominance and publishes per write site, so the VM is told it rather
+   * than guessing: one line per store method,
+   * `<internal/Class>#<name><descriptor>\t<guardSite>[,<guardSite>...]`,
+   * where the guard sites are the woven branch site ids the runtime passes to
+   * markConcolicBranch.  A method the table does not name never starts a log
+   * by a concrete store, and neither does one whose guard sites have all not
+   * decided anything on this path.
+   *
+   * Installing replaces the whole table; an empty one admits nothing, which
+   * is the fail-closed state before a plan has been installed.
+   */
+  static int install_guarded_store_sites(const char *table);
+
+  /**
+   * Whether a concrete store by the calling thread, right here, is
+   * control-dependent on a symbolic decision it has already taken.
+   */
+  static bool guarded_store_admitted();
+
   /** Where the calling thread stands, for one logged event to state. */
   static EventSite current_site();
 

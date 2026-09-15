@@ -87,6 +87,13 @@ public final class RegionGuardedConcreteWriteSmoke {
         // finalized by the very next conditional bytecode, so comparing the
         // marker's own result would consume the reservation and the branch
         // that followed would contribute no guard.
+        // The plan's answer, installed the way the runtime installs it: this
+        // method's stores are control-dependent on GUARD.expiry, and nothing
+        // else in this program is control-dependent on anything.  A store in
+        // a method the table does not name never starts a log, which is what
+        // keeps a decision from admitting every store that merely follows it.
+        require(System.installGuardedStoreSites(STORE_SITES) == 1,
+                "the guarded-store table was not installed");
         long marked = System.markConcolicBranch("GUARD.expiry", 1);
         if (clock.now > 50) {
             // Concrete removal of a concrete key from a concrete map, taken
@@ -94,16 +101,52 @@ public final class RegionGuardedConcreteWriteSmoke {
             keys.remove(Integer.valueOf(1));
         }
         require(marked > 0L, "branch marker rejected");
+        // A callee reached from the guarded branch, storing concretely into a
+        // container of its own.  Its method is not in the table, so nothing
+        // it does starts a log -- which is the whole difference between
+        // control dependence and "after a decision".  17960's seed logged
+        // eleven such sites (DigestBase#engineUpdate, HeapByteBuffer#_put,
+        // FileSummary$Section#getSerializedSize, UnmodifiableList#get) and
+        // the explorer read them as six BLOCKING TOPOLOGY_DIVERGENCE.
+        Map<Integer, String> downstream = serializeLike(expired);
+
         require(keys.containsKey(Integer.valueOf(2)),
                 "the wrong entry was removed");
         require(keys.get(Integer.valueOf(1)) == null || !expired,
                 "the removal did not run concretely");
+
+        String followed = System.getSharedMapVersions(downstream);
+        require(followed.contains("\"selected\":false"),
+                "a concrete store in a callee of the guarded branch started a"
+                        + " log: " + followed);
+        require(!followed.contains("\"fieldVersionId\""), followed);
 
         String evidence = System.getSharedMapVersions(keys);
         System.out.println((expired ? "REMOVED " : "KEPT ") + evidence);
         System.endConcolic();
         return evidence;
     }
+
+    /**
+     * Concrete stores in another method, reached from the guarded branch.
+     *
+     * <p>This is the shape of the protobuf serialization internals 17960's
+     * anchor reaches after its own decision: every store here is concrete,
+     * none of them is control-dependent on anything, and none of them may
+     * start a log.</p>
+     */
+    private static Map<Integer, String> serializeLike(boolean expired) {
+        Map<Integer, String> buffer = new LinkedHashMap<Integer, String>();
+        for (int index = 0; index < 4; index++) {
+            buffer.put(Integer.valueOf(index), expired ? "e" : "k");
+        }
+        return buffer;
+    }
+
+    /** This method's stores, and the branch they are control-dependent on. */
+    private static final String STORE_SITES =
+            "RegionGuardedConcreteWriteSmoke#run(Z)Ljava/lang/String;"
+                    + "\tGUARD.expiry";
 
     private static int count(String value, String needle) {
         int result = 0;

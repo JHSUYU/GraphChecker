@@ -543,6 +543,10 @@ std::string ConcolicMngr::getSymbolicExpression(Handle handle) {
   return std::string(buffer.GetString(), buffer.GetLength());
 }
 
+jint ConcolicMngr::installGuardedStoreSites(const char *table) {
+  return (jint) SharedFieldVersions::install_guarded_store_sites(table);
+}
+
 jlong ConcolicMngr::currentEventId() {
   return GlobalSymbolicSession::last_event_id();
 }

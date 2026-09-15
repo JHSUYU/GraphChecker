@@ -222,6 +222,14 @@ public:
   // question about whether one is needed.
   bool path_guarded() const;
 
+  // Whether one branch SITE was a symbolic decision on the current region's
+  // path.  A marked branch reaches branch_events only when its predicates are
+  // symbolic, admitted and owned by the marking frame, so membership is
+  // exactly "that site decided control flow here" -- which is the dynamic
+  // half of control dependence.  Site ids are the woven spelling the runtime
+  // passes to markConcolicBranch.
+  bool branch_site_decided(const std::string &site_id) const;
+
   inline bool is_aborted() const { return _aborted; }
   inline const std::string &get_abort_reason() const { return _abort_reason; }
   void abort_symbolic_execution(const char *reason);
