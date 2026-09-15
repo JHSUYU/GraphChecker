@@ -285,11 +285,9 @@ public class D3ExploreTest {
         Path declaredWave = declaredOut.resolve("obligations-0000");
         plan(declared, target, domains, declaredOut.resolve("results.jsonl"),
                 declaredWave, 0);
-        // The planner wrote the domains beside the obligations, so the worker
-        // solves under the same declaration without being told twice.
-        assertTrue(Files.isRegularFile(
-                declaredWave.resolve("root-domains.jsonl")));
-        Worker moved = solve(declared, declaredWave,
+        // The worker is handed the same declaration the wave was planned
+        // under, exactly as the campaign hands it.
+        Worker moved = solve(declared, domains, declaredWave,
                 obligations(declaredWave).get(0), declaredOut, "w0");
         assertEquals(Verdict.SAT_MODEL_READY, moved.verdict);
         String value = moved.obligation.rootAssignments().get("CASE.SERIAL");
@@ -375,9 +373,15 @@ public class D3ExploreTest {
 
     private Worker solve(Path iteration, Path waveDir, Obligation proposal,
                          Path out, String name) throws IOException {
+        return solve(iteration, null, waveDir, proposal, out, name);
+    }
+
+    /** One worker, given the same case declaration the wave was planned under. */
+    private Worker solve(Path iteration, Path domains, Path waveDir,
+                         Obligation proposal, Path out, String name)
+            throws IOException {
         Path worker = out.resolve(name);
-        ObligationSolverMain.solve(iteration,
-                waveDir.resolve("root-domains.jsonl"),
+        ObligationSolverMain.solve(iteration, domains,
                 waveDir.resolve("obligations.jsonl"),
                 proposal.obligationId(), worker, Paths.get("z3"), 10_000L);
         List<ObligationResult> rows = RowCodec.readAll(
@@ -403,8 +407,8 @@ public class D3ExploreTest {
 
     private static List<Obligation> obligations(Path waveDir)
             throws IOException {
-        return ExploreCodec.readObligations(
-                waveDir.resolve("obligations.jsonl"));
+        return RowCodec.readAll(waveDir.resolve("obligations.jsonl"),
+                ExploreCodec::readObligation);
     }
 
     private static Obligation named(List<Obligation> obligations,
