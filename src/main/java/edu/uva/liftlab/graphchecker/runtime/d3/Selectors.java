@@ -80,7 +80,7 @@ public final class Selectors {
         CausalContext context = occurrence.context();
         if (!(context instanceof CausalContext.Anchor)) return "";
         String site = ((CausalContext.Anchor) context).rpcSite();
-        int api = site.lastIndexOf('#');
+        int api = site.lastIndexOf('/');
         return api < 0 ? site : site.substring(api + 1);
     }
 }

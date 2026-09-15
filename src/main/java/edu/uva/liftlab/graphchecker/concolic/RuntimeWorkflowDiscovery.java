@@ -23,11 +23,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalBool;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalLongInteger;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
+import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.array;
+import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.optionalBool;
+import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.optionalLongInteger;
+import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.object;
+import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.optionalString;
 
 /** Selects one target and its VM-observed linked replay scope. */
 public final class RuntimeWorkflowDiscovery {

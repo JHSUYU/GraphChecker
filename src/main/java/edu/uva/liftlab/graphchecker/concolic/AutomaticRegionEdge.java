@@ -3,10 +3,10 @@ package edu.uva.liftlab.graphchecker.concolic;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.runtime.OccurrenceMinter;
 
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalInteger;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalLongInteger;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.firstNonBlank;
+import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.optionalInteger;
+import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.optionalLongInteger;
+import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.optionalString;
+import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.firstNonBlank;
 
 /** Evidence gate shared by graph discovery and SMT preparation. */
 public final class AutomaticRegionEdge {

@@ -27,10 +27,10 @@ import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalBool;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.shallowCopy;
+import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.array;
+import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.object;
+import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.optionalBool;
+import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.shallowCopy;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.ACTIVE;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.CONFIGURED_SOURCE_PHASE_GAPS;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.CONFIGURED_SOURCE_PHASE_OBSERVATIONS;

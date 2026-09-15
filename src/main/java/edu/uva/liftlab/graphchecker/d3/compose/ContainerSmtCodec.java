@@ -1,5 +1,11 @@
 package edu.uva.liftlab.graphchecker.d3.compose;
 
+import edu.uva.liftlab.graphchecker.d3.smt.JavaPrimitiveBoxing;
+import edu.uva.liftlab.graphchecker.d3.smt.JavaPrimitiveSmtSemantics;
+import edu.uva.liftlab.graphchecker.d3.smt.JsonFields;
+import edu.uva.liftlab.graphchecker.d3.smt.VmExpressionIr;
+import edu.uva.liftlab.graphchecker.d3.smt.VmRows;
+
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
@@ -12,10 +18,10 @@ import java.util.List;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
-import edu.uva.liftlab.graphchecker.d3.compose.JavaPrimitiveSmtSemantics.IntegralWidth;
+import edu.uva.liftlab.graphchecker.d3.smt.JavaPrimitiveSmtSemantics.IntegralWidth;
 
-import static edu.uva.liftlab.graphchecker.d3.compose.JsonFields.array;
-import static edu.uva.liftlab.graphchecker.d3.compose.JsonFields.optionalString;
+import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.array;
+import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.optionalString;
 
 /** The single SMT lowering for VM container operations. */
 public final class ContainerSmtCodec {

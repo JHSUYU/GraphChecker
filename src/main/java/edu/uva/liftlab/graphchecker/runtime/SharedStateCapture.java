@@ -1,5 +1,7 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
+import edu.uva.liftlab.graphchecker.d3.smt.JsonFields;
+
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
@@ -7,11 +9,11 @@ import edu.uva.liftlab.graphchecker.concolic.RecordedEvidenceIdentity;
 import edu.uva.liftlab.graphchecker.concolic.SharedStateEvidence;
 import edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.ActiveRegion;
 
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalBool;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalInteger;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalLongInteger;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
+import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.array;
+import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.optionalBool;
+import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.optionalInteger;
+import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.optionalLongInteger;
+import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.optionalString;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.decodeVmEnvelope;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.diag;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.parseJson;
@@ -261,7 +263,7 @@ final class SharedStateCapture {
      * that snapshot itself, one declared container at a time.</p>
      */
     private static JsonObject writeLogRecord(JsonObject record) {
-        JsonObject envelope = edu.uva.liftlab.graphchecker.concolic.JsonFields
+        JsonObject envelope = edu.uva.liftlab.graphchecker.d3.smt.JsonFields
                 .object(record, "envelope");
         JsonObject published = new JsonObject();
         copyIfPresent(record, published, "kind");

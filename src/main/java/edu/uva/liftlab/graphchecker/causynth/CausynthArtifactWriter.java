@@ -1,6 +1,6 @@
 package edu.uva.liftlab.graphchecker.causynth;
 
-import edu.uva.liftlab.graphchecker.concolic.JsonFields;
+import edu.uva.liftlab.graphchecker.d3.smt.JsonFields;
 
 import java.io.BufferedWriter;
 import java.io.IOException;

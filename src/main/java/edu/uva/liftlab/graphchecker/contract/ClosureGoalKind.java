@@ -2,7 +2,7 @@ package edu.uva.liftlab.graphchecker.contract;
 
 import com.google.gson.JsonObject;
 
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
+import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.optionalString;
 
 /** What one replay explores for a selected region occurrence. */
 public enum ClosureGoalKind {

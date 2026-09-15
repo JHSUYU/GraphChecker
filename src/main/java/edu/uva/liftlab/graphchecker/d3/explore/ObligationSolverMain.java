@@ -30,8 +30,8 @@ import java.util.Map;
  *   --sessions &lt;dir&gt;          the corpus every wave so far has written
  *   --output-dir &lt;dir&gt;        obligation_result.jsonl, obligation.jsonl,
  *                             obligation_query.smt2, execution_task_plan.jsonl
- *   --root-domains &lt;file&gt;     default: root-domains.jsonl beside the wave's
- *                             obligations, which the planner wrote there
+ *   --root-domains &lt;file&gt;     what the CASE says each root may be: the same
+ *                             declaration the wave was planned under
  *   --z3 &lt;path&gt; --solver-timeout-ms &lt;n&gt; --clock-skew-ms &lt;n|unbounded&gt;
  * </pre>
  *
@@ -42,9 +42,6 @@ import java.util.Map;
  * outcomes the next wave reads, never a failure of the run.</p>
  */
 public final class ObligationSolverMain {
-    /** The planner's sidecar, read when no {@code --root-domains} is given. */
-    static final String DOMAINS = "root-domains.jsonl";
-
     private ObligationSolverMain() {
     }
 
@@ -60,12 +57,9 @@ public final class ObligationSolverMain {
                     + "--obligation-id, --sessions and --output-dir are "
                     + "required");
         }
-        Path domains = ExploreMain.path(options, "root-domains");
-        if (domains == null && obligations.getParent() != null) {
-            domains = obligations.getParent().resolve(DOMAINS);
-        }
         Path iteration = sessions.getParent();
-        JsonObject result = solve(iteration, domains, obligations,
+        JsonObject result = solve(iteration,
+                ExploreMain.path(options, "root-domains"), obligations,
                 obligationId, out,
                 Paths.get(ExploreMain.value(options, "z3", "z3")),
                 ExploreMain.number(options, "solver-timeout-ms",
@@ -80,7 +74,8 @@ public final class ObligationSolverMain {
             throws IOException {
         Files.createDirectories(out);
         Obligation proposal = null;
-        for (Obligation row : ExploreCodec.readObligations(obligations)) {
+        for (Obligation row : RowCodec.readAll(obligations,
+                ExploreCodec::readObligation)) {
             if (row.obligationId().equals(obligationId)) proposal = row;
         }
         if (proposal == null) {

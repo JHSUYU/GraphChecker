@@ -501,7 +501,9 @@ final class RuntimeTraceContext {
                         .sender(state.exchangeTransport,
                                 state.exchangeCorrelationId,
                                 state.exchangeHalf),
-                normalizedUpper(transport) + "#"
+                // The api is the LAST path segment, which is how a case's
+                // selector is matched against it (ComposeMain.apiOf).
+                normalizedUpper(transport) + "/"
                         + MapFields.safe(remote.requestApi));
         publishCausalSource(state);
         return token;

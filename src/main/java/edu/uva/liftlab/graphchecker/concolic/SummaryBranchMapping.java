@@ -11,7 +11,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.requiredArray;
+import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.requiredArray;
 
 /**
  * Canonical typed branch row stored in a concolic summary.

@@ -1,9 +1,12 @@
 package edu.uva.liftlab.graphchecker.d3.compose;
 
+import edu.uva.liftlab.graphchecker.d3.smt.JavaPrimitiveSmtSemantics;
+import edu.uva.liftlab.graphchecker.d3.smt.VmRows;
+
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
-import edu.uva.liftlab.graphchecker.d3.compose.JavaPrimitiveSmtSemantics.IntegralWidth;
+import edu.uva.liftlab.graphchecker.d3.smt.JavaPrimitiveSmtSemantics.IntegralWidth;
 import edu.uva.liftlab.graphchecker.d3.compose.VmTermLowering.Sort;
 import edu.uva.liftlab.graphchecker.d3.compose.VmTermLowering.Term;
 import edu.uva.liftlab.graphchecker.d3.contract.ExpressionTable;

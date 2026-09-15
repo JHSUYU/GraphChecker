@@ -1,4 +1,4 @@
-package edu.uva.liftlab.graphchecker.d3.compose;
+package edu.uva.liftlab.graphchecker.d3.smt;
 
 import java.util.Arrays;
 import java.util.Collections;

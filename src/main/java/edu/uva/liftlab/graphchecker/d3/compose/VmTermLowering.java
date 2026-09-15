@@ -1,7 +1,11 @@
 package edu.uva.liftlab.graphchecker.d3.compose;
 
-import edu.uva.liftlab.graphchecker.d3.compose.JavaPrimitiveSmtSemantics.FloatingKind;
-import edu.uva.liftlab.graphchecker.d3.compose.JavaPrimitiveSmtSemantics.IntegralWidth;
+import edu.uva.liftlab.graphchecker.d3.smt.JavaPrimitiveSmtSemantics;
+import edu.uva.liftlab.graphchecker.d3.smt.JsonFields;
+import edu.uva.liftlab.graphchecker.d3.smt.VmExpressionIr;
+
+import edu.uva.liftlab.graphchecker.d3.smt.JavaPrimitiveSmtSemantics.FloatingKind;
+import edu.uva.liftlab.graphchecker.d3.smt.JavaPrimitiveSmtSemantics.IntegralWidth;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
@@ -15,8 +19,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.function.Consumer;
 
-import static edu.uva.liftlab.graphchecker.d3.compose.JsonFields.firstNonBlank;
-import static edu.uva.liftlab.graphchecker.d3.compose.JsonFields.optionalString;
+import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.firstNonBlank;
+import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.optionalString;
 
 /**
  * The one SMT lowering vocabulary shared by {@code PathMergeLowering}
