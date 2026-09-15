@@ -257,7 +257,12 @@ public final class ClosurePlanner {
         List<Demand> next = new ArrayList<Demand>();
         for (OccurrenceAddress member : group) {
             if (!member.equals(demand.occurrence)) {
-                next.add(new Demand(member, CLOSURE_MEMBER, false));
+                // A factor member is in the closure because the occurrence it
+                // is state-connected to is, so it INHERITS that reason: being
+                // somebody's factor is not a reason of its own, and calling
+                // it one would report a static candidate's sibling as a
+                // member the rows connected.
+                next.add(new Demand(member, demand.why, false));
             }
             for (AttachRow attach : corpus.attachesOn(member)) {
                 if (!demanded.contains(attach.symbol())) {
