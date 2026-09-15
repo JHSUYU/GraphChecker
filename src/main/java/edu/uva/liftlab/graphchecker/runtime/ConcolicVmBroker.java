@@ -90,7 +90,6 @@ final class ConcolicVmBroker {
     private Method symbolizeExactField;
     private Method observeExactPrimitiveField;
     private Method sharedFieldVersions;
-    private Method trackContainer;
     private Method getExpression;
     private Method getFieldExpression;
     private Method finishRegion;
@@ -250,12 +249,6 @@ final class ConcolicVmBroker {
                 "getSharedFieldVersions");
     }
 
-    boolean trackContainer(Object value, String prefix)
-            throws Exception {
-        return Boolean.TRUE.equals(trackContainer.invoke(
-                null, value, prefix));
-    }
-
     String expression(Object value) throws Exception {
         return String.valueOf(getExpression.invoke(null, value));
     }
@@ -392,8 +385,6 @@ final class ConcolicVmBroker {
                 String.class, String.class);
         api.sharedFieldVersions = method(system, "getSharedFieldVersions",
                 Object.class, String.class, String.class, String.class);
-        api.trackContainer = method(system, "trackContainerExpression",
-                Object.class, String.class);
         api.getExpression = method(system, "getSymbolicExpression",
                 Object.class);
         api.getFieldExpression = method(system,

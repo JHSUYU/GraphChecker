@@ -28,8 +28,9 @@ minted once, at its hook -- which is why neither field is listed in
 declared there -- by the two static sites it is read at,
 `BlockTokenSecretManager.updateKeys()` and `.addKeys(...)`, which PLAN resolves
 to whichever regions cover them; the same file is shared by all three cases.
-The key ids observed on the wire are carriers, not roots of their own: they
-carry the NameNode's minted `serialNo`.
+The key ids observed on the wire are declared cut ports, not roots of their
+own: they are tracked and mint nothing, because the attach installs the
+NameNode's own propagated `serialNo` expression at the consumer.
 
 One more declaration is per case rather than shared: `target_occurrence` in
 `case.sh` names the occurrence of the annotated site the campaign is about, as

@@ -124,14 +124,12 @@ every `<org.apache.hadoop.util.Timer: long now()>` return. An experiment that
 does not want the whole automatic set narrows it with
 `causynth_symbolic_inputs=@config/symbolic-inputs.jsonl`.
 
-The file is a **restrictive allowlist over roots, not over symbols**: with it
-present, the only input actions that may mint are the ones it names plus the
-two exempt authorities. Every other input stays `SYMBOLIC` and is tracked as
-a carrier, reusing whatever expression the VM propagated to it -- with one
-exception, an undeclared `EXTERNAL_CALL_RETURN`, which has no propagated
-expression to reuse and is therefore `CONCRETE`. A region the file does not
-mention mints nothing and still carries everything. Without the file every
-automatic candidate mints. "Carriers" below has the whole decision table.
+The file is the **declaration of which reads are symbolic at all**: an input
+action is symbolic only where a declaration names it, and every other
+proposed read is `CONCRETE` at its recorded value with
+`symbolicDemand: UNDECLARED_SYMBOLIC_INPUT`. A region the file does not
+mention declares nothing, and a campaign with no file at all declares
+nothing beyond the three declarations that live outside it (below).
 
 One JSONL row per **static site**. A row says where the root is read -- the
 class and the method -- and PLAN resolves that to the planned regions that
@@ -168,7 +166,7 @@ action:
 | `portIds` | `portId` or `symbol` |
 | `cells` | `cell` |
 
-Every input this file does not mention is already tracked as a carrier.
+Every input this file does not mention stays concrete.
 
 `cells` is how a call return is named, since it carries no field signature: an
 `EXTERNAL_CALL_RETURN` action's cell is `<callee signature>.return`, identical
@@ -181,7 +179,7 @@ at every call site of that callee inside the region, so one entry declares
 ```
 
 A declared row does not only survive the narrowing: it **mints**. Once a
-shared-state carrier is installed, every later read of a field arrives wrapped
+shared value is installed, every later read of a field arrives wrapped
 in a `ReadFrom`, including a field only ever written from constants, and the
 automatic rule reads that wrapper as "already propagated" and skips the mint --
 so a declared field could stay concrete. A declared source of primitive type
@@ -194,151 +192,68 @@ is the mint and `DelegationKey#expiryDate` flows from it. Non-primitive
 declarations keep the loose rule, since a container or reference has no root
 to mint.
 
-### Carriers
+### Only a declaration makes a read symbolic
 
-Concretizing a read is not the neutral option it looks like. A `CONCRETE`
-action is one the plan never symbolizes, so the VM publishes no `ReadFrom`
-candidates and no container versions for it; the guarded read family the
-composer builds over a shared location then has no writer cases to admit, the
-observed closure has nothing to explore, and a root that only reaches the
-fatal predicate *through* that family never appears in `candidate.smt2` at
-all. Two campaigns measured it. HDFS-17960: emptying its allowlist
-concretized the four reads of `AtomicInteger#value`, and the campaign went
-from 25 active observed tasks, 94 consumer-boundary families and 46 guarded
-reads to 1, 2 and 0, with `configuredSourceMaterializations: []` and no root
-in the formula, though the narrowing never touched the hook's own field.
-HDFS-11741: its per-region allowlist concretized 212 of 277 input actions,
-including 14 of the 18 `BOUNDED_CONTAINER_STATE` actions outright -- among
-them the DataNode's `allKeys`, which its own README calls "shared state
-reconstructed from its retained writers".
+Owner ruling, 2026-09-13/15: shadow retention is **by value**, not by
+declared carrier location.  Any symbolic write keeps its expression under the
+real object identity and a read returns it, so no stage has to decide in
+advance which locations are "carriers": a read that observes a root-derived
+store gets that store's expression whether or not the plan named the
+location, and a read that observes nothing symbolic has nothing to publish.
+Containers are not modelled at region entry at all -- a container becomes
+symbolic only when a root-derived value is put into it, and the VM carries
+the INITIAL snapshot base inside the expression it then hands back.  Which
+relations hold is found by flipping the root-dependent branches, not by
+minting a symbol per read.
 
-So the file governs one decision and not the other. Every proposed input
-carries two verdicts, and `symbolic_root_policy.jsonl` publishes both per
-action alongside its summary row:
+`ConcolicScheduler.SymbolicInputSelection.decide` therefore takes one
+decision per proposed input, with four declarations and nothing else:
 
-| verdict | meaning | on the plan row | who decides |
-|---|---|---|---|
-| TRACK | symbolize the read: the VM publishes its `ReadFrom` candidates and container versions | the surviving `mode: SYMBOLIC` | the mechanism -- true for every carrier |
-| MINT | may become a *fresh* root, a free symbol the solver moves | `mintEligible` | the three declaring authorities below |
+| declaration | verdict | mints |
+|---|---|---|
+| a `fieldSignatures` / `portIds` / `cells` name of this file, for the action's own region | `DECLARED_SYMBOLIC_ROOT` | yes -- the read is where the search starts |
+| an `EXPLICIT_SYMBOLIC_FAULT` marker the workload wrote into its own source | `WORKLOAD_DECLARED_SYMBOLIC_FAULT` | yes |
+| a field a `CausynthSymbolicSource.symbolize` hook site owns | `CONFIGURED_SYMBOLIC_SOURCE_FIELD_OWNED` | the hook does, at its own site, so the action stands down `CONCRETE` |
+| a `COMMUNICATION_SITE_PORT` the communication catalog declared | `DECLARED_COMMUNICATION_CUT_PORT` | never: tracked, and `attachCommunicationLeaf` installs the producer's expression |
+| anything else | `UNDECLARED_SYMBOLIC_INPUT` | no -- `CONCRETE` at its recorded value |
 
-A carrier is a shared location this campaign's roots can still change. It is
-not something the file declares and not "every read the recording made":
-`ConcolicScheduler.RootDependenceSlice` derives it from the roots' own forward
-dependence over the runtime-refined dataflow graph, which states both halves
-of the relation the design asks for --
+`symbolic_root_policy.jsonl` publishes one summary row (`decidedActionCount`,
+`trackedActionCount`, `mintEligibleActionCount`, `declaredActionCount`) and
+one verdict per decided action.  On HDFS-17960 that is 4 declared counter
+reads (`<AtomicInteger: int value>` behind `SnapshotManager.getNumSnapshots`,
+selected by the exact-copy rename below), 2 hook-owned marker rows and 126
+undeclared refusals; 24 `SYMBOLIC` input actions become 4.
 
-- **data dependence**: a value edge (`field_write`, `field_mutation`,
-  `call_return`, `local_def_use`, `caller_argument`, the wire handoff kinds)
-  carries a root-dependent value into the cell it targets;
-- **control dependence**: a `GUARD` edge (`path_guard_dependency`,
-  `heap_mutation_path_guard`, `receiver_field_effect_path_guard`) runs from a
-  guard's operand to the definition that guard controls, so a write whose case
-  partition a root decides is reached by the same walk.
+A declaration names a **value**, and the graph names one value once per
+Jimple local it is copied into -- a method's `.return` cell is one of those
+names.  `renameDeclaredNames` extends every declared name backwards over the
+edges Soot itself proves are exact JVM value copies
+(`SOOT_EXACT_LOCAL_DIRECT_COPY_V1`, `SOOT_EXACT_PARAMETER_IDENTITY_BINDING_V1`)
+and over nothing else, so a case can declare
+`<SnapshotManager: int getNumSnapshots()>.return` and select the
+accessor-return port that names the `AtomicInteger` leaf, without any
+upstream cell becoming a root.
 
--- so one transitive forward closure from the root cells answers both, and its
-fixed point *is* the carrier set: a read of a carrier that feeds another store
-lands on that store's cell on the next hop. Everything else is `CONCRETE` at
-its recorded value, with `symbolicDemand: NOT_ROOT_DEPENDENT` and a
-`symbolic_root_policy.jsonl` verdict of the same name. This is what selected
-HDFS-17960's `DirectorySnapshottableFeature#snapshotsByNames` and the
-`AtomicInteger#value` behind `SnapshotManager#numSnapshots` with nothing
-declaring either.
+A declared row **mints**.  Once a read arrives wrapped in a `ReadFrom` whose
+every candidate is a constant, the loose "already propagated" rule would skip
+the mint and the declared field would stay concrete, so a declared source of
+primitive type asks the strict question instead (is anything symbolic
+actually inside?) and mints where the answer is no, recording the usual
+`PLANNED_MANUAL_SYMBOLIZATION_V1` evidence.  A declared read a symbol has
+already reached still flows, so declaring both a root and the values derived
+from it does not fork the chain.
 
-Two properties fall out of the walk rather than being cases in it. **A field
-nothing writes is never a carrier** -- a static final appears only as a
-`fromCell`, is the target of no edge, and so cannot be reached from any root;
-that is what keeps `FSDirectory.DOT_RESERVED` and
-`NameNodeLayoutVersion.MINIMUM_COMPATIBLE_LAYOUT_VERSION` out of HDFS-17960's
-plan, where they used to be tracked and crashed INSTRUMENT with
-`STATIC_FIELD_MATERIALIZATION_UNSUPPORTED`. And **a campaign whose roots the
-graph does not name narrows nothing**: the slice reports
-`carrierSliceApplied: false`, `carrierSliceReason:
-NO_ROOT_CELL_IN_REFINED_GRAPH`, and every carrier stays tracked, because
-narrowing on an empty seed would concrete every read and delete the evidence
-rather than the waste.
-
-Carriers, so derived, are tracked and the allowlist cannot refuse them --
-refusing one removes no root and deletes the evidence. Declared communication
-cut ports are tracked whether or not the slice reaches them: the port is
-itself a manual declaration of the wire path, and the value it names is
-produced on the other side of the wire. Three things, and nothing else, are
-mint-eligible:
-
-- a name this file declares, through `fieldSignatures`, `portIds` or `cells`,
-  for the region the action belongs to;
-- a field a `CausynthSymbolicSource.symbolize` hook site owns -- the hook call
-  is itself the declaration, and it mints at its own site, so the input action
-  stands down (`CONFIGURED_SYMBOLIC_SOURCE_FIELD_OWNED`);
-- an `EXPLICIT_SYMBOLIC_FAULT` port, i.e. a `Debug.makeSymbolicBoolean` marker
-  the workload wrote into its own source.
-
-One input kind cannot be tracked without minting. An `EXTERNAL_CALL_RETURN`
--- a `Timer.now()` return, say -- has no writer inside the recording, so
-there is no carrier expression to reuse and symbolizing it *is* minting. An
-undeclared one is therefore `CONCRETE`, and is the only thing the file still
-refuses; each refusal is published with its region, source kind, site and
-cell as `suppressedRootCandidates`.
-
-`ConcolicRegionRuntime` honours the second verdict. `mintEligible` decodes on
-`SymbolizeAction` (default `true`, the behaviour of a campaign with no
-selection file), and `retainPropagatedInput` no longer answers "nothing
-propagated, go and mint" for a tracked carrier: it opens path recording and
-publishes the port at its recorded value, exactly as a selected shared read
-already does. Containers fall through and are still tracked, because
-publishing a shared state's versions is what a carrier is for.
-
-The authored `symbolicDemand` survives a tracked action untouched. It is how
-the replay learns that a port models a whole container rather than a scalar
-(`ConcolicRegionRuntime.trackContainerOrObserveConcrete`), and the previous
-narrowing overwrote it with its own verdict -- which is the other half of the
-HDFS-11741 defect: the four container-state actions that survived as cut
-ports reached replay with their `BOUNDED_CONTAINER_STATE` demand replaced by
-`DECLARED_COMMUNICATION_CUT_PORT`.
-
-Which leaves the choice of what to *declare* a soundness question, not a
-budget one. **A value whose earlier members are baked into concrete state
-elsewhere in the recording cannot be declared a free root.** The block key id
-is the worked example: the NameNode rolls it from a counter, and the target
-DataNode's `allKeys` arrives in the composition as an initial snapshot of
-three recorded constants. Minting the NameNode-side id as a free symbol gives
-it no identity with those constants, so the solver answers with an id outside
-the recorded set and reaches the target's lookup miss whether or not the fault
-fired -- a world the recording does not admit. Declare the mechanism that is
-genuinely free (here the wall clock, and the expiry computed from it) and let
-the counter flow as the constants it was recorded as.
-
-#### What tracking costs, and the fold that pays it back
-
-Tracking *every* carrier grows the plan; tracking the root-dependent ones does
-not. Re-running the PLAN stage offline over three recorded corpora, with each
-experiment's own file unchanged, gives three columns: what the old allowlist
-narrowed to, what "track every carrier" costs, and what the root slice keeps.
-
-| corpus | declared-only | every carrier | root-dependent | carrier locations |
-|---|---|---|---|---|
-| hdfs-17897 | 18 | 97 | **71** | 12 |
-| hdfs-17899-bug3 | 20 | 121 | **75** | 7 |
-| hdfs-17960 | 4 | 80 | **13** | 3 |
-
-The root set is unchanged in all three, and so is the chain each case needs:
-HDFS-17960 keeps `snapshotsByNames`, `AtomicInteger#value` and `Snapshot#id`
-and nothing else; bug3 and 17897 keep `BlockTokenSecretManager#allKeys`,
-`DelegationKey#keyId`/`#expiryDate` and the `BlockKeyProto` /
-`DataEncryptionKeyProto` copies on the wire path. Most of the new symbolic actions are
-reads of state written only from constants, and each becomes a guarded read
-whose arms all lower to the same literal. Such a family is free of any case:
-`ConcolicSmtComposer.guardedReadTerm` still mints a fresh `sym__read__` value
-(ConcolicSmtComposer.java:3496), declares a selector per arm and asserts the
-`exactlyOne` cardinality over them (ConcolicSmtComposer.java:3230) plus each
-arm's writer-case closure (ConcolicSmtComposer.java:3823). When every arm's
-lowered term is a syntactic constant and they are all equal, the read *is*
-that constant: the value symbol, the selectors, the cardinality axiom and the
-writer-case closure can all be dropped and every use replaced by the literal.
-`collapsedContainerArm` (ConcolicSmtComposer.java:1582) already recognises
-the shape for container arms, but as a refusal, not a fold. The fold is not
-implemented here: it changes emitted SMT and must be gated on a byte-identical
-recompose of the HDFS-17960 and bug3 corpora, whose recorded summaries predate
-this plan and so do not exercise it.
+Which leaves the choice of what to declare a soundness question. **A value
+whose earlier members are baked into concrete state elsewhere in the
+recording cannot be declared a free root.** The block key id is the worked
+example: the NameNode rolls it from a counter, and the target DataNode's
+`allKeys` arrives as recorded constants. Minting the NameNode-side id as a
+free symbol gives it no identity with those constants, so the solver answers
+with an id outside the recorded set and reaches the target's lookup miss
+whether or not the fault fired -- a world the recording does not admit.
+Declare the mechanism that is genuinely free (here the wall clock, and the
+expiry computed from it) and let the counter flow as the constants it was
+recorded as.
 
 ### The replay task set
 
@@ -357,7 +272,7 @@ root cells meets the backward closure of the fatal read -- the failing
 branch's operand, guard and throw cells and the reads the target goal
 symbolizes -- taken over the refined dataflow graph, and between occurrences
 over the plan's shared-location, protocol and request-control edges
-(`RootDependenceSlice.reachingFatalRead`, `ReplayTaskSlice.backwardFrom`). A
+(the plan's own backward walk over the refined graph). A
 writer outside that intersection is a recorded constant *for this failure*
 however root-dependent its value is: either no root can move it, or nothing
 the failing branch reads consults it. Root dependence is seeded at
@@ -394,10 +309,10 @@ decision is a pure function of the plan, the refined graph and the roots, so
 the active-observed schedule of the seed query takes the same subset. Three
 rules bound it: a target, a root site and a write the fatal read consumes are
 kept whatever else says, and the whole narrowing is withheld --
-`replayTaskSliceApplied: false`, nothing pruned -- exactly when the carrier
-slice is, because a root the graph does not name cannot state what it
-reaches; a fatal read the graph has no cell for narrows nothing rather than
-everything.
+`replayTaskSliceApplied: false`, nothing pruned -- when no declared root
+resolves to a cell of the graph, because a root the graph does not name
+cannot state what it reaches; a fatal read the graph has no cell for narrows
+nothing rather than everything.
 
 Offline on the recorded plans it takes HDFS-17960 from 44 tasks to 18 -- the
 same 18 the forward-only rule kept, the loader and the whole fsimage save
@@ -413,33 +328,6 @@ scheduler as `--replay-task-budget` and published as
 its own test asserted that it never dropped a task -- a number nobody wrote
 compared against a count nobody read. It is gone; the kept count is in
 `keptOccurrenceCount` and the per-occurrence decisions are beside it.
-
-**Shared carriers are declared on the same slice.** `RuntimeRegionPlanner`
-publishes on every closure goal every shared field its region reads or writes
-at an exact runtime access, and the replay versions each declared carrier --
-one guarded-read family per read, one arm per writer. `ConcolicScheduler`
-keeps a task's `sharedCarriers` row only when the slice reaches its location
-(`RootDependenceSlice.reachesLocation`): the root's own field, every field on
-the forward closure, and the field of every action the slice carries -- which
-is what keeps a library leaf such as `AtomicInteger#value`, a source cell of
-its own that meets the graph only at its accessor's local. Everything else is
-recorded at its concrete value: no versions, no families. The decisions are
-published beside the replay task slice in `shared_carrier_slice.jsonl` -- a
-`SHARED_CARRIER_SLICE` summary, then one `SHARED_CARRIER_DECISION` row per
-declared carrier with `reason: SHARED_CARRIER_KEPT` or
-`SHARED_CARRIER_NOT_ROOT_DEPENDENT` -- and in the schedule index's
-`sharedCarrierSlice` member; a withheld slice drops nothing. Offline on the
-recorded plans HDFS-17960 goes from 19 declared locations (135 carrier rows
-over 18 tasks) to 4 (49 rows): `snapshotDeletionOrdered`, `snapshotsByNames`,
-`AtomicInteger#value`, `Snapshot#id`; `INodeDirectory#children` (11 families,
-31 arms in the recorded formula), `snapshotCounter`, `snapshotQuota`, the
-edit-log op strings and the fsimage loader's fields go. The composer
-manufactures no family of its own -- every arm is a VM `ReadFromExpression`
-over a carrier the replay selected -- so it is consistent by construction.
-A `carrierDeclarations` ledger used to restate that in the manifest; it was
-`consistent: true` with `undeclaredFamilyCount: 0` on every recorded run, its
-own javadoc said an undeclared family "is not something to gate here", and
-nothing read it, so it is gone.
 
 ## Trace context and topology
 
@@ -916,7 +804,7 @@ resolvable with `@config`, `@repo` and `@project`:
 
 | File | Role |
 | --- | --- |
-| `symbolic-inputs.jsonl` | the root allowlist, one `{"regionId", "fieldSignatures": [...]}` row per region: which observed application sources this case may mint as symbolic roots. Carriers are not named here -- they are derived from the roots' forward dependence. Configured with `causynth_symbolic_inputs`; when a case declares it, minting is narrowed to exactly those fields, which is what keeps a witness about the fault rather than about whatever else happened to be free. A case that declares none mints only the roots the plan's own symbolization actions name. |
+| `symbolic-inputs.jsonl` | the case's declaration, one `{"class", "method", "cells"/"fieldSignatures"/"portIds": [...]}` row per static site: which reads of this case are symbolic at all. Configured with `causynth_symbolic_inputs`. Every read it does not name is concrete, which is what keeps a witness about the fault rather than about whatever else happened to be free. A case that declares none is symbolic only where a hook site, a workload marker or a declared wire cut port says so. |
 | `communication-mappings.jsonl` | one `WIRE_FLOW` row per declared cross-node value: `id`, `transport`, `direction`, `javaType`, an exact `producer` and `consumer` endpoint, and optionally `consumerField` -- the field the consumer assigns the received value to, which is the second route a flow can reach the formula by. |
 | `loop-bounds.jsonl` | the finite unroll for every retained condition-controlled loop. An empty file explicitly means the workload has no such loop. |
 | `target.yaml` | the `exception_target_id` the annotated throw site carries. |

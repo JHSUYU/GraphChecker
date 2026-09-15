@@ -353,9 +353,11 @@ public class D3RuntimeTest {
         assertEquals("no write precedes the mint: -1 and the decimal",
                 ReadRow.UNKNOWN_VERSION, unwritten.observedVersion());
         assertEquals("2", unwritten.concreteValue());
-        assertEquals("a reference-sorted mint states no row; a second port"
-                        + " of one cell is a second read event and states"
-                        + " one; the same event reached twice states one",
+        assertEquals("a reference-sorted mint states no row; a second mint"
+                        + " of one cell (version 127) is a second mint and"
+                        + " states one; the SAME mint reached twice states"
+                        + " one row, whatever occurrence or read event"
+                        + " reached it",
                 6, reads.size());
         List<RootMintRow> roots = RowCodec.readAll(dir.roots(),
                 RowCodec::readRootMint);

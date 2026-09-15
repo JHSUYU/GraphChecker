@@ -64,12 +64,6 @@ public final class ConcolicInstrumentationSelections {
                 String owner = CausynthStaticFacts.methodOwner(signature);
                 if (!owner.isEmpty()) classes.add(owner);
             }
-            // A factory region can publish a value through a freshly-created
-            // object's constructor.  That constructor is not necessarily a
-            // method in the region slice, but its selected carrier field still
-            // has to be registered before the first putfield.
-            classes.addAll(plan.materializations()
-                    .sharedCarrierDeclaringClasses());
         }
         if (classes.isEmpty()) {
             throw new IllegalStateException(
@@ -154,8 +148,6 @@ public final class ConcolicInstrumentationSelections {
             rootLoopDemandedUnitIndex = task.rootLoopDemandedUnitIndex();
             rootLoopControlSites = task.rootLoopControlSites();
             materializations = ConcolicMaterializationSelection.from(symbolic);
-            materializations.addSharedCarrierTargets(
-                    task.sharedCarriers(), inputActions.all());
             materializations.addObservedWriteSites(
                     task.observedWriteSites());
             communicationHandoffs = task.communicationHandoffs();
@@ -170,10 +162,6 @@ public final class ConcolicInstrumentationSelections {
             methods.add(rootMethod);
             methods.addAll(branches.methods());
             anchorMethods.addAll(branches.methods());
-            // A concrete shared-state carrier is not a fresh symbolic input,
-            // but its exact read still needs the materialization hook which
-            // admits the planner-selected producer version.
-            methods.addAll(materializations.sharedCarrierAccessMethods());
             // A cut's own frame is where the port's value is presented and
             // received.
             for (CommunicationHandoffSpec site : communicationHandoffs) {
@@ -475,31 +463,6 @@ public final class ConcolicInstrumentationSelections {
         /** Refusal verdict: static shared state this pipeline cannot carry. */
         static final String STATIC_FIELD_UNSUPPORTED =
                 "STATIC_FIELD_UNSUPPORTED";
-        private static final String ATOMIC_INTEGER_VALUE =
-                "<java.util.concurrent.atomic.AtomicInteger: int value>";
-        private static final String ATOMIC_LONG_VALUE =
-                "<java.util.concurrent.atomic.AtomicLong: long value>";
-        /** Exact calls implemented by the VM's SymbolicAtomic helper. */
-        private static final Set<String> ATOMIC_INTEGER_MUTATIONS =
-                Collections.unmodifiableSet(new LinkedHashSet<>(Arrays.asList(
-                        "<java.util.concurrent.atomic.AtomicInteger: int getAndIncrement()>",
-                        "<java.util.concurrent.atomic.AtomicInteger: int getAndDecrement()>",
-                        "<java.util.concurrent.atomic.AtomicInteger: int incrementAndGet()>",
-                        "<java.util.concurrent.atomic.AtomicInteger: int decrementAndGet()>",
-                        "<java.util.concurrent.atomic.AtomicInteger: int getAndAdd(int)>",
-                        "<java.util.concurrent.atomic.AtomicInteger: int addAndGet(int)>",
-                        "<java.util.concurrent.atomic.AtomicInteger: boolean compareAndSet(int,int)>",
-                        "<java.util.concurrent.atomic.AtomicInteger: boolean weakCompareAndSet(int,int)>")));
-        private static final Set<String> ATOMIC_LONG_MUTATIONS =
-                Collections.unmodifiableSet(new LinkedHashSet<>(Arrays.asList(
-                        "<java.util.concurrent.atomic.AtomicLong: long getAndIncrement()>",
-                        "<java.util.concurrent.atomic.AtomicLong: long getAndDecrement()>",
-                        "<java.util.concurrent.atomic.AtomicLong: long incrementAndGet()>",
-                        "<java.util.concurrent.atomic.AtomicLong: long decrementAndGet()>",
-                        "<java.util.concurrent.atomic.AtomicLong: long getAndAdd(long)>",
-                        "<java.util.concurrent.atomic.AtomicLong: long addAndGet(long)>",
-                        "<java.util.concurrent.atomic.AtomicLong: boolean compareAndSet(long,long)>",
-                        "<java.util.concurrent.atomic.AtomicLong: boolean weakCompareAndSet(long,long)>")));
         private static final Pattern LOCAL = Pattern.compile(
                 "^(<.+>)::([^#]+)(?:#.*)?$");
         private final Map<String, Map<String, Set<Integer>>> localsByMethod =
@@ -507,12 +470,6 @@ public final class ConcolicInstrumentationSelections {
         private final Map<String, Set<Integer>> methodArguments =
                 new LinkedHashMap<>();
         private final Map<String, FieldTarget> fields = new LinkedHashMap<>();
-        /** Declarations whose writes publish selected shared-state versions. */
-        private final Set<String> sharedCarrierFields =
-                new LinkedHashSet<>();
-        /** Exact read sites required only to admit concrete shared carriers. */
-        private final Map<String, Map<Integer, Set<String>>>
-                sharedCarrierFieldsBySite = new LinkedHashMap<>();
         private final Map<String, AccessorCallTarget> accessorCallsBySite =
                 new LinkedHashMap<>();
         /**
@@ -524,7 +481,6 @@ public final class ConcolicInstrumentationSelections {
          */
         private final Map<String, ObservedWriteTarget> observedWritesBySite =
                 new LinkedHashMap<>();
-        private boolean associativeContainerState;
 
         private static ConcolicMaterializationSelection from(
                 JsonArray actions) throws IOException {
@@ -547,10 +503,6 @@ public final class ConcolicInstrumentationSelections {
                 // incorrectly try to replace the compiler-owned int[].
                 return;
             }
-            associativeContainerState |= "BOUNDED_CONTAINER_STATE".equals(
-                    optionalString(action, "symbolicDemand"))
-                    && JavaContainerTypes.shape(optionalString(action, "javaType"))
-                    == JavaContainerTypes.Shape.ASSOCIATIVE;
             addAccessorCallTarget(action);
             String mode = optionalString(action, "bindingMode");
             String cell = optionalString(action, "cell");
@@ -606,55 +558,6 @@ public final class ConcolicInstrumentationSelections {
         }
 
         /**
-         * Access-owner shared carriers use the same exact getfield hooks as a
-         * heap materialization, but they are not themselves new symbolic
-         * inputs.
-         */
-        void addSharedCarrierTargets(JsonArray carriers, JsonArray actions)
-                throws IOException {
-            Set<String> carrierFields = new LinkedHashSet<>();
-            for (JsonElement element : carriers) {
-                if (!element.isJsonObject()) continue;
-                JsonObject carrier = element.getAsJsonObject();
-                if (!"ACTIVATION_FIELD_RECEIVER".equals(
-                        optionalString(carrier, "sourceKind"))) {
-                    continue;
-                }
-                String owner = optionalString(carrier, "declaringClass");
-                String name = optionalString(carrier, "fieldName");
-                if (owner.isEmpty() || name.isEmpty()) {
-                    throw unsupported(carrier);
-                }
-                if (SharedFieldFlow.compilerSwitchDispatchField(name)) {
-                    continue;
-                }
-                FieldTarget target = new FieldTarget(owner, name);
-                String fieldKey = target.owner + "|" + target.name;
-                carrierFields.add(fieldKey);
-                sharedCarrierFields.add(fieldKey);
-            }
-            for (JsonElement element : actions) {
-                if (!element.isJsonObject()) continue;
-                JsonObject action = element.getAsJsonObject();
-                FieldTarget target = concolicFieldTarget(action);
-                if (target == null) continue;
-                String fieldKey = target.owner + "|" + target.name;
-                if (!carrierFields.contains(fieldKey)) continue;
-                addSharedCarrierAccessSite(
-                        optionalString(action, "staticAccessSiteId"), fieldKey);
-                addSharedCarrierAccessSite(
-                        optionalString(action, "siteId"), fieldKey);
-                for (JsonElement site : JsonFields.array(
-                        action, "accessSites")) {
-                    if (site.isJsonPrimitive()) {
-                        addSharedCarrierAccessSite(
-                                site.getAsString(), fieldKey);
-                    }
-                }
-            }
-        }
-
-        /**
          * Registers the write sites the plan selected for observation.
          *
          * <p>A cell the VM retains by value has no version log until
@@ -693,23 +596,6 @@ public final class ConcolicInstrumentationSelections {
         /** The write sites this campaign observes, deduplicated. */
         Collection<ObservedWriteTarget> observedWrites() {
             return observedWritesBySite.values();
-        }
-
-        private void addSharedCarrierAccessSite(String encoded,
-                                                String fieldKey) {
-            Matcher site = SITE_ID.matcher(stringValue(encoded).trim());
-            if (!site.matches()) return;
-            int unit;
-            try {
-                unit = Integer.parseInt(site.group(2));
-            } catch (RuntimeException malformed) {
-                return;
-            }
-            sharedCarrierFieldsBySite
-                    .computeIfAbsent(site.group(1),
-                            ignored -> new LinkedHashMap<>())
-                    .computeIfAbsent(unit, ignored -> new LinkedHashSet<>())
-                    .add(fieldKey);
         }
 
         private void addLocal(String method, String local, int unitIndex) {
@@ -771,55 +657,7 @@ public final class ConcolicInstrumentationSelections {
         boolean isEmpty() {
             return localsByMethod.isEmpty() && methodArguments.isEmpty()
                     && fields.isEmpty()
-                    && sharedCarrierFields.isEmpty()
-                    && sharedCarrierFieldsBySite.isEmpty()
                     && accessorCallsBySite.isEmpty();
-        }
-
-        Set<String> sharedCarrierAccessMethods() {
-            return sharedCarrierFieldsBySite.keySet();
-        }
-
-        boolean matchesWriteCarrier(SootFieldRef field) {
-            return matchesSelectedField(field, true, "", -1);
-        }
-
-        /** Classes which declare a selected shared-state carrier. */
-        Set<String> sharedCarrierDeclaringClasses() {
-            Set<String> classes = new LinkedHashSet<>();
-            for (String field : sharedCarrierFields) {
-                int separator = field.indexOf('|');
-                if (separator > 0) classes.add(field.substring(0, separator));
-            }
-            return classes;
-        }
-
-        /**
-         * The selected primitive carrier mutated by one VM-modeled Atomic
-         * call, or {@code ""} when this campaign did not declare it.
-         *
-         * <p>Atomic RMWs execute inside the JDK and have no application
-         * {@code putfield} for the ordinary carrier hook to observe.  The
-         * caller must therefore select the exact Atomic receiver before the
-         * invocation.  Returning a field only for a declared carrier keeps
-         * unselected application atomics off the symbolic heap.</p>
-         */
-        String selectedAtomicWriteCarrier(SootMethodRef method) {
-            return selectedAtomicWriteCarrier(method == null
-                    ? "" : method.getSignature());
-        }
-
-        /** String seam used by the small decoder-alignment test. */
-        String selectedAtomicWriteCarrier(String methodSignature) {
-            String field = ATOMIC_INTEGER_MUTATIONS.contains(methodSignature)
-                    ? ATOMIC_INTEGER_VALUE
-                    : ATOMIC_LONG_MUTATIONS.contains(methodSignature)
-                    ? ATOMIC_LONG_VALUE : "";
-            DeclaredField declaration = FieldPathSpec.declaredField(field);
-            if (declaration == null) return "";
-            String fieldKey = declaration.owner() + "|"
-                    + declaration.name();
-            return sharedCarrierFields.contains(fieldKey) ? field : "";
         }
 
         Set<String> localMethods() {
@@ -856,12 +694,6 @@ public final class ConcolicInstrumentationSelections {
         }
 
         boolean matches(String method, int unitIndex, SootFieldRef field) {
-            return matchesSelectedField(field, false, method, unitIndex);
-        }
-
-        private boolean matchesSelectedField(SootFieldRef field,
-                                             boolean writeCarrier,
-                                             String method, int unitIndex) {
             if (field == null) {
                 return false;
             }
@@ -872,15 +704,8 @@ public final class ConcolicInstrumentationSelections {
                     : stringValue(declaringClass.getName());
             String fieldName = stringValue(declared == null
                     ? field.name() : declared.getName());
-            String fieldKey = owner + "|" + fieldName;
-            Map<Integer, Set<String>> carrierSites = writeCarrier ? null
-                    : sharedCarrierFieldsBySite.get(method);
-            boolean exactCarrierRead = carrierSites != null
-                    && carrierSites.getOrDefault(unitIndex,
-                    Collections.emptySet()).contains(fieldKey);
-            boolean sharedCarrier = sharedCarrierFields.contains(fieldKey);
             boolean namedTarget = namedFieldTarget(owner, fieldName);
-            if (!writeCarrier && field.isStatic()) {
+            if (field.isStatic()) {
                 // A getstatic has no receiver object, so MATERIALIZE_FIELD
                 // cannot stand at it: the only static read this pipeline can
                 // materialize is the primitive round trip on the local that
@@ -889,10 +714,9 @@ public final class ConcolicInstrumentationSelections {
                 // instrumentConsumedStaticPrimitiveFieldRead a site it could
                 // only refuse, and the refusal killed the campaign -- it is
                 // how a byte[] constant read reached the instrumenter at all.
-                return field.type() instanceof PrimType
-                        && (exactCarrierRead || namedTarget);
+                return field.type() instanceof PrimType && namedTarget;
             }
-            return sharedCarrier || namedTarget;
+            return namedTarget;
         }
 
         /** Whether a plan action named this field, ignoring its shape. */
@@ -931,14 +755,7 @@ public final class ConcolicInstrumentationSelections {
                     : stringValue(declaringClass.getName());
             String fieldName = stringValue(declared == null
                     ? field.name() : declared.getName());
-            String fieldKey = owner + "|" + fieldName;
-            Map<Integer, Set<String>> carrierSites =
-                    sharedCarrierFieldsBySite.get(method);
-            boolean selected = sharedCarrierFields.contains(fieldKey)
-                    || namedFieldTarget(owner, fieldName)
-                    || (carrierSites != null && carrierSites.getOrDefault(
-                    unitIndex, Collections.emptySet()).contains(fieldKey));
-            if (!selected) {
+            if (!namedFieldTarget(owner, fieldName)) {
                 return "";
             }
             return declared != null && declared.isFinal()
@@ -958,10 +775,6 @@ public final class ConcolicInstrumentationSelections {
             mergeNested(localsByMethod, other.localsByMethod);
             mergeSets(methodArguments, other.methodArguments);
             fields.putAll(other.fields);
-            sharedCarrierFields.addAll(other.sharedCarrierFields);
-            mergeNested(sharedCarrierFieldsBySite,
-                    other.sharedCarrierFieldsBySite);
-            associativeContainerState |= other.associativeContainerState;
             for (ObservedWriteTarget target
                     : other.observedWritesBySite.values()) {
                 ObservedWriteTarget held =
@@ -998,10 +811,6 @@ public final class ConcolicInstrumentationSelections {
                     SiteId.of(method, unitIndex));
         }
 
-        boolean associativeContainerState() {
-            return associativeContainerState;
-        }
-
         /** Unique local-definition sites this campaign named. */
         int localSiteCount() {
             int sites = 0;
@@ -1020,15 +829,7 @@ public final class ConcolicInstrumentationSelections {
 
         /** Unique declared fields this campaign named. */
         int fieldCount() {
-            Set<String> selected = new LinkedHashSet<>(fields.keySet());
-            selected.addAll(sharedCarrierFields);
-            for (Map<Integer, Set<String>> sites
-                    : sharedCarrierFieldsBySite.values()) {
-                for (Set<String> fieldsAtSite : sites.values()) {
-                    selected.addAll(fieldsAtSite);
-                }
-            }
-            return selected.size();
+            return fields.size();
         }
     }
 

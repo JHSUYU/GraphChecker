@@ -292,33 +292,52 @@ final class D3RowPublication {
                             + " read: " + optionalString(row, "portId"));
             return;
         }
-        // One row per read EVENT.  Each declared port's mint is its own
-        // read -- two calls of a declared accessor in one occurrence are two
-        // values, and a `<Timer: long now()>.return` cell proves it -- so
-        // the key is the event, not the cell: the occurrence, the location
-        // and the event this mint is.  Keying it on the cell alone would
-        // discard the second port's statement; keying it on the PLANNED
-        // occurrenceId (what it did before) let one event through twice,
-        // because two mints in one activation carry different planned ids,
-        // and the anchor stated INSTANCE/2#24 twice in every session of the
-        // P2f' corpus (seed seq 242/308, focused 185/209 and 208/210).
+        // ONE ROW PER MINT, and a mint's identity in a session is the
+        // version it installed: the VM's version counter hands out one
+        // number per store, so two mints can never share it and one mint
+        // can never have two.  Nothing coarser will do.  The occurrence is
+        // not an identity here -- the anchor region's two FSImageSaver
+        // activations share one OccurrenceAddress (the thread-start frame
+        // carries no loop iteration, P2h), each mints the declared counter
+        // once, and keying on (occurrence, location, read-event ordinal)
+        // called the second activation's mint a duplicate of the first:
+        // its version was then stated by no row at all and every read that
+        // observed it lost its join (17960 corpus 4404a4af: v138 stated,
+        // v149 not, `ADMISSION_GAP: 2 paths reached the anchor and all were
+        // refused: INSTANCE/1#24@149`).  Two ports of one activation are
+        // two mints for the same reason.  A second row for the SAME
+        // mintVersion is the one real duplicate, and it is named.
         long event = optionalLongInteger(row, "eventSeq", 0L);
-        if (!D3Runtime.claimEvent("placeholder", occurrence.id() + "#"
-                + locationKey + "#" + event)) {
+        long mintVersion = installedAt == null ? ReadRow.UNKNOWN_VERSION
+                : Long.parseLong(installedAt[1]);
+        // The key is the mint's own store: (location, version), which is
+        // exactly the key #mintStores and #mintedLocations already suppress
+        // and state it by, so the row, the suppression and the composer's
+        // ReadFrom@(L, v) resolution all name one thing.  Version alone
+        // would do in a real session -- the VM hands out one version per
+        // store from the session counter it shares with read events -- and
+        // the location only refines it, never merges two mints of one
+        // location, which is the case this key exists for.
+        // A mint the VM stated no version for has no store to name, so it
+        // answers to the symbol it installed -- its only other name.  Such
+        // a row is already a stated failure downstream (contract v2.4
+        // invariant 7: a placeholder states the version it mints), so
+        // nothing is hidden by keying it.
+        String mintKey = mintVersion < 0L ? "symbol#" + safe(minted)
+                : locationKey + "#" + mintVersion;
+        if (!D3Runtime.claimEvent("placeholder", mintKey)) {
             D3Runtime.gap(GapKind.DECLARATION_MISSING, GapClass.DIAGNOSTIC,
-                    symbol, "this occurrence already states read event "
-                            + event + " of " + locationKey
-                            + ", so this mint publishes no second row for"
-                            + " it: " + optionalString(row, "portId"));
+                    symbol, "this session already states the mint "
+                            + mintKey + ", so this row states no second"
+                            + " value for it: "
+                            + optionalString(row, "portId"));
             return;
         }
         D3Runtime.read(occurrence, event,
                 Endpoint.stateSite(locationKey, "PLACEHOLDER", 0, false),
                 location, observed, minted,
                 declared, literal(value),
-                optionalString(row, "siteIndex"),
-                installedAt == null ? ReadRow.UNKNOWN_VERSION
-                        : Long.parseLong(installedAt[1]));
+                optionalString(row, "siteIndex"), mintVersion);
     }
 
     /**

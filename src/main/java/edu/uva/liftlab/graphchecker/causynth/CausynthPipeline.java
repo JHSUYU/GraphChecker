@@ -434,12 +434,6 @@ public final class CausynthPipeline {
                 }
                 loopBound = plan.loopBound();
             }
-            // A selected output field may first be written by a constructor or
-            // setter below the region root.  Discover those concrete writers
-            // from the declaration itself; the existing pre-putfield hook then
-            // registers the exact fresh receiver before its first value.
-            writerMethods.addAll(selectedCarrierWriterMethods(
-                    materializations));
         }
 
         private SootMethod declaredReplayEntry(InstrumentationPlan plan) {
@@ -578,35 +572,6 @@ public final class CausynthPipeline {
                     materializations.methodArgumentCount(),
                     materializations.accessorCalls().size(), boundedBackedges);
         }
-    }
-
-    /** Concrete methods declared by carrier owners which write those fields. */
-    static Set<String> selectedCarrierWriterMethods(
-            ConcolicMaterializationSelection selection) {
-        Set<String> methods = new LinkedHashSet<>();
-        for (String className : selection.sharedCarrierDeclaringClasses()) {
-            SootClass owner = Scene.v().getSootClassUnsafe(className, false);
-            if (owner == null || !owner.isApplicationClass()) continue;
-            for (SootMethod method : owner.getMethods()) {
-                if (!method.isConcrete()) continue;
-                try {
-                    for (Unit unit : method.retrieveActiveBody().getUnits()) {
-                        if (!(unit instanceof AssignStmt)) continue;
-                        Value left = ((AssignStmt) unit).getLeftOp();
-                        if (left instanceof InstanceFieldRef
-                                && selection.matchesWriteCarrier(
-                                ((InstanceFieldRef) left).getFieldRef())) {
-                            methods.add(method.getSignature());
-                            break;
-                        }
-                    }
-                } catch (RuntimeException unavailable) {
-                    LOG.debug("Skipping unavailable selected carrier writer {}",
-                            method.getSignature(), unavailable);
-                }
-            }
-        }
-        return methods;
     }
 
     /**
@@ -1979,21 +1944,6 @@ public final class CausynthPipeline {
                     insertBeforeSequence(body, stmt, before);
                 }
 
-                InvokeExpr invoke = stmt.containsInvokeExpr()
-                        ? stmt.getInvokeExpr() : null;
-                if (associativeReadInvoke(invoke)
-                        && (selection.selectedSite(signature, unitIndex)
-                        || selection.associativeContainerState())) {
-                    InstanceInvokeExpr read = (InstanceInvokeExpr) invoke;
-                    List<Unit> before = new ArrayList<>();
-                    Value container = objectArg(body, read.getBase(), before);
-                    Value key = objectArg(body, read.getArg(0), before);
-                    emit(before,
-                            refs.ref(Hook.MATERIALIZE_ASSOCIATIVE_READ),
-                            container, key);
-                    insertBeforeSequence(body, stmt, before);
-                }
-
                 if (!(stmt instanceof AssignStmt)) {
                     continue;
                 }
@@ -2032,25 +1982,6 @@ public final class CausynthPipeline {
                 }
             }
         });
-    }
-
-    private static boolean associativeReadInvoke(InvokeExpr invoke) {
-        if (!(invoke instanceof InstanceInvokeExpr)
-                || !"get".equals(invoke.getMethodRef().name())
-                || invoke.getArgCount() != 1
-                || !"java.lang.Object".equals(invoke.getMethodRef()
-                .parameterType(0).toString())
-                || !"java.lang.Object".equals(invoke.getMethodRef()
-                .returnType().toString())) {
-            return false;
-        }
-        Type receiverType = ((InstanceInvokeExpr) invoke).getBase().getType();
-        try {
-            return Scene.v().getOrMakeFastHierarchy().canStoreType(
-                    receiverType, RefType.v("java.util.Map"));
-        } catch (RuntimeException incompleteHierarchy) {
-            return "java.util.Map".equals(receiverType.toString());
-        }
     }
 
     private void instrumentConcolicMethodArguments(
@@ -3407,7 +3338,6 @@ public final class CausynthPipeline {
         MATERIALIZE_PRIMITIVE,
         MATERIALIZE_STATIC_PRIMITIVE_FIELD,
         MATERIALIZE_FIELD,
-        MATERIALIZE_ASSOCIATIVE_READ,
         EXPORT_COMMUNICATION_LEAF,
         ATTACH_COMMUNICATION_LEAF,
         PUSH_OUTBOUND_MESSAGE_FRAME,
@@ -3566,9 +3496,6 @@ public final class CausynthPipeline {
                     .add(Hook.MATERIALIZE_FIELD, runtime, "materializeField",
                             VoidType.v(), string, IntType.v(), object, string,
                             string)
-                    .add(Hook.MATERIALIZE_ASSOCIATIVE_READ, runtime,
-                            "materializeAssociativeRead", VoidType.v(),
-                            object, object)
                     .add(Hook.EXPORT_COMMUNICATION_LEAF, runtime,
                             "exportCommunicationLeaf", VoidType.v(), string,
                             object, string, string)

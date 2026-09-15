@@ -41,10 +41,11 @@ minted once, at its hook -- which is why neither field is listed in
 `<org.apache.hadoop.util.Timer: long now()>.return`, has no hook and is still
 declared there -- by the two static sites it is read at,
 `BlockTokenSecretManager.updateKeys()` and `.addKeys(...)`, which PLAN resolves
-to whichever regions cover them. The key IDs observed on the wire and `allKeys`
-are carriers, not roots of their own: they carry the NameNode's minted
-expressions, and the file narrows which inputs may *mint*, never which are
-symbolized.
+to whichever regions cover them. The key IDs observed on the wire are
+declared cut ports, not roots of their own: they are tracked and mint
+nothing, because `attachCommunicationLeaf` installs the NameNode's own
+propagated expression at the consumer. `allKeys` is not modelled at region
+entry: the map carries whatever expression a root-derived put left in it.
 
 ## Target occurrence
 

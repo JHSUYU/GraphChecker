@@ -2,6 +2,7 @@ package edu.uva.liftlab.graphchecker.d3.plan;
 
 
 import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import org.junit.Rule;
@@ -12,11 +13,9 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.AbstractMap;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
-import java.util.Map;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -26,10 +25,11 @@ import static org.junit.Assert.fail;
 /**
  * What an experiment's {@code symbolic-inputs.jsonl} governs.
  *
- * <p>TRACK -- symbolize the read so the VM publishes its candidates -- is
- * the default for every carrier.  MINT belongs to three authorities only: a
- * fault marker in the workload's source, a field a hook owns, and a name
- * this file declares.  The file narrows mint, never tracking.</p>
+ * <p>Everything: a read is symbolic only where a declaration says so -- a
+ * name this file declares, a fault marker in the workload's own source, a
+ * field a hook owns, or a wire cut port the communication catalog declared.
+ * Every other proposed read is concrete, and the declared cell's write
+ * sites are the only stores the replay observes.</p>
  */
 public class SymbolicRootPolicyTest {
 
@@ -50,13 +50,13 @@ public class SymbolicRootPolicyTest {
     public final TemporaryFolder folder = new TemporaryFolder();
 
     /**
-     * A declared cell is stamped so the replay knows the row was named by hand
-     * rather than proposed, while a declared wire-flow cut port hands over a
-     * producer expression: it is tracked and mints no root, so refusing it
-     * would only cut propagation.
+     * A declared cell is stamped so the replay knows the row was named by
+     * hand rather than proposed; an undeclared read is concrete by name; and
+     * a declared wire-flow cut port hands over a producer expression: it is
+     * tracked and mints no root, so refusing it would only cut propagation.
      */
     @Test
-    public void theFileGovernsMintAndNeverTracking() throws Exception {
+    public void onlyADeclarationMakesAReadSymbolic() throws Exception {
         ConcolicScheduler.SymbolicInputSelection selection = read(
                 "{\"regionId\":\"" + NN + "\",\"cells\":[\"" + CLOCK_CELL
                         + "\"]}");
@@ -64,17 +64,49 @@ public class SymbolicRootPolicyTest {
 
         assertTrue("the declared clock carries the mint marker",
                 selected.get(0).getAsJsonObject().get(ROOT).getAsBoolean());
-        assertFalse("a tracked carrier never carries it",
-                selected.get(1).getAsJsonObject().has(ROOT));
-        assertFalse("nor does the exempt fault marker, whose mint the "
-                        + "runtime finds by sourceKind",
+        assertEquals("a read no declaration names is concrete by name",
+                "CONCRETE", member(selected, 1, "mode"));
+        assertEquals(ConcolicScheduler.SymbolicInputSelection.UNDECLARED,
+                member(selected, 1, "symbolicDemand"));
+        assertEquals("and the fault marker the workload wrote stays symbolic",
+                "SYMBOLIC", member(selected, 2, "mode"));
+        assertFalse("without the marker, whose mint the runtime finds by "
+                        + "sourceKind",
                 selected.get(2).getAsJsonObject().has(ROOT));
         JsonArray actions = proposals();
         actions.add(action("COMMUNICATION_SITE_PORT", "<C: int getKeyId()>#u2",
                 "<C: int getKeyId()>.return"));
         JsonObject cut = selection.select(DN, actions).get(3).getAsJsonObject();
         assertEquals("SYMBOLIC", cut.get("mode").getAsString());
-        assertFalse(cut.get("mintEligible").getAsBoolean());
+        assertFalse("a cut port is not a declared root", cut.has(ROOT));
+        assertEquals("tracked, and never mint-eligible",
+                "false|" + InputActionCatalog
+                        .DECLARED_COMMUNICATION_CUT_PORT,
+                verdictOf(selection, "<C: int getKeyId()>.return"));
+
+        // And the write side of a DECLARED cell: the VM retains a location
+        // by value, so the stores of a declared counter publish nothing
+        // until the location is observed, and the graph already names those
+        // stores as field_mutation edges carrying the callee that performed
+        // them.  Selection only -- which sites the replay observes.
+        JsonObject mutation = json("{\"kind\":\"field_mutation\","
+                + "\"transferKind\":\"HEAP_WRITE\",\"fromCell\":\""
+                + DELETE + "#u35\",\"toCell\":\"" + NUM_SNAPSHOTS
+                + "\",\"method\":\"" + DELETE + "\",\"siteId\":\""
+                + DELETE + "#u35\",\"unitIndex\":35,\"invoke\":\""
+                + DECREMENT + "\"}");
+        JsonArray sites = ConcolicScheduler.observedWriteSites(
+                Collections.singletonList(mutation),
+                Collections.singleton(ATOMIC_VALUE));
+        assertEquals("one write site of the declared cell", 1, sites.size());
+        assertEquals(DELETE + "#u35", member(sites, 0, "siteId"));
+        assertEquals(ATOMIC_VALUE, member(sites, 0, "cell"));
+        assertEquals("no declared cell, no observation", 0,
+                ConcolicScheduler.observedWriteSites(
+                        Collections.singletonList(mutation),
+                        Collections.singleton(KEY_ID)).size());
+        assertTrue("the declared cell is read off the declared action alone",
+                ConcolicScheduler.declaredInputCells(null).isEmpty());
 
         // A declaration names a VALUE, and the graph names one value once
         // per local it is copied into: the case knows the accessor's own
@@ -99,17 +131,41 @@ public class SymbolicRootPolicyTest {
     private static final String ACCESSOR_LOCAL =
             "<S: int getNumSnapshots()>::$i0";
 
-    /** One declaration of {@link #ACCESSOR_RETURN}, seeded over one graph. */
+    /** One declaration of {@link #ACCESSOR_RETURN}, resolved over one graph. */
     private ConcolicScheduler.SymbolicInputSelection renamed(JsonObject edge)
             throws IOException {
         ConcolicScheduler.SymbolicInputSelection selection = read(
                 "{\"regionId\":\"" + NN + "\",\"cells\":[\""
                         + ACCESSOR_RETURN + "\"]}");
-        selection.seedCarrierSlice(Collections.singletonList(edge),
-                Collections.<Map.Entry<String, JsonArray>>singletonList(
-                        new AbstractMap.SimpleImmutableEntry<>(NN,
-                                actions(accessorPort()))));
+        selection.resolveDeclaredNames(Collections.singletonList(edge));
         return selection;
+    }
+
+    /** {@code mintEligible|verdict} of the decision row naming one cell. */
+    private static String verdictOf(
+            ConcolicScheduler.SymbolicInputSelection selection, String cell) {
+        for (JsonElement element : selection.rootDecisions()) {
+            JsonObject row = element.getAsJsonObject();
+            if (cell.equals(row.get("cell").getAsString())) {
+                return row.get("mintEligible").getAsString() + "|"
+                        + row.get("verdict").getAsString();
+            }
+        }
+        return "";
+    }
+
+    /** The declared counter of hdfs-17960 and the store the graph names. */
+    private static final String ATOMIC_VALUE =
+            "<java.util.concurrent.atomic.AtomicInteger: int value>";
+    private static final String NUM_SNAPSHOTS =
+            "<S: java.util.concurrent.atomic.AtomicInteger numSnapshots>";
+    private static final String DECREMENT = "<java.util.concurrent.atomic"
+            + ".AtomicInteger: int getAndDecrement()>";
+    private static final String DELETE = "<S: void deleteSnapshot()>";
+
+    private static String member(JsonArray rows, int index, String name) {
+        JsonObject row = rows.get(index).getAsJsonObject();
+        return row.has(name) ? row.get(name).getAsString() : "";
     }
 
     private static JsonArray actions(JsonObject action) {

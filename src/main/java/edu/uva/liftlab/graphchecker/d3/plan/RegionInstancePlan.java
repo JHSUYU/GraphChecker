@@ -131,14 +131,6 @@ public final class RegionInstancePlan extends PlanRow {
             return runtimeDefinitionMethods;
         }
 
-        /**
-         * The shared locations the planner declared for this goal, which are
-         * the only ones the replay will select and version.
-         */
-        public JsonArray sharedCarriers() {
-            return array(encoded, ExecutionTask.SHARED_CARRIERS).deepCopy();
-        }
-
         public JsonArray symbolize() {
             return array(encoded, "symbolize").deepCopy();
         }
@@ -153,15 +145,6 @@ public final class RegionInstancePlan extends PlanRow {
 
         void writeTaskPayloadTo(JsonObject target) {
             target.addProperty("goalId", goalId());
-            // Carrier declarations are the planner's and only the replay can
-            // act on them.  An absent member stays absent: inventing one would
-            // version a location the target slice never asked about.
-            JsonArray carriers =
-                    array(encoded, ExecutionTask.SHARED_CARRIERS);
-            if (carriers.size() > 0) {
-                target.add(ExecutionTask.SHARED_CARRIERS,
-                        carriers.deepCopy());
-            }
         }
 
         private Set<String> decodeRuntimeDefinitionMethods() {
