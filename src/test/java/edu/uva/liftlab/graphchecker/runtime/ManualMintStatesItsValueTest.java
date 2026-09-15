@@ -351,6 +351,7 @@ public class ManualMintStatesItsValueTest {
         encoded.add("inputActions", new JsonArray());
         JsonObject loopBound = new JsonObject();
         loopBound.addProperty("schemaVersion", 1);
+        loopBound.addProperty("defaultBackedgeTraversals", 8);
         encoded.add("loopBound", loopBound);
         return encoded;
     }

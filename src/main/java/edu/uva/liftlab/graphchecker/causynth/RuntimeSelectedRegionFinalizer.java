@@ -3387,6 +3387,9 @@ public final class RuntimeSelectedRegionFinalizer {
         Map<String, Integer> retained = new LinkedHashMap<>();
         List<Map<String, Object>> bounded = new ArrayList<>();
         List<Map<String, Object>> resourceDefault = new ArrayList<>();
+        // The same number the campaign declared for an inherited loop
+        // bound: one activation-local access per body execution.
+        int accessDefault = LoopBoundPolicy.declaredDefault();
         String refusal = "";
         for (Map<String, Object> access : accesses) {
             String site = firstNonEmpty(text(access.get("staticAccessSiteId")),
@@ -3396,7 +3399,7 @@ public final class RuntimeSelectedRegionFinalizer {
             access.put("staticAccessSiteId", site);
             access.put("activationLocalStaticSiteOccurrence", occurrence);
             boolean withinDefault =
-                    occurrence <= LoopBoundPolicy.MAX_LOOP_BODY_ITERATIONS;
+                    occurrence <= accessDefault;
             if (withinDefault) resourceDefault.add(access);
             if (!withinDefault && !demand.required(port, access)) continue;
             int kept = retained.getOrDefault(site, 0) + 1;
@@ -3407,7 +3410,7 @@ public final class RuntimeSelectedRegionFinalizer {
                             + " demands more than " + MAX_RETAINED_SITE_ACCESSES
                             + " activation-local accesses, so this port keeps"
                             + " only the "
-                            + LoopBoundPolicy.MAX_LOOP_BODY_ITERATIONS
+                            + accessDefault
                             + "-access resource default and the accesses"
                             + " above it are invisible to every later stage";
                     planGap(gaps, GapKind.BOUND_INSUFFICIENT,

@@ -73,10 +73,24 @@ public final class LoopBoundPolicy {
     public static final String LOOP_CLASSIFIED_CONDITION_CONTROLLED =
             "STATIC_CONDITION_CONTROLLED_V1";
 
-    /** The executor's backedge ceiling for a loop no declaration narrows: a
-     *  resource limit, never a modeled {@code K_L}.  README {@code LOOP-1}
-     *  forbids a retained condition loop inheriting a core default. */
-    public static final int MAX_LOOP_BODY_ITERATIONS = 8;
+    /**
+     * The one declared key stating the backedge ceiling a retained loop the
+     * case did not narrow runs under.
+     *
+     * <p>It used to be a constant, {@code MAX_LOOP_BODY_ITERATIONS = 8},
+     * applied silently: on the accepted 17960 run 54 retained loops inherited
+     * it, which README {@code LOOP-1} forbids a retained condition loop doing.
+     * The number is now the case's own statement --
+     * {@code causynth_loop_default_bound} in its {@code workflow.properties},
+     * passed as this property by {@code run_engine.sh} -- and every inherited
+     * application is still published as the DIAGNOSTIC gap row the catalog
+     * raises ({@code INHERITED_K_L_<n>}).  A campaign that states no bound is
+     * refused by name rather than given one.</p>
+     */
+    public static final String DEFAULT_BOUND_PROPERTY =
+            "causynth.loop.default.bound";
+    /** Member stating the inherited bound one frozen contract was built on. */
+    private static final String DEFAULT_FIELD = "defaultBackedgeTraversals";
     /** What {@link #bodyBound(Object)} answers when nothing was declared. */
     public static final int NO_DECLARED_BOUND = 0;
     /** The largest {@code K_L} any loop may declare; a declaration above it is
@@ -96,7 +110,7 @@ public final class LoopBoundPolicy {
     /** Body entries one replay-path loop may run in one activation: the
      *  service loops a long-lived root spins between the slice's calls,
      *  where an unbounded count is what makes an activation endless.
-     *  Independent of {@link #MAX_LOOP_BODY_ITERATIONS}: that caps the path
+     *  Independent of {@link #declaredDefault()}: that caps the path
      *  space a solver reasons about, this caps the work one replay may do. */
     public static final int MAX_REPLAY_PATH_LOOP_BODIES = 32;
     private static final int SCHEMA_VERSION = 1;
@@ -114,10 +128,10 @@ public final class LoopBoundPolicy {
 
     private LoopBoundPolicy(int defaultBackedgeTraversals,
                             Map<String, Integer> declared) {
-        if (defaultBackedgeTraversals != MAX_LOOP_BODY_ITERATIONS) {
+        if (defaultBackedgeTraversals < 1) {
             throw new IllegalArgumentException(
-                    "the inherited loop body bound is fixed at "
-                            + MAX_LOOP_BODY_ITERATIONS + " iterations");
+                    "the inherited loop body bound must be at least one body "
+                            + "execution, not " + defaultBackedgeTraversals);
         }
         // Sorted, so one set of declarations has one identity whatever order
         // a producer walked its loops in (README section 1).
@@ -150,6 +164,32 @@ public final class LoopBoundPolicy {
         return new LoopBoundPolicy(maxTraversals, declared);
     }
 
+    /**
+     * The inherited bound this campaign declared.
+     *
+     * <p>Absent, blank or not a positive integer is refused by name: a
+     * campaign whose declaration did not arrive would model a prefix nobody
+     * stated and report nothing about it.</p>
+     */
+    public static int declaredDefault() {
+        String declared = System.getProperty(DEFAULT_BOUND_PROPERTY);
+        String value = declared == null ? "" : declared.trim();
+        int bound;
+        try {
+            bound = Integer.parseInt(value);
+        } catch (NumberFormatException malformed) {
+            throw new IllegalStateException("the campaign declared no -D"
+                    + DEFAULT_BOUND_PROPERTY + " (causynth_loop_default_bound)"
+                    + ", so no loop may inherit a bound: got \"" + value
+                    + "\"", malformed);
+        }
+        if (bound < 1) {
+            throw new IllegalStateException(DEFAULT_BOUND_PROPERTY
+                    + " must be at least one body execution, not " + bound);
+        }
+        return bound;
+    }
+
     public static LoopBoundPolicy decode(JsonObject owner) {
         JsonElement raw = owner == null ? null : owner.get(FIELD);
         if (raw == null || !raw.isJsonObject()) {
@@ -167,12 +207,14 @@ public final class LoopBoundPolicy {
             declared.put(entry.getKey(),
                     Integer.valueOf(optionalInteger(bounds, entry.getKey(), -1)));
         }
-        // The inherited bound is fixed at MAX_LOOP_BODY_ITERATIONS by the
-        // constructor, so a row never states it; only the declarations are
-        // contract.  The executor limit is derived from them here exactly as
-        // the encoder derived the value it stated, so the stated member is
-        // read by humans and never compared with its own derivation.
-        return new LoopBoundPolicy(MAX_LOOP_BODY_ITERATIONS, declared);
+        // The inherited bound the campaign declared travels IN the frozen
+        // contract, so a replay honours the number the plan was built on and
+        // needs no property of its own.  The executor limit is derived from
+        // the declarations here exactly as the encoder derived the value it
+        // stated, so the stated member is read by humans and never compared
+        // with its own derivation.
+        return new LoopBoundPolicy(
+                optionalInteger(encoded, DEFAULT_FIELD, 0), declared);
     }
 
     /** The backedge limit an unnarrowed loop runs under: derived, never
@@ -216,6 +258,7 @@ public final class LoopBoundPolicy {
     public JsonObject toJson() {
         JsonObject encoded = new JsonObject();
         encoded.addProperty("schemaVersion", SCHEMA_VERSION);
+        encoded.addProperty(DEFAULT_FIELD, defaultBackedgeTraversals);
         encoded.addProperty("maxBackedgeTraversals",
                 maxBackedgeTraversals);
         if (!declared.isEmpty()) {
@@ -255,9 +298,9 @@ public final class LoopBoundPolicy {
 
     /**
      * {@code K_L} from one retained loop's own declaration only.  Silence
-     * answers {@link #NO_DECLARED_BOUND} and never the core default: reading
-     * {@link #MAX_LOOP_BODY_ITERATIONS} out of an absent field is the step
-     * that turned an undeclared loop into an accepted one.
+     * answers {@link #NO_DECLARED_BOUND} and never the inherited bound:
+     * reading the campaign's default out of an absent field is the step that
+     * turned an undeclared loop into an accepted one.
      */
     public static int bodyBound(Object declared) {
         if (declared == null) return NO_DECLARED_BOUND;

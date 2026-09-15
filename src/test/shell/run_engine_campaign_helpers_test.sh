@@ -679,7 +679,12 @@ done
 # it names and EXPLORE flips at them -- so which file it is belongs to the
 # configuration a campaign publishes, and both readers take it from this one
 # key rather than each deriving a path.
-[[ "$(print_normalized_config | wc -l)" -eq 42 ]] \
+# 43: `causynth_loop_default_bound` joined it when the bound an unnarrowed
+# retained loop inherits stopped being a constant in LoopBoundPolicy.  It was
+# applied silently to 54 of hdfs-17960's retained loops, which README LOOP-1
+# forbids a retained condition loop doing, so the case states it and the
+# campaign publishes what it stated.
+[[ "$(print_normalized_config | wc -l)" -eq 43 ]] \
   || fail "config prints a different number of keys than it used to: \
 $(print_normalized_config | wc -l)"
 # CONFIG-2: the static scope map is ONE path, and both of its readers take it
@@ -871,6 +876,7 @@ stop_after_config() {
   trace_test=T
   causynth_loop_bounds="${stop_after_dir}/loop-bounds.jsonl"
   : >"${causynth_loop_bounds}"
+  causynth_loop_default_bound=8
   causynth_communication_mappings=""
   causynth_symbolic_inputs=""
   causynth_root_domains=""

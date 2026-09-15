@@ -1027,7 +1027,7 @@ final class RuntimeRegionPlanner {
         // README LOOP-1: a declared bound that happens to equal the inherited
         // default is still a declaration.
         return LoopBoundPolicy.cfgBackedges(
-                LoopBoundPolicy.MAX_LOOP_BODY_ITERATIONS, declared);
+                LoopBoundPolicy.declaredDefault(), declared);
     }
 
     /** In-memory planning entry point. {@code regionSource} and {@code

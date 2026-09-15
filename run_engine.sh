@@ -82,6 +82,13 @@ workflow_config_keys=(
   "causynth_process_dirs CAUSYNTH_PROCESS_DIRS krp -"
   "causynth_communication_mappings CAUSYNTH_COMMUNICATION_MAPPINGS krp -"
   "causynth_loop_bounds CAUSYNTH_LOOP_BOUNDS krp -"
+  # The backedge ceiling a retained loop the case did not narrow runs under.
+  # It used to be a constant in LoopBoundPolicy, applied silently to 54 of
+  # hdfs-17960's retained loops, which README LOOP-1 forbids a retained
+  # condition loop doing.  The case states it; every inherited application is
+  # still published as the catalog's DIAGNOSTIC gap row (INHERITED_K_L_<n>).
+  # No default here: a campaign that states none is refused by name.
+  "causynth_loop_default_bound CAUSYNTH_LOOP_DEFAULT_BOUND krp -"
   "causynth_symbolic_inputs CAUSYNTH_SYMBOLIC_INPUTS krp -"
   # CLOSURE-V2 SS4: the epoch's static scope map (write sites, export
   # sites, guard sets).  Two stages read it and both must read the SAME
@@ -378,6 +385,7 @@ run_java_main() {
     runtime_classpath="${runtime_classpath}:${project_classpath}"
   fi
   run_in_directory "${graphchecker_work_dir}" "${java_bin}" \
+    "-Dcausynth.loop.default.bound=${causynth_loop_default_bound}" \
     -cp "${runtime_classpath}" "${main_class}" "$@"
 }
 
@@ -403,7 +411,7 @@ require_positive_integer() {
 validate_config() {
   local key
   local missing=0
-  for key in project_repo project_module_dir project_classes_dir project_classpath causynth_output_dir causynth_cache_dir causynth_target_spec custom_jdk_home z3_bin workload_command trace_test causynth_loop_bounds; do
+  for key in project_repo project_module_dir project_classes_dir project_classpath causynth_output_dir causynth_cache_dir causynth_target_spec custom_jdk_home z3_bin workload_command trace_test causynth_loop_bounds causynth_loop_default_bound; do
     if [[ -z "${!key}" ]]; then
       echo "Missing workflow config value: ${key}" >&2
       missing=1
@@ -435,7 +443,8 @@ validate_config() {
   local key
   for key in solver_timeout_ms schedule_max_jobs \
       concolic_worker_count campaign_max_iterations \
-      region_path_max_waves compose_max_valuations; do
+      region_path_max_waves compose_max_valuations \
+      causynth_loop_default_bound; do
     require_positive_integer "${key}"
   done
   # The one stage a campaign may be asked to stop after.  Refused here rather
@@ -512,6 +521,7 @@ do_analyze() {
   require_file "loop body bound declarations" "${causynth_loop_bounds}"
   system_properties+=(
     "-Dcausynth.loop.bounds=${causynth_loop_bounds}"
+    "-Dcausynth.loop.default.bound=${causynth_loop_default_bound}"
   )
   if [[ -n "${CAUSYNTH_TRACE_MODE:-}" ]]; then
     system_properties+=(

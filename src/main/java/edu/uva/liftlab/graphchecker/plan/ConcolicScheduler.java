@@ -121,7 +121,7 @@ public final class ConcolicScheduler {
         Collections.sort(candidates, Candidate.ORDER);
 
         LoopBoundPolicy loopBound = declaredLoopBounds(
-                arguments.maxLoopIterations, loaded.regionPlans);
+                LoopBoundPolicy.declaredDefault(), loaded.regionPlans);
         Result result = new Result();
         for (Candidate candidate : candidates) {
             JsonArray edgeBindings = objectRows(
@@ -2326,7 +2326,6 @@ public final class ConcolicScheduler {
         public final String occurrenceId;
         public final String goalId;
         public final int maxJobs;
-        public final int maxLoopIterations;
         public final Path symbolicInputs;
         /** The occurrence of the annotated site the case declares, or "". */
         public final String targetOccurrence;
@@ -2337,7 +2336,7 @@ public final class ConcolicScheduler {
         private Arguments(Path regionPlan, Path refinedGraph,
                           Path outputDirectory, String regionId,
                           String occurrenceId, String goalId,
-                          int maxJobs, int maxLoopIterations,
+                          int maxJobs,
                           Path symbolicInputs, ClosureMode closureMode,
                           String targetOccurrence,
                           java.util.Set<String> retainRegions) {
@@ -2352,7 +2351,6 @@ public final class ConcolicScheduler {
             this.occurrenceId = safe(occurrenceId);
             this.goalId = safe(goalId);
             this.maxJobs = Math.max(1, maxJobs);
-            this.maxLoopIterations = maxLoopIterations;
             this.symbolicInputs = symbolicInputs;
             this.closureMode = closureMode;
             this.targetOccurrence = safe(targetOccurrence);
@@ -2361,7 +2359,7 @@ public final class ConcolicScheduler {
         public static Arguments parse(String[] args) {
             Map<String, String> values = parseArgs(args, "region-plan",
                     "refined-graph", "output-dir", "max-jobs",
-                    "symbolic-inputs", "max-loop-iterations",
+                    "symbolic-inputs",
                     "closure-mode", "target-occurrence");
             Path regionPlan = requiredPath(values, "region-plan");
             Path output = Paths.get(firstNonBlank(values.get("output-dir"),
@@ -2375,9 +2373,6 @@ public final class ConcolicScheduler {
             return new Arguments(regionPlan, refinedGraph,
                     output, "", "", "",
                     parseInt(values.get("max-jobs"), 1),
-                    positiveInt(values.get("max-loop-iterations"),
-                            LoopBoundPolicy.MAX_LOOP_BODY_ITERATIONS,
-                            "max-loop-iterations"),
                     symbolicInputs, closureMode,
                     values.get("target-occurrence"),
                     splitRegions(values.get("retain-regions")));
@@ -2435,7 +2430,7 @@ public final class ConcolicScheduler {
                 RuntimeWorkflowDiscovery.Selection selection) {
             return new Arguments(regionPlan, refinedGraph, outputDirectory,
                     selection.regionId, selection.occurrenceId,
-                    selection.goalId, 1, maxLoopIterations,
+                    selection.goalId, 1,
                     symbolicInputs, closureMode, targetOccurrence,
                     retainRegions);
         }

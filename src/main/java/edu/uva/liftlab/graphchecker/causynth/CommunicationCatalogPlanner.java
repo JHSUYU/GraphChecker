@@ -123,7 +123,7 @@ final class CommunicationCatalogPlanner {
                         GapKind.BOUNDED_LOOP_BODY_BOUND_UNDECLARED,
                         GapClass.DIAGNOSTIC,
                         "INHERITED_K_L_"
-                                + LoopBoundPolicy.MAX_LOOP_BODY_ITERATIONS,
+                                + LoopBoundPolicy.declaredDefault(),
                         method, loopSiteId, controlSites.toString()));
             } else if (fixedCount && declaredBound == 0) {
                 // An array-indexed for was exempt from the row above and
