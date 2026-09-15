@@ -1767,6 +1767,39 @@ campaign_import_session() {
   require_nonempty "replay session census" "${census}"
   campaign_log "sessions: ${count}, rows: $(jq -r -s '[.[].rows] | add // 0' \
     "${census}")"
+  campaign_import_gate "${iteration_dir}" "${iteration_id}"
+}
+
+# The row contract, checked once, where every row passes through.
+#
+# A defect in a row is not one stage's problem.  17960 lost two campaigns to
+# rows that EXPLORE and COMPOSE each read as valid -- a decision whose
+# `outcome` was the complement of its term's truth value, and a focused
+# session that published rows with an empty expression table -- and each stage
+# that met one reported something later and elsewhere.  d3.contract.
+# RowInvariants states the contract's own sentences, and the gate runs them
+# here: a BLOCKING violation stops the campaign at IMPORT, naming the row, and
+# a DIAGNOSTIC one is recorded and the campaign goes on.
+#
+# Append-only, into the campaign's own gap file: a gap row a later stage
+# overwrites was never evidence.
+campaign_import_gate() {
+  local iteration_dir=$1 iteration_id=$2
+  local gaps="${iteration_dir}/campaign_gaps.jsonl"
+  local summary="${iteration_dir}/import_gate.json"
+  local blocking violations first
+  run_java_main edu.uva.liftlab.graphchecker.d3.contract.ImportGateMain \
+    --sessions "${iteration_dir}/sessions" \
+    --out "${gaps}" \
+    --topology-epoch "${iteration_id}" >"${summary}"
+  require_nonempty "import gate summary" "${summary}"
+  violations=$(jq -er '.violations' "${summary}")
+  blocking=$(jq -er '.blocking' "${summary}")
+  first=$(jq -r '.firstBlockingSubject // ""' "${summary}")
+  campaign_log "import gate: ${violations} row invariant violation(s), \
+${blocking} blocking"
+  [[ "${blocking}" -eq 0 ]] || campaign_fail IMPORT ImportGate "${gaps}" \
+    "${blocking} row invariants violated: ${first}"
 }
 
 

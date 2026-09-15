@@ -906,4 +906,47 @@ $(tr '\n' ' ' <"${stop_after_dir}/labels-full.tsv")"
   || fail "an unset campaign_stop_after did not run through EMIT: \
 $(tr '\n' ' ' <"${stop_after_dir}/labels-full.tsv")"
 
+# IMPORT-GATE: the row contract stops the campaign at IMPORT, or records.
+#
+# The gate's own rules are checked in D3ContractTest; what is checked here is
+# the control flow the stage wraps around them: a BLOCKING count fails the
+# stage naming the first subject, a DIAGNOSTIC-only run goes on, and either
+# way the gap file the gate appended is the artifact the failure names.
+gate_dir="${test_tmp}/import-gate"
+mkdir -p "${gate_dir}/sessions"
+# Stands in for the gate JVM: prints the summary the stage reads and appends
+# to the campaign gap file, exactly as ImportGateMain does.
+gate_stub() {
+  printf '{"violations":%s,"blocking":%s,"firstBlockingSubject":"%s"}\n' \
+    "$1" "$2" "$3"
+  printf '{"schemaVersion":1,"kind":"GAP_ROW","gapClass":"%s"}\n' "$4" \
+    >>"${gate_dir}/campaign_gaps.jsonl"
+}
+(
+  run_java_main() { gate_stub 3 0 "" DIAGNOSTIC; }
+  campaign_import_gate "${gate_dir}" iteration-0000 >/dev/null
+) || fail "a gate with no blocking violation failed the campaign"
+[[ "$(wc -l <"${gate_dir}/campaign_gaps.jsonl")" -eq 1 ]] \
+  || fail "the gate's diagnostic row was not appended"
+(
+  run_java_main() {
+    gate_stub 4 2 "decisions.jsonl seq=88 field=outcome" BLOCKING
+  }
+  campaign_import_gate "${gate_dir}" iteration-0000 >/dev/null
+) 2>"${gate_dir}/error.log" \
+  && fail "a blocking row invariant did not fail the campaign"
+grep -q 'stage=IMPORT' "${gate_dir}/error.log" \
+  || fail "the gate's failure is not attributed to IMPORT: \
+$(cat "${gate_dir}/error.log")"
+grep -q 'component=ImportGate' "${gate_dir}/error.log" \
+  || fail "the gate's failure names no component"
+grep -q '2 row invariants violated: decisions.jsonl seq=88 field=outcome' \
+  "${gate_dir}/error.log" \
+  || fail "the gate's failure does not name the first blocking subject: \
+$(cat "${gate_dir}/error.log")"
+grep -q "artifact=${gate_dir}/campaign_gaps.jsonl" "${gate_dir}/error.log" \
+  || fail "the gate's failure does not name the gap file it appended"
+[[ "$(wc -l <"${gate_dir}/campaign_gaps.jsonl")" -eq 2 ]] \
+  || fail "the gate's gap file is not append-only"
+
 echo "run_engine campaign helper tests passed"
