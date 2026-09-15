@@ -790,16 +790,24 @@ public final class D3Runtime {
     }
 
     /**
-     * The rendered site index of one event the VM logged, or {@code ""}.
+     * The rendered site index of one event the VM logged, or null.
      *
      * <p>{@code activationKey} is the {@code regionEnterEventId} the logged
      * event states and {@code eventId} its version id or read event id; both
      * are the VM's own statements, and the frames are the journal's
-     * (FrameJournal).  An empty answer is an event this run cannot place.</p>
+     * (FrameJournal).</p>
+     *
+     * <p>Null is an event this run cannot place; {@code ""} is an event the
+     * journal DID place on no frames at all, which is where most stores are
+     * -- the region's own method, with no woven call between its entry and
+     * the store.  The two are different answers and the row would read the
+     * same for both, so the caller gets to tell them apart: an index that is
+     * empty because the event stood at the region entry is stated, and only
+     * an unplaced event is a gap.</p>
      */
     public static String framesOf(long activationKey, long eventId) {
         ExecutionIndex index = FrameJournal.framesAt(activationKey, eventId);
-        return index == null ? "" : index.render();
+        return index == null ? null : index.render();
     }
 
     /**

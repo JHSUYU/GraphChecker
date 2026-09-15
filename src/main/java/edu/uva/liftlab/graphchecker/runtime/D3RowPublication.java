@@ -688,7 +688,10 @@ final class D3RowPublication {
             activation = record == null ? -1L : record.activation;
         }
         String frames = D3Runtime.framesOf(activation, eventId);
-        if (!frames.isEmpty()) return frames;
+        // "" is placed on no frames -- the store or read is in the region's
+        // own method -- and the bci of the site is then what distinguishes
+        // it.  Only an event the journal could not place is a gap.
+        if (frames != null) return frames;
         D3Runtime.gap(GapKind.LINEAGE_LOST, GapClass.DIAGNOSTIC,
                 locationKey + "#" + eventId,
                 "this " + (write ? "version" : "read")
