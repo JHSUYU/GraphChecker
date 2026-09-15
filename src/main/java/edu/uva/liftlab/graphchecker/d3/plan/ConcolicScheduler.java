@@ -60,14 +60,6 @@ import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.optionalString;
 /** Builds graph-directed concolic jobs from static regions and concrete
  * runtime-selected region instance plans. */
 public final class ConcolicScheduler {
-    /**
-     * The member a branch query publishes a concretely observed target under.
-     *
-     * <p>The anchor took its arm without a symbolic decision, so the path set
-     * states the arm rather than a predicate over it.</p>
-     */
-    static final String TARGET_CONCRETE_OBSERVATION =
-            "targetConcreteObservation";
     /** Telemetry artifact naming what the selection file refused. */
     static final String ROOT_POLICY_ARTIFACT = "symbolic_root_policy.jsonl";
     /** Row kind of {@link #ROOT_POLICY_ARTIFACT}. */

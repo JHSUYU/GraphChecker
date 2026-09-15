@@ -1361,8 +1361,7 @@ final class ConcolicTaskPlan {
                         publish.fieldSignature())
                         || !assignment.matchesConfiguredSource(
                         publish.phaseId(), publish.sourceId(),
-                        publish.fieldSignature())
-                        || assignment.hasContainerTarget()) {
+                        publish.fieldSignature())) {
                     throw new IllegalArgumentException(
                             "model assignment names an undeclared or "
                                     + "unsupported configured source in "
@@ -1387,7 +1386,6 @@ final class ConcolicTaskPlan {
         private boolean answersHandoffPhase(ModelAssignment assignment) {
             String phaseId = assignment.configuredSourcePhaseId;
             if (!ConcolicRegionRuntime.isHandoffMintKey(phaseId)
-                    || assignment.hasContainerTarget()
                     || !assignment.matchesConfiguredSource(phaseId, phaseId,
                     "")) {
                 return false;

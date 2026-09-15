@@ -469,16 +469,6 @@ public final class SharedExpressionTable {
             definitions.putIfAbsent(anchor, definition);
         }
 
-        private void requireReferencesDefined() {
-            for (String anchor : references) {
-                requireAnchor(anchor);
-                if (!definitions.containsKey(anchor)) {
-                    throw new IllegalArgumentException(
-                            "missing shared expression definition: " + anchor);
-                }
-            }
-        }
-
         private void validateReferences() {
             Set<String> visited = new LinkedHashSet<>();
             Set<String> active = new LinkedHashSet<>();
@@ -486,11 +476,6 @@ public final class SharedExpressionTable {
                 validateReachable(anchor, visited, active);
             }
             reachable = visited;
-        }
-
-        private void validateReference(String anchor) {
-            validateReachable(anchor, validatedReferences,
-                    new LinkedHashSet<String>());
         }
 
         private void validateDefinitions() {

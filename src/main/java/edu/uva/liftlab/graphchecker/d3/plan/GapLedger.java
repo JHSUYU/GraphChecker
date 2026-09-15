@@ -469,10 +469,6 @@ public final class GapLedger {
                         + " retained selection moves -- the root itself is in"
                         + " the plan, so no chain link is missing and the"
                         + " site form is the thing to rewrite");
-        blocking(plan, "SYMBOLIC_CONTAINER_SNAPSHOT_CAPACITY_REACHED",
-                "an accessor-return stream hit the container snapshot"
-                        + " capacity, so later reads of that container were"
-                        + " never minted as ports");
 
         // ------------------------------------------------------------------
         // The flip wave.  Three admission codes above are written for the

@@ -36,7 +36,6 @@ public final class VmExpressionIr {
     static final String FIELD_READ = "FIELD_READ";
     static final String BOUNDARY_KIND = "boundaryKind";
     static final String EVENT_ID = "eventId";
-    static final String FAMILY_KEY = "familyKey";
     static final String TOPOLOGY_EPOCH = "topologyEpoch";
     public static final String EXPRESSION = "expression";
 

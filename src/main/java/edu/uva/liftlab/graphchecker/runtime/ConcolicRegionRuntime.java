@@ -164,8 +164,6 @@ public final class ConcolicRegionRuntime {
      * failure: the occurrence set is bounded, not silently truncated, and the
      * composer reads this marker to know so.
      */
-    static final String SKIP_LOOP_OCCURRENCE_BEYOND_BOUND =
-            "LOOP_OCCURRENCE_BEYOND_BOUND";
     static final String SKIP_LOOP_OCCURRENCES_BOUNDED =
             "LOOP_OCCURRENCES_BOUNDED";
     static final String SKIP_TERMINAL_NEVER_REACHED =
@@ -1425,21 +1423,6 @@ public final class ConcolicRegionRuntime {
                 }
                 String leafFieldSignature = exactFieldSignature(exactField);
                 Object value = exactField.get(leafOwner);
-                boolean assignmentFailed = false;
-                for (ModelAssignment assignment
-                        : active.fieldAssignments(action)) {
-                    if (!assignment.hasContainerTarget()) continue;
-                    if (!assignment.validContainerTarget()
-                            || !writeContainerTarget(value, assignment)) {
-                        active.addUnresolvedOnce(action.symbol
-                                + ": solver container model could not be "
-                                + "materialized");
-                        assignmentFailed = true;
-                        break;
-                    }
-                    active.recordModelAssignment(assignment);
-                }
-                if (assignmentFailed) continue;
                 JsonElement carried;
                 try {
                     carried = containerValue(value)
@@ -4719,118 +4702,6 @@ public final class ConcolicRegionRuntime {
         return false;
     }
 
-    static boolean writeContainerTarget(
-            Object container, ModelAssignment assignment) {
-        if ("INDEXED".equals(assignment.containerShape)) {
-            return writeIndexedContainerElement(container,
-                    assignment.containerIndex,
-                    assignment.valueType, assignment.value);
-        }
-        if (!"ASSOCIATIVE".equals(assignment.containerShape)) return false;
-        if (assignment.iterationTarget()) {
-            return writeOrderedIterationTarget(container, assignment);
-        }
-        if (assignment.dynamicAssociativeTarget()) return false;
-        if (!(container instanceof Map<?, ?>)) return false;
-        Object key = containerKey(assignment.containerKeyJavaType,
-                assignment.containerKeyValue);
-        if (key == UnsupportedReplayValue.INSTANCE) return false;
-        return writeAssociativeContainerTarget(container, key, assignment);
-    }
-
-    @SuppressWarnings("unchecked")
-    static boolean writeAssociativeContainerTarget(
-            Object container, Object key, ModelAssignment assignment) {
-        if (!(container instanceof Map<?, ?>)
-                || !"ASSOCIATIVE".equals(assignment.containerShape)) {
-            return false;
-        }
-        Map<Object, Object> map = (Map<Object, Object>) container;
-        if ("UNCHANGED".equals(assignment.valueType)) {
-            // A non-null reference model constrains only nullness. The live
-            // object is already the only replayable identity.
-            return map.containsKey(key) && map.get(key) != null;
-        }
-        if (!map.containsKey(key)) {
-            // Map.get on an absent key already yields null.  Replaying that
-            // observation must not turn it into a present-null entry.
-            return "NULL".equals(assignment.valueType);
-        }
-        Object current = map.get(key);
-        Object modeled = modeledContainerValue(current, assignment);
-        if (modeled == UnsupportedReplayValue.INSTANCE) return false;
-        map.put(key, modeled);
-        return true;
-    }
-
-    @SuppressWarnings("unchecked")
-    private static boolean writeOrderedIterationTarget(
-            Object container, ModelAssignment assignment) {
-        int index = assignment.containerIndex;
-        if (index < 0) return false;
-        try {
-            if (container instanceof LinkedHashSet<?>
-                    && "KEY".equals(assignment.containerProjection)) {
-                List<Object> values = new ArrayList<>(
-                        (Set<Object>) container);
-                if (index >= values.size()) return false;
-                Object current = values.get(index);
-                Object modeled = modeledContainerValue(current, assignment);
-                if (modeled == UnsupportedReplayValue.INSTANCE) return false;
-                if (collidesWithLiveElement(current, modeled,
-                        ((Set<?>) container).contains(modeled))) {
-                    return false;
-                }
-                values.set(index, modeled);
-                LinkedHashSet<Object> target =
-                        (LinkedHashSet<Object>) container;
-                target.clear();
-                target.addAll(values);
-                return target.size() == values.size();
-            }
-            if (container instanceof Map<?, ?>
-                    && "VALUE".equals(assignment.containerProjection)) {
-                Map<Object, Object> target = (Map<Object, Object>) container;
-                List<Map.Entry<Object, Object>> entries = new ArrayList<>(
-                        target.entrySet());
-                if (index >= entries.size()) return false;
-                Map.Entry<Object, Object> selected = entries.get(index);
-                Object modeled = modeledContainerValue(
-                        selected.getValue(), assignment);
-                if (modeled == UnsupportedReplayValue.INSTANCE) return false;
-                // Replacing the value of an existing entry is not a
-                // structural modification and therefore preserves the live
-                // map's current iteration frontier, including HashMap's.
-                target.put(selected.getKey(), modeled);
-                return true;
-            }
-            if (!(container instanceof LinkedHashMap<?, ?>)) return false;
-            LinkedHashMap<Object, Object> target =
-                    (LinkedHashMap<Object, Object>) container;
-            List<Map.Entry<Object, Object>> entries = new ArrayList<>(
-                    target.entrySet());
-            if (index >= entries.size()) return false;
-            Map.Entry<Object, Object> selected = entries.get(index);
-            if (!"KEY".equals(assignment.containerProjection)) return false;
-            Object current = selected.getKey();
-            Object modeled = modeledContainerValue(current, assignment);
-            if (modeled == UnsupportedReplayValue.INSTANCE) return false;
-            if (collidesWithLiveElement(current, modeled,
-                    target.containsKey(modeled))) {
-                return false;
-            }
-            target.clear();
-            for (int cursor = 0; cursor < entries.size(); cursor++) {
-                Map.Entry<Object, Object> entry = entries.get(cursor);
-                target.put(cursor == index ? modeled : entry.getKey(),
-                        entry.getValue());
-            }
-            return target.size() == entries.size();
-        } catch (Throwable ignored) {
-            return false;
-        }
-    }
-
     private static Object modeledContainerValue(
             Object current, ModelAssignment assignment) {
         return modeledContainerValue(current, assignment.valueType,
@@ -7033,19 +6904,6 @@ public final class ConcolicRegionRuntime {
             return matches == 1;
         }
 
-        private List<ModelAssignment> fieldAssignments(
-                SymbolizeAction action) {
-            List<ModelAssignment> result = new ArrayList<>();
-            for (ModelAssignment assignment : activation.modelAssignments) {
-                if (assignment.targetsFieldAccess(action)
-                        && !assignment.dynamicAssociativeTarget()
-                        && !appliedModelAssignments.contains(assignment.key)) {
-                    result.add(assignment);
-                }
-            }
-            return result;
-        }
-
         private void recordModelAssignment(ModelAssignment assignment) {
             appliedModelAssignments.add(assignment.key);
         }
@@ -7586,14 +7444,6 @@ public final class ConcolicRegionRuntime {
         final String configuredSourceId;
         final String configuredSourceFieldSignature;
         final boolean modelIsNull;
-        final boolean containerTargetPresent;
-        final String containerShape;
-        final String containerSelectorKind;
-        final String containerProjection;
-        final int containerIndex;
-        final int containerAccessOrdinal;
-        final String containerKeyJavaType;
-        final String containerKeyValue;
         final List<String> path = new ArrayList<>();
 
         ModelAssignment(JsonObject json) {
@@ -7608,20 +7458,16 @@ public final class ConcolicRegionRuntime {
             this.configuredSourceFieldSignature = optionalString(json,
                     "configuredSourceFieldSignature");
             this.modelIsNull = optionalBool(json, "modelIsNull", false);
-            JsonElement encodedContainerTarget = json.get("containerTarget");
-            this.containerTargetPresent = encodedContainerTarget != null;
-            JsonObject containerTarget = object(json, "containerTarget");
-            this.containerShape = optionalString(containerTarget, "shape");
-            this.containerSelectorKind = optionalString(containerTarget,
-                    "selectorKind");
-            this.containerProjection = optionalString(containerTarget,
-                    "projection");
-            this.containerIndex = optionalInteger(containerTarget, "index", -1);
-            this.containerAccessOrdinal = optionalInteger(containerTarget,
-                    "accessOrdinal", -1);
-            this.containerKeyJavaType = optionalString(containerTarget,
-                    "keyJavaType");
-            this.containerKeyValue = optionalString(containerTarget, "keyValue");
+            if (json.get("containerTarget") != null) {
+                // A container is symbolic only once a root-derived value is
+                // written into it, and the VM states that inside the
+                // expression the container then carries.  Nothing models a
+                // container cell, so an assignment that names one is refused
+                // rather than materialized into the live object.
+                throw new IllegalArgumentException(
+                        "model assignment names a container target: "
+                                + "containers are not modelled");
+            }
             for (JsonElement element : array(json,
                     "materializationPath")) {
                 if (element.isJsonPrimitive()) {
@@ -7649,41 +7495,6 @@ public final class ConcolicRegionRuntime {
                     + safe(sourcePhaseId));
         }
 
-        boolean hasContainerTarget() {
-            return containerTargetPresent;
-        }
-
-        boolean iterationTarget() {
-            return "ASSOCIATIVE".equals(containerShape)
-                    && "ITERATION_INDEX".equals(containerSelectorKind);
-        }
-
-        boolean dynamicAssociativeTarget() {
-            return "ASSOCIATIVE".equals(containerShape)
-                    && "ACCESS_ORDINAL".equals(containerSelectorKind)
-                    && containerAccessOrdinal >= 1;
-        }
-
-        boolean validContainerTarget() {
-            if ("INDEXED".equals(containerShape)) {
-                return containerIndex >= 0;
-            }
-            if (iterationTarget()) {
-                return containerIndex >= 0
-                        && ("KEY".equals(containerProjection)
-                        || "VALUE".equals(containerProjection));
-            }
-            if (dynamicAssociativeTarget()) {
-                return true;
-            }
-            if (!"ASSOCIATIVE".equals(containerShape)
-                    || containerKeyJavaType.isEmpty()
-                    || containerKeyValue.isEmpty()) {
-                return false;
-            }
-            return true;
-        }
-
         boolean matches(SymbolizeAction action,
                                 List<String> actualPath) {
             if (!inputSymbol.equals(action.symbol)) return false;
@@ -7692,19 +7503,6 @@ public final class ConcolicRegionRuntime {
                         || action.fieldPath.equals(actualPath);
             }
             return actualPath != null && path.equals(actualPath);
-        }
-
-        boolean targetsFieldAccess(SymbolizeAction action) {
-            if (!inputSymbol.equals(action.symbol)) return false;
-            if (path.isEmpty()) return true;
-            if (action.fieldPath.isEmpty()
-                    || path.size() < action.fieldPath.size()) return false;
-            for (int index = 0; index < action.fieldPath.size(); index++) {
-                if (!path.get(index).equals(action.fieldPath.get(index))) {
-                    return false;
-                }
-            }
-            return true;
         }
 
         Object referenceValue(Object concrete) {

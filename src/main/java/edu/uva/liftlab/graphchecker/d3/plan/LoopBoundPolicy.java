@@ -20,8 +20,6 @@ public final class LoopBoundPolicy {
 
     public static final String LOOP_SITE_ID = "loopSiteId";
     public static final String LOOP_BODY_BOUND = "loopBodyBound";
-    public static final String LOOP_BODY_BOUND_AUTHORITY =
-            "loopBodyBoundAuthority";
     public static final String LOOP_CONTROL_SITE_IDS = "loopControlSiteIds";
     /** Branch sites assigned by the CFG analysis to this exact innermost
      * natural loop.  Replay uses this membership instead of treating unit
@@ -38,8 +36,6 @@ public final class LoopBoundPolicy {
     public static final String LOOP_CLASSIFICATION_AUTHORITY =
             "loopClassificationAuthority";
     public static final String PATH_LOOP_COUNTS = "pathLoopCounts";
-    public static final String LOOP_BODY_COUNT = "loopBodyCount";
-    public static final String PATH_LOOP_REACHED = "pathLoopReached";
     public static final String LOOP_CARDINALITY = "loopCardinality";
     public static final String LOOP_CARDINALITIES = "loopCardinalities";
     public static final String LOOP_CARDINALITY_GAPS =
@@ -68,11 +64,7 @@ public final class LoopBoundPolicy {
     public static final String LOOP_FAILURE_RELEVANT = "failureRelevant";
     /** {@link #LOOP_FAILURE_RELEVANT}'s authority, so a reader can tell a
      *  decided declaration from an old one that predates the decision. */
-    public static final String LOOP_RELEVANCE_AUTHORITY =
-            "loopRelevanceAuthority";
     /** The one rule that decides {@link #LOOP_FAILURE_RELEVANT}. */
-    public static final String FAILURE_DEMANDED_LOOP_SCOPE =
-            "FAILURE_DEMANDED_LOOP_SCOPE_V1";
     public static final String PATH_LOOP_COUNT_MISSING =
             "PATH_LOCAL_LOOP_COUNT_MISSING";
     public static final String PATH_LOOP_COUNT_AMBIGUOUS =
@@ -95,8 +87,6 @@ public final class LoopBoundPolicy {
     public static final String LOOP_CLASSIFIED_CONDITION_CONTROLLED =
             "STATIC_CONDITION_CONTROLLED_V1";
 
-    public static final String BOUND_FROM_DECLARATION =
-            "LOOP_DECLARED_LOOP_BODY_BOUND";
     public static final String LOOP_SITE_UNDECLARED =
             "BOUNDED_LOOP_SITE_UNDECLARED";
     /** One nest's control sites do not all classify alike, so the nest has no
@@ -123,8 +113,6 @@ public final class LoopBoundPolicy {
     /** Two declarations state different {@code K_L} for one loop. */
     public static final String LOOP_BODY_BOUND_DISAGREES =
             "BOUNDED_LOOP_BODY_BOUND_DISAGREES";
-    /** Maximum failure-relevant cells retained for one symbolic container. */
-    public static final int SYMBOLIC_CONTAINER_SNAPSHOT_CAPACITY = 32;
     /** Body entries one replay-path loop may run in one activation: the
      *  service loops a long-lived root spins between the slice's calls,
      *  where an unbounded count is what makes an activation endless.

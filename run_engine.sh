@@ -590,10 +590,8 @@ do_compose() {
   [[ -z "${declared}" ]] || selection+=(--anchor "${declared}")
   [[ -z "${causynth_root_domains}" ]] \
     || selection+=(--root-domains "${causynth_root_domains}")
-  require_file "runtime region plan" "${runtime_region_plan}"
   run_java_main edu.uva.liftlab.graphchecker.d3.compose.ComposeMain \
     --sessions "${compose_sessions_dir}" \
-    --runtime-plan "${runtime_region_plan}" \
     --output "${composed_smt}" \
     --manifest "${composition_manifest}" \
     --timeout-ms "${solver_timeout_ms}" \

@@ -71,8 +71,6 @@ public final class SharedStateEvidence {
             "VM_SHARED_STATE_EVIDENCE_V1";
     /** Summary member carrying one execution's recorded shared state. */
     public static final String RECORDED_FIELD = "recordedSharedState";
-    /** Kind of that member. */
-    public static final String RECORDED_KIND = "RECORDED_SHARED_STATE";
     /** Gap family recorded for every refusal. */
     public static final String GAP_KIND = "SHARED_STATE_GAP";
     /** Authority stamped on a gap row. */
@@ -283,8 +281,6 @@ public final class SharedStateEvidence {
         return LOCATION_KIND_MAP_STATE.equals(locationKindOf(locationKey));
     }
 
-    public static final String SESSION_LOCATION_FIELD = "sessionLocationKey";
-
 
 
     /** Whether {@code versionKind} publishes one immutable whole state. */
@@ -458,9 +454,6 @@ public final class SharedStateEvidence {
     /**
      * Members the runtime adds to a version and a read row so each names the
      */
-    public static final String WRITER_SOURCE_KEY = "writerSourceKey";
-    public static final String WRITER_OCCURRENCE_ID = "writerOccurrenceId";
-    public static final String READER_SOURCE_KEY = "readerSourceKey";
     public static final String READER_OCCURRENCE_ID = "readerOccurrenceId";
 
     public static JsonObject versionsRecord(String locationKey,

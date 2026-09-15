@@ -42,14 +42,10 @@ import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.optionalString;
  * space physical.</p>
  */
 public final class ClockRootPhysics {
-    public static final String MANIFEST_FIELD = "clockRootPhysics";
     public static final int SCHEMA_VERSION = 1;
     public static final String KIND = "CLOCK_ROOT_PHYSICS";
     public static final String AUTHORITY =
             "RECORDED_CLOCK_WINDOW_AND_ORDER_V1";
-    /** Default half-width of a clock's window: five minutes. */
-    public static final long DEFAULT_SKEW_MILLIS = 300000L;
-
     /** Declared callees whose return value is a wall clock in milliseconds. */
     private static final List<String> CLOCK_CALLEES = java.util.Arrays.asList(
             "<org.apache.hadoop.util.Timer: long now()>",
@@ -83,18 +79,5 @@ public final class ClockRootPhysics {
     public static boolean clockCallee(String declaredCallee) {
         return declaredCallee != null && CLOCK_CALLEES.contains(declaredCallee);
     }
-
-    /**
-     * The skew a case states when it claims no bound on a clock at all.
-     *
-     * <p>A wall clock carries no physics this checker can appeal to: two
-     * nodes' clocks are whatever they are, and a bound on their difference
-     * is a number somebody picked.  A case that says so declares this, and
-     * every cell is then free -- which is the honest formula, not a lax one:
-     * what the execution actually fixes is stated elsewhere, by the order
-     * its own readings came in and by the values each path read.</p>
-     */
-    public static final long UNBOUNDED_SKEW_MILLIS = Long.MAX_VALUE;
-
 
 }

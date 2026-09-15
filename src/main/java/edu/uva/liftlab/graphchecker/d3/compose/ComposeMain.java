@@ -51,8 +51,6 @@ import java.util.Map;
  *   --z3 &lt;path&gt;           default "z3"
  *   --max-valuations &lt;n&gt;  how many questions to ask, default 64
  *   --timeout-ms &lt;n&gt;      per solver run, default 20000
- *   --runtime-plan &lt;file&gt; accepted, not read (see the manifest note)
- *   --clock-skew-ms &lt;n&gt;   accepted, not read: a clock has a floor, no window
  * </pre>
  *
  * <p>Every outcome is an artifact.  A declared occurrence no session

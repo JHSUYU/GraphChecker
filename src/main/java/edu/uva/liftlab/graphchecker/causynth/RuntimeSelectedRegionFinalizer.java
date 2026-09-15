@@ -68,14 +68,6 @@ public final class RuntimeSelectedRegionFinalizer {
      */
     public static final String BOUND_INSUFFICIENT = "BOUND_INSUFFICIENT";
     /**
-     * An accessor-return stream reached
-     * {@link LoopBoundPolicy#SYMBOLIC_CONTAINER_SNAPSHOT_CAPACITY}, so the
-     * reads after it were never minted as ports at all.
-     */
-    public static final String SNAPSHOT_CAPACITY_REACHED =
-            "SYMBOLIC_CONTAINER_SNAPSHOT_CAPACITY_REACHED";
-
-    /**
      * Existing planner admission vocabulary for a bounded state writer.  Why
      * this activation is in the plan at all, when it is there for anything
      * other than reaching the fatal target: the planner publishes it on the
@@ -2472,10 +2464,7 @@ public final class RuntimeSelectedRegionFinalizer {
                 "fieldPathDeclarations", "bindingKind",
                 "writerFieldReadSeq", "mutatorEnterSeq",
                 "mutationCompletionSeq", "mutationInvocationId",
-                "mutatorDeclaredCallee", "containerMemberToken",
-                "containerMemberIdentityAuthority", "containerObjectId",
-                "containerKeyObjectId", "containerValueObjectId",
-                "containerMemberFieldBindings"}) {
+                "mutatorDeclaredCallee"}) {
             access.put(key, binding.get(key));
         }
         access.put("staticAccessSiteId", firstNonEmpty(
@@ -2553,23 +2542,6 @@ public final class RuntimeSelectedRegionFinalizer {
                         + declaredCallee + "\n" + implementation;
                 int retained = retainedByActivationStream.getOrDefault(
                         stream, 0);
-                if (retained >= LoopBoundPolicy
-                        .SYMBOLIC_CONTAINER_SNAPSHOT_CAPACITY) {
-                    // Reads past the capacity were never minted as ports, so
-                    // the container this accessor returns is described by its
-                    // first N observations and nothing states that the rest
-                    // exist.
-                    planGap(program.planGaps, SNAPSHOT_CAPACITY_REACHED,
-                            regionId + "\n" + SiteId.of(caller, unitIndex)
-                                    + "\n" + field,
-                            "an accessor-return stream reached the "
-                                    + LoopBoundPolicy
-                                            .SYMBOLIC_CONTAINER_SNAPSHOT_CAPACITY
-                                    + "-observation container snapshot"
-                                    + " capacity, so its later reads were"
-                                    + " never minted as ports");
-                    continue;
-                }
                 retainedByActivationStream.put(stream, retained + 1);
                 Map<String, Object> port = new LinkedHashMap<>(binding);
                 port.put("occurrenceId", occurrenceId);

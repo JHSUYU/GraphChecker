@@ -9,15 +9,12 @@ import java.util.Set;
 /**
  * CONTRACT-SPEC 2: the session's {@code expressions.json}.
  *
- * <p>{@code ref -> expression JSON} in the existing shared-expression format --
- * the VM's {@code EXPR.v1.*} objects, unchanged.  Rows carry references, not
+ * <p>{@code ref -> expression JSON}: the VM's expression objects,
+ * unchanged.  Rows carry references, not
  * trees: the VM propagates values as a shared DAG and a row that inlined its
  * expression would restate its whole upstream history at every handoff.</p>
  */
 public final class ExpressionTable {
-    /** The prefix every reference in this table carries. */
-    public static final String REFERENCE_PREFIX = "EXPR.v1.";
-
     private final Map<String, JsonObject> expressions;
 
     private ExpressionTable(Map<String, JsonObject> expressions) {
