@@ -180,13 +180,26 @@ final class RuntimeTraceContext {
     /** Captures the current source/span for a Thread, Runnable, or Callable. */
     static void captureAsync(Object carrier) {
         if (carrier == null) return;
+        if (carrier instanceof java.util.Collection) {
+            // A batch submission is one submission per task: two subtasks
+            // of one invokeAll run under two endpoints, which is the only
+            // thing that tells their activations apart.
+            for (Object element : (java.util.Collection<?>) carrier) {
+                captureAsync(element);
+            }
+            return;
+        }
         State state = CURRENT.get();
         View view = state.view();
         // The lineage travels with the work, exactly as the request scope
         // does: a pool thread created before the scope existed inherits
         // neither, and both are facts about the work rather than the thread.
-        Object lineage = Lineage.capture(
-                view.source == null ? "" : view.source.key());
+        // The submission itself is an endpoint: the thread that runs this
+        // work inherits the frame from it, and its activation row names it
+        // as startedBy (R-I7.1's thread-start edge).
+        String nodeKey = view.source == null ? "" : view.source.key();
+        Object lineage = Lineage.capture(nodeKey,
+                ConcolicRegionRuntime.noteWorkSubmission(nodeKey));
         synchronized (LOCK) {
             ASYNC_SEEDS.put(carrier, new Seed(view.spanId,
                     view.source, view.requestKey, view.requestApi,
@@ -200,6 +213,12 @@ final class RuntimeTraceContext {
         State state = CURRENT.get();
         Seed seed = takeSeed(Thread.currentThread());
         if (seed == null) seed = takeSeed(receiver);
+        // A root activation's execution index starts at the root.  A pool
+        // thread carries the frames of whatever created it -- a fork-join
+        // worker is created in the middle of the submitting call path --
+        // and indexing the work it runs from there would say that two
+        // tasks stolen by two workers ran at the same point.
+        edu.uva.liftlab.graphchecker.runtime.d3.Identity.scopeStart();
 
         // The receiver's own registration first, and only then anything
         // ambient.
@@ -288,9 +307,14 @@ final class RuntimeTraceContext {
      */
     static Object captureScope() {
         View view = CURRENT.get().view();
+        String nodeKey = view.source == null ? "" : view.source.key();
+        // Building the work is a submission, exactly as handing a task to
+        // an executor is: the endpoint it mints is what the thread that
+        // runs the work ran BECAUSE OF, and it is the only thing that
+        // tells two calls of one api inside one request apart.
         return new RequestScope(view.source, view.requestKey,
-                view.requestApi, Lineage.capture(
-                        view.source == null ? "" : view.source.key()));
+                view.requestApi, Lineage.capture(nodeKey,
+                        ConcolicRegionRuntime.noteWorkSubmission(nodeKey)));
     }
 
     /**

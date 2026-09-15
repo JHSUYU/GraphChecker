@@ -83,8 +83,16 @@ final class WireFlowCatalog {
                                   Map<String, SootMethod> methods) {
         if (integer(row, "schemaVersion", -1) != SCHEMA_VERSION
                 || !KIND.equals(string(row, "kind"))) {
+            // Named with the record, never skipped: a declared flow this
+            // build cannot read is a port that will not mint, and a silent
+            // skip turns that into "the workload never sent it".
             throw new IllegalArgumentException(
-                    "mapping requires schemaVersion 1 and kind WIRE_FLOW");
+                    "communication mapping " + string(row, "id")
+                            + " states schemaVersion "
+                            + integer(row, "schemaVersion", -1) + " kind "
+                            + string(row, "kind") + "; this build reads"
+                            + " schemaVersion " + SCHEMA_VERSION + " kind "
+                            + KIND);
         }
         String id = string(row, "id");
         String transport = string(row, "transport");

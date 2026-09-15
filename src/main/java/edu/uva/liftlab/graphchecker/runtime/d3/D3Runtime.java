@@ -268,9 +268,11 @@ public final class D3Runtime {
         SessionPublisher session = publisher;
         if (session != null) {
             String ref = expressionRef(condition);
+            // Polarity-free: the row states the predicate and the arm,
+            // and the composer conjoins (outcome ? term : (not term)).
             session.decision(DecisionRow.of(sessionId(), sequence(seq),
-                    occurrence, Text.safe(siteId), ordinal, outcome,
-                    term(ref, outcome), clockReadings()));
+                    occurrence, Text.safe(siteId), ordinal, outcome, ref,
+                    clockReadings()));
         }
         FocusedReplay.observeDecision(occurrence, siteId, ordinal, outcome);
     }
@@ -321,6 +323,29 @@ public final class D3Runtime {
                                         String site, int attempt) {
         return occurrence == null ? null : endpoint(occurrence, site,
                 attempt);
+    }
+
+    /**
+     * The endpoint of one work submission.
+     *
+     * <p>A batch submits several tasks from one point of one activation --
+     * {@code invokeAll} with three subtasks -- and the started work is
+     * addressed by the endpoint that started it, so those submissions may
+     * not share an endpoint.  The k-th submission made at one point is the
+     * k-th, in the order the run makes them, which a replay of the same
+     * prefix makes in the same order.</p>
+     */
+    public static Endpoint submission(OccurrenceAddress from) {
+        if (from == null) return null;
+        Endpoint at = endpoint(from, "SUBMIT", 0);
+        if (at == null) return null;
+        AtomicInteger made = SUBMISSIONS.get(at.id());
+        if (made == null) {
+            AtomicInteger fresh = new AtomicInteger();
+            made = SUBMISSIONS.putIfAbsent(at.id(), fresh);
+            if (made == null) made = fresh;
+        }
+        return endpoint(from, "SUBMIT#" + made.getAndIncrement(), 0);
     }
 
     /** One v_H minted at an endpoint already allocated. */
@@ -467,6 +492,32 @@ public final class D3Runtime {
         Identity.exitCall();
     }
 
+    /**
+     * This thread, as a key stable inside one session.
+     *
+     * <p>Same-thread program order is a happens-before input (R-I7.1), and
+     * two rows are on one thread iff they carry one key.  The name alone is
+     * not stable -- Hadoop renames DataXceiver threads per op -- so the JVM
+     * thread id is the key and the name travels with it for a reader.</p>
+     */
+
+    /** The submission endpoint this thread inherited its frame from. */
+    private static Endpoint startedBy() {
+        String id = Lineage.startedBy();
+        if (id.isEmpty()) return null;
+        Endpoint known = STARTERS.get(id);
+        return known;
+    }
+
+    /** Endpoints that started work elsewhere, by id, for startedBy. */
+    private static final Map<String, Endpoint> STARTERS =
+            new ConcurrentHashMap<String, Endpoint>();
+
+    /** Remembers one submission endpoint so a child row can name it. */
+    public static void starting(Endpoint submission) {
+        if (submission != null) STARTERS.put(submission.id(), submission);
+    }
+
     /** Charges one loop iteration to the running execution index. */
     public static void loopIteration(String loopId) {
         Identity.loopIteration(loopId);
@@ -479,7 +530,16 @@ public final class D3Runtime {
             return "";
         }
         JsonObject object = expression.getAsJsonObject();
-        String ref = "EXPR." + Text.sha16(RowCodec.toLine(object));
+        // One serialization per expression, not per row that names it.  A
+        // container's expression on hdfs-17960 is hundreds of nodes deep
+        // and every write of that location publishes the same tree; the
+        // replay spent longer serializing them again than running the
+        // workload.
+        String ref = REFS.get(object);
+        if (ref == null) {
+            ref = "EXPR." + Text.sha16(RowCodec.toLine(object));
+            REFS.put(object, ref);
+        }
         SessionPublisher session = publisher;
         if (session != null) session.expression(ref, object);
         return ref;
@@ -550,6 +610,32 @@ public final class D3Runtime {
      * ordinal moves when an unrelated event of the same site is inserted
      * earlier, and two replays then disagree about which event is which.</p>
      */
+    /** Expression refs already computed, by the tree they name. */
+    private static final Map<JsonObject, String> REFS =
+            java.util.Collections.synchronizedMap(
+                    new java.util.IdentityHashMap<JsonObject, String>());
+
+    /** Read events already stated, so one read is one occurrence's. */
+    private static final Map<String, Boolean> CLAIMED_READS =
+            new ConcurrentHashMap<String, Boolean>();
+
+    /**
+     * Claims one read event for the activation publishing it now.
+     *
+     * <p>A value read once is carried by the expression of everything
+     * built from it, so the same read node is reachable from several
+     * activations' trees.  It happened in one of them: the first to
+     * publish it, which is the innermost, since an activation finishes
+     * before the one it runs inside.</p>
+     */
+    public static boolean claimRead(String identity) {
+        return CLAIMED_READS.put(Text.safe(identity), Boolean.TRUE) == null;
+    }
+
+    /** Submissions already made at one point, by base endpoint id. */
+    private static final ConcurrentHashMap<String, AtomicInteger> SUBMISSIONS =
+            new ConcurrentHashMap<String, AtomicInteger>();
+
     private static Endpoint endpoint(OccurrenceAddress occurrence,
                                      String site, int attempt) {
         return Endpoint.of(occurrence, Text.safe(site), Identity.siteIndex(),
@@ -609,9 +695,13 @@ public final class D3Runtime {
         synchronized (LOCK) {
             ACTIVATIONS.clear();
             AMBIENT.clear();
+            STARTERS.clear();
             CONTEXTS.clear();
             INDEXES.clear();
             ORDINALS.clear();
+            CLAIMED_READS.clear();
+            REFS.clear();
+            SUBMISSIONS.clear();
             Identity.resetForTests();
             CLOCKS.clear();
             LAST_SEQ.set(0L);

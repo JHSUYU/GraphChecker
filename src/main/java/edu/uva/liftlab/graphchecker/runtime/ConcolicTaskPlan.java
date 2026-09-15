@@ -282,10 +282,13 @@ final class ConcolicTaskPlan {
             // admitted to any address, which is how one occurrence came to
             // own two enclosing invocations.
             if (!task.acceptsRootInvocation(observed)) {
-                task.noteUnaddressedCandidate("matching enclosing root: "
-                        + task.addressDifference(observed)
-                        + attribution(activationSource));
-                continue;
+                if (!task.addressDrifts(observed)) {
+                    task.noteUnaddressedCandidate("matching enclosing root: "
+                            + task.addressDifference(observed)
+                            + attribution(activationSource));
+                    continue;
+                }
+                task.noteAddressDrift(observed);
             }
             // One occurrence, one enclosing activation.  The bodies of
             // occurrence k are the bodies of the invocation admitted for k;
@@ -360,7 +363,8 @@ final class ConcolicTaskPlan {
                     context).isEmpty()) continue;
             OccurrenceAddress observed = task.observedAddress(
                     countedLifecycle(task, activationSource));
-            if (!task.acceptsRootInvocation(observed)) {
+            if (!task.acceptsRootInvocation(observed)
+                    && !task.addressDrifts(observed)) {
                 // Said out loud, as the loop-body path already says it.  A
                 // non-loop root that ran and was refused on its address was
                 // refused in silence, and the end of the run then reported
@@ -376,6 +380,9 @@ final class ConcolicTaskPlan {
                 continue;
             }
             if (candidateLive[index]) continue;
+            if (!task.acceptsRootInvocation(observed)) {
+                task.noteAddressDrift(observed);
+            }
             candidateLive[index] = true;
             return task;
         }
@@ -1925,6 +1932,43 @@ final class ConcolicTaskPlan {
             return address != null && observed != null
                     && address.id().equals(observed.id());
         }
+
+        /**
+         * Whether {@code observed} is this occurrence up to what the two
+         * passes see differently.
+         *
+         * <p>The plan's address is computed offline from the recording's
+         * frames, the replay's live from its own; the node and the region
+         * are the two components both passes read from the same evidence,
+         * and a candidate that agrees on them and that this task's
+         * selector already picked out -- its receiver, its thread, its
+         * source -- is this occurrence.  Where the causal context or the
+         * execution index differ, the run does not refuse the occurrence
+         * silently: it admits it and states the drift, which is a fact
+         * about the two computations rather than about the activation.</p>
+         */
+        boolean addressDrifts(OccurrenceAddress observed) {
+            return address != null && observed != null
+                    && address.node().equals(observed.node())
+                    && address.regionId().equals(observed.regionId());
+        }
+
+        /** States one admitted activation whose address drifted. */
+        void noteAddressDrift(OccurrenceAddress observed) {
+            String difference = addressDifference(observed);
+            if (!addressDrifts.add(difference)) return;
+            edu.uva.liftlab.graphchecker.runtime.d3.D3Runtime.gap(
+                    edu.uva.liftlab.graphchecker.d3.contract.GapKind
+                            .LINEAGE_LOST,
+                    edu.uva.liftlab.graphchecker.d3.contract.GapClass
+                            .DIAGNOSTIC,
+                    safe(occurrenceId),
+                    "the plan and this replay address one activation"
+                            + " differently: " + difference);
+        }
+
+        /** Drifts already stated, so one activation states one. */
+        private final Set<String> addressDrifts = new LinkedHashSet<>();
 
         /**
          * Why {@code observed} is not this task's occurrence.

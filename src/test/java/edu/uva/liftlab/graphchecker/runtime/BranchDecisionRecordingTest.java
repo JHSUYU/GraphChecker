@@ -78,6 +78,7 @@ public class BranchDecisionRecordingTest {
                 + "\",\"occurrence\":1,\"siteId\":\"" + DECLARED
                 + "\",\"unitIndex\":4},\"sourceTakenOutcome\":true},"
                 + "\"method\":\"" + METHOD + "\",\"occurrence\":1,"
+                + "\"outcome\":true,"
                 + "\"rawPathConditionBaseline\":0,"
                 + "\"rawPathConditionSize\":0,\"siteId\":\"" + DECLARED
                 + "\",\"unitIndex\":4}]\n" + REACH,
@@ -97,7 +98,8 @@ public class BranchDecisionRecordingTest {
                 + "\"site\":{\"method\":\"" + METHOD + "\",\"occurrence\":1,"
                 + "\"siteId\":\"" + DECLARED + "\",\"unitIndex\":4},"
                 + "\"sourceTakenOutcome\":true},\"method\":\"" + METHOD
-                + "\",\"occurrence\":1,\"rawPathConditionBaseline\":0,"
+                + "\",\"occurrence\":1,\"outcome\":true,"
+                + "\"rawPathConditionBaseline\":0,"
                 + "\"rawPathConditionSize\":0,\"siteId\":\"" + DECLARED
                 + "\",\"unitIndex\":4}]\n" + REACH,
                 publishes(multiway("0,1,2", 1)));
