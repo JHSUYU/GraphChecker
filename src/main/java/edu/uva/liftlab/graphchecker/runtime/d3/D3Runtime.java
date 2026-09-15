@@ -478,8 +478,37 @@ public final class D3Runtime {
                            String detail) {
         SessionPublisher session = publisher;
         if (session == null) return;
+        // One statement, stated once: the same refusal is reached from every
+        // activation that met it, and a reader counts named gaps.
+        if (!claimEvent("gap", kind + "#" + cls + "#" + Text.safe(subject)
+                + "#" + Text.safe(detail))) {
+            return;
+        }
         session.gap(GapRow.of(sessionId(), kind, cls, Text.safe(subject),
                 Text.safe(detail)));
+    }
+
+    /** The symbols this session minted at declared region inputs. */
+    private static final Map<String, Boolean> PLACEHOLDERS =
+            new ConcurrentHashMap<String, Boolean>();
+
+    /**
+     * Records that one symbol is a read placeholder, session-wide.
+     *
+     * <p>The mint happens in the innermost activation, and every activation
+     * it runs inside sees the same field shadow afterwards.  The write log
+     * of an OUTER activation therefore offers the mint's version as a write
+     * of that location, and only a session-wide answer suppresses it: the
+     * per-activation one let hdfs-17960's version 173 through on
+     * {@code REGION.f167c8f6}.</p>
+     */
+    public static void placeholderSymbol(String symbol) {
+        PLACEHOLDERS.put(Text.safe(symbol), Boolean.TRUE);
+    }
+
+    /** Whether one symbol is a read placeholder this session minted. */
+    public static boolean isPlaceholderSymbol(String symbol) {
+        return PLACEHOLDERS.containsKey(Text.safe(symbol));
     }
 
     /** Enters one frame of the execution index: a woven control site. */
@@ -718,6 +747,7 @@ public final class D3Runtime {
             INDEXES.clear();
             ORDINALS.clear();
             CLAIMED_READS.clear();
+            PLACEHOLDERS.clear();
             REFS.clear();
             SUBMISSIONS.clear();
             Identity.resetForTests();

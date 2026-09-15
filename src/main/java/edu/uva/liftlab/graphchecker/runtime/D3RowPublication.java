@@ -195,14 +195,9 @@ final class D3RowPublication {
                                     JsonObject row, String symbol,
                                     Map<String, String> installed) {
         String signature = optionalString(row, "fieldSignature");
-        // One row per read event.  The same manual row is reachable from
-        // every activation the read ran inside, and the read happened in
-        // one of them.
-        if (!D3Runtime.claimEvent("placeholder",
-                optionalString(row, "portId") + "#"
-                        + optionalString(row, "occurrenceId"))) {
-            return;
-        }
+        // A read placeholder, session-wide, so no activation's write log
+        // offers the mint's own version as a write of that location.
+        D3Runtime.placeholderSymbol(symbol);
         // The location is the VM's own -- owner rid, slot offset -- so this
         // read and every write of the same storage spell one location.
         // Naming the Java field signature instead left the read saying
@@ -239,6 +234,16 @@ final class D3RowPublication {
             D3Runtime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
                     symbol, "a declared region input states no value it"
                             + " read: " + optionalString(row, "portId"));
+            return;
+        }
+        // One row per read, per activation.  The declared ports of one
+        // activation are reads of one location that carry one symbol -- the
+        // VM keeps the field's shadow, so the second mint finds the first
+        // symbol -- and the same manual row is reachable again from every
+        // activation the read ran inside.  One row states it.
+        if (!D3Runtime.claimEvent("placeholder",
+                optionalString(row, "occurrenceId") + "#" + locationKey
+                        + "#" + symbol)) {
             return;
         }
         D3Runtime.read(occurrence,
@@ -290,12 +295,12 @@ final class D3RowPublication {
                                          Set<String> mints) {
         JsonElement written = version == null ? null
                 : version.get("expression");
-        if (written == null || !written.isJsonObject() || mints.isEmpty()) {
-            return false;
-        }
+        if (written == null || !written.isJsonObject()) return false;
         JsonObject node = written.getAsJsonObject();
-        return optionalString(node, "_type").contains("Symbol")
-                && mints.contains(optionalString(node, "_exp"));
+        if (!optionalString(node, "_type").contains("Symbol")) return false;
+        String symbol = optionalString(node, "_exp");
+        return mints.contains(symbol)
+                || D3Runtime.isPlaceholderSymbol(symbol);
     }
 
     /**
