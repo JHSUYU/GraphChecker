@@ -417,12 +417,6 @@ public class D3ContractTest {
         Rows unminted = clean();
         unminted.mintVersion = -1L;
         assertInvariant(7, GapClass.BLOCKING, "field=mintVersion", unminted);
-        // P2m: the window-start pseudo-occurrence owns a write no activation
-        // can, and nothing else is let through with it.
-        assertFalse(RowInvariants.windowStart(clean().anchor));
-        assertFalse(RowInvariants.windowStart(OccurrenceAddress.of(DN0,
-                REGION, CausalContext.of(PRODUCER_ID, RPC),
-                index(frame(RUN, 0)))));
         // 8: a RootMintRow is published for a declared root, and its reading
         // is spelled the way its kind is read back.
         Rows undeclared = clean();

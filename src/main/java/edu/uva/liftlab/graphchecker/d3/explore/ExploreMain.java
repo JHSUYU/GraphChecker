@@ -58,8 +58,8 @@ import java.util.Set;
 public final class ExploreMain {
     /** A task the anchor's closure holds: it opens slots and joins families. */
     static final String CLOSURE_MEMBER = "CLOSURE_MEMBER";
-    /** A task because a DECLARED root's value decides something in it. */
-    static final String ROOT_DEPENDENT_DECISION = "ROOT_DEPENDENT_DECISION";
+    /** A task because it decided something over a SYMBOL. */
+    static final String SYMBOLIC_DECISION = "SYMBOLIC_DECISION";
 
     private ExploreMain() {
     }
@@ -142,10 +142,10 @@ public final class ExploreMain {
         // connect them (INTERACTION-ID SS8 case 1, which the next wave's
         // recomputation does by itself).
         Set<String> closure = closureOf(tasks);
-        for (Task task : ClosurePlanner.rootDependent(corpus, opened)) {
+        for (Task task : ClosurePlanner.symbolicDecision(corpus, opened)) {
             if (!opened.add(task.taskId())) continue;
             tasks.add(task);
-            why.put(task.taskId(), ROOT_DEPENDENT_DECISION);
+            why.put(task.taskId(), SYMBOLIC_DECISION);
         }
         // The epoch's skeleton, reconciled against everything the replays
         // have said so far.  It is taken AFTER the closure is planned,

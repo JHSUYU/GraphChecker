@@ -47,22 +47,6 @@ public final class RowInvariants {
     private static final Pattern DECIMAL = Pattern.compile("^-?[0-9]+$");
     /** The site spelling a placeholder read carries. */
     public static final String PLACEHOLDER = "#PLACEHOLDER#";
-    /**
-     * The node's window-start pseudo-occurrence (runtime P2m).
-     *
-     * <p>A container-typed declared input's INITIAL state is published as a
-     * WriteRow whose endpoint occurrence is this: the state the window opened
-     * with was written before any activation of the window ran, so no
-     * activation can own it and invariant 1 exempts it.  Such a writer is
-     * UNATTESTED by construction -- it states what the container held and
-     * never why, so it carries no path condition, and the composer and the
-     * explorer may deliver its value but never treat it as an attested arm
-     * (HANDOVER SS1.4: attested = instrumented AND (seed OR focused)).  Every
-     * other invariant treats it as an ordinary writer: it is one row per
-     * event, its endpoint distinguishes its events, and its expression is
-     * lowered like any other.</p>
-     */
-    public static final String WINDOW_START = "Root:WINDOW_START";
 
     private RowInvariants() {
     }
@@ -154,21 +138,12 @@ public final class RowInvariants {
                                     String kind, long seq,
                                     OccurrenceAddress occurrence) {
         if (ran.contains(occurrence.id())) return;
-        // The window's own opening state has no activation to belong to.
-        if (windowStart(occurrence)) return;
         if (!said.add(kind + "|" + occurrence.id())) return;
         gaps.add(violation(session, GapKind.ADMISSION_GAP, GapClass.BLOCKING,
                 kind, seq, "occurrence", occurrence.render(),
                 "invariant 1 (CONTRACT-SPEC SS2: one ActivationRow per "
                         + "activation): this session published no activation "
                         + "for the occurrence this row is about"));
-    }
-
-    /** Whether this is the node's window-start pseudo-occurrence. */
-    public static boolean windowStart(OccurrenceAddress occurrence) {
-        return occurrence != null
-                && occurrence.context().form() == CausalContext.Form.ROOT
-                && occurrence.context().render().startsWith(WINDOW_START);
     }
 
     // ---- 2. never-neither ---------------------------------------------

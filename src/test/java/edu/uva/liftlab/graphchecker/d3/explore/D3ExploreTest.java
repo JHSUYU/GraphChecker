@@ -555,6 +555,54 @@ public class D3ExploreTest {
         assertTrue("and it is BLOCKING: the campaign opens an epoch",
                 blocking);
 
+        // R-I7 against R-I6: a STATE reader that joined ANOTHER writer in
+        // another session is not a replacement, it is that family's second
+        // arm.  A flip is expected to change which writer delivers -- that
+        // is what the flip is for -- so reading it as a contradiction forked
+        // an epoch over the arm the wave had just asked for.  "Opened by
+        // another session" means nothing for a state slot.
+        Path arms = tree.newFolder("closure-state-arms").toPath();
+        OccurrenceAddress otherWriter = occurrence("hdfs-case/dn0",
+                "REGION.deletekeys", CausalContext.of(Role.CLIENT, 4),
+                "o.a.h.h.s.d.BPServiceActor#offerService#77");
+        Endpoint reader = at(target, Endpoint.stateSite(
+                "BlockTokenSecretManager", "get", 3, false),
+                "BlockTokenSecretManager#get#3");
+        Session firstArm = new Session(arms, "s-seed");
+        firstArm.activation(target, false);
+        firstArm.activation(writer, false);
+        firstArm.symbolic("e.a", "M_A");
+        firstArm.write(at(writer, Endpoint.stateSite("BlockTokenSecretManager",
+                        "addKeys", 12, true), "BlockTokenSecretManager"
+                        + "#addKeys#12"), allKeys, 5L, "e.a");
+        firstArm.read(reader, allKeys, 5L, "M_READ_KEY", "119992");
+        firstArm.flush();
+        Session flipping = new Session(arms, "s-flip");
+        flipping.activation(target, true);
+        flipping.activation(otherWriter, true);
+        flipping.symbolic("e.b", "M_B");
+        flipping.write(at(otherWriter, Endpoint.stateSite(
+                        "BlockTokenSecretManager", "removeKeys", 19, true),
+                        "BlockTokenSecretManager#removeKeys#19"), allKeys,
+                9L, "e.b");
+        flipping.read(reader, allKeys, 9L, "M_READ_KEY_2", "0");
+        flipping.flush();
+        Set<String> readers = new LinkedHashSet<String>();
+        readers.add(target.id());
+        readers.add(writer.id());
+        readers.add(otherWriter.id());
+        SlotTable.Reconciliation grew2 = new SlotTable().reconcile(
+                Corpus.read(arms, null), readers, 8);
+        assertFalse("a state pairing another session states is growth",
+                grew2.replaced);
+        assertTrue("both writers are arms of that reader's family: "
+                        + grew2.opened.size(), grew2.opened.size() >= 2);
+        for (GapRow gap : grew2.gaps) {
+            assertFalse("and nothing is refused over it: " + gap.detail(),
+                    gap.kind() == GapKind.TOPOLOGY_DIVERGENCE
+                            && gap.cls() == GapClass.BLOCKING);
+        }
+
         // A region the workload never RETAINED: its activation is all there
         // is of it, no endpoint of it exists, so no slot can ever name it.
         // The epoch has to be re-cut with it instrumented (SS8 case 2).
@@ -768,20 +816,43 @@ public class D3ExploreTest {
                 "CLOSURE_MEMBER", whyTask.get(target.render()));
         assertEquals("and the deferring region is a task on its decision, "
                         + "with the manifest saying which: " + whyTask,
-                "ROOT_DEPENDENT_DECISION", whyTask.get(deferring.render()));
-        assertFalse("a root the case did NOT declare makes no task: " + whyTask,
-                whyTask.containsKey(undeclared.render()));
-        assertFalse("nor does an occurrence that decided nothing: " + whyTask,
+                ExploreMain.SYMBOLIC_DECISION,
+                whyTask.get(deferring.render()));
+        // Owner's ruling: a branch that carries a SYMBOL is a flip target.
+        // Whether the flip is producible is the solver's verdict, not a
+        // pre-filter, so a decision over a root the case did not declare is
+        // a task too -- and refused by name below rather than never asked.
+        assertEquals("a decision over an undeclared symbol is a task: "
+                        + whyTask, ExploreMain.SYMBOLIC_DECISION,
+                whyTask.get(undeclared.render()));
+        assertFalse("an occurrence that decided nothing is not: " + whyTask,
                 whyTask.containsKey(silent.render()));
         // It is a task, not a closure member: it opens no slot, so the
         // skeleton still counts its interactions as outside the closure.
         List<Obligation> beyond = obligations(asideWave);
-        assertEquals("one flip, on the root-dependent decision: " + beyond,
-                1, beyond.size());
-        assertEquals("SnapshotManager#u7", beyond.get(0).siteId());
-        assertTrue(beyond.get(0).flippedOutcome());
-        assertTrue("a wave proposes no model: the worker solves it",
-                beyond.get(0).rootAssignments().isEmpty());
+        assertEquals("one flip per symbolic decision: " + beyond, 2,
+                beyond.size());
+        for (Obligation flip : beyond) {
+            assertEquals("SnapshotManager#u7", flip.siteId());
+            assertTrue(flip.flippedOutcome());
+            assertTrue("a wave proposes no model: the worker solves it",
+                    flip.rootAssignments().isEmpty());
+        }
+        // And the one over the undeclared symbol is refused where the design
+        // says it is refused: by the solver, naming it, never as a model that
+        // answers with a value the chain does not reach (HANDOVER SS1.5).
+        if (z3Available()) {
+            Path asideOut = tree.newFolder("closure-root-dependent-out")
+                    .toPath();
+            String pinned = ClosurePlanner.taskId(undeclared);
+            for (Obligation flip : beyond) {
+                if (!flip.taskId().equals(pinned)) continue;
+                Worker refused = solve(aside, asideWave, flip, asideOut, "wu");
+                assertEquals("a flip over a symbol nothing binds is refused "
+                                + "by the solver, not by a pre-filter",
+                        Verdict.NOT_ADMITTED, refused.verdict);
+            }
+        }
 
         // Two reads of ONE location at one endpoint id that observed
         // DIFFERENT versions are two events the identity cannot separate --
