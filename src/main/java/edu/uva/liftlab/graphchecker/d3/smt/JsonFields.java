@@ -1,4 +1,4 @@
-package edu.uva.liftlab.graphchecker.concolic;
+package edu.uva.liftlab.graphchecker.d3.smt;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
@@ -138,13 +138,13 @@ public final class JsonFields {
         return value.getAsJsonArray();
     }
 
-    static String primitiveString(JsonObject object, String field) {
+    public static String primitiveString(JsonObject object, String field) {
         JsonElement value = object == null ? null : object.get(field);
         return value != null && value.isJsonPrimitive()
                 ? value.getAsString() : "";
     }
 
-    static int primitiveInteger(JsonObject object, String field,
+    public static int primitiveInteger(JsonObject object, String field,
                                 int fallback) {
         JsonElement value = object == null ? null : object.get(field);
         try {
@@ -155,7 +155,7 @@ public final class JsonFields {
         }
     }
 
-    static String textString(JsonObject object, String field) {
+    public static String textString(JsonObject object, String field) {
         JsonElement value = object == null ? null : object.get(field);
         return value != null && value.isJsonPrimitive()
                 && value.getAsJsonPrimitive().isString()

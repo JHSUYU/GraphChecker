@@ -1,5 +1,7 @@
 package edu.uva.liftlab.graphchecker.concolic;
 
+import edu.uva.liftlab.graphchecker.d3.smt.VmExpressionIr;
+
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
@@ -14,8 +16,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.primitiveInteger;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.primitiveString;
+import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.primitiveInteger;
+import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.primitiveString;
 
 /**
  * Immutable solver-only context for path constraints that are not branches.

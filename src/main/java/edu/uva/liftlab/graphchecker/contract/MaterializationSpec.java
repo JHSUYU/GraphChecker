@@ -8,9 +8,9 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalInteger;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.text;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.trimmed;
+import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.optionalInteger;
+import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.text;
+import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.trimmed;
 
 /**
  * Static field-input materialization selected by exact analysis sites; runtime

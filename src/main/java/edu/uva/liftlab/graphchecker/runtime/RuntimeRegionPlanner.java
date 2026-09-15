@@ -12,7 +12,7 @@ import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
 import edu.uva.liftlab.graphchecker.causynth.StaticProgram;
 import edu.uva.liftlab.graphchecker.concolic.AutomaticRegionEdge;
 import edu.uva.liftlab.graphchecker.concolic.ExactConcreteBranchObservation;
-import edu.uva.liftlab.graphchecker.concolic.JavaPrimitiveSmtSemantics;
+import edu.uva.liftlab.graphchecker.d3.smt.JavaPrimitiveSmtSemantics;
 import edu.uva.liftlab.graphchecker.concolic.SharedFieldFlow;
 import edu.uva.liftlab.graphchecker.concolic.SharedStateEvidence;
 import edu.uva.liftlab.graphchecker.contract.CommunicationCatalogContract;

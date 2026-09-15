@@ -3,7 +3,7 @@ package edu.uva.liftlab.graphchecker.contract;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.text;
+import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.text;
 
 /**
  * The one execution-task catalog for declared, symbolic and concrete inputs.

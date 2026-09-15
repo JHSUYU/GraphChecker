@@ -1,4 +1,4 @@
-package edu.uva.liftlab.graphchecker.d3.compose;
+package edu.uva.liftlab.graphchecker.d3.smt;
 
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
@@ -10,8 +10,8 @@ import java.util.Deque;
 import java.util.IdentityHashMap;
 import java.util.Set;
 
-import static edu.uva.liftlab.graphchecker.d3.compose.JsonFields.optionalLongInteger;
-import static edu.uva.liftlab.graphchecker.d3.compose.JsonFields.optionalString;
+import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.optionalLongInteger;
+import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.optionalString;
 
 /**
  * The spellings the VM uses inside a recorded expression.
