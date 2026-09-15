@@ -253,12 +253,58 @@ public final class CausynthTraceRecorder {
         return address == null ? "" : address.render();
     }
 
-    /** Files the frame of one work start, for the work it started. */
+    /**
+     * Files the frame of one work start, for the work it started.
+     *
+     * <p>The work starts whether or not its frame can be named -- an
+     * instrumentation hook may not turn a start into a failure -- but a
+     * start nobody could name is a lineage hole and says so: the occurrence
+     * the started work will publish is the one that loses its start-site
+     * frame, so the failure is stated where it happened, in the channel
+     * each pass has (a session gap row in a replay, a plan gap through the
+     * trace in the recording).  It is never swallowed.</p>
+     */
     public static void startWork(String startSiteId, Object carrier) {
+        String site = MapFields.safe(startSiteId);
         try {
-            Identity.startWork(MapFields.safe(startSiteId), carrier);
-        } catch (Throwable ignored) {
-            // Work is started whether or not its frame can be named.
+            Identity.startWork(site, carrier);
+        } catch (Throwable unnamed) {
+            RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind
+                            .LINEAGE_LOST,
+                    edu.uva.liftlab.graphchecker.contract.GapClass.DIAGNOSTIC,
+                    site, "the frame of this work start could not be filed, "
+                            + "so the work it started carries no start-site "
+                            + "frame in its execution index: "
+                            + unnamed);
+            writeLineageGap(site, "the frame of this work start could not be "
+                    + "filed, so the work it started carries no start-site "
+                    + "frame in its execution index: " + unnamed);
+        }
+    }
+
+    /** {@code event} of one lineage gap the RECORDING states. */
+    static final String LINEAGE_GAP_EVENT = "LINEAGE_GAP";
+
+    /**
+     * States one lineage gap of the recording, for the plan to publish.
+     *
+     * <p>The recording has no session to hold a gap row, and the aggregation
+     * is the next reader of everything it writes, so the fact travels as a
+     * trace row and {@link #aggregateStateTrace} hands it to the plan's own
+     * gap list.  A gap the recording cannot state is a gap nobody ever
+     * hears about.</p>
+     */
+    private static void writeLineageGap(String subject, String detail) {
+        if (!recordingEnabled) return;
+        synchronized (LOCK) {
+            writeTraceRow(
+                    "schemaVersion", 3,
+                    "event", LINEAGE_GAP_EVENT,
+                    "seq", EVENT_COUNTER.incrementAndGet(),
+                    "code", edu.uva.liftlab.graphchecker.contract.GapKind
+                            .LINEAGE_LOST.name(),
+                    "subject", MapFields.safe(subject),
+                    "detail", MapFields.safe(detail));
         }
     }
 
@@ -1256,9 +1302,15 @@ public final class CausynthTraceRecorder {
             for (Map<String, Object> row : closure.regionEdges) {
                 RuntimeRefinedGraphBuilder.normalizeNumbersInPlace(row);
             }
+            // The plan's gaps are this pass's own plus the ones the
+            // RECORDING stated: the recording has no session to hold a gap
+            // row, and a gap it cannot state is one nobody hears about.
+            List<Map<String, Object>> planGaps =
+                    new ArrayList<>(closure.gaps);
+            planGaps.addAll(trace.lineageGaps);
             writeRuntimeRegionPlans(planOutputDirectory, refinedFlowIndex,
                     closure.regions, closure.regionEdges, trace,
-                    activationGraph.runtimeInstances, closure.gaps);
+                    activationGraph.runtimeInstances, planGaps);
         }
     }
 
@@ -1887,6 +1939,14 @@ public final class CausynthTraceRecorder {
                     row.longValue("remoteParentSpanId", 0L),
                     sourceRef(row), row.stringValue("requestKey"),
                     row.stringValue("requestApi")));
+        } else if (LINEAGE_GAP_EVENT.equals(eventKind)) {
+            Map<String, Object> gap = new LinkedHashMap<>();
+            gap.put("schemaVersion", 1);
+            gap.put("kind", RuntimeSelectedRegionFinalizer.PLAN_GAP_KIND);
+            gap.put("code", row.stringValue("code"));
+            gap.put("subject", row.stringValue("subject"));
+            gap.put("detail", row.stringValue("detail"));
+            trace.lineageGaps.add(gap);
         } else if (PROTOCOL_NOTE_EVENT.equals(eventKind)) {
             // Recognised, and deliberately not a protocol event.
             return;
@@ -2203,6 +2263,8 @@ public final class CausynthTraceRecorder {
         final List<RuntimeRegionPlanner.ProtocolEvent> protocol =
                 new ArrayList<>();
         final List<SourceTraceEvent> sources = new ArrayList<>();
+        /** Lineage gaps the recording stated, as plan-gap rows. */
+        final List<Map<String, Object>> lineageGaps = new ArrayList<>();
 
         private void sort() {
             methods.sort((left, right) -> Long.compare(left.seq, right.seq));

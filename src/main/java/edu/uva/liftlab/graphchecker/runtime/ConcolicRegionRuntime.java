@@ -857,10 +857,20 @@ public final class ConcolicRegionRuntime {
      * started, which takes it when it runs.</p>
      */
     public static void startWork(String startSiteId, Object carrier) {
+        String site = safe(startSiteId);
         try {
-            RowRuntime.startWork(safe(startSiteId), carrier);
-        } catch (Throwable ignored) {
-            // Work is started whether or not its frame can be named.
+            RowRuntime.startWork(site, carrier);
+        } catch (Throwable unnamed) {
+            // The start happens either way -- a hook may not turn it into a
+            // failure -- and the hole is stated rather than swallowed: the
+            // work this start created will publish an occurrence whose
+            // index is missing the start-site frame.
+            RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind
+                            .LINEAGE_LOST,
+                    edu.uva.liftlab.graphchecker.contract.GapClass.DIAGNOSTIC,
+                    site, "the frame of this work start could not be filed, "
+                            + "so the work it started carries no start-site "
+                            + "frame in its execution index: " + unnamed);
         }
     }
 

@@ -456,6 +456,15 @@ public final class GapLedger {
                         + " row names which loops rest on that check and the"
                         + " case where the count is missing is withheld by"
                         + " name");
+        diagnostic(plan, "LINEAGE_LOST",
+                "the interaction or the frame is there and the naming"
+                        + " failed, which is a degraded identity rather than"
+                        + " a missing chain link: every row still carries the"
+                        + " occurrence and the endpoint it was published at,"
+                        + " in the degraded form IDENTITY-V3 names (Lost, or"
+                        + " an index without the start-site frame).  The"
+                        + " subject says which site could not be named, so"
+                        + " the hole is addressable");
         diagnostic(plan, "OCCURRENCE_ADDRESS_SHARED",
                 "the activations are all published, each keeping its own"
                         + " events, and the address they share is the one"
