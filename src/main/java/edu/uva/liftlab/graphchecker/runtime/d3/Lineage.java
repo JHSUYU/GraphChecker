@@ -176,6 +176,7 @@ public final class Lineage {
                                String api) {
         List<Frame> stack = STACK.get();
         final List<Frame> restored = new ArrayList<Frame>(stack);
+        final String startedBy = startedBy();
         long token;
         if (carried instanceof Carried && ((Carried) carried).names()) {
             Carried scope = (Carried) carried;
@@ -189,11 +190,17 @@ public final class Lineage {
             token = push(nodeKey, role, api);
         }
         RESTORED.get().put(token, restored);
+        STARTERS.get().put(token, startedBy);
         return token;
     }
 
     /** Leaves a restored scope and puts back the thread's own lineage. */
     public static void release(long token) {
+        // The submission this thread ran under is the restored scope's, and
+        // it ends with it: a pool thread that kept the last task's starter
+        // would hand the next root an anchor that started something else.
+        String starter = STARTERS.get().remove(token);
+        if (starter != null) startedBy(starter);
         List<Frame> restored = RESTORED.get().remove(token);
         if (restored == null) {
             pop(token);
@@ -203,6 +210,15 @@ public final class Lineage {
         stack.clear();
         stack.addAll(restored);
     }
+
+    /** The starter each restored scope displaced, by its token. */
+    private static final ThreadLocal<Map<Long, String>> STARTERS =
+            new ThreadLocal<Map<Long, String>>() {
+                @Override
+                protected Map<Long, String> initialValue() {
+                    return new java.util.LinkedHashMap<Long, String>();
+                }
+            };
 
     private static final ThreadLocal<Map<Long, List<Frame>>> RESTORED =
             new ThreadLocal<Map<Long, List<Frame>>>() {
@@ -346,6 +362,7 @@ public final class Lineage {
         COUNTERS.clear();
         STACK.remove();
         RESTORED.remove();
+        STARTERS.remove();
         STARTED_BY.remove();
     }
 }

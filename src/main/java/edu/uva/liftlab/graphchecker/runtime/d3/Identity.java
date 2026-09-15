@@ -178,6 +178,15 @@ public final class Identity {
         if (!Text.safe(anchorEndpointId).isEmpty()) {
             return CausalContext.of(anchorEndpointId, Text.safe(rpcSite));
         }
+        // A thread started by a submission ran because of that submission:
+        // its endpoint is the anchor, exactly as a message's producer is.
+        // Two sibling threads doing the same work under one request -- the
+        // two FSImageSaver threads on hdfs-17960 -- share a role, a window
+        // index and a call path, and are told apart by nothing else.
+        String started = Lineage.startedBy();
+        if (!started.isEmpty()) {
+            return CausalContext.of(started, "THREAD_START");
+        }
         if (role != null && role != Role.UNKNOWN && windowIndex > 0) {
             return CausalContext.of(role, windowIndex);
         }

@@ -1766,7 +1766,8 @@ public final class ConcolicRegionRuntime {
                 }
             }
             active.recordConfiguredSourceMint(entry, safe(sourceId),
-                    safe(fieldSignature), symbol, expression, reused);
+                    safe(fieldSignature), symbol, expression, reused,
+                    assignment == null ? recordedScalar(value) : null);
             if (evidence != null) {
                 active.recordSymbolicSource(entry.key(), evidence);
             }
@@ -2292,7 +2293,9 @@ public final class ConcolicRegionRuntime {
      * @return the submission endpoint's id, or {@code ""}
      */
     static String noteWorkSubmission(String nodeKey) {
-        if (!D3Runtime.open()) return "";
+        // Minted in the recording too, where there is no session to publish
+        // into: the id is what the started thread's causal context IS, and
+        // the recording's own rows need it as much as a replay's do.
         try {
             ActiveRegion active = activeRegion();
             edu.uva.liftlab.graphchecker.d3.contract.OccurrenceAddress from =
@@ -2301,7 +2304,7 @@ public final class ConcolicRegionRuntime {
                             : active.d3Address;
             if (from == null) return "";
             edu.uva.liftlab.graphchecker.d3.contract.Endpoint submission =
-                    D3Runtime.nextEndpoint(from, "SUBMIT", 0);
+                    D3Runtime.submission(from);
             if (submission == null) return "";
             D3Runtime.starting(submission);
             return submission.id();
@@ -6698,8 +6701,17 @@ public final class ConcolicRegionRuntime {
         private synchronized void recordConfiguredSourceMint(
                 SourceSiteEntry entry, String sourceId,
                 String fieldSignature, String symbol,
-                JsonElement expression, boolean reused) {
+                JsonElement expression, boolean reused,
+                String recordedValue) {
             JsonObject row = new JsonObject();
+            // What the run read at the mint.  A root whose row states no
+            // value has no centre for a relative domain to resolve
+            // against -- [+0,+3] around nothing -- so the composer cannot
+            // move it at all.
+            if (recordedValue != null && !recordedValue.isEmpty()) {
+                row.addProperty("observedValue", recordedValue);
+                row.addProperty("recordedValue", recordedValue);
+            }
             row.addProperty("sourceId", safe(sourceId));
             row.addProperty("sourcePhaseId", entry.phaseId());
             row.addProperty("occurrenceId", occurrenceId());
