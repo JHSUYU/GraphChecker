@@ -396,6 +396,10 @@ public class D3ContractTest {
         // whose whole expression is a placeholder's own symbol.
         Rows unstated = clean();
         unstated.writes.clear();
+        // and the mint states a different version, so nothing states v7
+        unstated.reads.set(1, ReadRow.of("s-gate", 16L,
+                unstated.placeholderAt, keys, 7L,
+                "M_I_field_" + REGION + ".in.a1", "I", "2", 99L));
         assertInvariant(7, GapClass.DIAGNOSTIC, "field=observedVersion",
                 unstated);
         Rows fabricated = clean();
@@ -408,21 +412,23 @@ public class D3ContractTest {
         // a version no write carries is stated all the same -- and a
         // placeholder that states none is refused, once the recording
         // publishes the field at all.
+        // The mint's own version is NOT the version it observed: laneA5's
+        // placeholder observed 77 and minted 177, and keying the mint by the
+        // observed version refused a row whose field was right there in it.
         Rows mintStated = clean();
-        mintStated.writes.clear();
-        mintStated.mintVersion = 7L;
-        assertTrue("a version the placeholder mint states is stated: "
-                        + names(gate(mintStated)),
+        mintStated.reads.set(1, ReadRow.of("s-gate", 16L,
+                mintStated.placeholderAt, keys, 7L,
+                "M_I_field_" + REGION + ".in.a1", "I", "2", 177L));
+        mintStated.reads.add(ReadRow.of("s-gate", 17L, mintStated.readAt,
+                keys, 177L, "state_allKeys_177", BLOCK_KEY, null));
+        assertTrue("the mint states 177 and a later read observes it, so "
+                        + "neither is unstated: " + names(gate(mintStated)),
                 noViolation(gate(mintStated), 7));
         Rows unminted = clean();
-        unminted.mintVersion = -1L;
+        unminted.reads.set(1, ReadRow.of("s-gate", 16L,
+                unminted.placeholderAt, keys, 7L,
+                "M_I_field_" + REGION + ".in.a1", "I", "2"));
         assertInvariant(7, GapClass.BLOCKING, "field=mintVersion", unminted);
-        // P2m: the window-start pseudo-occurrence owns a write no activation
-        // can, and nothing else is let through with it.
-        assertFalse(RowInvariants.windowStart(clean().anchor));
-        assertFalse(RowInvariants.windowStart(OccurrenceAddress.of(DN0,
-                REGION, CausalContext.of(PRODUCER_ID, RPC),
-                index(frame(RUN, 0)))));
         // 8: a RootMintRow is published for a declared root, and its reading
         // is spelled the way its kind is read back.
         Rows undeclared = clean();
@@ -459,13 +465,7 @@ public class D3ContractTest {
     /** One session's rows, as a recording a table row can bend. */
     private final class Rows {
         private String id = "s-gate";
-        /**
-         * What every placeholder row of this session states as its
-         * {@code mintVersion}, or null to publish the field at all -- the
-         * contract v2.4 field, written straight into the line because the
-         * typed row does not carry it until runtime P2k lands on staging.
-         */
-        private Long mintVersion;
+
         private OccurrenceAddress anchor;
         private Endpoint readAt;
         private Endpoint writeAt;
@@ -487,18 +487,6 @@ public class D3ContractTest {
             RowCodec.writeAll(dir.decisions(), decisions,
                     RowCodec::writeDecision);
             RowCodec.writeAll(dir.reads(), reads, RowCodec::writeRead);
-            if (mintVersion != null) {
-                List<String> lines = new java.util.ArrayList<>();
-                for (ReadRow row : reads) {
-                    JsonObject line = RowCodec.writeRead(row);
-                    if (row.endpoint().site()
-                            .contains(RowInvariants.PLACEHOLDER)) {
-                        line.addProperty("mintVersion", mintVersion);
-                    }
-                    lines.add(RowCodec.toLine(line));
-                }
-                java.nio.file.Files.write(dir.reads(), lines);
-            }
             RowCodec.writeAll(dir.writes(), writes, RowCodec::writeWrite);
             RowCodec.writeAll(dir.roots(), roots, RowCodec::writeRootMint);
             RowCodec.writeAll(dir.targets(), targets, RowCodec::writeTarget);
@@ -549,7 +537,7 @@ public class D3ContractTest {
         rows.reads.add(ReadRow.of("s-gate", 16L, rows.placeholderAt,
                 LocationId.of(LocationKind.MAP,
                         "o.a.h.h.s.t.b.BlockTokenSecretManager", "allKeys"),
-                7L, "M_I_field_" + REGION + ".in.a1", "I", "2"));
+                7L, "M_I_field_" + REGION + ".in.a1", "I", "2", 7L));
         rows.targets.add(TargetRow.of("s-gate", 15L, rows.anchor, "Guard#u8",
                 "EXPR.0000000000000001", true, true));
         return rows;

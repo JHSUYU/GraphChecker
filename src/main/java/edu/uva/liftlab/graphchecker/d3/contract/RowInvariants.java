@@ -47,22 +47,6 @@ public final class RowInvariants {
     private static final Pattern DECIMAL = Pattern.compile("^-?[0-9]+$");
     /** The site spelling a placeholder read carries. */
     public static final String PLACEHOLDER = "#PLACEHOLDER#";
-    /**
-     * The node's window-start pseudo-occurrence (runtime P2m).
-     *
-     * <p>A container-typed declared input's INITIAL state is published as a
-     * WriteRow whose endpoint occurrence is this: the state the window opened
-     * with was written before any activation of the window ran, so no
-     * activation can own it and invariant 1 exempts it.  Such a writer is
-     * UNATTESTED by construction -- it states what the container held and
-     * never why, so it carries no path condition, and the composer and the
-     * explorer may deliver its value but never treat it as an attested arm
-     * (HANDOVER SS1.4: attested = instrumented AND (seed OR focused)).  Every
-     * other invariant treats it as an ordinary writer: it is one row per
-     * event, its endpoint distinguishes its events, and its expression is
-     * lowered like any other.</p>
-     */
-    public static final String WINDOW_START = "Root:WINDOW_START";
 
     private RowInvariants() {
     }
@@ -154,21 +138,12 @@ public final class RowInvariants {
                                     String kind, long seq,
                                     OccurrenceAddress occurrence) {
         if (ran.contains(occurrence.id())) return;
-        // The window's own opening state has no activation to belong to.
-        if (windowStart(occurrence)) return;
         if (!said.add(kind + "|" + occurrence.id())) return;
         gaps.add(violation(session, GapKind.ADMISSION_GAP, GapClass.BLOCKING,
                 kind, seq, "occurrence", occurrence.render(),
                 "invariant 1 (CONTRACT-SPEC SS2: one ActivationRow per "
                         + "activation): this session published no activation "
                         + "for the occurrence this row is about"));
-    }
-
-    /** Whether this is the node's window-start pseudo-occurrence. */
-    public static boolean windowStart(OccurrenceAddress occurrence) {
-        return occurrence != null
-                && occurrence.context().form() == CausalContext.Form.ROOT
-                && occurrence.context().render().startsWith(WINDOW_START);
     }
 
     // ---- 2. never-neither ---------------------------------------------
@@ -608,54 +583,40 @@ public final class RowInvariants {
                 placeholders.add(row.symbol());
             }
         }
-        // Contract v2.4: a placeholder read STATES a version of its own
-        // (ReadRow.mintVersion), so the version a later read observed is
-        // stated either by a write or by the mint.  The field is read off the
-        // rows rather than off a typed accessor, so the rule holds the moment
-        // the runtime publishes it and says "pending" until then -- a
-        // published field is the only evidence that it exists.
-        Map<String, Long> mintVersions = mintVersions(session);
-        boolean published = mintVersions != null;
-        if (published) {
-            for (Map.Entry<String, Long> mint : mintVersions.entrySet()) {
-                if (mint.getValue().longValue() >= 0) {
-                    stated.add(mint.getKey());
-                }
+        // Contract v2.4: a placeholder read STATES a version of its own,
+        // which is NOT the version it observed -- seq 243 of laneA5 observed
+        // 77 and minted 177 -- so the two are added to the same set of
+        // stated versions and never compared with each other.  Keying the
+        // mint by the observed version is what made the gate refuse a row
+        // whose field was right there in it.
+        for (ReadRow row : session.reads()) {
+            if (row.mintVersion() >= 0) {
+                stated.add(row.location() + "@" + row.mintVersion());
             }
         }
-        GapClass unstated = published ? GapClass.BLOCKING
-                : GapClass.DIAGNOSTIC;
-        String pending = published ? ""
-                : "; contract v2.4's ReadRow.mintVersion is not published by "
-                + "this recording yet (pending field), so this is recorded "
-                + "rather than refused";
         Set<String> said = new LinkedHashSet<String>();
         for (ReadRow row : session.reads()) {
             if (row.observedVersion() < 0) continue;
             String key = row.location() + "@" + row.observedVersion();
             if (stated.contains(key)) continue;
-            say(session, gaps, said, GapKind.UNSTATED_VALUE, unstated,
-                    "reads", row.seq(), "observedVersion",
+            say(session, gaps, said, GapKind.UNSTATED_VALUE,
+                    GapClass.DIAGNOSTIC, "reads", row.seq(),
+                    "observedVersion",
                     key, "invariant 7 (HANDOVER SS1.4: a read joins the "
                             + "expression of the write version it observed; "
                             + "contract v2.4: or the placeholder mint that "
                             + "states it): no WriteRow of this session states "
-                            + "this version and no placeholder read mints it"
-                            + pending);
+                            + "this version and no placeholder read mints it");
         }
-        // Every placeholder row states its own version.
-        if (published) {
-            for (ReadRow row : session.reads()) {
-                if (!row.endpoint().site().contains(PLACEHOLDER)) continue;
-                Long minted = mintVersions.get(
-                        row.location() + "@" + row.observedVersion());
-                if (minted != null && minted.longValue() >= 0) continue;
-                gaps.add(violation(session, GapKind.UNSTATED_VALUE,
-                        GapClass.BLOCKING, "reads", row.seq(), "mintVersion",
-                        row.location() + "", "invariant 7 (contract v2.4: a "
-                                + "placeholder ReadRow states the version it "
-                                + "mints): this placeholder row states none"));
-            }
+        // Every placeholder row states the version it mints.
+        for (ReadRow row : session.reads()) {
+            if (!row.endpoint().site().contains(PLACEHOLDER)) continue;
+            if (row.mintVersion() >= 0) continue;
+            gaps.add(violation(session, GapKind.UNSTATED_VALUE,
+                    GapClass.BLOCKING, "reads", row.seq(), "mintVersion",
+                    row.location() + "", "invariant 7 (contract v2.4: a "
+                            + "placeholder ReadRow states the version it "
+                            + "mints): this placeholder row states none"));
         }
         for (WriteRow row : session.writes()) {
             JsonObject node = session.expressions()
@@ -671,48 +632,6 @@ public final class RowInvariants {
                             + "this session minted, so it states no value of "
                             + "its own and the pair would join to nothing"));
         }
-    }
-
-    /**
-     * {@code location@mintVersion} for every placeholder read that states one.
-     *
-     * <p>Null when no row of this session carries the field at all, which is
-     * how a recording says the runtime does not publish it yet: the rule is
-     * written once and switches from recorded to refused on its own, rather
-     * than on a version number somebody has to remember to change.</p>
-     */
-    private static Map<String, Long> mintVersions(SessionReader session) {
-        Map<String, Long> minted = new LinkedHashMap<String, Long>();
-        boolean any = false;
-        List<JsonObject> rows;
-        try {
-            rows = RowCodec.readJsonl(
-                    session.directory().resolve(SessionDir.READS));
-        } catch (java.io.IOException unreadable) {
-            return null;
-        }
-        for (JsonObject row : rows) {
-            if (!row.has("mintVersion")
-                    || !row.get("mintVersion").isJsonPrimitive()) {
-                continue;
-            }
-            any = true;
-            JsonObject location = object(row, "location");
-            if (location == null) continue;
-            long version = row.get("mintVersion").getAsLong();
-            try {
-                minted.put(LocationId.of(
-                        LocationKind.valueOf(text(location, "kind")),
-                        text(location, "owner"), text(location, "slot"))
-                        + "@" + version, Long.valueOf(version));
-            } catch (IllegalArgumentException malformed) {
-                // A location the contract cannot spell is invariant 2/4's to
-                // name from the typed row; this reader states nothing about
-                // it rather than failing the whole gate on one line.
-                continue;
-            }
-        }
-        return any ? minted : null;
     }
 
     // ---- 8. roots ------------------------------------------------------

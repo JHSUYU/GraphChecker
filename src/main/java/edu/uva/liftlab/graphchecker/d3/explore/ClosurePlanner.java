@@ -379,35 +379,38 @@ public final class ClosurePlanner {
     }
 
     /**
-     * Every seed occurrence a DECLARED root's value decides something in.
+     * Every seed occurrence that decided something over a SYMBOL.
      *
-     * <p>The static graph is used only to decide what to TRACK -- the
+     * <p>Owner's ruling, 2026-09-15: a branch that carries a symbol IS a flip
+     * target.  The static graph is used only to decide what to TRACK -- the
      * root-dependence slice picks the carriers, the occurrences to replay and
-     * the BRANCHES TO FLIP -- so a decision whose predicate names a declared
-     * root is a flip candidate by definition, wherever inside G_S^W it sits.
-     * It does not have to be reachable from the anchor through rows, and on
-     * 17960 it cannot be: the seed runs the marker's TRUE arm, where
-     * {@code deleteSnapshot} defers and the counter decrement never executes,
-     * so the anchor's dependence on the deletion region exists only on the
-     * arm the flip would create. A closure that waits for a row stating that
-     * dependence waits for the replay it is supposed to ask for.</p>
+     * the BRANCHES TO FLIP -- so a decision the recording published a
+     * predicate for is a candidate wherever inside G_S^W it sits, and
+     * whether that flip is producible is the solver's verdict
+     * (UNPRODUCIBLE_ANSWER when a model lands on a symbol nothing binds,
+     * HANDOVER SS1.5) rather than a pre-filter here.  It does not have to be
+     * reachable from the anchor through rows, and on 17960 it cannot be: the
+     * seed runs the marker's TRUE arm, where {@code deleteSnapshot} defers
+     * and the counter decrement never executes, so the anchor's dependence on
+     * the deletion region exists only on the arm the flip would create.  A
+     * closure that waits for a row stating that dependence waits for the
+     * replay it is supposed to ask for.</p>
      *
      * <p>Such an occurrence is a TASK -- one focused replay, its own
      * obligations {@code prefix and not d} -- and NOT a closure member: it
      * opens no slot and joins no family until its rows connect it, which the
      * per-wave recomputation does on its own (INTERACTION-ID SS8 case 1). The
      * test is rows only: an {@code ActivationRow} of the seed session with
-     * {@code instrumented == true}, a {@code DecisionRow} of that occurrence
-     * whose term names -- through the one lowering, because the runtime
-     * publishes a predicate over a propagated value as an expression
-     * reference -- a symbol some {@code RootMintRow} of that session minted
-     * with {@code declared == true}.</p>
+     * {@code instrumented == true} and a {@code DecisionRow} of that
+     * occurrence that states a predicate -- {@link FlipQuery#flippable}, the
+     * same rule the obligation factory cuts candidates with, so a decision
+     * cannot be a task's reason and not its candidate.</p>
      *
      * @param planned task ids the closure already holds, which are not
      *                planned twice and stay closure members
      */
-    public static List<Task> rootDependent(Corpus corpus,
-                                           Set<String> planned) {
+    public static List<Task> symbolicDecision(Corpus corpus,
+                                              Set<String> planned) {
         String seed = corpus.seedSessionId();
         SessionReader session = seed.isEmpty() ? null : corpus.session(seed);
         if (session == null) return new ArrayList<Task>();
@@ -423,7 +426,7 @@ public final class ClosurePlanner {
             OccurrenceAddress occurrence = decision.occurrence();
             if (!instrumented.contains(occurrence.id())) continue;
             if (deciding.containsKey(occurrence.id())) continue;
-            if (!namesADeclaredRoot(corpus, seed, decision)) continue;
+            if (!FlipQuery.flippable(corpus, seed, decision)) continue;
             deciding.put(occurrence.id(), occurrence);
         }
         List<Task> tasks = new ArrayList<Task>();
@@ -436,18 +439,6 @@ public final class ClosurePlanner {
                     new ArrayList<OccurrenceAddress>(), seed));
         }
         return tasks;
-    }
-
-    /** Whether one decision's predicate rests on a declared root's value. */
-    private static boolean namesADeclaredRoot(Corpus corpus, String sessionId,
-                                              DecisionRow decision) {
-        if (!FlipQuery.predicate(decision.term())) return false;
-        for (String symbol : SmtText.symbols(FlipQuery.statedTerm(corpus,
-                sessionId, decision.term()), new LinkedHashSet<String>())) {
-            RootMintRow minted = corpus.rootBySymbol(sessionId, symbol);
-            if (minted != null && minted.declared()) return true;
-        }
-        return false;
     }
 
     /** The session an occurrence was first recorded in. */

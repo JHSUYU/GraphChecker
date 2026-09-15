@@ -78,26 +78,21 @@ public final class SmtLowering extends VmLoweringCore {
         JsonElement writeExpression(String locationKey, long version);
 
         /**
-         * The symbols the ROWS in this view state for a read of this
-         * location.
+         * The symbols this session's placeholder ROWS state for the
+         * version the mint gave the read.
          *
-         * <p>A version no write log entry covers can still be a read the
-         * recording states.  The VM's mint primitive gives a declared
-         * region input a fresh version whose value IS the minted symbol,
-         * so nobody wrote it and the row contract publishes it as a READ:
-         * the reading occurrence's own statement of what that read
-         * returned -- the location, the symbol and the plain decimal.  The
-         * row states a version too, but it is the version the mint was
-         * LAID OVER (the last real write of the location), not the one the
-         * mint carried, so the version is not what the two are matched by:
-         * the OCCURRENCE that published the row is, which is why this view
-         * is scoped to one (see {@code CorpusIndex.joinOf}).</p>
-         *
-         * <p>The symbols are the rows' own, so this is the recording
-         * answering what a read returned, not a value reconstructed
-         * here.</p>
+         * <p>A declared region input is a READ, so the mint's shadow store
+         * is no write and no {@code WriteRow} states the version it
+         * created -- but a term's {@code ReadFromExpression} names exactly
+         * that version, because that is what the location held when the
+         * read ran.  {@code ReadRow.mintVersion} (CONTRACT v2.4) is that
+         * version, and it is what the reader and the row are matched by:
+         * unique by construction, where {@code (occurrence, location)} was
+         * not -- one occurrence may declare one cell under SEVERAL ports,
+         * and laneA4 failed on exactly that, two placeholder rows of one
+         * occurrence for {@code INSTANCE/2#24} refusing each other.</p>
          */
-        Set<String> statedReadSymbols(String locationKey);
+        Set<String> mintedReadSymbols(long version);
     }
 
     private static final SessionJoin NO_JOIN = new SessionJoin() {
@@ -107,71 +102,57 @@ public final class SmtLowering extends VmLoweringCore {
         }
 
         @Override
-        public Set<String> statedReadSymbols(String locationKey) {
+        public Set<String> mintedReadSymbols(long version) {
             return Collections.<String>emptySet();
         }
     };
 
     /**
-     * What rows state about each location, by location.
+     * What each MINT VERSION of a session is worth, by that version.
      *
      * <p>The index every view of a session builds, so that "which symbol
-     * does a row state for a read of this location" has ONE answer however
-     * the session was opened -- the composer's corpus index and the flip
-     * query's single session alike.  A row counts when it states the value
-     * its read returned: its symbol is then bound by that row's own JOIN
-     * or PIN, which is what makes it usable as the value of a read of the
-     * same location the write log does not cover.</p>
+     * did the mint at this version give the read" has ONE answer however
+     * the session was opened.  A row counts when it states a mint version
+     * and a symbol: its symbol is then bound by that row's own JOIN or
+     * PIN, which is what makes it usable as the value of a read of the
+     * version the mint created.</p>
      *
-     * <p>{@code occurrenceId} is the scope: non-empty keeps only the rows
-     * that ONE occurrence published, which is the scope a term's own reads
-     * are asked in.  Empty asks the whole session, for a caller that has
-     * no occurrence to ask as -- and a session whose occurrences state two
-     * symbols for one location then answers nothing, rather than one of
-     * them.</p>
+     * <p>{@code ReadRow.mintVersion} is unique by construction, so no
+     * scope is needed and none is taken: the (occurrence, location) bridge
+     * this replaces could not tell two ports of one occurrence apart and
+     * refused them both.</p>
      */
-    public static Map<String, Set<String>> statedReadIndex(
-            Iterable<ReadRow> reads, String occurrenceId) {
-        Map<String, Set<String>> stated =
-                new LinkedHashMap<String, Set<String>>();
-        if (reads == null) return stated;
-        String scope = occurrenceId == null ? "" : occurrenceId;
+    public static Map<Long, Set<String>> mintedReadIndex(
+            Iterable<ReadRow> reads) {
+        Map<Long, Set<String>> minted =
+                new LinkedHashMap<Long, Set<String>>();
+        if (reads == null) return minted;
         for (ReadRow read : reads) {
-            if (read == null) continue;
+            if (read == null || read.mintVersion() < 0L) continue;
             if (read.symbol() == null || read.symbol().isEmpty()) continue;
-            if (read.concreteValue() == null
-                    || read.concreteValue().trim().isEmpty()) {
-                continue;
-            }
-            if (!scope.isEmpty() && (read.endpoint() == null
-                    || !scope.equals(read.endpoint().occurrence().id()))) {
-                continue;
-            }
-            String key = locationKey(read.location());
-            if (key.isEmpty()) continue;
-            Set<String> symbols = stated.get(key);
+            Long key = Long.valueOf(read.mintVersion());
+            Set<String> symbols = minted.get(key);
             if (symbols == null) {
                 symbols = new LinkedHashSet<String>();
-                stated.put(key, symbols);
+                minted.put(key, symbols);
             }
             symbols.add(read.symbol());
         }
-        return stated;
+        return minted;
     }
 
     /**
-     * The one symbol the rows state for a read of this location.
+     * The one symbol the mint at this version gave the read.
      *
      * <p>{@code ""} when no row states one.  Rows that disagree state NO
-     * answer -- {@code null} -- and every caller refuses that by name:
-     * picking one of two symbols would put one read's value on another
-     * read, which is the reconstruction this design does not do.</p>
+     * answer -- {@code null} -- and every caller refuses that by name: the
+     * mint version is unique by construction, so two symbols under one of
+     * them is the recording contradicting itself, and picking either would
+     * put one read's value on another read.</p>
      */
-    public static String statedReadSymbol(SessionJoin join,
-                                          String locationKey) {
-        Set<String> symbols = join == null || locationKey == null
-                || locationKey.isEmpty()
-                ? null : join.statedReadSymbols(locationKey);
+    public static String mintedReadSymbol(SessionJoin join, long version) {
+        Set<String> symbols = join == null || version < 0L
+                ? null : join.mintedReadSymbols(version);
         if (symbols == null || symbols.isEmpty()) return "";
         if (symbols.size() > 1) return null;
         return symbols.iterator().next();
@@ -322,8 +303,8 @@ public final class SmtLowering extends VmLoweringCore {
             writes.put(locationKey(write.location()) + "#" + write.version(),
                     write.expressionRef());
         }
-        final Map<String, Set<String>> stated =
-                statedReadIndex(session.reads(), "");
+        final Map<Long, Set<String>> minted =
+                mintedReadIndex(session.reads());
         return new SessionJoin() {
             @Override
             public JsonElement writeExpression(String locationKey,
@@ -334,8 +315,9 @@ public final class SmtLowering extends VmLoweringCore {
             }
 
             @Override
-            public Set<String> statedReadSymbols(String locationKey) {
-                Set<String> symbols = stated.get(locationKey);
+            public Set<String> mintedReadSymbols(long version) {
+                Set<String> symbols =
+                        minted.get(Long.valueOf(version));
                 return symbols == null
                         ? Collections.<String>emptySet() : symbols;
             }
@@ -880,16 +862,18 @@ public final class SmtLowering extends VmLoweringCore {
      *   <li>a write log entry, whose expression is the writer's own
      *       propagation and whose row also names the writer occurrence the
      *       STATE families are built over;</li>
-     *   <li>otherwise the symbol a READ row states for this location --
-     *       the row the OCCURRENCE whose term this is published for it,
-     *       which is the scope {@code join} carries.  A mint is not a
-     *       write: the VM's primitive gives a declared region input a
-     *       version whose value is the minted symbol, and what that read
-     *       returned is stated by the reading occurrence's own row, bound
-     *       by that row's own join or pin.  The row's version is the last
-     *       real write the mint was laid over, not the version the mint
-     *       carried, so the two are matched by the occurrence and the
-     *       location and not by the version.</li>
+     *   <li>otherwise the symbol the placeholder row whose
+     *       {@code mintVersion} IS this version states.  A mint is not a
+     *       write: the VM's primitive gives a declared region input a new
+     *       version whose value is the minted symbol, nobody wrote it, and
+     *       the row states both halves -- {@code observedVersion}, the
+     *       last real write the mint was laid over, which is that row's
+     *       OWN join, and {@code mintVersion}, the version a reader
+     *       arrives with, which is this one.  Matched by the mint version
+     *       and by nothing else: it is unique by construction, where
+     *       (occurrence, location) was not, and one occurrence declaring
+     *       one cell under two ports made that bridge refuse both
+     *       rows.</li>
      * </ol>
      *
      * <p>The node also carries the VM's own expression for the version,
@@ -923,14 +907,14 @@ public final class SmtLowering extends VmLoweringCore {
                                 origin + ":join"), expression, location,
                         key, version, expected, origin);
             }
-            String minted = statedReadSymbol(join, key);
+            String minted = mintedReadSymbol(join, version);
             if (minted == null) {
-                return unstated("ReadVersion:" + key + "@" + version + ":"
-                                + join.statedReadSymbols(key),
-                        "the occurrence whose term this is published two "
-                                + "read rows of this location under "
-                                + "different symbols, so what its read of "
-                                + "it returned has no answer", expected);
+                return unstated("MintVersion:" + key + "@" + version + ":"
+                                + join.mintedReadSymbols(version),
+                        "two placeholder rows of this session state this "
+                                + "mint version under different symbols, so "
+                                + "what the read it made returned has no "
+                                + "answer", expected);
             }
             if (!minted.isEmpty()) {
                 return symbolTerm(symbolNode(minted,
