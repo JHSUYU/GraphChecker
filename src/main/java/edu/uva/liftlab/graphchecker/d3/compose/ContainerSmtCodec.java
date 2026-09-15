@@ -746,7 +746,7 @@ public final class ContainerSmtCodec {
             return size == null ? null : new Term(
                     "(mkIndexedState " + size.text
                             + " (indexed_elements " + state.text + "))",
-                    Sort.INDEXED);
+                    Sort.INDEXED, IntegralWidth.NONE, literal(size.text));
         }
         if ("KEY".equals(operation) || "VALUE".equals(operation)) {
             Entry entry = entry(expression.get("receiver"));
@@ -877,7 +877,8 @@ public final class ContainerSmtCodec {
             if ("INDEXED".equals(shape)) {
                 return new Term("(mkIndexedState 0"
                         + " ((as const (Array Int Value))"
-                        + " " + NULL_CELL + "))", Sort.INDEXED);
+                        + " " + NULL_CELL + "))", Sort.INDEXED,
+                        IntegralWidth.NONE, 0L);
             }
             if ("ASSOCIATIVE".equals(shape)) {
                 return new Term("(mkAssocState 0"
@@ -978,23 +979,21 @@ public final class ContainerSmtCodec {
                         : host.box(arguments.get(0));
                 return value == null ? null
                         : new Term("(indexed_append " + receiver.text + " "
-                        + value.text + ")", Sort.INDEXED);
+                        + value.text + ")", Sort.INDEXED,
+                        IntegralWidth.NONE, grown(receiver, 1L));
             }
             if ("INSERT".equals(operation) && arguments.size() == 2) {
                 Term index = host.operand(arguments.get(0), Sort.INT);
                 Term value = namedPerMutation(arguments.get(1))
                         ? host.element(arguments.get(1), expression)
                         : host.box(arguments.get(1));
-                return index == null || value == null ? null
-                        : new Term("(indexed_insert " + receiver.text + " "
-                        + index.text + " " + value.text + ")",
-                        Sort.INDEXED);
+                if (index == null || value == null) return null;
+                return shift(receiver, index, value, host);
             }
             if ("REMOVE".equals(operation) && arguments.size() == 1) {
                 Term index = host.operand(arguments.get(0), Sort.INT);
-                return index == null ? null
-                        : new Term("(indexed_remove " + receiver.text + " "
-                        + index.text + ")", Sort.INDEXED);
+                if (index == null) return null;
+                return shift(receiver, index, null, host);
             }
             if ("CONTAINS".equals(operation) && arguments.size() == 1) {
                 Term value = host.box(arguments.get(0));
@@ -2003,6 +2002,114 @@ public final class ContainerSmtCodec {
         return cursor;
     }
 
+    /**
+     * One list insertion or removal, shifted WITHOUT a quantifier.
+     *
+     * <p>{@code indexed_insert}/{@code indexed_remove} state the shift as a
+     * {@code lambda} over every index, which puts the query in a fragment
+     * z3 answers {@code (incomplete quantifiers)}: 17960's moved valuation
+     * came back undecided after 141 s while the same query with the two
+     * lambdas gone was decided in 0.07 s.  The shift itself is finite --
+     * the recording states how many elements the list held -- so where the
+     * size is stated the result is written out as that many
+     * {@code store}s, each at a CONCRETE index:</p>
+     *
+     * <pre>
+     *   insert: a[k] = ite(k &lt; i, s[k], ite(k = i, v, s[k-1]))  k in [0, n]
+     *   remove: a[k] = ite(k &lt; i, s[k], s[k+1])                 k in [0, n-2]
+     * </pre>
+     *
+     * <p>Exact, not approximate: every index the list has is written, and
+     * the index {@code i} stays symbolic -- no case split on it, so the
+     * term is linear in the size the recording stated.  The cells past the
+     * new size are not written because they are not in the list; the size
+     * is what says which they are.</p>
+     *
+     * <p>The operation's own DEFINEDNESS is stated beside it, as the
+     * division lowering states a non-zero divisor: {@code List.add(i, v)}
+     * requires {@code 0 <= i <= n} and {@code remove(i)} requires
+     * {@code 0 <= i < n}, and an index outside that throws rather than
+     * producing a list.  The recording shows the operation HAPPENED, so
+     * this is that execution's own fact, and no witness is lost by it: an
+     * out-of-range index is an execution that threw, which is not a path
+     * that reached the anchor.</p>
+     *
+     * <p>A state whose size the recording does not state keeps the
+     * quantified definition -- there is nothing here to invent a size
+     * from -- and an {@code unknown} the quantifiers leave behind is named
+     * by {@link Solver} rather than passed off as a verdict.</p>
+     *
+     * @param value the element to insert, or null for a removal
+     */
+    private static Term shift(Term receiver, Term index, Term value,
+                              Host host) {
+        long size = receiver.indexedSize;
+        boolean insert = value != null;
+        if (size < 0L) {
+            // No stated size: the shift stays the quantified relation it
+            // was, and the refusal is the solver's to name.
+            host.unsupported("ContainerRelation:INDEXED:"
+                    + (insert ? "INSERT" : "REMOVE")
+                    + ":unstated-size");
+            return new Term("(indexed_" + (insert ? "insert" : "remove")
+                    + " " + receiver.text + " " + index.text
+                    + (insert ? " " + value.text : "") + ")",
+                    Sort.INDEXED);
+        }
+        if (!insert && size == 0L) {
+            host.unsupported("ContainerRelation:INDEXED:REMOVE:empty");
+            return null;
+        }
+        long result = insert ? size + 1L : size - 1L;
+        // What the execution's own semantics require of the index.
+        host.require("(and (<= 0 " + index.text + ") ("
+                + (insert ? "<=" : "<") + " " + index.text + " " + size
+                + "))");
+        StringBuilder array = new StringBuilder("(indexed_elements ")
+                .append(receiver.text).append(')');
+        for (long slot = 0L; slot < result; slot++) {
+            String held = "(indexed_read " + receiver.text + " " + slot
+                    + ")";
+            String cell;
+            if (insert) {
+                String before = slot == 0L ? held
+                        : "(indexed_read " + receiver.text + " "
+                        + (slot - 1L) + ")";
+                cell = "(ite (< " + slot + " " + index.text + ") " + held
+                        + " (ite (= " + slot + " " + index.text + ") "
+                        + value.text + " " + before + "))";
+            } else {
+                cell = "(ite (< " + slot + " " + index.text + ") " + held
+                        + " (indexed_read " + receiver.text + " "
+                        + (slot + 1L) + "))";
+            }
+            array = new StringBuilder("(store ").append(array).append(' ')
+                    .append(slot).append(' ').append(cell).append(')');
+        }
+        return new Term("(mkIndexedState " + result + " " + array + ")",
+                Sort.INDEXED, IntegralWidth.NONE, result);
+    }
+
+    /** One decimal size the recording stated, or -1. */
+    private static long literal(String text) {
+        String value = text == null ? "" : text.trim();
+        if (value.isEmpty()) return -1L;
+        for (int index = 0; index < value.length(); index++) {
+            if (!Character.isDigit(value.charAt(index))) return -1L;
+        }
+        try {
+            return Long.parseLong(value);
+        } catch (NumberFormatException tooLarge) {
+            return -1L;
+        }
+    }
+
+    /** This state's size plus one more element, or -1. */
+    private static long grown(Term receiver, long by) {
+        return receiver == null || receiver.indexedSize < 0L ? -1L
+                : receiver.indexedSize + by;
+    }
+
     /** Names a pure subterm when the host supports DAG sharing. */
     private static Term shared(Term value, Host host) {
         if (value == null) return null;
@@ -2298,17 +2405,42 @@ public final class ContainerSmtCodec {
         public final String text;
         public final Sort sort;
         public final IntegralWidth integralWidth;
+        /**
+         * How many elements this INDEXED state holds, or {@code -1}.
+         *
+         * <p>The RECORDING states it: a container the execution built from
+         * an empty one, or from a snapshot whose size the VM published as a
+         * literal, has a size this lowering can count along the chain of
+         * operations it is lowering.  It is what lets a shift be written as
+         * a finite store chain instead of a {@code lambda} -- the whole
+         * reason 17960's moved valuation came back
+         * {@code (incomplete quantifiers)} -- and it is never guessed: a
+         * state whose size the recording does not state carries
+         * {@code -1}.</p>
+         */
+        public final long indexedSize;
 
         public Term(String text, Sort sort) {
             this(text, sort, IntegralWidth.NONE);
         }
 
         public Term(String text, Sort sort, IntegralWidth integralWidth) {
+            this(text, sort, integralWidth, -1L);
+        }
+
+        public Term(String text, Sort sort, IntegralWidth integralWidth,
+                    long indexedSize) {
             this.text = text;
             this.sort = sort;
             this.integralWidth = sort == Sort.INT
                     && integralWidth != null
                     ? integralWidth : IntegralWidth.NONE;
+            this.indexedSize = sort == Sort.INDEXED ? indexedSize : -1L;
+        }
+
+        /** The same term, at the size the recording states for it. */
+        public Term sized(long size) {
+            return new Term(text, sort, integralWidth, size);
         }
     }
 
