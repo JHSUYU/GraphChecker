@@ -232,11 +232,17 @@ public class D3RuntimeTest {
                 Collections.<String, String[]>emptyMap());
         placeholder(occurrence, placeholderRow("b", null), "M_I_unversioned",
                 Collections.<String, String[]>emptyMap());
-        // The mint's own shadow store is not a write, and the row still
-        // states the location and version the VM observed for the read.
+        // The mint's own shadow store is not a write, so the version this
+        // read OBSERVED is the last real write before it -- version 125,
+        // which the WriteRow above states -- and the row is the anchor's
+        // join to that writer.
         placeholder(occurrence, placeholderRow("c", null), "M_I_installed",
                 Collections.singletonMap("M_I_installed",
-                        new String[]{"INSTANCE_FIELD/22#24", "125"}));
+                        new String[]{"INSTANCE_FIELD/22#24", "126", "125"}));
+        // A mint with no write before it states -1 and pins the decimal.
+        placeholder(occurrence, placeholderRow("e", null), "M_I_unwritten",
+                Collections.singletonMap("M_I_unwritten",
+                        new String[]{"INSTANCE_FIELD/22#24", "126", "-1"}));
         D3Runtime.closeSession();
 
         SessionDir dir = session();
@@ -275,12 +281,16 @@ public class D3RuntimeTest {
         assertEquals(LocationId.of(LocationKind.INSTANCE,
                         "java.util.concurrent.atomic.AtomicInteger", "value"),
                 reads.get(2).location());
-        // The mint is not a write -- no WriteRow states its version -- but
-        // the row names the VM's location and the version the read saw, so
-        // a term that spells that read finds this symbol there.
+        // The mint is not a write -- no WriteRow states its version -- so
+        // the row names the VM's location and the LAST REAL WRITE before
+        // the mint, which is the write above: the placeholder read is the
+        // anchor's JOIN to the occurrence that wrote the cell.
         assertEquals(writes.get(0).location(), reads.get(3).location());
         assertEquals(125L, reads.get(3).observedVersion());
         assertEquals("2", reads.get(3).concreteValue());
+        assertEquals("no write precedes the mint: -1 and the decimal",
+                ReadRow.UNKNOWN_VERSION, reads.get(4).observedVersion());
+        assertEquals("2", reads.get(4).concreteValue());
         List<RootMintRow> roots = RowCodec.readAll(dir.roots(),
                 RowCodec::readRootMint);
         assertEquals(RootKind.INTEGRAL, roots.get(0).kind());

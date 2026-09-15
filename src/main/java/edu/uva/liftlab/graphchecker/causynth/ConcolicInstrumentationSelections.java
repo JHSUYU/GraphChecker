@@ -156,6 +156,8 @@ public final class ConcolicInstrumentationSelections {
             materializations = ConcolicMaterializationSelection.from(symbolic);
             materializations.addSharedCarrierTargets(
                     task.sharedCarriers(), inputActions.all());
+            materializations.addObservedWriteSites(
+                    task.observedWriteSites());
             communicationHandoffs = task.communicationHandoffs();
             configuredSourcePhases = task.configuredSourcePhases();
 
@@ -513,6 +515,15 @@ public final class ConcolicInstrumentationSelections {
                 sharedCarrierFieldsBySite = new LinkedHashMap<>();
         private final Map<String, AccessorCallTarget> accessorCallsBySite =
                 new LinkedHashMap<>();
+        /**
+         * Stores of a declared input's cell the replay must observe, by site.
+         *
+         * <p>The plan decides these ({@code ExecutionTask
+         * .observedWriteSites}); the pass rewrites each exactly once, and
+         * the runtime hook is a no-op outside an active region.</p>
+         */
+        private final Map<String, ObservedWriteTarget> observedWritesBySite =
+                new LinkedHashMap<>();
         private boolean associativeContainerState;
 
         private static ConcolicMaterializationSelection from(
@@ -641,6 +652,47 @@ public final class ConcolicInstrumentationSelections {
                     }
                 }
             }
+        }
+
+        /**
+         * Registers the write sites the plan selected for observation.
+         *
+         * <p>A cell the VM retains by value has no version log until
+         * something symbolic reaches it, so a store the plan selected
+         * publishes nothing unless the location is observed first.  Each
+         * entry names one bytecode site; a second task naming the same site
+         * with a different cell is a plan the pass cannot execute and is
+         * refused rather than silently merged.</p>
+         */
+        void addObservedWriteSites(JsonArray sites) throws IOException {
+            for (JsonElement element : sites == null
+                    ? new JsonArray() : sites) {
+                if (!element.isJsonObject()) continue;
+                JsonObject site = element.getAsJsonObject();
+                String method = optionalString(site, "method");
+                int unitIndex = optionalInteger(site, "unitIndex", -1);
+                String siteId = optionalString(site, "siteId");
+                String callee = optionalString(site, "declaredCallee");
+                String cell = optionalString(site, "cell");
+                if (method.isEmpty() || unitIndex < 0 || siteId.isEmpty()
+                        || callee.isEmpty() || cell.isEmpty()
+                        || !siteId.equals(SiteId.of(method, unitIndex))) {
+                    throw unsupported(site);
+                }
+                ObservedWriteTarget target = new ObservedWriteTarget(method,
+                        unitIndex, siteId, callee, cell);
+                ObservedWriteTarget held =
+                        observedWritesBySite.put(siteId, target);
+                if (held != null && !held.sameObservation(target)) {
+                    throw new IOException(
+                            "OBSERVED_WRITE_SITE_CONFLICT: " + siteId);
+                }
+            }
+        }
+
+        /** The write sites this campaign observes, deduplicated. */
+        Collection<ObservedWriteTarget> observedWrites() {
+            return observedWritesBySite.values();
         }
 
         private void addSharedCarrierAccessSite(String encoded,
@@ -910,6 +962,16 @@ public final class ConcolicInstrumentationSelections {
             mergeNested(sharedCarrierFieldsBySite,
                     other.sharedCarrierFieldsBySite);
             associativeContainerState |= other.associativeContainerState;
+            for (ObservedWriteTarget target
+                    : other.observedWritesBySite.values()) {
+                ObservedWriteTarget held =
+                        observedWritesBySite.put(target.siteId, target);
+                if (held != null && !held.sameObservation(target)) {
+                    throw new IllegalStateException(
+                            "OBSERVED_WRITE_SITE_CAMPAIGN_CONFLICT: "
+                                    + target.siteId);
+                }
+            }
             for (AccessorCallTarget target
                     : other.accessorCallsBySite.values()) {
                 if (conflicts(target)) {
@@ -967,6 +1029,29 @@ public final class ConcolicInstrumentationSelections {
                 }
             }
             return selected.size();
+        }
+    }
+
+    /** One store of a declared input's cell that the replay observes. */
+    static final class ObservedWriteTarget {
+        final String method;
+        final int unitIndex;
+        final String siteId;
+        final String declaredCallee;
+        final String cell;
+
+        ObservedWriteTarget(String method, int unitIndex, String siteId,
+                            String declaredCallee, String cell) {
+            this.method = method;
+            this.unitIndex = unitIndex;
+            this.siteId = siteId;
+            this.declaredCallee = declaredCallee;
+            this.cell = cell;
+        }
+
+        boolean sameObservation(ObservedWriteTarget other) {
+            return other != null && declaredCallee.equals(
+                    other.declaredCallee) && cell.equals(other.cell);
         }
     }
 

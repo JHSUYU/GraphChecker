@@ -199,7 +199,96 @@ public final class ConcolicScheduler {
 
             result.executionTasks.add(scheduled);
         }
+        // Which stores of a declared input's cell the replay must observe:
+        // one campaign-wide answer, computed from the same refined graph the
+        // root-dependence slice is computed from, and annotated onto every
+        // task because a location is shared and the first write of it in
+        // the window is what starts its log -- whichever occurrence makes
+        // it.  json() is the live row by decision (PlanRow).
+        JsonArray writeSites = observedWriteSites(loaded.refinedGraph,
+                declaredInputCells(result.executionTasks));
+        if (writeSites.size() > 0) {
+            for (ExecutionTask task : result.executionTasks) {
+                task.json().add(ExecutionTask.OBSERVED_WRITE_SITES,
+                        writeSites.deepCopy());
+            }
+        }
         return result;
+    }
+
+    /**
+     * The exact cells this campaign's DECLARED region inputs name.
+     *
+     * <p>Only a declared input: the experiment said "the search starts at
+     * this cell", and the write sites of anything else are not this
+     * campaign's business.</p>
+     */
+    static Set<String> declaredInputCells(Iterable<ExecutionTask> tasks) {
+        Set<String> cells = new LinkedHashSet<>();
+        for (ExecutionTask task : tasks == null
+                ? Collections.<ExecutionTask>emptyList() : tasks) {
+            for (JsonElement element : task.inputActions().all()) {
+                if (!element.isJsonObject()) continue;
+                JsonObject action = element.getAsJsonObject();
+                if (!optionalBool(action,
+                        InputActionCatalog.DECLARED_SYMBOLIC_ROOT, false)) {
+                    continue;
+                }
+                for (String member : new String[]{"leafFieldSignature",
+                        "accessFieldSignature", "cell"}) {
+                    String signature = optionalString(action, member);
+                    if (FieldPathSpec.declaredField(signature) != null) {
+                        cells.add(signature);
+                    }
+                }
+            }
+        }
+        return cells;
+    }
+
+    /**
+     * The stores of a declared cell the replay must observe, from the graph.
+     *
+     * <p>The runtime-refined graph already states every heap write as a
+     * {@code field_mutation} edge carrying the bytecode site and the callee
+     * that performed it, so this reads the writer sites off the graph rather
+     * than inferring them.  The only writers it admits are the ones the VM
+     * has a linearization for -- {@link SharedFieldFlow#atomicValueField} is
+     * that surface, and it also proves the carrier field's type owns the
+     * cell -- because a store the VM does not model publishes no version
+     * however early the location is tracked.  Scoping only: which sites are
+     * observed, never what any of them wrote.</p>
+     */
+    static JsonArray observedWriteSites(List<JsonObject> refinedGraph,
+                                        Set<String> declaredCells) {
+        JsonArray sites = new JsonArray();
+        if (declaredCells == null || declaredCells.isEmpty()) return sites;
+        Set<String> seen = new LinkedHashSet<>();
+        for (JsonObject edge : refinedGraph == null
+                ? Collections.<JsonObject>emptyList() : refinedGraph) {
+            if (!"field_mutation".equals(optionalString(edge, "kind"))) {
+                continue;
+            }
+            String invoke = optionalString(edge, "invoke");
+            String cell = SharedFieldFlow.atomicValueField(
+                    optionalString(edge, "toCell"), invoke);
+            if (cell.isEmpty() || !declaredCells.contains(cell)) continue;
+            String method = optionalString(edge, "method");
+            String siteId = optionalString(edge, "siteId");
+            int unitIndex = optionalInteger(edge, "unitIndex", -1);
+            if (method.isEmpty() || siteId.isEmpty() || unitIndex < 0
+                    || !seen.add(siteId)) {
+                continue;
+            }
+            JsonObject site = new JsonObject();
+            site.addProperty("method", method);
+            site.addProperty("unitIndex", unitIndex);
+            site.addProperty("siteId", siteId);
+            site.addProperty("declaredCallee", invoke);
+            site.addProperty("cell", cell);
+            sites.add(site);
+        }
+        return sites;
     }
 
     /**

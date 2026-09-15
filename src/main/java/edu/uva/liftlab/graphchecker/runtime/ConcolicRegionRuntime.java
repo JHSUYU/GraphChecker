@@ -508,6 +508,13 @@ public final class ConcolicRegionRuntime {
 
     /** Closes a lightweight accessor scope on normal or exceptional return. */
     public static void exitAccessorCallContext(long contextToken) {
+        // Before the frame is popped: the reads this call performed are
+        // stated at the site the call stands on, not at its caller's.
+        AccessorCallContext closing = contextToken == 0L ? null
+                : CURRENT_ACCESSOR_CALL_CONTEXT.get();
+        if (closing != null && closing.contextToken == contextToken) {
+            stampDeclaredReads(closing);
+        }
         D3Runtime.exitFrame();
         if (contextToken == 0L) return;
         try {
@@ -1408,6 +1415,9 @@ public final class ConcolicRegionRuntime {
                     continue;
                 }
                 String leafFieldSignature = exactFieldSignature(exactField);
+                // WHERE the reads of this declared cell happen: inside this
+                // accessor call, whose frame the index already carries.
+                armDeclaredReadStamp(active, leafOwner, leafFieldSignature);
                 Object value = exactField.get(leafOwner);
                 boolean assignmentFailed = false;
                 for (ModelAssignment assignment
@@ -1473,6 +1483,182 @@ public final class ConcolicRegionRuntime {
             }
         }
         armGuardedRead(active, owner, guardedRead);
+    }
+
+    /**
+     * Remembers the frames this accessor call stands on for its cell's reads.
+     *
+     * <p>Called where the declared read is materialized, which is inside the
+     * accessor call context and therefore inside its execution-index frame.
+     * The baseline is the newest read event the location's log already
+     * carries, so the reads stamped at the close of the call are exactly the
+     * ones this call performed.</p>
+     */
+    private static void armDeclaredReadStamp(ActiveRegion active,
+                                             Object owner,
+                                             String fieldSignature) {
+        AccessorCallContext context = CURRENT_ACCESSOR_CALL_CONTEXT.get();
+        if (context == null || active == null || owner == null
+                || safe(fieldSignature).isEmpty()
+                || context.regionToken != active.token) {
+            return;
+        }
+        context.stampOwner = owner;
+        context.stampCell = safe(fieldSignature);
+        context.stampIndex = D3Runtime.siteIndexHere();
+        context.stampBaseline = newestReadEvent(owner, context.stampCell);
+    }
+
+    /** States the site of every read this accessor call performed. */
+    private static void stampDeclaredReads(AccessorCallContext context) {
+        if (context == null || context.stampOwner == null
+                || context.stampCell.isEmpty()) {
+            return;
+        }
+        try {
+            JsonObject envelope = declaredCellEnvelope(context.stampOwner,
+                    context.stampCell);
+            if (envelope == null) return;
+            String locationKey = SharedStateEvidence.locationKey(envelope);
+            if (locationKey.isEmpty()) return;
+            for (JsonElement element : array(envelope, "reads")) {
+                if (!element.isJsonObject()) continue;
+                long event = optionalLongInteger(element.getAsJsonObject(),
+                        "readEventId", -1L);
+                if (event < 0L || event <= context.stampBaseline) continue;
+                D3Runtime.readSite(locationKey, event,
+                        context.callSiteId + ":READ", context.stampIndex);
+            }
+        } catch (Throwable ignored) {
+            // A stamp the run could not state leaves the endpoint with the
+            // empty index, which the row publication names as a gap.
+        } finally {
+            context.stampOwner = null;
+            context.stampCell = "";
+        }
+    }
+
+    /** The newest read event one declared cell's log carries, or -1. */
+    private static long newestReadEvent(Object owner, String fieldSignature) {
+        try {
+            JsonObject envelope = declaredCellEnvelope(owner, fieldSignature);
+            if (envelope == null) return -1L;
+            long newest = -1L;
+            for (JsonElement element : array(envelope, "reads")) {
+                if (!element.isJsonObject()) continue;
+                long event = optionalLongInteger(element.getAsJsonObject(),
+                        "readEventId", -1L);
+                if (event > newest) newest = event;
+            }
+            return newest;
+        } catch (Throwable unavailable) {
+            return -1L;
+        }
+    }
+
+    /** One declared cell's version/read envelope, as the VM holds it now. */
+    private static JsonObject declaredCellEnvelope(Object owner,
+                                                   String fieldSignature)
+            throws Exception {
+        JsonElement parsed = parseJson(
+                engine().sharedFieldVersions(owner, fieldSignature));
+        if (parsed == null || !parsed.isJsonObject()) return null;
+        JsonObject envelope = parsed.getAsJsonObject();
+        return envelope.has("location") || !envelope.has("envelope")
+                ? envelope : object(envelope, "envelope");
+    }
+
+    /**
+     * Tracks a declared region input's cell from this write onwards.
+     *
+     * <p>The VM retains a location BY VALUE: its version log begins at the
+     * first symbolic value written to it, so a location nothing symbolic
+     * has reached yet has no log and a store to it leaves no version
+     * behind.  On hdfs-17960 that is why the snapshot counter's two
+     * decrements published nothing and the anchor's read of the same cell
+     * had no writer to join: the first symbolic value the cell ever saw was
+     * the anchor's own placeholder mint, AFTER both writes.</p>
+     *
+     * <p>{@code System.observeExactPrimitiveField} attaches the value the
+     * field holds right now as a concrete leaf -- a {@code ConExpression},
+     * not a symbol, so no input is invented -- which is enough for the VM
+     * to start versioning the location.  The Atomic RMW that follows is
+     * then linearized by the VM's own summary
+     * ({@code SymbolicAtomic::finish_method_helper} -&gt;
+     * {@code publish_linearization}) and published as a version like any
+     * other store's, carrying the expression the VM built.  The PLAN stage
+     * decides WHICH write sites are observed; this states what the write
+     * did.</p>
+     */
+    public static void observeDeclaredWriteSite(String siteId,
+                                                String fieldSignature,
+                                                Object receiver) {
+        ActiveRegion active = activeRegion();
+        if (active == null || receiver == null
+                || safe(fieldSignature).isEmpty()) {
+            return;
+        }
+        try {
+            engine().observeExactPrimitiveField(receiver, fieldSignature);
+            ensurePathRecordingStarted(active);
+            diag("DECLARED_WRITE_OBSERVED", safe(siteId) + " "
+                    + safe(fieldSignature));
+        } catch (Throwable failure) {
+            active.addUnresolvedOnce(safe(siteId)
+                    + ": declared write site could not be observed on "
+                    + safe(fieldSignature) + ": " + rootCause(failure));
+        }
+    }
+
+    /**
+     * States where the version this write just published was written.
+     *
+     * <p>A published version names the location and the value, never the
+     * bytecode that stored it, and the write log is read out at the end of
+     * the activation -- by then the thread is back at the region entry and
+     * the frames of the store are gone.  This hook runs AT the store, with
+     * those frames live, and asks the VM which version the store produced
+     * (the newest one of this location).  Both halves are facts of the run:
+     * the version comes from the VM's own log and the index from the
+     * thread's own frame stack (IDENTITY-V3 sec 1: Endpoint = (occurrence,
+     * site, siteIndex, attempt)).</p>
+     */
+    public static void recordDeclaredWriteSite(String siteId,
+                                               String fieldSignature,
+                                               Object receiver) {
+        ActiveRegion active = activeRegion();
+        if (active == null || receiver == null
+                || safe(fieldSignature).isEmpty()) {
+            return;
+        }
+        String index = D3Runtime.siteIndexHere();
+        try {
+            JsonObject envelope = declaredCellEnvelope(receiver,
+                    fieldSignature);
+            if (envelope == null) return;
+            String locationKey = SharedStateEvidence.locationKey(envelope);
+            long newest = -1L;
+            for (JsonElement element : array(envelope, "versions")) {
+                if (!element.isJsonObject()) continue;
+                long id = optionalLongInteger(element.getAsJsonObject(),
+                        "fieldVersionId", -1L);
+                if (id > newest) newest = id;
+            }
+            if (locationKey.isEmpty() || newest < 0L) {
+                active.addUnresolvedOnce(safe(siteId)
+                        + ": the write published no version of "
+                        + safe(fieldSignature) + " this run can address");
+                return;
+            }
+            D3Runtime.writeSite(locationKey, newest,
+                    safe(siteId) + ":WRITE", index);
+            diag("DECLARED_WRITE_VERSION", safe(siteId) + " " + locationKey
+                    + "@" + newest + " sidx=" + index);
+        } catch (Throwable failure) {
+            active.addUnresolvedOnce(safe(siteId)
+                    + ": declared write site could not state its version on "
+                    + safe(fieldSignature) + ": " + rootCause(failure));
+        }
     }
 
     /** Applies a model to the key used by this exact live Map.get. */
@@ -5726,6 +5912,11 @@ public final class ConcolicRegionRuntime {
         final Object receiver;
         final int occurrence;
         private final AccessorCallContext previous;
+        /** The declared cell whose reads inside this call are stamped. */
+        private String stampCell = "";
+        private Object stampOwner;
+        private String stampIndex = "";
+        private long stampBaseline = -1L;
 
         private AccessorCallContext(
                 long contextToken, long regionToken, Thread thread,
@@ -6805,6 +6996,13 @@ public final class ConcolicRegionRuntime {
             row.addProperty("plannedOccurrenceId",
                     activation.occurrenceId);
             row.addProperty("occurrenceId", occurrenceId());
+            // WHERE in the region this read stood, captured here because
+            // here is where it runs: the row is published at the end of the
+            // activation, and the frames are gone by then.  The accessor
+            // call context pushes its own frame (D3Runtime.enterFrame), so
+            // two reads of one accessor site inside one occurrence differ by
+            // that frame's iteration rather than by an ordinal.
+            row.addProperty("siteIndex", D3Runtime.siteIndexHere());
             row.addProperty("symbol", safe(requestedSymbol));
             JsonArray encodedPath = new JsonArray();
             for (String segment : fieldPath == null

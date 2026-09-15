@@ -87,6 +87,8 @@ final class ConcolicVmBroker {
     private Method symbolizeWithPrefix;
     private Method symbolizeField;
     private Method symbolizeExactField;
+    private Method observeExactPrimitiveField;
+    private Method sharedFieldVersions;
     private Method trackContainer;
     private Method getExpression;
     private Method getFieldExpression;
@@ -189,6 +191,48 @@ final class ConcolicVmBroker {
         }
         symbolizeExactField.invoke(null, owner, field.owner(),
                 field.name(), javaTypeDescriptor(field.type()), prefix);
+    }
+
+    /**
+     * Attaches the value one exact int/long field holds right now as that
+     * field's concrete expression.
+     *
+     * <p>Not a symbolic input: the leaf the VM installs is a
+     * {@code ConExpression} over the value the field already has
+     * ({@code concolicMngr.cpp:887}).  What it buys is that the location
+     * becomes one the VM will version -- retention is by value, so an
+     * untracked field's writes leave no version behind at all, and a write
+     * site the plan selected would publish nothing.  The write that follows
+     * is then a version like any other store's, carrying the expression the
+     * VM built from this observed value.</p>
+     */
+    void observeExactPrimitiveField(Object owner, String fieldSignature)
+            throws Exception {
+        DeclaredField field = FieldPathSpec.declaredField(
+                safe(fieldSignature));
+        if (field == null) {
+            throw new UnsupportedOperationException(
+                    "no exact declared field for observed leaf: "
+                            + safe(fieldSignature));
+        }
+        observeExactPrimitiveField.invoke(null, owner, field.owner(),
+                field.name(), javaTypeDescriptor(field.type()));
+    }
+
+    /** One selected field's own version envelope, as the VM holds it now. */
+    String sharedFieldVersions(Object owner, String fieldSignature)
+            throws Exception {
+        DeclaredField field = FieldPathSpec.declaredField(
+                safe(fieldSignature));
+        if (field == null) {
+            throw new UnsupportedOperationException(
+                    "no exact declared field for version read-back: "
+                            + safe(fieldSignature));
+        }
+        return requiredVmJson(sharedFieldVersions.invoke(null, owner,
+                field.owner(), field.name(),
+                javaTypeDescriptor(field.type())),
+                "getSharedFieldVersions");
     }
 
     boolean trackContainer(Object value, String prefix)
@@ -327,6 +371,11 @@ final class ConcolicVmBroker {
         api.symbolizeExactField = method(system, "symbolizeExactField",
                 Object.class, String.class, String.class, String.class,
                 String.class);
+        api.observeExactPrimitiveField = method(system,
+                "observeExactPrimitiveField", Object.class, String.class,
+                String.class, String.class);
+        api.sharedFieldVersions = method(system, "getSharedFieldVersions",
+                Object.class, String.class, String.class, String.class);
         api.trackContainer = method(system, "trackContainerExpression",
                 Object.class, String.class);
         api.getExpression = method(system, "getSymbolicExpression",

@@ -60,6 +60,8 @@ public final class ExecutionTask extends PlanRow {
 
     /** Member a scheduler declares this task's symbolic carriers in. */
     public static final String SHARED_CARRIERS = "sharedCarriers";
+    /** Write sites of a declared input's cell the replay must observe. */
+    public static final String OBSERVED_WRITE_SITES = "observedWriteSites";
     /** Solver-selected concrete values for exact guarded primitive reads. */
     public static final String GUARDED_READ_ASSIGNMENTS =
             "guardedReadAssignments";
@@ -484,6 +486,21 @@ public final class ExecutionTask extends PlanRow {
 
     public JsonArray sharedCarriers() {
         return array(encoded, SHARED_CARRIERS).deepCopy();
+    }
+
+    /**
+     * The write sites of a declared region input's cell.
+     *
+     * <p>Scoping, not value: the VM retains a location by value, so a cell
+     * nothing symbolic has reached yet keeps no version log and its stores
+     * publish nothing.  These are the stores the replay must OBSERVE -- the
+     * concrete value the field already holds becomes the location's first
+     * expression -- so that every later write of it is a version a reader
+     * can join to.  Each entry names a bytecode site and the cell it
+     * writes; what the write did is the runtime's to state.</p>
+     */
+    public JsonArray observedWriteSites() {
+        return array(encoded, OBSERVED_WRITE_SITES).deepCopy();
     }
 
     /** Full immutable replay contract for offline validation and summaries. */
