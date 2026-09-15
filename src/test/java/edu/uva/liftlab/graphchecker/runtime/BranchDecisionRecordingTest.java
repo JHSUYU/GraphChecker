@@ -74,8 +74,10 @@ public class BranchDecisionRecordingTest {
      *
      * <p>The site id in that row is also what the VM is told a guarded
      * store depends on: the guarded-store table names the store's method
-     * with the internal owner the VM asks with and carries the guard branch
-     * site verbatim, exactly as this row spells it.</p>
+     * with the internal owner the VM asks with and carries each guard branch
+     * site verbatim as its own tab-separated field, exactly as this row
+     * spells it -- commas and all, since a site id's parameter list has
+     * them (VM25).</p>
      */
     @Test
     public void aBinaryDecisionPublishesOneRowAndTheReach() throws Exception {
@@ -86,19 +88,32 @@ public class BranchDecisionRecordingTest {
                 + "\"rawPathConditionSize\":0,\"siteId\":\"" + DECLARED
                 + "\",\"unitIndex\":4}]\n" + REACH,
                 publishes(binary(true)));
-        assertEquals("the store's method is internal, its guard verbatim",
-                "a/B#run(I)V\t" + DECLARED + "\n",
-                GuardedStoreSites.of(Collections.singletonList(
-                        writeSite("a.B#run(I)V", DECLARED))).text());
+        GuardedStoreSites table = GuardedStoreSites.of(
+                Collections.singletonList(writeSite("a.B#run(I)V",
+                        DECLARED, COMMAS)));
+        assertEquals("the store's method is internal, each guard a field",
+                "a/B#run(I)V\t" + DECLARED + "\t" + COMMAS + "\n",
+                table.text());
+        assertEquals("the VM keeps every method the table guards", 1,
+                table.methods());
     }
 
-    /** One {@code WRITE_SITE} row of a static scope map, with its guard. */
-    private static JsonObject writeSite(String vmSite, String guard) {
+    /** A guard whose method takes two parameters, so its id has a comma. */
+    private static final String COMMAS =
+            "<a.B: void run(int,long)>#u9";
+
+    /** One {@code WRITE_SITE} row of a static scope map, with its guards. */
+    private static JsonObject writeSite(String vmSite, String... guards) {
+        StringBuilder stated = new StringBuilder();
+        for (String guard : guards) {
+            if (stated.length() > 0) stated.append(',');
+            stated.append('\'').append(guard).append('\'');
+        }
         return JsonParser.parseString(("{'kind':'STATIC_SCOPE_SITE','role':"
                 + "'WRITE_SITE','regionId':'REGION.1','siteId':'" + METHOD
                 + "#u7','vmSite':'" + vmSite + "','cell':'<a.B: int f>',"
                 + "'carrier':'<a.B: int f>','portId':'','declaredCallee':'',"
-                + "'guards':['" + guard + "']}").replace('\'', '"'))
+                + "'guards':[" + stated + "]}").replace('\'', '"'))
                 .getAsJsonObject();
     }
 
