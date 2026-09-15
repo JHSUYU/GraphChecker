@@ -506,7 +506,10 @@ public final class Composer {
         String selector = "path_selector__" + ordinal + "__"
                 + JsonText.digest(path.pathId(), 10);
         lowering.declare(selector, Sort.BOOL);
-        SmtLowering.SessionJoin rows = corpus.joinOf(session);
+        // This path's own occurrence: the reads its terms name are the
+        // ones the anchor published rows for, and a placeholder row is
+        // matched to them by occurrence and location.
+        SmtLowering.SessionJoin rows = corpus.joinOf(session, anchor);
         lowering.begin(session, rows, corpus.expressions(session));
 
         List<String> terms = new ArrayList<String>();
@@ -945,21 +948,20 @@ public final class Composer {
                 continue;
             }
             if (answered.contains(read.symbol())) continue;
-            // The version this read observed, as the ROWS state it: no
-            // write made it, and a read row of this session does.  The
-            // reader's symbol is then that symbol -- same location, same
-            // version, same session -- which is the mint the VM performed
-            // at a declared region input, and not a value chosen here.
-            String minted = SmtLowering.statedReadSymbol(join, key,
-                    read.observedVersion());
+            // What this occurrence's OWN row says its read of this
+            // location returned: no write made the version this read
+            // observed, and a read row of the same occurrence states the
+            // read.  That is the mint the VM performed at a declared
+            // region input -- whose row carries the last real write's
+            // version, not the mint's -- and not a value chosen here.
+            String minted = SmtLowering.statedReadSymbol(join, key);
             if (minted == null) {
                 refusals.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
                         GapClass.DIAGNOSTIC, key + "@"
                                 + read.observedVersion(),
-                        "two read rows of this session state different "
-                                + "symbols for this location at this "
-                                + "version: " + join.statedReadSymbols(key,
-                                read.observedVersion())));
+                        "this occurrence published two read rows of this "
+                                + "location under different symbols: "
+                                + join.statedReadSymbols(key)));
                 continue;
             }
             if (minted.equals(read.symbol())) {

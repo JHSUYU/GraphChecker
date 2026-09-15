@@ -95,6 +95,14 @@ public class D3ComposerTest {
      */
     private static final String MINTED =
             "M_I_field_REGION.target.in.counter";
+    /**
+     * The same, on a location a real write log entry covers: the version
+     * a placeholder row states is the LAST REAL WRITE the mint was laid
+     * over, so the row joins to that write's expression while the term's
+     * ReadFrom names the version the mint carried.
+     */
+    private static final String MINTED_JOINED =
+            "M_I_field_REGION.target.in.counter2";
 
     // ------------------------------------------------------------------
     // 1. Polarity: the recording is refuted, the flip reaches the failure.
@@ -586,26 +594,28 @@ public class D3ComposerTest {
                     symbol(NO_ROW, "I"), integer("I", 4L)));
             session.decision(ANCHOR, "anchor#u11", true,
                     "EXPR.00000000000000b4");
-            // A version no write log entry covers, and TWO read rows of
-            // this session state a value for it under DIFFERENT symbols.
-            // What the version holds then has no answer: taking either one
-            // would put one read's value on the other read's version, so
-            // the ReadFrom naming it is refused by name -- and so is the
-            // reader whose own row states nothing.
+            // ONE occurrence, ONE location, and TWO read rows of it
+            // stating a value under DIFFERENT symbols -- at two versions,
+            // because the version is not what the reader and the row are
+            // matched by.  What this occurrence's read of the location
+            // returned then has no answer: taking either one would put
+            // one read's value on another read, so the ReadFrom is
+            // refused by name -- and so is the reader whose own row
+            // states nothing.
             session.read(Endpoint.of(ANCHOR, "Counter#a#1:READ",
                             at("two#1", 0), 0),
                     LocationId.of(LocationKind.INSTANCE, "9", "16"), 7L,
                     "two_a", "I", "1");
             session.read(Endpoint.of(ANCHOR, "Counter#b#1:READ",
                             at("two#2", 0), 0),
-                    LocationId.of(LocationKind.INSTANCE, "9", "16"), 7L,
+                    LocationId.of(LocationKind.INSTANCE, "9", "16"), 9L,
                     "two_b", "I", "2");
             session.read(Endpoint.of(ANCHOR, "Counter#r#1:READ",
                             at("two#3", 0), 0),
-                    LocationId.of(LocationKind.INSTANCE, "9", "16"), 7L,
-                    "INSTANCE/9#16@v7", "I", null);
+                    LocationId.of(LocationKind.INSTANCE, "9", "16"), 11L,
+                    "INSTANCE/9#16@v11", "I", null);
             session.expression("EXPR.00000000000000b5", binary("==",
-                    read("INSTANCE_FIELD", 9L, 16L, 7L, "I"),
+                    read("INSTANCE_FIELD", 9L, 16L, 11L, "I"),
                     integer("I", 1L)));
             session.decision(ANCHOR, "anchor#u12", true,
                     "EXPR.00000000000000b5");
@@ -644,16 +654,16 @@ public class D3ComposerTest {
                         + "refused by name, naming the class and offset",
                 named(gaps, "UNSTATED_FIELD_PROJECTION:"
                         + "org/apache/Store@48:L"));
-        assertTrue("two read rows stating different symbols for one "
-                        + "version state nothing about it, and the "
-                        + "ReadFrom naming it is refused by name",
-                named(gaps, "UNSTATED_VALUE:ReadVersion:INSTANCE/9#16@7:"
+        assertTrue("two rows of one occurrence stating different symbols "
+                        + "for one location state nothing about its read "
+                        + "of it, and the ReadFrom is refused by name",
+                named(gaps, "UNSTATED_VALUE:ReadVersion:INSTANCE/9#16@11:"
                         + "[two_a, two_b]"));
         assertTrue("and so is the reader whose own row states no value",
                 says(gaps, GapKind.UNSTATED_VALUE,
-                        "two read rows of this session state different "
-                                + "symbols for this location at this "
-                                + "version: [two_a, two_b]"));
+                        "this occurrence published two read rows of this "
+                                + "location under different symbols: "
+                                + "[two_a, two_b]"));
         assertFalse("the unplaceable symbol is not in the formula",
                 composition.body().contains("vh_ref"));
     }
@@ -990,6 +1000,30 @@ public class D3ComposerTest {
                         at("count#3", 0), 0),
                 LocationId.of(LocationKind.INSTANCE, "22", "24"),
                 174L, "INSTANCE/22#24@v174", "I", null);
+        // The same shape where the mint was laid over a REAL write: the
+        // counter's RMW at v77 is in the write log, the placeholder row
+        // states v77 (the version it was laid over) and the term's
+        // ReadFrom names v178 (the version the mint gave the read).  The
+        // row and the term are matched by THIS OCCURRENCE and the
+        // location, so the row's symbol is the read's value -- and the
+        // row's own value comes from the JOIN to v77, which is the
+        // writer's chain, not from the pin to what it happened to read.
+        session.expression("EXPR.00000000000000e2", binary("+",
+                symbol(SERIAL, "I"), integer("I", 1L)));
+        session.write(Endpoint.of(PRODUCER, "Manager#createSnapshot#27:WRITE",
+                        at("rmw#1", 0), 0),
+                LocationId.of(LocationKind.INSTANCE, "2", "24"), 77L,
+                "EXPR.00000000000000e2");
+        session.read(Endpoint.of(ANCHOR,
+                        "INSTANCE_FIELD/2#24#PLACEHOLDER#0:READ",
+                        at("count#4", 0), 0),
+                LocationId.of(LocationKind.INSTANCE, "2", "24"),
+                77L, MINTED_JOINED, "I", "2");
+        session.read(Endpoint.of(ANCHOR,
+                        "<Manager: int getNumSnapshots()>#u2:READ",
+                        at("count#5", 0), 0),
+                LocationId.of(LocationKind.INSTANCE, "2", "24"),
+                178L, "INSTANCE/2#24@v178", "I", null);
         // Two reference-typed reads whose value the ROW states, the way a
         // reference read states one: the VM's rid spelling, and "N" for
         // null.  A row and a FieldAccess concreteValue mean the same thing
@@ -1024,8 +1058,11 @@ public class D3ComposerTest {
         session.expression("EXPR.00000000000000f3", binary("!=",
                 read("INSTANCE_FIELD", 22L, 24L, 174L, "I"),
                 integer("I", 5L)));
+        session.expression("EXPR.00000000000000f4", binary("!=",
+                read("INSTANCE_FIELD", 2L, 24L, 178L, "I"),
+                integer("I", 9L)));
         session.target("(and EXPR.00000000000000f1 EXPR.00000000000000f2 "
-                        + "EXPR.00000000000000f3)",
+                        + "EXPR.00000000000000f3 EXPR.00000000000000f4)",
                 false, true);
         session.write();
 
@@ -1103,6 +1140,26 @@ public class D3ComposerTest {
                         + "row states no value",
                 fatalArm(composition).contains(SmtLowering.legalSymbols(
                         "(= INSTANCE/22#24@v174 " + MINTED + ")")));
+        // The mint laid over a real write: matched by occurrence and
+        // location, and valued by the JOIN to the version its row states.
+        assertTrue("a placeholder row whose version the write log DOES "
+                        + "cover takes the writer's expression, not the "
+                        + "value it read: " + fatalArm(composition),
+                fatalArm(composition).contains(SmtLowering.legalSymbols(
+                        "(= " + MINTED_JOINED + " (java_int_wrap (+ "
+                                + SERIAL + " 1)))")));
+        assertFalse("so it is not pinned to that value",
+                fatalArm(composition).contains(SmtLowering.legalSymbols(
+                        "(= " + MINTED_JOINED + " 2)")));
+        assertTrue("and the term's ReadFrom over the version the MINT "
+                        + "carried is that row's symbol, which no row and "
+                        + "no write states by version: "
+                        + fatalArm(composition),
+                fatalArm(composition).contains(SmtLowering.legalSymbols(
+                        "(not (= " + MINTED_JOINED + " 9))")));
+        assertTrue("as is the reader row of the mint version",
+                fatalArm(composition).contains(SmtLowering.legalSymbols(
+                        "(= INSTANCE/2#24@v178 " + MINTED_JOINED + ")")));
         // A row whose stated value is a REFERENCE, through the one
         // lowering a FieldAccess concreteValue goes through.
         assertTrue("a row that states an identity pins its symbol to the "
