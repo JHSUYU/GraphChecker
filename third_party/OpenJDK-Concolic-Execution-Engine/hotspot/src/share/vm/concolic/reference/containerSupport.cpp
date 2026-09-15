@@ -677,18 +677,35 @@ ContainerSupport::StateQuery ContainerSupport::query_state(
   return answer;
 }
 
+// Naming an object is not making it symbolic.  This function answers what a
+// reference *is*, for a recording that has to state what it read; it used to
+// answer by allocating a shadow, which is the thing that turns an object's
+// own loads into symbolic ones -- CONCOLIC_ALOAD gates on
+// `arrObj->is_symbolic()`, so naming one array-valued field put every element
+// load of that array on the container path, with a state root, a position
+// constraint and a path condition per load.  On 17960's seed that was 57 MB of
+// expressions and 39 GB of RSS for a recording that had only been asked for a
+// name.  So an object with no shadow is named and left alone
+// (`name_reference`), and one that already has a shadow answers exactly as
+// before.
 Expression *ContainerSupport::concrete_value(oop value) {
   if (value == NULL) return SymbolExpression::get(Sym_NULL);
   if (value->is_array()) {
-    SymArr *array =
-        ConcolicMngr::ctx->get_or_alloc_sym_array((arrayOop)value);
-    if (array != NULL && array->get_ref_exp() != NULL) {
-      return array->get_ref_exp();
+    SymArr *array = ConcolicMngr::ctx->find_sym_array((arrayOop)value);
+    if (array != NULL) {
+      return array->get_ref_exp() != NULL
+          ? array->get_ref_exp()
+          : static_cast<Expression *>(new ArraySymbolExp(
+                array->get_sym_rid(), array->get_version(), T_OBJECT));
     }
-    return array == NULL
+    // A named array's version is 0, which is the version a shadow allocated
+    // for it now would report: an unshadowed array has no recorded mutation
+    // to have moved it on.
+    sym_rid_t named = ConcolicMngr::ctx->name_reference(value);
+    return named == NULL_SYM_RID
         ? static_cast<Expression *>(new PlaceHolderSymbolExp(value))
-        : static_cast<Expression *>(new ArraySymbolExp(
-              array->get_sym_rid(), array->get_version(), T_OBJECT));
+        : static_cast<Expression *>(
+              new ArraySymbolExp(named, 0, T_OBJECT));
   }
   Symbol *type = value->klass()->name();
   if (type->equals(SymPrimitive<jboolean>::TYPE_NAME))
@@ -709,10 +726,15 @@ Expression *ContainerSupport::concrete_value(oop value) {
     return SymPrimitive<jdouble>::get_exp_of(value);
   if (type == vmSymbols::java_lang_String())
     return SymString::get_exp_of(value);
-  SymInstance *identity =
-      ConcolicMngr::ctx->get_or_alloc_sym_inst(value);
-  return identity == NULL ? new PlaceHolderSymbolExp(value)
-                          : identity->get_or_create_ref_exp(value);
+  SymInstance *identity = ConcolicMngr::ctx->find_sym_inst(value);
+  if (identity != NULL) return identity->get_or_create_ref_exp(value);
+  // Named, not shadowed.  InstanceSymbolExp reads the identity straight out
+  // of the header, so this is the same spelling the object's own shadow would
+  // give it if it ever gets one -- the allocators adopt a named id.
+  sym_rid_t named = ConcolicMngr::ctx->name_reference(value);
+  return named == NULL_SYM_RID
+      ? static_cast<Expression *>(new PlaceHolderSymbolExp(value))
+      : static_cast<Expression *>(new InstanceSymbolExp(value));
 }
 
 Expression *ContainerSupport::semantic_value(oop value) {

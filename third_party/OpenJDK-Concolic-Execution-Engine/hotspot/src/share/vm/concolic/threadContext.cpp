@@ -472,6 +472,10 @@ int ThreadContext::next_container_removal_position(oop cursor) {
   return heap().next_container_removal_position(cursor);
 }
 
+sym_rid_t ThreadContext::name_reference(oop obj) {
+  return heap().name_reference(obj);
+}
+
 SymInstance *ThreadContext::get_or_alloc_sym_inst(oop obj) {
   return heap().get_or_alloc_sym_inst(obj);
 }

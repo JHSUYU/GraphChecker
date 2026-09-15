@@ -185,6 +185,20 @@ public:
   SessionSymbolicHeap();
   ~SessionSymbolicHeap();
 
+  /**
+   * This object's session identity, minting one if it has none.
+   *
+   * The identity a recording needs to *name* what a reference read returned,
+   * and nothing else: no shadow, no store entry, no GC root, and the object
+   * stays non-symbolic (`SYM_RID_NAMED_ONLY`), so naming it cannot change
+   * which loads take the symbolic path or which expressions exist.  An object
+   * that already has an identity -- named earlier, or symbolic -- keeps it, so
+   * one object has one identity for the session however it was reached.
+   *
+   * Returns NULL_SYM_RID only for a NULL object.
+   */
+  sym_rid_t name_reference(oop obj);
+
   SymInstance *get_or_alloc_sym_inst(oop obj);
   SymInstance *alloc_sym_inst(oop obj);
   SymInstance *get_sym_inst(sym_rid_t sym_rid);
