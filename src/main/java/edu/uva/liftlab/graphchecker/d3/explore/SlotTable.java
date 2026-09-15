@@ -43,10 +43,11 @@ import java.util.Set;
  *   <li>the same pair from any later replay FILLS the slot; arms accumulate;</li>
  *   <li>an interaction outside the closure is RECORDED and no more — it is
  *       not this anchor's business, but a reader should still see it;</li>
- *   <li>a REPLACEMENT contradicts the skeleton rather than growing it: a
- *       consumer endpoint already in a slot paired with a DIFFERENT producer,
- *       a STATE reader paired with a writer outside the versions it could
- *       have observed, or a closure member whose {@code CausalContext} changed
+ *   <li>a REPLACEMENT contradicts the skeleton rather than growing it: a WIRE
+ *       consumer endpoint already in a slot paired with a DIFFERENT producer
+ *       by another session, a STATE reader paired with a writer outside the
+ *       versions it could have observed, or a closure member whose
+ *       {@code CausalContext} changed
  *       — the same code point in the same control context, started for a
  *       different reason. That is {@code TOPOLOGY_DIVERGENCE}, BLOCKING, and
  *       the campaign opens a new epoch from that replay's pairing; the old
@@ -100,7 +101,22 @@ public final class SlotTable {
 
     private final Map<String, Slot> byInteraction =
             new LinkedHashMap<String, Slot>();
-    /** consumer endpoint id -> the slot the skeleton pairs it in. */
+    /**
+     * WIRE consumer endpoint id -> the slot the skeleton pairs it in.
+     *
+     * <p>WIRE only, and that is the whole of R-I6 vs R-I7: a message has ONE
+     * producer, so a consumer endpoint the catalog pairs with another one is
+     * a contradiction -- the routing, the retry or the binding changed.  A
+     * STATE reader has no such thing.  Which writer delivered the version it
+     * read is a fact about that session's path, and across sessions the
+     * writers ARE the family's arms; a flip is expected to change which one
+     * delivers, because that is what the flip is for.  17960's counter read
+     * pairs with createSnapshot in the seed and with deleteSnapshot in every
+     * marker flip, and reading that as a replacement forked an epoch over
+     * the arm the wave had just asked for.  So "opened by another session"
+     * means nothing for a STATE slot: it is never consulted, and a STATE
+     * pairing no slot holds is growth.</p>
+     */
     private final Map<String, Slot> slotOfConsumer =
             new LinkedHashMap<String, Slot>();
 
@@ -141,7 +157,9 @@ public final class SlotTable {
 
     private void hold(Slot slot) {
         byInteraction.put(slot.interactionId(), slot);
-        slotOfConsumer.put(slot.consumer.id(), slot);
+        if (slot.kind == InteractionKind.WIRE) {
+            slotOfConsumer.put(slot.consumer.id(), slot);
+        }
     }
 
     /**
@@ -222,10 +240,11 @@ public final class SlotTable {
                     replaced = true;
                     continue;
                 }
+                // No REPLACED case: a state pairing cannot contradict the
+                // catalog, so take() never answers one for a STATE slot.
                 switch (take(InteractionKind.STATE, writer.endpoint(), consumer,
                         session.sessionId(), wave, opened, gaps)) {
                     case FILLED: filled++; break;
-                    case REPLACED: replaced = true; break;
                     default: break;
                 }
             }
@@ -312,9 +331,12 @@ public final class SlotTable {
      *
      * <p>The decision is per SLOT.  {@code byInteraction} answers it for the
      * pair itself, and the consumer-keyed map answers the R-I6 question that
-     * a slot id cannot: whether a REPLAY has paired a consumer endpoint with
-     * a producer other than the one the CATALOG holds it against.  That is a
-     * cross-session statement, and only that is a replacement.</p>
+     * a slot id cannot: whether a REPLAY has paired a WIRE consumer endpoint
+     * with a producer other than the one the CATALOG holds it against.  That
+     * is a cross-session statement about a message, and only that is a
+     * replacement (R-I6; R-I7/R-I7.1 make a state pairing a path fact, and
+     * the arms of one family are exactly the writers different sessions
+     * delivered from).</p>
      *
      * <p>Two pairings of one consumer endpoint id inside ONE session are not
      * a contradiction -- a run does not contradict itself.  They are two
@@ -330,7 +352,10 @@ public final class SlotTable {
         Slot slot = new Slot(kind, producer, consumer, sessionId, wave);
         String interaction = slot.interactionId();
         if (byInteraction.containsKey(interaction)) return Outcome.FILLED;
-        Slot held = slotOfConsumer.get(consumer.id());
+        // A STATE pairing is never a contradiction: every (writer, reader)
+        // pair any session states is one more arm of that reader's family.
+        Slot held = kind == InteractionKind.WIRE
+                ? slotOfConsumer.get(consumer.id()) : null;
         if (held != null && !held.producer.id().equals(producer.id())) {
             if (!held.openedBySession.equals(sessionId)) {
                 gaps.add(GapRow.of(sessionId, GapKind.TOPOLOGY_DIVERGENCE,
