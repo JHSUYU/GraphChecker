@@ -88,13 +88,13 @@ public final class RegionGuardedConcreteWriteSmoke {
         // marker's own result would consume the reservation and the branch
         // that followed would contribute no guard.
         // The plan's answer, installed the way the runtime installs it: this
-        // method's stores are control-dependent on GUARD.expiry, and nothing
+        // method's stores are control-dependent on GUARD_SITE, and nothing
         // else in this program is control-dependent on anything.  A store in
         // a method the table does not name never starts a log, which is what
         // keeps a decision from admitting every store that merely follows it.
         require(System.installGuardedStoreSites(STORE_SITES) == 1,
                 "the guarded-store table was not installed");
-        long marked = System.markConcolicBranch("GUARD.expiry", 1);
+        long marked = System.markConcolicBranch(GUARD_SITE, 1);
         if (clock.now > 50) {
             // Concrete removal of a concrete key from a concrete map, taken
             // because a symbolic predicate came out one way.
@@ -143,10 +143,28 @@ public final class RegionGuardedConcreteWriteSmoke {
         return buffer;
     }
 
-    /** This method's stores, and the branch they are control-dependent on. */
+    /**
+     * A real woven guard site id: a Soot signature followed by its unit
+     * index, whose parameter list contains commas.  Splitting the guard list
+     * on commas fragmented 15 of 27 of these and they matched nothing, so the
+     * table's fields are tab-separated and nothing else is a separator.
+     */
+    private static final String GUARD_SITE =
+            "<org.apache.hadoop.hdfs.server.namenode.snapshot.SnapshotManager:"
+                    + " java.lang.String createSnapshot(org.apache.hadoop"
+                    + ".hdfs.server.namenode.INodesInPath,java.lang.String,"
+                    + "long)>#u11";
+
+    /**
+     * This method's stores, and the branches they are control-dependent on:
+     * the method key, then one field per guard site.  Two guards here, so the
+     * second field is not the last -- a parser that stopped at the first tab,
+     * or split a field on its commas, fails this.
+     */
     private static final String STORE_SITES =
             "RegionGuardedConcreteWriteSmoke#run(Z)Ljava/lang/String;"
-                    + "\tGUARD.expiry";
+                    + "\t" + GUARD_SITE
+                    + "\t<some.Other: void m(int,long)>#u3";
 
     private static int count(String value, String needle) {
         int result = 0;

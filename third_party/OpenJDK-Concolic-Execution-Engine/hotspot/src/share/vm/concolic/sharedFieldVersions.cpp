@@ -568,14 +568,22 @@ int SharedFieldVersions::install_guarded_store_sites(const char *table) {
     size_t tab = line.find('\t');
     if (tab == std::string::npos || tab == 0) continue;
     std::string method = line.substr(0, tab);
+    // The remaining TAB-separated fields are the guard ids, and nothing is
+    // split on anything else.  A guard id is a woven site id -- a Soot
+    // signature plus its unit index, e.g.
+    // `<org.apache...SnapshotManager: java.lang.String createSnapshot(
+    // org.apache...INodesInPath,java.lang.String,long)>#u11` -- whose
+    // parameter list contains commas, so splitting on them fragmented 15 of
+    // 27 ids and the guards matched nothing.  A tab cannot occur inside an id
+    // because it is the separator, which is why the writer refuses one.
     std::vector<std::string> guards;
     size_t from = tab + 1;
     while (from <= line.size()) {
-      size_t comma = line.find(',', from);
-      if (comma == std::string::npos) comma = line.size();
-      std::string guard = line.substr(from, comma - from);
+      size_t next = line.find('\t', from);
+      if (next == std::string::npos) next = line.size();
+      std::string guard = line.substr(from, next - from);
       if (!guard.empty()) guards.push_back(guard);
-      from = comma + 1;
+      from = next + 1;
     }
     // A store method with no guard site is not control-dependent on
     // anything, so naming it would admit exactly nothing; drop it rather
