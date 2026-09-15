@@ -25,6 +25,7 @@ import edu.uva.liftlab.graphchecker.d3.contract.TargetRow;
 import edu.uva.liftlab.graphchecker.d3.contract.WriteRow;
 import java.lang.management.ManagementFactory;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -540,14 +541,53 @@ public final class D3Runtime {
                 attempt);
     }
 
-    /** Publishes what only the end of a replay can state, and closes. */
+    /**
+     * Publishes what only the end of a replay can state, and closes.
+     *
+     * <p>The verdict goes twice: into the session, which is the evidence,
+     * and into the worker's own {@code obligation_result.jsonl}, which is
+     * what the wave reads.  The replay owns the verdict -- whether the
+     * focused prefix reproduced and the flipped decision was taken is a
+     * fact of the run, not of the solve that proposed it.</p>
+     */
     public static void closeSession() {
         SessionPublisher session = publisher;
         if (session == null) return;
-        for (ObligationResult result : FocusedReplay.results(sessionId())) {
+        List<ObligationResult> results =
+                FocusedReplay.results(sessionId());
+        for (ObligationResult result : results) {
             session.obligationResult(result);
         }
+        writeWorkerVerdicts(results);
         session.close();
+    }
+
+    /** The wave's own file: one row per obligation this replay ran. */
+    private static void writeWorkerVerdicts(List<ObligationResult> results) {
+        if (results.isEmpty()) return;
+        String worker = Text.safe(System.getenv("CAUSYNTH_CONCOLIC_WORKER_DIR"));
+        if (worker.isEmpty()) return;
+        StringBuilder rows = new StringBuilder();
+        for (ObligationResult result : results) {
+            JsonObject row = new JsonObject();
+            row.addProperty("schemaVersion", 1);
+            row.addProperty("kind", "OBLIGATION_RESULT");
+            row.addProperty("obligationId", result.obligationId());
+            row.addProperty("verdict", result.verdict().name());
+            row.addProperty("sessionId", result.sessionId());
+            row.addProperty("detail", result.detail());
+            rows.append(RowCodec.toLine(row)).append('\n');
+        }
+        try {
+            java.nio.file.Files.write(
+                    java.nio.file.Paths.get(worker,
+                            "obligation_result.jsonl"),
+                    rows.toString().getBytes(
+                            java.nio.charset.StandardCharsets.UTF_8));
+        } catch (java.io.IOException unwritable) {
+            System.err.println("Causynth could not write the replay's"
+                    + " obligation verdict: " + unwritable);
+        }
     }
 
     public static void resetForTests() {
