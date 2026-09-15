@@ -1643,8 +1643,8 @@ campaign_replay() {
   local sessions="${campaign_sessions_dir:-$(dirname "${results}")/sessions}"
   mkdir -p "${sessions}"
   require_nonempty "concolic execution task plan" "${plan}"
-  [[ ! -e "${results}" ]] || die \
-    "replay output already exists; worker directories are written once: ${results}"
+  [[ ! -e "${worker}/replay.log" ]] || die \
+    "replay output already exists; worker directories are written once: ${worker}"
   mkdir -p "${worker}" "$(dirname "${results}")"
   # Every task in one workload JVM shares one propagation ledger, and the plan
   # names it: ConcolicScheduler stamps the seed replay's tasks and
@@ -1665,54 +1665,45 @@ campaign_replay() {
     "CAUSYNTH_STATIC_SCOPE_MAP=${causynth_static_scope_map}" \
     >"${worker}/replay.log" 2>&1
   # A workload whose target branch throws exits nonzero by design, so the gate
-  # is the evidence it published and not its exit code. An empty result is
-  # always a failure, and it is reported with the path that is empty.
-  [[ -s "${results}" ]] || campaign_fail REPLAY WORKLOAD "${results}" \
-    "the concolic replay published no result (exit ${status}); see ${worker}/replay.log"
-  # A workload that terminated before its selected regions ran still publishes
-  # one CONCOLIC_REGION_SKIPPED row per unreached region, so a non-empty file
-  # is not evidence that anything was replayed.  Only CONCOLIC_REGION_RESULT
-  # rows carry a session, so a result carrying none is a failed replay and is
-  # named here, beside the log that holds the workload's terminating
-  # exception -- not one stage later as a wall of anchor-miss rows.
-  if [[ "${region_results}" == required ]] \
-      && ! jq -e -n 'any(inputs; .event == "CONCOLIC_REGION_RESULT")' \
-        "${results}" >/dev/null; then
-    campaign_fail REPLAY WORKLOAD "${results}" \
-      "the concolic replay published only skipped regions (exit ${status}); the workload terminated before its selected regions ran and its exception is in ${worker}/replay.log"
-  fi
-  # Some region ran, but not the failure target.  EXPLORE still plans the
-  # TARGET member the kept slice names, and refuses it as NO_OBSERVED_PATH_SEED
-  # -- stages and one JVM wave away from the workload exception that caused it.
-  # Name the unreached target here instead, beside the log that holds that
-  # exception.
+  # is the evidence it published and not its exit code.  That evidence is the
+  # session: one JSONL file per row kind (CONTRACT-SPEC SS2), and a session
+  # with no activation row replayed nothing whatever the exit code said.
   if [[ "${region_results}" == required ]]; then
-    local unreached_targets
-    unreached_targets=$(jq -r -n --slurpfile plan "${plan}" \
-      --slurpfile ran "${results}" '
-        ($plan | map(select(.goalKind == "TARGET_REACH_CLOSURE") | .taskId)
-          | unique) as $targets
-        | ($ran | map(select(.event == "CONCOLIC_REGION_RESULT") | .taskId)
-          | unique) as $observed
-        | [$targets[] | select(IN($observed[]) | not)] as $missing
-        | if ($targets | length) == 0
-            or ($missing | length) != ($targets | length) then ""
-          else
-            ([$ran[] | select(.taskId | IN($missing[]))
-              | "\(.taskId) \(.skipKind // .event): \(.reason // "")"]
-              | unique) as $skips
-            # A planned task can publish no row at all; name it anyway.
-            | (if ($skips | length) > 0 then $skips
-               else [$missing[] | "\(.): no result row"] end)
-            | join("; ")
-          end') || campaign_fail REPLAY WORKLOAD "${results}" \
-        "the replay result could not be read for target coverage"
-    if [[ -n "${unreached_targets}" ]]; then
-      campaign_fail REPLAY WORKLOAD "${results}" \
-        "the concolic replay reached no TARGET_REACH occurrence (exit ${status}); every target task was skipped: ${unreached_targets}; the workload's terminating exception is in ${worker}/replay.log"
+    local live
+    live=$(find "${sessions}" -mindepth 2 -maxdepth 2 \
+      -name activations.jsonl -size +0c -print -quit 2>/dev/null) || live=""
+    [[ -n "${live}" ]] || campaign_fail REPLAY WORKLOAD "${sessions}" \
+      "the concolic replay published no activation row (exit ${status}); the workload terminated before its selected regions ran and its exception is in ${worker}/replay.log"
+    # Some region ran, but not the failure target.  EXPLORE still plans the
+    # TARGET member the kept slice names, and refuses it as
+    # NO_OBSERVED_PATH_SEED -- stages and one JVM wave away from the workload
+    # exception that caused it.  Name the unreached target here instead,
+    # beside the log that holds that exception.  The target row states it:
+    # reachedAnchor says whether this session reached the anchor at all.
+    local declared_target reached=""
+    local -a target_rows=()
+    declared_target=$(jq -r '.method // ""' \
+      "${causynth_output_dir}/target_resolved.json") \
+      || campaign_fail REPLAY WORKLOAD "${sessions}" \
+        "the declared target could not be read for target coverage"
+    while IFS= read -r -d '' target_file; do
+      target_rows+=("${target_file}")
+    done < <(find "${sessions}" -mindepth 2 -maxdepth 2 -name targets.jsonl \
+      -print0)
+    if [[ -n "${declared_target}" && ${#target_rows[@]} -gt 0 ]]; then
+      reached=$(jq -r -n --arg target "${declared_target}" '
+        [inputs
+          | select(.reachedAnchor == true)
+          | select(.anchorSiteId | startswith($target + "#"))
+          | .anchorSiteId] | first // ""' "${target_rows[@]}") \
+        || campaign_fail REPLAY WORKLOAD "${sessions}" \
+          "the target rows could not be read for target coverage"
     fi
+    [[ -n "${declared_target}" && -n "${reached}" ]] || campaign_fail REPLAY \
+      WORKLOAD "${sessions}" \
+      "the concolic replay reached no TARGET_REACH occurrence (exit ${status}); no session published a target row that reached ${declared_target:-the declared target}; the workload's terminating exception is in ${worker}/replay.log"
   fi
-  campaign_log "replay role=${role} exit=${status} result=${results}"
+  campaign_log "replay role=${role} exit=${status} sessions=${sessions}"
 }
 
 
@@ -1720,6 +1711,9 @@ campaign_session_replay() {
   local iteration_dir=$1
   local seed="${iteration_dir}/seed-result"
   local plan="${iteration_dir}/seed-replay/execution_task_plan.jsonl"
+  # CAUSYNTH_CONCOLIC_RESULTS names this replay, it is not a file any more:
+  # RowRuntime derives the session id from the directory holding it, and the
+  # rows themselves go to ${iteration_dir}/sessions/<sessionId>/.
   local results="${seed}/concolic_region_results.jsonl"
   local ids
   ids=$(campaign_task_ids "${plan}")
@@ -1731,7 +1725,6 @@ campaign_session_replay() {
   mkdir -p "${campaign_sessions_dir}"
   campaign_replay worker "${plan}" "${ids}" \
     "${iteration_dir}/instrumented-classes" "${results}" "${seed}/focused"
-  require_nonempty "session replay results" "${results}"
 }
 
 
@@ -1872,7 +1865,7 @@ campaign_obligation_worker() {
   # are recorded terminal verdicts, not process failures, and the next wave
   # reads them so the obligation is not proposed again.
   case "${outcome}" in
-    UNSAT|NOT_ADMITTED|DIVERGED) return 0 ;;
+    UNSAT|NOT_ADMITTED) return 0 ;;
   esac
   [[ "${outcome}" == "SAT_MODEL_READY" ]] \
     || die "the obligation verdict is not solver-backed: ${outcome}"
@@ -2415,21 +2408,11 @@ campaign_write_gaps() {
 # from the stage that decided it, and the claim is read off those states.
 campaign_emit() {
   local iteration_dir=$1
-  local replay_rows replay_bytes gapCount raw_result_list
+  local session_rows session_bytes gapCount
   local artifacts_json stages_json iterations_json
-  local -a raw_results=()
   # Before anything is published: the generation this run was frozen on must
   # still be the generation on disk.
   campaign_verify_frozen_inputs
-  if ! raw_result_list=$(find "${iteration_dir}" -type f \
-      -name 'concolic_region_results.jsonl' -print | LC_ALL=C sort); then
-    campaign_fail EMIT CAMPAIGN "${iteration_dir}" \
-      "failed to enumerate raw replay results"
-  fi
-  [[ -z "${raw_result_list}" ]] || mapfile -t raw_results \
-    <<<"${raw_result_list}"
-  [[ ${#raw_results[@]} -gt 0 ]] || die \
-    "the iteration published no raw replay result: ${iteration_dir}"
 
   # One readable document each, because the reads below are jq invocations
   # that would otherwise hide a producer's parse failure behind their own
@@ -2538,8 +2521,14 @@ campaign_emit() {
   ' >"${campaign_final}/result.json"
   require_nonempty "campaign result" "${campaign_final}/result.json"
 
-  replay_rows=$(wc -l "${raw_results[@]}" | tail -n 1 | awk '{print $1}')
-  replay_bytes=$(stat -c '%s' "${raw_results[@]}" | awk '{n += $1} END {print n + 0}')
+  # The replay's own provenance, off the census IMPORT published and the
+  # session files it counted.  There is no folded result to measure.
+  session_rows=$(jq -r -s '[.[].rows] | add // 0' \
+    "${iteration_dir}/session_census.jsonl") || campaign_fail EMIT CAMPAIGN \
+    "${iteration_dir}/session_census.jsonl" "the session census is malformed"
+  session_bytes=$(find "${iteration_dir}/sessions" -type f \
+    \( -name '*.jsonl' -o -name 'expressions.json' \) -printf '%s\n' \
+    | awk '{n += $1} END {print n + 0}')
   if ! artifacts_json=$(campaign_artifact_digests); then
     campaign_fail EMIT CAMPAIGN "${campaign_final}" \
       "failed to validate final artifact digests"
@@ -2577,8 +2566,8 @@ campaign_emit() {
     --arg root "${campaign_root}" \
     --arg final "${campaign_final}" \
     --slurpfile artifactDocuments "${manifest_scratch}/artifacts.json" \
-    --argjson replayRows "${replay_rows}" \
-    --argjson replayBytes "${replay_bytes}" \
+    --argjson sessionRows "${session_rows}" \
+    --argjson sessionBytes "${session_bytes}" \
     --slurpfile stageDocuments "${manifest_scratch}/stages.json" \
     --slurpfile iterationDocuments "${manifest_scratch}/iterations.json" '
     ($artifactDocuments[0] // []) as $artifacts |
@@ -2593,8 +2582,8 @@ campaign_emit() {
      artifacts: $artifacts,
      metrics: {stageWallMillis: $stages,
                totalStageWallMillis: ([$stages[] | .wallMillis] | add // 0),
-               replayResultRows: $replayRows,
-               replayResultBytes: $replayBytes}}
+               sessionRows: $sessionRows,
+               sessionBytes: $sessionBytes}}
   ' >"${campaign_final}/run-manifest.json" || manifest_status=$?
   rm -rf -- "${manifest_scratch}"
   [[ "${manifest_status}" -eq 0 ]] || campaign_fail EMIT CAMPAIGN \

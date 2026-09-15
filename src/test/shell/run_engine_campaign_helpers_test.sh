@@ -126,9 +126,6 @@ emit_fixture() {
     topologyEpoch: "iteration-0000", sessionId: "SESSION.seed",
     rowKind: "targets", rows: 1}' \
     >"${emit_iteration}/session_census.jsonl"
-  printf '%s\n' \
-    '{"taskId":"task-target","published":true}' \
-    >"${emit_iteration}/seed-result/concolic_region_results.jsonl"
   : >"${emit_iteration}/campaign_gaps.jsonl"
   jq -n '{schemaVersion: 1, kind: "CAMPAIGN_ITERATION_MANIFEST",
     iterationId: "iteration-0000", parentIterationId: "",

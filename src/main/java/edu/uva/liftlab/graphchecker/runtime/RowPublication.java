@@ -111,12 +111,6 @@ final class RowPublication {
         }
     }
 
-    private static JsonObject predicate(JsonObject witness) {
-        JsonElement satisfied = witness.get("sourceSatisfiedPredicate");
-        return satisfied != null && satisfied.isJsonObject()
-                ? satisfied.getAsJsonObject() : null;
-    }
-
     /**
      * The roots this activation minted, and the placeholders it did not.
      *
@@ -1165,7 +1159,11 @@ final class RowPublication {
                 continue;
             }
             JsonObject witness = object(mapping, "witness");
-            if (witness.size() > 0) condition = predicate(witness);
+            // The arm this run took, as the VM published it.
+            JsonElement satisfied = witness.get("sourceSatisfiedPredicate");
+            if (satisfied != null && satisfied.isJsonObject()) {
+                condition = satisfied.getAsJsonObject();
+            }
         }
         RowRuntime.target(occurrence,
                 reach == null ? 0L : optionalLongInteger(reach, "vmEventId",

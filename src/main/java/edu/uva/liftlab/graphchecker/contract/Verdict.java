@@ -18,7 +18,5 @@ public enum Verdict {
      */
     ADMITTED,
     /** The replay did not reproduce the focused region's own prefix. */
-    NOT_ADMITTED,
-    /** The replay's closure differs from the plan's: a new epoch. */
-    DIVERGED
+    NOT_ADMITTED
 }
