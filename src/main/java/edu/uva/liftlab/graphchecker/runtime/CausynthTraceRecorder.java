@@ -746,7 +746,39 @@ public final class CausynthTraceRecorder {
         event.kind = MapFields.safe(kind);
         event.method = MapFields.safe(method);
         event.callId = callId;
+        event.executionIndex = edu.uva.liftlab.graphchecker.runtime.d3
+                .Identity.atScope().render();
+        event.causalContext = recordedCausalContext();
         return event;
+    }
+
+    /**
+     * The causal context of the scope this event ran in, as the RECORDING
+     * can state it.
+     *
+     * <p>An anchored scope names the exchange that opened it rather than the
+     * producer's endpoint id: which occurrence produced that message is
+     * exactly what the offline pass computes, and stating a correlation the
+     * trace also carries on both its {@code EXCHANGE_SEND} and {@code
+     * EXCHANGE_RECEIVE} rows lets it be resolved without guessing.</p>
+     */
+    private static String recordedCausalContext() {
+        String anchor = edu.uva.liftlab.graphchecker.runtime.d3.Lineage
+                .anchor();
+        if (!anchor.isEmpty()) {
+            return "Anchor:" + anchor + "@"
+                    + edu.uva.liftlab.graphchecker.runtime.d3.Lineage
+                            .rpcSite();
+        }
+        edu.uva.liftlab.graphchecker.d3.contract.Role role =
+                edu.uva.liftlab.graphchecker.runtime.d3.Lineage.rootRole();
+        int window = edu.uva.liftlab.graphchecker.runtime.d3.Lineage
+                .rootWindowIndex();
+        if (role != edu.uva.liftlab.graphchecker.d3.contract.Role.UNKNOWN
+                && window > 0) {
+            return "Root:" + role.name() + "#" + window;
+        }
+        return "Lost:" + role.name();
     }
 
     private static void emitExecutionEvent(ExecutionEvent event) {
@@ -1848,7 +1880,12 @@ public final class CausynthTraceRecorder {
                 // is the ordinary case and the trace is written per call.
                 "receiverAttributed", event.receiverAttributed ? 1 : null,
                 "requestKey", event.requestKey,
-                "requestApi", event.requestApi);
+                "requestApi", event.requestApi,
+                // Identity v3, on the exchange rows too: an export's
+                // site-local index and the scope it crossed in.
+                "executionIndex", edu.uva.liftlab.graphchecker.runtime.d3
+                        .Identity.atScope().render(),
+                "causalContext", recordedCausalContext());
     }
 
     private static void writeFieldTraceLine(
@@ -1926,7 +1963,12 @@ public final class CausynthTraceRecorder {
                 "sourceEpoch", sourceEpoch(event.source),
                 "sourceKey", sourceKey(event.source),
                 "requestKey", event.requestKey,
-                "requestApi", event.requestApi);
+                "requestApi", event.requestApi,
+                // Identity v3, on the exchange rows too: an export's
+                // site-local index and the scope it crossed in.
+                "executionIndex", edu.uva.liftlab.graphchecker.runtime.d3
+                        .Identity.atScope().render(),
+                "causalContext", recordedCausalContext());
     }
 
     private static void writeSourceTraceLine(String event, SourceRef source,
@@ -1982,7 +2024,9 @@ public final class CausynthTraceRecorder {
                 "outcome", event.outcome,
                 "branchKind", event.branchKind,
                 "successorIndex", event.successorIndex,
-                "switchCaseKeys", event.switchCaseKeys);
+                "switchCaseKeys", event.switchCaseKeys,
+                "executionIndex", event.executionIndex,
+                "causalContext", event.causalContext);
     }
 
     private static void writeTraceRow(Object... fields) {
@@ -2074,6 +2118,23 @@ public final class CausynthTraceRecorder {
         private String branchKind = "";
         private Integer successorIndex;
         private String switchCaseKeys = "";
+        /**
+         * Identity v3, as the recording can state it (IDENTITY-IMPL §B).
+         *
+         * <p>{@code executionIndex} is the path from the scope root to this
+         * event, {@code callSite@iteration/...}; the region-entry event's
+         * own index is a prefix of every event inside that region, so the
+         * offline minter takes the region's index from the entry event and
+         * each site's index by dropping that prefix.  {@code causalContext}
+         * is why the scope ran: {@code Root:<ROLE>#<k>}, {@code
+         * Lost:<ROLE>}, or {@code Anchor:corr:<correlationId>@<site>} --
+         * the correlation rather than the producer's endpoint id, because
+         * the producer's occurrence is what the offline pass is computing.
+         * {@code scopeDepth} is how many frames of the index belong to the
+         * scope, so a reader never has to guess where a region began.</p>
+         */
+        private String executionIndex = "";
+        private String causalContext = "";
     }
 
     static final class TraceData {
