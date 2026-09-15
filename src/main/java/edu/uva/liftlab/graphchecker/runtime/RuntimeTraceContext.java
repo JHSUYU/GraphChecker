@@ -199,7 +199,8 @@ final class RuntimeTraceContext {
         // as startedBy (R-I7.1's thread-start edge).
         String nodeKey = view.source == null ? "" : view.source.key();
         Object lineage = Lineage.capture(nodeKey,
-                ConcolicRegionRuntime.noteWorkSubmission(nodeKey));
+                edu.uva.liftlab.graphchecker.runtime.Identity
+                        .workSubmitted(nodeKey));
         synchronized (LOCK) {
             ASYNC_SEEDS.put(carrier, new Seed(view.spanId,
                     view.source, view.requestKey, view.requestApi,
@@ -322,7 +323,8 @@ final class RuntimeTraceContext {
         // tells two calls of one api inside one request apart.
         return new RequestScope(view.source, view.requestKey,
                 view.requestApi, Lineage.capture(nodeKey,
-                        ConcolicRegionRuntime.noteWorkSubmission(nodeKey)));
+                        edu.uva.liftlab.graphchecker.runtime.Identity
+                                .workSubmitted(nodeKey)));
     }
 
     /**

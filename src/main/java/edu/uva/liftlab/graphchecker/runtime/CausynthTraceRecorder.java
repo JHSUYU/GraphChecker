@@ -213,6 +213,10 @@ public final class CausynthTraceRecorder {
         String address = "";
         if (!region.isEmpty()) {
             pushMethodFrame(method);
+            // Opened, as a replay opens it: the endpoints of the events
+            // inside this activation are indexed from here and name this
+            // occurrence (Identity.currentOccurrence), which is how the
+            // recording files the same producer endpoint a replay does.
             address = occurrenceAddress(receiver, region);
         }
         RuntimeRegionPlanner.MethodEvent event =
@@ -245,7 +249,7 @@ public final class CausynthTraceRecorder {
         edu.uva.liftlab.graphchecker.contract.OccurrenceAddress address =
                 Identity.occurrence(RuntimeTraceContext
                                 .activationSource(receiver).key(),
-                        regionId, false);
+                        regionId, true);
         return address == null ? "" : address.render();
     }
 
@@ -369,8 +373,9 @@ public final class CausynthTraceRecorder {
                 MapFields.safe(method));
     }
 
-    /** Leaves the activation frame {@link #pushMethodFrame} pushed. */
+    /** Leaves the region {@link #pushMethodFrame} opened. */
     private static void popMethodFrame() {
+        edu.uva.liftlab.graphchecker.runtime.Identity.regionExit();
         edu.uva.liftlab.graphchecker.runtime.Identity.exitCall();
     }
 
@@ -602,12 +607,14 @@ public final class CausynthTraceRecorder {
         }
         recordExchange("SEND", transport, correlationId, attemptId, half,
                 localOwner, carriedScope);
-        // IDENTITY-V3 SS C: the message carries its producer's endpoint, so
+        // IDENTITY-V3 §C: the message carries its producer's endpoint, so
         // the receiver can state the anchor it ran under.  Filed by
         // correlation because the endpoint is bigger than the header slot
         // this transport has; the pairing itself is the run's own fact.
-        ConcolicRegionRuntime.noteMessageSender(transport, correlationId,
-                half);
+        // One computation, called from the one place both passes reach it:
+        // the recording files the same producer endpoint a replay does.
+        Identity.messageSent(RuntimeTraceContext.activationSource(localOwner)
+                .key(), transport, correlationId, half);
         return header;
     }
 

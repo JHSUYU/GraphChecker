@@ -2292,65 +2292,7 @@ public final class ConcolicRegionRuntime {
         }
     }
 
-    /**
-     * Files the endpoint of the message this thread is sending.
-     *
-     * <p>IDENTITY-V3 §C: the producer endpoint travels with the message, so
-     * the receiving occurrence can state the anchor it ran under.  This
-     * transport has no spare header slot for 48 bytes, so it is filed by
-     * the exchange's own correlation id -- which is the same within-run
-     * pairing evidence the leaf handles use, not a second mechanism.</p>
-     */
-    static void noteMessageSender(String transport, String correlationId,
-                                  String half) {
-        if (!RowRuntime.open()) return;
-        try {
-            ActiveRegion active = activeRegion();
-            RuntimeTraceContext.View view = RuntimeTraceContext.current();
-            String nodeKey = view.source == null ? "" : view.source.key();
-            edu.uva.liftlab.graphchecker.contract.OccurrenceAddress sender =
-                    active == null || active.d3Address == null
-                            ? RowRuntime.degraded(nodeKey,
-                                    safe(transport) + "#" + safe(half))
-                            : active.d3Address;
-            RowRuntime.sending(sender, safe(transport), safe(correlationId),
-                    safe(half));
-        } catch (Throwable ignored) {
-            // A message is sent whether or not its endpoint can be filed.
-        }
-    }
 
-    /**
-     * The endpoint of one Thread.start or executor submission.
-     *
-     * <p>The child's activation row names it, which is the thread-start
-     * edge of happens-before (INTERACTION-ID §7.1): without it two
-     * occurrences on two threads have only their message causality, and a
-     * task submitted inside a scope has none.</p>
-     *
-     * @return the submission endpoint's id, or {@code ""}
-     */
-    static String noteWorkSubmission(String nodeKey) {
-        // Minted in the recording too, where there is no session to publish
-        // into: the id is what the started thread's causal context IS, and
-        // the recording's own rows need it as much as a replay's do.
-        try {
-            ActiveRegion active = activeRegion();
-            edu.uva.liftlab.graphchecker.contract.OccurrenceAddress from =
-                    active == null || active.d3Address == null
-                            ? RowRuntime.degraded(nodeKey, "submit")
-                            : active.d3Address;
-            if (from == null) return "";
-            edu.uva.liftlab.graphchecker.contract.Endpoint submission =
-                    RowRuntime.submission(from);
-            if (submission == null) return "";
-            RowRuntime.starting(submission);
-            return submission.id();
-        } catch (Throwable ignored) {
-            // Work is submitted whether or not its endpoint can be named.
-            return "";
-        }
-    }
 
     /** The transport's retry number for this leg, or 0. */
     private static int attemptOf(RuntimeTraceContext.View view) {

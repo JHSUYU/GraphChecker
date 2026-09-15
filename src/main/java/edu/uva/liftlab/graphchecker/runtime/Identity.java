@@ -1,6 +1,7 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
 import edu.uva.liftlab.graphchecker.contract.CausalContext;
+import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.ExecutionIndex;
 import edu.uva.liftlab.graphchecker.contract.Frame;
 import edu.uva.liftlab.graphchecker.contract.NodeId;
@@ -441,8 +442,90 @@ public final class Identity {
             return null;
         }
         ExecutionIndex index = open ? regionEnter() : atScope();
-        return OccurrenceAddress.of(NodeId.parse(Text.safe(nodeKey)),
-                Text.safe(regionId), here(Lineage.rootRole()), index);
+        OccurrenceAddress address = OccurrenceAddress.of(
+                NodeId.parse(Text.safe(nodeKey)), Text.safe(regionId),
+                here(Lineage.rootRole()), index);
+        if (open) {
+            State state = state();
+            Region region = state.region();
+            if (region != null) region.occurrence = address;
+        }
+        return address;
+    }
+
+    /**
+     * The occurrence an event on this thread belongs to.
+     *
+     * <p>The innermost region activation open here, whose address was filed
+     * when it was entered by {@link #occurrence} -- in the recording and in
+     * a replay alike, because both open their regions through that one
+     * call.  Outside every region it is the degraded role occurrence, which
+     * is still an occurrence an endpoint can be keyed by (INTERACTION-ID
+     * R-I1).</p>
+     */
+    public static OccurrenceAddress currentOccurrence(String nodeKey) {
+        State state = state();
+        for (int index = state.regions.size() - 1; index >= 0; index--) {
+            OccurrenceAddress occurrence = state.regions.get(index).occurrence;
+            if (occurrence != null) return occurrence;
+        }
+        return roleOccurrence(nodeKey,
+                Lineage.named() ? Lineage.role() : Role.UNKNOWN);
+    }
+
+    /**
+     * THE endpoint of one event: where it happened, in which occurrence.
+     *
+     * <p>IDENTITY-IMPL §A: (occurrence, site, site-local execution index,
+     * attempt).  One computation for both passes, as the occurrence address
+     * is: a producer endpoint the recording mints and a producer endpoint a
+     * replay mints are the same string for the same event, which is what
+     * lets the causal context of everything downstream of a message be the
+     * SAME context in the two passes.  Before this, the recording minted
+     * its senders from a degraded role occurrence (or, behind a session
+     * guard, not at all) and the replay from its live activation, so the
+     * anchor of every occurrence a message started drifted -- hdfs-17960's
+     * two FSImageSaver activations were planned at {@code
+     * Anchor:...@THREAD_START} and ran at {@code
+     * Anchor:...@HADOOP_IPC/checkpoint-namespace}.</p>
+     */
+    public static Endpoint endpoint(String nodeKey, String site, int attempt) {
+        return endpointAt(currentOccurrence(nodeKey), site, attempt);
+    }
+
+    /** The same endpoint, for an occurrence the caller already holds. */
+    public static Endpoint endpointAt(OccurrenceAddress occurrence,
+                                      String site, int attempt) {
+        return occurrence == null ? null
+                : Endpoint.of(occurrence, Text.safe(site), siteIndex(),
+                        attempt);
+    }
+
+    /**
+     * Files the producer endpoint of one whole message, for the anchor its
+     * receiver states (IDENTITY-IMPL §C).
+     *
+     * @return the endpoint id filed, or {@code ""}
+     */
+    public static String messageSent(String nodeKey, String transport,
+                                     String correlationId, String half) {
+        Endpoint producer = endpoint(nodeKey,
+                Text.safe(transport) + "#" + Text.safe(half), 0);
+        if (producer == null) return "";
+        Interactions.sent(Text.safe(transport), Text.safe(correlationId),
+                Text.safe(half), producer.id());
+        return producer.id();
+    }
+
+    /**
+     * The endpoint of one work submission, for the row that names the
+     * thread-start edge (R-I7.1).
+     *
+     * @return the endpoint id, or {@code ""}
+     */
+    public static String workSubmitted(String nodeKey) {
+        Endpoint submission = endpoint(nodeKey, "SUBMIT", 0);
+        return submission == null ? "" : submission.id();
     }
 
     /**
@@ -476,16 +559,14 @@ public final class Identity {
         if (!Text.safe(anchorEndpointId).isEmpty()) {
             return CausalContext.of(anchorEndpointId, Text.safe(rpcSite));
         }
-        // A thread started by a submission ran because of that submission:
-        // its endpoint is the anchor, exactly as a message's producer is.
-        // Two sibling threads doing the same work under one request -- the
-        // two FSImageSaver threads on hdfs-17960 -- share a role, a window
-        // index and a call path, and are told apart by the frame of the
-        // start that created each of them (see #startWork).
-        String started = Lineage.startedBy();
-        if (!started.isEmpty()) {
-            return CausalContext.of(started, "THREAD_START");
-        }
+        // No arm for "started by a submission".  A thread start is not a
+        // message: the work runs inside the scope its starter was in, whose
+        // anchor is the arm above, and two siblings started from one site
+        // are told apart by the start-site FRAME in the index (#startWork,
+        // REPORT-P2H) rather than by a second context form.  The arm that
+        // used to stand here fired only in the recording -- the replay
+        // always had the scope's anchor by then -- so one occurrence
+        // carried two contexts.
         if (role != null && role != Role.UNKNOWN && windowIndex > 0) {
             return CausalContext.of(role, windowIndex);
         }
@@ -517,6 +598,8 @@ public final class Identity {
     private static final class Region {
         private final int base;
         private FrameJournal journal;
+        /** The occurrence this activation is, for the endpoints inside it. */
+        private OccurrenceAddress occurrence;
 
         private Region(int base) {
             this.base = base;
