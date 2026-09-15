@@ -100,6 +100,9 @@ public final class Arms {
 
         /** The occurrence this endpoint id belongs to, or null. */
         OccurrenceAddress occurrenceOf(String endpointId);
+
+        /** The session event this endpoint's row was sequenced at, or -1. */
+        long seqOf(String sessionId, String endpointId);
     }
 
     /** One delivery a slot records, and what it happened under. */
@@ -365,6 +368,30 @@ public final class Arms {
         return false;
     }
 
+    /**
+     * Whether {@code a} is causally before {@code b} in this session.
+     *
+     * <p>Three orderings, in the order they can be asked of the rows: inside
+     * one occurrence, the session's own event order (same-thread program
+     * order); across occurrences, the causal-anchor chain -- the occurrence
+     * that started the other's request is before it; and thread start/join,
+     * which the rows carry only as that chain today.  An ordering the rows
+     * do not state is UNKNOWN, and unknown is answered {@code false} here,
+     * so a caller asking "is a before b" never reads absence as order.</p>
+     */
+    public boolean ancestor(Endpoint a, Endpoint b, String session) {
+        if (a == null || b == null) return false;
+        OccurrenceAddress left = a.occurrence();
+        OccurrenceAddress right = b.occurrence();
+        if (left.id().equals(right.id())) {
+            long first = rows.seqOf(session, a.id());
+            long second = rows.seqOf(session, b.id());
+            return first >= 0L && second >= 0L && first < second;
+        }
+        if (!chainKnown(left) || !chainKnown(right)) return false;
+        return ancestor(left, right);
+    }
+
     /** Whether {@code older} starts the request {@code younger} runs in. */
     private boolean ancestor(OccurrenceAddress older,
                              OccurrenceAddress younger) {
@@ -393,16 +420,12 @@ public final class Arms {
         if (expression == null) return null;
         List<DecisionRow> decisions = rows.decisionsOf(session, producer);
         boolean attested = !decisions.isEmpty();
-        List<String> pi = new ArrayList<String>();
-        if (attested) {
-            for (DecisionRow decision : decisions) {
-                // The prefix: what the replay had decided BY THE TIME it
-                // delivered.  A decision it took afterwards is not a reason
-                // the delivery happened.
-                if (decision.seq() >= deliveredAt) continue;
-                pi.add(decision.term());
-            }
-        }
+        // The prefix: what the replay had decided BY THE TIME it delivered.
+        // A decision it took afterwards is not a reason the delivery
+        // happened.
+        List<String> pi = attested
+                ? pathCondition(decisions, deliveredAt)
+                : new ArrayList<String>();
         Set<String> symbols = new LinkedHashSet<String>();
         symbolsIn(expression, symbols, 0);
         Map<String, String> guard = new LinkedHashMap<String, String>();
@@ -429,6 +452,36 @@ public final class Arms {
         return new Arm(slotId, symbol, session,
                 attested ? rows.pathIdOf(session, producer) : "",
                 expressionRef, pi, guard, guardRoots, attested, nested);
+    }
+
+    /**
+     * One path condition, with each decision's polarity applied.
+     *
+     * <p>{@code DecisionRow.term} is the branch PREDICATE as written at the
+     * site, polarity-free: the same site in two replays publishes the same
+     * term and the two runs differ in {@code outcome}.  So the conjunct is
+     * the term when the run took it and its negation when it did not, and
+     * every consumer applies that -- here, once, because a consumer that
+     * forgot it would state a path that took the arm its run did not.</p>
+     *
+     * @param before only decisions the session sequenced before this, or
+     *               {@link Long#MAX_VALUE} for the whole path
+     */
+    public static List<String> pathCondition(List<DecisionRow> decisions,
+                                             long before) {
+        List<String> pi = new ArrayList<String>();
+        if (decisions == null) return pi;
+        for (DecisionRow decision : decisions) {
+            if (decision.seq() >= before) continue;
+            pi.add(conjunct(decision));
+        }
+        return pi;
+    }
+
+    /** One decision, as the arm of it that its run took. */
+    public static String conjunct(DecisionRow decision) {
+        String term = decision.term();
+        return decision.outcome() ? term : "(not " + term + ")";
     }
 
     /** Every symbol a recorded expression names, whatever its depth. */

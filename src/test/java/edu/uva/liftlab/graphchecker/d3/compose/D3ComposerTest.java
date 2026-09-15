@@ -587,6 +587,38 @@ public class D3ComposerTest {
     }
 
     // ------------------------------------------------------------------
+    // 13. A published term is a predicate; the row says which arm.
+    // ------------------------------------------------------------------
+
+    @Test
+    public void aDecisionContributesTheArmItsRunTook() throws Exception {
+        Path iteration = folder.newFolder("polarity-arm").toPath();
+        Session session = new Session(iteration, "s0", false);
+        session.marker("false");
+        // One site, taken; one site, not taken.  The runtime publishes the
+        // PREDICATE both times and the outcome says which arm ran.
+        session.decision(ANCHOR, "anchor#u1", true, MARKER);
+        session.decision(ANCHOR, "anchor#u2", false, MARKER);
+        session.target("true", false, true);
+        session.write();
+
+        Composer.Composition composition = compose(iteration, 4);
+        assertEquals(1, composition.disjuncts().size());
+        assertTrue("the arm it took is the term",
+                composition.body().contains(MARKER));
+        assertTrue("the arm it did not take is the negation",
+                composition.body().contains("(not " + MARKER + ")"));
+
+        // And the one routine says the same of either row.
+        List<DecisionRow> rows = CorpusIndex.of(iteration)
+                .path("s0", ANCHOR).decisions();
+        List<String> pi = edu.uva.liftlab.graphchecker.d3.smt.Arms
+                .pathCondition(rows, Long.MAX_VALUE);
+        assertEquals(MARKER, pi.get(0));
+        assertEquals("(not " + MARKER + ")", pi.get(1));
+    }
+
+    // ------------------------------------------------------------------
     // Fixture.
     // ------------------------------------------------------------------
 
@@ -741,8 +773,13 @@ public class D3ComposerTest {
         }
 
         void decision(OccurrenceAddress at, String site, String term) {
+            decision(at, site, true, term);
+        }
+
+        void decision(OccurrenceAddress at, String site, boolean outcome,
+                      String term) {
             decisions.add(DecisionRow.of(id, ++seq, at, site,
-                    decisions.size() + 1, true, term,
+                    decisions.size() + 1, outcome, term,
                     Collections.<String, Long>emptyMap()));
         }
 
