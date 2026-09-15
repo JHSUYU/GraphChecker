@@ -63,13 +63,6 @@ public final class ExecutionIndex {
         return of(frames);
     }
 
-    /** This index with one more frame: the runtime's incremental fold. */
-    public ExecutionIndex push(Frame frame) {
-        List<Frame> deeper = new ArrayList<>(frames);
-        deeper.add(Fields.required(frame, "frame"));
-        return new ExecutionIndex(Fields.copy(deeper), fold(hash, frame));
-    }
-
     /** The frames, outermost first. */
     public List<Frame> frames() {
         return frames;

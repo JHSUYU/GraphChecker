@@ -50,33 +50,7 @@ public final class RuntimePlanArtifact {
     /** The occurrence plans, decoded once here and never re-parsed. */
     public List<RegionInstancePlan> regionPlans() { return plans; }
 
-    public List<JsonObject> plans() {
-        List<JsonObject> result = new ArrayList<>();
-        for (RegionInstancePlan plan : plans) {
-            result.add(plan.json().deepCopy());
-        }
-        return result;
-    }
-
     public List<JsonObject> regions() { return copies(regions); }
-
-    /**
-     * Gaps the planner raised about the ports this plan was built from.
-     *
-     * <p>A truncated access history or a container observation stream that
-     * hit its capacity is invisible in every artifact downstream of this one,
-     * so it is carried here rather than left to the planning JVM's stdout.
-     * Older artifacts carry no such member and answer empty.</p>
-     */
-    public List<JsonObject> gaps() { return copies(gaps); }
-
-    /** Encodes compact plans plus one canonical region/edge catalog. */
-    public static String encode(Collection<JsonObject> encodedPlans,
-                                Collection<JsonObject> encodedEdges,
-                                Collection<JsonObject> encodedRegions) {
-        return encode(encodedPlans, encodedEdges, encodedRegions,
-                Collections.<JsonObject>emptyList());
-    }
 
     /** As above, carrying the planning gaps the catalog publishes. */
     public static String encode(Collection<JsonObject> encodedPlans,

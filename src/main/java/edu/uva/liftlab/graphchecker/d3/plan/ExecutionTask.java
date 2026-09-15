@@ -187,11 +187,6 @@ public final class ExecutionTask extends PlanRow {
         return consumers == null ? Collections.<String>emptyList() : consumers;
     }
 
-    /** Every outgoing port the plan bound to at least one consumer. */
-    public Set<String> boundExportPorts() {
-        return exportConsumerOccurrences.keySet();
-    }
-
     public static ExecutionTask decode(JsonObject encoded) {
         if (encoded == null) {
             throw new IllegalArgumentException("execution task is required");
@@ -432,21 +427,6 @@ public final class ExecutionTask extends PlanRow {
         return Collections.unmodifiableSet(result);
     }
 
-    /**
-     * The request the recording entered this occurrence under, or {@code ""}.
-     *
-     * <p>Circumstance, not identity: it never decides which activation this
-     * is.  It is here so IMPORT can say when the activation that answered
-     * the address ran under a different request than the recording had --
-     * on hdfs-17899 bug2 the SPS key-updater daemon answers an occurrence
-     * the recording took inside {@code refresh-block-keys#1} while carrying
-     * no request at all.</p>
-     */
-    public String causalAnchorRequestKey() {
-        return optionalString(object(object(encoded, "rootSelector"),
-                "causalAnchor"), "requestKey");
-    }
-
     public JsonObject rootSelector() {
         return object(encoded, "rootSelector").deepCopy();
     }
@@ -495,24 +475,6 @@ public final class ExecutionTask extends PlanRow {
      */
     public JsonArray observedWriteSites() {
         return array(encoded, OBSERVED_WRITE_SITES).deepCopy();
-    }
-
-    /** Full immutable replay contract for offline validation and summaries. */
-    public synchronized JsonElement replayContract() {
-        JsonElement contract = encoded.get("replayContract");
-        if (contract == null) return null;
-        if (!encoded.has(SharedExpressionTable.FIELD)) {
-            return contract.deepCopy();
-        }
-        if (expandedReplayContract == null) {
-            JsonObject envelope = new JsonObject();
-            envelope.add("replayContract", contract);
-            envelope.add(SharedExpressionTable.FIELD,
-                    encoded.get(SharedExpressionTable.FIELD));
-            expandedReplayContract = SharedExpressionTable.expand(envelope)
-                    .get("replayContract");
-        }
-        return expandedReplayContract;
     }
 
     /** Concrete replay decisions, decoded without expanding predicates. */

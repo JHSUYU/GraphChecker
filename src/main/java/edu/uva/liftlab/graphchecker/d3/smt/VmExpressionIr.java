@@ -161,76 +161,6 @@ public final class VmExpressionIr {
     }
 
     /**
-     * Validates the raw, session-local wrapper emitted by the VM.  The
-     * replay-independent family key is deliberately not required here: only
-     * the Java evidence join is allowed to add it.
-     */
-    static String consumerBoundaryFault(JsonElement expression,
-                                        String expectedKind,
-                                        long expectedEventId) {
-        if (!isConsumerBoundary(expression)) {
-            return "expression is not a ConsumerBoundaryExpression";
-        }
-        JsonObject row = expression.getAsJsonObject();
-        String kind = optionalString(row, BOUNDARY_KIND);
-        if (!(RPC_ATTACH.equals(kind) || FIELD_READ.equals(kind))) {
-            return "consumer boundary has an unsupported kind";
-        }
-        if (expectedKind != null && !expectedKind.isEmpty()
-                && !expectedKind.equals(kind)) {
-            return "consumer boundary kind disagrees with its evidence";
-        }
-        long eventId = longValue(row, EVENT_ID);
-        if (eventId <= 0L) {
-            return "consumer boundary names no dynamic event";
-        }
-        if (expectedEventId > 0L && eventId != expectedEventId) {
-            return "consumer boundary event disagrees with its evidence";
-        }
-        if (optionalString(row, "_java_type").isEmpty()) {
-            return "consumer boundary names no Java type";
-        }
-        JsonElement payload = row.get(EXPRESSION);
-        if (payload == null || payload.isJsonNull()
-                || !payload.isJsonObject()) {
-            return "consumer boundary carries no expression payload";
-        }
-        if (VmRows.truncated(payload)) {
-            return "consumer boundary payload was truncated";
-        }
-        return "";
-    }
-
-    static JsonObject boundaryReference(JsonObject boundary,
-                                        String familyKey) {
-        JsonObject reference = JsonFields.shallowCopy(boundary);
-        reference.addProperty("_type", CONSUMER_BOUNDARY_REFERENCE_TYPE);
-        reference.addProperty(FAMILY_KEY, familyKey == null ? "" : familyKey);
-        return reference;
-    }
-
-    private static long longValue(JsonObject row, String field) {
-        JsonElement value = row == null ? null : row.get(field);
-        if (value == null || !value.isJsonPrimitive()
-                || !value.getAsJsonPrimitive().isNumber()) return -1L;
-        try {
-            return value.getAsLong();
-        } catch (RuntimeException ignored) {
-            return -1L;
-        }
-    }
-
-    static boolean isAllocatedInstanceReference(String raw) {
-        return raw != null
-                && ALLOCATED_INSTANCE_REFERENCE.matcher(raw).matches();
-    }
-
-    static boolean isAllocatedArrayReference(String raw) {
-        return raw != null
-                && ALLOCATED_ARRAY_REFERENCE.matcher(raw).matches();
-    }
-
-    /**
      * Exact serialization of {@code PlaceHolderSymbolExp} for a reference:
      * an oop the VM observed as an operand without a shadow to name it, so
      * it carries the class and no identity.  It names no root and no object.
@@ -248,17 +178,6 @@ public final class VmExpressionIr {
     public static boolean isCanonicalMapStateReference(String raw) {
         return raw != null
                 && CANONICAL_MAP_STATE_REFERENCE.matcher(raw).matches();
-    }
-
-    /**
-     * A VM-local identity created only after a concrete oop already exists.
-     * It is an existential witness for the recorded execution, never a
-     * writable symbolic input.
-     */
-    static boolean isExecutionLocalStructuralWitness(String raw) {
-        return isAllocatedInstanceReference(raw)
-                || isAllocatedArrayReference(raw)
-                || isCanonicalMapStateReference(raw);
     }
 
 
@@ -354,58 +273,4 @@ public final class VmExpressionIr {
         return constantPayload(optionalString(object, "_exp"));
     }
 
-    static boolean provablyStringValued(JsonElement expression,
-                                        Predicate<String> stringTyped) {
-        if (expression == null || !expression.isJsonObject()) return false;
-        JsonObject object = expression.getAsJsonObject();
-        String type = optionalString(object, "_type");
-        if ("ConStringSymbolExp".equals(type)) return true;
-        if ("SymbolExpression".equals(type)
-                || "ConSymbolExp".equals(type)
-                || "ConstExpr".equals(type)) {
-            return stringTyped.test(optionalString(object, "_java_type"));
-        }
-        if (!"OpStrExpression".equals(type)
-                || optionalBool(object, "_is_not", false)) return false;
-        String operation = optionalString(object, "_name");
-        if ("toString".equals(operation)) {
-            JsonArray params = array(object, "_param_list");
-            return params.size() == 1
-                    && isPrimitiveIntExpression(params.get(0));
-        }
-        if (!"concat".equals(operation)) return false;
-        JsonArray params = array(object, "_param_list");
-        if (params.size() == 0) return false;
-        for (JsonElement parameter : params) {
-            if (!provablyStringValued(parameter, stringTyped)) return false;
-        }
-        return true;
-    }
-
-    static boolean flattenConcat(JsonElement expression,
-                                 List<JsonElement> result) {
-        if (expression == null || !expression.isJsonObject()) {
-            return false;
-        }
-        JsonObject object = expression.getAsJsonObject();
-        if (!"OpStrExpression".equals(optionalString(object, "_type"))
-                || !"concat".equals(optionalString(object, "_name"))
-                || optionalBool(object, "_is_not", false)) {
-            return false;
-        }
-        JsonArray params = array(object, "_param_list");
-        if (params.size() == 0) return false;
-        for (JsonElement parameter : params) {
-            if (parameter != null && parameter.isJsonObject()
-                    && "OpStrExpression".equals(optionalString(
-                    parameter.getAsJsonObject(), "_type"))
-                    && "concat".equals(optionalString(
-                    parameter.getAsJsonObject(), "_name"))) {
-                if (!flattenConcat(parameter, result)) return false;
-            } else {
-                result.add(parameter);
-            }
-        }
-        return true;
-    }
 }

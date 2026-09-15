@@ -461,11 +461,6 @@ public final class SmtLowering extends VmLoweringCore {
         return value.text;
     }
 
-    /** The SMT sort one recorded Java type denotes. */
-    public static String sortOf(String javaType) {
-        return JavaSmtSorts.sortOfJava(javaType).smt;
-    }
-
     /** Whether one symbol occurs in a term as a symbol, not a substring. */
     static boolean mentions(String term, String symbol) {
         if (term == null || symbol == null || symbol.isEmpty()) return false;
@@ -521,10 +516,6 @@ public final class SmtLowering extends VmLoweringCore {
 
         public String text() {
             return text;
-        }
-
-        public String refusal() {
-            return refusal;
         }
 
         /** Every symbol the text names, with its SMT sort. */
@@ -1037,16 +1028,6 @@ public final class SmtLowering extends VmLoweringCore {
                         + "which cell of it the read returned", cell);
     }
 
-    /** A merge over another region's cases is a cross-session object. */
-    @Override
-    public Term caseMergeTerm(JsonObject expression, Sort expected,
-                              String origin) {
-        return cut("CaseMergeInPath:"
-                        + JsonText.string(expression, "mergeId"),
-                "a value merged over another region's cases reached one "
-                        + "path's expression", expected);
-    }
-
     @Override
     public Term containerTerm(JsonObject expression, boolean field,
                               String origin) {
@@ -1135,10 +1116,6 @@ public final class SmtLowering extends VmLoweringCore {
                             + JsonText.digest(session.getKey(), 10),
                     "(distinct " + String.join(" ", held.values()) + ")");
         }
-    }
-
-    public Map<String, String> identities() {
-        return opaqueIdentities;
     }
 
     // ------------------------------------------------------------------
@@ -1482,11 +1459,6 @@ public final class SmtLowering extends VmLoweringCore {
         return Collections.unmodifiableMap(named);
     }
 
-    /** Declared symbols this lowering put in the formula. */
-    public Set<String> usedSymbols() {
-        return usedSymbols;
-    }
-
     /**
      * Whether THIS LOWERING invented the name, rather than the recording.
      *
@@ -1561,17 +1533,6 @@ public final class SmtLowering extends VmLoweringCore {
         return names;
     }
 
-    /** Lowers one boolean constraint, with its Java definedness. */
-    public String condition(JsonElement expression, String origin) {
-        Term value = dispatch(expression, Sort.BOOL, origin);
-        if (value == null || value.sort != Sort.BOOL) {
-            refuse(origin + ":NON_BOOLEAN_CONSTRAINT", "");
-            return "true";
-        }
-        return VmTermLowering.and(Arrays.asList(value.precondition,
-                value.text));
-    }
-
     /** Lowers one value expression, keeping its sort. */
     public Term term(JsonElement expression, Sort expected, String origin) {
         return dispatch(expression, expected, origin);
@@ -1633,10 +1594,6 @@ public final class SmtLowering extends VmLoweringCore {
         if (assertedOnce.add(formula)) {
             assertions.add("(assert " + formula + ")");
         }
-    }
-
-    public Set<String> unsupported() {
-        return unsupported;
     }
 
     public Map<String, String> unsupportedDetail() {
@@ -1795,13 +1752,6 @@ public final class SmtLowering extends VmLoweringCore {
         return lines;
     }
 
-    /** Preamble and declarations, with no assertion and no check. */
-    public String declarationsOnly() {
-        StringBuilder query = new StringBuilder();
-        appendPreamble(query);
-        return legalSymbols(query.toString());
-    }
-
     private void appendPreamble(StringBuilder query) {
         query.append("; GraphChecker Design 3 composed query").append('\n');
         // Before the logic and before every assertion: z3 accepts :named
@@ -1944,12 +1894,6 @@ public final class SmtLowering extends VmLoweringCore {
     /** The whole query, at the assertions it holds. */
     public String render() {
         return body() + "(check-sat)\n";
-    }
-
-    /** Named rows of the rendered query, the formula-size measure. */
-    public int namedRows() {
-        return declarations().size() + sharedTerms.size()
-                + assertions.size();
     }
 
     // ------------------------------------------------------------------

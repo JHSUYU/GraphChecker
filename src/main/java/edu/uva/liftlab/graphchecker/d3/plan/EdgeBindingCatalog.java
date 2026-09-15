@@ -110,30 +110,4 @@ public final class EdgeBindingCatalog {
         return result;
     }
 
-    /**
-     * Replaces one row's inline bindings by their catalog references.
-     *
-     * <p>A row with no selection publishes no reference list, so a reader
-     * sees the same absence the writer saw.</p>
-     */
-    public void compactInto(JsonObject row) {
-        if (row.has(IDS)) {
-            throw new IllegalArgumentException(
-                    "row is already binding-compacted");
-        }
-        JsonArray ids = idsOf(array(row, BINDINGS));
-        row.remove(BINDINGS);
-        if (ids.size() > 0) row.add(IDS, ids);
-    }
-
-    /** Replaces one row's catalog references by the bindings they name. */
-    public void hydrateInto(JsonObject row) {
-        if (row.has(BINDINGS)) {
-            throw new IllegalArgumentException(
-                    "compact row must not duplicate " + BINDINGS);
-        }
-        JsonArray bindings = hydrate(array(row, IDS));
-        row.remove(IDS);
-        if (bindings.size() > 0) row.add(BINDINGS, bindings);
-    }
 }

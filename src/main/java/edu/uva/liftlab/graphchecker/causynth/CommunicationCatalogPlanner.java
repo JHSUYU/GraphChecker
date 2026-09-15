@@ -2,7 +2,6 @@ package edu.uva.liftlab.graphchecker.causynth;
 
 import edu.uva.liftlab.graphchecker.d3.plan.GapLedger;
 
-import edu.uva.liftlab.graphchecker.d3.plan.BoundedLoopComposition;
 
 import edu.uva.liftlab.graphchecker.d3.plan.CommunicationCatalogContract;
 import edu.uva.liftlab.graphchecker.d3.plan.LoopBoundPolicy;
@@ -145,7 +144,7 @@ final class CommunicationCatalogPlanner {
                 // is its array length, which is exact where the replay
                 // publishes a dense cardinality vector covering the body
                 // count -- and where it does not,
-                // BoundedLoopComposition raises
+                // The loop-bound policy raises
                 // PATH_LOCAL_ARRAY_CARDINALITY_MISSING against that case and
                 // the claim is withheld by name.  Demanding a declared K_L
                 // here would replace an exact count with a stated prefix,

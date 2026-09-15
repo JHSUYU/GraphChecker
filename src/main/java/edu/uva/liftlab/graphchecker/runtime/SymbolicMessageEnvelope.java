@@ -478,15 +478,8 @@ public final class SymbolicMessageEnvelope {
             return producerOccurrenceId;
         }
 
-        /** Which frame of the message this value was built in. */
-        public int frame() { return frame; }
-
         /** Which element of that frame and port the value was set on. */
         public int ordinal() { return ordinal; }
 
-        /** The planned consumer occurrences the plan bound to this port. */
-        public List<String> consumerOccurrenceIds() {
-            return consumerOccurrenceIds;
-        }
     }
 }

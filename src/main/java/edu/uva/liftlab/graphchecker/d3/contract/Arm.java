@@ -41,15 +41,6 @@ public final class Arm {
                 Fields.copy(guardRoots), attested);
     }
 
-    public String producerPathId() {
-        return producerPathId;
-    }
-
-    /** The producer path's condition; {@code ""} for an unattested arm. */
-    public String piRef() {
-        return piRef;
-    }
-
     /** The exported value {@code e_q}. */
     public String expressionRef() {
         return expressionRef;

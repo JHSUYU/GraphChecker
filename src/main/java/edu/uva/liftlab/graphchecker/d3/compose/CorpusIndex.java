@@ -322,12 +322,6 @@ public final class CorpusIndex implements Arms.Rows {
         return bySessionId.get(sessionId);
     }
 
-    /** Every session's path at one occurrence. */
-    public List<PathRecord> pathsAt(OccurrenceAddress occurrence) {
-        List<PathRecord> paths = pathsByOccurrence.get(occurrence.id());
-        return paths == null ? Collections.<PathRecord>emptyList() : paths;
-    }
-
     /** One session's path at one occurrence, or null. */
     public PathRecord path(String sessionId, OccurrenceAddress occurrence) {
         Map<String, PathRecord> paths = pathsBySession.get(sessionId);
@@ -361,18 +355,9 @@ public final class CorpusIndex implements Arms.Rows {
         return null;
     }
 
-    public List<AttachRow> attachesOf(Endpoint consumer) {
-        List<AttachRow> rows = attachesByConsumer.get(consumer.id());
-        return rows == null ? Collections.<AttachRow>emptyList() : rows;
-    }
-
     public List<AttachRow> attachesOf(Interaction interaction) {
         List<AttachRow> rows = attachesByInteraction.get(interaction.id());
         return rows == null ? Collections.<AttachRow>emptyList() : rows;
-    }
-
-    public Interaction interaction(String interactionId) {
-        return interactions.get(interactionId);
     }
 
     public Map<String, Interaction> interactions() {
@@ -406,15 +391,6 @@ public final class CorpusIndex implements Arms.Rows {
         if (own != null) return own;
         return bySession.isEmpty() ? null
                 : bySession.values().iterator().next();
-    }
-
-    /** Whether this symbol is a handoff variable some attach minted. */
-    public boolean handoffSymbol(String symbol) {
-        return attachesBySymbol.containsKey(symbol);
-    }
-
-    public Set<String> handoffSymbols() {
-        return attachesBySymbol.keySet();
     }
 
     /**
@@ -494,13 +470,6 @@ public final class CorpusIndex implements Arms.Rows {
     // ------------------------------------------------------------------
     // The shared arm rule reads the corpus through this.
     // ------------------------------------------------------------------
-
-    @Override
-    public List<String> sessionIds() {
-        List<String> ids = new ArrayList<String>();
-        for (SessionReader session : sessions) ids.add(session.sessionId());
-        return ids;
-    }
 
     @Override
     public JsonObject expression(String sessionId, String expressionRef) {

@@ -31,25 +31,6 @@ public final class PathEntry {
                 Fields.text(selector, "selector"), fatalObserved);
     }
 
-    public String pathId() {
-        return pathId;
-    }
-
-    /** The replay session this path was recorded in. */
-    public String sessionId() {
-        return sessionId;
-    }
-
-    /** The solver name of this path's selector. */
-    public String selector() {
-        return selector;
-    }
-
-    /** Whether this path's own run observed the fatal arm. */
-    public boolean fatalObserved() {
-        return fatalObserved;
-    }
-
     @Override
     public boolean equals(Object value) {
         if (this == value) return true;

@@ -56,16 +56,6 @@ public final class ExploreCodec {
         return json;
     }
 
-    public static Task readTask(JsonObject json) {
-        List<OccurrenceAddress> factor = new ArrayList<OccurrenceAddress>();
-        for (JsonElement member : array(json, "factor")) {
-            factor.add(RowCodec.readOccurrence(member.getAsJsonObject()));
-        }
-        return Task.of(string(json, "taskId"),
-                RowCodec.readOccurrence(object(json, "focused")), factor,
-                string(json, "seedSessionId"));
-    }
-
     public static JsonObject writeObligation(Obligation obligation) {
         JsonObject json = new JsonObject();
         json.addProperty("obligationId", obligation.obligationId());

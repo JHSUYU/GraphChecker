@@ -14,35 +14,6 @@ public final class SmtModelValueCodec {
     private SmtModelValueCodec() {
     }
 
-    /** Flattens only an ordinary unary-negative numeric atom. */
-    public static String normalizeScalar(String value) {
-        String raw = value == null ? "" : value.trim();
-        List<String> negative = applicationArguments(raw, "-");
-        if (negative != null && negative.size() == 1
-                && numericAtom(negative.get(0))) {
-            try {
-                return new BigDecimal(negative.get(0)).negate()
-                        .toPlainString();
-            } catch (NumberFormatException ignored) {
-                return raw;
-            }
-        }
-        return raw;
-    }
-
-    /** Converts one exact decimal integer atom into SMT-LIB syntax. */
-    static String integerLiteral(String value) {
-        String raw = value == null ? "" : value.trim();
-        if (raw.isEmpty() || raw.length() > 1024) return null;
-        try {
-            BigInteger parsed = new BigInteger(raw);
-            return parsed.signum() < 0 ? "(- " + parsed.negate() + ")"
-                    : parsed.toString();
-        } catch (NumberFormatException malformed) {
-            return null;
-        }
-    }
-
     /** Converts an exact SMT Real model value to a Java decimal literal. */
     public static String realToJavaLiteral(String value) {
         String raw = value == null ? "" : value.trim();
@@ -56,32 +27,6 @@ public final class SmtModelValueCodec {
             return null;
         }
         return Double.toString(represented);
-    }
-
-    /**
-     * Decodes the exact bit-vector returned by {@code fp.to_ieee_bv} into a
-     * Java parser literal.
-     */
-    public static String floatingPointBitsToJavaLiteral(String value,
-                                                        String descriptor) {
-        String raw = value == null ? "" : value.trim();
-        int width = "F".equals(descriptor) ? 32
-                : "D".equals(descriptor) ? 64 : 0;
-        if (width == 0) return null;
-        BigInteger bits = bitVector(raw, width);
-        if (bits == null) return null;
-        if (width == 32) {
-            float decoded = Float.intBitsToFloat(bits.intValue());
-            if (Float.isNaN(decoded)) return "NaN";
-            if (decoded == Float.POSITIVE_INFINITY) return "Infinity";
-            if (decoded == Float.NEGATIVE_INFINITY) return "-Infinity";
-            return Float.toString(decoded);
-        }
-        double decoded = Double.longBitsToDouble(bits.longValue());
-        if (Double.isNaN(decoded)) return "NaN";
-        if (decoded == Double.POSITIVE_INFINITY) return "Infinity";
-        if (decoded == Double.NEGATIVE_INFINITY) return "-Infinity";
-        return Double.toString(decoded);
     }
 
     /** Decodes SMT-LIB's doubled-quote escaping. */
@@ -118,31 +63,6 @@ public final class SmtModelValueCodec {
                 return null;
             }
             return numerator.divide(denominator, REAL_REPLAY_CONTEXT);
-        }
-        return null;
-    }
-
-    private static BigInteger bitVector(String value, int width) {
-        try {
-            if (value.startsWith("#x")
-                    && value.length() == 2 + width / 4) {
-                return new BigInteger(value.substring(2), 16);
-            }
-            if (value.startsWith("#b")
-                    && value.length() == 2 + width) {
-                return new BigInteger(value.substring(2), 2);
-            }
-            List<String> bv = applicationArguments(value, "_");
-            if (bv != null && bv.size() == 2
-                    && bv.get(0).startsWith("bv")
-                    && Integer.toString(width).equals(bv.get(1))) {
-                BigInteger result = new BigInteger(
-                        bv.get(0).substring(2));
-                return result.signum() >= 0
-                        && result.bitLength() <= width ? result : null;
-            }
-        } catch (RuntimeException malformed) {
-            return null;
         }
         return null;
     }

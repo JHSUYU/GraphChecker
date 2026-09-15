@@ -342,13 +342,6 @@ public final class Corpus implements Arms.Rows {
         return null;
     }
 
-    /** Whether the occurrence ran symbolically in that session. */
-    public boolean ranFocused(String sessionId,
-                              OccurrenceAddress occurrence) {
-        ActivationRow row = activation(sessionId, occurrence);
-        return row != null && row.focused();
-    }
-
     public List<DecisionRow> decisionsOf(String sessionId,
                                          OccurrenceAddress occurrence) {
         List<DecisionRow> rows = decisions.get(
@@ -385,13 +378,6 @@ public final class Corpus implements Arms.Rows {
     }
 
     // ---- Arms.Rows: what the shared arm builder asks of a corpus -------
-
-    @Override
-    public List<String> sessionIds() {
-        List<String> ids = new ArrayList<String>();
-        for (SessionReader session : sessions) ids.add(session.sessionId());
-        return ids;
-    }
 
     @Override
     public JsonObject expression(String sessionId, String expressionRef) {
@@ -468,16 +454,6 @@ public final class Corpus implements Arms.Rows {
         return arms;
     }
 
-    /** Every write of one location, in one session. */
-    public List<WriteRow> writesOf(LocationId location, String sessionId) {
-        return writesOf(sessionId, SmtLowering.locationKey(location));
-    }
-
-    /** One endpoint of this corpus by its id: the anchor chain's join. */
-    public Endpoint endpoint(String endpointId) {
-        return endpointById.get(endpointId);
-    }
-
     /** The write one read observed, inside that read's own session. */
     public WriteRow writeOf(String sessionId, LocationId location,
                             long version) {
@@ -525,14 +501,6 @@ public final class Corpus implements Arms.Rows {
     public RootMintRow rootOf(String sessionId, String rootId) {
         Map<String, RootMintRow> bySession = rootsById.get(rootId);
         return bySession == null ? null : bySession.get(sessionId);
-    }
-
-    /** One root's mint row in one session, as {@link Arms.Rows} asks it. */
-    /** Any mint row of one root, for its kind and its published domain. */
-    public RootMintRow anyRoot(String rootId) {
-        Map<String, RootMintRow> bySession = rootsById.get(rootId);
-        if (bySession == null || bySession.isEmpty()) return null;
-        return bySession.values().iterator().next();
     }
 
     /**

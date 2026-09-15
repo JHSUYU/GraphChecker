@@ -620,7 +620,7 @@ public final class ConcolicScheduler {
         Map<String, Integer> declared = new TreeMap<>();
         for (RegionInstancePlan plan : regionPlans) {
             for (JsonElement element : array(plan.json(),
-                    BoundedLoopComposition.PLAN_FIELD)) {
+                    LoopBoundPolicy.PLAN_FIELD)) {
                 if (!element.isJsonObject()) continue;
                 JsonObject loop = element.getAsJsonObject();
                 String loopSiteId = optionalString(loop,
@@ -630,7 +630,7 @@ public final class ConcolicScheduler {
                 Integer held = declared.put(loopSiteId, bound);
                 if (held != null && held.intValue() != bound) {
                     throw new IllegalStateException(
-                            BoundedLoopComposition.LOOP_BODY_BOUND_DISAGREES
+                            LoopBoundPolicy.LOOP_BODY_BOUND_DISAGREES
                                     + ": loop " + loopSiteId + " is planned"
                                     + " under K_L=" + held + " and K_L="
                                     + bound + "; one loop has one prefix");

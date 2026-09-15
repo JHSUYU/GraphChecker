@@ -92,13 +92,6 @@ public final class SharedExpressionTable {
     public static final class Compactor {
         private final Builder builder = new Builder();
 
-        public JsonObject compact(JsonObject artifact) {
-            if (artifact == null) return new JsonObject();
-            builder.collectTables(artifact);
-            builder.validateDefinitions();
-            builder.beginArtifact();
-            return compactDecodedArtifact(artifact, builder);
-        }
     }
 
     /** Compacts a graph whose content-addressed definitions are trusted. */
@@ -150,16 +143,6 @@ public final class SharedExpressionTable {
         return expanded.getAsJsonObject();
     }
 
-    /** Stable digest of one expression-bearing artifact. */
-    public static String semanticDigest(JsonObject artifact) {
-        if (artifact == null) artifact = new JsonObject();
-        Builder builder = new Builder();
-        builder.collectTables(artifact);
-        builder.validateDefinitions();
-        return ArtifactIO.sha256(CanonicalJson.render(
-                compactRoot(artifact, builder)));
-    }
-
     /** Reuses node identities while hashing a related set of expressions. */
     public static final class Anchors {
         private final Builder builder = new Builder();
@@ -184,14 +167,6 @@ public final class SharedExpressionTable {
             builder.validateReference(result);
             return result;
         }
-    }
-
-    /**
-     * Resolves one portable expression DAG. Resolved nodes are shared in
-     * memory; a caller that intends to mutate an expression must copy it.
-     */
-    public static JsonObject expand(JsonObject artifact) {
-        return new Decoder().expand(artifact);
     }
 
     /** Incremental decoder which interns anchors across several envelopes. */
@@ -260,14 +235,6 @@ public final class SharedExpressionTable {
                             resolver.anchorsByExpanded));
         }
 
-        /** Hashes only the record root; expression anchors bind the DAG. */
-        public synchronized String semanticDigest(JsonObject artifact) {
-            if (artifact == null) artifact = new JsonObject();
-            Builder builder = new Builder(resolver.definitions,
-                    resolver.anchorsByExpanded);
-            return ArtifactIO.sha256(CanonicalJson.render(
-                    compactRoot(artifact, builder)));
-        }
     }
 
     public static boolean isReference(JsonElement value) {

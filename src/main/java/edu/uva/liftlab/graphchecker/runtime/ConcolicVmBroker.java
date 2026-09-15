@@ -233,22 +233,6 @@ final class ConcolicVmBroker {
                 field.name(), javaTypeDescriptor(field.type()));
     }
 
-    /** One selected field's own version envelope, as the VM holds it now. */
-    String sharedFieldVersions(Object owner, String fieldSignature)
-            throws Exception {
-        DeclaredField field = FieldPathSpec.declaredField(
-                safe(fieldSignature));
-        if (field == null) {
-            throw new UnsupportedOperationException(
-                    "no exact declared field for version read-back: "
-                            + safe(fieldSignature));
-        }
-        return requiredVmJson(sharedFieldVersions.invoke(null, owner,
-                field.owner(), field.name(),
-                javaTypeDescriptor(field.type())),
-                "getSharedFieldVersions");
-    }
-
     String expression(Object value) throws Exception {
         return String.valueOf(getExpression.invoke(null, value));
     }

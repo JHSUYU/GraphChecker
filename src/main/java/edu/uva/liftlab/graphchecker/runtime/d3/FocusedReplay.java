@@ -84,22 +84,6 @@ public final class FocusedReplay {
         }
     }
 
-    /** Whether this replay was handed a focused task at all. */
-    public static boolean active() {
-        load();
-        return task != null;
-    }
-
-    public static Task task() {
-        load();
-        return task;
-    }
-
-    public static List<Obligation> obligations() {
-        load();
-        return OBLIGATIONS;
-    }
-
     /**
      * Whether this occurrence is the one that runs symbolic.
      *
@@ -177,19 +161,6 @@ public final class FocusedReplay {
             if (value != null) return value;
         }
         return "";
-    }
-
-    /** Whether this attach was answered with no arm that could produce it. */
-    public static boolean unproducible(String endpointId) {
-        load();
-        String id = Text.safe(endpointId);
-        for (Obligation obligation : OBLIGATIONS) {
-            if (obligation.unproducible() != null
-                    && obligation.unproducible().contains(id)) {
-                return true;
-            }
-        }
-        return false;
     }
 
     /**

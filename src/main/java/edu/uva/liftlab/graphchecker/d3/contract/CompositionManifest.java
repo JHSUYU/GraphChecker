@@ -48,36 +48,6 @@ public final class CompositionManifest {
                 Fields.text(smt2Path, "smt2Path"));
     }
 
-    public OccurrenceAddress anchor() {
-        return anchor;
-    }
-
-    public List<PathEntry> paths() {
-        return paths;
-    }
-
-    public List<Family> families() {
-        return families;
-    }
-
-    public List<RootDomain> roots() {
-        return roots;
-    }
-
-    /** How many valuations the enumeration ran. */
-    public int valuations() {
-        return valuations;
-    }
-
-    public Claim claim() {
-        return claim;
-    }
-
-    /** The composed formula the solver was given. */
-    public String smt2Path() {
-        return smt2Path;
-    }
-
     @Override
     public boolean equals(Object value) {
         if (this == value) return true;

@@ -101,10 +101,6 @@ public final class ConfiguredSourcePhaseContract {
         return Collections.unmodifiableList(result);
     }
 
-    public static List<Occurrence> occurrencesOf(JsonElement encoded) {
-        return occurrencesOf(encoded, false);
-    }
-
     /**
      * Decodes an ordered runtime phase catalog.
      *
@@ -454,6 +450,5 @@ public final class ConfiguredSourcePhaseContract {
 
         public String runtimeDeclaredCallee() { return runtimeDeclaredCallee; }
 
-        public List<Long> enclosingCallIds() { return enclosingCallIds; }
     }
 }

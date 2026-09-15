@@ -323,25 +323,6 @@ public final class ContainerSmtCodec {
                 && symbol(binary.get("_left"));
     }
 
-    public static boolean handlesAccessConstraint(JsonElement expression) {
-        if (expression == null || !expression.isJsonObject()) return false;
-        JsonObject binary = expression.getAsJsonObject();
-        if (!"BinaryExpression".equals(optionalString(binary, "_type"))) {
-            return false;
-        }
-        JsonElement left = binary.get("_left");
-        JsonElement right = binary.get("_right");
-        return handles(left) || handles(right)
-                || constant(left) && constant(right);
-    }
-
-    /** The VM's three constant-payload node kinds, stated once. */
-    public static boolean constant(JsonElement expression) {
-        if (expression == null || !expression.isJsonObject()) return false;
-        return constantKind(
-                optionalString(expression.getAsJsonObject(), "_type"));
-    }
-
     /** Whether one already-read {@code _type} names a constant payload. */
     public static boolean constantKind(String type) {
         return "ConstExpr".equals(type) || "ConSymbolExp".equals(type)
@@ -486,24 +467,6 @@ public final class ContainerSmtCodec {
         // A local mutation inherits the identity of the state it rests on.
         return EXPRESSION_TYPE.equals(optionalString(node, "_type"))
                 && evidencedContainerIdentity(node.get("receiver"));
-    }
-
-    /** Rewrites an indexed read to the element it provably selects. */
-    static JsonElement selectedIndexedElement(JsonElement expression) {
-        if (expression == null || !expression.isJsonObject()) {
-            return expression;
-        }
-        JsonObject object = expression.getAsJsonObject();
-        JsonArray arguments = array(object, "arguments");
-        if (!EXPRESSION_TYPE.equals(optionalString(object, "_type"))
-                || !"INDEXED".equals(optionalString(object, "shape"))
-                || !"READ".equals(optionalString(object, "operation"))
-                || arguments.size() != 1) {
-            return expression;
-        }
-        JsonElement stored = storedIndexedWrite(object.get("receiver"),
-                arguments.get(0), optionalString(object, "_java_type"));
-        return stored == null ? expression : selectedIndexedElement(stored);
     }
 
     /** Resolves {@code READ(WRITE(s, j, v), i)} to the stored {@code v}. */
@@ -2121,84 +2084,6 @@ public final class ContainerSmtCodec {
         return result;
     }
 
-    /**
-     * Recovers one common map view through propagation wrappers.
-     *
-     * <p>The VM keeps the exact {@code VALUE_VIEW}/{@code KEY_VIEW} operation
-     * in every writer arm of a {@code ReadFromExpression}.  Consumer
-     * boundaries and case merges preserve that choice structure, so an
-     * iterator may see several wrappers rather than the view node directly.
-     * The projection remains exact only when every recorded arm agrees.</p>
-     */
-    /**
-     * The shape a guarded read answers when its value IS a container, or
-     * {@code ""} when the read answers a cell or a scalar instead.
-     *
-     * <p>The VM records the erased reference type {@code L} for such a read,
-     * because a cursor and a view are both just objects to it.  Lowered from
-     * that type the read is a reference, while its arms lower to the states
-     * they actually are - and every arm then looks like a sort conflict.
-     * The associative side of this was already handled by
-     * {@link #selectedReadViewState}; an indexed cursor had no equivalent,
-     * which is what refused every traversal of a selected list.</p>
-     */
-    static String containerValuedReadShape(JsonElement expression) {
-        return containerValuedReadShape(expression, 0);
-    }
-
-    private static String containerValuedReadShape(JsonElement expression,
-                                                   int depth) {
-        if (depth > 64 || expression == null
-                || !expression.isJsonObject()) {
-            return "";
-        }
-        JsonObject object = expression.getAsJsonObject();
-        if (VmExpressionIr.isConsumerBoundary(object)
-                || VmExpressionIr.isConsumerBoundaryReference(object)) {
-            return containerValuedReadShape(
-                    object.get(VmExpressionIr.EXPRESSION), depth + 1);
-        }
-        String type = optionalString(object, "_type");
-        if (EXPRESSION_TYPE.equals(type)) {
-            return containerValuedOperation(
-                    optionalString(object, "operation"))
-                    ? optionalString(object, "shape") : "";
-        }
-        if (!VmRows.GUARDED_READ_TYPE.equals(type)) return "";
-        JsonArray arms = readVersions(object);
-        // Every arm must answer the same container shape, or the read has no
-        // one shape to be lowered at and the sort check refuses it as before.
-        String shape = "";
-        for (JsonElement arm : arms) {
-            if (!arm.isJsonObject()) return "";
-            String armShape = containerValuedReadShape(
-                    arm.getAsJsonObject().get(EXPRESSION_MEMBER), depth + 1);
-            if (armShape.isEmpty()) return "";
-            if (shape.isEmpty()) {
-                shape = armShape;
-            } else if (!shape.equals(armShape)) {
-                return "";
-            }
-        }
-        return shape;
-    }
-
-    /** Whether one relation's own value is the container, not a member. */
-    private static boolean containerValuedOperation(String operation) {
-        return "STATE".equals(operation) || "SNAPSHOT_BASE".equals(operation)
-                || "ITERATOR".equals(operation)
-                || "ENTRY_VIEW".equals(operation)
-                || "KEY_VIEW".equals(operation)
-                || "VALUE_VIEW".equals(operation)
-                || "PUT".equals(operation) || "APPEND".equals(operation)
-                || "INSERT".equals(operation) || "WRITE".equals(operation)
-                || "REMOVE".equals(operation)
-                || "REMOVE_AT".equals(operation)
-                || "REMOVE_IF".equals(operation)
-                || "CLEAR".equals(operation)
-                || "CLEAR_VIEW".equals(operation);
-    }
-
     private static String selectedReadViewKind(JsonElement expression) {
         if (expression == null || !expression.isJsonObject()) return "";
         JsonObject object = expression.getAsJsonObject();
@@ -2438,10 +2323,6 @@ public final class ContainerSmtCodec {
             this.indexedSize = sort == Sort.INDEXED ? indexedSize : -1L;
         }
 
-        /** The same term, at the size the recording states for it. */
-        public Term sized(long size) {
-            return new Term(text, sort, integralWidth, size);
-        }
     }
 
     private static final class Entry {

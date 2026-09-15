@@ -73,14 +73,4 @@ public final class JavaSmtSorts {
                 ? Sort.ARRAY_VALUE : Sort.VALUE;
     }
 
-    /** The same text, spelled the way an SMT symbol may be spelled. */
-    public static String smtName(String value) {
-        String normalized = firstNonBlank(value, "anonymous")
-                .replaceAll("[^A-Za-z0-9_]", "_");
-        if (normalized.isEmpty()) normalized = "anonymous";
-        if (Character.isDigit(normalized.charAt(0))) {
-            normalized = "n_" + normalized;
-        }
-        return normalized;
-    }
 }

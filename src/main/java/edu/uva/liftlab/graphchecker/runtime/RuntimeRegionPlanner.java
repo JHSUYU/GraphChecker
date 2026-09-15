@@ -1,6 +1,5 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
-import edu.uva.liftlab.graphchecker.d3.plan.BoundedLoopComposition;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
@@ -2433,8 +2432,7 @@ final class RuntimeRegionPlanner {
 
     /** Task member carrying the retained loops of one occurrence. */
     static final String RETAINED_LOOPS_FIELD =
-            edu.uva.liftlab.graphchecker.d3.plan.BoundedLoopComposition
-                    .PLAN_FIELD;
+            edu.uva.liftlab.graphchecker.d3.plan.LoopBoundPolicy.PLAN_FIELD;
 
     static final class RefinedFlowIndex {
         private final Map<String, Map<String, List<FlowEdge>>>

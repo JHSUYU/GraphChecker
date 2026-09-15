@@ -407,18 +407,6 @@ public final class RowCodec {
         }
     }
 
-    /** Appends one row to a kind's file, creating it if it is not there. */
-    public static void appendJsonl(Path file, JsonObject row)
-            throws IOException {
-        Files.createDirectories(file.toAbsolutePath().getParent());
-        try (BufferedWriter out = Files.newBufferedWriter(file,
-                StandardCharsets.UTF_8, StandardOpenOption.CREATE,
-                StandardOpenOption.APPEND)) {
-            out.write(toLine(row));
-            out.write("\n");
-        }
-    }
-
     public static List<JsonObject> readJsonl(Path file) throws IOException {
         List<JsonObject> rows = new ArrayList<>();
         if (file == null || !Files.isRegularFile(file)) return rows;

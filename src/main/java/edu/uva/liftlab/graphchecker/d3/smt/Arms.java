@@ -71,9 +71,6 @@ public final class Arms {
 
     /** What one stage must be able to look up; both corpora can answer it. */
     public interface Rows {
-        /** The sessions of this corpus, in the layout's order. */
-        List<String> sessionIds();
-
         /** The expression this session published under this ref, or null. */
         JsonObject expression(String sessionId, String expressionRef);
 

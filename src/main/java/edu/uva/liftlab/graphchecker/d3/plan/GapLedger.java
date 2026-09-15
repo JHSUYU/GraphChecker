@@ -1,9 +1,5 @@
 package edu.uva.liftlab.graphchecker.d3.plan;
 
-import edu.uva.liftlab.graphchecker.d3.plan.SymbolicPropagationClosure;
-
-import edu.uva.liftlab.graphchecker.d3.plan.BoundedLoopComposition;
-
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
@@ -209,7 +205,7 @@ public final class GapLedger {
         }
 
         // ------------------------------------------------------------------
-        // COMPOSE / BOUNDED_LOOP -- BoundedLoopComposition, and the per-case
+        // COMPOSE / BOUNDED_LOOP -- the per-case
         // loop-count reasons the importer copies out of the replay.  A loop
         // whose body count this composition cannot check against a declared
         // bound is a step of the chain stated at an unknown multiplicity.
@@ -272,7 +268,7 @@ public final class GapLedger {
                         + " its body ran is not pinned by the recording");
 
         // ------------------------------------------------------------------
-        // COMPOSE / SYMBOLIC_PROPAGATION -- SymbolicPropagationClosure.  Each
+        // COMPOSE / SYMBOLIC_PROPAGATION.  Each
         // of these is a read whose writer, arm, case or payload the closure
         // could not name; that is exactly a link of the read-from chain.
         // ------------------------------------------------------------------
@@ -450,7 +446,7 @@ public final class GapLedger {
         String plan = "PLAN/STATIC";
         diagnostic(plan, "BOUNDED_LOOP_FIXED_COUNT_BOUND_UNDECLARED",
                 "an array-indexed loop's trip count is its array length, and"
-                        + " BoundedLoopComposition checks every replayed case"
+                        + " the loop-bound policy checks every replayed case"
                         + " of it against a dense exact cardinality vector"
                         + " covering the body count -- raising the blocking"
                         + " PATH_LOCAL_ARRAY_CARDINALITY_MISSING where the"
@@ -517,17 +513,6 @@ public final class GapLedger {
     public static GapClass classOf(String code) {
         Entry entry = code == null ? null : REGISTRY.get(code.trim());
         return entry == null ? GapClass.BLOCKING : entry.gapClass;
-    }
-
-    /**
-     * Why the ledger classes {@code code} as it does, or {@code ""}.
-     *
-     * <p>A row that carries its class must carry the reason with it, or the
-     * class is an opinion the reader has to trust.</p>
-     */
-    public static String reasonOf(String code) {
-        Entry entry = code == null ? null : REGISTRY.get(code.trim());
-        return entry == null ? "" : entry.reason;
     }
 
     /** Whether {@code code} withholds a claim. */

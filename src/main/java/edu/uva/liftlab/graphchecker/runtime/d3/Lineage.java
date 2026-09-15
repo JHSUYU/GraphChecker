@@ -139,11 +139,6 @@ public final class Lineage {
         }
     }
 
-    /** The lineage of the calling thread, as a value work can carry. */
-    public static Carried capture(String nodeKey) {
-        return capture(nodeKey, "");
-    }
-
     /** The same, naming the endpoint of the submission that carries it. */
     public static Carried capture(String nodeKey, String startedByEndpoint) {
         return new Carried(new ArrayList<Frame>(STACK.get()),
@@ -228,14 +223,6 @@ public final class Lineage {
                 }
             };
 
-    /** Whether any hop of the current lineage is unattributable. */
-    public static boolean lost() {
-        for (Frame frame : STACK.get()) {
-            if (frame.lost) return true;
-        }
-        return false;
-    }
-
     /** Whether the calling thread is inside any scope frame at all. */
     public static boolean named() {
         return !STACK.get().isEmpty();
@@ -246,12 +233,6 @@ public final class Lineage {
         List<Frame> stack = STACK.get();
         return stack.isEmpty() ? Role.UNKNOWN
                 : stack.get(stack.size() - 1).role;
-    }
-
-    /** The k of the innermost frame, or 0. */
-    public static int k() {
-        List<Frame> stack = STACK.get();
-        return stack.isEmpty() ? 0 : stack.get(stack.size() - 1).k;
     }
 
     /**
@@ -303,19 +284,6 @@ public final class Lineage {
     /** The rendered lineage path, {@code ""} at a root. */
     public static String path() {
         return path(STACK.get());
-    }
-
-    /**
-     * The next window-local ordinal of one counted thing.
-     *
-     * <p>Daemon roots have no parent to count within, so their k is a raw
-     * window ordinal: IDENTITY-V2 §0 rules that acceptable because the
-     * closure makes it harmless -- a tick the anchor never reads is outside
-     * the closure, and one it does read is identified by the version it
-     * wrote, not by k.</p>
-     */
-    public static int windowOrdinal(String subject) {
-        return counter("WINDOW\n" + Text.safe(subject)).incrementAndGet();
     }
 
     /** Opens the recording window: k counts from here, in every replay. */

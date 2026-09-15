@@ -68,10 +68,6 @@ public final class Frontier {
         this.tasks = Collections.unmodifiableList(new ArrayList<Task>(tasks));
     }
 
-    public List<Task> tasks() {
-        return tasks;
-    }
-
     /**
      * Takes the verdicts the waves before this one recorded.
      *
@@ -111,10 +107,6 @@ public final class Frontier {
             obligations.add(candidate.proposal());
         }
         return new Wave(index, obligations);
-    }
-
-    public List<String> validatedSessions() {
-        return Collections.unmodifiableList(validatedSessions);
     }
 
     /** Per task: how many queries are answered, and how many this wave asks. */

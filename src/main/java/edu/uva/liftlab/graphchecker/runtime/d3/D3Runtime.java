@@ -106,10 +106,6 @@ public final class D3Runtime {
         return sessionId;
     }
 
-    public static SessionPublisher publisher() {
-        return publisher;
-    }
-
     /**
      * The sessions directory the campaign named, or null.
      *
@@ -235,25 +231,10 @@ public final class D3Runtime {
         return thread.getName() + "#" + thread.getId();
     }
 
-    /** The address minted for this activation, or {@code null}. */
-    public static OccurrenceAddress addressOf(long token) {
-        return ACTIVATIONS.get(token);
-    }
-
     public static void endActivation(long token) {
         ACTIVATIONS.remove(token);
         CONTEXTS.remove(token);
         INDEXES.remove(token);
-    }
-
-    /** The causal context this activation entered under, or null. */
-    public static CausalContext contextOf(long token) {
-        return CONTEXTS.get(token);
-    }
-
-    /** The execution index of this activation's entry, or null. */
-    public static ExecutionIndex indexOf(long token) {
-        return INDEXES.get(token);
     }
 
     // ------------------------------------------------------------------
@@ -589,14 +570,6 @@ public final class D3Runtime {
      * not stable -- Hadoop renames DataXceiver threads per op -- so the JVM
      * thread id is the key and the name travels with it for a reader.</p>
      */
-
-    /** The submission endpoint this thread inherited its frame from. */
-    private static Endpoint startedBy() {
-        String id = Lineage.startedBy();
-        if (id.isEmpty()) return null;
-        Endpoint known = STARTERS.get(id);
-        return known;
-    }
 
     /** Endpoints that started work elsewhere, by id, for startedBy. */
     private static final Map<String, Endpoint> STARTERS =

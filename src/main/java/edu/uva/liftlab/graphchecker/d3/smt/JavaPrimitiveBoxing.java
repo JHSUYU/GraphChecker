@@ -58,10 +58,6 @@ public final class JavaPrimitiveBoxing {
         return primitive == null ? "" : primitive.descriptor;
     }
 
-    public static boolean wrapperType(String type) {
-        return !primitiveDescriptor(type).isEmpty();
-    }
-
     private static void add(Map<String, Primitive> values, String wrapper,
                             String javaType, String accessor,
                             String descriptor) {

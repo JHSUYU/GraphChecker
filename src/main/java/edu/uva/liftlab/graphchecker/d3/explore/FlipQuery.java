@@ -622,88 +622,6 @@ final class FlipQuery {
             return SmtText.conjoin(atMostOne);
         }
 
-        /**
-         * One family arm: what one producer path delivered, under the
-         * decisions it took and the valuation it ran under.
-         *
-         * <p>The guard states only roots the corpus VARIED: a root every
-         * replay read the same way separates no arm from another, and stating
-         * it would pin the very quantity the flip exists to move.  A clock is
-         * never an equality.  An arm from a run in which the producer ran
-         * concretely is UNATTESTED -- it states what was delivered, not why --
-         * and is named as such.</p>
-         */
-        private String arm(ExportRow export, String variable,
-                           List<String> refusals) {
-            SessionReader session = corpus.session(export.sessionId());
-            if (session == null) {
-                refusals.add("no session to resolve " + export.sessionId());
-                return "";
-            }
-            Set<String> roots = new LinkedHashSet<String>();
-            Set<String> unknown = new LinkedHashSet<String>();
-            SmtLowering.Lowered lowered = corpus.lowering(export.sessionId())
-                    .lower(export.expressionRef());
-            String delivered;
-            boolean attested;
-            if (lowered.ok()) {
-                delivered = rename(lowered.text(), export.sessionId(), roots,
-                        unknown);
-                if (!unknown.isEmpty()) {
-                    refusals.add("delivered a value this replay did not "
-                            + "state: " + unknown.iterator().next());
-                    return "";
-                }
-                attested = corpus.ranFocused(export.sessionId(),
-                        export.endpoint().occurrence());
-            } else {
-                delivered = SmtText.literal(export.recordedValue(),
-                        sorts.get(variable));
-                if (delivered.isEmpty()) {
-                    refusals.add(lowered.refusal());
-                    return "";
-                }
-                attested = false;
-            }
-            List<String> conjuncts = new ArrayList<String>();
-            for (DecisionRow decision : corpus.decisionsOf(export.sessionId(),
-                    export.endpoint().occurrence())) {
-                // The prefix of the DELIVERY: a decision the producer took
-                // after putting the value on the wire cannot be a condition
-                // of what it delivered.  The session's own event order says
-                // which those are (CONTRACT-SPEC v1.1 seq).
-                if (decision.seq() >= export.seq()) continue;
-                if (!flippable(corpus, export.sessionId(), decision)) continue;
-                String term = rename(lower(decision.term(),
-                                export.sessionId()), export.sessionId(),
-                        roots, unknown);
-                if (!unknown.isEmpty()) {
-                    refusals.add("its prefix names " + unknown.iterator().next()
-                            + ", which that replay did not declare");
-                    return "";
-                }
-                conjuncts.add(decision.outcome() ? term
-                        : "(not " + term + ")");
-            }
-            for (String rootId : roots) {
-                if (!corpus.varied(rootId)) continue;
-                String rootVariable = rootVariable(rootId);
-                String reading = SmtText.literal(
-                        corpus.rootReading(export.sessionId(), rootId),
-                        sorts.get(rootVariable));
-                if (rootVariable.isEmpty() || reading.isEmpty()) continue;
-                conjuncts.add("(= " + rootVariable + " " + reading + ")");
-            }
-            conjuncts.add("(= " + variable + " " + delivered + ")");
-            if (!attested) {
-                gaps.add(GapRow.of(export.sessionId(), GapKind.UNATTESTED_ARM,
-                        GapClass.DIAGNOSTIC, export.endpoint().toString(),
-                        "the producer ran concretely in this session: the arm "
-                                + "states the delivery, not the reason for it"));
-            }
-            return SmtText.conjoin(conjuncts);
-        }
-
         // ---- naming --------------------------------------------------
 
         /**
@@ -824,16 +742,6 @@ final class FlipQuery {
             }
         }
 
-        /** The variable one root already has, or "" when it has none yet. */
-        private String rootVariable(String rootId) {
-            for (Map.Entry<String, String> entry : rootVariables.entrySet()) {
-                if (entry.getValue().equals(rootId)) return entry.getKey();
-            }
-            RootMintRow any = corpus.anyRoot(rootId);
-            return any == null ? ""
-                    : variable(any.sessionId(), any.symbol());
-        }
-
         /**
          * The sort the runtime declared one value at.
          *
@@ -920,11 +828,6 @@ final class FlipQuery {
             return new Built("", kind.name() + ":" + subject, flipped,
                     new ArrayList<Control>(controls.values()), rootVariables,
                     gaps);
-        }
-
-        private static String reasons(List<String> refusals) {
-            return refusals.isEmpty() ? "no export row names this interaction"
-                    : refusals.get(0);
         }
 
         private String render(DecisionRow flipped, int flipIndex) {

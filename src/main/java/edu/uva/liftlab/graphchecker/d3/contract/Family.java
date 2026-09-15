@@ -34,14 +34,6 @@ public final class Family {
         return arms;
     }
 
-    /** Whether any arm may carry a root move (INTERACTION-ID R-I5). */
-    public boolean anyUnattested() {
-        for (Arm arm : arms) {
-            if (!arm.attested()) return true;
-        }
-        return false;
-    }
-
     @Override
     public boolean equals(Object value) {
         if (this == value) return true;

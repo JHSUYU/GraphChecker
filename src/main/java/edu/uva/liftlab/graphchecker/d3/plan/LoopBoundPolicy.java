@@ -118,6 +118,11 @@ public final class LoopBoundPolicy {
     /** A declared {@code K_L} that names no retained loop. */
     public static final String DECLARED_BOUND_SITE_UNDECLARED =
             "BOUNDED_LOOP_BODY_BOUND_SITE_UNDECLARED";
+    /** Task/plan member carrying the retained loops of one occurrence. */
+    public static final String PLAN_FIELD = "retainedLoops";
+    /** Two declarations state different {@code K_L} for one loop. */
+    public static final String LOOP_BODY_BOUND_DISAGREES =
+            "BOUNDED_LOOP_BODY_BOUND_DISAGREES";
     /** Maximum failure-relevant cells retained for one symbolic container. */
     public static final int SYMBOLIC_CONTAINER_SNAPSHOT_CAPACITY = 32;
     /** Body entries one replay-path loop may run in one activation: the
@@ -168,12 +173,6 @@ public final class LoopBoundPolicy {
         this.defaultBackedgeTraversals = defaultBackedgeTraversals;
         this.declared = Collections.unmodifiableSortedMap(bounds);
         this.maxBackedgeTraversals = limit;
-    }
-
-    /** A contract in which every retained loop inherits the default. */
-    public static LoopBoundPolicy cfgBackedges(int maxTraversals) {
-        return new LoopBoundPolicy(maxTraversals,
-                Collections.<String, Integer>emptyMap());
     }
 
     /** A contract in which the named loops declare their own {@code K_L},
@@ -312,29 +311,4 @@ public final class LoopBoundPolicy {
         return bound;
     }
 
-    /**
-     * Whether one retained-loop declaration's trip count is still demanded.
-     *
-     * <p>Fail-closed: a declaration that carries no decision, or one decided
-     * under an authority this build does not know, is required.  Only an
-     * explicit {@code false} under {@link #FAILURE_DEMANDED_LOOP_SCOPE}
-     * relaxes the bound obligation, and only for the undeclared-bound gap --
-     * a declared {@code K_L}, the path-local count and every out-of-bound
-     * refusal are unaffected by this answer.</p>
-     */
-    public static boolean failureRelevantLoop(JsonObject declaration) {
-        if (declaration == null) return true;
-        JsonElement decided = declaration.get(LOOP_FAILURE_RELEVANT);
-        if (decided == null || !decided.isJsonPrimitive()
-                || !decided.getAsJsonPrimitive().isBoolean()) {
-            return true;
-        }
-        JsonElement authority = declaration.get(LOOP_RELEVANCE_AUTHORITY);
-        if (authority == null || !authority.isJsonPrimitive()
-                || !FAILURE_DEMANDED_LOOP_SCOPE.equals(
-                authority.getAsString())) {
-            return true;
-        }
-        return decided.getAsBoolean();
-    }
 }

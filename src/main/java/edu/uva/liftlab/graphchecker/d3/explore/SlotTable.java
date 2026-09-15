@@ -151,10 +151,6 @@ public final class SlotTable {
     /** The region slot a degraded occurrence carries: a role, not a region. */
     static final String ROLE_REGION = "ROLE.";
 
-    public boolean holds(String interactionId) {
-        return byInteraction.containsKey(interactionId);
-    }
-
     private void hold(Slot slot) {
         byInteraction.put(slot.interactionId(), slot);
         if (slot.kind == InteractionKind.WIRE) {

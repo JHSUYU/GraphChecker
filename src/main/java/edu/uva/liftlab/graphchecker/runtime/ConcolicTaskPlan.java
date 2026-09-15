@@ -160,15 +160,6 @@ final class ConcolicTaskPlan {
         if (index >= 0) occurrenceClaimed[index] = true;
     }
 
-    /** The campaign task with this id, or {@code null}. */
-    RuntimeTask taskById(String taskId) {
-        if (taskId == null || taskId.isEmpty()) return null;
-        for (RuntimeTask task : tasks) {
-            if (taskId.equals(task.taskId)) return task;
-        }
-        return null;
-    }
-
     /**
      * Resolves an occurrence-specific instrumentation hook to the stable
      * region entry shared by every sibling hook at that Java method.
@@ -390,23 +381,6 @@ final class ConcolicTaskPlan {
     }
 
     /**
-     * How the request this root entered differs from the planned one, or "".
-     *
-     * <p>Information, not admission.  The request was the stitcher's way of
-     * addressing an occurrence, because it merged replays and needed the RPC
-     * exchange to tell two runs of one region apart.  An occurrence is
-     * (node, epoch, region, k-th activation); which exchange happened to be
-     * open around it says where it was reached from, not which occurrence it
-     * is.</p>
-     */
-    static String requestMismatch(
-            RuntimeTask task, SourceRef registeredReceiverSource,
-            RuntimeTraceContext.View context) {
-        return task.rootContextSelector.reachedUnder
-                .requestDifference(context);
-    }
-
-    /**
      * Why this activation is not the planned node's, or {@code ""}.
      *
      * <p>One answer, with nothing deferred behind it.  A unique
@@ -545,41 +519,6 @@ final class ConcolicTaskPlan {
                     + " counts in the unregistered source)";
         }
         return " (attributed to " + activationSource.key() + ")";
-    }
-
-    /** Whether this run attributed the activation to no node at all. */
-    static boolean unattributed(SourceRef activationSource) {
-        return activationSource == null
-                || RuntimeTraceContext.UNREGISTERED_SOURCE.key()
-                .equals(activationSource.key());
-    }
-
-    /**
-     * Counts this physical entry once in the bucket it belongs to.
-     *
-     * <p>Once per entry however many tasks are offered it: the guard is the
-     * per-entry map, so two tasks sharing one counter scope do not advance
-     * it twice.</p>
-     */
-    /**
-     * Whether this task's bucket counts an entry at this hook.
-     *
-     * <p>The one difference between a method root and an enclosing loop
-     * root: which hook group the task belongs to and which argument selector
-     * its plan row carries.  Everything after it is the same question.</p>
-     */
-    private boolean countsEntry(RuntimeTask task, boolean loopRoot,
-                                String hookGroupKey, String rootMethod,
-                                Object receiver, Object[] rootArguments,
-                                String threadName) {
-        if (task.loopBodyRoot != loopRoot) return false;
-        return (loopRoot ? task.loopRootHookGroupKey()
-                : task.rootHookGroupKey()).equals(safe(hookGroupKey))
-                && compatibleRoot(task.rootMethod, rootMethod,
-                task.rootContextSelector,
-                loopRoot ? task.enclosingRootArgumentSelector
-                        : task.rootArgumentSelector,
-                receiver, rootArguments, threadName);
     }
 
     /** The source keys this run attributed to one live root entry. */
@@ -1549,15 +1488,6 @@ final class ConcolicTaskPlan {
                     : consumers;
         }
 
-        Set<String> declaredOutgoingPorts() {
-            Set<String> ports = new LinkedHashSet<>();
-            for (CommunicationHandoffSpec handoff
-                    : communicationHandoffs.values()) {
-                if (handoff.outgoing()) ports.add(handoff.portId());
-            }
-            return ports;
-        }
-
         /**
          * Indexes the frozen receiver locator of every planned field access.
          *
@@ -1717,12 +1647,6 @@ final class ConcolicTaskPlan {
             return LoopBoundPolicy.MAX_REPLAY_PATH_LOOP_BODIES;
         }
 
-        String policy(String siteId) {
-            String policy = branchPolicies.get(siteId);
-            return "EXPLORE".equals(policy)
-                    || "PATH_ASSUMPTION".equals(policy) ? policy : "EXPLORE";
-        }
-
         /** Whether the frozen plan declares a policy for this branch site. */
         boolean declaresBranch(String siteId) {
             return branchPolicies.containsKey(safe(siteId));
@@ -1772,13 +1696,6 @@ final class ConcolicTaskPlan {
             reserveConfiguredSourcePhaseOrdinals(sourceOrdinals);
         }
 
-
-        /** One bound gap per task, however many turns follow it. */
-        synchronized boolean claimLoopBoundGapMarker() {
-            if (loopBoundGapClaimed) return false;
-            loopBoundGapClaimed = true;
-            return true;
-        }
 
         synchronized boolean cutsBoundedLoopOccurrence() {
             if (!loopBodyRoot) return false;

@@ -137,25 +137,6 @@ public final class ObligationFactory {
     }
 
     /**
-     * Every flip this task's paths offer that the corpus has not answered.
-     *
-     * <p>A path is one recorded run of the FOCUSED occurrence.  The task's
-     * factor replays with it -- the writers and readers of one location on
-     * one node are one symbolic unit -- but the decisions that are flipped
-     * are the focused occurrence's, because an obligation names a site and an
-     * ordinal and nothing that would say in which co-occurrence they are.</p>
-     *
-     * @param asked a query already answered in an earlier wave, which is
-     *              never proposed again: the answer would be the same
-     */
-    public static List<Candidate> candidates(Corpus corpus, Task task,
-                                             Bounds bounds,
-                                             Predicate<String> asked) {
-        return candidates(corpus, task, bounds, asked,
-                new ArrayList<GapRow>());
-    }
-
-    /**
      * The same, naming every candidate the corpus has already answered.
      *
      * @param gaps where a skipped candidate is recorded, so a reader can see

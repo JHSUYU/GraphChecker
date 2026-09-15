@@ -105,24 +105,6 @@ public final class SymbolicSourceEvidence {
     }
 
     /**
-     * One mint, with the entry number and root name the runtime published.
-     *
-     * @param ordinal per-(activation, site) entry count, 1-based
-     * @param reused  whether the VM had already propagated an expression here
-     * @param symbol  the runtime's own root name, or "" to let the Composer
-     *                name the root
-     */
-    public static JsonObject event(String sourcePhaseId, String sourceId,
-                                   String occurrenceId,
-                                   String fieldSignature,
-                                   JsonElement expression,
-                                   int ordinal, boolean reused,
-                                   String symbol) {
-        return event(sourcePhaseId, sourceId, occurrenceId, fieldSignature,
-                expression, ordinal, reused, symbol, null);
-    }
-
-    /**
      * One mint, with the concrete value the field held when it was read.
      *
      * @param recordedValue what the field held at this mint, or null/"" when
@@ -169,165 +151,6 @@ public final class SymbolicSourceEvidence {
         return row;
     }
 
-    /** What the field held at this mint, or "" when the row states none. */
-    public static String recordedValueOf(JsonObject event) {
-        return event == null ? "" : optionalString(event, RECORDED_VALUE);
-    }
-
-    /** One root minted by an explicit task {@code SYMBOLIC} input action. */
-    public static JsonObject manualEvent(String portId, String occurrenceId,
-                                         String fieldSignature,
-                                         String javaType, String rawSymbol,
-                                         String sourceIdentity) {
-        return manualEvent(portId, occurrenceId, fieldSignature, javaType,
-                rawSymbol, sourceIdentity, "", "", -1L, "", "");
-    }
-
-    /**
-     * The same root, with what the mint row states about the read.
-     *
-     * <p>{@code declaredCallee} is the hook's own declaration: a cell
-     * minted through the clock hook is a wall-clock read by construction,
-     * and carrying the callee here is what lets the composer window that
-     * root instead of pinning it -- without any reader inferring a clock
-     * from a site name.  {@code recordedValue} is what the recording read
-     * there, which is the value such a window is centred on.</p>
-     */
-    public static JsonObject manualEvent(String portId, String occurrenceId,
-                                         String fieldSignature,
-                                         String javaType, String rawSymbol,
-                                         String sourceIdentity,
-                                         String declaredCallee,
-                                         String siteId, long eventSeq,
-                                         String recordedValue,
-                                         String observedValue) {
-        JsonObject expression = new JsonObject();
-        expression.addProperty("_type", "SymbolExpression");
-        expression.addProperty("_java_type", required(javaType,
-                "javaType"));
-        expression.addProperty("_exp", required(rawSymbol, "rawSymbol"));
-        exactSymbol(expression);
-        JsonObject row = new JsonObject();
-        row.addProperty("schemaVersion", SCHEMA_VERSION);
-        row.addProperty("kind", MANUAL_KIND);
-        row.addProperty("authority", MANUAL_AUTHORITY);
-        row.addProperty("portId", required(portId, "portId"));
-        row.addProperty("sourceOccurrenceId", required(occurrenceId,
-                "sourceOccurrenceId"));
-        // A manual input's identity IS what every reader calls its field:
-        // there is no Java field behind a hook's mint, and a row that left
-        // the member off was refused as a malformed materialization by the
-        // one reader that asks for it.  Stated here, once, rather than by a
-        // second builder that filled it in.
-        row.addProperty("fieldSignature",
-                fieldSignature == null || fieldSignature.trim().isEmpty()
-                        ? required(sourceIdentity, "sourceIdentity").trim()
-                        : fieldSignature.trim());
-        row.addProperty("rawSymbol", rawSymbol);
-        row.addProperty("javaType", javaType);
-        row.add("expression", expression);
-        row.addProperty("sourceIdentity", required(sourceIdentity,
-                "sourceIdentity"));
-        // The mint row IS the declaration every reader uses, so it states
-        // the identity under all three names a materialization asks for
-        // rather than letting a second builder invent them from the symbol.
-        // The node is the occurrence's own prefix; an address without a
-        // region is the node itself.
-        row.addProperty("sourcePhaseId", sourceIdentity.trim());
-        row.addProperty("sourceId", sourceIdentity.trim());
-        row.addProperty("sourceKey", nodeOf(occurrenceId));
-        if (declaredCallee != null && !declaredCallee.trim().isEmpty()) {
-            row.addProperty(DECLARED_CALLEE, declaredCallee.trim());
-        }
-        if (siteId != null && !siteId.trim().isEmpty()) {
-            row.addProperty("siteId", siteId.trim());
-        }
-        if (eventSeq >= 0L) {
-            row.addProperty("eventSeq", eventSeq);
-        }
-        if (recordedValue != null && !recordedValue.trim().isEmpty()) {
-            row.addProperty(RECORDED_VALUE, recordedValue.trim());
-        }
-        if (observedValue != null && !observedValue.trim().isEmpty()) {
-            row.addProperty(OBSERVED_VALUE, observedValue.trim());
-        }
-        return validate(row);
-    }
-
-    /** What this execution read at the mint, or "" when it states none. */
-    public static String observedValueOf(JsonObject event) {
-        return event == null ? "" : optionalString(event, OBSERVED_VALUE);
-    }
-
-    /**
-     * One manual mint row as every reader declares it.
-     *
-     * <p>The row IS the declaration -- it states the port, the callee the
-     * hook declared and both readings -- but a row written before those
-     * members existed states its identity only as {@code sourceIdentity}.
-     * Completing it here keeps that knowledge in the class that owns the
-     * row's shape: the composer used to rebuild a declaration instead, and
-     * the rebuilt row, installed over the evidence, lost the port and the
-     * callee, so no composition ever listed a clock read.</p>
-     */
-    public static JsonObject manualDeclaration(JsonObject row) {
-        if (row == null) return null;
-        // The VM's own observation spells the identity "symbol" and the
-        // address "occurrenceId"; a row this class minted spells them
-        // "sourceIdentity" and "sourceOccurrenceId".  Both are the same
-        // statement, and this is the one place that says so.
-        String identity = optionalString(row, "sourceIdentity");
-        if (identity.isEmpty()) identity = optionalString(row, SYMBOL);
-        if (identity.isEmpty()) return null;
-        JsonObject declaration = shallowCopy(row);
-        String occurrence = optionalString(row, "sourceOccurrenceId");
-        if (occurrence.isEmpty()) {
-            occurrence = optionalString(row, "occurrenceId");
-            stateIfAbsent(declaration, "sourceOccurrenceId", occurrence);
-        }
-        stateIfAbsent(declaration, "sourcePhaseId", identity);
-        stateIfAbsent(declaration, "sourceId", identity);
-        stateIfAbsent(declaration, "fieldSignature", identity);
-        stateIfAbsent(declaration, "sourceKey", nodeOf(occurrence));
-        return declaration;
-    }
-
-    private static void stateIfAbsent(JsonObject row, String member,
-                                      String value) {
-        if (optionalString(row, member).isEmpty() && !value.isEmpty()) {
-            row.addProperty(member, value);
-        }
-    }
-
-    /** The call whose return this root was minted from, or "". */
-    public static String declaredCalleeOf(JsonObject event) {
-        return event == null ? "" : optionalString(event, DECLARED_CALLEE);
-    }
-
-    public static boolean isManual(JsonObject event) {
-        return event != null && MANUAL_KIND.equals(optionalString(event, "kind"));
-    }
-
-    /** The 1-based entry number one row states. */
-    public static int ordinalOf(JsonObject event) {
-        int ordinal = JsonFields.optionalInteger(event, ORDINAL, 0);
-        if (ordinal < 1) {
-            throw new IllegalArgumentException(
-                    FIELD + " states no mint ordinal");
-        }
-        return ordinal;
-    }
-
-    /** Whether this row reuses an already-propagated expression. */
-    public static boolean isReused(JsonObject event) {
-        if (isManual(event)) return false;
-        if (!event.has(REUSED)) {
-            throw new IllegalArgumentException(
-                    FIELD + " states no reuse");
-        }
-        return JsonFields.optionalBool(event, REUSED, false);
-    }
-
     public static void writeTo(JsonObject owner, List<JsonObject> events) {
         if (owner == null || events == null || events.isEmpty()) return;
         JsonArray encoded = new JsonArray();
@@ -335,62 +158,10 @@ public final class SymbolicSourceEvidence {
         owner.add(FIELD, encoded);
     }
 
-    public static List<JsonObject> eventsOf(JsonObject owner) {
-        if (owner == null) return Collections.emptyList();
-        List<JsonObject> result = new ArrayList<>();
-        Set<String> identities = new LinkedHashSet<>();
-        for (JsonElement element : array(owner, FIELD)) {
-            if (!element.isJsonObject()) {
-                throw new IllegalArgumentException(
-                        FIELD + " entries must be objects");
-            }
-            JsonObject event = validate(element.getAsJsonObject());
-            // Wave 3 C1: one owner legitimately holds many mints of one
-            // site - one per entry.  What may not repeat is one entry.
-            String identity = identity(event);
-            if (!identities.add(identity)) {
-                throw new IllegalArgumentException(
-                        FIELD + " repeats one source mint: " + identity);
-            }
-            result.add(event);
-        }
-        return result;
-    }
-
-    /**
-     * Canonical identity of one mint: the field, the activation that read it
-     * and which entry of that activation.  Shared by every replay of the same
-     * entry, distinct for every other entry of the same site.
-     */
-    public static String identity(JsonObject event) {
-        JsonObject valid = validate(event);
-        if (isManual(valid)) return optionalString(valid, "sourceIdentity");
-        return optionalString(valid, "sourceId") + "\n"
-                + optionalString(valid, "sourceOccurrenceId") + "\n#"
-                + ordinalOf(valid);
-    }
-
     /**
      * Builds the one-to-one raw-symbol registry consumed by the Composer.
      * A collision is evidence corruption, never a reason to pick one row.
      */
-
-    /** One VM root may be observed again when the same field object survives
-     * into another activation.  The raw root is then the identity authority;
-     * occurrence and ordinal describe observations, not new roots. */
-    private static boolean sameConfiguredSource(JsonObject left,
-                                                JsonObject right) {
-        return left != null && right != null
-                && !isManual(left) && !isManual(right)
-                && optionalString(left, "sourceId").equals(optionalString(right,
-                "sourceId"))
-                && optionalString(left, "sourcePhaseId").equals(optionalString(right,
-                "sourcePhaseId"))
-                && optionalString(left, "fieldSignature").equals(optionalString(right,
-                "fieldSignature"))
-                && optionalString(left, "javaType").equals(optionalString(right,
-                "javaType"));
-    }
 
     private static JsonObject validate(JsonObject event) {
         if (event == null || !hasOnlyKnownMembers(event)) {
@@ -534,17 +305,6 @@ public final class SymbolicSourceEvidence {
                     "sourcePhaseId must name an exact source phase");
         }
         return result;
-    }
-
-    /**
-     * The node and epoch an occurrence ran on, read through the address
-     * grammar rather than off the id's text; an id that names no address is
-     * the node itself.
-     */
-    private static String nodeOf(String occurrenceId) {
-        String id = occurrenceId == null ? "" : occurrenceId.trim();
-        int region = id.indexOf("/region/");
-        return region <= 0 ? id : id.substring(0, region);
     }
 
 }

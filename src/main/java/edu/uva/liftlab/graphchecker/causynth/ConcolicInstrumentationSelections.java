@@ -795,22 +795,6 @@ public final class ConcolicInstrumentationSelections {
             }
         }
 
-        /**
-         * Whether this campaign named the exact bytecode site {@code
-         * method#uUnit}. README section 1's first gate.
-         */
-        boolean selectedSite(String method, int unitIndex) {
-            if (unitIndex < 0) return false;
-            Map<String, Set<Integer>> locals = localsByMethod.get(method);
-            if (locals != null) {
-                for (Set<Integer> sites : locals.values()) {
-                    if (sites.contains(unitIndex)) return true;
-                }
-            }
-            return accessorCallsBySite.containsKey(
-                    SiteId.of(method, unitIndex));
-        }
-
         /** Unique local-definition sites this campaign named. */
         int localSiteCount() {
             int sites = 0;
@@ -927,21 +911,6 @@ public final class ConcolicInstrumentationSelections {
         for (Map.Entry<K, Map<I, Set<V>>> entry : from.entrySet()) {
             mergeSets(into.computeIfAbsent(entry.getKey(),
                     ignored -> new LinkedHashMap<>()), entry.getValue());
-        }
-    }
-
-    static int intValue(Object value, int fallback) {
-        if (value instanceof Number) {
-            return ((Number) value).intValue();
-        }
-        if (value == null || String.valueOf(value).trim().isEmpty()
-                || "null".equals(String.valueOf(value))) {
-            return fallback;
-        }
-        try {
-            return Integer.parseInt(String.valueOf(value));
-        } catch (RuntimeException ignored) {
-            return fallback;
         }
     }
 

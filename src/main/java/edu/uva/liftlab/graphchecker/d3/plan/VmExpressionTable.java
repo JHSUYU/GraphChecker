@@ -58,15 +58,6 @@ public final class VmExpressionTable {
         return false;
     }
 
-    /** Converts every native table/reference nested in one artifact. */
-    public static JsonObject portable(JsonObject artifact) {
-        if (artifact == null) return new JsonObject();
-        if (!usesNativeDag(artifact)) return artifact;
-        Store store = new Store();
-        JsonObject expanded = store.importEnvelope(artifact);
-        return store.compact(expanded);
-    }
-
     /**
      * Decodes several VM envelopes for one region while interning equal
      * content-addressed nodes.  Runtime analysis receives the real expression

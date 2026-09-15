@@ -403,11 +403,6 @@ public final class VmTermLowering {
                 + upper + "))";
     }
 
-    /** Java's int range, stated over one lowered integer. */
-    public static String javaIntRange(String integer) {
-        return integralRange("(- 2147483648)", integer, "2147483647");
-    }
-
     /** Java's decimal Integer.toString of one lowered integer. */
     public static Term javaIntString(Term integer) {
         return Term.nonNullString("(java_int_to_string " + integer.text + ")",
@@ -462,12 +457,6 @@ public final class VmTermLowering {
                     precondition);
         }
 
-        /** A term carrying exactly the facts given: an unstated String
-         *  nullness stays unknown, the solver's refusal trigger. */
-        public static Term vm(String text, Sort sort) {
-            return vm(text, sort, IntegralWidth.NONE, "", "");
-        }
-
         public static Term vm(String text, Sort sort, IntegralWidth integralWidth) {
             return vm(text, sort, integralWidth, "", "");
         }
@@ -476,12 +465,6 @@ public final class VmTermLowering {
                        String stringNullness, String stringReferenceOrigin) {
             return new Term(text, sort, integralWidth, stringNullness,
                     stringReferenceOrigin, "true");
-        }
-
-        public static Term nullableString(String text, String nullness,
-                                   String referenceOrigin) {
-            return of(text, Sort.STRING, IntegralWidth.NONE, nullness,
-                    referenceOrigin, "true");
         }
 
         public static Term nonNullString(String text, String precondition) {
@@ -514,9 +497,5 @@ public final class VmTermLowering {
             Collections.sort(this.selectors);
         }
 
-        public boolean same(GuardedReadUse other) {
-            return other != null && activation.equals(other.activation)
-                    && selectors.equals(other.selectors);
-        }
     }
 }

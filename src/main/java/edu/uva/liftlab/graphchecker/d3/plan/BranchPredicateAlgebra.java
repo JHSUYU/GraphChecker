@@ -244,9 +244,7 @@ public final class BranchPredicateAlgebra {
      *
      * <p>The predicate must already be expanded: a
      * {@link SharedExpressionTable#REFERENCE_TYPE} node carries no leaves of
-     * its own, so a compact DAG would under-report. Callers inside a closure
-     * wave receive expanded rows from
-     * {@link SymbolicPropagationClosure#rewriteSummaryRows}.</p>
+     * its own, so a compact DAG would under-report.</p>
      */
     public static Set<String> symbolicSupport(JsonElement predicate) {
         Set<String> support = new TreeSet<>();

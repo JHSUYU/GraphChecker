@@ -250,11 +250,6 @@ public final class SharedStateEvidence {
         return gap;
     }
 
-    /** Whether {@code row} is a gap this vocabulary produced. */
-    public static boolean isGap(JsonObject row) {
-        return JsonFields.isGapRow(row, GAP_KIND, GAP_AUTHORITY, OK);
-    }
-
 
     /**
      * Names the location one version-store envelope describes, as the VM's
@@ -283,38 +278,6 @@ public final class SharedStateEvidence {
     }
 
 
-    /** The VM session's symbolic owner encoded in a location key. */
-    public static long locationOwnerOf(String locationKey) {
-        if (locationKindOf(locationKey).isEmpty()) return 0L;
-        int slash = locationKey.indexOf('/');
-        int slot = locationKey.indexOf('#', slash + 1);
-        if (slash < 0 || slot <= slash + 1) return 0L;
-        try {
-            long owner = Long.parseLong(locationKey.substring(slash + 1,
-                    slot));
-            return owner > 0L ? owner : 0L;
-        } catch (NumberFormatException invalid) {
-            return 0L;
-        }
-    }
-
-    /**
-     * Whether one expression node is the STATE root of a container whose
-     * whole state a carrier versions.
-     *
-     * <p>Both whole-state shapes answer yes.  An indexed root that answered
-     * no would keep its session-local symbol instead of the content address
-     * runtime carrier evidence gives it, and one logical container would
-     * then be a different witness in every replay session.</p>
-     */
-    public static boolean isWholeStateRoot(JsonObject node) {
-        if (node == null) return false;
-        String shape = optionalString(node, "shape");
-        return "ContainerRelation".equals(optionalString(node, "_type"))
-                && "STATE".equals(optionalString(node, "operation"))
-                && ("ASSOCIATIVE".equals(shape) || "INDEXED".equals(shape));
-    }
-
     /** Whether {@code locationKey} names one selected map's whole state. */
     public static boolean isMapState(String locationKey) {
         return LOCATION_KIND_MAP_STATE.equals(locationKindOf(locationKey));
@@ -322,44 +285,6 @@ public final class SharedStateEvidence {
 
     public static final String SESSION_LOCATION_FIELD = "sessionLocationKey";
 
-    /**
-     * A cross-session name for one location, built from the planned region
-     */
-    public static String canonicalLocationKey(String locationKey,
-                                              String declaredField,
-                                              String occurrenceId,
-                                              long receiverObjectId) {
-        String kind = locationKindOf(locationKey);
-        if (kind.isEmpty()
-                || occurrenceId == null || occurrenceId.trim().isEmpty()
-                || declaredField == null || declaredField.trim().isEmpty()
-                || receiverObjectId <= 0L) {
-            return "";
-        }
-        int slot = locationKey.indexOf('#');
-        if (slot < 0) return "";
-        return kind + "/" + occurrenceId.trim() + "@receiver:"
-                + receiverObjectId + "@"
-                + declaredField.trim()
-                + locationKey.substring(slot);
-    }
-
-    public static String sessionLocationKey(JsonObject row) {
-        String session = optionalString(row, SESSION_LOCATION_FIELD);
-        return session.isEmpty() ? optionalString(row, "locationKey") : session;
-    }
-
-
-    private static void rename(JsonObject row, String session,
-                               String canonical) {
-        String heldSession = optionalString(row, SESSION_LOCATION_FIELD);
-        if (!heldSession.isEmpty()
-                && !heldSession.equals(optionalString(row, "locationKey"))) return;
-        if (heldSession.isEmpty()) {
-            row.addProperty(SESSION_LOCATION_FIELD, session);
-        }
-        row.addProperty("locationKey", canonical);
-    }
 
 
     /** Whether {@code versionKind} publishes one immutable whole state. */
@@ -551,109 +476,6 @@ public final class SharedStateEvidence {
         return record;
     }
 
-    /** Whether {@code row} is an admitted write log. */
-    public static boolean isVersionsRecord(JsonObject row) {
-        return writeLogFault(row).isEmpty();
-    }
-
-    /**
-     * Why one published write log cannot be read, or {@code ""}.
-     *
-     * <p>{@link #versionsFault} is the recording side's contract: it runs on
-     * the VM envelope, which states the selection, the writer case behind
-     * every version, the read log and the truncation flags.  A replay
-     * publishes none of that -- it publishes the write log, {@code
-     * location#version -> expression} -- because a read inside one replay is
-     * determined and needs only the version it observed and the expression
-     * written at it.  So this side admits on exactly that: an addressable
-     * location, and per version an id, a declared kind and an untruncated
-     * value.  Requiring the recording's members here refuses every write log
-     * the runtime publishes and leaves every read unresolved.</p>
-     */
-    public static String writeLogFault(JsonObject row) {
-        if (row == null) return "no write log";
-        if (!VERSIONS_RECORD_KIND.equals(optionalString(row, "kind"))
-                || !RECORD_AUTHORITY.equals(
-                optionalString(row, "authority"))) {
-            return "row is not an authoritative write log";
-        }
-        if (optionalString(row, "locationKey").isEmpty()) {
-            return "write log names no location";
-        }
-        JsonObject envelope = object(row, "envelope");
-        if (!VERSIONS_ENVELOPE_KIND.equals(optionalString(envelope, "kind"))
-                || optionalInteger(envelope, "schemaVersion", -1)
-                != SCHEMA_VERSION) {
-            return "envelope is not an authoritative version store";
-        }
-        if (locationKey(envelope).isEmpty()) {
-            return "envelope names no addressable location";
-        }
-        JsonElement versionsMember = envelope.get("versions");
-        if (versionsMember == null || !versionsMember.isJsonArray()) {
-            return "envelope carries no version array";
-        }
-        JsonArray versions = versionsMember.getAsJsonArray();
-        if (versions.size() == 0) {
-            return "selected location published no version";
-        }
-        boolean mapState = isMapState(locationKey(envelope));
-        Set<Long> versionIds = new LinkedHashSet<>();
-        for (JsonElement element : versions) {
-            if (!element.isJsonObject()) return "version is not an object";
-            JsonObject version = element.getAsJsonObject();
-            String fault = writtenVersionFault(version, mapState);
-            if (!fault.isEmpty()) return fault;
-            if (!versionIds.add(optionalLongInteger(version,
-                    "fieldVersionId", 0L))) {
-                return "duplicate fieldVersionId "
-                        + optionalLongInteger(version, "fieldVersionId", 0L);
-            }
-        }
-        return "";
-    }
-
-    /** Admits one version of a published write log. */
-    private static String writtenVersionFault(
-            JsonObject version, boolean mapState) {
-        long id = optionalLongInteger(version, "fieldVersionId", 0L);
-        if (id <= 0L) return "version has no fieldVersionId";
-        String versionKind = optionalString(version, "versionKind");
-        if (!VERSION_KINDS.contains(versionKind)) {
-            return "version " + id + " has no declared kind";
-        }
-        if (!INITIAL_VERSION_KIND.equals(versionKind)
-                && stateVersionKind(versionKind) != mapState) {
-            return "version " + id + " has kind " + versionKind
-                    + " that its location kind does not publish";
-        }
-        JsonElement expression = version.get("expression");
-        if (expression == null || expression.isJsonNull()) {
-            return "version " + id + " carries no value expression";
-        }
-        if (containsVmSerializationTruncation(expression)) {
-            return VM_EXPRESSION_SERIALIZATION_TRUNCATED
-                    + ": version " + id + " value expression";
-        }
-        return "";
-    }
-
-
-    public static JsonObject recorded(Collection<JsonObject> versionRecords) {
-        JsonArray versions = new JsonArray();
-        if (versionRecords != null) {
-            for (JsonObject record : versionRecords) {
-                if (isVersionsRecord(record)) versions.add(record);
-            }
-        }
-        if (versions.size() == 0) return new JsonObject();
-        JsonObject recorded = new JsonObject();
-        recorded.addProperty("schemaVersion", SCHEMA_VERSION);
-        recorded.addProperty("kind", RECORDED_KIND);
-        recorded.addProperty("authority", RECORD_AUTHORITY);
-        recorded.add("versions", versions);
-        return recorded;
-    }
 
 
     private static boolean booleanMember(JsonObject object, String field) {

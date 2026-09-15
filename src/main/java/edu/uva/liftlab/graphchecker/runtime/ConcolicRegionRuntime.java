@@ -20,7 +20,6 @@ import edu.uva.liftlab.graphchecker.d3.plan.ClockRootPhysics;
 import edu.uva.liftlab.graphchecker.d3.plan.ExactConcreteBranchObservation;
 import edu.uva.liftlab.graphchecker.d3.plan.RecordedEvidenceIdentity;
 import edu.uva.liftlab.graphchecker.d3.plan.SharedStateEvidence;
-import edu.uva.liftlab.graphchecker.d3.plan.SymbolicPropagationClosure;
 import edu.uva.liftlab.graphchecker.d3.plan.SymbolicSourceEvidence;
 import edu.uva.liftlab.graphchecker.d3.smt.VmExpressionIr;
 import edu.uva.liftlab.graphchecker.d3.plan.VmExpressionTable;
@@ -5076,9 +5075,9 @@ public final class ConcolicRegionRuntime {
      * on {@code PBHelper.convert(BlockKeyProto)} and lost its reach
      * condition to {@code true}.  A flow whose value never arrives is
      * already named three times over, by {@link #attachCommunicationLeaf}'s
-     * own handoff gap, by {@code SymbolicPropagationClosure
-     * .RPC_ATTACH_SENDER_EXPRESSION_MISSING} and by {@code the composition
-     * .WIRE_FLOW_VALUE_UNBOUND}; a mint hid all three behind a root that
+     * own handoff gap, by {@code RPC_ATTACH_SENDER_EXPRESSION_MISSING} and
+     * by the composition's {@code WIRE_FLOW_VALUE_UNBOUND}; a mint hid all
+     * three behind a root that
      * answered to nothing.</p>
      *
      * <p>Open path recording so the VM still resolves the writer and creates

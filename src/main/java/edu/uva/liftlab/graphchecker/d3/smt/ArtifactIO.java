@@ -36,28 +36,6 @@ public final class ArtifactIO {
     private ArtifactIO() {
     }
 
-    static String readText(Path path) throws IOException {
-        if (path == null || !Files.isRegularFile(path)) {
-            throw new IOException("Input not found: " + path);
-        }
-        return new String(Files.readAllBytes(path), StandardCharsets.UTF_8);
-    }
-
-    static JsonObject readObject(Path path) throws IOException {
-        JsonElement parsed;
-        try {
-            parsed = JsonParser.parseString(new String(
-                    Files.readAllBytes(path), StandardCharsets.UTF_8));
-        } catch (RuntimeException malformed) {
-            throw new IOException("Malformed JSON object in " + path,
-                    malformed);
-        }
-        if (!parsed.isJsonObject()) {
-            throw new IOException("Expected one JSON object in " + path);
-        }
-        return parsed.getAsJsonObject();
-    }
-
     public static List<JsonObject> readJsonl(Path path) throws IOException {
         if (path == null || !Files.isRegularFile(path)) {
             throw new IOException("JSONL input not found: " + path);
@@ -173,31 +151,6 @@ public final class ArtifactIO {
         });
     }
 
-    /** Atomically streams one JSON document without building a second copy. */
-    static void replaceJson(Path path, JsonElement value, Gson writer)
-            throws IOException {
-        atomicReplace(path, output -> {
-            writer.toJson(value, output);
-            output.newLine();
-        });
-    }
-
-    static Map<String, JsonObject> uniqueIndex(
-            Iterable<JsonObject> rows, String field) throws IOException {
-        Map<String, JsonObject> result = new LinkedHashMap<>();
-        if (rows == null) return result;
-        for (JsonObject row : rows) {
-            String key = JsonFields.optionalString(row, field);
-            if (key.isEmpty()) continue;
-            JsonObject previous = result.put(key, row);
-            if (previous != null && !previous.equals(row)) {
-                throw new IOException("Conflicting duplicate " + field
-                        + ": " + key);
-            }
-        }
-        return result;
-    }
-
     public static String sha256(Path path) throws IOException {
         MessageDigest digest = digest();
         byte[] buffer = new byte[8192];
@@ -216,25 +169,6 @@ public final class ArtifactIO {
 
     public static String sha256(byte[] value) {
         return hex(digest().digest(value == null ? new byte[0] : value));
-    }
-
-    static JsonObject artifact(Path path) throws IOException {
-        if (path == null || !Files.isRegularFile(path)) {
-            throw new IOException("Artifact input not found: " + path);
-        }
-        JsonObject result = new JsonObject();
-        result.addProperty("path", path.toAbsolutePath().normalize()
-                .toString());
-        result.addProperty("sha256", sha256(path));
-        return result;
-    }
-
-    static JsonObject artifact(Path path, byte[] bytes) {
-        JsonObject result = new JsonObject();
-        result.addProperty("path", path.toAbsolutePath().normalize()
-                .toString());
-        result.addProperty("sha256", sha256(bytes));
-        return result;
     }
 
     public static Path sibling(Path path, String name) {

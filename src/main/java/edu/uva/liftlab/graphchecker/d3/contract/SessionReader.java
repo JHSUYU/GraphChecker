@@ -87,10 +87,6 @@ public final class SessionReader {
         return directory.sessionId();
     }
 
-    public Path directory() {
-        return directory.dir();
-    }
-
     public List<ActivationRow> activations() {
         return activations;
     }
@@ -123,10 +119,6 @@ public final class SessionReader {
         return targets;
     }
 
-    public List<GapRow> gaps() {
-        return gaps;
-    }
-
     public ExpressionTable expressions() {
         return expressions;
     }
@@ -149,21 +141,6 @@ public final class SessionReader {
             if (activation.focused()) return activation.occurrence();
         }
         return null;
-    }
-
-    /**
-     * Which session is the recording, or null when that has no answer.
-     *
-     * <p>One rule, in one place: the seed is the session whose activations
-     * focused nothing.  A corpus with none of those, or with more than one,
-     * does not state which recording a claim is about -- and the caller
-     * raises the BLOCKING gap, because what that means is the reading stage's
-     * to say, not the file layout's.  Never a fallback to "the first one":
-     * naming an exploration replay as the recording is how a claim comes to
-     * be about the wrong execution.</p>
-     */
-    public static String seedSessionId(Path iteration) throws IOException {
-        return seedSessionId(readAll(iteration));
     }
 
     /** The same rule, over sessions a caller already read. */

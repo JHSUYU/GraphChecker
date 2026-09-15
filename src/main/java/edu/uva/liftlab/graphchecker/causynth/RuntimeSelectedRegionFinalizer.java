@@ -2362,20 +2362,6 @@ public final class RuntimeSelectedRegionFinalizer {
         return new ArrayList<>(result);
     }
 
-    /** The declared field a port's leaf reads, by its own path or its cell. */
-    private static String leafDeclaration(Map<String, Object> port) {
-        List<String> declarations = strings(
-                port.get("fieldPathDeclarations"));
-        return declarations.isEmpty() ? text(port.get("cell"))
-                : declarations.get(declarations.size() - 1);
-    }
-
-    private static boolean primitiveLeaf(Map<String, Object> port) {
-        DeclaredFieldCell field = DeclaredFieldCell.parse(
-                leafDeclaration(port));
-        return field != null && field.primitive();
-    }
-
     /** Republishes one recorded access as the port's own replay address. */
     private static void copyRuntimeOccurrence(
             Map<String, Object> access, Map<String, Object> port) {

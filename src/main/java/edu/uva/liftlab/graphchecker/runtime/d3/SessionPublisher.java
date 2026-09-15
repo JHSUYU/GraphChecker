@@ -108,14 +108,6 @@ public final class SessionPublisher {
         writeExpressions();
     }
 
-    public String sessionId() {
-        return layout.sessionId();
-    }
-
-    public Path dir() {
-        return layout.dir();
-    }
-
     public void activation(ActivationRow row) {
         if (row != null) append(layout.activations(),
                 RowCodec.writeActivation(row));
@@ -197,13 +189,6 @@ public final class SessionPublisher {
             if (!closed && expressions.size() % 64 != 0) return;
         }
         writeExpressions();
-    }
-
-    /** Whether this session already holds the expression named by a ref. */
-    public boolean holdsExpression(String ref) {
-        synchronized (LOCK) {
-            return expressions.containsKey(Text.safe(ref));
-        }
     }
 
     private void writeExpressions() {

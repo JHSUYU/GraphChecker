@@ -96,27 +96,6 @@ public final class JavaContainerTypes {
     private JavaContainerTypes() {
     }
 
-    /**
-     * The shape of one declared field type whose WHOLE state a selected
-     * carrier versions, or {@link Shape#NONE} when the field is a reference
-     * slot instead.
-     *
-     * <p>This is deliberately narrower than {@link #shape(String)}: arrays
-     * already have their own element locations, and a set is not versioned
-     * whole by any carrier this build selects.  It is also deliberately
-     * name-based rather than reflective, so the answer does not depend on
-     * which types happen to be loadable in the deciding JVM.</p>
-     */
-    public static Shape wholeStateShape(String type) {
-        String value = erase(normalize(type));
-        if (value.isEmpty() || value.startsWith("[")
-                || value.endsWith("[]")) {
-            return Shape.NONE;
-        }
-        if (INDEXED.contains(value)) return Shape.INDEXED;
-        return MAPS.contains(value) ? Shape.ASSOCIATIVE : Shape.NONE;
-    }
-
     public static Shape shape(String type) {
         String value = normalize(type);
         if (value.startsWith("[") || value.endsWith("[]")) {
@@ -214,13 +193,6 @@ public final class JavaContainerTypes {
         return value.endsWith(".return")
                 && symbolicResultOperation(value.substring(
                 0, value.length() - ".return".length()));
-    }
-
-    /** Drops a generic argument list, which a declared type may carry. */
-    private static String erase(String type) {
-        String value = type == null ? "" : type.trim();
-        int generic = value.indexOf('<');
-        return generic < 0 ? value : value.substring(0, generic).trim();
     }
 
     private static String normalize(String type) {

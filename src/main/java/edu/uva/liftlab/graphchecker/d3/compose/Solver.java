@@ -92,10 +92,6 @@ public final class Solver {
             return core;
         }
 
-        public String output() {
-            return output;
-        }
-
         @Override
         public String toString() {
             return status + (values.isEmpty() ? "" : " " + values)

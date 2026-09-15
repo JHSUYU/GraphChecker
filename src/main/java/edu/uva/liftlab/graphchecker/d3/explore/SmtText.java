@@ -50,20 +50,6 @@ final class SmtText {
     }
 
     /**
-     * Rewrites one recorded term, replacing every symbol the corpus knows
-     * with the query's variable for it.
-     *
-     * @param term      the recorded SMT-LIB predicate
-     * @param rename    symbol to variable; a symbol absent from it is either
-     *                  vocabulary or an undeclared free name
-     * @param unknown   filled with every token that is neither
-     */
-    static String rewrite(String term, Map<String, String> rename,
-                          Set<String> unknown) {
-        return rewrite(term, rename, null, unknown);
-    }
-
-    /**
      * The same, with the names the query's PREAMBLE already states.
      *
      * <p>A lowered term names two more kinds of thing than a recorded one:

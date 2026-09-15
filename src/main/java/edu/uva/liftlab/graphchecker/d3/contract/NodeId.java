@@ -56,11 +56,6 @@ public final class NodeId {
         return node;
     }
 
-    /** The lifecycle of that component the workload declared. */
-    public int epoch() {
-        return epoch;
-    }
-
     public String render() {
         return node + EPOCH_MARKER + epoch;
     }

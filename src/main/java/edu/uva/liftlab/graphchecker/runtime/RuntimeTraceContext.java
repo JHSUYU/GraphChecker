@@ -409,10 +409,6 @@ final class RuntimeTraceContext {
                     && !requestApi.isEmpty();
         }
 
-        /** The node this work belongs to, or null. */
-        SourceRef source() {
-            return source;
-        }
     }
 
     /** Encodes the current node and request flow for the next message. */
@@ -577,11 +573,6 @@ final class RuntimeTraceContext {
 
     static void exitInbound(long token) {
         restoreScope(token);
-    }
-
-    /** Attributes a local exchange leg without inferring any remote state. */
-    static View exchange(Object localOwner) {
-        return exchange(localOwner, null);
     }
 
     /**
