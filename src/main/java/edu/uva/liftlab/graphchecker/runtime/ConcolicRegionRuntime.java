@@ -15,9 +15,6 @@ import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
 import edu.uva.liftlab.graphchecker.plan.BranchPredicateAlgebra;
 import edu.uva.liftlab.graphchecker.plan.BranchWitness;
 import edu.uva.liftlab.graphchecker.smt.CanonicalJson;
-import edu.uva.liftlab.graphchecker.plan.ClockRootPhysics;
-import edu.uva.liftlab.graphchecker.plan.SharedStateEvidence;
-import edu.uva.liftlab.graphchecker.plan.SymbolicSourceEvidence;
 import edu.uva.liftlab.graphchecker.smt.VmExpressionIr;
 import edu.uva.liftlab.graphchecker.plan.VmExpressionTable;
 import edu.uva.liftlab.graphchecker.plan.SmtModelValueCodec;
@@ -76,7 +73,6 @@ import static edu.uva.liftlab.graphchecker.runtime.ConcolicResultPublisher.submi
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicResultPublisher.taskUnanswered;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicVmBroker.engine;
 import static edu.uva.liftlab.graphchecker.runtime.SharedStateCapture.captureRecordedSharedStateRaw;
-import static edu.uva.liftlab.graphchecker.runtime.SharedStateCapture.evidenceIdentity;
 import static edu.uva.liftlab.graphchecker.runtime.PathConditionWindow.contiguousConditionIndices;
 import static edu.uva.liftlab.graphchecker.runtime.PathConditionWindow.vmEventConditionIndices;
 
@@ -107,8 +103,6 @@ public final class ConcolicRegionRuntime {
     private static final AtomicLong TOKEN_COUNTER = new AtomicLong();
     private static final AtomicLong ACCESSOR_CONTEXT_TOKEN_COUNTER =
             new AtomicLong();
-    /** Monotonic ordinal of one recorded-evidence read-out batch. */
-    private static final AtomicLong EVIDENCE_SNAPSHOTS = new AtomicLong();
     static final String HALT_AFTER_SELECTED_RESULT_PROPERTY =
             "causynth.concolic.halt.after.selected.result";
     static final Map<Long, ActiveRegion> ACTIVE = new ConcurrentHashMap<>();
@@ -1596,8 +1590,8 @@ public final class ConcolicRegionRuntime {
                 symbol = "sym__" + safe(sourceId) + "__"
                         + safe(sourceOccurrence) + "__"
                         + entry.ordinal;
-                String label = SymbolicSourceEvidence.engineLabelForPhase(
-                        entry.phaseId(), safe(sourceId));
+                String label = ConfiguredSourcePhaseContract
+                        .engineLabelForPhase(entry.phaseId(), safe(sourceId));
                 api.symbolizeExactField(owner, exactFieldSignature(field),
                         entry.ordinal <= 1 ? label
                                 : label + "__" + entry.ordinal);
@@ -1610,42 +1604,9 @@ public final class ConcolicRegionRuntime {
             JsonElement expression = engineExpression(api.fieldExpression(
                     owner, declaringClass, field.getName(), descriptor,
                     value));
-            // Only the occurrence that minted the VM leaf owns source
-            // evidence and its model assignment.  A propagated bare or
-            // compound expression remains the consumer's exact input and is
-            // recorded below as reuse without acquiring a second identity.
-            JsonObject evidence = null;
-            if (!reused) {
-                // Fail closed: a concrete write is not a materialized
-                // symbolic input until the VM has accepted the exact field
-                // and returned one exact root for it.  The evidence row is
-                // built before the mint row so that a read-back the VM did
-                // not replace -- the shape this catch names -- leaves no row
-                // claiming a symbol it never published.
-                try {
-                    evidence = SymbolicSourceEvidence.event(entry.phaseId(),
-                            safe(sourceId), active.occurrenceId(),
-                            safe(fieldSignature), expression,
-                            entry.ordinal, reused, symbol,
-                            // Only an activation that read the field as the
-                            // program left it observed a recorded value.  A
-                            // replay that wrote the wave's assignment into
-                            // the field above read that back, and publishing
-                            // it as "recorded" is how a counterfactual
-                            // becomes the recording.
-                            assigned ? null : recordedScalar(value));
-                } catch (IllegalArgumentException refused) {
-                    throw new IllegalStateException(refused.getMessage()
-                            + " (VM read-back after symbolizeExactField: "
-                            + describeReadBack(expression) + ")", refused);
-                }
-            }
             active.recordConfiguredSourceMint(entry, safe(sourceId),
                     safe(fieldSignature), symbol, expression, reused,
                     assigned ? null : recordedScalar(value));
-            if (evidence != null) {
-                active.recordSymbolicSource(entry.key(), evidence);
-            }
             return true;
         } catch (Throwable failure) {
             return false;
@@ -3179,14 +3140,14 @@ public final class ConcolicRegionRuntime {
         try {
             api.pausePathCondition();
             paused = true;
-            RecordedBranch recorded = decision.recordPaused(active, api,
+            boolean recorded = decision.recordPaused(active, api,
                     method, unitIndex, expression, prepared.occurrence,
                     vmEventId);
             // Advances the replay contract and records a prefix mismatch;
             // whether this decision consumed the contract's source event
             // says nothing about whether the target site ran.
             active.observeReplayDecision(branchSite, prepared.occurrence,
-                    decision, recorded.symbolicSupportDigest);
+                    decision);
             replayContradicted = active.replayPrefixContradicted();
             // A bounded loop may have run the planned target occurrence at
             // another one.  targetReach is the planner's semantic source
@@ -3195,7 +3156,7 @@ public final class ConcolicRegionRuntime {
             boolean permuted = decision.addressesPermutedTargetOccurrence()
                     && edu.uva.liftlab.graphchecker.runtime.FocusedReplay
                             .focused(active.d3Address);
-            if (statesTargetReach(recorded.decided, permuted,
+            if (statesTargetReach(recorded, permuted,
                     active.activation.targetBranchSite,
                     active.activation.targetBranchOccurrence,
                     branchSite, prepared.occurrence)) {
@@ -3248,13 +3209,21 @@ public final class ConcolicRegionRuntime {
         }
     }
 
-    private static RecordedBranch recordBranchPaused(
+    /**
+     * Captures one exact binary decision; false only where the VM emitted no
+     * branch event to capture, so there is no row beside which a target
+     * reach could be stated.  It used to mean "attested well enough to
+     * address a target reach", which read the presence of a path condition as
+     * permission to publish the anchor -- so an activation that decided the
+     * target site concretely published a branch row and no reach.
+     */
+    private static boolean recordBranchPaused(
             ActiveRegion active, ConcolicVmBroker api, String method, int unitIndex,
             String expression, int occurrence, boolean observedOutcome,
             long vmEventId) throws Exception {
         if (vmEventId <= 0L) {
             // The VM emitted no symbolic branch event.
-            return RecordedBranch.NONE;
+            return false;
         }
         String siteId = SiteId.render(method, unitIndex);
         int baseline = active.lastPathConditionSize;
@@ -3295,27 +3264,13 @@ public final class ConcolicRegionRuntime {
                 ? conditionIndex + 1 : rawPathConditionSize;
         mapping.addProperty("rawPathConditionSize", mappingLimit);
         mapping.addProperty("rawPathConditionBaseline", mappingBaseline);
-        String symbolicSupportDigest = "";
         if (conditionIndex >= 0) {
             JsonElement condition = conditions.get(conditionIndex);
             JsonElement semanticCondition = semanticBranchCondition(
                     expression, observedOutcome, condition);
-            String rawOperator = binaryOperator(condition);
-            String semanticOperator = binaryOperator(semanticCondition);
             if (vmAttestation.valid) {
-                symbolicSupportDigest =
-                        BranchPredicateAlgebra.symbolicSupportDigest(
-                                semanticCondition);
-                JsonObject metadata = new JsonObject();
-                metadata.addProperty("predicateNormalization",
-                        safe(rawOperator).equals(safe(semanticOperator))
-                                ? BranchWitness.IDENTITY_NORMALIZATION
-                                : BranchWitness.CMP_NORMALIZATION);
-                BranchWitness witness = BranchWitness.vmPcImmutable(siteId,
-                        safe(method), unitIndex, occurrence,
-                        observedOutcome, semanticCondition, conditionIndex,
-                        metadata);
-                mapping.add("witness", witness.toImmutableJsonView());
+                mapping.add("witness", BranchWitness.immutablePredicate(
+                        semanticCondition).toImmutableJsonView());
                 // The predicate under which the JUMP is taken, which is the
                 // one thing about this site that does not move between
                 // replays or between arms, and the arm beside it
@@ -3348,35 +3303,8 @@ public final class ConcolicRegionRuntime {
         // outcome beside it is this execution's own.  Whether it carried a
         // path condition is whether the row states a site predicate, which
         // is what the decision row publishes.
-        return new RecordedBranch(true, symbolicSupportDigest);
+        return true;
     }
-
-    /**
-     * Result of one exact capture: whether this decision was recorded at
-     * all, and the symbolic support a binary branch matched its replay
-     * prefix on.  A multiway successor is its own authority and carries no
-     * support.
-     *
-     * <p>{@code decided} is false only where the VM emitted no branch event
-     * to capture, and there is no row beside which a target reach could be
-     * stated.  It used to mean "attested well enough to address a target
-     * reach", which read the presence of a path condition as permission to
-     * publish the anchor -- so an activation that decided the target site
-     * concretely published a branch row and no reach.</p>
-     */
-    private static final class RecordedBranch {
-        private static final RecordedBranch NONE =
-                new RecordedBranch(false, "");
-        private final boolean decided;
-        private final String symbolicSupportDigest;
-
-        private RecordedBranch(boolean decided,
-                               String symbolicSupportDigest) {
-            this.decided = decided;
-            this.symbolicSupportDigest = safe(symbolicSupportDigest);
-        }
-    }
-
 
     private static boolean recordSwitchBranchPaused(
             ActiveRegion active, ConcolicVmBroker api, String method, int unitIndex,
@@ -3413,7 +3341,6 @@ public final class ConcolicRegionRuntime {
         }
         active.branchMappings.add(mapping);
         if (attestation.valid) {
-            int decisionOrdinal = 1;
             for (Integer conditionIndex : conditionIndices) {
                 JsonObject predicate = branchMapping(method, unitIndex,
                         occurrence, vmEventId);
@@ -3421,11 +3348,9 @@ public final class ConcolicRegionRuntime {
                 predicate.addProperty("rawPathConditionBaseline",
                         mappingBaseline);
                 predicate.add("witness",
-                        BranchWitness.pcPredicateImmutable(siteId,
-                                safe(method), unitIndex, occurrence,
-                                decisionOrdinal++,
-                                conditions.get(conditionIndex),
-                                conditionIndex).toImmutableJsonView());
+                        BranchWitness.immutablePredicate(
+                                conditions.get(conditionIndex))
+                                .toImmutableJsonView());
                 active.branchMappings.add(predicate);
             }
         }
@@ -3855,17 +3780,24 @@ public final class ConcolicRegionRuntime {
             pathConditionPaused = true;
             if (!active.abandoned) {
                 publishRows = true;
-                // One ordinal names every row assembled for this close.
-                active.evidenceSnapshot =
-                        EVIDENCE_SNAPSHOTS.incrementAndGet();
                 try {
                     rawSharedState = captureRecordedSharedStateRaw(active,
-                            api, evidenceIdentity(active));
+                            api);
                 } catch (Throwable throwable) {
-                    active.sharedStateGaps.add(SharedStateEvidence.gap(
-                            SharedStateEvidence.STAGE_VERSIONS,
-                            SharedStateEvidence.INVOCATION_FAILED, "",
-                            rootCause(throwable)));
+                    // A write log this run could not read out leaves every
+                    // location it held with no version to join to, so the
+                    // refusal is stated the way the one gap vocabulary states
+                    // it rather than on an artifact nobody publishes.
+                    RowRuntime.gap(
+                            edu.uva.liftlab.graphchecker.contract.GapKind
+                                    .UNSTATED_VALUE,
+                            edu.uva.liftlab.graphchecker.contract.GapClass
+                                    .DIAGNOSTIC,
+                            SharedStateCapture.STAGE_VERSIONS,
+                            "the tracked-location read-out could not be"
+                                    + " invoked, so no write version of this"
+                                    + " activation is stated: "
+                                    + rootCause(throwable));
                 }
             }
             api.finish();
@@ -5040,16 +4972,15 @@ public final class ConcolicRegionRuntime {
         }
 
         /** This decision's exact capture while the VM window is open. */
-        RecordedBranch recordPaused(
+        boolean recordPaused(
                 ActiveRegion active, ConcolicVmBroker api, String method,
                 int unitIndex, String expression, int occurrence,
                 long vmEventId) throws Exception {
             return expected == null
                     ? recordBranchPaused(active, api, method, unitIndex,
                     expression, occurrence, outcome, vmEventId)
-                    : new RecordedBranch(recordSwitchBranchPaused(active, api,
-                    method, unitIndex, expression, occurrence, expected,
-                    vmEventId), "");
+                    : recordSwitchBranchPaused(active, api, method, unitIndex,
+                    expression, occurrence, expected, vmEventId);
         }
 
         /** What an absent replay-boundary handle is refused as. */
@@ -5289,9 +5220,6 @@ public final class ConcolicRegionRuntime {
         Throwable exitThrowable;
         /** Exact configured-source and planned-action observations. */
         final List<JsonObject> symbolizedRows = new ArrayList<>();
-        /** Exact configured source roots materialized by this activation. */
-        final Map<String, JsonObject> symbolicSources =
-                new LinkedHashMap<>();
         /**
          * Mint sites, and the fields they mint, this activation reached.
          *
@@ -5330,9 +5258,7 @@ public final class ConcolicRegionRuntime {
         /** The write log this activation read out, and its gaps. */
         final Map<String, JsonObject> sharedStateRecords =
                 new LinkedHashMap<>();
-        final List<JsonObject> sharedStateGaps = new ArrayList<>();
         /** Read-out batch every record of this activation is stamped with. */
-        private long evidenceSnapshot;
         private final Set<String> materialized = new LinkedHashSet<>();
         private final Map<String, Integer> branchOccurrences =
                 new LinkedHashMap<>();
@@ -5543,12 +5469,6 @@ public final class ConcolicRegionRuntime {
          */
         private boolean observeReplayDecision(
                 String siteId, int occurrence, BranchDecision decision) {
-            return observeReplayDecision(siteId, occurrence, decision, "");
-        }
-
-        private boolean observeReplayDecision(
-                String siteId, int occurrence, BranchDecision decision,
-                String symbolicSupportDigest) {
             if (d3Address == null) return true;
             edu.uva.liftlab.graphchecker.runtime.FocusedReplay
                     .observeDecision(d3Address, siteId, occurrence,
@@ -5782,7 +5702,7 @@ public final class ConcolicRegionRuntime {
          * The same row, with the concrete value the mint read.
          *
          * <p>One mint publication shape: a configured-source mint states
-         * what the field held ({@code SymbolicSourceEvidence.recordedValue})
+         * what the field held
          * and a manual one stated nothing, so a root the composer met
          * through a manual input had no recorded value to lower -- on lane
          * VM12 that is DelegationKey.expiryDate, minted as
@@ -5846,18 +5766,15 @@ public final class ConcolicRegionRuntime {
                 row.addProperty("observedValue", recordedValue);
                 row.addProperty("recordedValue", recordedValue);
             }
-            // A cell minted through the clock hook is a wall-clock read by
-            // construction: the declaration names the callee, so the mint
-            // row states it and no reader downstream has to guess a clock
-            // from a site name.  The value it states is the one the
+            // The case declared this read a wall clock, so the mint row
+            // states it and no reader downstream has to guess a clock from a
+            // callee or a site name.  The value it states is the one the
             // RECORDING read, not this replay's: a clock is what every
             // replay reads differently, and pinning the root to one
             // replay's instant is what left eleven of bug3's twelve paths
-            // unsatisfiable at every valuation.  The recorded reading is
-            // the centre of the window the case's declared skew allows.
+            // unsatisfiable at every valuation.
             if (action.declaresWallClockRead()) {
-                row.addProperty("declaredCallee", action.declaredCallee);
-                row.addProperty("siteId", action.siteId);
+                row.addProperty(InputActionCatalog.DECLARED_WALL_CLOCK, true);
                 row.addProperty("eventSeq", action.eventSeq);
                 row.addProperty("recordedValue",
                         action.recordedPrimitiveValue);
@@ -5890,26 +5807,6 @@ public final class ConcolicRegionRuntime {
                     phase == null ? "" : phase.sourceId());
             gap.addProperty("detail", safe(detail));
             configuredSourcePhaseGaps.add(gap);
-        }
-
-        private synchronized void recordSymbolicSource(
-                String sourcePhaseId, JsonObject evidence) {
-            JsonObject prior = symbolicSources.putIfAbsent(sourcePhaseId,
-                    shallowCopy(evidence));
-            if (prior != null && !prior.equals(evidence)) {
-            }
-        }
-
-        /**
-         * The read-out batch this activation's evidence belongs to, allocated
-         * on first use so a capture outside the exit batch still gets its own
-         * comparable ordinal rather than borrowing a later one.
-         */
-        long evidenceSnapshot() {
-            if (evidenceSnapshot == 0L) {
-                evidenceSnapshot = EVIDENCE_SNAPSHOTS.incrementAndGet();
-            }
-            return evidenceSnapshot;
         }
 
         /**
@@ -6115,8 +6012,8 @@ public final class ConcolicRegionRuntime {
         final String accessorImplementationMethod;
         /** How the finalizer classified the port that minted this action. */
         final String sourceKind;
-        /** The external call whose return this action symbolizes, or "". */
-        final String declaredCallee;
+        /** Whether the case declared this read to be a wall clock. */
+        final boolean clock;
         /** The static site the plan observed this read at, or "". */
         final String siteId;
         /** The recorded event this read was observed at, or -1. */
@@ -6179,7 +6076,8 @@ public final class ConcolicRegionRuntime {
             this.accessorImplementationMethod = optionalString(json,
                     "accessorImplementationMethod");
             this.sourceKind = optionalString(json, "sourceKind");
-            this.declaredCallee = optionalString(json, "declaredCallee");
+            this.clock = optionalBool(json,
+                    InputActionCatalog.DECLARED_WALL_CLOCK, false);
             this.siteId = optionalString(json, "siteId");
             this.eventSeq = optionalLongInteger(json, "eventSeq", -1L);
             this.recordedPrimitiveValue = optionalBool(json, "observed", false)
@@ -6289,15 +6187,14 @@ public final class ConcolicRegionRuntime {
          * Whether this root is a wall-clock read whose recorded answer is
          * known.
          *
-         * <p>{@link ClockRootPhysics} already names the callees whose return
-         * is a millisecond clock; it is the same list that anchors each
-         * read's window and order in the composed formula, so a root it
-         * classifies as a clock here is exactly a root the composer lets
-         * move within a skew of what it read.</p>
+         * <p>The case's {@code symbolic-inputs.jsonl} row declares it
+         * ({@link InputActionCatalog#DECLARED_WALL_CLOCK}); nothing here
+         * matches a callee signature against a list of clock names.  A root
+         * the case declares a clock is exactly the root the composer moves by
+         * an offset from what the recording read.</p>
          */
         boolean declaresWallClockRead() {
-            return ClockRootPhysics.clockCallee(declaredCallee)
-                    && !recordedPrimitiveValue.isEmpty();
+            return clock && !recordedPrimitiveValue.isEmpty();
         }
 
         boolean matchesStaticField(String actualMethod,

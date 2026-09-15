@@ -124,7 +124,7 @@ public final class CausynthPipeline {
             return;
         }
 
-        CausynthTargetContext target = CausynthTargetResolver.resolve(options);
+        CausynthTargetContext target = CausynthTargetResolver.resolve();
         ExceptionTargetSite exceptionTarget =
                 ExceptionTargetAnnotationScanner.select(
                         options.getInputList(), target.exceptionTargetId);
@@ -328,13 +328,12 @@ public final class CausynthPipeline {
      * returned normally every time. So the target, and only the target, gets
      * the row-writing exceptional-exit hook.</p>
      *
-     * <p>That difference is deliberate and is recorded as such in
-     * {@code target_resolved.json}: with {@code skeletonTargetThrowRecorded}
-     * true, the absence of a {@code METHOD_EXIT_THROW} row for the target is
-     * an observation; the absence of one for any other instrumented method is
-     * not, because none is ever written. Normal exits stay silent everywhere,
-     * the target included, so the entry-row counts this pass has always
-     * produced do not move.</p>
+     * <p>That difference is deliberate: the absence of a
+     * {@code METHOD_EXIT_THROW} row for the target is an observation; the
+     * absence of one for any other instrumented method is not, because none
+     * is ever written.  Normal exits stay silent everywhere, the target
+     * included, so the entry-row counts this pass has always produced do not
+     * move.</p>
      */
     private void instrumentRegionSkeletonTrace(StaticProgram result) {
         Set<String> selectedMethods = skeletonCandidateMethods(result);
@@ -351,18 +350,13 @@ public final class CausynthPipeline {
                                 !annotatedTarget.isEmpty()
                                         && annotatedTarget.equals(
                                                 method.getSignature())));
-        // The flag travels with the discovery artifacts so a later reader of
-        // targetThrowRecords knows whether a zero is an observation.
-        boolean targetThrowRecorded = !annotatedTarget.isEmpty()
-                && rewritten.contains(annotatedTarget);
-        result.targetResolved.put("skeletonTargetThrowRecorded",
-                targetThrowRecorded);
         LOG.info("Instrumented {} of {} candidate methods for REGION_SKELETON "
                         + "trace out of a {}-method static slice "
                         + "and {} candidate regions",
                 rewritten.size(), selectedMethods.size(),
                 result.traceMethods.size(), result.regions.size());
-        if (targetThrowRecorded) {
+        if (!annotatedTarget.isEmpty()
+                && rewritten.contains(annotatedTarget)) {
             LOG.info("Exceptional exit is recorded for the annotated target "
                     + "{} only; every other instrumented method still pops "
                     + "its activation without a row", annotatedTarget);
@@ -414,12 +408,6 @@ public final class CausynthPipeline {
         private final Map<String, CfgLoopControl.NaturalLoop> rootLoops =
                 new LinkedHashMap<>();
         private LoopBoundPolicy loopBound;
-        private int boundedBackedges;
-        private int fieldMaterializationSites;
-        private int scannedBodies;
-        /** Static field reads the instrumenter refused, site -> verdict. */
-        private final Map<String, String> staticFieldRefusals =
-                new LinkedHashMap<>();
 
         private CampaignEnvelope(List<InstrumentationPlan> campaign) {
             this.campaign = campaign;
@@ -505,11 +493,8 @@ public final class CausynthPipeline {
             if (loopBound == null) {
                 return;
             }
-            boundedBackedges = instrumentConcolicLoopBounds(
-                    loopBoundMethods, loopBound, fixedCountLoopSites);
-            LOG.info("Bounded {} slice backedge(s) across {} selected "
-                            + "method(s)",
-                    boundedBackedges, loopBoundMethods.size());
+            instrumentConcolicLoopBounds(loopBoundMethods, loopBound,
+                    fixedCountLoopSites);
         }
 
         private SootMethod replayEntry(InstrumentationPlan plan) {
@@ -554,60 +539,6 @@ public final class CausynthPipeline {
                     plan.rootLoopHeaderUnitIndex());
         }
 
-        /**
-         * Records one static field read this pipeline cannot materialize.
-         *
-         * <p>Refusing is not a campaign error.  Which fields a plan selects
-         * is plan content, and a shape the instrumenter has no hook for must
-         * leave the read concrete and say so -- throwing here killed the
-         * whole campaign over one {@code static final byte[]} constant.</p>
-         */
-        private void refuseStaticFieldMaterialization(
-                String declaredSignature, String site, String verdict) {
-            staticFieldRefusals.put(verdict + " " + declaredSignature
-                    + " at " + site, verdict);
-        }
-
-        /** Static shared state left concrete: a coverage gap, not a constant. */
-        private int staticFieldCoverageGaps() {
-            int gaps = 0;
-            for (String verdict : staticFieldRefusals.values()) {
-                if (ConcolicMaterializationSelection.STATIC_FIELD_UNSUPPORTED
-                        .equals(verdict)) {
-                    gaps++;
-                }
-            }
-            return gaps;
-        }
-
-        /** States the campaign envelope as static counts, not trace events. */
-        private void report() {
-            if (!staticFieldRefusals.isEmpty()) {
-                LOG.warn("Left {} selected static field read(s) concrete, of "
-                                + "which {} are static non-final shared state "
-                                + "and therefore a replay coverage gap; a "
-                                + "static final field is a constant and is "
-                                + "not: {}",
-                        staticFieldRefusals.size(),
-                        staticFieldCoverageGaps(),
-                        staticFieldRefusals.keySet());
-            }
-            LOG.info("Concolic campaign envelope: {} task(s); {} selected "
-                            + "method(s), of which {} were scanned; "
-                            + "static site counts: {} branch, "
-                            + "{} local materialization, "
-                            + "{} declared field over {} read site(s), "
-                            + "{} method argument, "
-                            + "{} accessor call; "
-                            + "{} bounded backedge(s). These are unique rewritten "
-                            + "methods/sites, not dynamic trace events.",
-                    campaign.size(), methods.size(), scannedBodies,
-                    branches.siteCount(),
-                    materializations.localSiteCount(),
-                    materializations.fieldCount(), fieldMaterializationSites,
-                    materializations.methodArgumentCount(),
-                    materializations.accessorCalls().size(), boundedBackedges);
-        }
     }
 
     /**
@@ -641,7 +572,6 @@ public final class CausynthPipeline {
         instrumentConcolicMethodArguments(envelope.materializations, refs);
         instrumentConcolicMaterializations(envelope, refs);
         instrumentConcolicBranches(envelope.branches, refs);
-        envelope.report();
     }
 
     /**
@@ -2106,7 +2036,6 @@ public final class CausynthPipeline {
         }
         instrumentMethods(envelope.methods, "", (body, method, originalUnits,
                 entry, lowerBound, receiver) -> {
-            envelope.scannedBodies++;
             String signature = method.getSignature();
             for (int index = instrumentableFrom(originalUnits, lowerBound);
                     index >= 0 && index < originalUnits.size(); index++) {
@@ -2142,28 +2071,20 @@ public final class CausynthPipeline {
                             selection.staticMaterializationRefusal(
                                     method.getSignature(), unitIndex,
                                     fieldRef);
-                    if (!staticRefusal.isEmpty()) {
-                        envelope.refuseStaticFieldMaterialization(
-                                declaredSignature,
-                                SiteId.of(method.getSignature(), unitIndex),
-                                staticRefusal);
-                        continue;
-                    }
+                    // A shape the instrumenter has no hook for leaves the
+                    // read concrete under its own named verdict
+                    // (ConcolicMaterializationSelection): refusing is plan
+                    // content, and throwing here killed a whole campaign
+                    // over one static final byte[] constant.
+                    if (!staticRefusal.isEmpty()) continue;
                     if (!selection.matches(method.getSignature(),
                             unitIndex, fieldRef)) {
                         continue;
                     }
-                    envelope.fieldMaterializationSites++;
                     if (field instanceof StaticFieldRef) {
-                        String refusal = instrumentConsumedStaticPrimitiveFieldRead(
+                        instrumentConsumedStaticPrimitiveFieldRead(
                                 body, method, stmt, unitIndex,
                                 (StaticFieldRef) field, refs);
-                        if (!refusal.isEmpty()) {
-                            envelope.refuseStaticFieldMaterialization(
-                                    declaredSignature,
-                                    SiteId.of(method.getSignature(),
-                                            unitIndex), refusal);
-                        }
                         continue;
                     }
                     if (!(field instanceof InstanceFieldRef)) {

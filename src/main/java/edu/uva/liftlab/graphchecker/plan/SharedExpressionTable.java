@@ -41,57 +41,18 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
  * records; this table deduplicates values and does not infer causality.</p>
  */
 public final class SharedExpressionTable {
-    public static final int SCHEMA_VERSION = 1;
+    /** The one member read outside this codec: the table's artifact name. */
     public static final String FIELD = "sharedExpressionTable";
-    public static final String KIND = "CONTENT_ADDRESSED_EXPRESSION_TABLE";
-    public static final String AUTHORITY = "MERKLE_EXPRESSION_SHA256_V1";
-    public static final String REFERENCE_TYPE = "SharedExpressionReference";
-    public static final String ANCHOR = "expressionAnchor";
+    private static final int SCHEMA_VERSION = 1;
+    private static final String KIND = "CONTENT_ADDRESSED_EXPRESSION_TABLE";
+    private static final String AUTHORITY = "MERKLE_EXPRESSION_SHA256_V1";
+    private static final String REFERENCE_TYPE = "SharedExpressionReference";
+    private static final String ANCHOR = "expressionAnchor";
     private static final String PREFIX = "EXPR.v1.";
     private static final String HASH_DOMAIN =
             "GraphChecker/content-addressed-expression/v1\n";
 
     private SharedExpressionTable() {
-    }
-
-    /** Compacts every VM expression nested in one portable artifact. */
-    public static JsonObject compact(JsonObject artifact) {
-        if (artifact == null) return new JsonObject();
-        Builder builder = new Builder();
-        return compactArtifact(artifact, builder);
-    }
-
-    private static JsonObject compactArtifact(JsonObject artifact,
-                                              Builder builder) {
-        builder.collectTables(artifact);
-        // A table is one self-contained artifact.  Bad unreachable rows are
-        // corruption too; pruning must not make compact() accept what
-        // expand() rejects.
-        builder.validateDefinitions();
-        return compactDecodedArtifact(artifact, builder);
-    }
-
-    /**
-     * Compacts a run of artifacts that carry one common expression table.
-     *
-     * <p>{@link #compact(JsonObject)} is one self-contained trust boundary: it
-     * parses and re-hashes every definition it is handed. A wave's flip rows
-     * are handed the <em>same</em> table object, so doing that per row re-read
-     * and re-hashed one table once per row, which grows with the product of
-     * the row count and the table size.</p>
-     *
-     * <p>This compactor keeps the definitions it has already verified, and the
-     * anchors it has already computed, across the artifacts of one such run.
-     * Each artifact still publishes only the rows reachable from itself, so
-     * each one carries exactly the table {@link #compact(JsonObject)} gave it.
-     * Use it only where the artifacts genuinely share their table: definitions
-     * verified for an earlier member of the run stay available to a later one,
-     * which is what makes the reuse sound and what a mixed batch would not
-     * support.</p>
-     */
-    public static final class Compactor {
-        private final Builder builder = new Builder();
-
     }
 
     /** Compacts a graph whose content-addressed definitions are trusted. */
@@ -109,19 +70,6 @@ public final class SharedExpressionTable {
         return result;
     }
 
-    /**
-     * Expands several portable artifacts through one resolver.
-     *
-     * <p>Inputs are already content-addressed. The resolver interns equal
-     * definitions across artifact rows, so one expression node has one
-     * in-memory representation even when several summaries use it. Internal
-     * consumers still receive the tree-shaped VM IR.</p>
-     */
-    public static List<JsonObject> expandAll(
-            Collection<JsonObject> artifacts) {
-        return new Decoder().expandAll(artifacts);
-    }
-
     private static JsonObject expandArtifact(JsonObject artifact,
                                              Resolver resolver) {
         JsonElement expanded = resolver.expand(artifact,
@@ -130,12 +78,6 @@ public final class SharedExpressionTable {
             throw new IllegalArgumentException("artifact root must be object");
         }
         return expanded.getAsJsonObject();
-    }
-
-    /** Reuses node identities while hashing a related set of expressions. */
-    public static final class Anchors {
-        private final Builder builder = new Builder();
-
     }
 
     /** Incremental decoder which interns anchors across several envelopes. */
@@ -147,28 +89,6 @@ public final class SharedExpressionTable {
             requirePortableArtifact(artifact);
             resolver.collectTables(artifact);
             return expandArtifact(artifact, resolver);
-        }
-
-        /** Expands a related batch while retaining one anchor resolver. */
-        public synchronized List<JsonObject> expandAll(
-                Collection<JsonObject> artifacts) {
-            List<JsonObject> portable = new ArrayList<>();
-            if (artifacts != null) {
-                for (JsonObject artifact : artifacts) {
-                    if (artifact != null) {
-                        requirePortableArtifact(artifact);
-                        portable.add(artifact);
-                    }
-                }
-            }
-            for (JsonObject artifact : portable) {
-                resolver.collectTables(artifact);
-            }
-            List<JsonObject> result = new ArrayList<>(portable.size());
-            for (JsonObject artifact : portable) {
-                result.add(expandArtifact(artifact, resolver));
-            }
-            return Collections.unmodifiableList(result);
         }
 
         /**
@@ -206,13 +126,13 @@ public final class SharedExpressionTable {
 
     }
 
-    public static boolean isReference(JsonElement value) {
+    private static boolean isReference(JsonElement value) {
         if (!declaresReference(value)) return false;
         JsonObject reference = value.getAsJsonObject();
         return referenceMembers(reference, reference.has(FIELD));
     }
 
-    public static String anchor(JsonElement reference) {
+    private static String anchor(JsonElement reference) {
         return isReference(reference)
                 ? optionalString(reference.getAsJsonObject(), ANCHOR) : "";
     }
@@ -373,55 +293,15 @@ public final class SharedExpressionTable {
                 new LinkedHashMap<>();
         private final Map<JsonElement, String> compactedExpressions =
                 new IdentityHashMap<>();
-        /** One compact operation may receive an already expanded shared DAG. */
-        private final Set<JsonElement> collected = Collections.newSetFromMap(
-                new IdentityHashMap<JsonElement, Boolean>());
         /** References reachable from the compacted artifact root. */
         private final Set<String> references = new LinkedHashSet<>();
-        /** Anchors already checked by an incremental identity client. */
-        private final Set<String> validatedReferences = new HashSet<>();
-        /**
-         * Definitions already walked for shape and acyclicity.  A definition
-         * is immutable and named by its own content, so one pass over it
-         * settles it for every artifact this builder goes on to compact.
-         */
-        private final Set<String> validatedDefinitions = new LinkedHashSet<>();
         private Set<String> reachable = Collections.emptySet();
-
-        private Builder() {
-        }
 
         /** Direct view of definitions already verified by one Decoder. */
         private Builder(Map<String, JsonObject> verifiedDefinitions,
                         Map<JsonElement, String> verifiedAnchors) {
             definitions.putAll(verifiedDefinitions);
             compactedExpressions.putAll(verifiedAnchors);
-        }
-
-        private void collectTables(JsonElement value) {
-            if (value == null || value.isJsonNull()
-                    || value.isJsonPrimitive()) return;
-            if (!collected.add(value)) return;
-            if (value.isJsonArray()) {
-                for (JsonElement child : value.getAsJsonArray()) {
-                    collectTables(child);
-                }
-                return;
-            }
-            JsonObject row = value.getAsJsonObject();
-            JsonElement encoded = row.get(FIELD);
-            if (encoded != null) importTable(encoded);
-            for (Map.Entry<String, JsonElement> field : row.entrySet()) {
-                if (!FIELD.equals(field.getKey())) {
-                    collectTables(field.getValue());
-                }
-            }
-        }
-
-        private void importTable(JsonElement encoded) {
-            Map<String, JsonObject> incoming = new LinkedHashMap<>();
-            readTable(encoded, definitions, incoming);
-            definitions.putAll(incoming);
         }
 
         private JsonElement compact(JsonElement value, boolean artifactRoot) {
@@ -476,13 +356,6 @@ public final class SharedExpressionTable {
                 validateReachable(anchor, visited, active);
             }
             reachable = visited;
-        }
-
-        private void validateDefinitions() {
-            Set<String> active = new LinkedHashSet<>();
-            for (String anchor : definitions.keySet()) {
-                validateReachable(anchor, validatedDefinitions, active);
-            }
         }
 
         private void validateReachable(String anchor, Set<String> visited,

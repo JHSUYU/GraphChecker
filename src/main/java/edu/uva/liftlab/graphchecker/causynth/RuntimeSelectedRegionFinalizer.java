@@ -1,9 +1,9 @@
 package edu.uva.liftlab.graphchecker.causynth;
 
-import edu.uva.liftlab.graphchecker.plan.GapLedger;
-
 import edu.uva.liftlab.graphchecker.plan.AutomaticRegionEdge;
 import edu.uva.liftlab.graphchecker.plan.SharedFieldFlow;
+import edu.uva.liftlab.graphchecker.contract.GapClass;
+import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.plan.CommunicationCatalogContract;
 import edu.uva.liftlab.graphchecker.plan.DependencyRole;
@@ -56,17 +56,6 @@ public final class RuntimeSelectedRegionFinalizer {
      */
     public static final String DEMAND_SCOPE = "demandScopeMethods";
 
-    /** Row kind of a gap this finalizer raised about its own ports. */
-    public static final String PLAN_GAP_KIND = "RUNTIME_PLAN_GAP";
-    /**
-     * One static site demanded more activation-local accesses than
-     * {@link #MAX_RETAINED_SITE_ACCESSES}, so the port below it keeps only
-     * the plain resource default.  The refusal string for this has been
-     * computed since the bound existed; until now it was computed and
-     * discarded, which is the failure design point 5 forbids -- a javadoc
-     * asserting a reporting path that did not exist.
-     */
-    public static final String BOUND_INSUFFICIENT = "BOUND_INSUFFICIENT";
     /**
      * Existing planner admission vocabulary for a bounded state writer.  Why
      * this activation is in the plan at all, when it is there for anything
@@ -83,16 +72,6 @@ public final class RuntimeSelectedRegionFinalizer {
      * artifact can tell which location bought each admission, rather than
      * having to re-derive it from the retained edges.
      */
-    /**
-     * Telemetry row kind for a shared-location demand hop the care set
-     * refused.  A location outside the care set is a constant for this
-     * failure: nothing the target reads depends on which writer produced it,
-     * so the hop stops there and its writers are never admitted.  Recording
-     * the refusal by name keeps a pruned-but-needed location diagnosable
-     * instead of silent.
-     */
-    public static final String DEMAND_PRUNED_UNCARED_KIND =
-            "SHARED_LOCATION_DEMAND_PRUNED_UNCARED";
     /**
      * How many shared-location demand hops separate this admission from the
      * fatal target.  A writer the failure closure's own port demand asked for
@@ -114,24 +93,6 @@ public final class RuntimeSelectedRegionFinalizer {
     public static final String DEMAND_DEPTH = "demandDepth";
     /** The fatal target is the origin of every shared-location demand. */
     private static final int TARGET_DEMAND_DEPTH = 0;
-    /**
-     * Bound on transitive shared-location demand, counted in hops from the
-     * fatal target: the rule refuses a hop that would land past it.  Unset
-     * means unbounded inside the retained skeleton, which is itself bounded
-     * -- only recorded activations of selected regions can be demanded at all
-     * -- so the fixed point is finite either way.
-     *
-     * <p>{@code 0} disables the transitive rule and leaves exactly the
-     * first-order admissions, which this bound never gates: those come from
-     * reads the failure closure demanded through a port, and the closure
-     * needs their writers whatever the bound says.  {@code 1} still admits
-     * one hop, off the fatal target's own undemanded shared reads.</p>
-     */
-    static final String DEMAND_DEPTH_PROPERTY =
-            "causynth.shared.location.demand.depth";
-    static final String DEMAND_DEPTH_ENVIRONMENT =
-            "CAUSYNTH_SHARED_LOCATION_DEMAND_DEPTH";
-
     /** Communication ports whose exact export/attach sites need hooks. */
     public static final String COMMUNICATION_PORTS = "communicationPorts";
 
@@ -143,12 +104,6 @@ public final class RuntimeSelectedRegionFinalizer {
     /** Exact IN/OUT cut captures observed inside one runtime activation. */
     public static final String OBSERVED_COMMUNICATION_CAPTURES =
             "observedCommunicationCaptures";
-    /** Which side of one communication site a declared port belongs to. */
-    public static final String PORT_ROLE = "portRole";
-    /** The frame that issues the call. */
-    public static final String PORT_ROLE_CLIENT = "CLIENT";
-    /** The remote handler, which is its own region occurrence. */
-    public static final String PORT_ROLE_SERVER = "SERVER";
     /** Region-row member carrying the retained loops of its methods. */
     public static final String RETAINED_LOOPS = "retainedLoops";
     /** Schema every region skeleton row and its refined row are stated in. */
@@ -156,8 +111,6 @@ public final class RuntimeSelectedRegionFinalizer {
     /** {@code kind} of one planned region skeleton row. */
     public static final String SKELETON_KIND = "REGION_SKELETON";
     /** Gap code: several activations, one occurrence address. */
-    public static final String OCCURRENCE_ADDRESS_SHARED =
-            "OCCURRENCE_ADDRESS_SHARED";
     /** Activation member listing the root calls that share its address. */
     public static final String SHARED_ADDRESS_ROOT_CALLS =
             "sharedAddressRootCallIds";
@@ -301,7 +254,6 @@ public final class RuntimeSelectedRegionFinalizer {
         declareCommunicationPorts(program, cutPorts);
         canonicalizeRegionEdges(program);
         return new Result(program.regions, program.regionEdges,
-                new ArrayList<>(program.demandPruned.values()),
                 program.planGaps);
     }
 
@@ -909,7 +861,8 @@ public final class RuntimeSelectedRegionFinalizer {
             if (entry.getValue().size() < 2) continue;
             program.activations.get(entry.getKey()).put(
                     SHARED_ADDRESS_ROOT_CALLS, entry.getValue());
-            planGap(program.planGaps, OCCURRENCE_ADDRESS_SHARED,
+            planGap(program.planGaps, GapKind.OCCURRENCE_ADDRESS_SHARED,
+                    GapClass.DIAGNOSTIC,
                     entry.getKey(), entry.getValue().size() + " activations "
                             + "of this region share one address: nothing "
                             + "IDENTITY-V3 names distinguishes them (same "
@@ -1143,12 +1096,10 @@ public final class RuntimeSelectedRegionFinalizer {
         for (String target : targets) {
             demandDepths.put(target, TARGET_DEMAND_DEPTH);
         }
-        int demandDepthBound = configuredDemandDepthBound();
         // The locations transitive demand may travel through, decided once
         // per finalization off the runtime-refined graph.
         Set<String> caredLocations = caredSharedLocations(
                 program.refinedGraph);
-        Map<String, Map<String, Object>> prunedUncared = program.demandPruned;
         Set<String> admittedStateWriters = new LinkedHashSet<>(
                 admitSharedLocationWriters(targets, instances, demands,
                         program.regionEdges, demandDepths));
@@ -1218,15 +1169,13 @@ public final class RuntimeSelectedRegionFinalizer {
             boolean grown = admittedStateWriters.addAll(admitWritersOfDemands(
                     union.reached, union.demandedInputs, instances,
                     program.regionEdges, demandDepths, targets,
-                    caredLocations, prunedUncared));
+                    caredLocations));
             grown |= transitiveDemands.addAll(transitiveSharedLocationDemand(
                     union.reached, union.demandedInputs, instances,
-                    program.regionEdges, demandDepths, demandDepthBound,
-                    caredLocations, prunedUncared));
-            // A hop the bound refused reads the consumer's depth, so a round
-            // that only shortened a demand chain can still open one.  Depths
-            // never rise and the occurrence set is finite, so answering that
-            // round terminates too.
+                    program.regionEdges, demandDepths, caredLocations));
+            // A round that only shortened a demand chain still restates the
+            // hop counts the rows publish.  Depths never rise and the
+            // occurrence set is finite, so answering that round terminates.
             grown |= !depthsBefore.equals(demandDepths);
             if (!grown) break;
             union = walkFailureClosure(targets, instances, demands,
@@ -1655,7 +1604,7 @@ public final class RuntimeSelectedRegionFinalizer {
             fatalInputs.addAll(demands.targetInputs(instances.get(target)));
         }
         return admitWritersOfDemands(targets, fatalInputs, instances,
-                regionEdges, demandDepths, targets, null, null);
+                regionEdges, demandDepths, targets, null);
     }
 
     /**
@@ -1663,7 +1612,7 @@ public final class RuntimeSelectedRegionFinalizer {
      * occurrence the closure reached on its own authority -- a fault entry, a
      * communication entry, a protocol producer -- is a demand origin of the
      * same standing as the target's own reads, and counts as one hop rather
-     * than zero so that a bound keeps the chains off it short.
+     * than zero.
      */
     private static int demandDepth(Map<String, Integer> demandDepths,
                                    String occurrenceId) {
@@ -1679,36 +1628,6 @@ public final class RuntimeSelectedRegionFinalizer {
         if (known == null || depth < known) {
             demandDepths.put(occurrenceId, depth);
         }
-    }
-
-    /**
-     * Reads the configured bound on transitive shared-location demand.
-     * Absent or blank leaves it unbounded within the retained skeleton;
-     * {@code 0} turns the rule off; a negative value is refused rather than
-     * read as one of those two.
-     */
-    private static int configuredDemandDepthBound() throws IOException {
-        return configuredDemandDepth(firstNonEmpty(
-                text(System.getProperty(DEMAND_DEPTH_PROPERTY)).trim(),
-                text(System.getenv(DEMAND_DEPTH_ENVIRONMENT)).trim()));
-    }
-
-    /** The bound one configured value states. */
-    static int configuredDemandDepth(String value) throws IOException {
-        String configured = text(value).trim();
-        if (configured.isEmpty()) return Integer.MAX_VALUE;
-        int bound;
-        try {
-            bound = Integer.parseInt(configured);
-        } catch (NumberFormatException malformed) {
-            throw new IOException("shared-location demand depth is not a "
-                    + "number: " + configured, malformed);
-        }
-        if (bound < 0) {
-            throw new IOException("shared-location demand depth cannot be "
-                    + "negative: " + bound);
-        }
-        return bound;
     }
 
     /**
@@ -1801,26 +1720,6 @@ public final class RuntimeSelectedRegionFinalizer {
         return located;
     }
 
-    /** One refused demand hop, keyed by the location and the reader. */
-    private static void recordPrunedDemand(
-            Map<String, Map<String, Object>> prunedUncared,
-            String location, String consumer,
-            Map<String, Object> reader, int readerDepth) {
-        if (prunedUncared == null || location.isEmpty()) return;
-        String regionId = reader == null ? ""
-                : text(reader.get("regionId"));
-        Map<String, Object> row = prunedUncared.computeIfAbsent(
-                location + "\n" + consumer, ignored -> {
-                    Map<String, Object> fresh = new LinkedHashMap<>();
-                    fresh.put("schemaVersion", 3);
-                    fresh.put("kind", DEMAND_PRUNED_UNCARED_KIND);
-                    fresh.put(SharedFieldFlow.EDGE_LOCATION, location);
-                    fresh.put("readerOccurrenceId", consumer);
-                    return fresh;
-                });
-        row.put(DEMAND_DEPTH, readerDepth);
-    }
-
     /**
      * Second-order shared-location demand: the read ports an already admitted
      * occurrence holds for a location some other recorded activation of the
@@ -1853,9 +1752,7 @@ public final class RuntimeSelectedRegionFinalizer {
             Map<String, Map<String, Object>> instances,
             List<Map<String, Object>> regionEdges,
             Map<String, Integer> demandDepths,
-            int depthBound,
-            Set<String> caredLocations,
-            Map<String, Map<String, Object>> prunedUncared) {
+            Set<String> caredLocations) {
         Set<String> reached = new LinkedHashSet<>(admitted);
         Set<String> seeds = new LinkedHashSet<>();
         for (Map<String, Object> edge : regionEdges) {
@@ -1887,17 +1784,11 @@ public final class RuntimeSelectedRegionFinalizer {
             if (caredLocations != null
                     && !caredLocations.contains(location)) {
                 // Outside the care set this location is a constant for the
-                // failure, so the hop stops here.  Record the refusal by
-                // location and reader so a pruned-but-needed location is
-                // diagnosable rather than silent.
-                recordPrunedDemand(prunedUncared, location, consumer,
-                        instances.get(consumer), demandDepth(
-                                demandDepths, consumer));
+                // failure, so the hop stops here.
                 continue;
             }
-            int hop = demandDepth(demandDepths, consumer) + 1;
-            if (hop > depthBound) continue;
-            recordDemandDepth(demandDepths, writer, hop);
+            recordDemandDepth(demandDepths, writer,
+                    demandDepth(demandDepths, consumer) + 1);
             seeds.add(demand);
         }
         return seeds;
@@ -1911,8 +1802,7 @@ public final class RuntimeSelectedRegionFinalizer {
             List<Map<String, Object>> regionEdges,
             Map<String, Integer> demandDepths,
             Collection<String> fatalTargets,
-            Set<String> caredLocations,
-            Map<String, Map<String, Object>> prunedUncared)
+            Set<String> caredLocations)
             throws IOException {
         Set<String> targets = new LinkedHashSet<>(demanding);
         Set<String> fatalInputs = demandedInputs;
@@ -1945,9 +1835,6 @@ public final class RuntimeSelectedRegionFinalizer {
                     && (fatalTargets == null
                     || !fatalTargets.contains(consumer))
                     && !caredLocations.contains(location)) {
-                recordPrunedDemand(prunedUncared, location, consumer,
-                        instances.get(consumer),
-                        demandDepth(demandDepths, consumer));
                 continue;
             }
             locationsByWriter.computeIfAbsent(writer,
@@ -2956,7 +2843,6 @@ public final class RuntimeSelectedRegionFinalizer {
             branch.put("operandCells", operandCells(decisiveGuards));
             Boolean required = consistentRequiredOutcome(decisiveGuards);
             branch.put("requiredOutcome", required);
-            branch.put("guardedSiteOutcomes", guardedSiteOutcomes(guards));
 
             boolean cfgLoopControl = classifier.cfgLoopControlGuard(guards);
             boolean loopStructure = cfgLoopControl
@@ -3004,47 +2890,6 @@ public final class RuntimeSelectedRegionFinalizer {
         }
         List<String> result = new ArrayList<>(cells);
         Collections.sort(result);
-        return result;
-    }
-
-    /**
-     * Names, per site this branch decides, the Jimple outcome the analyzer
-     * proved is required to reach that site.
-     */
-    private static List<Map<String, Object>> guardedSiteOutcomes(
-            Collection<Map<String, Object>> guards) {
-        Map<String, Boolean> proved = new TreeMap<>();
-        Set<String> unproved = new TreeSet<>();
-        for (Map<String, Object> guard : guards) {
-            List<Map<String, Object>> controlled = new ArrayList<>();
-            controlled.addAll(rows(guard.get("guardedMutations")));
-            controlled.addAll(rows(guard.get("controlledDefinitions")));
-            controlled.addAll(rows(guard.get("guardedEffects")));
-            for (Map<String, Object> row : controlled) {
-                String site = firstNonEmpty(firstNonEmpty(
-                        text(row.get("guardedMutationSiteId")),
-                        text(row.get("controlledDefinitionSiteId"))),
-                        text(row.get("effectSiteId")));
-                if (site.isEmpty()) continue;
-                Boolean outcome = booleanValue(row.get("requiredOutcome"));
-                if (outcome == null) {
-                    unproved.add(site);
-                    continue;
-                }
-                Boolean prior = proved.putIfAbsent(site, outcome);
-                if (prior != null && !prior.equals(outcome)) {
-                    unproved.add(site);
-                }
-            }
-        }
-        List<Map<String, Object>> result = new ArrayList<>();
-        for (Map.Entry<String, Boolean> entry : proved.entrySet()) {
-            if (unproved.contains(entry.getKey())) continue;
-            Map<String, Object> row = new LinkedHashMap<>();
-            row.put("siteId", entry.getKey());
-            row.put("requiredOutcome", entry.getValue());
-            result.add(row);
-        }
         return result;
     }
 
@@ -3480,26 +3325,26 @@ public final class RuntimeSelectedRegionFinalizer {
      * one hot site.
      */
     /**
-     * Records one finalizer gap, once per (code, subject).
+     * Records one finalizer gap, once per (kind, subject), stating its own
+     * class exactly like a {@link
+     * edu.uva.liftlab.graphchecker.contract.GapRow}.
      *
      * <p>{@code gaps} may be null where a caller builds ports outside a
-     * finalize pass; the two truncations below both run inside one, so in
-     * practice every raised gap reaches
-     * {@link edu.uva.liftlab.graphchecker.plan.GapLedger}.</p>
+     * finalize pass; the truncation below runs inside one.</p>
      */
-    private static void planGap(List<Map<String, Object>> gaps, String code,
-                                String subject, String detail) {
+    private static void planGap(List<Map<String, Object>> gaps, GapKind kind,
+                                GapClass cls, String subject, String detail) {
         if (gaps == null) return;
         for (Map<String, Object> existing : gaps) {
-            if (code.equals(text(existing.get("code")))
+            if (kind.name().equals(text(existing.get("kind")))
                     && subject.equals(text(existing.get("subject")))) {
                 return;
             }
         }
         Map<String, Object> row = new LinkedHashMap<>();
         row.put("schemaVersion", 1);
-        row.put("kind", PLAN_GAP_KIND);
-        row.put("code", code);
+        row.put("kind", kind.name());
+        row.put("cls", cls.name());
         row.put("subject", subject);
         row.put("detail", detail);
         gaps.add(row);
@@ -3516,6 +3361,9 @@ public final class RuntimeSelectedRegionFinalizer {
         Map<String, Integer> retained = new LinkedHashMap<>();
         List<Map<String, Object>> bounded = new ArrayList<>();
         List<Map<String, Object>> resourceDefault = new ArrayList<>();
+        // The same number the campaign declared for an inherited loop
+        // bound: one activation-local access per body execution.
+        int accessDefault = LoopBoundPolicy.declaredDefault();
         String refusal = "";
         for (Map<String, Object> access : accesses) {
             String site = firstNonEmpty(text(access.get("staticAccessSiteId")),
@@ -3525,7 +3373,7 @@ public final class RuntimeSelectedRegionFinalizer {
             access.put("staticAccessSiteId", site);
             access.put("activationLocalStaticSiteOccurrence", occurrence);
             boolean withinDefault =
-                    occurrence <= LoopBoundPolicy.MAX_LOOP_BODY_ITERATIONS;
+                    occurrence <= accessDefault;
             if (withinDefault) resourceDefault.add(access);
             if (!withinDefault && !demand.required(port, access)) continue;
             int kept = retained.getOrDefault(site, 0) + 1;
@@ -3536,10 +3384,11 @@ public final class RuntimeSelectedRegionFinalizer {
                             + " demands more than " + MAX_RETAINED_SITE_ACCESSES
                             + " activation-local accesses, so this port keeps"
                             + " only the "
-                            + LoopBoundPolicy.MAX_LOOP_BODY_ITERATIONS
+                            + accessDefault
                             + "-access resource default and the accesses"
                             + " above it are invisible to every later stage";
-                    planGap(gaps, BOUND_INSUFFICIENT,
+                    planGap(gaps, GapKind.BOUND_INSUFFICIENT,
+                            GapClass.BLOCKING,
                             text(port.get("portId")) + "\n" + site, refusal);
                 }
                 continue;
@@ -4189,27 +4038,17 @@ public final class RuntimeSelectedRegionFinalizer {
         /** Canonicalized region edges exactly as written to the artifact. */
         public final List<Map<String, Object>> regionEdges;
         /**
-         * One row per shared-location demand hop the care set refused.
-         * Telemetry only: nothing downstream schedules off these, they exist
-         * so a pruned-but-needed location can be named after the fact.
-         */
-        public final List<Map<String, Object>> demandPruned;
-        /**
-         * Gaps this pass raised about its own ports.  Unlike
-         * {@link #demandPruned} these are not telemetry: every one of them
+         * Gaps this pass raised about its own ports: every one of them
          * says a recorded access or a recorded container observation was
          * dropped, which no later stage can see, so they travel into the
-         * runtime plan artifact and are classed by
-         * {@link edu.uva.liftlab.graphchecker.plan.GapLedger}.
+         * runtime plan artifact stating their own kind and class.
          */
         public final List<Map<String, Object>> gaps;
         private Result(List<Map<String, Object>> regions,
                        List<Map<String, Object>> regionEdges,
-                       List<Map<String, Object>> demandPruned,
                        List<Map<String, Object>> gaps) {
             this.regions = regions;
             this.regionEdges = regionEdges;
-            this.demandPruned = demandPruned;
             this.gaps = gaps;
         }
     }

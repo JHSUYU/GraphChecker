@@ -1084,12 +1084,7 @@ public class ExploreTest {
      */
     private Path scopeMap(Path iteration, String... sites)
             throws IOException {
-        List<String> lines = new ArrayList<String>();
-        JsonObject schema = new JsonObject();
-        schema.addProperty("schemaVersion", 1);
-        schema.addProperty("kind", StaticScopeMap.KIND);
-        lines.add(schema.toString());
-        lines.addAll(Arrays.asList(sites));
+        List<String> lines = new ArrayList<String>(Arrays.asList(sites));
         Path file = iteration.resolve(StaticScopeMap.FILE);
         Files.write(file, (String.join(System.lineSeparator(), lines)
                 + System.lineSeparator()).getBytes("UTF-8"));
@@ -1111,7 +1106,6 @@ public class ExploreTest {
         row.addProperty("cell", cell);
         row.addProperty("carrier", carrier);
         row.addProperty("portId", portId);
-        row.addProperty("declaredCallee", "");
         JsonArray stated = new JsonArray();
         for (String guard : guards) stated.add(guard);
         row.add("guards", stated);

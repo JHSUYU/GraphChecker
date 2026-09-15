@@ -335,7 +335,7 @@ public final class VmExpressionTable {
                 JsonElement child = field.getValue();
                 result.add(field.getKey(), "pathGuard".equals(field.getKey())
                         && (child == null || child.isJsonNull())
-                        ? SharedStateEvidence.emptyConjunction()
+                        ? emptyConjunction()
                         : expandInterned(child, decoder));
             }
             return result;
@@ -400,5 +400,19 @@ public final class VmExpressionTable {
         @Override public String toString() {
             return session + ":" + expression;
         }
+    }
+
+    /**
+     * The explicit empty conjunction: a write that took no branch.
+     *
+     * <p>Explicitly null means the empty conjunction; an absent path guard
+     * means the guard was never captured, which is a different and worse
+     * fact, so the two are never spelled alike.</p>
+     */
+    static JsonObject emptyConjunction() {
+        JsonObject guard = new JsonObject();
+        guard.addProperty("kind", "EMPTY_CONJUNCTION");
+        guard.addProperty("authority", "VM_UNGUARDED_WRITE_V1");
+        return guard;
     }
 }

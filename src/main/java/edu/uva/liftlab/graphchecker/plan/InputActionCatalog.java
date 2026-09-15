@@ -34,6 +34,18 @@ public final class InputActionCatalog {
      */
     public static final String DECLARED_COMMUNICATION_CUT_PORT =
             "DECLARED_COMMUNICATION_CUT_PORT";
+    /**
+     * Marks an input the case declared to be a wall-clock read.
+     *
+     * <p>A clock is the one root kind the composer moves differently -- it
+     * rides an offset from what the recording read rather than a value of its
+     * own -- so which reads are clocks has to be stated, not recognised.  The
+     * case says so on the {@code symbolic-inputs.jsonl} row that declares the
+     * cell; the planner copies the flag onto the action, the replay reads it
+     * off the action, and the mint row states it for the composer.  Nothing
+     * matches a callee name against a list.</p>
+     */
+    public static final String DECLARED_WALL_CLOCK = "clock";
 
     public enum Mode {
         SYMBOLIC, CONCRETE, DECLARATION_ONLY

@@ -88,8 +88,8 @@ public class ManualMintStatesItsValueTest {
         assertEquals("J", modelled.get("javaType").getAsString());
 
         JsonObject clock = manualRow(clockAction(), "1789358344655");
-        assertEquals("<org.apache.hadoop.util.Timer: long now()>",
-                clock.get("declaredCallee").getAsString());
+        assertTrue("the mint states the clock the case declared",
+                clock.get("clock").getAsBoolean());
         assertEquals("the seed's reading, which the window is centred on",
                 "1789358343989", clock.get("recordedValue").getAsString());
         assertEquals("and this execution's own instant, beside it",
@@ -207,8 +207,7 @@ public class ManualMintStatesItsValueTest {
     private static JsonObject clockAction() {
         JsonObject encoded = action("REGION.aaa1cfd7.in.f30dbb22");
         encoded.addProperty("rootKind", "CALL_RETURN");
-        encoded.addProperty("declaredCallee",
-                "<org.apache.hadoop.util.Timer: long now()>");
+        encoded.addProperty("clock", true);
         encoded.addProperty("observed", true);
         encoded.addProperty("primitiveValue", "1789358343989");
         return encoded;
@@ -309,6 +308,7 @@ public class ManualMintStatesItsValueTest {
         encoded.add("inputActions", new JsonArray());
         JsonObject loopBound = new JsonObject();
         loopBound.addProperty("schemaVersion", 1);
+        loopBound.addProperty("defaultBackedgeTraversals", 8);
         encoded.add("loopBound", loopBound);
         return encoded;
     }

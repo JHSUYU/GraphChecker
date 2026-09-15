@@ -171,7 +171,8 @@ public class BranchDecisionRecordingTest {
                 + "'inputActions':[{'symbol':'sym.f','mode':'SYMBOLIC',"
                 + "'bindingMode':'FIELD_ACCESS','accessFieldSignature':"
                 + "'<a.B: int f>','accessSites':['" + DECLARED + "']}],"
-                + "'loopBound':{'schemaVersion':1},'retainedLoops':[{"
+                + "'loopBound':{'schemaVersion':1,"
+                + "'defaultBackedgeTraversals':8},'retainedLoops':[{"
                 + "'loopExitDecisions':[{'siteId':'" + BOUNDARY + "'}]}],"
                 + "'targetBranch':{'siteId':'" + DECLARED
                 + "','occurrence':1}}").replace('\'', '"');

@@ -59,13 +59,6 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 /** Builds graph-directed concolic jobs from static regions and concrete
  * runtime-selected region instance plans. */
 public final class ConcolicScheduler {
-    /** Telemetry artifact naming what the selection file refused. */
-    static final String ROOT_POLICY_ARTIFACT = "symbolic_root_policy.jsonl";
-    /** Row kind of {@link #ROOT_POLICY_ARTIFACT}. */
-    static final String SYMBOLIC_ROOT_POLICY = "SYMBOLIC_ROOT_POLICY";
-    /** A manual root still declared by a planner-minted region hash. */
-    static final String REGION_ID_DECLARATION =
-            "SYMBOLIC_INPUT_REGION_ID_DECLARATION";
     private static final Pattern LOCAL_CELL = Pattern.compile(
             "^(<.+>)::([^#]+)(?:#.*)?$");
     private ConcolicScheduler() {
@@ -128,7 +121,7 @@ public final class ConcolicScheduler {
         Collections.sort(candidates, Candidate.ORDER);
 
         LoopBoundPolicy loopBound = declaredLoopBounds(
-                arguments.maxLoopIterations, loaded.regionPlans);
+                LoopBoundPolicy.declaredDefault(), loaded.regionPlans);
         Result result = new Result();
         for (Candidate candidate : candidates) {
             JsonArray edgeBindings = objectRows(
@@ -313,11 +306,8 @@ public final class ConcolicScheduler {
             throws IOException {
         LoadedInputs loaded = loadInputs(arguments);
         RuntimeWorkflowDiscovery.RankedWorkflow workflow =
-                arguments.closureMode == ClosureMode.SEED_REPLAY
-                ? RuntimeWorkflowDiscovery.seedReplayWorkflow(
-                        loaded.regionPlans, arguments.targetOccurrence)
-                : RuntimeWorkflowDiscovery.candidateWorkflow(
-                        loaded.regionPlans, arguments.targetOccurrence);
+                RuntimeWorkflowDiscovery.workflow(loaded.regionPlans,
+                        arguments.targetOccurrence);
         requireRetainedRegions(arguments.retainRegions, workflow);
         if (workflow.scheduledTaskCount() > arguments.maxJobs) {
             // A bare count says only that the campaign is too big; what a
@@ -362,13 +352,6 @@ public final class ConcolicScheduler {
             taskRows = withSeedReplayGroup(taskRows);
         }
         ArtifactIO.replaceJsonl(taskPlan, taskRows);
-        // A root the selection file refused is invisible downstream: the
-        // task simply carries a CONCRETE action.  Publishing the refusals
-        // makes "why is there no clock root" answerable from one file.
-        ArtifactIO.replaceJsonl(arguments.outputDirectory.resolve(
-                        ROOT_POLICY_ARTIFACT),
-                rootPolicyRows(arguments.symbolicInputs,
-                        loaded.symbolicInputs));
         JsonObject taskPlanIdentity = artifactIdentity(taskPlan);
         JsonObject index = workflow.scheduleIndex(result.executionTasks,
                 loaded.regionPlanIdentity, taskPlanIdentity);
@@ -790,12 +773,8 @@ public final class ConcolicScheduler {
             JsonObject branch = element.getAsJsonObject().deepCopy();
             if (target.siteId.equals(optionalString(branch, "siteId"))) {
                 branch.addProperty("policy", "EXPLORE");
-                branch.addProperty("policyReason",
-                        "TARGET_REACH_SELECTED_FAILURE_BRANCH");
             } else if ("EXPLORE".equals(optionalString(branch, "policy"))) {
                 branch.addProperty("policy", "PATH_ASSUMPTION");
-                branch.addProperty("policyReason",
-                        "TARGET_REACH_PREFIX_CONTEXT");
             }
             result.add(branch);
         }
@@ -1587,8 +1566,7 @@ public final class ConcolicScheduler {
         /** Static, replay-stable fields of one port/capture row. */
         private static final String[] SEMANTIC_PORT_FIELDS = {
                 "accessFieldSignature", "accessSites", "argumentIndex",
-                "cell",
-                "containerCapacity", "declaredCallee", "definitionMethod",
+                "cell", "declaredCallee", "definitionMethod",
                 "definitionUnitIndex", "dependencyRole", "fieldPath",
                 "fieldPathDeclarations", "fieldPaths", "fieldSignature",
                 "helperActivationBoundedOccurrence", "javaType",
@@ -1720,47 +1698,6 @@ public final class ConcolicScheduler {
                 : path.toAbsolutePath().normalize().toString();
     }
 
-    /** One row: which file decided the root set. */
-    static JsonObject rootPolicyTelemetry(
-            Path declarations, SymbolicInputSelection selection) {
-        JsonObject row = new JsonObject();
-        row.addProperty("schemaVersion", 1);
-        row.addProperty("kind", SYMBOLIC_ROOT_POLICY);
-        row.addProperty("declarations",
-                declarations == null ? "" : declarations.toString());
-        JsonArray decisions = selection.rootDecisions();
-        int tracked = 0;
-        int mintEligible = 0;
-        int declared = 0;
-        for (JsonElement element : decisions) {
-            JsonObject decision = element.getAsJsonObject();
-            if (optionalBool(decision,
-                    SymbolicInputSelection.TRACKED, false)) tracked++;
-            if (optionalBool(decision,
-                    SymbolicInputSelection.MINT_ELIGIBLE, false)) {
-                mintEligible++;
-            }
-            if (optionalBool(decision, "declared", false)) declared++;
-        }
-        row.addProperty("decidedActionCount", decisions.size());
-        row.addProperty("trackedActionCount", tracked);
-        row.addProperty("mintEligibleActionCount", mintEligible);
-        row.addProperty("declaredActionCount", declared);
-        return row;
-    }
-
-    /** The policy artifact: one summary row, then one verdict per action. */
-    static List<JsonObject> rootPolicyRows(
-            Path declarations, SymbolicInputSelection selection) {
-        List<JsonObject> rows = new ArrayList<>();
-        rows.add(rootPolicyTelemetry(declarations, selection));
-        rows.addAll(selection.declarationDiagnostics());
-        for (JsonElement element : selection.rootDecisions()) {
-            rows.add(element.getAsJsonObject());
-        }
-        return rows;
-    }
-
     public static final class Result {
         public final List<ExecutionTask> executionTasks = new ArrayList<>();
     }
@@ -1834,35 +1771,21 @@ public final class ConcolicScheduler {
      * here.</p>
      */
     static final class SymbolicInputSelection {
-        /** Decision-row member: the plan symbolizes this read. */
-        static final String TRACKED = "tracked";
-        /** Action and decision-row member: may become a fresh root. */
-        static final String MINT_ELIGIBLE = "mintEligible";
-        /** Row kind of one per-action verdict. */
-        static final String ROOT_DECISION = "SYMBOLIC_ROOT_DECISION";
         /** Verdict of a read no declaration names. */
         static final String UNDECLARED = "UNDECLARED_SYMBOLIC_INPUT";
         /** regionId -> the field signatures, port ids and cells it admits. */
         private final Map<String, Set<String>> admitted;
+        /** The subset of {@link #admitted} the case declared to be clocks. */
+        private final Map<String, Set<String>> clocks;
         /** regionId -> sourceId -> the one field that hook site mints. */
         private final Map<String, Map<String, String>> minted;
-        /** One verdict per decided action, deduplicated, first-seen order. */
-        private final Set<JsonObject> decisions = new LinkedHashSet<>();
-
-        /** What each declaration row asked the campaign to change. */
-        private final List<JsonObject> declarationDiagnostics;
-
         private SymbolicInputSelection(
                 Map<String, Set<String>> admitted,
-                Map<String, Map<String, String>> minted,
-                List<JsonObject> declarationDiagnostics) {
+                Map<String, Set<String>> clocks,
+                Map<String, Map<String, String>> minted) {
             this.admitted = admitted;
+            this.clocks = clocks;
             this.minted = minted;
-            this.declarationDiagnostics = declarationDiagnostics;
-        }
-
-        List<JsonObject> declarationDiagnostics() {
-            return declarationDiagnostics;
         }
 
         /** One pass over the static hook declarations and, when the campaign
@@ -1871,7 +1794,6 @@ public final class ConcolicScheduler {
                 Path path, List<JsonObject> regionCatalog,
                 List<RegionInstancePlan> regionPlans)
                 throws IOException {
-            List<JsonObject> diagnostics = new ArrayList<>();
             Map<String, Map<String, String>> minted = new LinkedHashMap<>();
             Set<String> catalogRegions = new LinkedHashSet<>();
             for (JsonObject region : regionCatalog == null
@@ -1890,24 +1812,35 @@ public final class ConcolicScheduler {
                 }
             }
             Map<String, Set<String>> admitted = new LinkedHashMap<>();
+            Map<String, Set<String>> clocks = new LinkedHashMap<>();
             if (path == null) {
-                return new SymbolicInputSelection(
-                        admitted, minted, diagnostics);
+                return new SymbolicInputSelection(admitted, clocks, minted);
             }
             requireFile(path, "symbolic input selection");
             for (JsonObject row : ArtifactIO.readJsonl(path)) {
+                // A row that declares itself a clock declares every name on
+                // it a clock: the case states which of its reads is a wall
+                // clock, and the planner never decides that from a callee.
+                boolean clock = optionalBool(
+                        row, InputActionCatalog.DECLARED_WALL_CLOCK, false);
                 for (String regionId : declaredRegions(row, catalogRegions,
-                        regionPlans, diagnostics)) {
+                        regionPlans)) {
                     Set<String> names = admitted.computeIfAbsent(regionId,
                             ignored -> new LinkedHashSet<>());
+                    Set<String> clockNames = clock
+                            ? clocks.computeIfAbsent(regionId,
+                                    ignored -> new LinkedHashSet<>())
+                            : null;
                     for (String field : new String[]{
                             "fieldSignatures", "portIds", "cells"}) {
                         addDeclaredNames(names, row, field);
+                        if (clockNames != null) {
+                            addDeclaredNames(clockNames, row, field);
+                        }
                     }
                 }
             }
-            return new SymbolicInputSelection(admitted, minted,
-                    diagnostics);
+            return new SymbolicInputSelection(admitted, clocks, minted);
         }
 
         /**
@@ -1929,21 +1862,16 @@ public final class ConcolicScheduler {
          * matches several regions declares the root in each of them -- the
          * same Java method planned on two nodes is two regions and the
          * declaration means both -- unless it scopes itself to a node or an
-         * epoch.  The region-id form is still read, and asks in the policy
-         * artifact to be rewritten as a site.</p>
+         * epoch.  The region-id form is still read.</p>
          */
         private static List<String> declaredRegions(
                 JsonObject row, Set<String> catalogRegions,
-                List<RegionInstancePlan> regionPlans,
-                Collection<JsonObject> diagnostics) throws IOException {
+                List<RegionInstancePlan> regionPlans) throws IOException {
             String regionId = firstNonBlank(optionalString(row, "regionId"));
             if (!regionId.isEmpty()) {
                 if (!catalogRegions.contains(regionId)) {
                     throw new IOException("symbolic input selection names "
                             + "an unknown static region: " + regionId);
-                }
-                if (diagnostics != null) {
-                    diagnostics.add(regionIdDeclarationDiagnostic(regionId));
                 }
                 return Collections.singletonList(regionId);
             }
@@ -2022,23 +1950,6 @@ public final class ConcolicScheduler {
             }
             return (node.isEmpty() || node.equals(actualNode))
                     && (epoch.isEmpty() || epoch.equals(actualEpoch));
-        }
-
-        /** Asks, once per row, for the site form the plan can resolve. */
-        private static JsonObject regionIdDeclarationDiagnostic(
-                String regionId) {
-            JsonObject row = new JsonObject();
-            row.addProperty("schemaVersion", 1);
-            row.addProperty("kind", "CONCOLIC_PLAN_DIAGNOSTIC");
-            row.addProperty("stage", "PLAN");
-            row.addProperty("source", "SYMBOLIC_INPUT_SELECTION");
-            row.addProperty("code", REGION_ID_DECLARATION);
-            row.addProperty("subject", regionId);
-            row.addProperty("detail", "this manual root is declared by a "
-                    + "planner-minted region hash, which moves when the "
-                    + "selection moves; declare it by its static site "
-                    + "(class + method, optionally node/epoch) instead");
-            return row;
         }
 
         /** An explicit source hook is itself the allowlist authority. */
@@ -2131,8 +2042,6 @@ public final class ConcolicScheduler {
                 retained.addProperty("mode", "CONCRETE");
                 retained.addProperty("symbolicDemand",
                         "CONFIGURED_SYMBOLIC_SOURCE_FIELD_OWNED");
-                record(regionId, action, false, false, true,
-                        "CONFIGURED_SYMBOLIC_SOURCE_FIELD_OWNED");
                 return;
             }
             if (declaredCutPort(action)) {
@@ -2146,8 +2055,6 @@ public final class ConcolicScheduler {
                 // is how HDFS-17899 bug3 acquired four existential roots on
                 // PBHelper.convert(BlockKeyProto) -- so the declaration is
                 // not allowed to reach it.
-                record(regionId, action, true, false, false,
-                        InputActionCatalog.DECLARED_COMMUNICATION_CUT_PORT);
                 return;
             }
             boolean declared = admits(regionId, action);
@@ -2164,7 +2071,6 @@ public final class ConcolicScheduler {
                 // a fresh root.
                 retained.addProperty("mode", "CONCRETE");
                 retained.addProperty("symbolicDemand", UNDECLARED);
-                record(regionId, action, false, false, false, UNDECLARED);
                 return;
             }
             if (declared) {
@@ -2172,10 +2078,11 @@ public final class ConcolicScheduler {
                 // "the search starts at this cell" means.
                 retained.addProperty(
                         InputActionCatalog.DECLARED_SYMBOLIC_ROOT, true);
+                if (names(clocks, regionId, action)) {
+                    retained.addProperty(
+                            InputActionCatalog.DECLARED_WALL_CLOCK, true);
+                }
             }
-            record(regionId, action, true, true, declared,
-                    declared ? "DECLARED_SYMBOLIC_ROOT"
-                            : "WORKLOAD_DECLARED_SYMBOLIC_FAULT");
         }
 
         /**
@@ -2198,39 +2105,6 @@ public final class ConcolicScheduler {
         private static boolean workloadOwnedSymbol(JsonObject action) {
             return RuntimeSelectedRegionFinalizer.EXPLICIT_SYMBOLIC_FAULT
                     .equals(optionalString(action, "sourceKind"));
-        }
-
-        /** Both verdicts for one action, so "why is this read concrete" and
-         *  "why did this read mint" are answerable from one file. */
-        private void record(String regionId, JsonObject action,
-                            boolean tracked, boolean mintEligible,
-                            boolean declared, String verdict) {
-            JsonObject row = new JsonObject();
-            row.addProperty("schemaVersion", 1);
-            row.addProperty("kind", ROOT_DECISION);
-            row.addProperty("regionId", safe(regionId));
-            row.addProperty("sourceKind",
-                    optionalString(action, "sourceKind"));
-            row.addProperty("symbolicDemand",
-                    optionalString(action, "symbolicDemand"));
-            row.addProperty("siteId", firstNonBlank(
-                    optionalString(action, "siteId"),
-                    optionalString(action, "staticAccessSiteId")));
-            row.addProperty("fieldSignature", actionField(action));
-            row.addProperty("cell", optionalString(action, "cell"));
-            row.addProperty("portId", actionPort(action));
-            row.addProperty(TRACKED, tracked);
-            row.addProperty(MINT_ELIGIBLE, mintEligible);
-            row.addProperty("declared", declared);
-            row.addProperty("verdict", verdict);
-            decisions.add(row);
-        }
-
-        /** One row per distinct action this file decided. */
-        JsonArray rootDecisions() {
-            JsonArray rows = new JsonArray();
-            for (JsonObject row : decisions) rows.add(row.deepCopy());
-            return rows;
         }
 
         /** Whether a declaring hook site of this region mints the action's
@@ -2262,7 +2136,13 @@ public final class ConcolicScheduler {
          * names the accessor's return.</p>
          */
         private boolean admits(String regionId, JsonObject action) {
-            Set<String> names = admitted.get(safe(regionId));
+            return names(admitted, regionId, action);
+        }
+
+        /** Whether one declared name set covers this action's port or cells. */
+        private static boolean names(Map<String, Set<String>> declared,
+                                     String regionId, JsonObject action) {
+            Set<String> names = declared.get(safe(regionId));
             if (names == null || names.isEmpty()) return false;
             if (names.contains(actionPort(action))) return true;
             for (String cell : actionCells(action)) {
@@ -2299,6 +2179,10 @@ public final class ConcolicScheduler {
          */
         private void renameDeclaredNames(List<JsonObject> refinedGraph) {
             if (admitted.isEmpty()) return;
+            // Both name sets are renamed: a declared clock cell and the
+            // exact copies of it are the same read under different Jimple
+            // names, so the flag travels with the declaration.
+
             Map<String, Set<String>> copies = new LinkedHashMap<>();
             for (JsonObject edge : refinedGraph == null
                     ? Collections.<JsonObject>emptyList() : refinedGraph) {
@@ -2313,17 +2197,20 @@ public final class ConcolicScheduler {
                         ignored -> new LinkedHashSet<>()).add(from);
             }
             if (copies.isEmpty()) return;
-            for (Set<String> names : admitted.values()) {
-                Set<String> renamed = new LinkedHashSet<>(names);
-                Deque<String> pending = new ArrayDeque<>(names);
-                while (!pending.isEmpty()) {
-                    for (String copied : copies.getOrDefault(
-                            pending.removeFirst(),
-                            Collections.<String>emptySet())) {
-                        if (renamed.add(copied)) pending.addLast(copied);
+            for (Map<String, Set<String>> declared
+                    : Arrays.asList(admitted, clocks)) {
+                for (Set<String> names : declared.values()) {
+                    Set<String> renamed = new LinkedHashSet<>(names);
+                    Deque<String> pending = new ArrayDeque<>(names);
+                    while (!pending.isEmpty()) {
+                        for (String copied : copies.getOrDefault(
+                                pending.removeFirst(),
+                                Collections.<String>emptySet())) {
+                            if (renamed.add(copied)) pending.addLast(copied);
+                        }
                     }
+                    names.addAll(renamed);
                 }
-                names.addAll(renamed);
             }
         }
 
@@ -2349,6 +2236,7 @@ public final class ConcolicScheduler {
         private final SymbolicInputSelection symbolicInputs;
 
         private LoadedInputs(List<RegionInstancePlan> regionPlans,
+
                              Map<String, Region> regionIndex,
                              DefinitionIndex definitions,
                              List<JsonObject> refinedGraph,
@@ -2368,10 +2256,10 @@ public final class ConcolicScheduler {
     }
 
     /**
-     * Which closure the schedule is drawn from.  Exactly one of the two
-     * answers the question "which region occurrences are in scope", so the
-     * caller states it once rather than leaving two independent flags to
-     * contradict each other.
+     * Which closure the schedule is drawn from.  It names the scope once, so
+     * two independent flags cannot contradict each other; it is read by
+     * {@link #withSeedReplayGroup}, which is the one thing the seed replay
+     * does differently.
      */
     public enum ClosureMode {
         /** Every candidate occurrence the frozen region plan declares. */
@@ -2391,9 +2279,8 @@ public final class ConcolicScheduler {
             for (ClosureMode mode : values()) {
                 if (mode.option.equals(requested)) return mode;
             }
-            throw new IllegalArgumentException("--closure-mode must be one "
-                    + "of candidate|seed-replay|active-observed, not: "
-                    + requested);
+            throw new IllegalArgumentException("--closure-mode must be "
+                    + "candidate or seed-replay, not: " + requested);
         }
     }
 
@@ -2439,7 +2326,6 @@ public final class ConcolicScheduler {
         public final String occurrenceId;
         public final String goalId;
         public final int maxJobs;
-        public final int maxLoopIterations;
         public final Path symbolicInputs;
         /** The occurrence of the annotated site the case declares, or "". */
         public final String targetOccurrence;
@@ -2450,7 +2336,7 @@ public final class ConcolicScheduler {
         private Arguments(Path regionPlan, Path refinedGraph,
                           Path outputDirectory, String regionId,
                           String occurrenceId, String goalId,
-                          int maxJobs, int maxLoopIterations,
+                          int maxJobs,
                           Path symbolicInputs, ClosureMode closureMode,
                           String targetOccurrence,
                           java.util.Set<String> retainRegions) {
@@ -2465,7 +2351,6 @@ public final class ConcolicScheduler {
             this.occurrenceId = safe(occurrenceId);
             this.goalId = safe(goalId);
             this.maxJobs = Math.max(1, maxJobs);
-            this.maxLoopIterations = maxLoopIterations;
             this.symbolicInputs = symbolicInputs;
             this.closureMode = closureMode;
             this.targetOccurrence = safe(targetOccurrence);
@@ -2474,7 +2359,7 @@ public final class ConcolicScheduler {
         public static Arguments parse(String[] args) {
             Map<String, String> values = parseArgs(args, "region-plan",
                     "refined-graph", "output-dir", "max-jobs",
-                    "symbolic-inputs", "max-loop-iterations",
+                    "symbolic-inputs",
                     "closure-mode", "target-occurrence");
             Path regionPlan = requiredPath(values, "region-plan");
             Path output = Paths.get(firstNonBlank(values.get("output-dir"),
@@ -2488,9 +2373,6 @@ public final class ConcolicScheduler {
             return new Arguments(regionPlan, refinedGraph,
                     output, "", "", "",
                     parseInt(values.get("max-jobs"), 1),
-                    positiveInt(values.get("max-loop-iterations"),
-                            LoopBoundPolicy.MAX_LOOP_BODY_ITERATIONS,
-                            "max-loop-iterations"),
                     symbolicInputs, closureMode,
                     values.get("target-occurrence"),
                     splitRegions(values.get("retain-regions")));
@@ -2546,10 +2428,9 @@ public final class ConcolicScheduler {
 
         private Arguments forSelection(
                 RuntimeWorkflowDiscovery.Selection selection) {
-            return new Arguments(regionPlan, refinedGraph,
-                    outputDirectory,
+            return new Arguments(regionPlan, refinedGraph, outputDirectory,
                     selection.regionId, selection.occurrenceId,
-                    selection.goalId, 1, maxLoopIterations,
+                    selection.goalId, 1,
                     symbolicInputs, closureMode, targetOccurrence,
                     retainRegions);
         }
