@@ -65,6 +65,12 @@ import soot.jimple.Stmt;
 import soot.jimple.StringConstant;
 import soot.jimple.SwitchStmt;
 import soot.tagkit.Tag;
+import soot.validation.BodyValidator;
+import soot.validation.CheckInitValidator;
+import soot.validation.LocalsValidator;
+import soot.validation.TrapsValidator;
+import soot.validation.UnitBoxesValidator;
+import soot.validation.ValidationException;
 
 import java.io.IOException;
 import java.util.ArrayDeque;
@@ -89,6 +95,26 @@ public final class CausynthPipeline {
             "edu.uva.liftlab.graphchecker.runtime.CausynthTraceRecorder";
     private static final String CONCOLIC_REGION_RUNTIME_CLASS =
             "edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime";
+    /** Every local a weave adds is named for the weave that added it. */
+    private static final String TRACE_LOCAL_PREFIX = "$causynth";
+    /**
+     * Soot's own body rules, run on every woven body by {@link
+     * #validateWovenBodies}.  {@code CheckInitValidator} is the one that
+     * answers the woven-trap rule of {@link #afterWovenPrologue}: it runs
+     * Soot's {@code InitAnalysis} over an {@code ExceptionalUnitGraph} built
+     * with the pedantic throw analysis, so every unit of a trap range has an
+     * edge into the handler and a woven local the handler reads is reported
+     * unless it is stored on every one of them -- which is the JVM's own
+     * stackmap merge, one pass earlier and by name.  The other three are the
+     * structural claims a weave can break: a local it used but did not
+     * declare, a trap or a branch whose units it left out of the body.
+     */
+    private static final BodyValidator[] WOVEN_BODY_RULES = {
+        CheckInitValidator.v(),
+        LocalsValidator.v(),
+        TrapsValidator.v(),
+        UnitBoxesValidator.v(),
+    };
     private final GraphCheckerOptions options;
     public CausynthPipeline(GraphCheckerOptions options) {
         this.options = options;
@@ -97,6 +123,10 @@ public final class CausynthPipeline {
     public void run() throws IOException {
         try {
             analyze();
+            // Before Soot writes one class file: no woven body leaves this
+            // JVM unless it satisfies the rules the JVM's verifier will
+            // apply to it.
+            validateWovenBodies();
         } finally {
             // The loop CFGs are this run's, not this JVM's.
             CfgLoopControl.forget();
@@ -176,6 +206,68 @@ public final class CausynthPipeline {
 
     private static long elapsedMillis(long startNanos) {
         return (System.nanoTime() - startNanos) / 1_000_000L;
+    }
+
+    /**
+     * The weave's own verifier gate: every body this run wove obeys Soot's
+     * body rules, definite assignment included, or the run is refused by
+     * name before a class file is written.
+     *
+     * <p>This is what makes {@link #afterWovenPrologue} a rule of the class
+     * rather than a comment on one construct: a woven local read in a
+     * handler or at a return that its store does not dominate is reported
+     * here, whichever construct wove it.  The JVM used to report it
+     * instead -- as a {@code VerifyError} inside a replay, hours into a
+     * campaign, at a method the campaign never mentions.  Soot runs these
+     * validators only under {@code -validate} or {@code -debug}, which is
+     * why this states them itself.</p>
+     */
+    private void validateWovenBodies() {
+        List<ValidationException> failures = new ArrayList<>();
+        int validated = 0;
+        for (SootClass type : Scene.v().getApplicationClasses()) {
+            for (SootMethod method : type.getMethods()) {
+                if (!method.hasActiveBody()) continue;
+                Body body = method.getActiveBody();
+                if (!wovenBody(body)) continue;
+                validated++;
+                for (BodyValidator rule : WOVEN_BODY_RULES) {
+                    rule.validate(body, failures);
+                }
+                if (!failures.isEmpty()) {
+                    ValidationException failure = failures.get(0);
+                    throw new IllegalStateException(
+                            "WOVEN_BODY_IS_UNVERIFIABLE: "
+                                    + method.getSignature() + ": "
+                                    + failure.getRawMessage() + " [at "
+                                    + failure.getConcerned() + "]");
+                }
+            }
+        }
+        LOG.info("Woven-body verifier gate: {} woven body(ies) satisfy "
+                + "definite assignment over exception edges, declared "
+                + "locals, trap units and branch targets", validated);
+    }
+
+    /** Whether this body carries units a weave of this run put in it. */
+    private static boolean wovenBody(Body body) {
+        for (Local local : body.getLocals()) {
+            if (local.getName().startsWith(TRACE_LOCAL_PREFIX)) return true;
+        }
+        for (Unit unit : body.getUnits()) {
+            if (unit instanceof Stmt && ((Stmt) unit).containsInvokeExpr()
+                    && isHookInvoke(((Stmt) unit).getInvokeExpr())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Whether one invocation is a call of a woven hook. */
+    private static boolean isHookInvoke(InvokeExpr invoke) {
+        return isRecorderInvoke(invoke)
+                || (invoke != null && CONCOLIC_REGION_RUNTIME_CLASS.equals(
+                        invoke.getMethodRef().declaringClass().getName()));
     }
 
     /**
@@ -623,13 +715,14 @@ public final class CausynthPipeline {
                                        String regionId) {
         Local entryToken = newTraceLocal(body, LongType.v(),
                 "$causynthRegionEntry");
+        // The entry hook IS the token's store, and the trap opens after it,
+        // so there is nothing for a `= 0L` ahead of it to make safe: it was
+        // the false comfort that let the trap open at it.
         List<Unit> entry = new ArrayList<>();
-        entry.add(Jimple.v().newAssignStmt(entryToken, LongConstant.v(0L)));
         refs.bracket(entry, entryToken, Hook.ENTER_REGION_ENTRY,
                 StringConstant.v(regionId),
                 StringConstant.v(method.getSignature()), receiver);
         insertBeforeOrAppendNoRedirect(body, insertionPoint, entry);
-        Unit regionStart = entry.isEmpty() ? insertionPoint : entry.get(0);
         for (int index = instrumentableFrom(originalUnits, lowerBound);
                 index >= 0 && index < originalUnits.size(); index++) {
             Unit unit = originalUnits.get(index);
@@ -641,8 +734,11 @@ public final class CausynthPipeline {
             refs.bracket(exit, Hook.EXIT_REGION_ENTRY, entryToken);
             insertBeforeSequence(body, unit, exit);
         }
-        addThrowHandler(body, regionStart, refs, Hook.THROW_REGION_ENTRY,
-                "$causynthRegionEntryThrown", entryToken);
+        // The handler reads the token, so the trap opens after the store:
+        // afterWovenPrologue, not the prologue's own first unit.
+        addThrowHandler(body, afterWovenPrologue(body, entry), refs,
+                Hook.THROW_REGION_ENTRY, "$causynthRegionEntryThrown",
+                entryToken);
     }
 
     /**
@@ -3159,7 +3255,51 @@ public final class CausynthPipeline {
      * is the argument list the hook takes ahead of the throwable: empty is the
      * method-activation form, and a region identity additionally brackets the
      * report with paused observation.
+     *
+     * <p>{@code start} obeys the woven-trap rule of {@link
+     * #afterWovenPrologue}: it is a unit the construct's prologue -- every
+     * store of every woven local this handler reads through {@code identity}
+     * -- has already fallen through to.  {@link #validateWovenBodies} is
+     * what enforces that on the finished body.</p>
      */
+    /**
+     * THE WOVEN-TRAP RULE: a woven catch-all opens at the first unit the
+     * construct's own prologue falls through to -- never at a unit of the
+     * prologue itself.
+     *
+     * <p>Every woven local a handler reads (a region token, an invocation
+     * id) is stored by that prologue, and the JVM merges the frame of EVERY
+     * unit in the trap range into the handler's incoming frame.  A range
+     * that opened at the store therefore merges the frame from before it, in
+     * which the local is not assigned, and the handler's read of it cannot
+     * be verified.  hdfs-17960's woven {@code FSNamesystem.allowSnapshot}
+     * was refused exactly so -- {@code @142: lload_2, Local index 2 is
+     * invalid}, "get long/double overflows locals", with the stackmap at the
+     * handler carrying {@code {Object, Object}} and no {@code Long} because
+     * the trap opened at bci 0 while the token's {@code lstore_2} is bci 1.
+     * A long or double local owns two slots, so a partially assigned one
+     * does not merely lose its type: the read overflows the frame.</p>
+     *
+     * <p>Nothing is owed on the excluded prefix: an exception raised before
+     * the frame was opened has no frame to close.  And the prologue is
+     * entered by fall-through only ({@code insertBeforeNoRedirect} keeps
+     * every branch on its old target, and a loop-body entry moves the whole
+     * prologue together), so the store dominates every unit from here on --
+     * which is what makes the local assigned on every path into the range,
+     * at every return the exit hooks read it at, and on every exception edge
+     * into the handler.  Soot's {@code LocalPacker} cannot pack the local
+     * into a slot shared with another type either: a local the handler reads
+     * is live across the whole range.</p>
+     *
+     * @return the unit after {@code prologue}, or null when the prologue
+     *         ends the body -- a construct with no unit to guard opens no
+     *         trap rather than guarding its own store
+     */
+    private static Unit afterWovenPrologue(Body body, List<Unit> prologue) {
+        if (prologue == null || prologue.isEmpty()) return null;
+        return body.getUnits().getSuccOf(prologue.get(prologue.size() - 1));
+    }
+
     private void addThrowHandler(Body body, Unit start, HookCatalog refs,
                                  Hook throwHook, String localName,
                                  Value... identity) {

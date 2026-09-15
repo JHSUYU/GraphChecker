@@ -1658,6 +1658,30 @@ campaign_instrument() {
   [[ -n "$(find "${classes}" -name '*.class' -print -quit 2>/dev/null)" ]] \
     || campaign_fail INSTRUMENT CAMPAIGN "${classes}" \
       "union instrumentation wrote no class file"
+  campaign_verify_woven_classes "${iteration_dir}"
+}
+
+# The JVM verifier is the authority on whether woven bytecode is executable,
+# and INSTRUMENT is the stage that asks it.  Asked for the first time inside a
+# replay instead, its answer arrives as a VerifyError hours into the campaign
+# at a method the campaign never mentions: 9d2761c17's seed replay died on
+# woven FSNamesystem.allowSnapshot @142 "Local index 2 is invalid" before any
+# region ran, and REPLAY reported a failed workload method.  The class loader
+# is the replay's own layout -- execute.sh composes ${classes}:${jar}:${cp} --
+# so a class that links here links there.
+campaign_verify_woven_classes() {
+  local iteration_dir=$1
+  local classes="${iteration_dir}/instrumented-classes"
+  local report="${iteration_dir}/woven_class_verification.log"
+  local status=0
+  run_capturing_status run_java_main \
+    edu.uva.liftlab.graphchecker.causynth.VerifyWovenClasses \
+    "${classes}" "${project_classpath}" >"${report}"
+  [[ "${status}" -eq 0 ]] || campaign_fail INSTRUMENT VerifyWovenClasses \
+    "${report}" "$(grep -m 1 -E \
+      '^(UNVERIFIABLE|VERIFY_WOVEN_CLASSES_REFUSED)' "${report}" \
+      || echo 'the verifier gate failed without naming a class')"
+  campaign_log "$(head -n 1 "${report}")"
 }
 
 # One fresh workload instance, through the configured adapter. The adapter owns
