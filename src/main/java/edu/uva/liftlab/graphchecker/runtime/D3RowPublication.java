@@ -123,28 +123,55 @@ final class D3RowPublication {
      */
     private static void roots(ActiveRegion active,
                               OccurrenceAddress occurrence) {
+        Set<String> stated = new LinkedHashSet<String>();
         for (JsonObject row : active.symbolizedRows) {
             String symbol = vmSymbol(row);
             if (symbol.isEmpty()) continue;
+            stated.add(optionalString(row, "portId"));
             String sourceId = optionalString(row, "sourceId");
-            String clock = optionalString(row, "declaredCallee");
-            String javaType = optionalString(row, "javaType");
-            boolean marker = "Z".equals(javaType)
-                    || "boolean".equals(javaType);
-            if (sourceId.isEmpty() && clock.isEmpty() && !marker) {
+            // The kind is read off the declaration, once
+            // (see #kindOf): a configured source states no javaType of its
+            // own and carries it on the symbol it minted, which is why a
+            // declared boolean root read INTEGRAL while the composer looked
+            // for a range with two values in it.
+            RootKind kind = kindOf(row);
+            if (sourceId.isEmpty() && kind == RootKind.INTEGRAL) {
                 placeholder(occurrence, row, symbol);
                 continue;
             }
             String rootId = sourceId.isEmpty()
                     ? optionalString(row, "portId") : sourceId;
-            RootKind kind = clock.isEmpty()
-                    ? (marker ? RootKind.MARKER : RootKind.INTEGRAL)
-                    : RootKind.CLOCK;
             D3Runtime.rootMint(occurrence,
                     optionalLongInteger(row, "eventSeq", 0L), rootId, symbol,
                     kind, literal(optionalString(row, "recordedValue")),
                     optionalString(row, "domainMin"),
                     optionalString(row, "domainMax"), true);
+        }
+        refusedDeclarations(active, occurrence, stated);
+    }
+
+    /**
+     * Every declared region input this activation never symbolized.
+     *
+     * <p>A declaration the replay silently does not reach is the one
+     * failure mode that reads downstream as "this branch is concrete":
+     * hdfs-17960's empty phi was exactly that, a declared read that neither
+     * minted nor refused.  The row names the port so the absence is
+     * answerable from the session rather than from a replay trace.</p>
+     */
+    private static void refusedDeclarations(ActiveRegion active,
+                                            OccurrenceAddress occurrence,
+                                            Set<String> stated) {
+        for (ConcolicRegionRuntime.SymbolizeAction action
+                : active.activation.symbolize) {
+            if (!action.declaredSymbolicRoot
+                    || stated.contains(action.symbol)) {
+                continue;
+            }
+            D3Runtime.gap(GapKind.DECLARATION_MISSING, GapClass.DIAGNOSTIC,
+                    action.symbol, "a declared region input was never"
+                            + " symbolized in this activation: site="
+                            + action.siteId + " cell=" + action.cell);
         }
     }
 
@@ -159,7 +186,23 @@ final class D3RowPublication {
     private static void placeholder(OccurrenceAddress occurrence,
                                     JsonObject row, String symbol) {
         String signature = optionalString(row, "fieldSignature");
-        LocationId location = fieldLocation(signature);
+        // The write log spells a location the VM's way -- owner rid, slot
+        // offset -- so when the mint's own expression carries the read the
+        // VM resolved, that is the spelling the row states and the two
+        // sides of one location join.  Naming the Java field signature
+        // instead left the read saying AtomicInteger#value while every
+        // write of it said INSTANCE_FIELD/<rid>#<offset>, and the composer
+        // had a placeholder with no writer.
+        JsonObject read = nestedRead(row.get("expression"), 0);
+        String locationKey = read == null ? ""
+                : locationKey(object(read, "location"));
+        LocationId location = location(locationKey);
+        long observed = location == null ? ReadRow.UNKNOWN_VERSION
+                : versionOf(read);
+        if (location == null) {
+            locationKey = signature;
+            location = fieldLocation(signature);
+        }
         if (location == null) {
             D3Runtime.gap(GapKind.DECLARATION_MISSING, GapClass.DIAGNOSTIC,
                     symbol, "a declared region input states no field to"
@@ -168,7 +211,7 @@ final class D3RowPublication {
         }
         String value = optionalString(row, "observedValue");
         if (value.isEmpty()) value = optionalString(row, "recordedValue");
-        if (literal(value).isEmpty()) {
+        if (observed < 0L && literal(value).isEmpty()) {
             D3Runtime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
                     symbol, "a declared region input states no value it"
                             + " read: " + optionalString(row, "portId"));
@@ -176,8 +219,8 @@ final class D3RowPublication {
         }
         D3Runtime.read(occurrence,
                 optionalLongInteger(row, "eventSeq", 0L),
-                Endpoint.stateSite(signature, "PLACEHOLDER", 0, false),
-                location, ReadRow.UNKNOWN_VERSION, symbol,
+                Endpoint.stateSite(locationKey, "PLACEHOLDER", 0, false),
+                location, observed, symbol,
                 javaDescriptor(optionalString(row, "javaType")),
                 literal(value));
     }
