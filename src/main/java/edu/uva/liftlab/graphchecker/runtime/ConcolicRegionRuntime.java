@@ -2195,23 +2195,62 @@ public final class ConcolicRegionRuntime {
     }
 
     /**
-     * Writes the value the wave assigned this root, at its mint.
+     * The value the wave asks of this root at its mint, or {@code ""}.
      *
-     * <p>Only on the focused occurrence: an obligation's assignment is a
-     * counterfactual about ONE region's roots, and writing it into a region
+     * <p>One decision for every mint, whatever the mint writes into.  Only
+     * on the focused occurrence: an obligation's assignment is a
+     * counterfactual about ONE region's roots, and applying it in a region
      * that merely runs alongside would make the run state something the
      * obligation never asked.</p>
+     *
+     * <p>A clock is stated as a SKEW rather than a value, because every
+     * execution reads a clock fresh: the focus row says how far off the
+     * reading is to be and this adds it to {@code observed}, the instant
+     * this run actually read.  Pinning a replay to the recording's instant
+     * is what left eleven of bug3's twelve paths unsatisfiable at every
+     * valuation.</p>
+     */
+    private static String focusedRootValue(ActiveRegion active,
+                                           String rootId, Object observed) {
+        if (active == null || active.d3Address == null) return "";
+        if (!edu.uva.liftlab.graphchecker.runtime.FocusedReplay
+                .focused(active.d3Address)) {
+            return "";
+        }
+        Long skew = edu.uva.liftlab.graphchecker.runtime.FocusedReplay
+                .clockSkew(rootId);
+        if (skew == null) {
+            return edu.uva.liftlab.graphchecker.runtime.FocusedReplay
+                    .rootAssignment(rootId);
+        }
+        Long reading = readingOf(observed);
+        if (reading == null) {
+            RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind
+                            .UNPRODUCIBLE_ANSWER,
+                    edu.uva.liftlab.graphchecker.contract.GapClass
+                            .BLOCKING, rootId,
+                    "the wave states a skew for this clock and the mint read"
+                            + " no instant to add it to");
+            return "";
+        }
+        return Long.toString(reading.longValue() + skew.longValue());
+    }
+
+    /** One integral reading, or null when the value is not one. */
+    private static Long readingOf(Object value) {
+        return value instanceof Number && !(value instanceof Float)
+                && !(value instanceof Double)
+                ? Long.valueOf(((Number) value).longValue()) : null;
+    }
+
+    /**
+     * Writes that value into the declared field the mint stands on.
      */
     private static boolean applyFocusedRootAssignment(
             ActiveRegion active, String sourceId, Object owner,
             String fieldSignature, String descriptor) {
-        if (active == null || active.d3Address == null) return false;
-        if (!edu.uva.liftlab.graphchecker.runtime.FocusedReplay
-                .focused(active.d3Address)) {
-            return false;
-        }
-        String value = edu.uva.liftlab.graphchecker.runtime.FocusedReplay
-                .rootAssignment(sourceId);
+        String value = focusedRootValue(active, sourceId,
+                readExactField(owner, fieldSignature));
         if (value.isEmpty()) return false;
         if (!active.mintIsPlaceable(owner)) return false;
         if (writeModeledField(owner, fieldSignature, descriptor, value)) {
@@ -2226,7 +2265,6 @@ public final class ConcolicRegionRuntime {
         return false;
     }
 
-    /** One value the wave stated, as the assignment the writer takes. */
     /** The declared site of {@code portId} in this occurrence's plan. */
     /**
      * The declared site of {@code portId}, whoever is running.
@@ -4064,7 +4102,30 @@ public final class ConcolicRegionRuntime {
                 action.symbol, exactPath, fieldSignature)) {
             return concrete;
         }
-        Object fresh = freshPrimitiveBox(concrete);
+        // The wave's value reaches a manual root here, because the cell a
+        // manual mint stands on IS the box the region reads back -- the
+        // same decision the declared field's writer takes
+        // (#focusedRootValue), so a clock's skew applies wherever the clock
+        // is read and not only where a configured source happens to be.
+        String assigned = focusedRootValue(active, action.symbol, concrete);
+        Object planted = concrete;
+        if (!assigned.isEmpty()) {
+            Object modeled = coerceModelValue("", assigned,
+                    concrete == null ? null : concrete.getClass());
+            if (modeled == null
+                    || modeled == UnsupportedReplayValue.INSTANCE) {
+                RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind
+                                .UNPRODUCIBLE_ANSWER,
+                        edu.uva.liftlab.graphchecker.contract.GapClass
+                                .BLOCKING, action.symbol,
+                        "the wave's value for this root could not be read as"
+                                + " the type the mint reads");
+                assigned = "";
+            } else {
+                planted = modeled;
+            }
+        }
+        Object fresh = freshPrimitiveBox(planted);
         try {
             api.symbolizeField(fresh, "value", manualMintLabel(action.symbol,
                     active.activation.occurrenceId, true));
@@ -4072,7 +4133,10 @@ public final class ConcolicRegionRuntime {
             JsonElement expression = primitiveBoxExpression(api, fresh);
             active.recordManualSymbolization(action, action.symbol,
                     exactPath, fieldSignature, expression, true, false,
-                    recordedScalar(concrete));
+                    // A replay that planted the wave's value read the wave's
+                    // value back, and publishing that as "recorded" is how a
+                    // counterfactual becomes the recording.
+                    assigned.isEmpty() ? recordedScalar(concrete) : "");
             return fresh;
         } catch (Throwable throwable) {
             return concrete;

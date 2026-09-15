@@ -60,6 +60,8 @@ public class ManualMintStatesItsValueTest {
         opened.forEach(ConcolicRegionRuntime.ACTIVE::remove);
         opened.clear();
         RuntimeTraceContext.resetForTests();
+        System.clearProperty(FocusedReplay.PLAN_PROPERTY);
+        FocusedReplay.resetForTests();
     }
 
     /**
@@ -94,6 +96,59 @@ public class ManualMintStatesItsValueTest {
                 "1789358343989", clock.get("recordedValue").getAsString());
         assertEquals("and this execution's own instant, beside it",
                 "1789358344655", clock.get("observedValue").getAsString());
+
+        // What the wave asks of a clock is a SKEW, and the mint applies it
+        // to the instant THIS run read: a model is an instant of the
+        // recording's window, and writing it absolutely would rewind the
+        // clock to an epoch no replay reads.  An ordinary root keeps its
+        // absolute value, and both come out of one decision.
+        focusRow("{\"taskId\":\"TASK.1\",\"obligationId\":\"OBL.1\","
+                + "\"pathId\":\"PATH.1\",\"seedSessionId\":\"s-seed\","
+                + "\"focused\":\"" + PLANNED_ADDRESS + "\","
+                + "\"flip\":{\"siteId\":\"Arrival#u8\",\"ordinal\":1,"
+                + "\"outcome\":true},"
+                + "\"rootAssignments\":{\"CASE.SERIAL\":\"12\"},"
+                + "\"clockDeltas\":{\"CASE.NOW\":\"-4200\"},"
+                + "\"answers\":{},\"unproducible\":[]}");
+        ConcolicRegionRuntime.ActiveRegion focused = manualRegion();
+        focused.d3Address = edu.uva.liftlab.graphchecker.contract
+                .OccurrenceAddress.parse(PLANNED_ADDRESS);
+        assertEquals("the skew moves this replay's own reading",
+                "1789358340455",
+                focusedRootValue(focused, "CASE.NOW",
+                        Long.valueOf(1789358344655L)));
+        assertEquals("a value is a value", "12",
+                focusedRootValue(focused, "CASE.SERIAL", Long.valueOf(7L)));
+        assertEquals("nothing was asked of this root", "",
+                focusedRootValue(focused, "CASE.OTHER", Long.valueOf(7L)));
+    }
+
+    /** The rendered v3 address the focus row names and the region carries. */
+    private static final String PLANNED_ADDRESS =
+            "hdfs/nn0#epoch1/region/" + MANUAL_REGION
+                    + "/ctx:Root:CLIENT#1/idx:";
+
+    /** Writes one focus row where this replay looks for it. */
+    private void focusRow(String row) throws Exception {
+        java.nio.file.Path dir = java.nio.file.Files.createTempDirectory(
+                "causynth-focus");
+        java.nio.file.Files.write(dir.resolve(FocusedReplay.FOCUS_FILE),
+                (row + System.lineSeparator()).getBytes("UTF-8"));
+        System.setProperty(FocusedReplay.PLAN_PROPERTY,
+                dir.resolve("execution_task_plan.jsonl").toString());
+        FocusedReplay.resetForTests();
+    }
+
+    /** The one decision every mint takes about the wave's value. */
+    private static String focusedRootValue(
+            ConcolicRegionRuntime.ActiveRegion active, String rootId,
+            Object observed) throws Exception {
+        Method value = ConcolicRegionRuntime.class.getDeclaredMethod(
+                "focusedRootValue",
+                ConcolicRegionRuntime.ActiveRegion.class, String.class,
+                Object.class);
+        value.setAccessible(true);
+        return (String) value.invoke(null, active, rootId, observed);
     }
 
     /**

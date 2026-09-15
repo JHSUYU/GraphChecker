@@ -96,11 +96,23 @@ final class FlipQuery {
         final List<Control> controls;
         /** query variable -> the root it stands for, for the model read-back. */
         final Map<String, String> rootVariables;
+        /**
+         * The same, for the clocks of the path this obligation is about.
+         *
+         * <p>Apart from {@link #rootVariables} because a clock's model is a
+         * counterfactual about a SKEW: every execution reads a clock fresh,
+         * so the value a model hands back is an instant of the recording's
+         * window and the replay's own instant is a different one.  The focus
+         * row therefore states the difference and the replay adds it to what
+         * it reads.</p>
+         */
+        final Map<String, String> clockVariables;
         final List<GapRow> gaps;
 
         private Built(String smt2, List<String> modelSymbols, String refusal,
                       DecisionRow flipped,
                       List<Control> controls, Map<String, String> rootVariables,
+                      Map<String, String> clockVariables,
                       List<GapRow> gaps) {
             this.smt2 = smt2;
             this.modelSymbols =
@@ -110,6 +122,8 @@ final class FlipQuery {
             this.controls = Collections.unmodifiableList(controls);
             this.rootVariables =
                     Collections.unmodifiableMap(rootVariables);
+            this.clockVariables =
+                    Collections.unmodifiableMap(clockVariables);
             this.gaps = Collections.unmodifiableList(gaps);
         }
 
@@ -230,6 +244,8 @@ final class FlipQuery {
                 new LinkedHashMap<String, List<Choice>>();
         private final Map<String, String> rootVariables =
                 new LinkedHashMap<String, String>();
+        private final Map<String, String> clockVariables =
+                new LinkedHashMap<String, String>();
         /** Sessions whose lowering this query's terms are written in. */
         private final Set<String> lowered = new LinkedHashSet<String>();
         /** session|symbol the query bound to a variable of its own. */
@@ -291,7 +307,7 @@ final class FlipQuery {
                 return new Built("", Collections.<String>emptyList(),
                         refusal, flipped,
                         new ArrayList<Control>(controls.values()),
-                        rootVariables, gaps);
+                        rootVariables, clockVariables, gaps);
             }
             String free = unbound();
             if (!free.isEmpty()) {
@@ -306,7 +322,7 @@ final class FlipQuery {
             return new Built(render(flipped, flipIndex),
                     new ArrayList<String>(sorts.keySet()), "", flipped,
                     new ArrayList<Control>(controls.values()), rootVariables,
-                    gaps);
+                    clockVariables, gaps);
         }
 
         /**
@@ -379,6 +395,13 @@ final class FlipQuery {
             RootMintRow own = corpus.rootOf(path.sessionId, minted.rootId());
             RootMintRow row = own == null ? minted : own;
             if (row.kind() == RootKind.CLOCK) {
+                // One variable per session (see #variable), so only the
+                // reading of the path being flipped is one the replay of
+                // that path reads -- another session's clock is another
+                // execution's instant and no replay can be held to it.
+                if (minted.sessionId().equals(path.sessionId)) {
+                    clockVariables.put(variable, row.rootId());
+                }
                 assertions.add("(>= " + variable + " 0)");
                 return;
             }
@@ -837,7 +860,7 @@ final class FlipQuery {
             return new Built("", Collections.<String>emptyList(),
                     kind.name() + ":" + subject, flipped,
                     new ArrayList<Control>(controls.values()), rootVariables,
-                    gaps);
+                    clockVariables, gaps);
         }
 
         private String render(DecisionRow flipped, int flipIndex) {
