@@ -46,8 +46,6 @@ public final class SessionPublisher {
             new LinkedHashMap<String, SessionPublisher>();
     /** Results of the obligations this replay was handed. */
     public static final String OBLIGATION_RESULTS = "obligations.jsonl";
-    /** Roots whose declared domain resolved to absolute bounds. */
-    public static final String ROOT_DOMAINS = "root-domains.jsonl";
 
     private final SessionDir layout;
     private final Map<String, BufferedWriter> writers =
@@ -137,17 +135,14 @@ public final class SessionPublisher {
     /**
      * One root, and its domain when the declaration resolved one.
      *
-     * <p>{@code root-domains.jsonl} carries the same row for the roots that
-     * have absolute bounds, so a composer reading domains never parses the
-     * mint log to find them.</p>
+     * <p>One row, in {@code roots.jsonl}.  The domains a composer reads are
+     * the CASE's declaration ({@code --root-domains}, which
+     * {@code explore.Corpus} opens); a second per-session copy of the mint
+     * row was a write-only artifact and a second spelling of it.</p>
      */
     public void rootMint(RootMintRow row) {
-        if (row == null) return;
-        JsonObject json = RowCodec.writeRootMint(row);
-        append(layout.roots(), json);
-        if (!row.pinned()) {
-            append(layout.dir().resolve(ROOT_DOMAINS), json);
-        }
+        if (row != null) append(layout.roots(),
+                RowCodec.writeRootMint(row));
     }
 
     public void target(TargetRow row) {

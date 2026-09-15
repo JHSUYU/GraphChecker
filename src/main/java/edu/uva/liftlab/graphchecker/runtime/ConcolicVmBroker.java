@@ -89,7 +89,6 @@ final class ConcolicVmBroker {
     private Method symbolizeField;
     private Method symbolizeExactField;
     private Method observeExactPrimitiveField;
-    private Method sharedFieldVersions;
     private Method getExpression;
     private Method getFieldExpression;
     private Method finishRegion;
@@ -364,8 +363,6 @@ final class ConcolicVmBroker {
         api.observeExactPrimitiveField = method(system,
                 "observeExactPrimitiveField", Object.class, String.class,
                 String.class, String.class);
-        api.sharedFieldVersions = method(system, "getSharedFieldVersions",
-                Object.class, String.class, String.class, String.class);
         api.getExpression = method(system, "getSymbolicExpression",
                 Object.class);
         api.getFieldExpression = method(system,

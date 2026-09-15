@@ -16,7 +16,6 @@ import java.util.concurrent.atomic.AtomicLong;
 
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.ACTIVE;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.HALT_AFTER_SELECTED_RESULT_PROPERTY;
-import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.diagAfterVmClose;
 import static edu.uva.liftlab.graphchecker.runtime.SharedStateCapture.assembleRecordedSharedState;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.rootCause;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicTaskPlan.configuration;
@@ -268,9 +267,7 @@ final class ConcolicResultPublisher {
             return true;
         } catch (RejectedExecutionException rejected) {
             // Never run a large decode on the RPC owner as a rejection
-            // fallback.
-            diagAfterVmClose("RESULT_PUBLICATION_REJECTED",
-                    rootCause(rejected));
+            // fallback.  The row says what happened.
             taskUnanswered(active.activation, "RESULT_PUBLICATION_REJECTED: "
                     + "the row publication of a completed VM occurrence could"
                     + " not be enqueued: " + rootCause(rejected));
@@ -300,8 +297,6 @@ final class ConcolicResultPublisher {
             // failure is terminal because a later activation may have used
             // the reserved loop phase; silently rolling back would make its
             // identity false.
-            diagAfterVmClose("RESULT_PUBLICATION_FAILED",
-                    rootCause(failure));
             configuration().markOccurrenceClaimed(active.activation);
             try {
                 taskUnanswered(active.activation,
@@ -309,8 +304,12 @@ final class ConcolicResultPublisher {
                                 + " could not publish its rows: "
                                 + rootCause(failure));
             } catch (Throwable reportingFailure) {
-                diagAfterVmClose("RESULT_PUBLICATION_FAILURE_REPORT_FAILED",
-                        rootCause(reportingFailure));
+                // The last resort: the gap row itself could not be filed, so
+                // there is nowhere left to state this but stderr.
+                System.err.println("Causynth could not publish"
+                        + " TASK_UNANSWERED for "
+                        + active.activation.taskId + ": "
+                        + rootCause(reportingFailure));
             } finally {
                 haltWhenCampaignSettled(active.activation.taskId, 2);
             }

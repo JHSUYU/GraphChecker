@@ -6,10 +6,7 @@ import com.google.gson.JsonParser;
 import edu.uva.liftlab.graphchecker.smt.CanonicalJson;
 import edu.uva.liftlab.graphchecker.plan.ExecutionTask;
 import org.junit.After;
-import org.junit.Before;
 import org.junit.Test;
-import java.io.ByteArrayOutputStream;
-import java.io.PrintStream;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.ArrayDeque;
@@ -21,10 +18,10 @@ import static org.junit.Assert.assertFalse;
 
 /**
  * Characterization of the branch-observation machinery a region runs for one
- * decision: every row, target reach and diagnostic line it
- * writes down, for a binary branch and for the multiway switch answering the
- * same questions.  One implementation serves both, so these transcripts are
- * what "the same, parameterised by the decision" means.
+ * decision: every row and the target reach it writes down, for a binary
+ * branch and for the multiway switch answering the same questions.  One
+ * implementation serves both, so these transcripts are what "the same,
+ * parameterised by the decision" means.
  */
 public class BranchDecisionRecordingTest {
     private static final String METHOD = "<a.B: void run(int)>";
@@ -35,31 +32,16 @@ public class BranchDecisionRecordingTest {
     private static final String TARGET = SNAPSHOTS + "#u61";
     private static final String ELSEWHERE = SNAPSHOTS + "#u44";
 
-    /** The reach and the announcement, unchanged by the kind. */
+    /** The reach, unchanged by the kind. */
     private static final String REACH = "targetReach={\"kind\":\"TARGET_REACH_EVENT\","
             + "\"occurrence\":1,\"outcome\":true,\"siteId\":\""
             + DECLARED + "\"}\n"
-            + "returned=observation\n"
-            + "diag=TARGET_REACHED|token=900001 site=" + DECLARED + "#1\n";
+            + "returned=observation\n";
 
     private final Deque<Long> opened = new ArrayDeque<>();
-    private final ByteArrayOutputStream diagnostics =
-            new ByteArrayOutputStream();
-    private PrintStream systemError;
-
-    @Before
-    public void captureDiagnostics() throws Exception {
-        System.setProperty(ConcolicRegionRuntime.DIAGNOSTICS_PROPERTY, "true");
-        forgetCachedDiagnostics();
-        systemError = System.err;
-        System.setErr(new PrintStream(diagnostics, true, "UTF-8"));
-    }
 
     @After
     public void releaseRegions() throws Exception {
-        System.setErr(systemError);
-        System.clearProperty(ConcolicRegionRuntime.DIAGNOSTICS_PROPERTY);
-        forgetCachedDiagnostics();
         while (!opened.isEmpty()) {
             ConcolicRegionRuntime.ACTIVE.remove(opened.pop());
         }
@@ -208,23 +190,7 @@ public class BranchDecisionRecordingTest {
                         : CanonicalJson.render((JsonObject) reach))
                 .append("\nreturned=").append(returned == null ? "null"
                         : "observation").append('\n');
-        for (String line : diagnostic()) {
-            text.append("diag=").append(line).append('\n');
-        }
         return text.toString();
-    }
-
-    /** What this scenario logged: EVENT|detail, without the clock fields. */
-    private String[] diagnostic() throws Exception {
-        String text = new String(diagnostics.toByteArray(), "UTF-8");
-        diagnostics.reset();
-        if (text.isEmpty()) return new String[0];
-        String[] lines = text.split("\n");
-        for (int index = 0; index < lines.length; index++) {
-            String[] parts = lines[index].split("\\|", 6);
-            if (parts.length == 6) lines[index] = parts[4] + "|" + parts[5];
-        }
-        return lines;
     }
 
     private static Object binary(boolean outcome) throws Exception {
@@ -256,13 +222,6 @@ public class BranchDecisionRecordingTest {
         Field field = owner.getClass().getDeclaredField(name);
         field.setAccessible(true);
         return field.get(owner);
-    }
-
-    private static void forgetCachedDiagnostics() throws Exception {
-        Field cached = ConcolicRegionRuntime.class
-                .getDeclaredField("diagnostics");
-        cached.setAccessible(true);
-        cached.set(null, null);
     }
 
     @SuppressWarnings("unchecked")

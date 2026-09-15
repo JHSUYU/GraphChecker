@@ -11,7 +11,6 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
-import com.google.gson.JsonPrimitive;
 import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
 import edu.uva.liftlab.graphchecker.plan.BranchPredicateAlgebra;
 import edu.uva.liftlab.graphchecker.plan.BranchWitness;
@@ -35,7 +34,6 @@ import edu.uva.liftlab.graphchecker.runtime.Interactions;
 import edu.uva.liftlab.graphchecker.plan.SiteId;
 import edu.uva.liftlab.graphchecker.runtime.ConcolicTaskPlan.RuntimeTask;
 import edu.uva.liftlab.graphchecker.runtime.SharedStateCapture.RawSharedStateReadOut;
-import edu.uva.liftlab.graphchecker.runtime.SharedStateCapture.SharedStateResult;
 import java.lang.reflect.Array;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
@@ -46,8 +44,6 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Deque;
-import java.util.HashMap;
-import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -115,10 +111,6 @@ public final class ConcolicRegionRuntime {
     private static final AtomicLong EVIDENCE_SNAPSHOTS = new AtomicLong();
     static final String HALT_AFTER_SELECTED_RESULT_PROPERTY =
             "causynth.concolic.halt.after.selected.result";
-    /** Emits one line per replay milestone to stderr. */
-    static final String DIAGNOSTICS_PROPERTY =
-            "causynth.concolic.diagnostics";
-    private static volatile Boolean diagnostics;
     static final Map<Long, ActiveRegion> ACTIVE = new ConcurrentHashMap<>();
     /**
      * Selected activations on this Java thread, innermost first.
@@ -392,7 +384,6 @@ public final class ConcolicRegionRuntime {
     /** Publishes the bounded prefix and detaches symbolic observation. */
     private static void endAtCut(ActiveRegion active, Error cut) {
         if (cut == null) return;
-        diag("REGION_CUT", cut.toString());
         finish(active.token, "CUT", "", null);
     }
 
@@ -737,12 +728,6 @@ public final class ConcolicRegionRuntime {
                 observeCausalSource(context.source.key());
             }
             prepare(active);
-            diag("REGION_START", "token=" + active.token
-                    + " task=" + safe(admitted.taskId)
-                    + " source=" + safe(admitted.sourceKey)
-                    + " region=" + safe(admitted.regionId)
-                    + " journal=" + active.vmRegionEnterEventId
-                    + " clock=" + api.currentEventId());
             api.resumePathCondition();
             pathConditionPaused = false;
             return active;
@@ -1197,8 +1182,6 @@ public final class ConcolicRegionRuntime {
         if (active == null) {
             // Outside every replayed region: no activation is claiming
             // anything about this firing, so there is no ledger to refuse.
-            diag(FAULT_IDLE_UNANSWERED, "marker=" + safe(name)
-                    + " reason=NO_ACTIVE_REGION");
             return false;
         }
         int occurrence = active.materializationOccurrences.explicitFault(
@@ -1366,8 +1349,6 @@ public final class ConcolicRegionRuntime {
         try {
             engine().observeExactPrimitiveField(receiver, fieldSignature);
             ensurePathRecordingStarted(active);
-            diag("DECLARED_WRITE_OBSERVED", safe(siteId) + " "
-                    + safe(fieldSignature));
         } catch (Throwable failure) {
         }
     }
@@ -2861,7 +2842,7 @@ public final class ConcolicRegionRuntime {
 
     /** Reports every refused broker call to the diagnostic trace. */
     private static HandoffResult record(HandoffResult result) {
-        if (!result.ok()) diag("VM_HANDOFF_REFUSED", result.toString());
+
         return result;
     }
 
@@ -3223,18 +3204,11 @@ public final class ConcolicRegionRuntime {
         boolean exactRange = !noVmCondition
                 && contiguousConditionIndices(eventConditionIndices);
         PathConditionWindow.Read read = PathConditionWindow.forEvent(
-                active.expressionStore, api, eventConditionIndices,
-                (start, end) -> diag("PC_READ_BEGIN", siteId + " occ="
-                        + occurrence + " range=[" + start + "," + end + ")"));
+                active.expressionStore, api, eventConditionIndices);
         PathConditionWindow conditions = read.conditions;
         int rawPathConditionSize = exactRange ? conditions.size() : baseline;
         int attestationBaseline = noVmCondition ? 0 : baseline;
         if (exactRange) {
-            diag("PC_READ_END", siteId + " occ=" + occurrence
-                    + " chars=" + read.chars + " source=" + read.source);
-            diag("PC_PARSED", siteId + " occ=" + occurrence
-                    + " conditions=" + rawPathConditionSize
-                    + " mode=" + conditions.mode());
         }
         VmBranchEventAttestation vmAttestation = attestVmBranchEvent(api,
                 active, siteId, expression, observedOutcome, vmEventId,
@@ -3349,11 +3323,8 @@ public final class ConcolicRegionRuntime {
                 vmEventConditionIndices(events, vmEventId);
         boolean noVmCondition = eventConditionIndices != null
                 && eventConditionIndices.isEmpty();
-        // The switch hook does not trace the range it is about to read.
         PathConditionWindow.Read read = PathConditionWindow.forEvent(
-                active.expressionStore, api, eventConditionIndices, null);
-        diag("PC_READ_END", siteId + " occ=" + occurrence
-                + " chars=" + read.chars + " source=" + read.source);
+                active.expressionStore, api, eventConditionIndices);
         PathConditionWindow conditions = read.conditions;
         VmBranchEventAttestation attestation = attestVmBranchEvent(api,
                 active, siteId, expression, expected.caseArm(), vmEventId,
@@ -3727,10 +3698,6 @@ public final class ConcolicRegionRuntime {
                 if (scope != null && scope.regionToken == active.token) {
                     CURRENT_ACCESSOR_CALL_CONTEXT.remove();
                 }
-                diag("REGION_FINISH", "token=" + active.token
-                        + " task=" + safe(active.activation.taskId)
-                        + " source=" + active.attributedSourceKeys()
-                        + " exit=" + safe(exitKind));
                 active.exitKind = safe(exitKind);
                 active.exceptionType = safe(exceptionType);
                 active.exitThrowable = throwable;
@@ -4264,10 +4231,6 @@ public final class ConcolicRegionRuntime {
     private static boolean observeCutPortWithoutMinting(
             ActiveRegion active, SymbolizeAction action) {
         if (!declaredCommunicationCutPort(action)) return false;
-        diag(DECLARED_CUT_PORT_MINT_REFUSED, "port="
-                + safe(action.symbol) + " occurrence="
-                + (active == null ? ""
-                : safe(active.activation.occurrenceId)));
         ensurePathRecordingStarted(active);
         return true;
     }
@@ -4802,64 +4765,7 @@ public final class ConcolicRegionRuntime {
     }
 
 
-    private static boolean diagnosticsEnabled() {
-        Boolean cached = diagnostics;
-        if (cached != null) return cached;
-        boolean enabled;
-        try {
-            enabled = Boolean.parseBoolean(
-                    safe(System.getProperty(DIAGNOSTICS_PROPERTY)));
-        } catch (Throwable ignored) {
-            enabled = false;
-        }
-        diagnostics = enabled;
-        return enabled;
-    }
 
-    /**
-     * Writes one diagnostic line with path-condition recording paused, so the
-     * trace can never manufacture a condition of the program under test.
-     */
-    static void diag(String event, String detail) {
-        if (!diagnosticsEnabled()) return;
-        ConcolicVmBroker api = engine();
-        boolean paused = false;
-        try {
-            api.pausePathCondition();
-            paused = true;
-        } catch (Throwable ignored) {
-            // A missing engine still leaves the line worth printing.
-        }
-        try {
-            diagLine(event, detail);
-        } finally {
-            if (paused) {
-                try {
-                    api.resumePathCondition();
-                } catch (Throwable ignored) {
-                    // Resume failure is already reported by the real hooks.
-                }
-            }
-        }
-    }
-
-    /** Diagnostic for daemon publication, where no VM context may be called. */
-    static void diagAfterVmClose(String event, String detail) {
-        if (diagnosticsEnabled()) diagLine(event, detail);
-    }
-
-    /** The line itself, which never fails the replay or the publication. */
-    private static void diagLine(String event, String detail) {
-        try {
-            System.err.println("CAUSYNTH-DIAG|"
-                    + System.currentTimeMillis() + "|t"
-                    + Thread.currentThread().getId() + "|heapMB"
-                    + (Runtime.getRuntime().totalMemory()
-                    - Runtime.getRuntime().freeMemory()) / 1048576L + "|"
-                    + safe(event) + "|" + safe(detail));
-        } catch (Throwable ignored) {
-        }
-    }
 
 
     static JsonElement parseJson(String value) {
@@ -5583,9 +5489,6 @@ public final class ConcolicRegionRuntime {
                             decision.outcome);
             boolean contradicted = edu.uva.liftlab.graphchecker.runtime
                     .FocusedReplay.contradicted(d3Address);
-            diag("REPLAY_OBSERVE", siteId + " occ=" + occurrence
-                    + decision.replayTrace(!contradicted)
-                    + " contradicted=" + contradicted);
             if (contradicted) {
             }
             return !contradicted;
@@ -5643,8 +5546,6 @@ public final class ConcolicRegionRuntime {
             // composer can say which of them were taken before it.
             if (vmEventId > 0L) reach.addProperty("vmEventId", vmEventId);
             targetReach = reach;
-            diag("TARGET_REACHED", "token=" + token + " site=" + safe(siteId)
-                    + "#" + occurrence);
         }
 
         /**
@@ -5668,17 +5569,12 @@ public final class ConcolicRegionRuntime {
          */
         void noteRecordedFaultAnswer(String name, int occurrence,
                                      boolean recorded) {
-            diag(RECORDED_FAULT_ANSWER, "marker=" + safe(name) + "#"
-                    + occurrence + " recorded=" + recorded
-                    + " occurrence=" + safe(activation.occurrenceId));
         }
 
         void noteFaultIdle(String name, int occurrence, boolean controlled,
                            String reason) {
             String subject = "marker=" + safe(name) + "#" + occurrence
                     + " reason=" + safe(reason);
-            diag(FAULT_IDLE_UNANSWERED, subject + " controlled=" + controlled
-                    + " occurrence=" + safe(activation.occurrenceId));
             if (controlled) {
             }
         }

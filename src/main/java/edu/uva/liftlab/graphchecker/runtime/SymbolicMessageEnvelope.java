@@ -194,17 +194,6 @@ public final class SymbolicMessageEnvelope {
     }
 
     /**
-     * Observes the element this port would take next, without taking it.
-     * Admission uses the concrete message's producer occurrence before the
-     * selected region starts; the attach hook remains the sole consumer.
-     */
-    public static Entry peek(String portId) {
-        Inbound message = INBOUND.get();
-        if (message == null || empty(portId)) return Entry.MISSING;
-        return message.at(portId, message.nextOrdinal(portId));
-    }
-
-    /**
      * Takes the element of this message this port is decoding next.
      *
      * <p>The lookup is by ordinal, not by position: an element already
@@ -215,12 +204,6 @@ public final class SymbolicMessageEnvelope {
         Inbound message = INBOUND.get();
         if (message == null || empty(portId)) return Entry.MISSING;
         return message.take(portId);
-    }
-
-    /** Elements of the current message no decode has looked up. */
-    public static int inboundUnattached() {
-        Inbound message = INBOUND.get();
-        return message == null ? 0 : message.unattached();
     }
 
     /**
@@ -269,18 +252,6 @@ public final class SymbolicMessageEnvelope {
             return ordinal == null ? 0 : ordinal;
         }
 
-        Entry at(String portId, int ordinal) {
-            int frame = frame();
-            for (int index = 0; index < entries.size(); index++) {
-                Entry entry = entries.get(index);
-                if (entry.frame == frame && entry.ordinal == ordinal
-                        && portId.equals(entry.portId)) {
-                    return entry;
-                }
-            }
-            return Entry.MISSING;
-        }
-
         Entry take(String portId) {
             int frame = frame();
             int ordinal = nextOrdinal(portId);
@@ -294,14 +265,6 @@ public final class SymbolicMessageEnvelope {
                 return entry;
             }
             return Entry.MISSING;
-        }
-
-        int unattached() {
-            int left = 0;
-            for (boolean taken : lookedUp) {
-                if (!taken) left++;
-            }
-            return left;
         }
 
         /** Marks every element nothing looked up; each is seen once. */
