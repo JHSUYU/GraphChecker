@@ -248,6 +248,10 @@ public:
   std::string get_current_code_pos();
 
 public:
+  /** This object's session identity, naming it if it has none; never
+   *  makes it symbolic.  See SessionSymbolicHeap::name_reference. */
+  sym_rid_t name_reference(oop obj);
+
   SymInstance *get_or_alloc_sym_inst(oop obj);
   SymInstance *alloc_sym_inst(oop obj);
   inline SymInstance *get_sym_inst(oop obj) {

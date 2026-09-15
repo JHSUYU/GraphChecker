@@ -18,6 +18,24 @@
 // separate small cap.
 typedef ulong sym_rid_t;
 
+// The id word's top bit says the object has been *named* and nothing more.
+//
+// A recording states the identity of what a reference read returned, and an
+// object it had to name that way needs a session identity to be named by.
+// Naming is not a claim that anything about the object is symbolic: a named
+// object has an id, no shadow, and `is_symbolic() == false`, so every gate
+// that asks whether to run symbolic machinery -- which loads become container
+// reads, which values propagate, which path conditions exist -- keeps
+// answering exactly what it answered before the object was named.
+//
+// The id itself is the remaining bits and is never rewritten, so an object
+// that is named first and becomes symbolic later keeps one id, and therefore
+// one identity spelling, for the whole session; the shadow allocators reuse
+// it and clear this bit.  It lives in the header rather than in a side map
+// because the lookup has to be one load on a bytecode path and has to survive
+// a GC that moves the object.
+#define SYM_RID_NAMED_ONLY (((sym_rid_t) 1) << (8 * sizeof(sym_rid_t) - 1))
+
 #define FIELD_INDEX_ARRAY_LENGTH -1
 
 typedef std::set<std::string> method_set_t;

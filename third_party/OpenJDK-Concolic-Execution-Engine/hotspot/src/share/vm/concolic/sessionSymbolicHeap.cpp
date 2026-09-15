@@ -51,6 +51,23 @@ sym_rid_t SessionSymbolicHeap::get_next_sym_rid() {
   return GlobalSymbolicSession::next_sym_rid();
 }
 
+sym_rid_t SessionSymbolicHeap::name_reference(oop obj) {
+  if (obj == NULL) return NULL_SYM_RID;
+  sym_rid_t existing = obj->get_sym_rid();
+  if (existing != NULL_SYM_RID) return existing;
+  // Minted outside the lock, as the shadow allocators do: next_sym_rid takes
+  // no engine lock, and an id lost to a race costs one id, not correctness.
+  sym_rid_t sym_rid = get_next_sym_rid();
+  HeapLock guard(this);
+  // Under the same lock the allocators publish a header id under, so a
+  // concurrent allocation either sees this id and reuses it or wins the race
+  // and this thread reads its id back here.
+  existing = obj->get_sym_rid();
+  if (existing != NULL_SYM_RID) return existing;
+  obj->set_named_sym_rid(sym_rid);
+  return sym_rid;
+}
+
 sym_rid_t SessionSymbolicHeap::canonical_container_id_locked(
     sym_rid_t id) const {
   ContainerOwnerStore::const_iterator owner = _container_owners.find(id);
@@ -290,7 +307,13 @@ SymInstance *SessionSymbolicHeap::alloc_sym_inst(oop obj) {
   // are session-scoped and monotone, so a lost race costs one id, not
   // correctness.
   // ---------------------------------------------------------------------
-  sym_rid_t sym_rid = get_next_sym_rid();
+  // An object this session already named keeps that id: the shadow published
+  // below adopts it and clears SYM_RID_NAMED_ONLY, so a reference read that
+  // stated this object's identity earlier and an owner projection that states
+  // it now are the same term.  A fresh id is minted only for an object no
+  // recording has named.
+  sym_rid_t sym_rid = obj->get_sym_rid();
+  if (sym_rid == NULL_SYM_RID) sym_rid = get_next_sym_rid();
   SymInstance *sym_inst = NULL;
   ResourceMark rm;
 
@@ -445,7 +468,9 @@ SymArr *SessionSymbolicHeap::alloc_sym_array(arrayOop array, Expression *length_
   // Same shape as alloc_sym_inst: build first, then publish under one lock
   // that covers both the header word and the store.  An array shadow needs no
   // GC root, so there is nothing to release on the losing path but the shadow.
-  sym_rid_t sym_rid = get_next_sym_rid();
+  // An array this session already named keeps that id, for the same reason.
+  sym_rid_t sym_rid = array->get_sym_rid();
+  if (sym_rid == NULL_SYM_RID) sym_rid = get_next_sym_rid();
 
   // if (length_exp == NULL) {
   //   length_exp = new ConExpression(array->length());

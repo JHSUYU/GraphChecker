@@ -423,7 +423,9 @@ int CppInterpreter::native_entry(Method* method, intptr_t UNUSED, TRAPS) {
       /**
        * This is where we check whether returned oop of native call are initialized with NULL_SYM_RID
        */
-      if (istate->oop_temp()->is_symbolic()) {
+      // Any id at all, named or symbolic: this guard is about a header word
+      // that holds something this session never minted.
+      if (istate->oop_temp()->is_named()) {
         if (!(istate->method()->name()->equals("Symbolize") ||
               istate->method()->name()->equals("invoke0"))) {
           sym_rid_t sym_rid = istate->oop_temp()->get_sym_rid();

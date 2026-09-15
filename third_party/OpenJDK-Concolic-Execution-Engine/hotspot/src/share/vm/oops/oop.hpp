@@ -76,9 +76,21 @@ private:
 
 public:
 #ifdef ENABLE_CONCOLIC
+  // Publishes a shadow's identity: this object is symbolic from here on.
+  // Writing the bare id also clears SYM_RID_NAMED_ONLY, which is how an
+  // object that was only named becomes symbolic without changing its id.
   void set_sym_rid(sym_rid_t sym_rid) { _sym_rid = sym_rid; }
-  sym_rid_t get_sym_rid() const { return _sym_rid; }
-  bool is_symbolic() const { return _sym_rid != NULL_SYM_RID; }
+  // Publishes an identity and nothing else; see SYM_RID_NAMED_ONLY.
+  void set_named_sym_rid(sym_rid_t sym_rid) {
+    _sym_rid = sym_rid | SYM_RID_NAMED_ONLY;
+  }
+  sym_rid_t get_sym_rid() const { return _sym_rid & ~SYM_RID_NAMED_ONLY; }
+  // Whether this object has a session identity at all -- named or symbolic.
+  bool is_named() const { return get_sym_rid() != NULL_SYM_RID; }
+  bool is_symbolic() const {
+    return _sym_rid != NULL_SYM_RID
+        && (_sym_rid & SYM_RID_NAMED_ONLY) == 0;
+  }
 #endif
 
   markOop mark() const { return _mark; }

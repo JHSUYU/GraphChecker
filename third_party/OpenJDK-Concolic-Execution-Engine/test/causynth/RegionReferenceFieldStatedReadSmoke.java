@@ -29,16 +29,33 @@ public final class RegionReferenceFieldStatedReadSmoke {
         final int tag;
         final Leaf leaf;
         final Leaf absent;
+        final int[] payload;
 
-        Node(int tag, Leaf leaf, Leaf absent) {
+        Node(int tag, Leaf leaf, Leaf absent, int[] payload) {
             this.tag = tag;
             this.leaf = leaf;
             this.absent = absent;
+            this.payload = payload;
         }
     }
 
+    private static final class Sink {
+        int total;
+    }
+
+    private static final int PAYLOAD_LENGTH = 4096;
+
+    private static int[] payload() {
+        int[] values = new int[PAYLOAD_LENGTH];
+        for (int index = 0; index < values.length; index++) {
+            values[index] = index;
+        }
+        return values;
+    }
+
     private static final class Input {
-        final Node[] nodes = {new Node(5, new Leaf(7), null)};
+        final Node[] nodes =
+                {new Node(5, new Leaf(7), null, payload())};
     }
 
     private static final String LEAF_DESCRIPTOR =
@@ -110,10 +127,80 @@ public final class RegionReferenceFieldStatedReadSmoke {
                 "{\"_type\":\"SymbolExpression\",\"_java_type\":\"\","
                 + "\"_exp\":\"N\"}"), nullRead);
 
+        namedReferentStaysConcrete(node);
+
         require(System.finishConcolicRegion().contains("\"complete\":true"),
                 "summary incomplete");
         System.out.println(
                 "CAUSYNTH_REGION_REFERENCE_FIELD_STATED_READ_SMOKE_OK");
+    }
+
+    /**
+     * A named referent is inert.
+     *
+     * <p>Stating the identity of what a reference read returned is a naming
+     * act.  It must not decide that the object is symbolic: its own element
+     * and field loads stay concrete, produce no expression, and record no
+     * path condition.  Naming used to allocate a shadow, and a shadow is
+     * what `CONCOLIC_ALOAD` gates on, so one named array-valued field put
+     * every element load of that array on the container path -- a state root,
+     * a position constraint and a path condition per load.  On 17960's seed
+     * that was 57 MB of expressions and 39 GB of RSS for a recording that had
+     * only been asked for a name.</p>
+     */
+    private static void namedReferentStaysConcrete(Node node) {
+        int[] payload = node.payload;
+        Leaf leaf = node.leaf;
+
+        // The reference read still states the identity, for an array in the
+        // spelling an array owner identity has.
+        String arrayRead = System.getSymbolicFieldExpression(node,
+                Node.class.getName(), "payload", "[I", payload);
+        require(arrayRead.contains("\"_java_type\":\"L\""), arrayRead);
+        require(referenced(arrayRead, "concreteValue").startsWith(
+                "{\"_type\":\"SymbolExpression\",\"_java_type\":\"L\","
+                + "\"_exp\":\"AL_"), arrayRead);
+
+        String before = System.getPathCondition();
+        int sum = 0;
+        for (int index = 0; index < payload.length; index++) {
+            sum += payload[index];
+        }
+        int identifier = leaf.id;
+        String after = System.getPathCondition();
+
+        require(sum == PAYLOAD_LENGTH * (PAYLOAD_LENGTH - 1) / 2,
+                "concrete element loads changed: " + sum);
+        require(identifier == 7, "concrete field load changed: "
+                + identifier);
+        // Byte-identical, which is the whole claim: these loads produced no
+        // expression, so there was nothing for them to record.
+        require(after.equals(before), PAYLOAD_LENGTH
+                + " element loads and one field load of named referents"
+                + " changed the path condition: " + before.length()
+                + " -> " + after.length() + " chars; " + after);
+
+        // Neither referent is symbolic, so neither has a container state or
+        // an object shadow to hand back.
+        String namedArray = System.getSymbolicExpression(payload);
+        require(namedArray.contains("\"symbolic\":false"), namedArray);
+        require(namedArray.contains("\"kind\":\"CONCRETE_OBJECT\""),
+                namedArray);
+        String namedObject = System.getSymbolicExpression(leaf);
+        require(namedObject.contains("\"symbolic\":false"), namedObject);
+        require(namedObject.contains("\"kind\":\"CONCRETE_OBJECT\""),
+                namedObject);
+
+        // And the values those loads produced carry no expression at all.
+        Sink sink = new Sink();
+        sink.total = sum + identifier;
+        String carried = System.getSymbolicFieldExpression(sink,
+                Sink.class.getName(), "total", "I",
+                Integer.valueOf(sink.total));
+        require(carried.contains("\"kind\":\"CONCRETE_PRIMITIVE\""),
+                carried);
+        require(!carried.contains("ContainerRelation"), carried);
+        require(!carried.contains("FieldAccessExpression"), carried);
     }
 
     /**
