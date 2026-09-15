@@ -281,9 +281,47 @@ final class D3RowPublication {
         if (!optionalString(row, "declaredCallee").isEmpty()) {
             return RootKind.CLOCK;
         }
-        String javaType = optionalString(row, "javaType");
+        String javaType = javaTypeOf(row);
         return "Z".equals(javaType) || "boolean".equals(javaType)
                 ? RootKind.MARKER : RootKind.INTEGRAL;
+    }
+
+    /**
+     * The Java type a mint row states, or the one its expression does.
+     *
+     * <p>A configured source mints through the VM's own label and states
+     * no type of its own; the symbol it minted carries it.  Without this
+     * a boolean configured root -- hdfs-17960's
+     * {@code HDFS.CONFIG.SNAPSHOT_DELETION_ORDERED} -- is published
+     * INTEGRAL, and a composer then looks for a range where there are two
+     * values.</p>
+     */
+    private static String javaTypeOf(JsonObject row) {
+        String stated = optionalString(row, "javaType");
+        return stated.isEmpty() ? symbolType(row.get("expression"), 0)
+                : stated;
+    }
+
+    /** The type of the first symbol leaf an expression states. */
+    private static String symbolType(JsonElement node, int depth) {
+        if (node == null || node.isJsonNull() || depth > 8) return "";
+        if (node.isJsonArray()) {
+            for (JsonElement element : node.getAsJsonArray()) {
+                String found = symbolType(element, depth + 1);
+                if (!found.isEmpty()) return found;
+            }
+            return "";
+        }
+        if (!node.isJsonObject()) return "";
+        JsonObject object = node.getAsJsonObject();
+        if (optionalString(object, "_type").contains("Symbol")) {
+            return optionalString(object, "_java_type");
+        }
+        for (Map.Entry<String, JsonElement> member : object.entrySet()) {
+            String found = symbolType(member.getValue(), depth + 1);
+            if (!found.isEmpty()) return found;
+        }
+        return "";
     }
 
     /**
