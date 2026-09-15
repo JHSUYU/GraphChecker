@@ -132,6 +132,9 @@ public final class CorpusIndex implements Arms.Rows {
     /** Endpoint id -> the occurrence it belongs to: the causal chain. */
     private final Map<String, OccurrenceAddress> occurrenceByEndpoint =
             new LinkedHashMap<String, OccurrenceAddress>();
+    /** session|endpoint -> the session event its row was sequenced at. */
+    private final Map<String, Long> seqByEndpoint =
+            new LinkedHashMap<String, Long>();
 
     private CorpusIndex(Path iteration, List<SessionReader> sessions) {
         this.iteration = iteration;
@@ -222,11 +225,15 @@ public final class CorpusIndex implements Arms.Rows {
             add(exportsByProducer, export.endpoint().id(), export);
             occurrenceByEndpoint.put(export.endpoint().id(),
                     export.endpoint().occurrence());
+            seqByEndpoint.put(sessionId + "|" + export.endpoint().id(),
+                    export.seq());
         }
         for (AttachRow attach : session.attaches()) {
             add(attachesByConsumer, attach.endpoint().id(), attach);
             occurrenceByEndpoint.put(attach.endpoint().id(),
                     attach.endpoint().occurrence());
+            seqByEndpoint.put(sessionId + "|" + attach.endpoint().id(),
+                    attach.seq());
             Interaction interaction = attach.interaction();
             if (interaction != null) {
                 interactions.put(interaction.id(), interaction);
@@ -248,11 +255,19 @@ public final class CorpusIndex implements Arms.Rows {
         for (WriteRow write : session.writes()) {
             occurrenceByEndpoint.put(write.endpoint().id(),
                     write.endpoint().occurrence());
+            seqByEndpoint.put(sessionId + "|" + write.endpoint().id(),
+                    write.seq());
             writes.put(SmtLowering.locationKey(write.location()) + "#"
                     + write.version(), write);
         }
         writesBySession.put(sessionId, writes);
         readsBySession.put(sessionId, session.reads());
+        for (ReadRow read : session.reads()) {
+            occurrenceByEndpoint.put(read.endpoint().id(),
+                    read.endpoint().occurrence());
+            seqByEndpoint.put(sessionId + "|" + read.endpoint().id(),
+                    read.seq());
+        }
 
         for (RootMintRow root : session.roots()) {
             add(rootsById, root.rootId(), root);
@@ -485,6 +500,12 @@ public final class CorpusIndex implements Arms.Rows {
     @Override
     public OccurrenceAddress occurrenceOf(String endpointId) {
         return occurrenceByEndpoint.get(endpointId);
+    }
+
+    @Override
+    public long seqOf(String sessionId, String endpointId) {
+        Long seq = seqByEndpoint.get(sessionId + "|" + endpointId);
+        return seq == null ? -1L : seq.longValue();
     }
 
     @Override
