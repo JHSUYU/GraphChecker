@@ -23,7 +23,6 @@ import edu.uva.liftlab.graphchecker.d3.plan.InputActionCatalog;
 import edu.uva.liftlab.graphchecker.d3.smt.JavaContainerTypes;
 import edu.uva.liftlab.graphchecker.d3.smt.JavaPrimitiveBoxing;
 import edu.uva.liftlab.graphchecker.d3.plan.LoopBoundPolicy;
-import edu.uva.liftlab.graphchecker.contract.OccurrenceId;
 import edu.uva.liftlab.graphchecker.d3.plan.PathObservation;
 import edu.uva.liftlab.graphchecker.d3.plan.RegionInstancePlan;
 import edu.uva.liftlab.graphchecker.d3.plan.RegionInstancePlan.Goal;
@@ -220,15 +219,14 @@ public final class ConcolicScheduler {
                 }
             }
         }
-        String receiver = OccurrenceId.parse(occurrenceId).planned();
+        String receiver = occurrenceId;
         Set<String> suppliedPorts = new LinkedHashSet<>();
         for (JsonElement element : edgeBindings == null
                 ? new JsonArray() : edgeBindings) {
             if (!element.isJsonObject()) continue;
             JsonObject binding = element.getAsJsonObject();
             if (!AutomaticRegionEdge.tracedExchangeCandidate(binding)
-                    || !receiver.equals(OccurrenceId.parse(
-                    optionalString(binding, "toOccurrenceId")).planned())) {
+                    || !receiver.equals(optionalString(binding, "toOccurrenceId"))) {
                 continue;
             }
             String port = optionalString(binding, "toInputPort");
@@ -1647,8 +1645,7 @@ public final class ConcolicScheduler {
                     || !candidate.goal.plan().regionId().equals(
                     optionalString(summary, "regionId"))
                     || !expectedInstance.equals(
-                    OccurrenceId.parse(
-                            optionalString(summary, "occurrenceId")).planned())
+                    optionalString(summary, "occurrenceId"))
                     || !ClosureGoalKind.fromTask(summary)
                     .capturesTargetReach()
                     || optionalString(summary, "summaryId").isEmpty()) {

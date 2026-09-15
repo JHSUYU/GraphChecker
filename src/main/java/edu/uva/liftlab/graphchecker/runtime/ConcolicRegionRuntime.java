@@ -36,7 +36,6 @@ import edu.uva.liftlab.graphchecker.d3.plan.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.runtime.d3.D3Runtime;
 import edu.uva.liftlab.graphchecker.runtime.d3.Interactions;
-import edu.uva.liftlab.graphchecker.contract.OccurrenceId;
 
 import edu.uva.liftlab.graphchecker.d3.plan.SiteId;
 import edu.uva.liftlab.graphchecker.runtime.ConcolicTaskPlan.RuntimeTask;
@@ -6211,11 +6210,18 @@ public final class ConcolicRegionRuntime {
             activationOrdinal = 0;
         }
 
-        /** This activation's own occurrence identity: address plus ordinal. */
+        /**
+         * This activation's own occurrence identity.
+         *
+         * <p>The address, and nothing appended to it. Identity v1 numbered
+         * the activations of one planned address and wrote {@code #a<n>}
+         * beside it, because two runs of one address were two occurrences it
+         * could not otherwise tell apart. Identity v3 distinguishes them by
+         * the execution index they entered under, so an address IS the
+         * occurrence and a suffix would be a second identity beside it.</p>
+         */
         String occurrenceId() {
-            return activationOrdinal <= 0 ? safe(activation.occurrenceId)
-                    : OccurrenceId.parse(safe(activation.occurrenceId))
-                            .withActivation(activationOrdinal).render();
+            return safe(activation.occurrenceId);
         }
 
         /**
@@ -7698,8 +7704,8 @@ public final class ConcolicRegionRuntime {
             this.readIdentity = optionalString(json, "readIdentity");
             this.candidateIdentity = optionalString(json, "candidateIdentity");
             this.readerTaskId = optionalString(json, "readerTaskId");
-            this.readerOccurrenceId = OccurrenceId.parse(
-                    optionalString(json, "readerOccurrenceId")).planned();
+            this.readerOccurrenceId =
+                    optionalString(json, "readerOccurrenceId");
             this.consumerSiteId = optionalString(json, "consumerSiteId");
             this.consumerSiteOccurrence = optionalInteger(json,
                     "consumerSiteOccurrence", 0);
@@ -7708,8 +7714,7 @@ public final class ConcolicRegionRuntime {
             this.descriptor = javaTypeDescriptor(optionalString(json, "descriptor"));
             String valueType = optionalString(json, "valueType");
             String value = optionalString(json, "value");
-            String plannedTaskOccurrence = OccurrenceId.parse(
-                    taskOccurrenceId).planned();
+            String plannedTaskOccurrence = taskOccurrenceId;
             if (readIdentity.isEmpty() || candidateIdentity.isEmpty()
                     || readerTaskId.isEmpty() || readerOccurrenceId.isEmpty()
                     || !readerOccurrenceId.equals(plannedTaskOccurrence)
