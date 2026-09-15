@@ -658,9 +658,29 @@ done
 # window -- the composer and the flip query both assert `(>= clock 0)` and
 # nothing else -- so no stage read the key, and both invocations that passed
 # `--clock-skew-ms` handed it to a main that did not read it either.
-[[ "$(print_normalized_config | wc -l)" -eq 41 ]] \
+# 42: `causynth_static_scope_map` joined it with CLOSURE-V2's static scope
+# map.  TWO stages read that file -- the workload JVM installs the guard sites
+# it names and EXPLORE flips at them -- so which file it is belongs to the
+# configuration a campaign publishes, and both readers take it from this one
+# key rather than each deriving a path.
+[[ "$(print_normalized_config | wc -l)" -eq 42 ]] \
   || fail "config prints a different number of keys than it used to: \
 $(print_normalized_config | wc -l)"
+# CONFIG-2: the static scope map is ONE path, and both of its readers take it
+# from that one key.  The workload JVM installs the guard sites the map names
+# and EXPLORE flips at them, so a second derivation of the path is two stages
+# reading two files.
+[[ " ${config_table_keys[*]} " == *" causynth_static_scope_map "* ]] \
+  || fail "the static scope map is not a declared workflow key"
+grep -qF 'causynth_static_scope_map=${causynth_static_scope_map:-${causynth_output_dir}/static_scope_map.jsonl}' \
+    "${repo}/run_engine.sh" \
+  || fail "the static scope map does not default beside the discovery artifacts"
+grep -qF -- '--static-scope-map "${causynth_static_scope_map}"' \
+    "${repo}/run_engine.sh" \
+  || fail "EXPLORE does not read the static scope map key"
+grep -qF 'CAUSYNTH_STATIC_SCOPE_MAP=${causynth_static_scope_map}' \
+    "${repo}/run_engine.sh" \
+  || fail "the workload JVM is not given the static scope map key"
 
 # FREEZE-1: one dispatch decides how each kind of frozen input is digested.
 digest_root="${test_tmp}/kind-digest"
