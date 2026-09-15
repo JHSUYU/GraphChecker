@@ -4,6 +4,7 @@ import com.google.gson.JsonObject;
 
 import edu.uva.liftlab.graphchecker.d3.contract.ActivationRow;
 import edu.uva.liftlab.graphchecker.d3.contract.CausalContext;
+import edu.uva.liftlab.graphchecker.d3.contract.Arm;
 import edu.uva.liftlab.graphchecker.d3.contract.AttachRow;
 import edu.uva.liftlab.graphchecker.d3.contract.ClaimKind;
 import edu.uva.liftlab.graphchecker.d3.contract.DecisionRow;
@@ -140,6 +141,126 @@ public class D3ComposerTest {
                         "z3 answered the composed query with an error"));
         assertFalse("nothing about the recording is decided by it",
                 errored.claim().polarityDecides());
+
+        // 1b. The same claim where the marker reaches the target only
+        // through CONTROL dependence -- 17960's shape.  The marker gates a
+        // branch of ANOTHER occurrence, so no decision of the anchor names
+        // it and the anchor's own phi is CONCRETE: false as the seed ran
+        // (a counter that was written), true in the flip replay (the write
+        // was skipped).  What connects the two is that each path carries
+        // its own replay's valuation of the varied root.
+        Path control = folder.newFolder("marker-control").toPath();
+        for (String[] each : new String[][]{
+                {"s0", "true", "2", "false"}, {"s1", "false", "0", "true"}}) {
+            Session session = new Session(control, each[0],
+                    "true".equals(each[3]));
+            session.marker(each[1]);
+            // The counter the anchor reads: concrete, and different in the
+            // two replays because the marker skipped the write.
+            session.read(Endpoint.of(ANCHOR,
+                            "<Manager: int count>#PLACEHOLDER#0:READ",
+                            at("count#1", 0), 0),
+                    LocationId.of(LocationKind.INSTANCE, "Manager", "held"),
+                    -1L, PLACEHOLDER, "I", each[2]);
+            // phi as the runtime publishes it: the FATAL polarity, over
+            // the value this replay read.  Concrete either way.
+            session.expression("EXPR.0000000000000fc1", binary("!=",
+                    integer("I", 2L), symbol(PLACEHOLDER, "I")));
+            session.target("EXPR.0000000000000fc1", "true".equals(each[3]),
+                    true);
+            session.write();
+        }
+
+        Composer.Composition controlled = compose(control, 8);
+        assertEquals("both replays reach the anchor", 2,
+                controlled.paths().size());
+        assertFalse("and no decision of the anchor names the marker",
+                controlled.body().contains("anchor#"));
+        assertEquals("a root the two replays minted differently is carried "
+                        + "on each path, so it is declared and enumerated",
+                2, controlled.valuations().size());
+        assertEquals("ordinal 0 is the SEED's value", "true",
+                controlled.valuations().get(0).assignment().get(MARKER_ROOT));
+        assertTrue("each path carries its own replay's valuation",
+                controlled.body().contains("(= " + MARKER + " true)")
+                        && controlled.body().contains(
+                        "(= " + MARKER + " false)"));
+
+        ClaimPolicy.Decision flipped = ClaimPolicy.decide(controlled,
+                solver());
+        assertEquals("the run as it happened does not reach the fatal arm",
+                "unsat", flipped.outcomes().get(0).answer().status());
+        assertEquals("the other polarity does", "sat",
+                flipped.outcomes().get(1).answer().status());
+        assertEquals(ClaimKind.MARKER_FLIPPED, flipped.claim().kind());
+        assertEquals(Collections.singletonMap(MARKER_ROOT, "false"),
+                flipped.claim().movedRoots());
+        assertTrue(flipped.claim().polarityDecides());
+
+        // 1c. The negative: two replays that minted the marker the SAME
+        // way vary nothing, so no path carries a valuation of it, nothing
+        // declares it, and there is one question to ask.
+        Path agreed = folder.newFolder("marker-agreed").toPath();
+        for (String[] each : new String[][]{
+                {"s0", "2", "false"}, {"s1", "0", "true"}}) {
+            Session session = new Session(agreed, each[0],
+                    "true".equals(each[2]));
+            session.marker("true");
+            session.read(Endpoint.of(ANCHOR,
+                            "<Manager: int count>#PLACEHOLDER#0:READ",
+                            at("count#1", 0), 0),
+                    LocationId.of(LocationKind.INSTANCE, "Manager", "held"),
+                    -1L, PLACEHOLDER, "I", each[1]);
+            session.expression("EXPR.0000000000000fc1", binary("!=",
+                    integer("I", 2L), symbol(PLACEHOLDER, "I")));
+            session.target("EXPR.0000000000000fc1", "true".equals(each[2]),
+                    true);
+            session.write();
+        }
+        // 1d. And an ARM is guarded by the delivering replay's valuation
+        // of every varied root, not only by the roots its own expression
+        // names: the delivery happened under that replay's values, so it
+        // is available under them and under no other valuation.  This
+        // arm's expression names no root at all.
+        Path guarded = folder.newFolder("marker-guarded").toPath();
+        for (String[] each : new String[][]{{"s0", "true", "false"},
+                {"s1", "false", "true"}}) {
+            Session session = new Session(guarded, each[0],
+                    "true".equals(each[2]));
+            session.activation(PRODUCER, "thread#" + PRODUCER.regionId(),
+                    null, "true".equals(each[2]), true);
+            session.marker(each[1]);
+            session.expression("EXPR.v1.plain", integer("I", 7L));
+            session.decision(PRODUCER, "nn#u1", "(or " + MARKER + " (not "
+                    + MARKER + "))");
+            session.export(Endpoint.of(PRODUCER, "PORT.key",
+                    at("export#1", 0), 0), "EXPR.v1.plain", 1L, "7");
+            session.attach(Endpoint.of(ANCHOR, "PORT.key",
+                            at("attach#1", 0), 0), "vh", "I", "7",
+                    Endpoint.of(PRODUCER, "PORT.key", at("export#1", 0), 0));
+            session.target("true", false, true);
+            session.write();
+        }
+        Composer.Composition armed = compose(guarded, 8);
+        assertEquals(1, armed.families().size());
+        assertEquals(2, armed.families().get(0).arms().size());
+        for (Arm arm : armed.families().get(0).arms()) {
+            assertTrue("an arm carries the delivering replay's valuation "
+                            + "of the varied root its expression never "
+                            + "names: " + arm.guardRoots(),
+                    arm.guardRoots().contains(MARKER_ROOT));
+        }
+        assertTrue("both replays' values are in the two arms",
+                armed.body().contains("(= " + MARKER + " true)")
+                        && armed.body().contains(
+                        "(= " + MARKER + " false)"));
+
+        Composer.Composition same = compose(agreed, 8);
+        assertEquals(2, same.paths().size());
+        assertFalse("nothing varied, so no path states a valuation of it",
+                same.body().contains("(= " + MARKER + " "));
+        assertEquals("and there is one question", 1,
+                same.valuations().size());
     }
 
     /** A solver that answers every question with an SMT-LIB read error. */

@@ -128,9 +128,6 @@ public final class CorpusIndex implements Arms.Rows {
     /** Clock cell symbol -> session id -> the instant it read. */
     private final Map<String, Map<String, Long>> clockCells =
             new LinkedHashMap<String, Map<String, Long>>();
-    /** Root id -> every recorded value any session gave it. */
-    private final Map<String, Set<String>> recordedRootValues =
-            new LinkedHashMap<String, Set<String>>();
     /** Root symbol -> every root id declared under it. */
     private final Map<String, Set<String>> rootIdsBySymbol =
             new LinkedHashMap<String, Set<String>>();
@@ -288,15 +285,6 @@ public final class CorpusIndex implements Arms.Rows {
 
         for (RootMintRow root : session.roots()) {
             add(rootsById, root.rootId(), root);
-            Set<String> values = recordedRootValues.get(root.rootId());
-            if (values == null) {
-                values = new LinkedHashSet<String>();
-                recordedRootValues.put(root.rootId(), values);
-            }
-            if (root.recordedValue() != null
-                    && !root.recordedValue().isEmpty()) {
-                values.add(root.recordedValue());
-            }
             Set<String> ids = rootIdsBySymbol.get(root.symbol());
             if (ids == null) {
                 ids = new LinkedHashSet<String>();
@@ -570,18 +558,11 @@ public final class CorpusIndex implements Arms.Rows {
         return rows == null || rows.isEmpty() ? null : rows.get(0);
     }
 
-    /**
-     * Whether two sessions of this corpus recorded this root differently.
-     *
-     * <p>A varied root is one exploration moved, and only a varied root is
-     * carried on a path: a root every session read the same way is already
-     * pinned by its own domain, and asserting it again on every path would
-     * put a root nothing branches on "on a path".</p>
-     */
-    public boolean varied(String rootId) {
-        Set<String> values = recordedRootValues.get(rootId);
-        return values != null && values.size() > 1;
-    }
+    // Whether two sessions recorded a root differently -- a varied root is
+    // one exploration moved, and only a varied root is carried on a path --
+    // is Arms.Rows.varied, which this index inherits.  A second copy here
+    // was the same rule twice, and the rule decides both what a path
+    // carries and what an arm is guarded by.
 
     /** Every symbol the runtime declared, at the sort it minted it at. */
     public Map<String, Sort> declaredSymbols() {

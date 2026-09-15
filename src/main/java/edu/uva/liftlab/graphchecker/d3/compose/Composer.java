@@ -999,6 +999,20 @@ public final class Composer {
         for (Map.Entry<String, String> guard : arm.guard().entrySet()) {
             String literal = JsonText.smtLiteral(guard.getValue());
             if (literal.isEmpty()) continue;
+            // The name has to be IN the query.  A guard names a root the
+            // arm's own expression need not mention -- the delivering
+            // replay's valuation of every varied root is part of what the
+            // delivery happened under -- and asserting an equality over a
+            // constant nothing declares makes z3 answer the whole query
+            // with an error instead of a verdict.  The one registry says
+            // whether the recording states the name, and at what sort.
+            if (!lowering.declareStated(guard.getKey())) {
+                gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
+                        guard.getKey(), "an arm of " + arm.slotId()
+                                + " is guarded by a symbol no row of this "
+                                + "corpus declares a sort for");
+                continue;
+            }
             conjuncts.add("(= " + guard.getKey() + " " + literal + ")");
         }
         for (String symbol : symbols) {
