@@ -1772,7 +1772,9 @@ public final class CausynthTraceRecorder {
                     sourceRef(row),
                     row.longValue("receiverAttributed", 0L) != 0L,
                     row.stringValue("requestKey"),
-                    row.stringValue("requestApi")));
+                    row.stringValue("requestApi"),
+                    row.stringValue("executionIndex"),
+                    row.stringValue("causalContext")));
         } else if (!skeletonOnly && ("FIELD_READ".equals(eventKind)
                 || "FIELD_WRITE".equals(eventKind))) {
             trace.fields.add(

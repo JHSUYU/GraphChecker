@@ -863,11 +863,12 @@ public final class RuntimeSelectedRegionFinalizer {
             String semanticSourceKey = semanticSourceKey(
                     targetPoliciesByRegion.get(regionId), instance,
                     observations, rootSourceKey);
-            int ordinal = minter.reserveOrdinal(semanticSourceKey, regionId);
             String occurrenceId;
             try {
                 occurrenceId = minter.mint(regionId, rootCallId,
-                        semanticSourceKey, ordinal);
+                        semanticSourceKey,
+                        text(instance.get("executionIndex")),
+                        text(instance.get("causalContext")));
             } catch (IllegalArgumentException duplicate) {
                 throw new IOException("duplicate runtime region activation: "
                         + regionId + "\n" + rootCallId);

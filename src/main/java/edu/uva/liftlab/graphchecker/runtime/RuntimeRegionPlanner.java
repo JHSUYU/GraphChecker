@@ -508,6 +508,10 @@ final class RuntimeRegionPlanner {
         activation.put("selection", skeleton.selection);
         activation.put("test", root.test);
         activation.put("thread", root.threadName);
+        // Identity v3: where this activation was, as the recording stated
+        // it.  The finalizer mints the occurrence address from these two.
+        activation.put("executionIndex", root.executionIndex);
+        activation.put("causalContext", root.causalContext);
         putTraceContext(activation, root,
                 activationSource(root, stampedSources(calls, trace)));
         putRecordedTraceIds(activation, root);
@@ -3273,6 +3277,17 @@ final class RuntimeRegionPlanner {
         boolean receiverAttributed;
         final String requestKey;
         final String requestApi;
+        /**
+         * Identity v3, as the recording stated it (IDENTITY-IMPL B).
+         *
+         * <p>{@code executionIndex} is the call path from the scope root to
+         * this event and {@code causalContext} is the scope it ran in.  PLAN
+         * mints offline, over this trace, so the address it mints can only
+         * be as precise as what the event carries -- and before these two it
+         * carried nothing an execution index could be built from.</p>
+         */
+        final String executionIndex;
+        final String causalContext;
         MethodEvent(long seq, String test, String threadName,
                     long tid, String method, int objectId, String receiverType,
                     long callId, long parentCallId, long parentSiteId,
@@ -3280,6 +3295,22 @@ final class RuntimeRegionPlanner {
                     long parentSpanId, long remoteParentSpanId,
                     SourceRef source, boolean receiverAttributed,
                     String requestKey, String requestApi) {
+            this(seq, test, threadName, tid, method, objectId, receiverType,
+                    callId, parentCallId, parentSiteId, laneId, spanId,
+                    parentSpanId, remoteParentSpanId, source,
+                    receiverAttributed, requestKey, requestApi, "", "");
+        }
+
+        MethodEvent(long seq, String test, String threadName,
+                    long tid, String method, int objectId, String receiverType,
+                    long callId, long parentCallId, long parentSiteId,
+                    long laneId, long spanId,
+                    long parentSpanId, long remoteParentSpanId,
+                    SourceRef source, boolean receiverAttributed,
+                    String requestKey, String requestApi,
+                    String executionIndex, String causalContext) {
+            this.executionIndex = safe(executionIndex);
+            this.causalContext = safe(causalContext);
             this.seq = seq;
             this.test = safe(test);
             this.threadName = safe(threadName);
