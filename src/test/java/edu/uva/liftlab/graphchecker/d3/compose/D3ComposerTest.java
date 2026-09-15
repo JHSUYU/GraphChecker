@@ -718,14 +718,16 @@ public class D3ComposerTest {
             this.id = id;
             this.explored = explored;
             activations.add(ActivationRow.of(id, ANCHOR,
-                    explored ? "task-flip" : "task-seed", explored));
+                    explored ? "task-flip" : "task-seed", explored, true,
+                    "fixture#1", null));
             this.seq = 0L;
         }
 
         /** One more activation of this session, in its own order. */
         void activation(OccurrenceAddress at) {
             activations.add(ActivationRow.of(id, at,
-                    explored ? "task-flip" : "task-seed", explored));
+                    explored ? "task-flip" : "task-seed", explored, true,
+                    "fixture#1", null));
         }
 
         void marker(String recorded) {
