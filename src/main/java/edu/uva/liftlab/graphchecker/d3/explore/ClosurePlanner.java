@@ -2,6 +2,7 @@ package edu.uva.liftlab.graphchecker.d3.explore;
 
 import edu.uva.liftlab.graphchecker.d3.compose.SmtLowering;
 import edu.uva.liftlab.graphchecker.d3.smt.Arms;
+import edu.uva.liftlab.graphchecker.d3.contract.ActivationRow;
 import edu.uva.liftlab.graphchecker.d3.contract.AttachRow;
 import edu.uva.liftlab.graphchecker.d3.contract.CausalContext;
 import edu.uva.liftlab.graphchecker.d3.contract.DecisionRow;
@@ -12,6 +13,7 @@ import edu.uva.liftlab.graphchecker.d3.contract.GapRow;
 import edu.uva.liftlab.graphchecker.d3.contract.LocationId;
 import edu.uva.liftlab.graphchecker.d3.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.d3.contract.ReadRow;
+import edu.uva.liftlab.graphchecker.d3.contract.RootMintRow;
 import edu.uva.liftlab.graphchecker.d3.contract.SessionReader;
 import edu.uva.liftlab.graphchecker.d3.contract.TargetRow;
 import edu.uva.liftlab.graphchecker.d3.contract.Task;
@@ -21,6 +23,7 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Deque;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -373,6 +376,78 @@ public final class ClosurePlanner {
             if (member != null) factor.add(member);
         }
         return factor;
+    }
+
+    /**
+     * Every seed occurrence a DECLARED root's value decides something in.
+     *
+     * <p>The static graph is used only to decide what to TRACK -- the
+     * root-dependence slice picks the carriers, the occurrences to replay and
+     * the BRANCHES TO FLIP -- so a decision whose predicate names a declared
+     * root is a flip candidate by definition, wherever inside G_S^W it sits.
+     * It does not have to be reachable from the anchor through rows, and on
+     * 17960 it cannot be: the seed runs the marker's TRUE arm, where
+     * {@code deleteSnapshot} defers and the counter decrement never executes,
+     * so the anchor's dependence on the deletion region exists only on the
+     * arm the flip would create. A closure that waits for a row stating that
+     * dependence waits for the replay it is supposed to ask for.</p>
+     *
+     * <p>Such an occurrence is a TASK -- one focused replay, its own
+     * obligations {@code prefix and not d} -- and NOT a closure member: it
+     * opens no slot and joins no family until its rows connect it, which the
+     * per-wave recomputation does on its own (INTERACTION-ID SS8 case 1). The
+     * test is rows only: an {@code ActivationRow} of the seed session with
+     * {@code instrumented == true}, a {@code DecisionRow} of that occurrence
+     * whose term names -- through the one lowering, because the runtime
+     * publishes a predicate over a propagated value as an expression
+     * reference -- a symbol some {@code RootMintRow} of that session minted
+     * with {@code declared == true}.</p>
+     *
+     * @param planned task ids the closure already holds, which are not
+     *                planned twice and stay closure members
+     */
+    public static List<Task> rootDependent(Corpus corpus,
+                                           Set<String> planned) {
+        String seed = corpus.seedSessionId();
+        SessionReader session = seed.isEmpty() ? null : corpus.session(seed);
+        if (session == null) return new ArrayList<Task>();
+        Set<String> instrumented = new LinkedHashSet<String>();
+        for (ActivationRow activation : session.activations()) {
+            if (activation.instrumented()) {
+                instrumented.add(activation.occurrence().id());
+            }
+        }
+        Map<String, OccurrenceAddress> deciding =
+                new LinkedHashMap<String, OccurrenceAddress>();
+        for (DecisionRow decision : session.decisions()) {
+            OccurrenceAddress occurrence = decision.occurrence();
+            if (!instrumented.contains(occurrence.id())) continue;
+            if (deciding.containsKey(occurrence.id())) continue;
+            if (!namesADeclaredRoot(corpus, seed, decision)) continue;
+            deciding.put(occurrence.id(), occurrence);
+        }
+        List<Task> tasks = new ArrayList<Task>();
+        for (OccurrenceAddress occurrence : deciding.values()) {
+            String taskId = taskId(occurrence);
+            if (planned.contains(taskId)) continue;
+            // No factor: a factor is the state-connected unit the closure
+            // computed, and this occurrence is not in the closure yet.
+            tasks.add(Task.of(taskId, occurrence,
+                    new ArrayList<OccurrenceAddress>(), seed));
+        }
+        return tasks;
+    }
+
+    /** Whether one decision's predicate rests on a declared root's value. */
+    private static boolean namesADeclaredRoot(Corpus corpus, String sessionId,
+                                              DecisionRow decision) {
+        if (!FlipQuery.predicate(decision.term())) return false;
+        for (String symbol : SmtText.symbols(FlipQuery.statedTerm(corpus,
+                sessionId, decision.term()), new LinkedHashSet<String>())) {
+            RootMintRow minted = corpus.rootBySymbol(sessionId, symbol);
+            if (minted != null && minted.declared()) return true;
+        }
+        return false;
     }
 
     /** The session an occurrence was first recorded in. */
