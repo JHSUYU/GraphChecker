@@ -327,34 +327,6 @@ public final class Corpus implements Arms.Rows {
         return paths;
     }
 
-    /**
-     * Whether any session of this epoch published a detailed row for it.
-     *
-     * <p>An activation row alone is the lightweight entry hook's statement
-     * that the region RAN; a decision, an export, an attach, a read, a write
-     * or a target is the statement that it was instrumented.  One replay
-     * having nothing to say about a region is ordinary; a whole epoch having
-     * nothing is the retained set being too small.</p>
-     */
-    public boolean detailed(OccurrenceAddress occurrence) {
-        String id = occurrence.id();
-        if (attachesOn.containsKey(id) || readsOn.containsKey(id)
-                || writesOn.containsKey(id) || targetsOn.containsKey(id)) {
-            return true;
-        }
-        for (SessionReader session : sessions) {
-            if (!decisionsOf(session.sessionId(), occurrence).isEmpty()) {
-                return true;
-            }
-            for (ExportRow export : session.exports()) {
-                if (export.endpoint().occurrence().id().equals(id)) {
-                    return true;
-                }
-            }
-        }
-        return false;
-    }
-
     public ActivationRow activation(String sessionId,
                                     OccurrenceAddress occurrence) {
         List<ActivationRow> rows = activations.get(occurrence.id());
