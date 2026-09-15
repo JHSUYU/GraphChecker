@@ -592,8 +592,18 @@ do_schedule() {
     --region-plan "${region_plan}"
     --output-dir "${schedule_output_dir}"
   )
-  require_file "runtime-refined graph" "${refined_graph}"
-  args+=(--refined-graph "${refined_graph}")
+  # PLAN reads the STATIC candidate graph, for one thing: the exact-copy
+  # relation a declaration is renamed over, which Soot proved and stamped on
+  # those rows.  It used to read the runtime-refined graph; the other three
+  # things it took from there are static facts of the candidate graph or of
+  # the static scope map, and are read from the map now.
+  require_file "candidate data-flow graph" "${candidate_graph}"
+  args+=(--candidate-graph "${candidate_graph}")
+  # The one guard authority's publication: the scheduler reads the fatal arm
+  # of the declared target branch off the TARGET_SITE row rather than
+  # re-deriving a polarity from the graph.
+  require_file "static scope map" "${causynth_static_scope_map}"
+  args+=(--static-scope-map "${causynth_static_scope_map}")
   # validate_config refuses an unstated cap: left to the scheduler's own
   # fallback of one job it would keep the first candidate of the plan and drop
   # the rest, and a schedule of one task is not an empty schedule, so the
@@ -904,15 +914,18 @@ campaign_kind_digest() {
 # cache their published artifacts, not RuntimeRegionPlanner's private in-memory
 # index, so cache reuse adds no second semantic schema.
 campaign_seed_artifact_rows() {
+  # Every published artifact of the seed boundary, and only published ones:
+  # target_resolved.json, communication_call_sites.jsonl.gz and
+  # retained_loops.jsonl.gz are gone because nothing read their content, and
+  # the static scope map is here because a cache HIT skips do_analyze -- so
+  # without it PLAN and EXPLORE were handed a file that did not exist, which
+  # StaticScopeMap.read answers as "this epoch published no map".
   printf '%s\t%s\n' \
     candidateGraph "${candidate_graph}" \
     runtimePlan "${runtime_region_plan}" \
     refinedGraph "${refined_graph}" \
-    targetResolved "${causynth_output_dir}/target_resolved.json" \
     regionSkeletons "${causynth_output_dir}/region_skeletons.jsonl.gz" \
-    communicationCallSites \
-      "${causynth_output_dir}/communication_call_sites.jsonl.gz" \
-    retainedLoops "${causynth_output_dir}/retained_loops.jsonl.gz" \
+    staticScopeMap "${causynth_static_scope_map}" \
     communicationGaps \
       "${causynth_output_dir}/communication_gaps.jsonl.gz" \
     selectedSkeletons \
@@ -1711,8 +1724,13 @@ campaign_replay() {
     # reachedAnchor says whether this session reached the anchor at all.
     local declared_target reached=""
     local -a target_rows=()
-    declared_target=$(jq -r '.method // ""' \
-      "${causynth_output_dir}/target_resolved.json") \
+    # The annotated target's method, off the TARGET_SITE row of the static
+    # scope map: the map already states that site, and target_resolved.json
+    # restated it for this one reader.
+    declared_target=$(jq -r -s '
+      [.[] | select(.role == "TARGET_SITE") | .siteId
+             | sub("#u[0-9]+$"; "")] | first // ""' \
+      "${causynth_static_scope_map}") \
       || campaign_fail REPLAY WORKLOAD "${sessions}" \
         "the declared target could not be read for target coverage"
     while IFS= read -r -d '' target_file; do

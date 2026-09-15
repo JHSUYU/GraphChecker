@@ -308,21 +308,10 @@ final class SymbolicRegionPlanner {
         if (anchors.isEmpty()) {
             return false;
         }
-        // The anchors of the admitting kind are the innermost methods that
-        // have to be entered for the demanded behaviour; the root only names
-        // the execution context they ran in.
-        List<String> demandScope = anchorRootedScope(root,
-                explicitFault ? fault
-                        : !failure.isEmpty() ? failure
-                        : !communication.isEmpty() ? communication : state,
-                methods, outgoing, regionAuthorities,
-                transportBoundaries);
         Map<String, Object> row = skeletonRow(root, authority);
         row.put("anchorMethod", anchors.get(0));
         row.put("anchorMethods", anchors);
         row.put("methods", methods);
-        row.put(RuntimeSelectedRegionFinalizer.DEMAND_SCOPE,
-                demandScope);
         row.put("selection", explicitFault
                 ? "EXPLICIT_FAULT_CONTEXT"
                 : !failure.isEmpty()
@@ -362,23 +351,6 @@ final class SymbolicRegionPlanner {
      * Forward closure from every anchor of the admitting kind, kept inside the
      * context closure the root already bounds.
      */
-    private static List<String> anchorRootedScope(
-            String root, List<String> anchors, List<String> context,
-            Map<String, Set<String>> outgoing,
-            Map<String, String> authorities,
-            Set<String> transportBoundaries) {
-        Set<String> sources = new LinkedHashSet<>(anchors);
-        Set<String> visited = callClosure(anchors, outgoing,
-                candidate -> transportBoundaries.contains(candidate)
-                        || !sources.contains(candidate)
-                        && authorities.containsKey(candidate));
-        visited.retainAll(new LinkedHashSet<>(context));
-        visited.add(root);
-        List<String> result = new ArrayList<>(visited);
-        Collections.sort(result);
-        return result;
-    }
-
     /** Every declared producer and consumer capture, without transport roles. */
     private static Set<String> communicationEndpoints(
             StaticProgram program) {

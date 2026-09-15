@@ -416,7 +416,7 @@ public class OccurrenceAddressIsNotARequestTest {
                 + "','relationKey':'REL.1','sourceKey':'" + sourceKey
                 + "','occurrenceId':'" + occurrenceId + "','rootMethod':'"
                 + rootMethod + "','instrumentationSelector':'sel',"
-                + "'admission':{'state':'EXECUTABLE'},'branches':[],"
+                + "'admission':{'state':'EXECUTABLE'},"
                 + "'inputActions':[],'loopBound':{'schemaVersion':1,'defaultBackedgeTraversals':8},"
                 + "'rootSelector':{'kind':'GLOBAL_INVOCATION','method':'"
                 + rootMethod + "','invocationOrdinal':" + ordinal

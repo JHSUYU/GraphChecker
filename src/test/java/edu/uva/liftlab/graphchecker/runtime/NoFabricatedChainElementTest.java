@@ -121,15 +121,15 @@ public class NoFabricatedChainElementTest {
                 + "'admission':{'state':'EXECUTABLE'},'rootSelector':{'kind':"
                 + "'GLOBAL_INVOCATION','invocationOrdinal':1,'causalAnchor':"
                 + "{'sourceKey':'dn0#epoch0','kind':'REGISTERED_SOURCE'}},"
-                + "'branches':[{'siteId':'" + SITE + "','policy':'EXPLORE',"
-                + "'selectedOccurrence':1,'requiredOutcome':true}]}")
+                + "'branchMethods':['" + METHOD + "']}")
                 .getAsJsonObject();
         JsonArray inputActions = new JsonArray();
         for (JsonObject action : acts) inputActions.add(action);
         encoded.add("inputActions", inputActions);
         if (target) {
             encoded.add("targetBranch", new JsonParser().parse(
-                    "{'siteId':'" + SITE + "','occurrence':1}"));
+                    "{'siteId':'" + SITE + "','occurrence':1,"
+                            + "'requiredOutcome':true}"));
         }
         return ExecutionTask.decode(encoded);
     }

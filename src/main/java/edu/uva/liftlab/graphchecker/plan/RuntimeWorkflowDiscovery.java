@@ -19,17 +19,13 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.Deque;
-import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-import static edu.uva.liftlab.graphchecker.smt.JsonFields.array;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalBool;
-import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalLongInteger;
-import static edu.uva.liftlab.graphchecker.smt.JsonFields.object;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 
 /** Selects one target and its VM-observed linked replay scope. */
@@ -82,31 +78,13 @@ public final class RuntimeWorkflowDiscovery {
             throw new IOException("runtime region plan has no replayable target");
         }
 
-        for (Target candidate : targets) {
-            Set<String> topologyScope = topologyScope(
-                    candidate.occurrenceId, byOccurrence, edges);
-            candidate.rank(closureEdges(topologyScope, edges));
-        }
-        targets.sort(Target.ORDER);
-        if (targets.size() > 1 && Target.EVIDENCE_ORDER.compare(
-                targets.get(0), targets.get(1)) == 0) {
-            throw new IOException("runtime evidence does not distinguish "
-                    + "target occurrences: " + targets.get(0).context()
-                    + "; " + targets.get(1).context());
-        }
-        // The occurrence(s) this campaign is about, decided before the
-        // election so a declared target is the one elected: a case that
-        // names which instance can fail has said which occurrence carries
-        // the replay closure, and ranking is how the answer is found when
-        // it did not.
+        // The occurrence this campaign is about is the one the case
+        // DECLARED.  There is no election: ranking observed evidence to
+        // decide which instance of the annotated site "matters" is a
+        // decision outside the slice, and a case that declares nothing is
+        // refused by name rather than answered by a heuristic.
         Set<String> anchors = anchorGoals(targets, declaredOccurrence);
-        Target target = targets.get(0);
-        for (Target candidate : targets) {
-            if (anchors.contains(candidate.goal.goalId())) {
-                target = candidate;
-                break;
-            }
-        }
+        Target target = declaredTarget(targets, declaredOccurrence);
         // A linked replay contains only the observed dynamic ancestry of the
         // target. Static demand still guides instrumentation and later
         // topology discovery; making an unrelated observed occurrence a
@@ -182,37 +160,72 @@ public final class RuntimeWorkflowDiscovery {
     }
 
     /**
-     * The goals of the occurrence(s) this campaign is about.
+     * The goals of the occurrences the case's declaration names.
      *
-     * <p>Two answers. The case's own declaration, when it states one --
-     * "we know which target instance can fail" -- read as an occurrence
-     * address, or as the request family and k when it names no region.
-     * Otherwise every observed occurrence: a recording is the healthy path
-     * by nature -- the fatal condition is what the composition builds --
-     * so nothing in the corpus distinguishes one occurrence of the site
-     * from another, and none is privileged.</p>
+     * <p>The declaration is the whole answer: an occurrence address, or the
+     * region and request family with a {@code k}.  Every occurrence it names
+     * captures the annotated target's reach; the one the {@code k} selects
+     * is the campaign's target.</p>
      */
     private static Set<String> anchorGoals(
             List<Target> targets, String declaredOccurrence) {
-        Set<String> everyGoal = new LinkedHashSet<>();
+        Set<String> byDeclaration = new LinkedHashSet<>();
         for (Target candidate : targets) {
-            everyGoal.add(candidate.goal.goalId());
+            if (declares(declaredOccurrence, candidate.occurrenceId)) {
+                byDeclaration.add(candidate.goal.goalId());
+            }
         }
+        return byDeclaration;
+    }
+
+    /**
+     * The target occurrence the case declared, in region-plan order.
+     *
+     * <p>The same rule {@link SelectorResolution} resolves a declaration by,
+     * over the rows this stage has: the {@code k}-th occurrence the
+     * declaration names, counted in the order the recording published them.
+     * Seed order is the resolution order because that is what a case author
+     * counted.  A declaration that names none of the observed target
+     * occurrences is a named refusal, not a fallback to "every occurrence"
+     * and not a rank.</p>
+     */
+    private static Target declaredTarget(List<Target> targets,
+                                         String declaredOccurrence)
+            throws IOException {
         String declared = declaredOccurrence == null ? ""
                 : declaredOccurrence.trim();
-        if (!declared.isEmpty()) {
-            Set<String> byDeclaration = new LinkedHashSet<>();
+        if (declared.isEmpty()) {
+            List<String> observed = new ArrayList<>();
             for (Target candidate : targets) {
-                if (declares(declared, candidate.occurrenceId)) {
-                    byDeclaration.add(candidate.goal.goalId());
-                }
+                observed.add(candidate.occurrenceId);
             }
-            // A declaration naming no observed occurrence keeps every
-            // occurrence rather than selecting none: the composition then
-            // states what the case declared beside what it observed.
-            if (!byDeclaration.isEmpty()) return byDeclaration;
+            throw new IOException("DECLARED_TARGET_OCCURRENCE_MISSING: this "
+                    + "campaign states no declared_target_occurrence, and "
+                    + "which occurrence of the annotated site it is about is "
+                    + "not a question runtime evidence may answer; observed "
+                    + "target occurrences: " + observed);
         }
-        return everyGoal;
+        int k = declaredK(declared);
+        int matched = 0;
+        for (Target candidate : targets) {
+            if (declares(declared, candidate.occurrenceId)
+                    && ++matched == k) {
+                return candidate;
+            }
+        }
+        throw new IOException("DECLARED_TARGET_OCCURRENCE_UNOBSERVED: "
+                + declared + " names " + matched + " of the "
+                + targets.size() + " observed target occurrence(s), and k="
+                + k + " selects none of them");
+    }
+
+    /** The {@code k} of a declaration, or 1 for an already resolved id. */
+    private static int declaredK(String declared) {
+        try {
+            return Math.max(1, OccurrenceAddress.parseSelector(declared).k());
+        } catch (RuntimeException notASelector) {
+            return 1;
+        }
     }
 
     /**
@@ -258,16 +271,14 @@ public final class RuntimeWorkflowDiscovery {
         return result;
     }
 
+    /** The observed failure-target branch sites one goal names. */
     private static Set<String> failureSites(Goal goal) {
         Set<String> result = new LinkedHashSet<>();
         for (JsonElement element : goal.branches()) {
             if (!element.isJsonObject()) continue;
             JsonObject branch = element.getAsJsonObject();
             if (optionalBool(branch, "failureTarget", false)
-                    && !optionalBool(branch, "loopControlGuard", false)
-                    && optionalBool(branch, "observed", false)
-                    && branch.has("requiredOutcome")
-                    && !branch.get("requiredOutcome").isJsonNull()) {
+                    && optionalBool(branch, "observed", false)) {
                 String site = optionalString(branch, "siteId");
                 if (!site.isEmpty()) result.add(site);
             }
@@ -319,20 +330,6 @@ public final class RuntimeWorkflowDiscovery {
         return selected;
     }
 
-    private static Map<String, JsonObject> closureEdges(
-            Set<String> closure, Map<String, JsonObject> edges) {
-        Map<String, JsonObject> result = new LinkedHashMap<>();
-        for (Map.Entry<String, JsonObject> entry : edges.entrySet()) {
-            JsonObject edge = entry.getValue();
-            String from = optionalString(edge, "fromOccurrenceId");
-            String to = optionalString(edge, "toOccurrenceId");
-            if (closure.contains(from) && closure.contains(to)) {
-                result.put(entry.getKey(), edge.deepCopy());
-            }
-        }
-        return result;
-    }
-
     private static Goal onlyReplayableGoal(RegionInstancePlan plan)
             throws IOException {
         Goal selected = null;
@@ -348,19 +345,7 @@ public final class RuntimeWorkflowDiscovery {
     }
 
     private static boolean namesFailureSite(Goal goal) {
-        for (JsonElement element : goal.branches()) {
-            if (!element.isJsonObject()) continue;
-            JsonObject branch = element.getAsJsonObject();
-            if (optionalBool(branch, "failureTarget", false)
-                    && !optionalBool(branch, "loopControlGuard", false)
-                    && optionalBool(branch, "observed", false)
-                    && branch.has("requiredOutcome")
-                    && !branch.get("requiredOutcome").isJsonNull()
-                    && !optionalString(branch, "siteId").isEmpty()) {
-                return true;
-            }
-        }
-        return false;
+        return !failureSites(goal).isEmpty();
     }
 
     static final class RankedWorkflow {
@@ -463,20 +448,12 @@ public final class RuntimeWorkflowDiscovery {
         }
     }
 
+    /** One observed occurrence of the annotated target site. */
     private static final class Target {
-        private static final Comparator<Target> EVIDENCE_ORDER =
-                TargetRank.ORDER.thenComparing(
-                        Comparator.comparingLong(
-                                Target::observedFailureEvent).reversed());
-        private static final Comparator<Target> ORDER = EVIDENCE_ORDER
-                .thenComparing(value -> value.plan.regionId())
-                .thenComparing(value -> value.plan.occurrenceId());
-
         private final RegionInstancePlan plan;
         private final Goal goal;
         private final String occurrenceId;
         private final String campaignId;
-        private TargetRank score = TargetRank.empty();
 
         private Target(RegionInstancePlan plan, Goal goal) {
             this.plan = plan;
@@ -485,152 +462,6 @@ public final class RuntimeWorkflowDiscovery {
             this.campaignId = "CAMPAIGN.REGION_PATH."
                     + ArtifactIO.sha256(plan.regionId() + "\n"
                     + occurrenceId + "\n" + goal.goalId());
-        }
-
-        private void rank(Map<String, JsonObject> topologyEdges) {
-            score = TargetRank.of(this, topologyEdges.values());
-        }
-
-        /**
-         * Distinguishes repeated executions of the target site after the
-         * semantic rank ties. This event belongs to the target predicate
-         * itself; it never selects a shared-state writer or a read-from edge.
-         */
-        private long observedFailureEvent() {
-            long selected = -1L;
-            for (JsonElement element : goal.branches()) {
-                if (!element.isJsonObject()) continue;
-                JsonObject branch = element.getAsJsonObject();
-                if (optionalBool(branch, "failureTarget", false)
-                        && optionalBool(branch, "observed", false)) {
-                    selected = Math.max(selected, optionalLongInteger(branch,
-                            "selectedRuntimeEventSeq", -1L));
-                }
-            }
-            return selected;
-        }
-
-        private String context() {
-            return occurrenceId + " rank=" + score;
-        }
-
-    }
-
-    /** Evidence-only target rank; names, roles and application types do not
-     * participate. */
-    private static final class TargetRank {
-        private static final Comparator<Target> ORDER = Comparator
-                .comparing((Target value) ->
-                        value.score.directProtocolInput).reversed()
-                .thenComparing(value ->
-                        value.score.allTargetInputsAnchored,
-                        Comparator.reverseOrder())
-                .thenComparing(Comparator.comparingInt(
-                        (Target value) -> value.score.anchoredTargetInputs)
-                        .reversed())
-                .thenComparingInt(value ->
-                        value.score.unresolvedTargetInputs)
-                .thenComparingInt(value ->
-                        value.score.unresolvedTopologyInputs);
-
-        private final boolean directProtocolInput;
-        private final boolean allTargetInputsAnchored;
-        private final int anchoredTargetInputs;
-        private final int unresolvedTargetInputs;
-        private final int unresolvedTopologyInputs;
-
-        private TargetRank(boolean directProtocolInput,
-                           int anchoredTargetInputs,
-                           int unresolvedTargetInputs,
-                           int unresolvedTopologyInputs) {
-            this.directProtocolInput = directProtocolInput;
-            this.allTargetInputsAnchored = anchoredTargetInputs > 0
-                    && unresolvedTargetInputs == 0;
-            this.anchoredTargetInputs = anchoredTargetInputs;
-            this.unresolvedTargetInputs = unresolvedTargetInputs;
-            this.unresolvedTopologyInputs = unresolvedTopologyInputs;
-        }
-
-        private static TargetRank empty() {
-            return new TargetRank(false, 0, Integer.MAX_VALUE,
-                    Integer.MAX_VALUE);
-        }
-
-        private static TargetRank of(Target target,
-                                     Iterable<JsonObject> topologyEdges) {
-            Map<String, JsonObject> directProtocol = new LinkedHashMap<>();
-            Set<String> unresolvedTopology = new LinkedHashSet<>();
-            for (JsonObject edge : topologyEdges) {
-                if (target.occurrenceId.equals(optionalString(edge, "toOccurrenceId"))
-                        && AutomaticRegionEdge.tracedExchangeCandidate(edge)) {
-                    directProtocol.put(optionalString(edge, "toInputPort"), edge);
-                }
-                if (unresolvedTopology(edge)) {
-                    unresolvedTopology.add(optionalString(edge, "toOccurrenceId")
-                            + "\n" + optionalString(edge, "toInputPort"));
-                }
-            }
-            Set<String> inputs = new LinkedHashSet<>();
-            Set<String> proven = new LinkedHashSet<>();
-            boolean direct = false;
-            for (JsonElement element : target.goal.symbolize()) {
-                if (!element.isJsonObject()) continue;
-                JsonObject action = element.getAsJsonObject();
-                String input = firstInputName(action);
-                if (input.isEmpty() || !inputs.add(input)) continue;
-                if (directProtocol.containsKey(input)
-                        || directProtocol.containsKey(
-                        optionalString(action, "portId"))) {
-                    direct = true;
-                    proven.add(input);
-                } else if (exactRuntimeInput(target.occurrenceId, action)) {
-                    proven.add(input);
-                }
-            }
-            return new TargetRank(direct, proven.size(),
-                    inputs.size() - proven.size(), unresolvedTopology.size());
-        }
-
-        private static String firstInputName(JsonObject action) {
-            String symbol = optionalString(action, "symbol");
-            return symbol.isEmpty() ? optionalString(action, "portId") : symbol;
-        }
-
-        private static boolean exactRuntimeInput(String occurrence,
-                                                 JsonObject action) {
-            if (!optionalBool(action, "observed", false)) return false;
-            for (JsonElement element : array(action, "runtimeAccesses")) {
-                if (!element.isJsonObject()) continue;
-                JsonObject access = element.getAsJsonObject();
-                if (occurrence.equals(optionalString(access, "occurrenceId"))
-                        && optionalLongInteger(access, "eventSeq", -1L) >= 0L) {
-                    return true;
-                }
-            }
-            return false;
-        }
-
-        private static boolean unresolvedTopology(JsonObject edge) {
-            if ("RUNTIME_PROTOCOL_FLOW".equals(optionalString(edge, "kind"))) {
-                return !AutomaticRegionEdge.tracedExchangeCandidate(edge);
-            }
-            if ("RUNTIME_FIELD_FLOW".equals(optionalString(edge, "kind"))) {
-                return !AutomaticRegionEdge.sharedLocationCandidate(edge);
-            }
-            if (AutomaticRegionEdge.RUNTIME_REQUEST_CONTROL_EDGE_KIND.equals(
-                    optionalString(edge, "kind"))) {
-                return !AutomaticRegionEdge.trustedRequestFaultControl(edge);
-            }
-            return true;
-        }
-
-        @Override
-        public String toString() {
-            return "{directProtocol=" + directProtocolInput
-                    + ", targetInputs=" + anchoredTargetInputs + "/"
-                    + (anchoredTargetInputs + unresolvedTargetInputs)
-                    + ", unresolvedTopologyInputs="
-                    + unresolvedTopologyInputs + "}";
         }
     }
 

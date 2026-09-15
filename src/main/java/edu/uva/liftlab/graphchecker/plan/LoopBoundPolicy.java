@@ -37,11 +37,6 @@ public final class LoopBoundPolicy {
     public static final String LOOP_CLASSIFICATION = "loopClassification";
     public static final String LOOP_CLASSIFICATION_AUTHORITY =
             "loopClassificationAuthority";
-    public static final String LOOP_CARDINALITY = "loopCardinality";
-    public static final String LOOP_CARDINALITIES = "loopCardinalities";
-    public static final String LOOP_CARDINALITY_GAPS =
-            "loopCardinalityGaps";
-    public static final String DYNAMIC_OCCURRENCE = "dynamicOccurrence";
     public static final String RUNTIME_LOOP_ID = "runtimeLoopId";
     /** Region-row member naming which activation a region is rooted on. */
     public static final String ROOT_AUTHORITY = "rootAuthority";
@@ -55,8 +50,6 @@ public final class LoopBoundPolicy {
     public static final String HEADER_UNIT_INDEX = "headerUnitIndex";
     /** {@link #ROOT_LOOP} member naming the original unit this region needs. */
     public static final String DEMANDED_UNIT_INDEX = "demandedUnitIndex";
-    public static final String PATH_CARDINALITY_AUTHORITY =
-            "RUNTIME_ARRAY_CARDINALITY_V1";
 
     /** One replay path states two different counts for one loop body. */
     public static final String PATH_LOOP_COUNT_AMBIGUOUS =

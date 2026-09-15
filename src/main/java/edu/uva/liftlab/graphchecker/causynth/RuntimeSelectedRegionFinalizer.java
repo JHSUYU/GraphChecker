@@ -54,7 +54,6 @@ public final class RuntimeSelectedRegionFinalizer {
      * Skeleton field naming the methods reached from the anchors that admitted
      * the region.
      */
-    public static final String DEMAND_SCOPE = "demandScopeMethods";
 
     /**
      * Existing planner admission vocabulary for a bounded state writer.  Why
@@ -205,7 +204,7 @@ public final class RuntimeSelectedRegionFinalizer {
             outputs.removeIf(RuntimeSelectedRegionFinalizer
                     ::toolBookkeepingPort);
             List<Map<String, Object>> branchPolicies = branches(program,
-                    regionId, demandScope(skeleton, outputs));
+                    regionId);
             List<Map<String, Object>> inputs = statePorts(program,
                     regionId, "HEAP_READ", "IN",
                     occurrenceByRecordedRootCall);
@@ -217,7 +216,6 @@ public final class RuntimeSelectedRegionFinalizer {
                     ::toolBookkeepingPort);
             inputs.addAll(explicitFaultPorts(regionId, regionGraph,
                     occurrenceByRecordedRootCall));
-            markLoopControlOnlyInputs(inputs, regionGraph, branchPolicies);
             region.put("symbolicInputs", inputs);
             region.put("outputs", outputs);
             region.put("branchPolicies", branchPolicies);
@@ -931,8 +929,6 @@ public final class RuntimeSelectedRegionFinalizer {
             Map<String, Object> policy = new LinkedHashMap<>();
             policy.put("siteId", entry.getKey());
             policy.put("failureTarget", true);
-            policy.put("requiredOutcome",
-                    consistentRequiredOutcome(entry.getValue()));
             result.add(policy);
         }
         return result;
@@ -1011,9 +1007,6 @@ public final class RuntimeSelectedRegionFinalizer {
                 evidence.put("siteId", site);
                 evidence.put("method", target.get("method"));
                 evidence.put("unitIndex", target.get("unitIndex"));
-                evidence.put("operandCells", target.get("operandCells"));
-                evidence.put("requiredOutcome", target.get(
-                        "requiredOutcome"));
                 evidence.put("observedOutcome", observation.get("outcome"));
                 evidence.put("eventSeq", observation.get("eventSeq"));
                 evidence.put("callId", callId);
@@ -2595,9 +2588,7 @@ public final class RuntimeSelectedRegionFinalizer {
             List<Map<String, Object>> branchPolicies) {
         List<String> seeds = new ArrayList<>();
         for (Map<String, Object> branch : branchPolicies) {
-            if ("EXPLORE".equals(text(branch.get("policy")))) {
-                seeds.addAll(strings(branch.get("operandCells")));
-            }
+            seeds.addAll(strings(branch.get("operandCells")));
         }
         Set<String> selected = new LinkedHashSet<>();
         Map<String, List<Map<String, Object>>> incoming =
@@ -2730,86 +2721,22 @@ public final class RuntimeSelectedRegionFinalizer {
     }
 
     /**
-     * A live-in used only to replay a bounded loop's continuation decision is
-     * retained in the task, but must not become a symbolic search dimension.
+     * The region's branch catalog: which conditional sites the slice reaches
+     * and which cells decide them.
+     *
+     * <p>No policy and no guard set.  Every decision whose term has a
+     * symbolic operand is recorded (LEAN section 1), so a branch the slice
+     * names is a branch the replay records; and the guard set of a site is
+     * {@code static_scope_map}'s, computed once by
+     * {@link SiteControlDependence}.  This used to classify each site
+     * EXPLORE or PATH_ASSUMPTION from a second, may-reach control-dependence
+     * relation carried on the graph, and to re-derive the fatal polarity
+     * from it.</p>
      */
-    private static void markLoopControlOnlyInputs(
-            List<Map<String, Object>> inputs,
-            List<Map<String, Object>> edges,
-            List<Map<String, Object>> branchPolicies) {
-        Set<String> loopOperands = new LinkedHashSet<>();
-        Set<String> semanticOperands = new LinkedHashSet<>();
-        for (Map<String, Object> branch : branchPolicies) {
-            Set<String> target = Boolean.TRUE.equals(booleanValue(
-                    branch.get("loopControlGuard")))
-                    ? loopOperands : semanticOperands;
-            target.addAll(strings(branch.get("operandCells")));
-        }
-        if (loopOperands.isEmpty()) return;
-
-        Map<String, List<String>> outgoing = new LinkedHashMap<>();
-        for (Map<String, Object> edge : edges) {
-            if ("GUARD".equals(text(edge.get("transferKind")))) continue;
-            String from = text(edge.get("fromCell"));
-            String to = text(edge.get("toCell"));
-            if (!from.isEmpty() && !to.isEmpty()) {
-                outgoing.computeIfAbsent(from,
-                        ignored -> new ArrayList<>()).add(to);
-            }
-        }
-        for (Map<String, Object> input : inputs) {
-            Set<String> starts = new LinkedHashSet<>(
-                    strings(input.get("dependencyCells")));
-            String cell = text(input.get("cell"));
-            if (!cell.isEmpty()) starts.add(cell);
-            // One walk answers both questions: any flow reaching a non-loop
-            // branch operand wins and keeps the value symbolic.
-            Set<String> reached = StaticProgram.closure(starts,
-                    node -> outgoing.getOrDefault(node,
-                            Collections.<String>emptyList()));
-            if (!Collections.disjoint(reached, loopOperands)
-                    && Collections.disjoint(reached, semanticOperands)) {
-                input.put("loopControlOnly", true);
-                input.put("symbolicDemand", "CONCRETE_LOOP_CONTROL");
-            }
-        }
-    }
-
-    /**
-     * The methods whose guards decide the region's demanded behaviour: what
-     * the admitting anchors reach, widened by the methods that define this
-     * region's own outputs.
-     */
-    private static Set<String> demandScope(
-            StaticProgram.RegionRow skeleton,
-            List<Map<String, Object>> outputs) {
-        Set<String> result = new LinkedHashSet<>(
-                skeleton.demandScopeMethods);
-        if (result.isEmpty()) {
-            return result;
-        }
-        for (Map<String, Object> output : outputs) {
-            String site = text(output.get("siteId"));
-            int marker = site.indexOf('#');
-            if (marker > 0) {
-                result.add(site.substring(0, marker));
-            }
-            String owner = text(output.get("rootMethod"));
-            if (!owner.isEmpty()) {
-                result.add(owner);
-            }
-        }
-        return result;
-    }
-
-    /** Builds the region's branch policies. */
     private static List<Map<String, Object>> branches(
-            StaticProgram program, String regionId,
-            Set<String> demandScope) {
+            StaticProgram program, String regionId) {
         Map<String, List<Map<String, Object>>> bySite = guardsBySite(
                 program.regionGraph(regionId), edge -> true);
-        BranchPolicyClassifier classifier = new BranchPolicyClassifier(
-                program.regionIncoming(regionId));
         List<Map<String, Object>> result = new ArrayList<>();
         for (Map.Entry<String, List<Map<String, Object>>> entry
                 : bySite.entrySet()) {
@@ -2841,24 +2768,6 @@ public final class RuntimeSelectedRegionFinalizer {
                 branch.put(FAILURE_TARGET_CELLS, guardedTargets);
             }
             branch.put("operandCells", operandCells(decisiveGuards));
-            Boolean required = consistentRequiredOutcome(decisiveGuards);
-            branch.put("requiredOutcome", required);
-
-            boolean cfgLoopControl = classifier.cfgLoopControlGuard(guards);
-            boolean loopStructure = cfgLoopControl
-                    || classifier.structuralLoopGuard(site, guards);
-            boolean carrierStructure = classifier.structureCarrierGuard(
-                    guards);
-            boolean outsideDemand = !demandScope.isEmpty()
-                    && failureGuards.isEmpty()
-                    && !demandScope.contains(text(
-                    representative.get("method")));
-            branch.put("loopControlGuard", loopStructure);
-            // Opposite required outcomes mean this guard selects between
-            // alternative demanded semantics.
-            branch.put("policy", loopStructure
-                    || carrierStructure || outsideDemand
-                    ? "PATH_ASSUMPTION" : "EXPLORE");
             result.add(branch);
         }
         return result;
@@ -2891,124 +2800,6 @@ public final class RuntimeSelectedRegionFinalizer {
         List<String> result = new ArrayList<>(cells);
         Collections.sort(result);
         return result;
-    }
-
-    private static Boolean consistentRequiredOutcome(
-            Collection<Map<String, Object>> guards) {
-        Set<Boolean> values = new LinkedHashSet<>();
-        for (Map<String, Object> guard : guards) {
-            List<Map<String, Object>> controlled = new ArrayList<>();
-            controlled.addAll(rows(guard.get("guardedMutations")));
-            controlled.addAll(rows(guard.get("controlledDefinitions")));
-            controlled.addAll(rows(guard.get("guardedEffects")));
-            if (controlled.isEmpty()) {
-                Boolean value = booleanValue(guard.get("requiredOutcome"));
-                if (value != null) values.add(value);
-                continue;
-            }
-            for (Map<String, Object> row : controlled) {
-                Boolean value = booleanValue(row.get("requiredOutcome"));
-                if (value == null) return null;
-                values.add(value);
-            }
-        }
-        return values.size() == 1 ? values.iterator().next() : null;
-    }
-
-    /** Classifies only positively proven structural traversal guards. */
-    private static final class BranchPolicyClassifier {
-        private final Map<String, List<Map<String, Object>>> incoming;
-
-        private BranchPolicyClassifier(
-                Map<String, List<Map<String, Object>>> incoming) {
-            this.incoming = incoming;
-        }
-
-        private boolean structuralLoopGuard(
-                String site, Collection<Map<String, Object>> guards) {
-            if (!loopRecurrence(site, guards)) return false;
-            for (String operand : operandCells(guards)) {
-                if (hasStructuralSource(operand)) return true;
-            }
-            return false;
-        }
-
-        private boolean cfgLoopControlGuard(
-                Collection<Map<String, Object>> guards) {
-            for (Map<String, Object> guard : guards) {
-                if (Boolean.TRUE.equals(booleanValue(
-                        guard.get("loopControlGuard")))) {
-                    return true;
-                }
-            }
-            return false;
-        }
-
-        private boolean structureCarrierGuard(
-                Collection<Map<String, Object>> guards) {
-            for (String operand : operandCells(guards)) {
-                if (containerRole(incoming, "fromCell", operand).equals(
-                        DependencyRole.CONCRETE_STRUCTURE_CARRIER)) {
-                    return true;
-                }
-            }
-            return false;
-        }
-
-        private boolean loopRecurrence(
-                String site, Collection<Map<String, Object>> guards) {
-            for (Map<String, Object> guard : guards) {
-                String guardSite = firstNonEmpty(text(guard.get("guardSiteId")),
-                        text(guard.get("siteId")));
-                if (!site.equals(guardSite)) continue;
-                if (Boolean.TRUE.equals(booleanValue(
-                        guard.get("sameCellRedefinition")))) {
-                    return true;
-                }
-                for (Map<String, Object> definition
-                        : rows(guard.get("controlledDefinitions"))) {
-                    if (Boolean.TRUE.equals(booleanValue(
-                            definition.get("sameCellRedefinition")))) {
-                        return true;
-                    }
-                }
-            }
-            return false;
-        }
-
-        private boolean hasStructuralSource(String start) {
-            Set<String> visitedEdges = new LinkedHashSet<>();
-            boolean[] structural = new boolean[1];
-            StaticProgram.closure(Collections.singletonList(start), cell -> {
-                List<String> sources = new ArrayList<>();
-                for (Map<String, Object> edge : incoming.getOrDefault(
-                        cell, Collections.<Map<String, Object>>emptyList())) {
-                    String identity = firstNonEmpty(text(edge.get("id")),
-                            text(edge.get("siteId")) + "\n"
-                                    + text(edge.get("fromCell")) + "\n"
-                                    + text(edge.get("toCell")));
-                    if (!visitedEdges.add(identity)
-                            || "GUARD".equals(text(
-                            edge.get("transferKind")))) {
-                        continue;
-                    }
-                    String invoke = text(edge.get("invoke"));
-                    if (JavaContainerTypes
-                            .structuralIterationPredicate(invoke)
-                            || JavaContainerTypes
-                            .structuralCardinalityOperation(invoke)
-                            || Boolean.TRUE.equals(booleanValue(
-                            edge.get("arrayLengthOperation")))) {
-                        structural[0] = true;
-                        return null;
-                    }
-                    String predecessor = text(edge.get("fromCell"));
-                    if (!predecessor.isEmpty()) sources.add(predecessor);
-                }
-                return sources;
-            });
-            return structural[0];
-        }
     }
 
     private static boolean exactLocalPass(Map<String, Object> edge) {
@@ -3488,10 +3279,7 @@ public final class RuntimeSelectedRegionFinalizer {
                 for (Map<String, Object> branch
                         : rows(region.get("branchPolicies"))) {
                     String site = text(branch.get("siteId"));
-                    if (!site.isEmpty()
-                            && "EXPLORE".equals(text(branch.get("policy")))
-                            && !Boolean.TRUE.equals(booleanValue(
-                            branch.get("loopControlGuard")))) {
+                    if (!site.isEmpty()) {
                         for (String operand : strings(
                                 branch.get("operandCells"))) {
                             addUnique(exploredSeeds, regionId, operand);
@@ -3694,7 +3482,12 @@ public final class RuntimeSelectedRegionFinalizer {
                         : evidenceBySite.entrySet()) {
                     List<Map<String, Object>> occurrences = entry.getValue();
                     sortByEventSeq(occurrences);
-                    int selectedIndex = selectedFatalOccurrence(occurrences);
+                    // The fatal occurrence of this activation is the FIRST
+                    // decision the recording made at that site in it.  It
+                    // used to be the first occurrence whose observed outcome
+                    // equalled a required one -- an election over recorded
+                    // evidence that this tree spelled out three times.
+                    int selectedIndex = 0;
                     Map<String, Object> selected = occurrences.get(
                             selectedIndex);
                     long cutoff = longNumber(selected.get("eventSeq"), -1L);
@@ -3716,10 +3509,6 @@ public final class RuntimeSelectedRegionFinalizer {
                     context.put("eventSeq", cutoff);
                     context.put("observedOutcome",
                             selected.get("observedOutcome"));
-                    if (selected.get("requiredOutcome") instanceof Boolean) {
-                        context.put("requiredOutcome",
-                                selected.get("requiredOutcome"));
-                    }
                     List<String> ports = new ArrayList<>();
                     for (String demand : inputs) {
                         Map<String, Object> port = this.inputs.get(demand);
@@ -3745,22 +3534,6 @@ public final class RuntimeSelectedRegionFinalizer {
                         + regionId + " " + occurrenceId);
             }
             return backwardInputs(occurrenceId, seeds);
-        }
-
-        /** Same occurrence rule as Scheduler.TargetBranch.select. */
-        private int selectedFatalOccurrence(
-                List<Map<String, Object>> occurrences) {
-            for (int index = 0; index < occurrences.size(); index++) {
-                Map<String, Object> occurrence = occurrences.get(index);
-                Object required = occurrence.get("requiredOutcome");
-                Object observed = occurrence.get("observedOutcome");
-                if (required instanceof Boolean
-                        && observed instanceof Boolean
-                        && required.equals(observed)) {
-                    return index;
-                }
-            }
-            return 0;
         }
 
         /**

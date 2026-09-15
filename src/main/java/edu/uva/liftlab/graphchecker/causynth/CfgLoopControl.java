@@ -282,11 +282,6 @@ final class CfgLoopControl {
         return built;
     }
 
-    /** Branches with a successor inside a natural loop and one outside. */
-    static Set<Unit> guards(LoopCfg cfg) {
-        return classify(cfg).keySet();
-    }
-
     /** One retained loop: its iteration guards and the kind it classifies
      *  as. */
     static final class RetainedLoop {

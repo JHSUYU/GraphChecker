@@ -100,19 +100,6 @@ public final class CausynthStaticFacts {
         }
     }
 
-    static final class ExceptionGuard {
-        final Fact fact;
-        final Boolean requiredOutcome;
-        final List<Integer> reachingSuccessorIndices;
-
-        ExceptionGuard(Fact fact, Boolean requiredOutcome,
-                       List<Integer> reachingSuccessorIndices) {
-            this.fact = fact;
-            this.requiredOutcome = requiredOutcome;
-            this.reachingSuccessorIndices = reachingSuccessorIndices;
-        }
-    }
-
     /** One exact, index-stable observation of a Soot unit. */
     static final class Fact {
         final Unit unit;

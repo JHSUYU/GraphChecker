@@ -1713,9 +1713,7 @@ final class RuntimeRegionPlanner {
 
     private static boolean eligibleTargetSite(Map<String, Object> branch) {
         return Boolean.TRUE.equals(branch.get("failureTarget"))
-                && !Boolean.TRUE.equals(branch.get("loopControlGuard"))
                 && Boolean.TRUE.equals(branch.get("observed"))
-                && branch.get("requiredOutcome") instanceof Boolean
                 && !stringValue(branch.get("siteId")).isEmpty();
     }
 
@@ -2190,19 +2188,12 @@ final class RuntimeRegionPlanner {
                         "outcome", event.outcome,
                         "eventSeq", event.seq));
             }
+            // The FIRST decision the recording made at this site in this
+            // activation.  It used to be the first one whose outcome equalled
+            // a required outcome the region plan carried -- an election over
+            // recorded evidence, and the polarity it elected on is now stated
+            // once, by the static scope map's TARGET_SITE row.
             int selectedIndex = 0;
-            Object required = policy.get("requiredOutcome");
-            boolean requiredDeclared = required instanceof Boolean;
-            boolean requiredObserved = false;
-            if (requiredDeclared) {
-                for (int index = 0; index < occurrences.size(); index++) {
-                    if (required.equals(occurrences.get(index).outcome)) {
-                        selectedIndex = index;
-                        requiredObserved = true;
-                        break;
-                    }
-                }
-            }
             RuntimeEvent selected = occurrences.isEmpty() ? null
                     : occurrences.get(selectedIndex);
             Map<String, Object> branch = new LinkedHashMap<>(policy);

@@ -2,7 +2,6 @@ package edu.uva.liftlab.graphchecker.causynth;
 
 import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.ObservedWriteTarget;
 import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.AccessorCallTarget;
-import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.ConcolicBranchSelection;
 import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.ConcolicMaterializationSelection;
 import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.InstrumentationPlan;
 import com.google.gson.JsonObject;
@@ -397,8 +396,6 @@ public final class CausynthPipeline {
                 configuredSourcePhaseSites = new LinkedHashMap<>();
         private final ConcolicMaterializationSelection materializations =
                 new ConcolicMaterializationSelection();
-        private final ConcolicBranchSelection branches =
-                new ConcolicBranchSelection();
         // Keyed by the plan itself, not by its root method: a campaign may
         // hold several tasks rooted at one method - a path flip is exactly
         // that - and each keeps its own replay entry and engine arm.
@@ -413,7 +410,6 @@ public final class CausynthPipeline {
             this.campaign = campaign;
             for (InstrumentationPlan plan : campaign) {
                 materializations.mergeFrom(plan.materializations());
-                branches.mergeFrom(plan.branches());
                 methods.addAll(plan.envelopeMethods());
                 writerMethods.addAll(plan.instrumentationMethods());
                 for (ConfiguredSourcePhaseContract.Occurrence phase
@@ -571,7 +567,7 @@ public final class CausynthPipeline {
                 refs);
         instrumentConcolicMethodArguments(envelope.materializations, refs);
         instrumentConcolicMaterializations(envelope, refs);
-        instrumentConcolicBranches(envelope.branches, refs);
+        instrumentConcolicBranches(envelope.methods, refs);
     }
 
     /**
@@ -2304,10 +2300,8 @@ public final class CausynthPipeline {
         }
         HookCatalog hooks = HookCatalog.concolic();
         SootMethodRef replayBody = hooks.ref(Hook.CHECK_REPLAY_LOOP_BODY);
-        SootMethodRef recordCardinality =
-                hooks.ref(Hook.RECORD_LOOP_CARDINALITY);
-        SootMethodRef completeCardinality =
-                hooks.ref(Hook.COMPLETE_LOOP_CARDINALITY);
+        SootMethodRef openInvocation = hooks.ref(Hook.OPEN_LOOP_INVOCATION);
+        SootMethodRef closeInvocation = hooks.ref(Hook.CLOSE_LOOP_INVOCATION);
         SootMethodRef checkBackedge = hooks.ref(Hook.CHECK_LOOP_BACKEDGE);
         int instrumented = 0;
         for (String methodSignature : methods) {
@@ -2340,22 +2334,24 @@ public final class CausynthPipeline {
                         ? loop.terminals()
                         : Collections.<Unit>emptyList();
                 if (fixedCount) {
+                    // One dynamic invocation of an indexed loop opens where
+                    // its array length is computed, which is once per
+                    // invocation and before the first body hook.  The length
+                    // itself is no longer recorded: only the invocation the
+                    // replay body budget is scoped to.
                     List<Unit> guards = new ArrayList<>();
                     for (CfgLoopControl.Edge edge : loopExits) {
                         guards.add(edge.source);
                     }
                     AssignStmt authority = CfgLoopControl
                             .arrayLengthAuthority(body, guards);
-                    if (authority == null
-                            || !(authority.getLeftOp() instanceof Local)) {
+                    if (authority == null) {
                         throw new IllegalStateException(
-                                "FIXED_COUNT_LOOP_CARDINALITY_UNADDRESSABLE: "
+                                "FIXED_COUNT_LOOP_INVOCATION_UNADDRESSABLE: "
                                         + loopId);
                     }
-                    Unit observation = invoke(recordCardinality,
-                            StringConstant.v(loopId),
-                            (Local) authority.getLeftOp());
-                    body.getUnits().insertAfter(observation, authority);
+                    body.getUnits().insertAfter(invoke(openInvocation,
+                            StringConstant.v(loopId)), authority);
                 }
                 boolean resourceLoop = fixedCount;
                 int loopBodyBound = resourceLoop
@@ -2393,10 +2389,11 @@ public final class CausynthPipeline {
                 if (fixedCount) {
                     for (CfgLoopControl.Edge exit : loopExits) {
                         splitStringHookEdge(body, method, exit.source,
-                                exit.target, loopId, completeCardinality);
+                                exit.target, loopId, closeInvocation);
                     }
                     for (Unit terminal : loopTerminals) {
-                        body.getUnits().insertBefore(invoke(completeCardinality, StringConstant.v(loopId)), terminal);
+                        body.getUnits().insertBefore(invoke(closeInvocation,
+                                StringConstant.v(loopId)), terminal);
                     }
                 }
             }
@@ -2630,13 +2627,38 @@ public final class CausynthPipeline {
         }
     }
 
-    private void instrumentConcolicBranches(
-            ConcolicBranchSelection selection, HookCatalog refs) {
-        instrumentMethods(selection.methods(), "",
+    /**
+     * Weaves the decision marker at EVERY conditional branch of every
+     * instrumented method.
+     *
+     * <p>LEAN section 1: any decision whose term has a symbolic operand is
+     * recorded, so there is nothing to select per branch and no plan member
+     * to honour.  This used to weave only the sites the task's
+     * {@code branches[]} array named, which made the recorded decision set a
+     * function of an offline branch classification -- and a decision at a
+     * site the plan had not named was dropped at the hook
+     * ({@code ConcolicTaskPlan.declaresBranch}).  The plan still says which
+     * METHODS are instrumented; which branches inside them exist is the
+     * body's answer.</p>
+     *
+     * <p>A woven unit has no original index and is skipped: a hook's own
+     * conditional is not a program decision, and no published site id could
+     * name it.</p>
+     *
+     * @return the number of branch sites woven
+     */
+    private int instrumentConcolicBranches(
+            Collection<String> methods, HookCatalog refs) {
+        int[] woven = new int[1];
+        instrumentMethods(methods, "",
                 (body, method, units, entry, lowerBound, receiver) -> {
                     String signature = method.getSignature();
-                    for (Integer unitIndex : selection.units(signature)) {
-                        Unit unit = originalUnit(body, unitIndex);
+                    for (Unit unit : snapshotUnits(body)) {
+                        boolean conditional = unit instanceof IfStmt
+                                || unit instanceof SwitchStmt;
+                        if (!conditional) continue;
+                        int unitIndex = originalUnitIndex(unit);
+                        if (unitIndex < 0) continue;
                         if (lowerBound != null
                                 && !unitAtOrAfter(body, lowerBound, unit)) {
                             throw new IllegalStateException(
@@ -2647,12 +2669,17 @@ public final class CausynthPipeline {
                         if (unit instanceof IfStmt) {
                             instrumentConcolicBranch(body, method,
                                     (IfStmt) unit, unitIndex, refs);
-                        } else if (unit instanceof SwitchStmt) {
+                        } else {
                             instrumentConcolicSwitch(body, method,
                                     (SwitchStmt) unit, unitIndex, refs);
                         }
+                        woven[0]++;
                     }
                 });
+        LOG.info("Wove the decision marker at {} conditional branch site(s) "
+                + "across {} instrumented method(s)", woven[0],
+                methods.size());
+        return woven[0];
     }
 
     private void instrumentConcolicBranch(Body body, SootMethod method,
@@ -3534,8 +3561,8 @@ public final class CausynthPipeline {
         RESOLVE_SWITCH_BRANCH,
         CHECK_LOOP_BACKEDGE,
         CHECK_REPLAY_LOOP_BODY,
-        RECORD_LOOP_CARDINALITY,
-        COMPLETE_LOOP_CARDINALITY,
+        OPEN_LOOP_INVOCATION,
+        CLOSE_LOOP_INVOCATION,
         EXIT_REGION_FRAME,
         THROW_REGION_FRAME
     }
@@ -3729,11 +3756,10 @@ public final class CausynthPipeline {
                     .add(Hook.CHECK_REPLAY_LOOP_BODY, runtime,
                             "checkReplayLoopBody", VoidType.v(), string,
                             IntType.v())
-                    .add(Hook.RECORD_LOOP_CARDINALITY, runtime,
-                            "recordLoopCardinality", VoidType.v(), string,
-                            IntType.v())
-                    .add(Hook.COMPLETE_LOOP_CARDINALITY, runtime,
-                            "completeLoopCardinality", VoidType.v(), string)
+                    .add(Hook.OPEN_LOOP_INVOCATION, runtime,
+                            "openLoopInvocation", VoidType.v(), string)
+                    .add(Hook.CLOSE_LOOP_INVOCATION, runtime,
+                            "closeLoopInvocation", VoidType.v(), string)
                     .add(Hook.EXIT_REGION_FRAME, runtime, "exitRegionFrame",
                             VoidType.v(), string, string)
                     .add(Hook.THROW_REGION_FRAME, runtime, "throwRegionFrame",

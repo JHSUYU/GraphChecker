@@ -321,29 +321,25 @@ public final class ConcolicRegionRuntime {
         endAtCut(active, cut);
     }
 
-    /**
-     * Records the exact array length supplying one fixed-count loop
-     * invocation.
-     */
-    public static void recordLoopCardinality(
-            String loopId, int cardinality) {
+    /** Opens one dynamic invocation of a fixed-count loop. */
+    public static void openLoopInvocation(String loopId) {
         ActiveRegion active = observingActiveRegion();
         if (active == null) return;
         beginBookkeeping();
         try {
-            active.recordLoopCardinality(safe(loopId), cardinality);
+            active.openLoopInvocation(safe(loopId));
         } finally {
             endBookkeeping();
         }
     }
 
-    /** Ends the current dynamic occurrence of one fixed-count loop. */
-    public static void completeLoopCardinality(String loopId) {
+    /** Closes the open dynamic invocation of a fixed-count loop. */
+    public static void closeLoopInvocation(String loopId) {
         ActiveRegion active = observingActiveRegion();
         if (active == null) return;
         beginBookkeeping();
         try {
-            active.completeLoopCardinality(safe(loopId));
+            active.closeLoopInvocation(safe(loopId));
         } finally {
             endBookkeeping();
         }
@@ -3116,36 +3112,13 @@ public final class ConcolicRegionRuntime {
         ActiveRegion active = activeRegion();
         if (active == null) return;
         String branchSite = SiteId.render(method, unitIndex);
-        boolean declared = active.activation.declaresBranch(branchSite);
-        boolean replayBoundary = active.activation
-                .observesReplayBoundary(branchSite);
-        if (!declared && !replayBoundary) {
-            active.takePreparedBranch(preparedHandle);
-            return;
-        }
-        if (!declared) {
-            PreparedBranch prepared = active.takePreparedBranch(
-                    preparedHandle);
-            int occurrence;
-            if (!active.pathRecordingStarted) {
-                occurrence = active.nextBranchOccurrence(branchSite);
-            } else if (prepared != null && prepared.matches(method,
-                    unitIndex, expression)) {
-                occurrence = prepared.occurrence;
-            } else {
-                return;
-            }
-            if (active.recordReplayBoundary(method, unitIndex,
-                    occurrence, decision)) {
-                active.observeReplayDecision(branchSite, occurrence,
-                        decision);
-            }
-            if (active.replayPrefixContradicted()) {
-                finish(active.token, "REPLAY_PREFIX_CONTRADICTED", "",
-                        null);
-            }
-            return;
-        }
+        // A decision at a woven site is recorded, full stop.  The frozen
+        // plan used to have to declare the site as well -- it carried the
+        // branches an offline classification had selected, and every
+        // decision at any other woven site was dropped here, so the
+        // recorded decision set was a function of that classification rather
+        // than of what ran.  With the selection gone, the arm below that
+        // handled "woven but not declared" is unreachable and goes with it.
         if (!active.pathRecordingStarted) {
             int decided = active.recordConcreteDecision(method, unitIndex,
                     decision);
@@ -5306,11 +5279,21 @@ public final class ConcolicRegionRuntime {
         private final Map<String, Integer> accessorCallOccurrences =
                 new LinkedHashMap<>();
         final LoopBackedgeBudget loopBackedges;
-        /** Occurrence of the open fixed-count invocation, by loop id. */
-        private final Map<String, Integer> activeLoopCardinalities =
+        /**
+         * The ordinal of the OPEN dynamic invocation of each fixed-count
+         * loop, by runtime natural-loop id.
+         *
+         * <p>Its only reader is {@link #chargeLoopBody}, which scopes the
+         * replay body budget to one dynamic invocation.  It used to also
+         * publish a {@code loopCardinalities} row per invocation carrying
+         * the exact array length, its ordinal and a cardinality authority;
+         * nothing read those rows once R1 deleted the result envelope they
+         * were written onto.</p>
+         */
+        private final Map<String, Integer> activeLoopInvocations =
                 new LinkedHashMap<>();
-        /** Next occurrence ordinal by runtime natural-loop id. */
-        private final Map<String, Integer> loopCardinalityOccurrences =
+        /** Next invocation ordinal by runtime natural-loop id. */
+        private final Map<String, Integer> loopInvocationOrdinals =
                 new LinkedHashMap<>();
         private final Map<Long, PreparedBranch> preparedBranches =
                 new LinkedHashMap<>();
@@ -5379,9 +5362,9 @@ public final class ConcolicRegionRuntime {
             // activation.  Its resource ceiling applies to each dynamic
             // invocation; accumulating all invocations under the static loop
             // id cuts ordinary code after (for example) two 16-element array
-            // walks.  recordLoopCardinality opens the exact invocation before
-            // the first body hook and completeLoopCardinality closes it.
-            Integer invocation = activeLoopCardinalities.get(loopId);
+            // walks.  openLoopInvocation opens the exact invocation before
+            // the first body hook and closeLoopInvocation closes it.
+            Integer invocation = activeLoopInvocations.get(loopId);
             String budgetKey = invocation == null ? loopId
                     : LoopBackedgeBudget.scoped(loopId,
                             invocation.intValue());
@@ -5395,20 +5378,20 @@ public final class ConcolicRegionRuntime {
          * Opens one dynamic invocation of a fixed-count loop.
          *
          * <p>The resource ceiling applies per invocation, so the backedge
-         * budget is scoped by which invocation this is; the count the hook
-         * states is what says one is open at all.</p>
+         * budget is scoped by which invocation this is; that an invocation
+         * is open at all is the whole of what the hook states now.</p>
          */
-        private synchronized void recordLoopCardinality(
-                String loopId, int cardinality) {
-            if (loopId.isEmpty() || cardinality < 0) return;
-            if (activeLoopCardinalities.containsKey(loopId)) return;
-            activeLoopCardinalities.put(loopId,
-                    loopCardinalityOccurrences.merge(loopId, 1,
-                            Integer::sum));
+        private synchronized void openLoopInvocation(String loopId) {
+            if (loopId.isEmpty()
+                    || activeLoopInvocations.containsKey(loopId)) {
+                return;
+            }
+            activeLoopInvocations.put(loopId,
+                    loopInvocationOrdinals.merge(loopId, 1, Integer::sum));
         }
 
-        private synchronized void completeLoopCardinality(String loopId) {
-            if (!loopId.isEmpty()) activeLoopCardinalities.remove(loopId);
+        private synchronized void closeLoopInvocation(String loopId) {
+            if (!loopId.isEmpty()) activeLoopInvocations.remove(loopId);
         }
 
         /** Records the terminal of this activation's bounded local path. */
@@ -5457,19 +5440,6 @@ public final class ConcolicRegionRuntime {
             } catch (Throwable ignored) {
                 // Observation must never alter the workload's own outcome.
                 return 0;
-            }
-        }
-
-        /** Persists an exact replay-invocation boundary without adding a PC. */
-        private boolean recordReplayBoundary(
-                String method, int unitIndex, int occurrence,
-                BranchDecision decision) {
-            try {
-                recordDecisionRow(method, unitIndex, occurrence,
-                        decision.outcome());
-                return true;
-            } catch (Throwable ignored) {
-                return false;
             }
         }
 

@@ -730,6 +730,30 @@ grep -qF 'CAUSYNTH_STATIC_SCOPE_MAP=${causynth_static_scope_map}' \
     "${repo}/run_engine.sh" \
   || fail "the workload JVM is not given the static scope map key"
 
+# SEED-ARTIFACTS-1: the seed boundary caches every artifact a later stage
+# reads and nothing else.  A cache HIT skips do_analyze, so an artifact left
+# out of these rows is simply absent on the next run -- which is how the
+# static scope map came to be missing while EXPLORE read it as "this epoch
+# published no map".  And three files whose content nothing read are no
+# longer written at all.
+causynth_output_dir="${test_tmp}/seed-rows"
+candidate_graph="${causynth_output_dir}/candidate_dataflow_edges.jsonl.gz"
+runtime_region_plan="${causynth_output_dir}/runtime/concolic_region_plan.jsonl"
+refined_graph="${causynth_output_dir}/runtime/refined_dataflow_edges.jsonl.gz"
+causynth_static_scope_map="${causynth_output_dir}/static_scope_map.jsonl"
+seed_rows=$(campaign_seed_artifact_rows)
+[[ "${seed_rows}" == *"staticScopeMap"$'\t'"${causynth_static_scope_map}"* ]] \
+  || fail "the seed cache does not carry the static scope map: ${seed_rows}"
+for absent in targetResolved communicationCallSites retainedLoops; do
+  [[ "${seed_rows}" != *"${absent}"* ]] \
+    || fail "the seed cache still carries ${absent}, whose content nothing \
+reads: ${seed_rows}"
+done
+grep -qF 'outputDir.resolve("target_resolved.json")' \
+    "${repo}/src/main/java/edu/uva/liftlab/graphchecker/causynth/CausynthArtifactWriter.java" \
+  && fail "ANALYZE still writes target_resolved.json" || true
+reset_config
+
 # FREEZE-1: one dispatch decides how each kind of frozen input is digested.
 digest_root="${test_tmp}/kind-digest"
 mkdir -p "${digest_root}/tree"
@@ -838,10 +862,14 @@ epoch2_dir="${test_tmp}/epoch2"
 mkdir -p "${epoch2_dir}/out"
 : >"${epoch2_dir}/region_plan.jsonl"
 : >"${epoch2_dir}/refined.jsonl.gz"
+: >"${epoch2_dir}/candidate.jsonl.gz"
+: >"${epoch2_dir}/static_scope_map.jsonl"
 scheduler_args=""
 run_java_main() { scheduler_args="$*"; }
 runtime_region_plan="${epoch2_dir}/region_plan.jsonl"
 refined_graph="${epoch2_dir}/refined.jsonl.gz"
+candidate_graph="${epoch2_dir}/candidate.jsonl.gz"
+causynth_static_scope_map="${epoch2_dir}/static_scope_map.jsonl"
 schedule_output_dir="${epoch2_dir}/out"
 schedule_max_jobs=8
 schedule_closure_mode=candidate
@@ -856,6 +884,19 @@ ${scheduler_args}"
 [[ "${scheduler_args}" != *"--summaries"* ]] \
   || fail "PLAN still passes --summaries, which no stage in this pipeline \
 writes: ${scheduler_args}"
+# GUARD-1: one guard authority.  The scheduler reads the fatal arm of the
+# declared target branch off static_scope_map's TARGET_SITE row, so PLAN has
+# to hand it the same file EXPLORE and the workload JVM are handed.
+[[ "${scheduler_args}" == *"--static-scope-map ${epoch2_dir}/static_scope_map.jsonl"* ]] \
+  || fail "PLAN did not hand the scheduler the static scope map: \
+${scheduler_args}"
+# GRAPH-1: PLAN reads the STATIC candidate graph and no runtime-refined one.
+[[ "${scheduler_args}" == *"--candidate-graph ${epoch2_dir}/candidate.jsonl.gz"* ]] \
+  || fail "PLAN did not hand the scheduler the candidate graph: \
+${scheduler_args}"
+[[ "${scheduler_args}" != *"--refined-graph"* ]] \
+  || fail "PLAN still passes the runtime-refined graph to the scheduler: \
+${scheduler_args}"
 [[ "$(type -t campaign_seeding_results)" != function ]] \
   || fail "campaign_seeding_results survived the option it fed"
 
