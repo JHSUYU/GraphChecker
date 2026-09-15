@@ -182,6 +182,13 @@ public final class SessionPublisher {
         synchronized (LOCK) {
             if (expressions.containsKey(key)) return;
             expressions.put(key, expression);
+            // The table is one JSON object and rewriting it per expression
+            // rewrote every expression once per expression: on hdfs-17960,
+            // whose container expressions are hundreds of nodes deep, that
+            // was most of a replay's wall time.  It is written when the
+            // session closes, and every sixty-fourth expression so a
+            // killed replay still leaves a table a reader can use.
+            if (expressions.size() % 64 != 0) return;
         }
         writeExpressions();
     }

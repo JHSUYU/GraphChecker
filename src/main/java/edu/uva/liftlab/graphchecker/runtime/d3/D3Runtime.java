@@ -530,7 +530,16 @@ public final class D3Runtime {
             return "";
         }
         JsonObject object = expression.getAsJsonObject();
-        String ref = "EXPR." + Text.sha16(RowCodec.toLine(object));
+        // One serialization per expression, not per row that names it.  A
+        // container's expression on hdfs-17960 is hundreds of nodes deep
+        // and every write of that location publishes the same tree; the
+        // replay spent longer serializing them again than running the
+        // workload.
+        String ref = REFS.get(object);
+        if (ref == null) {
+            ref = "EXPR." + Text.sha16(RowCodec.toLine(object));
+            REFS.put(object, ref);
+        }
         SessionPublisher session = publisher;
         if (session != null) session.expression(ref, object);
         return ref;
@@ -601,6 +610,11 @@ public final class D3Runtime {
      * ordinal moves when an unrelated event of the same site is inserted
      * earlier, and two replays then disagree about which event is which.</p>
      */
+    /** Expression refs already computed, by the tree they name. */
+    private static final Map<JsonObject, String> REFS =
+            java.util.Collections.synchronizedMap(
+                    new java.util.IdentityHashMap<JsonObject, String>());
+
     /** Read events already stated, so one read is one occurrence's. */
     private static final Map<String, Boolean> CLAIMED_READS =
             new ConcurrentHashMap<String, Boolean>();
@@ -686,6 +700,7 @@ public final class D3Runtime {
             INDEXES.clear();
             ORDINALS.clear();
             CLAIMED_READS.clear();
+            REFS.clear();
             SUBMISSIONS.clear();
             Identity.resetForTests();
             CLOCKS.clear();

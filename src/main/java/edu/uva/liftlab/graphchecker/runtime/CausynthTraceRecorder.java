@@ -782,9 +782,12 @@ public final class CausynthTraceRecorder {
         event.kind = MapFields.safe(kind);
         event.method = MapFields.safe(method);
         event.callId = callId;
-        event.executionIndex = edu.uva.liftlab.graphchecker.runtime.d3
-                .Identity.atScope().render();
-        event.causalContext = recordedCausalContext();
+        // No index and no context here.  Only the METHOD_ENTER and exchange
+        // rows are read for them, and folding the index's hash and
+        // rendering its path on every field read, branch and call site cost
+        // the recording more than everything else it does: one sha256 per
+        // frame per event, and a path string per event, for a member
+        // nothing downstream reads.
         return event;
     }
 
@@ -2086,9 +2089,7 @@ public final class CausynthTraceRecorder {
                 "outcome", event.outcome,
                 "branchKind", event.branchKind,
                 "successorIndex", event.successorIndex,
-                "switchCaseKeys", event.switchCaseKeys,
-                "executionIndex", event.executionIndex,
-                "causalContext", event.causalContext);
+                "switchCaseKeys", event.switchCaseKeys);
     }
 
     private static void writeTraceRow(Object... fields) {
