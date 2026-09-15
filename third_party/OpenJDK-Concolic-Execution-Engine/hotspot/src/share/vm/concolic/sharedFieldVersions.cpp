@@ -156,7 +156,10 @@ jlong SharedFieldVersions::publish_value(const Location &location,
   // crux -- left no version at all while only a symbolic *value* could start a
   // log.  A non-empty path guard is exactly that condition, and the guard the
   // version carries is the predicate it is a function of.
-  const bool guarded = path_guard != NULL;
+  // Control dependence, not "after a branch": the store's own method must be
+  // one the plan says has control-dependent stores, and one of that method's
+  // guard branches must have decided something symbolic on this path.
+  const bool guarded = path_guard != NULL && guarded_store_admitted();
   if (!symbolic && !guarded
       && (!has_carriers() || !is_tracked(location))) {
     return 0;
@@ -545,6 +548,69 @@ const char *SharedFieldVersions::version_kind_name(int kind) {
 
 // Where the calling thread stands, as one logged event states it.  One
 // reader, so a version and a read record cannot drift on what a site is.
+// The guarded-store table: store method -> the branch sites its stores are
+// control-dependent on.  Session state, replaced wholesale by an install and
+// empty until one happens.
+typedef std::map<std::string, std::vector<std::string> > GuardedStoreTable;
+static GuardedStoreTable _guarded_store_sites;
+
+int SharedFieldVersions::install_guarded_store_sites(const char *table) {
+  VERSION_LOCK;
+  _guarded_store_sites.clear();
+  if (table == NULL) return 0;
+  std::string text(table);
+  size_t at = 0;
+  while (at < text.size()) {
+    size_t end = text.find('\n', at);
+    if (end == std::string::npos) end = text.size();
+    std::string line = text.substr(at, end - at);
+    at = end + 1;
+    size_t tab = line.find('\t');
+    if (tab == std::string::npos || tab == 0) continue;
+    std::string method = line.substr(0, tab);
+    std::vector<std::string> guards;
+    size_t from = tab + 1;
+    while (from <= line.size()) {
+      size_t comma = line.find(',', from);
+      if (comma == std::string::npos) comma = line.size();
+      std::string guard = line.substr(from, comma - from);
+      if (!guard.empty()) guards.push_back(guard);
+      from = comma + 1;
+    }
+    // A store method with no guard site is not control-dependent on
+    // anything, so naming it would admit exactly nothing; drop it rather
+    // than keep a row that can never fire.
+    if (!guards.empty()) _guarded_store_sites[method] = guards;
+  }
+  return (int) _guarded_store_sites.size();
+}
+
+bool SharedFieldVersions::guarded_store_admitted() {
+  if (ConcolicMngr::ctx == NULL) return false;
+  {
+    VERSION_LOCK;
+    if (_guarded_store_sites.empty()) return false;
+  }
+  ThreadContext::CodeSite standing;
+  if (!ConcolicMngr::ctx->current_code_site(&standing)) return false;
+  std::string method = standing.class_name + "#" + standing.method_name
+      + standing.method_descriptor;
+  std::vector<std::string> guards;
+  {
+    VERSION_LOCK;
+    GuardedStoreTable::const_iterator found =
+        _guarded_store_sites.find(method);
+    if (found == _guarded_store_sites.end()) return false;
+    guards = found->second;
+  }
+  // Outside the lock: asking the thread context is not this store's business
+  // to do while holding the version store.
+  for (size_t index = 0; index < guards.size(); ++index) {
+    if (ConcolicMngr::ctx->branch_site_decided(guards[index])) return true;
+  }
+  return false;
+}
+
 SharedFieldVersions::EventSite SharedFieldVersions::current_site() {
   EventSite site;
   if (ConcolicMngr::ctx == NULL) return site;

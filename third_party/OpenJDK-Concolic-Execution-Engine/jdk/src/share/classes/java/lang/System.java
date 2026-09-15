@@ -507,6 +507,26 @@ public final class System {
      * window -- which is what lets a read or a write be attributed to the
      * frame it ran in.</p>
      */
+    /**
+     * Installs the session's guarded-store table and returns how many store
+     * methods it names.
+     *
+     * <p>A concrete store is evidence only when it is control-dependent on a
+     * symbolic decision -- the store a flipped branch would change.  That is
+     * a static fact the PLAN stage computes by post-dominance and publishes
+     * per write site, so the VM is told it rather than inferring it from "a
+     * branch happened earlier".  One line per store method,
+     * {@code <internal/Class>#<name><descriptor>\t<guardSite>[,<guardSite>]},
+     * where the guard sites are the branch site ids passed to
+     * {@link #markConcolicBranch}.  A method the table does not name never
+     * starts a location's log by a concrete store.</p>
+     *
+     * <p>Read-only with respect to symbolic state: it installs a table and
+     * records no value, no version and no path condition.  Installing
+     * replaces the whole table.</p>
+     */
+    public static native int installGuardedStoreSites(String table);
+
     public static native long currentSymbolicEventId();
 
     public static native long markConcolicBranch(String siteId,

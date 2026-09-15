@@ -265,6 +265,7 @@ SUNWprivate_1.1 {
                 JVM_SymbolizeExactField;
                 JVM_ObserveExactPrimitiveField;
                 JVM_CurrentSymbolicEventId;
+                JVM_InstallGuardedStoreSites;
                 JVM_GetPcStr;
                 JVM_PauseConcolicPathCondition;
                 JVM_ResumeConcolicPathCondition;

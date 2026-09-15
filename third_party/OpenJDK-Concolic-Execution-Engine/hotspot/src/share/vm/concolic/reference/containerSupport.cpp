@@ -590,7 +590,11 @@ void ContainerSupport::snapshot_for_receiver(
 
 bool ContainerSupport::guarded_mutation(const std::string &callee) {
   if (ConcolicMngr::ctx == NULL) return false;
-  if (!ConcolicMngr::ctx->path_guarded()) return false;
+  // Control dependence, asked of the plan, not "after a branch": the call
+  // site's own method must be one whose stores the plan says are
+  // control-dependent, and one of that method's guard branches must have
+  // decided something symbolic on this path.
+  if (!SharedFieldVersions::guarded_store_admitted()) return false;
   return callee == "put" || callee == "remove" || callee == "clear"
       || callee == "add" || callee == "offer" || callee == "set";
 }

@@ -64,6 +64,8 @@ static JNINativeMethod methods[] = {
                                                         (void *)&JVM_PauseConcolicPathCondition},
     {"resumeConcolicPathCondition", "()V",
                                                         (void *)&JVM_ResumeConcolicPathCondition},
+    {"installGuardedStoreSites", "(Ljava/lang/String;)I",
+                                                        (void *)&JVM_InstallGuardedStoreSites},
     {"currentSymbolicEventId", "()J",
                                                         (void *)&JVM_CurrentSymbolicEventId},
     {"markConcolicBranch", "(Ljava/lang/String;I)J",

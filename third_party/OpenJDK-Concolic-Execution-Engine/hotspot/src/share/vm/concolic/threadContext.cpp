@@ -74,6 +74,15 @@ ThreadContext::ThreadContext(JavaThread *jt, jlong context_id)
             "a thread context requires an open symbolic session");
 }
 
+bool ThreadContext::branch_site_decided(const std::string &site_id) const {
+  if (site_id.empty() || _region_stack.empty()) return false;
+  const RegionFrame *frame = _region_stack.back();
+  for (size_t index = 0; index < frame->branch_events.size(); ++index) {
+    if (frame->branch_events[index].site_id == site_id) return true;
+  }
+  return false;
+}
+
 bool ThreadContext::path_guarded() const {
   return !_region_stack.empty()
       && _region_stack.back()->branch_path_condition.size() > 0;

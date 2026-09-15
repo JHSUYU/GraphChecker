@@ -186,6 +186,9 @@ JVM_PauseConcolicPathCondition(JNIEnv *env, jclass ignored);
 JNIEXPORT void JNICALL
 JVM_ResumeConcolicPathCondition(JNIEnv *env, jclass ignored);
 
+JNIEXPORT jint JNICALL
+JVM_InstallGuardedStoreSites(JNIEnv *env, jclass ignored, jstring table);
+
 JNIEXPORT jlong JNICALL
 JVM_CurrentSymbolicEventId(JNIEnv *env, jclass ignored);
 

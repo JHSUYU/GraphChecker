@@ -546,6 +546,22 @@ JVM_ENTRY(void, JVM_ResumeConcolicPathCondition(JNIEnv *env, jclass ignored))
 #endif
 JVM_END
 
+JVM_ENTRY(jint, JVM_InstallGuardedStoreSites(JNIEnv *env, jclass ignored,
+                                            jstring table))
+  JVMWrapper("JVM_InstallGuardedStoreSites");
+#ifdef ENABLE_CONCOLIC
+  ResourceMark rm(THREAD);
+  const char *text = "";
+  if (table != NULL) {
+    oop value = JNIHandles::resolve_non_null(table);
+    text = java_lang_String::as_utf8_string(value);
+  }
+  return ConcolicMngr::installGuardedStoreSites(text);
+#else
+  return 0;
+#endif
+JVM_END
+
 JVM_ENTRY(jlong, JVM_CurrentSymbolicEventId(JNIEnv *env, jclass ignored))
   JVMWrapper("JVM_CurrentSymbolicEventId");
 #ifdef ENABLE_CONCOLIC

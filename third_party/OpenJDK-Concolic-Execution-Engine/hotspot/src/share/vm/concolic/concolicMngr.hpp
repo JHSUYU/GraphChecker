@@ -196,6 +196,13 @@ public:
    */
   static jlong currentEventId();
 
+  /**
+   * Installs the session's guarded-store table and returns how many store
+   * methods it names.  See
+   * SharedFieldVersions::install_guarded_store_sites.
+   */
+  static jint installGuardedStoreSites(const char *table);
+
   static std::string getSymbolicFieldExpression(
       Handle owner, const char *declaring_class, const char *field_name,
       const char *descriptor, Handle concrete_value);

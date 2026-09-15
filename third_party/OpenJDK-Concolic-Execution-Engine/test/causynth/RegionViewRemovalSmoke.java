@@ -79,6 +79,11 @@ public final class RegionViewRemovalSmoke {
         System.symbolizeExactField(clock, Clock.class.getName(), "now", "J",
                 "CLOCK.now");
 
+        // The plan's answer, installed the way the runtime installs it: the
+        // removal in this method is control-dependent on GUARD.expiry.
+        require(System.installGuardedStoreSites(STORE_SITES) == 1,
+                "the guarded-store table was not installed");
+
         // BTSM:224-233, unchanged in shape.
         Iterator<Map.Entry<Integer, Key>> it =
                 allKeys.entrySet().iterator();
@@ -106,6 +111,11 @@ public final class RegionViewRemovalSmoke {
         System.endConcolic();
         return evidence;
     }
+
+    /** This method's stores, and the branch they are control-dependent on. */
+    private static final String STORE_SITES =
+            "RegionViewRemovalSmoke#run(J)Ljava/lang/String;"
+                    + "\tGUARD.expiry";
 
     private static int count(String value, String needle) {
         int result = 0;
