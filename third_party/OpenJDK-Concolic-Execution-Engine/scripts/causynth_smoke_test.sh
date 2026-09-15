@@ -18,6 +18,7 @@ cd "$JDK_ROOT"
   test/causynth/RegionBranchEventApiSmoke.java \
   test/causynth/RegionFieldApiSmoke.java \
   test/causynth/RegionGuardedConcreteWriteSmoke.java \
+  test/causynth/RegionViewRemovalSmoke.java \
   test/causynth/RegionFieldExpressionApiSmoke.java \
   test/causynth/RegionPropagatedFieldGuardSmoke.java \
   test/causynth/RegionExpressionHandoffApiSmoke.java \
@@ -58,6 +59,7 @@ for smoke in \
   RegionBranchEventApiSmoke \
   RegionFieldApiSmoke \
   RegionGuardedConcreteWriteSmoke \
+  RegionViewRemovalSmoke \
   RegionFieldExpressionApiSmoke \
   RegionPropagatedFieldGuardSmoke \
   RegionExpressionHandoffApiSmoke \

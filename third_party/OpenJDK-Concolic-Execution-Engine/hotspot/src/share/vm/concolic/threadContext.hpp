@@ -133,6 +133,15 @@ private:
     PendingConditionalRemoval() : active(false), key(NULL), guard(NULL) {}
   };
   PendingConditionalRemoval _pending_conditional_removal;
+  // What an Iterator.remove() names -- a map key, or a list index -- read at
+  // the call boundary.
+  //
+  // The JDK's iterators clear their own record of the element inside remove()
+  // (LinkedHashIterator sets `current = null`, ArrayList$Itr sets
+  // `lastRet = -1`) before removing it, so by the time the finish hook
+  // publishes the mutation the element is already gone.  It is therefore read
+  // before the body runs and consumed once by the publisher.
+  Expression *_pending_view_removal_argument;
 
 public:
   ThreadContext(JavaThread *jt, jlong context_id);
@@ -350,6 +359,15 @@ public:
   // Begins tracking the element an iterator just returned as a candidate for
   // conditional removal.  Any previously tracked element must already have
   // been disposed by the caller.
+  void note_view_removal_argument(Expression *argument) {
+    _pending_view_removal_argument = argument;
+  }
+  Expression *take_view_removal_argument() {
+    Expression *argument = _pending_view_removal_argument;
+    _pending_view_removal_argument = NULL;
+    return argument;
+  }
+
   void begin_conditional_removal(Expression *key) {
     _pending_conditional_removal.active = true;
     _pending_conditional_removal.key = key;

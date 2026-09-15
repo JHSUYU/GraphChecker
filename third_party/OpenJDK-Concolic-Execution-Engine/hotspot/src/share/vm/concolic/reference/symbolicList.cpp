@@ -87,8 +87,24 @@ bool SymList::invoke_method_helper(MethodSymbolizerHandle &handle) {
     if (recording) {
       handle.general_prepare_param();
       // Before the body runs: state what the container already holds, while
-      // the receiver is still untouched by this operation.
-      ContainerSupport::state_base_before_operation(handle.get_param<oop>(0));
+      // the receiver is still untouched by this operation.  An iterator is
+      // not a location, so the container whose base this is is the list it
+      // walks.
+      oop target = handle.get_param<oop>(0);
+      oop backing = OopUtils::list_of_iterator(target);
+      ContainerSupport::state_base_before_operation(
+          backing != NULL ? backing : target);
+      // A removal through an iterator names the index it last returned, and
+      // the iterator forgets it inside remove(); read it here, while the body
+      // has not run, and let the publisher consume it.
+      if (backing != NULL && callee_name == "remove") {
+        bool found = false;
+        jint index = OopUtils::last_returned_index(target, &found);
+        if (found && index >= 0) {
+          ConcolicMngr::ctx->note_view_removal_argument(
+              new ConExpression(index));
+        }
+      }
     }
     return recording;
   }
@@ -312,6 +328,40 @@ Expression *SymList::finish_method_helper(MethodSymbolizerHandle &handle) {
     return NULL;
   }
   if (method == "remove" && !root_container && arguments.empty()) {
+    // An iterator is never a location of its own, so this is a mutation of
+    // the list it walks.  When the walk itself was never modelled -- every
+    // read concrete, so iterator()/next() were not admitted and the cursor
+    // has no chain at all -- the removal still has what it needs: the list,
+    // and the index the iterator last returned, both read from the
+    // iterator's own fields before its body cleared them.
+    if (ConcolicMngr::ctx->find_container_state(receiver_object) == NULL) {
+      oop backing_list = OopUtils::list_of_iterator(receiver_object);
+      Expression *base = backing_list == NULL ? NULL
+          : ConcolicMngr::ctx->container_state(backing_list, "INDEXED");
+      Expression *removed_index =
+          ConcolicMngr::ctx->take_view_removal_argument();
+      if (backing_list == NULL) {
+        ContainerSupport::mark_state_gap(
+            receiver_object, "INDEXED_VIEW_OWNER_MISSING");
+        ConcolicMngr::ctx->abort_symbolic_execution(
+            "INDEXED_VIEW_OWNER_MISSING");
+        return NULL;
+      }
+      if (base == NULL || removed_index == NULL) {
+        ContainerSupport::mark_state_gap(
+            receiver_object, "INDEXED_VIEW_REMOVED_INDEX_MISSING");
+        ConcolicMngr::ctx->abort_symbolic_execution(
+            "INDEXED_VIEW_REMOVED_INDEX_MISSING");
+        return NULL;
+      }
+      exp_list_t removed;
+      removed.push_back(removed_index);
+      Expression *next = new ContainerExpression(
+          "INDEXED", "REMOVE", base, removed);
+      ConcolicMngr::ctx->set_container_state(backing_list, next);
+      ContainerSupport::publish_state(backing_list, next, "REMOVE");
+      return NULL;
+    }
     int position = ConcolicMngr::ctx->next_container_removal_position(
         receiver_object);
     Expression *root = ConcolicMngr::ctx->container_state(
