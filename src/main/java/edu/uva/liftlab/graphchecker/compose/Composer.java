@@ -14,6 +14,7 @@ import edu.uva.liftlab.graphchecker.contract.DecisionRow;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.ExportRow;
 import edu.uva.liftlab.graphchecker.explore.Corpus;
+import edu.uva.liftlab.graphchecker.explore.SlotTable;
 import edu.uva.liftlab.graphchecker.contract.Family;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
@@ -377,11 +378,15 @@ public final class Composer {
         // family: the two pairings cannot both be this epoch's.
         try {
             slots = SlotTable.read(corpus.iteration());
-        } catch (java.io.IOException unreadable) {
+        } catch (java.io.IOException | RuntimeException unreadable) {
+            // The strict codec REFUSES a row it cannot read, and a refusal
+            // that reached a caller as a stack trace told the reader
+            // nothing: a skeleton this stage cannot state is named, and the
+            // composition closes fail-closed over it.
             slots = null;
             gap(GapKind.TOPOLOGY_DIVERGENCE, GapClass.BLOCKING,
                     SlotTable.FILE, "this epoch's slot table could not be "
-                            + "read: " + unreadable.getMessage());
+                            + "read: " + unreadable);
         }
         if (slots != null) {
             for (SlotTable.Replacement replacement

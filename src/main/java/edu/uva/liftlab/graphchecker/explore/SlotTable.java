@@ -16,6 +16,7 @@ import edu.uva.liftlab.graphchecker.contract.SessionReader;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
 
 import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -120,6 +121,16 @@ public final class SlotTable {
     private final Map<String, Slot> slotOfConsumer =
             new LinkedHashMap<String, Slot>();
 
+    /**
+     * Whether this epoch published a table at all.
+     *
+     * <p>An epoch that has published none has opened no slots, and every
+     * pairing in the rows is then growth: the rule has nothing to
+     * contradict, so a reader says nothing at all rather than naming every
+     * interaction of the recording as unopened.</p>
+     */
+    private boolean stated;
+
     /** An epoch that has opened no slot yet. */
     SlotTable() {
     }
@@ -128,11 +139,26 @@ public final class SlotTable {
     public static SlotTable read(Path iteration) throws IOException {
         SlotTable table = new SlotTable();
         if (iteration == null) return table;
-        for (Slot slot : RowCodec.readAll(iteration.resolve(FILE),
-                ExploreCodec::readSlot)) {
+        Path file = iteration.resolve(FILE);
+        table.stated = Files.isRegularFile(file);
+        // The codec refuses a row it cannot read rather than skipping it: a
+        // slot whose kind or whose endpoints do not parse is a skeleton this
+        // stage cannot state, and dropping it in silence would read as
+        // "no slot here", which is the one answer that means growth.
+        for (Slot slot : RowCodec.readAll(file, ExploreCodec::readSlot)) {
             table.hold(slot);
         }
         return table;
+    }
+
+    /** Whether this epoch published a skeleton at all. */
+    public boolean stated() {
+        return stated;
+    }
+
+    /** Whether this consumer endpoint has a WIRE slot in the skeleton. */
+    public boolean opened(String consumerEndpointId) {
+        return slotOfConsumer.containsKey(consumerEndpointId);
     }
 
     public void write(Path iteration) throws IOException {
@@ -320,6 +346,95 @@ public final class SlotTable {
                 read.sessionId());
     }
 
+    /** One session that pairs a slot's consumer with another producer. */
+    public static final class Replacement {
+        public final String sessionId;
+        public final String consumerEndpointId;
+        public final String skeletonProducerId;
+        public final String replayProducerId;
+        public final String openedBySession;
+
+        Replacement(String sessionId, String consumerEndpointId,
+                    String skeletonProducerId, String replayProducerId,
+                    String openedBySession) {
+            this.sessionId = sessionId;
+            this.consumerEndpointId = consumerEndpointId;
+            this.skeletonProducerId = skeletonProducerId;
+            this.replayProducerId = replayProducerId;
+            this.openedBySession = openedBySession;
+        }
+
+        /** Both pairings, which is what the gap has to name. */
+        public String detail() {
+            return "the skeleton pairs consumer " + consumerEndpointId
+                    + " with producer " + skeletonProducerId + " (slot opened"
+                    + " by session " + openedBySession + ") and session "
+                    + sessionId + " paired it with producer "
+                    + replayProducerId + ": two pairings of one consumer are"
+                    + " a replacement, not growth, so this epoch's families"
+                    + " take no rows from that session";
+        }
+    }
+
+    /**
+     * Every replacement the corpus states, in session order.
+     *
+     * <p>What the COMPOSITION asks of the skeleton: a replacing session's
+     * rows must not fill this epoch's families, because the two pairings
+     * cannot both be this epoch's.  Asked of the attach rows and nothing
+     * else -- the pairing is a recorded fact of the run that made it, and a
+     * replacement is two runs disagreeing about it -- and answered by
+     * {@link #replaced}, the same predicate {@link #take} decides a wave
+     * with, so the composition cannot hold a second opinion about what
+     * contradicts the epoch.</p>
+     */
+    public List<Replacement> replacements(Corpus corpus) {
+        List<Replacement> found = new ArrayList<Replacement>();
+        if (!stated) return found;
+        Set<String> seen = new LinkedHashSet<String>();
+        for (SessionReader session : corpus.sessions()) {
+            for (AttachRow attach : session.attaches()) {
+                if (attach.producer() == null) continue;
+                Slot held = replaced(InteractionKind.WIRE, attach.producer(),
+                        attach.endpoint(), session.sessionId());
+                if (held == null) continue;
+                if (!seen.add(session.sessionId() + "|"
+                        + attach.endpoint().id())) {
+                    continue;
+                }
+                found.add(new Replacement(session.sessionId(),
+                        attach.endpoint().id(), held.producer.id(),
+                        attach.producer().id(), held.openedBySession));
+            }
+        }
+        return found;
+    }
+
+    /**
+     * The slot one pairing CONTRADICTS, or null when it contradicts none.
+     *
+     * <p>R-I6, in one place.  A pairing the table already holds FILLS its
+     * slot; a WIRE consumer the table holds against another producer, by
+     * another session, is a REPLACEMENT; a STATE pairing contradicts
+     * nothing (R-I7/R-I7.1: the writers different sessions delivered from
+     * ARE the family's arms); and one run's own second pairing of one
+     * consumer endpoint is not a contradiction either -- a run does not
+     * contradict itself -- but a lineage its endpoint ids cannot state.</p>
+     */
+    private Slot replaced(InteractionKind kind, Endpoint producer,
+                          Endpoint consumer, String sessionId) {
+        if (kind != InteractionKind.WIRE) return null;
+        if (byInteraction.containsKey(
+                Interaction.of(kind, producer, consumer).id())) {
+            return null;
+        }
+        Slot held = slotOfConsumer.get(consumer.id());
+        if (held == null || held.producer.id().equals(producer.id())) {
+            return null;
+        }
+        return held.openedBySession.equals(sessionId) ? null : held;
+    }
+
     private enum Outcome { OPENED, FILLED, REPLACED, AMBIGUOUS }
 
     /**
@@ -350,20 +465,21 @@ public final class SlotTable {
         if (byInteraction.containsKey(interaction)) return Outcome.FILLED;
         // A STATE pairing is never a contradiction: every (writer, reader)
         // pair any session states is one more arm of that reader's family.
+        Slot contradicted = replaced(kind, producer, consumer, sessionId);
+        if (contradicted != null) {
+            gaps.add(GapRow.of(sessionId, GapKind.TOPOLOGY_DIVERGENCE,
+                    GapClass.BLOCKING, consumer.toString(),
+                    "the catalog pairs this consumer with producer "
+                            + "endpoint " + contradicted.producer.id()
+                            + ", opened by " + contradicted.openedBySession
+                            + ", and this replay pairs it with "
+                            + producer.id()
+                            + ": a replacement, not growth"));
+            return Outcome.REPLACED;
+        }
         Slot held = kind == InteractionKind.WIRE
                 ? slotOfConsumer.get(consumer.id()) : null;
         if (held != null && !held.producer.id().equals(producer.id())) {
-            if (!held.openedBySession.equals(sessionId)) {
-                gaps.add(GapRow.of(sessionId, GapKind.TOPOLOGY_DIVERGENCE,
-                        GapClass.BLOCKING, consumer.toString(),
-                        "the catalog pairs this consumer with producer "
-                                + "endpoint " + held.producer.id()
-                                + ", opened by " + held.openedBySession
-                                + ", and this replay pairs it with "
-                                + producer.id()
-                                + ": a replacement, not growth"));
-                return Outcome.REPLACED;
-            }
             gaps.add(GapRow.of(sessionId, GapKind.LINEAGE_LOST,
                     GapClass.DIAGNOSTIC, consumer.toString(),
                     "site index missing: this one session pairs this consumer "
