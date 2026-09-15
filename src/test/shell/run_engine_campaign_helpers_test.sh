@@ -691,6 +691,20 @@ $(print_normalized_config | wc -l)"
 # from that one key.  The workload JVM installs the guard sites the map names
 # and EXPLORE flips at them, so a second derivation of the path is two stages
 # reading two files.
+# CONFIG-1: a key workflow_config_keys does not carry is a refusal, not a
+# comment.  It used to be skipped, so `reach_max_inputs`,
+# `reach_max_valuations` and `causynth_analysis_scope` shipped in all four case
+# configs and read as settings that did nothing.
+unknown_config=$(mktemp "${test_tmp}/unknown-config.XXXXXX")
+printf 'workflow_path_base=project\nreach_max_inputs=8\n' >"${unknown_config}"
+if (load_config_file "${unknown_config}") 2>"${unknown_config}.err"; then
+  fail "an unknown workflow config key was accepted"
+fi
+grep -qF 'unknown workflow config key' "${unknown_config}.err" \
+  || fail "the refusal does not name the key: $(<"${unknown_config}.err")"
+grep -qF 'reach_max_inputs' "${unknown_config}.err" \
+  || fail "the refusal does not name the key: $(<"${unknown_config}.err")"
+
 [[ " ${config_table_keys[*]} " == *" causynth_static_scope_map "* ]] \
   || fail "the static scope map is not a declared workflow key"
 grep -qF 'causynth_static_scope_map=${causynth_static_scope_map:-${causynth_output_dir}/static_scope_map.jsonl}' \

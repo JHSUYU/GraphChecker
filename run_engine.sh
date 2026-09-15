@@ -160,10 +160,10 @@ reset_config() {
   done
 }
 
-# Workflow configs deliberately use a small key=value grammar. Unknown
-# keys remain available to GraphChecker through -C but are not evaluated by the
-# shell. This keeps a target config from changing PATH, HOME, IFS, or shell
-# control variables.
+# Workflow configs deliberately use a small key=value grammar, and only the
+# keys workflow_config_keys carries.  A key outside it is refused by name, so
+# a target config can neither change PATH, HOME, IFS or a shell control
+# variable nor ship a setting nothing reads.
 load_config_file() {
   local path=$1
   local raw key value
@@ -173,7 +173,13 @@ load_config_file() {
     [[ "${raw}" == *=* ]] || continue
     key=$(trim "${raw%%=*}")
     value=$(trim "${raw#*=}")
-    known_config_key "${key}" || continue
+    # A key this table does not carry is a refusal, not a comment.  It used to
+    # be skipped, so a misspelling -- or a key a stage deletion retired --
+    # stayed in a shipped config and read as a setting that did nothing:
+    # `reach_max_inputs`, `reach_max_valuations` and `causynth_analysis_scope`
+    # all shipped that way in all four case configs.
+    known_config_key "${key}" \
+      || die "unknown workflow config key in ${path}: ${key}"
     if [[ ${#value} -ge 2 ]]; then
       if [[ "${value:0:1}" == '"' && "${value: -1}" == '"' ]] \
           || [[ "${value:0:1}" == "'" && "${value: -1}" == "'" ]]; then
