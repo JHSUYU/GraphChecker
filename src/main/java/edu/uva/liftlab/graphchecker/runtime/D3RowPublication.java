@@ -326,10 +326,35 @@ final class D3RowPublication {
     private static Map<String, String> mintStores(ActiveRegion active) {
         Map<String, String> stores = new java.util.LinkedHashMap<String,
                 String>();
-        for (Map.Entry<String, String[]> mint
-                : mintedLocations(active).entrySet()) {
-            stores.put(mint.getValue()[0] + "#" + mint.getValue()[1],
-                    mint.getKey());
+        Set<String> minted = mintedLocations(active).keySet();
+        if (minted.isEmpty()) return stores;
+        // EVERY version whose whole value is a mint's symbol, not the first
+        // one per symbol: mintedLocations keeps the first because a
+        // placeholder row states one mint version, and a symbol that
+        // reaches a second store would then have left that store published
+        // as a write (v201 `M_L_field_REGION.692d5ed3...` survived exactly
+        // that way).  A store is a store wherever it stands.
+        for (JsonObject record : active.sharedStateRecords.values()) {
+            String locationKey = optionalString(record, "locationKey");
+            if (location(locationKey) == null) continue;
+            for (JsonElement element
+                    : array(object(record, "envelope"), "versions")) {
+                if (!element.isJsonObject()) continue;
+                JsonObject version = element.getAsJsonObject();
+                long id = optionalLongInteger(version, "fieldVersionId", -1L);
+                JsonElement written = version.get("expression");
+                if (id < 0L || written == null || !written.isJsonObject()) {
+                    continue;
+                }
+                JsonObject node = written.getAsJsonObject();
+                if (!optionalString(node, "_type").contains("Symbol")) {
+                    continue;
+                }
+                String symbol = optionalString(node, "_exp");
+                if (minted.contains(symbol)) {
+                    stores.put(locationKey + "#" + id, symbol);
+                }
+            }
         }
         return stores;
     }
