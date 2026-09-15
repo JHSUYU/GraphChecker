@@ -594,6 +594,11 @@ do_schedule() {
   )
   require_file "runtime-refined graph" "${refined_graph}"
   args+=(--refined-graph "${refined_graph}")
+  # The one guard authority's publication: the scheduler reads the fatal arm
+  # of the declared target branch off the TARGET_SITE row rather than
+  # re-deriving a polarity from the graph.
+  require_file "static scope map" "${causynth_static_scope_map}"
+  args+=(--static-scope-map "${causynth_static_scope_map}")
   # validate_config refuses an unstated cap: left to the scheduler's own
   # fallback of one job it would keep the first candidate of the plan and drop
   # the rest, and a schedule of one task is not an empty schedule, so the

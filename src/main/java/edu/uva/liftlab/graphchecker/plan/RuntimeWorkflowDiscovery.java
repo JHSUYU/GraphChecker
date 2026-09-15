@@ -352,10 +352,7 @@ public final class RuntimeWorkflowDiscovery {
             if (!element.isJsonObject()) continue;
             JsonObject branch = element.getAsJsonObject();
             if (optionalBool(branch, "failureTarget", false)
-                    && !optionalBool(branch, "loopControlGuard", false)
                     && optionalBool(branch, "observed", false)
-                    && branch.has("requiredOutcome")
-                    && !branch.get("requiredOutcome").isJsonNull()
                     && !optionalString(branch, "siteId").isEmpty()) {
                 return true;
             }

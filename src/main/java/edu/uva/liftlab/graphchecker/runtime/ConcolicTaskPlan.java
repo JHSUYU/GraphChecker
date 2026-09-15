@@ -1243,8 +1243,7 @@ final class ConcolicTaskPlan {
             this.targetBranchOccurrence = optionalInteger(targetBranch,
                     "occurrence", -1);
             this.targetBranchRequiredOutcome = targetRequiredOutcome(
-                    task.branches(), targetBranchSite,
-                    targetBranchOccurrence);
+                    targetBranch, targetBranchSite);
             for (JsonElement element : task.inputActions().all()) {
                 JsonObject encoded = element.getAsJsonObject();
                 SymbolizeAction action = new SymbolizeAction(encoded);
@@ -1723,40 +1722,27 @@ final class ConcolicTaskPlan {
             return targetBranchSite + "#" + targetBranchOccurrence;
         }
 
-        static boolean targetRequiredOutcome(
-                JsonArray branches, String targetSite,
-                int targetOccurrence) {
+        /**
+         * The arm of the declared target branch that reaches the annotated
+         * throw, as the task states it.
+         *
+         * <p>One authority, {@code causynth.SiteControlDependence}, computes
+         * it in ANALYZE, publishes it on the static scope map's TARGET_SITE
+         * row and the scheduler carries it onto {@code targetBranch}.  It
+         * used to be searched for again here, across the task's whole branch
+         * catalog, by matching the site and its selected occurrence.</p>
+         */
+        static boolean targetRequiredOutcome(JsonObject targetBranch,
+                                             String targetSite) {
             if (safe(targetSite).isEmpty()) return false;
-            Boolean required = null;
-            for (JsonElement element : branches) {
-                if (!element.isJsonObject()) continue;
-                JsonObject branch = element.getAsJsonObject();
-                if (!targetSite.equals(optionalString(branch, "siteId"))
-                        || targetOccurrence != optionalInteger(branch,
-                        "selectedOccurrence", -1)) {
-                    continue;
-                }
-                JsonElement encoded = branch.get("requiredOutcome");
-                if (encoded == null || !encoded.isJsonPrimitive()
-                        || !encoded.getAsJsonPrimitive().isBoolean()) {
-                    throw new IllegalArgumentException(
-                            "target branch requires a boolean outcome: "
-                                    + targetSite + '#' + targetOccurrence);
-                }
-                boolean candidate = encoded.getAsBoolean();
-                if (required != null && required != candidate) {
-                    throw new IllegalArgumentException(
-                            "ambiguous target required outcome: "
-                                    + targetSite + '#' + targetOccurrence);
-                }
-                required = candidate;
-            }
-            if (required == null) {
+            JsonElement encoded = targetBranch == null ? null
+                    : targetBranch.get("requiredOutcome");
+            if (encoded == null || !encoded.isJsonPrimitive()
+                    || !encoded.getAsJsonPrimitive().isBoolean()) {
                 throw new IllegalArgumentException(
-                        "target branch is absent from the branch catalog: "
-                                + targetSite + '#' + targetOccurrence);
+                        "target branch states no fatal arm: " + targetSite);
             }
-            return required;
+            return encoded.getAsBoolean();
         }
 
     }

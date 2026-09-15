@@ -2,6 +2,7 @@ package edu.uva.liftlab.graphchecker.plan;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
+import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
 
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
@@ -73,8 +74,43 @@ public final class StaticScopeMap {
 
     /** The guard set of one site, asked of the stage that has the CFG. */
     public interface Guards {
-        /** The branch sites {@code siteId} is control-dependent on. */
-        List<String> of(String siteId);
+        /** The branches {@code siteId} is control-dependent on. */
+        List<Guard> of(String siteId);
+    }
+
+    /**
+     * One branch a site is control-dependent on, with the arm that reaches
+     * the site.
+     *
+     * <p>The arm is the site's fatal polarity when the site is the annotated
+     * throw: post-dominance keeps a branch exactly when one of its arms makes
+     * the site unavoidable and another does not, so that arm is the one a
+     * replay must take to reach it.  {@code null} means the branch is not
+     * binary (a switch), where no single boolean names an arm.</p>
+     */
+    public static final class Guard {
+        private final String siteId;
+        private final Boolean outcome;
+
+        public Guard(String siteId, Boolean outcome) {
+            this.siteId = siteId == null ? "" : siteId;
+            this.outcome = outcome;
+        }
+
+        /** The branch site. */
+        public String siteId() {
+            return siteId;
+        }
+
+        /** The arm of this branch that reaches the guarded site, or null. */
+        public Boolean outcome() {
+            return outcome;
+        }
+
+        @Override
+        public String toString() {
+            return siteId + "=" + outcome;
+        }
     }
 
     /** One site the static slice names, and what it is about. */
@@ -91,10 +127,15 @@ public final class StaticScopeMap {
         /** The declared wire port, for an EXPORT_SITE. */
         public final String portId;
         public final List<String> guards;
+        /**
+         * The arm of each {@link #guards} entry that reaches this site, in
+         * the same order; an entry is null when the branch is not binary.
+         */
+        public final List<Boolean> guardOutcomes;
 
         Site(String role, String regionId, String siteId, String vmSite,
              String cell, String carrier, String portId,
-             List<String> guards) {
+             List<String> guards, List<Boolean> guardOutcomes) {
             this.role = role;
             this.regionId = regionId;
             this.siteId = siteId;
@@ -104,11 +145,30 @@ public final class StaticScopeMap {
             this.portId = portId;
             this.guards = Collections.unmodifiableList(
                     new ArrayList<String>(guards));
+            this.guardOutcomes = Collections.unmodifiableList(
+                    new ArrayList<Boolean>(guardOutcomes));
         }
 
-        Site withGuards(List<String> found) {
+        Site withGuards(List<Guard> found) {
+            List<String> sites = new ArrayList<String>();
+            List<Boolean> outcomes = new ArrayList<Boolean>();
+            for (Guard guard : found) {
+                sites.add(guard.siteId());
+                outcomes.add(guard.outcome());
+            }
             return new Site(role, regionId, siteId, vmSite, cell, carrier,
-                    portId, found);
+                    portId, sites, outcomes);
+        }
+
+        /** The arm of {@code guardSiteId} that reaches this site, or null. */
+        public Boolean outcomeOf(String guardSiteId) {
+            for (int index = 0; index < guards.size(); index++) {
+                if (guards.get(index).equals(guardSiteId)) {
+                    return guardOutcomes.size() > index
+                            ? guardOutcomes.get(index) : null;
+                }
+            }
+            return null;
         }
 
         @Override
@@ -173,7 +233,8 @@ public final class StaticScopeMap {
                 }
                 found.add(new Site(EXPORT_SITE, region.regionId, siteId,
                         vmSite(method), "", "", portId,
-                        Collections.<String>emptyList()));
+                        Collections.<String>emptyList(),
+                        Collections.<Boolean>emptyList()));
             }
         }
         return found;
@@ -190,11 +251,11 @@ public final class StaticScopeMap {
     public static List<JsonObject> rows(List<Site> sites, Guards guards) {
         List<JsonObject> rows = new ArrayList<JsonObject>();
         for (Site site : sites) {
-            List<String> found = guards == null
-                    ? Collections.<String>emptyList()
+            List<Guard> found = guards == null
+                    ? Collections.<Guard>emptyList()
                     : guards.of(site.siteId);
             rows.add(row(site.withGuards(found == null
-                    ? Collections.<String>emptyList() : found)));
+                    ? Collections.<Guard>emptyList() : found)));
         }
         return rows;
     }
@@ -213,6 +274,19 @@ public final class StaticScopeMap {
         JsonArray guards = new JsonArray();
         for (String guard : site.guards) guards.add(guard);
         row.add("guards", guards);
+        if (!site.guards.isEmpty()) {
+            JsonArray outcomes = new JsonArray();
+            for (int index = 0; index < site.guards.size(); index++) {
+                Boolean outcome = site.guardOutcomes.size() > index
+                        ? site.guardOutcomes.get(index) : null;
+                if (outcome == null) {
+                    outcomes.add(JsonNull.INSTANCE);
+                } else {
+                    outcomes.add(outcome);
+                }
+            }
+            row.add("guardOutcomes", outcomes);
+        }
         return row;
     }
 
@@ -227,7 +301,8 @@ public final class StaticScopeMap {
                 continue;
             }
             into.add(new Site(role, regionId, siteId, vmSite(method), cell,
-                    carrier, portId, Collections.<String>emptyList()));
+                    carrier, portId, Collections.<String>emptyList(),
+                    Collections.<Boolean>emptyList()));
         }
     }
 
@@ -325,10 +400,18 @@ public final class StaticScopeMap {
                     guards.add(guard.getAsString());
                 }
             }
+            List<Boolean> outcomes = new ArrayList<Boolean>();
+            JsonElement statedOutcomes = row.get("guardOutcomes");
+            if (statedOutcomes != null && statedOutcomes.isJsonArray()) {
+                for (JsonElement outcome : statedOutcomes.getAsJsonArray()) {
+                    outcomes.add(outcome == null || outcome.isJsonNull()
+                            ? null : Boolean.valueOf(outcome.getAsBoolean()));
+                }
+            }
             sites.add(new Site(string(row, "role"), string(row, "regionId"),
                     string(row, "siteId"), string(row, "vmSite"),
                     string(row, "cell"), string(row, "carrier"),
-                    string(row, "portId"), guards));
+                    string(row, "portId"), guards, outcomes));
         }
         return new StaticScopeMap(sites);
     }

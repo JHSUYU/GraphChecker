@@ -593,7 +593,6 @@ public final class StaticProgram {
         /** The admission anchors, the single {@code anchorMethod} included. */
         public final List<String> anchorMethods;
         public final List<String> methods;
-        public final List<String> demandScopeMethods;
         public final List<String> runtimeOccurrenceIds;
         public final List<String> sourcePhaseTraceMethods;
         public final List<Map<String, Object>> retainedLoops;
@@ -637,8 +636,6 @@ public final class StaticProgram {
             if (anchorMethods.isEmpty() && !anchorMethod.isEmpty()) {
                 anchorMethods.add(anchorMethod);
             }
-            demandScopeMethods = strings(row.get(
-                    RuntimeSelectedRegionFinalizer.DEMAND_SCOPE));
             runtimeOccurrenceIds = strings(row.get("runtimeOccurrenceIds"));
             sourcePhaseTraceMethods = strings(row.get(
                     ConfiguredSourcePhaseContract.TRACE_METHODS_FIELD));

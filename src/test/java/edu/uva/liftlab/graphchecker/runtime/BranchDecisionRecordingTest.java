@@ -166,8 +166,8 @@ public class BranchDecisionRecordingTest {
                 + "{'state':'EXECUTABLE'},'rootSelector':{'kind':"
                 + "'GLOBAL_INVOCATION','invocationOrdinal':1,'causalAnchor':"
                 + "{'sourceKey':'dn0#epoch0','kind':'REGISTERED_SOURCE'}},"
-                + "'branches':[{'siteId':'" + DECLARED + "','policy':'EXPLORE'"
-                + ",'selectedOccurrence':1,'requiredOutcome':true}],"
+                + "'branches':[{'siteId':'" + DECLARED
+                + "','selectedOccurrence':1}],"
                 + "'inputActions':[{'symbol':'sym.f','mode':'SYMBOLIC',"
                 + "'bindingMode':'FIELD_ACCESS','accessFieldSignature':"
                 + "'<a.B: int f>','accessSites':['" + DECLARED + "']}],"
@@ -175,7 +175,8 @@ public class BranchDecisionRecordingTest {
                 + "'defaultBackedgeTraversals':8},'retainedLoops':[{"
                 + "'loopExitDecisions':[{'siteId':'" + BOUNDARY + "'}]}],"
                 + "'targetBranch':{'siteId':'" + DECLARED
-                + "','occurrence':1}}").replace('\'', '"');
+                + "','occurrence':1,'requiredOutcome':true}}")
+                .replace('\'', '"');
         return ExecutionTask.decode(
                 JsonParser.parseString(plan).getAsJsonObject());
     }

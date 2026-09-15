@@ -262,8 +262,10 @@ public class RegionGraphOccurrenceKeyTest {
         StringBuilder text = new StringBuilder();
         for (JsonObject written : StaticScopeMap.rows(sites,
                 siteId -> siteId.endsWith("#u35")
-                        ? Arrays.asList(decrement + "#u7", decrement + "#u15")
-                        : Collections.<String>emptyList())) {
+                        ? Arrays.asList(
+                        new StaticScopeMap.Guard(decrement + "#u7", true),
+                        new StaticScopeMap.Guard(decrement + "#u15", false))
+                        : Collections.<StaticScopeMap.Guard>emptyList())) {
             text.append(written.toString()).append('\n');
         }
         Files.write(file, text.toString().getBytes(StandardCharsets.UTF_8));
@@ -287,15 +289,19 @@ public class RegionGraphOccurrenceKeyTest {
                 Arrays.asList("REGION.create " + increment + "#u27",
                         "REGION.delete " + decrement + "#u35"), writers);
         List<String> guards = new ArrayList<>();
+        List<Boolean> arms = new ArrayList<>();
         for (StaticScopeMap.Site site : map.writersOf(carrier)) {
             assertEquals("<java.util.concurrent.atomic.AtomicInteger: int"
                     + " value>", site.cell);
             if (site.siteId.equals(decrement + "#u35")) {
                 guards.addAll(site.guards);
+                arms.addAll(site.guardOutcomes);
             }
         }
         assertEquals("the write site carries its post-dominance guard set",
                 Arrays.asList(decrement + "#u7", decrement + "#u15"), guards);
+        assertEquals("and the arm of each guard that reaches it",
+                Arrays.asList(Boolean.TRUE, Boolean.FALSE), arms);
         // The port's producer side, and the annotated target.
         assertEquals(1, map.exportsOf("XCH.a.resp.count").size());
         assertEquals("REGION.save",
@@ -346,8 +352,14 @@ public class RegionGraphOccurrenceKeyTest {
         List<String> expected = Arrays.asList(
                 SiteId.of(method.getSignature(), 3),
                 SiteId.of(method.getSignature(), 4));
-        assertEquals(expected, SiteControlDependence.over(
-                Collections.singletonList(decrement)).of(decrement));
+        assertEquals(expected, guardSites(SiteControlDependence.over(
+                Collections.singletonList(decrement)).of(decrement)));
+        // Each kept branch also NAMES the arm that makes the write
+        // unavoidable: that is the site's fatal polarity, and it is stated
+        // once, here, instead of derived by a second rule downstream.
+        assertEquals(Arrays.asList(Boolean.TRUE, Boolean.TRUE),
+                guardArms(SiteControlDependence.over(
+                        Collections.singletonList(decrement)).of(decrement)));
         // Both arms of the marker branch CAN reach the write, which is why
         // the graph's may-reach guard rule drops it.
         assertEquals(2, new soot.toolkits.graph.BriefUnitGraph(body)
@@ -365,8 +377,22 @@ public class RegionGraphOccurrenceKeyTest {
         body.getUnits().insertBefore(hook, ordered);
         assertEquals("the hook shifted the positions", 8,
                 new ArrayList<Unit>(body.getUnits()).indexOf(write));
-        assertEquals(expected, SiteControlDependence.over(
-                Collections.singletonList(decrement)).of(decrement));
+        assertEquals(expected, guardSites(SiteControlDependence.over(
+                Collections.singletonList(decrement)).of(decrement)));
+    }
+
+    private static List<String> guardSites(
+            List<StaticScopeMap.Guard> guards) {
+        List<String> sites = new ArrayList<>();
+        for (StaticScopeMap.Guard guard : guards) sites.add(guard.siteId());
+        return sites;
+    }
+
+    private static List<Boolean> guardArms(
+            List<StaticScopeMap.Guard> guards) {
+        List<Boolean> arms = new ArrayList<>();
+        for (StaticScopeMap.Guard guard : guards) arms.add(guard.outcome());
+        return arms;
     }
 
 

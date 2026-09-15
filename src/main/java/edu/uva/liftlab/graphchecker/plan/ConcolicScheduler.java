@@ -72,6 +72,7 @@ public final class ConcolicScheduler {
             throws IOException {
         requireFile(arguments.regionPlan, "region plan");
         requireFile(arguments.refinedGraph, "runtime-refined graph");
+        requireFile(arguments.staticScopeMap, "static scope map");
         Files.createDirectories(arguments.outputDirectory);
 
         JsonObject regionPlanIdentity = artifactIdentity(
@@ -100,10 +101,17 @@ public final class ConcolicScheduler {
                 SymbolicInputSelection.read(arguments.symbolicInputs,
                         regions, regionPlans);
         Map<String, Region> regionIndex = regionIndex(regions);
+        StaticScopeMap staticScopeMap = StaticScopeMap.read(
+                arguments.staticScopeMap);
+        if (!staticScopeMap.stated()) {
+            throw new IOException("static scope map states no site: "
+                    + arguments.staticScopeMap);
+        }
         // The identities recorded here are verified once, against the same
         // files, at the point the schedule index commits them.
         return new LoadedInputs(regionPlans, regionIndex,
-                definitions, refinedGraph, regionPlanIdentity,
+                definitions, refinedGraph, staticScopeMap,
+                regionPlanIdentity,
                 refinedGraphIdentity, symbolicInputsIdentity,
                 symbolicInputs);
     }
@@ -117,7 +125,7 @@ public final class ConcolicScheduler {
         loaded.symbolicInputs.resolveDeclaredNames(loaded.refinedGraph);
         List<Candidate> candidates = candidates(arguments,
                 loaded.regionPlans, loaded.regionIndex,
-                loaded.definitions);
+                loaded.definitions, loaded.staticScopeMap);
         Collections.sort(candidates, Candidate.ORDER);
 
         LoopBoundPolicy loopBound = declaredLoopBounds(
@@ -150,11 +158,17 @@ public final class ConcolicScheduler {
             // member it already decoded is derived from these carriers.
             JsonObject executionTask = scheduled.json();
             if (candidate.goal.kind().capturesTargetReach()) {
-                // The branch event this occurrence must decide.
+                // The branch event this occurrence must decide, and the arm
+                // that reaches the annotated throw -- phi's fatal polarity,
+                // stated by the one guard authority
+                // (static_scope_map's TARGET_SITE row) and carried here so
+                // no later stage re-derives it.
                 JsonObject target = new JsonObject();
                 target.addProperty("siteId", candidate.target.siteId);
                 target.addProperty("occurrence",
                         candidate.target.selectedOccurrence);
+                target.addProperty("requiredOutcome",
+                        candidate.target.requiredOutcome);
                 executionTask.add("targetBranch", target);
             }
 
@@ -300,6 +314,31 @@ public final class ConcolicScheduler {
             retained.add(action.deepCopy());
         }
         return retained;
+    }
+
+    /**
+     * The arm of one branch site that reaches the annotated target.
+     *
+     * <p>The one guard authority, {@code causynth.SiteControlDependence},
+     * computed this in ANALYZE and published it on the TARGET_SITE row of
+     * {@code static_scope_map.jsonl}: post-dominance keeps a branch exactly
+     * when one arm makes the throw unavoidable, so the kept branch names
+     * that arm.  {@code null} means this map states no arm for the site,
+     * which is a refusal at the caller and never a default.</p>
+     */
+    static Boolean fatalArm(StaticScopeMap map, String guardSiteId) {
+        Boolean found = null;
+        for (StaticScopeMap.Site target : map.targetSites()) {
+            Boolean arm = target.outcomeOf(guardSiteId);
+            if (arm == null) continue;
+            if (found != null && !found.equals(arm)) {
+                throw new IllegalArgumentException(
+                        "AMBIGUOUS_FATAL_ARM: " + guardSiteId + " reaches "
+                                + "the annotated target on both arms");
+            }
+            found = arm;
+        }
+        return found;
     }
 
     static Result scheduleTargetFirst(Arguments arguments)
@@ -514,7 +553,8 @@ public final class ConcolicScheduler {
                                               List<RegionInstancePlan>
                                                       regionPlans,
                                               Map<String, Region> regions,
-                                              DefinitionIndex definitions)
+                                              DefinitionIndex definitions,
+                                              StaticScopeMap scopeMap)
             throws IOException {
         List<Candidate> result = new ArrayList<>();
         for (RegionInstancePlan plan : regionPlans) {
@@ -539,7 +579,8 @@ public final class ConcolicScheduler {
                 if (!goal.replayable()) {
                     continue;
                 }
-                appendGoalCandidates(arguments, result, goal, definitions);
+                appendGoalCandidates(arguments, result, goal, definitions,
+                        scopeMap);
             }
         }
         return result;
@@ -575,7 +616,7 @@ public final class ConcolicScheduler {
 
     private static void appendGoalCandidates(
             Arguments arguments, List<Candidate> result, Goal goal,
-            DefinitionIndex definitions)
+            DefinitionIndex definitions, StaticScopeMap scopeMap)
             throws IOException {
             Set<String> definitionMethods =
                     goal.runtimeDefinitionMethods();
@@ -597,7 +638,7 @@ public final class ConcolicScheduler {
             for (JsonElement element : branches) {
                 if (!element.isJsonObject()) continue;
                 JsonObject branch = element.getAsJsonObject();
-                if (!eligibleFailureTarget(branch)) continue;
+                if (!eligibleFailureTarget(branch, scopeMap)) continue;
                 eligibleFailureTargets++;
                 for (JsonElement cell : array(branch,
                         RuntimeSelectedRegionFinalizer
@@ -632,25 +673,21 @@ public final class ConcolicScheduler {
                 }
                 JsonObject branch = element.getAsJsonObject();
                 String siteId = optionalString(branch, "siteId");
-                if (!optionalBool(branch, "failureTarget", false)) {
+                if (!optionalBool(branch, "failureTarget", false)
+                        || !optionalBool(branch, "observed", false)) {
                     continue;
                 }
-                if (!optionalBool(branch, "observed", false)
-                        || !branch.has("requiredOutcome")
-                        || branch.get("requiredOutcome").isJsonNull()) {
+                Boolean arm = fatalArm(scopeMap, siteId);
+                if (arm == null) {
                     continue;
                 }
-                boolean required = optionalBool(branch, "requiredOutcome", false);
+                boolean required = arm.booleanValue();
                 TargetBranch target = TargetBranch.select(
                         siteId, array(branch, "occurrences"), required);
                 if (target == null) {
                     continue;
                 }
                 boolean hasWitness = target.observedOutcome == required;
-                boolean explore = "EXPLORE".equals(optionalString(branch, "policy"));
-                if (hasWitness && !explore) {
-                    continue;
-                }
                 // A target task explores exactly one branch; the rest of the
                 // slice is replayed prefix.
                 JsonArray reachSlice = targetReachBranchSlice(branches,
@@ -673,17 +710,17 @@ public final class ConcolicScheduler {
             }
     }
 
-    private static boolean eligibleFailureTarget(JsonObject branch) {
+    private static boolean eligibleFailureTarget(JsonObject branch,
+                                                 StaticScopeMap scopeMap) {
+        String siteId = optionalString(branch, "siteId");
+        Boolean arm = fatalArm(scopeMap, siteId);
         if (!optionalBool(branch, "failureTarget", false)
-                || optionalBool(branch, "loopControlGuard", false)
                 || !optionalBool(branch, "observed", false)
-                || !branch.has("requiredOutcome")
-                || branch.get("requiredOutcome").isJsonNull()) {
+                || arm == null) {
             return false;
         }
-        return TargetBranch.select(optionalString(branch, "siteId"),
-                array(branch, "occurrences"),
-                optionalBool(branch, "requiredOutcome", false)) != null;
+        return TargetBranch.select(siteId, array(branch, "occurrences"),
+                arm.booleanValue()) != null;
     }
 
     private static String targetQueryInstance(
@@ -764,21 +801,10 @@ public final class ConcolicScheduler {
                         binding));
     }
 
-    /** A target task solves one failure-directed branch. */
+    /** The branch catalog of a target task, as the region plan states it. */
     private static JsonArray targetReachBranchSlice(
             JsonArray branches, TargetBranch target) {
-        JsonArray result = new JsonArray();
-        for (JsonElement element : branches) {
-            if (!element.isJsonObject()) continue;
-            JsonObject branch = element.getAsJsonObject().deepCopy();
-            if (target.siteId.equals(optionalString(branch, "siteId"))) {
-                branch.addProperty("policy", "EXPLORE");
-            } else if ("EXPLORE".equals(optionalString(branch, "policy"))) {
-                branch.addProperty("policy", "PATH_ASSUMPTION");
-            }
-            result.add(branch);
-        }
-        return result;
+        return objectRows(branches);
     }
 
     /** Package-visible for the structure-carrier admission contract. */
@@ -978,7 +1004,6 @@ public final class ConcolicScheduler {
         for (JsonElement element : branches) {
             if (!element.isJsonObject()) continue;
             JsonObject branch = element.getAsJsonObject();
-            if (!"EXPLORE".equals(optionalString(branch, "policy"))) continue;
             for (JsonElement operand : array(branch, "operandCells")) {
                 String cell = operand.isJsonPrimitive()
                         ? operand.getAsString().trim() : "";
@@ -2230,6 +2255,7 @@ public final class ConcolicScheduler {
         private final Map<String, Region> regionIndex;
         private final DefinitionIndex definitions;
         private final List<JsonObject> refinedGraph;
+        private final StaticScopeMap staticScopeMap;
         private final JsonObject regionPlanIdentity;
         private final JsonObject refinedGraphIdentity;
         private final JsonObject symbolicInputsIdentity;
@@ -2240,6 +2266,7 @@ public final class ConcolicScheduler {
                              Map<String, Region> regionIndex,
                              DefinitionIndex definitions,
                              List<JsonObject> refinedGraph,
+                             StaticScopeMap staticScopeMap,
                              JsonObject regionPlanIdentity,
                              JsonObject refinedGraphIdentity,
                              JsonObject symbolicInputsIdentity,
@@ -2248,6 +2275,7 @@ public final class ConcolicScheduler {
             this.regionIndex = regionIndex;
             this.definitions = definitions;
             this.refinedGraph = refinedGraph;
+            this.staticScopeMap = staticScopeMap;
             this.regionPlanIdentity = regionPlanIdentity;
             this.refinedGraphIdentity = refinedGraphIdentity;
             this.symbolicInputsIdentity = symbolicInputsIdentity;
@@ -2321,6 +2349,8 @@ public final class ConcolicScheduler {
     public static final class Arguments {
         public final Path regionPlan;
         public final Path refinedGraph;
+        /** The static scope map: the one guard authority's publication. */
+        public final Path staticScopeMap;
         public final Path outputDirectory;
         public final String regionId;
         public final String occurrenceId;
@@ -2334,6 +2364,7 @@ public final class ConcolicScheduler {
         private final ClosureMode closureMode;
 
         private Arguments(Path regionPlan, Path refinedGraph,
+                          Path staticScopeMap,
                           Path outputDirectory, String regionId,
                           String occurrenceId, String goalId,
                           int maxJobs,
@@ -2346,6 +2377,7 @@ public final class ConcolicScheduler {
                             new LinkedHashSet<>(retainRegions));
             this.regionPlan = regionPlan;
             this.refinedGraph = refinedGraph;
+            this.staticScopeMap = staticScopeMap;
             this.outputDirectory = outputDirectory;
             this.regionId = safe(regionId);
             this.occurrenceId = safe(occurrenceId);
@@ -2358,19 +2390,20 @@ public final class ConcolicScheduler {
 
         public static Arguments parse(String[] args) {
             Map<String, String> values = parseArgs(args, "region-plan",
-                    "refined-graph", "output-dir", "max-jobs",
-                    "symbolic-inputs",
+                    "refined-graph", "static-scope-map", "output-dir",
+                    "max-jobs", "symbolic-inputs",
                     "closure-mode", "target-occurrence");
             Path regionPlan = requiredPath(values, "region-plan");
             Path output = Paths.get(firstNonBlank(values.get("output-dir"),
                     ArtifactIO.sibling(regionPlan,
                             "concolic-schedule").toString()));
             Path refinedGraph = requiredPath(values, "refined-graph");
+            Path staticScopeMap = requiredPath(values, "static-scope-map");
             Path symbolicInputs = optionalPath(
                     values.get("symbolic-inputs"));
             ClosureMode closureMode = ClosureMode.parse(
                     values.get("closure-mode"));
-            return new Arguments(regionPlan, refinedGraph,
+            return new Arguments(regionPlan, refinedGraph, staticScopeMap,
                     output, "", "", "",
                     parseInt(values.get("max-jobs"), 1),
                     symbolicInputs, closureMode,
@@ -2428,7 +2461,8 @@ public final class ConcolicScheduler {
 
         private Arguments forSelection(
                 RuntimeWorkflowDiscovery.Selection selection) {
-            return new Arguments(regionPlan, refinedGraph, outputDirectory,
+            return new Arguments(regionPlan, refinedGraph, staticScopeMap,
+                    outputDirectory,
                     selection.regionId, selection.occurrenceId,
                     selection.goalId, 1,
                     symbolicInputs, closureMode, targetOccurrence,

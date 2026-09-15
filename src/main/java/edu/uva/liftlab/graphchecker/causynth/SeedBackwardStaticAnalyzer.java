@@ -5,6 +5,7 @@ import edu.uva.liftlab.graphchecker.annotation.Debug;
 import edu.uva.liftlab.graphchecker.smt.JavaContainerTypes;
 import edu.uva.liftlab.graphchecker.plan.DependencyRole;
 import edu.uva.liftlab.graphchecker.plan.SiteId;
+import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import soot.Body;
@@ -53,7 +54,6 @@ import static edu.uva.liftlab.graphchecker.causynth.MapFields.object;
 import static edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts.Callsite;
 import static edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts.ConstructorParam;
 import static edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts.ArrayAccess;
-import static edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts.ExceptionGuard;
 import static edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts.Fact;
 import static edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts.FieldWrite;
 import static edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts.InstanceFieldAccess;
@@ -125,6 +125,11 @@ final class SeedBackwardStaticAnalyzer {
             "java.util.Collection", "java.util.List", "java.util.Set",
             "java.util.SortedSet", "java.util.NavigableSet",
             "java.util.Queue", "java.util.Deque");
+    /**
+     * The one kind of every control-dependence row: an operand of a branch
+     * that decides whether the cell at the other end is defined.
+     */
+    private static final String GUARD_KIND = "guard_dependency";
     private final CausynthTargetContext target;
     private final Map<String, SootClass> classesByName = new LinkedHashMap<>();
     private final Map<String, SootMethod> allMethodsBySignature =
@@ -132,8 +137,9 @@ final class SeedBackwardStaticAnalyzer {
     private final Map<String, List<SootMethod>> concreteMethodsBySubSignature =
             new LinkedHashMap<>();
     private final Map<String, List<Fact>> factsByMethod = new LinkedHashMap<>();
-    private final Map<String, MethodControlFlow> controlFlowByMethod =
-            new LinkedHashMap<>();
+    /** Post-dominance per method: the ONE control-dependence rule. */
+    private final Map<String, SiteControlDependence.MethodGuards>
+            guardsByMethod = new LinkedHashMap<>();
     private final Map<String, List<FieldWrite>> fieldWritersByField =
             new LinkedHashMap<>();
     private final Map<String, List<Callsite>> constructorCallersByCallee =
@@ -191,8 +197,6 @@ final class SeedBackwardStaticAnalyzer {
     private final Map<Fact, List<String>> canonicalDefsCache =
             new LinkedHashMap<>();
     private final Map<Fact, List<String>> canonicalLocalUsesCache =
-            new LinkedHashMap<>();
-    private final Map<String, List<ExceptionGuard>> requiredPathGuardsByFact =
             new LinkedHashMap<>();
     private final WireFlowCatalog wireFlows;
     /** README section 5's per-loop {@code K_L}, as this campaign declares it. */
@@ -334,10 +338,6 @@ final class SeedBackwardStaticAnalyzer {
      * first when the seed walk has not already done so.
      */
     private Body jimpleBody(String signature) {
-        MethodControlFlow cached = controlFlowByMethod.get(signature);
-        if (cached != null) {
-            return cached.cfg.body();
-        }
         SootMethod method = concreteMethod(signature);
         return method == null ? null : activeBody(method);
     }
@@ -418,22 +418,15 @@ final class SeedBackwardStaticAnalyzer {
                 addEdge("exception_throw", thrown, exceptionNode,
                         method, throwFact);
             }
-            // Every branch on at least one path to the exact throw.
-            forEachGuardOperand(method, branchGuards(method, throwFact,
-                    false), (guard, node) -> {
+            // Every branch on at least one path to the exact throw: the
+            // slice's scope, so a value that decides one of them is in it.
+            // Which of them DECIDES the throw, and on which arm, is the
+            // static scope map's TARGET_SITE row and is not restated here.
+            forEachGuardOperand(method, throwFact, false,
+                    (guardFact, node) -> {
                 methodRelevant.add(node);
-                Map<String, Object> edge = addEdge("exception_guard",
-                        node, exceptionNode, method, guard.fact);
-                if (edge != null) {
-                    ControlDependenceEdgeSupport
-                            .annotatePathGuard(edge, method,
-                                    guard.fact.unitIndex,
-                                    throwFact.unitIndex,
-                                    throwFact.unitText,
-                                    guard.requiredOutcome,
-                                    guard.reachingSuccessorIndices,
-                                    node, exceptionNode);
-                }
+                addEdge("exception_guard", node, exceptionNode, method,
+                        guardFact);
             });
 
             selectedMethods.add(method);
@@ -529,27 +522,9 @@ final class SeedBackwardStaticAnalyzer {
                     annotateExplicitSymbolicFaultEdge(edge, method, fact,
                             name);
 
-                    forEachGuardOperand(method,
-                            controllingGuards(method, fact),
-                            (guard, guardNode) -> {
-                                Map<String, Object> guardEdge = addEdge(
-                                        ControlDependenceEdgeSupport
-                                                .PATH_GUARD_KIND,
-                                        guardNode, destination, method,
-                                        guard.fact);
-                                if (guardEdge != null) {
-                                    ControlDependenceEdgeSupport
-                                            .annotatePathGuard(guardEdge,
-                                                    method,
-                                                    guard.fact.unitIndex,
-                                                    fact.unitIndex,
-                                                    fact.unitText,
-                                                    guard.requiredOutcome,
-                                                    guard.reachingSuccessorIndices,
-                                                    guardNode, destination);
-                                }
-                                relevant(method).add(guardNode);
-                            });
+                    demandControllingGuards(method, fact,
+                            relevant(method),
+                            Collections.singletonList(destination));
                 }
                 selectedMethods.add(method);
             }
@@ -632,117 +607,44 @@ final class SeedBackwardStaticAnalyzer {
     }
 
     /**
-     * Returns every dominating branch for which only a proper subset of
-     * successors can reach {@code targetFact}.
+     * The one CFG relation of a method, built on first demand and kept: the
+     * backward slice asks about many sites of the same body.
      */
-    private List<ExceptionGuard> controllingGuards(String method,
-                                                   Fact targetFact) {
-        return memoized(requiredPathGuardsByFact,
-                method + "\n" + targetFact.unitIndex,
-                ignored -> branchGuards(method, targetFact, true));
-    }
-
-    private List<ExceptionGuard> branchGuards(String method,
-                                              Fact targetFact,
-                                              boolean controllingOnly) {
-        MethodControlFlow controlFlow = controlFlow(method);
-        if (controlFlow == null || targetFact.unit == null) {
-            return Collections.emptyList();
+    private SiteControlDependence.MethodGuards cfgRelation(String method) {
+        SiteControlDependence.MethodGuards relation =
+                guardsByMethod.get(method);
+        if (relation == null) {
+            relation = SiteControlDependence.MethodGuards.of(method);
+            guardsByMethod.put(method, relation);
         }
-        List<ExceptionGuard> guards = new ArrayList<>();
-        for (Fact candidate : factsByMethod.getOrDefault(method,
-                Collections.emptyList())) {
-            if (!candidate.isBranch) {
-                continue;
-            }
-            CausynthBranchShape branchShape =
-                    CausynthBranchShape.from(controlFlow.cfg.body(),
-                            candidate.unit);
-            if (branchShape == null
-                    || branchShape.successorCount() < 2) {
-                continue;
-            }
-            List<Unit> successors = branchShape.successors;
-            int reachingSuccessors = 0;
-            List<Integer> reachingIndices = new ArrayList<>();
-            for (int successorIndex = 0;
-                successorIndex < successors.size(); successorIndex++) {
-                if (canReachWithoutRevisiting(controlFlow.cfg,
-                        successors.get(successorIndex), targetFact.unit,
-                        candidate.unit)) {
-                    reachingSuccessors++;
-                    reachingIndices.add(successorIndex);
-                }
-            }
-            // Control dependence does not require the branch itself to
-            // dominate the target.
-            boolean relevant = reachingSuccessors > 0
-                    && (!controllingOnly
-                    || reachingSuccessors < successors.size());
-            if (!relevant) {
-                continue;
-            }
-            Boolean requiredOutcome = null;
-            if (candidate.unit instanceof IfStmt) {
-                IfStmt ifStmt = (IfStmt) candidate.unit;
-                boolean takenReaches = canReachWithoutRevisiting(
-                        controlFlow.cfg, ifStmt.getTarget(),
-                        targetFact.unit, candidate.unit);
-                Unit fallThrough = controlFlow.cfg.body().getUnits()
-                        .getSuccOf(candidate.unit);
-                boolean fallThroughReaches = fallThrough != null
-                        && canReachWithoutRevisiting(controlFlow.cfg,
-                        fallThrough, targetFact.unit, candidate.unit);
-                if (takenReaches != fallThroughReaches) {
-                    requiredOutcome = takenReaches;
-                }
-            }
-            guards.add(new ExceptionGuard(candidate, requiredOutcome,
-                    reachingIndices));
-        }
-        guards.sort(Comparator.comparingInt(guard -> guard.fact.unitIndex));
-        return Collections.unmodifiableList(guards);
-    }
-
-    private MethodControlFlow controlFlow(String method) {
-        if (controlFlowByMethod.containsKey(method)) {
-            return controlFlowByMethod.get(method);
-        }
-        SootMethod sootMethod = concreteMethod(method);
-        if (sootMethod == null) {
-            return null;
-        }
-        try {
-            MethodControlFlow controlFlow = new MethodControlFlow(
-                    CfgLoopControl.loopCfg(activeBody(sootMethod)));
-            controlFlowByMethod.put(method, controlFlow);
-            return controlFlow;
-        } catch (RuntimeException ignored) {
-            return null;
-        }
+        return relation;
     }
 
     /**
-     * Tests reachability within the current dynamic occurrence of a candidate
-     * branch.
+     * Adds the operands of every branch that decides whether {@code site}
+     * runs to the slice.
+     *
+     * <p>This is the whole of control dependence in the slice: a value that
+     * decides whether the site runs is part of why the target read what it
+     * read.  The relation is not published as an edge kind of its own --
+     * once the operand is relevant, the backward walk emits the ordinary
+     * {@code guard_dependency} row from the operand to the guarded cell:
+     * ONE kind for the relation, where four ({@code path_guard_dependency},
+     * {@code heap_mutation_path_guard},
+     * {@code receiver_field_effect_path_guard} and
+     * {@code activation_path_guard}) used to state the same thing with
+     * their own outcome, successor-index and controlled-site annotations --
+     * a second control-dependence implementation published on the graph.</p>
      */
-    private boolean canReachWithoutRevisiting(CfgLoopControl.LoopCfg cfg,
-                                              Unit start, Unit targetUnit,
-                                              Unit candidateBranch) {
-        Set<Unit> seen = new LinkedHashSet<>();
-        Deque<Unit> work = new ArrayDeque<>();
-        work.add(start);
-        while (!work.isEmpty()) {
-            Unit current = work.removeFirst();
-            if (current == targetUnit) {
-                return true;
+    private void demandControllingGuards(String method, Fact site,
+                                         Set<String> relevant,
+                                         Collection<String> guardedCells) {
+        forEachGuardOperand(method, site, true, (guardFact, guardNode) -> {
+            for (String guarded : guardedCells) {
+                addEdge(GUARD_KIND, guardNode, guarded, method, guardFact);
             }
-            if (current == candidateBranch || !seen.add(current)) {
-                continue;
-            }
-            work.addAll(cfg.succsOf(current));
-        }
-        return false;
+            relevant.add(guardNode);
+        });
     }
 
     private Set<String> localNames(Collection<String> values) {
@@ -834,15 +736,25 @@ final class SeedBackwardStaticAnalyzer {
                 }
             }
 
-            if (defExactHit) {
-                processRequiredPathGuards(method, fact, defs,
-                        relevant);
+            if (defExactHit && !fact.isBranch) {
+                // A definition the slice demands is demanded on the paths
+                // that run it, so the branches that decide it are demanded
+                // too.
+                List<String> relevantDefs = new ArrayList<>();
+                for (String def : defs) {
+                    if (relevant.contains(def) && !ignoreNode(def)) {
+                        relevantDefs.add(def);
+                    }
+                }
+                if (!relevantDefs.isEmpty()) {
+                    demandControllingGuards(method, fact, relevant,
+                            relevantDefs);
+                }
             }
 
             if (fact.isBranch && useExactHit) {
                 for (String use : uses) {
-                    addEdge("guard_dependency", use, factNode(fact),
-                            method, fact);
+                    addEdge(GUARD_KIND, use, factNode(fact), method, fact);
                 }
             }
             if (fact.isThrow && useExactHit) {
@@ -856,46 +768,6 @@ final class SeedBackwardStaticAnalyzer {
             processArrayAccesses(method, fact, defs, relevant);
             processInvoke(method, fact, defs, relevant);
         }
-    }
-
-    /**
-     * Adds intraprocedural control dependencies for a statement that defines
-     * an exactly relevant value.
-     */
-    private void processRequiredPathGuards(String method, Fact targetFact,
-                                           List<String> defs,
-                                           Set<String> relevant) {
-        if (targetFact.isBranch) {
-            return;
-        }
-        List<String> relevantDefs = new ArrayList<>();
-        for (String def : defs) {
-            if (relevant.contains(def) && !ignoreNode(def)) {
-                relevantDefs.add(def);
-            }
-        }
-        if (relevantDefs.isEmpty()) {
-            return;
-        }
-
-        forEachGuardOperand(method, controllingGuards(method, targetFact),
-                (guard, guardNode) -> {
-            for (String def : relevantDefs) {
-                Map<String, Object> edge = addEdge(
-                        ControlDependenceEdgeSupport.PATH_GUARD_KIND,
-                        guardNode, def, method, guard.fact);
-                if (edge != null) {
-                    ControlDependenceEdgeSupport.annotatePathGuard(
-                            edge, method, guard.fact.unitIndex,
-                            targetFact.unitIndex,
-                            targetFact.unitText,
-                            guard.requiredOutcome,
-                            guard.reachingSuccessorIndices,
-                            guardNode, def);
-                }
-            }
-            relevant.add(guardNode);
-        });
     }
 
     private void processFieldReads(String method, Fact fact,
@@ -942,9 +814,12 @@ final class SeedBackwardStaticAnalyzer {
                 affectedRelevantHeapCells.add(mutatedFieldNode);
             }
         }
-        for (String affectedCell : affectedRelevantHeapCells) {
-            processHeapMutationPathGuards(method, fact,
-                    affectedCell, relevant);
+        if (!affectedRelevantHeapCells.isEmpty()) {
+            // A heap write may have no exactly relevant Jimple definition
+            // local, so the definition path above cannot attach the branches
+            // that make the write execute.
+            demandControllingGuards(method, fact, relevant,
+                    affectedRelevantHeapCells);
         }
     }
 
@@ -1035,38 +910,6 @@ final class SeedBackwardStaticAnalyzer {
 
     private String arrayElementCell(String canonicalBase) {
         return canonicalBase + "#array-element";
-    }
-
-    /**
-     * A heap write may have no exactly relevant Jimple definition local, so
-     * the ordinary {@link #processRequiredPathGuards(String, Fact, List, Set)}
-     * path cannot reliably attach the branches that make the write execute.
-     */
-    private void processHeapMutationPathGuards(
-            String method, Fact mutation, String mutatedCell,
-            Set<String> relevant) {
-        if (ignoreNode(mutatedCell)) {
-            return;
-        }
-        forEachGuardOperand(method, controllingGuards(method, mutation),
-                (guard, guardNode) -> {
-            addHeapMutationPathGuardEdge(guardNode, mutatedCell, method,
-                    guard, mutation);
-            relevant.add(guardNode);
-        });
-    }
-
-    private void addHeapMutationPathGuardEdge(
-            String guardNode, String mutatedCell, String method,
-            ExceptionGuard guard, Fact mutation) {
-        Map<String, Object> edge = addEdge("heap_mutation_path_guard",
-                guardNode, mutatedCell, method, guard.fact);
-        if (edge == null) {
-            return;
-        }
-        ControlDependenceEdgeSupport.annotateGuardedMutation(
-                edge, method, guard.fact.unitIndex, mutation.unitIndex,
-                guard.requiredOutcome, guard.reachingSuccessorIndices);
     }
 
     private void processFieldWrite(String method, Fact fact,
@@ -1250,12 +1093,9 @@ final class SeedBackwardStaticAnalyzer {
                 callsite);
         selectedMethods.add(callerMethod);
 
-        forEachGuardOperand(callerMethod, controllingGuards(callerMethod,
-                callsite), (guard, guardNode) -> {
-            addEdge("activation_path_guard", guardNode, activation,
-                    callerMethod, guard.fact);
-            relevant(callerMethod).add(guardNode);
-        });
+        demandControllingGuards(callerMethod, callsite,
+                relevant(callerMethod),
+                Collections.singletonList(activation));
     }
 
     /**
@@ -1312,7 +1152,8 @@ final class SeedBackwardStaticAnalyzer {
 
     /**
      * A relevant field-writing call is a heap effect even when its data
-     * argument is a constant.
+     * argument is a constant, so the branches that decide the call decide
+     * the effect.
      */
     private void addReceiverFieldEffectPathGuards(
             String calleeMethod, Callsite callsite, Fact callsiteFact,
@@ -1322,36 +1163,15 @@ final class SeedBackwardStaticAnalyzer {
         if (effectFields == null || effectFields.isEmpty()) {
             return;
         }
-        forEachGuardOperand(callsite.method, controllingGuards(
-                callsite.method, callsiteFact), (guard, guardNode) -> {
+        forEachGuardOperand(callsite.method, callsiteFact, true,
+                (guardFact, guardNode) -> {
             for (String effectField : effectFields) {
-                if (expandOnce("RECEIVER_EFFECT_GUARD", calleeMethod,
-                        callsite.method, callsite.unitIndex,
-                        guard.fact.unitIndex, guardNode, effectField)) {
-                    addReceiverFieldEffectPathGuardEdge(
-                            guardNode, effectField, calleeMethod,
-                            callsite, guard);
-                }
+                addEdge(GUARD_KIND, guardNode, effectField,
+                        callsite.method, guardFact);
             }
             callerRelevant.add(guardNode);
             selectedMethods.add(callsite.method);
         });
-    }
-
-    private void addReceiverFieldEffectPathGuardEdge(
-            String guardNode, String effectField, String calleeMethod,
-            Callsite callsite, ExceptionGuard guard) {
-        String kind = "receiver_field_effect_path_guard";
-        Map<String, Object> edge = addEdge(kind, guardNode, effectField,
-                callsite.method, guard.fact);
-        if (edge == null) {
-            return;
-        }
-        ControlDependenceEdgeSupport.annotateGuardedReceiverEffect(
-                edge, callsite.method, guard.fact.unitIndex,
-                callsite.unitIndex, guard.requiredOutcome,
-                guard.reachingSuccessorIndices, calleeMethod,
-                effectField);
     }
 
     private ConstructorParam constructorParam(String node) {
@@ -2515,17 +2335,22 @@ final class SeedBackwardStaticAnalyzer {
     }
 
     /**
-     * Visits every causal operand of {@code guards}, as the canonical node it
-     * names in {@code method}, skipping the ones no edge may name.
+     * Visits every causal operand of every branch {@code site} is
+     * control-dependent on, as the canonical node it names in {@code
+     * method}, skipping the ones no edge may name.
      */
     private void forEachGuardOperand(
-            String method, List<ExceptionGuard> guards,
-            BiConsumer<ExceptionGuard, String> visit) {
-        for (ExceptionGuard guard : guards) {
-            for (String use : causalGuardUses(guard.fact)) {
+            String method, Fact site, boolean controllingOnly,
+            BiConsumer<Fact, String> visit) {
+        if (site == null || site.unitIndex < 0) return;
+        for (Integer guardIndex : cfgRelation(method).reaching(
+                site.unitIndex, controllingOnly)) {
+            Fact guardFact = indexedFact(method, guardIndex.intValue());
+            if (guardFact == null) continue;
+            for (String use : causalGuardUses(guardFact)) {
                 String guardNode = canonical(method, use);
                 if (!ignoreNode(guardNode)) {
-                    visit.accept(guard, guardNode);
+                    visit.accept(guardFact, guardNode);
                 }
             }
         }
@@ -2869,11 +2694,12 @@ final class SeedBackwardStaticAnalyzer {
         }
         String fromText = String.valueOf(from);
         String toText = String.valueOf(to);
-        boolean sameCellPathGuard =
-                ControlDependenceEdgeSupport.permitsSameCellEdge(kind,
-                        fromText, toText, fact != null);
+        // A guarded redefinition of a cell may be decided by that cell's own
+        // earlier value, which is the one relation whose two ends can name
+        // the same cell.
+        boolean sameCellGuard = GUARD_KIND.equals(kind) && fact != null;
         if (ignoreNode(fromText) || ignoreNode(toText)
-                || fromText.equals(toText) && !sameCellPathGuard) {
+                || fromText.equals(toText) && !sameCellGuard) {
             return null;
         }
         EdgeIdentity key = edgeKey(kind, fromText, toText, method, fact);
@@ -2914,9 +2740,6 @@ final class SeedBackwardStaticAnalyzer {
                         instanceof soot.jimple.LengthExpr) {
                     edge.put("arrayLengthOperation", true);
                 }
-                if (fact.isBranch && loopControlGuard(method, fact.unit)) {
-                    edge.put("loopControlGuard", true);
-                }
                 if (fact.invoke != null) {
                     edge.put("invoke", fact.invoke);
                 }
@@ -2924,12 +2747,6 @@ final class SeedBackwardStaticAnalyzer {
             emittedEdgeRows.put(key, edge);
         }
         return edge;
-    }
-
-    private boolean loopControlGuard(String method, Unit unit) {
-        MethodControlFlow controlFlow = controlFlow(method);
-        return controlFlow != null
-                && controlFlow.loopControlGuards().contains(unit);
     }
 
     /**
@@ -3081,24 +2898,6 @@ final class SeedBackwardStaticAnalyzer {
                     && from.equals(identity.from)
                     && to.equals(identity.to)
                     && method.equals(identity.method);
-        }
-    }
-
-    private static final class MethodControlFlow {
-        /** The method's one loop CFG: its ordinary transfers, and the
-         *  dominance its guards are proved on. */
-        private final CfgLoopControl.LoopCfg cfg;
-        private Set<Unit> loopControlGuards;
-
-        private MethodControlFlow(CfgLoopControl.LoopCfg cfg) {
-            this.cfg = cfg;
-        }
-
-        private Set<Unit> loopControlGuards() {
-            if (loopControlGuards == null) {
-                loopControlGuards = CfgLoopControl.guards(cfg);
-            }
-            return loopControlGuards;
         }
     }
 
