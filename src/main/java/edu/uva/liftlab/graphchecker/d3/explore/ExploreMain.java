@@ -5,11 +5,14 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
+import edu.uva.liftlab.graphchecker.d3.contract.ActivationRow;
+import edu.uva.liftlab.graphchecker.d3.contract.CausalContext;
 import edu.uva.liftlab.graphchecker.d3.contract.GapClass;
 import edu.uva.liftlab.graphchecker.d3.contract.GapKind;
 import edu.uva.liftlab.graphchecker.d3.contract.GapRow;
 import edu.uva.liftlab.graphchecker.d3.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.d3.contract.RowCodec;
+import edu.uva.liftlab.graphchecker.d3.contract.Selector;
 import edu.uva.liftlab.graphchecker.d3.contract.Task;
 
 import java.io.IOException;
@@ -30,9 +33,9 @@ import java.util.Set;
  * <pre>
  *   --sessions &lt;dir&gt;           the corpus (the campaign's own layout), or
  *   --iteration &lt;dir&gt;          its parent, which holds sessions/
- *   --task-plan &lt;file&gt;         the seed replay's plan; its occurrences are
- *                              the closure's roots
- *   --target-occurrence &lt;addr&gt; one more root, in v2 or either v1 spelling
+ *   --task-plan &lt;file&gt;         the seed replay's plan; its occurrenceIds are
+ *                              selectors too, resolved the same way
+ *   --target-occurrence &lt;sel&gt;  the case's declared anchor, a v1 selector
  *   --results &lt;file&gt;           every ObligationResult the waves before this
  *                              one recorded; a query answered there is never
  *                              proposed again
@@ -53,6 +56,9 @@ import java.util.Set;
  * ({@link ObligationSolverMain}).</p>
  */
 public final class ExploreMain {
+    /** What tells a resolved occurrence id from a case's v1 selector. */
+    private static final String RESOLVED_MARKER = "/ctx:";
+
     private ExploreMain() {
     }
 
@@ -72,7 +78,7 @@ public final class ExploreMain {
         if (out == null) {
             throw new IllegalArgumentException("Missing --output-dir");
         }
-        JsonObject manifest = plan(iteration, anchors(options),
+        JsonObject manifest = plan(iteration, selectors(options),
                 path(options, "root-domains"), path(options, "results"), out,
                 (int) number(options, "wave", 0),
                 value(options, "topology-epoch", ""),
@@ -89,27 +95,24 @@ public final class ExploreMain {
     /**
      * Plans one wave.
      *
-     * @param roots the occurrences the closure starts from: the declared
-     *              anchor, or the seed plan's own occurrences
+     * @param selectors what the case declares, in the v1 spelling: the
+     *                  declared anchor and the seed plan's own occurrences.
+     *                  They are resolved against the seed session here,
+     *                  because a selector is not an identity and nothing
+     *                  downstream may see one.
      */
-    public static JsonObject plan(Path iteration,
-                                  List<OccurrenceAddress> roots,
+    public static JsonObject plan(Path iteration, List<String> selectors,
                                   Path rootDomains, Path results, Path out,
                                   int wave, String topologyEpoch,
                                   int maxTasks,
                                   ObligationFactory.Bounds bounds)
             throws IOException {
         Corpus corpus = Corpus.read(iteration, rootDomains);
-        List<Task> tasks = new ArrayList<Task>();
         List<GapRow> gaps = new ArrayList<GapRow>();
+        List<OccurrenceAddress> roots = resolve(corpus, selectors, gaps);
+        List<Task> tasks = new ArrayList<Task>();
         Set<String> planned = new LinkedHashSet<String>();
         for (OccurrenceAddress root : roots) {
-            if (corpus.pathsOf(root).isEmpty()) {
-                gaps.add(GapRow.of("", GapKind.ADMISSION_GAP,
-                        GapClass.DIAGNOSTIC, root.render(),
-                        "no session of this epoch activated the occurrence "
-                                + "the plan names, so its closure is empty"));
-            }
             ClosurePlanner.Plan plan = ClosurePlanner.plan(corpus, root,
                     maxTasks);
             gaps.addAll(plan.gaps);
@@ -146,17 +149,12 @@ public final class ExploreMain {
         return manifest;
     }
 
-    /** The closure's roots: the declared anchor and the seed plan's own. */
-    private static List<OccurrenceAddress> anchors(Map<String, String> options)
+    /** What the case declares, in the v1 spelling: anchor, then the plan's. */
+    private static List<String> selectors(Map<String, String> options)
             throws IOException {
-        List<OccurrenceAddress> roots = new ArrayList<OccurrenceAddress>();
-        Set<String> seen = new LinkedHashSet<String>();
+        List<String> selectors = new ArrayList<String>();
         String declared = value(options, "target-occurrence", "");
-        if (!declared.isEmpty()) {
-            OccurrenceAddress anchor = OccurrenceAddress.parse(declared);
-            seen.add(anchor.id());
-            roots.add(anchor);
-        }
+        if (!declared.isEmpty()) selectors.add(declared);
         Path plan = path(options, "task-plan");
         if (plan != null && Files.isRegularFile(plan)) {
             for (JsonObject row : RowCodec.readJsonl(plan)) {
@@ -164,22 +162,184 @@ public final class ExploreMain {
                 if (occurrence == null || !occurrence.isJsonPrimitive()) {
                     continue;
                 }
-                OccurrenceAddress address;
-                try {
-                    address = OccurrenceAddress.parse(
-                            occurrence.getAsString());
-                } catch (IllegalArgumentException malformed) {
-                    continue;
-                }
-                if (seen.add(address.id())) roots.add(address);
+                String text = occurrence.getAsString();
+                if (!selectors.contains(text)) selectors.add(text);
             }
         }
-        if (roots.isEmpty()) {
+        if (selectors.isEmpty()) {
             throw new IllegalArgumentException("the closure has no root: "
                     + "pass --target-occurrence, or a --task-plan whose rows "
                     + "name an occurrenceId");
         }
+        return selectors;
+    }
+
+    /**
+     * Resolves each declared selector against the seed session.
+     *
+     * <p>Humans do not write execution indexes (IDENTITY-V3 SS2): a case
+     * declares a SELECTOR -- node, region, the api that started the
+     * occurrence when one is given, and which match -- and the seed session's
+     * own activation order decides which occurrence that is.  The resolved id
+     * is what exploration and composition use; a selector never leaves this
+     * method.</p>
+     *
+     * <p>A selector nothing matches is an {@code ADMISSION_GAP} naming it and
+     * what the seed session did offer for that region, because the reason is
+     * almost always a spelling the deployment and the case do not share, and
+     * a reader cannot see that from "no tasks".</p>
+     */
+    private static List<OccurrenceAddress> resolve(Corpus corpus,
+                                                   List<String> selectors,
+                                                   List<GapRow> gaps) {
+        String seed = corpus.seedSessionId();
+        List<OccurrenceAddress> occurrences = seedOccurrences(corpus, seed);
+        String scope = "the seed session " + seed;
+        if (occurrences.isEmpty()) {
+            // A corpus of flips alone -- an offline re-plan, a seed whose
+            // activations were not published -- still has occurrences, and
+            // refusing every selector because one session is missing would
+            // stop exploration over a bookkeeping fact.  Which order the
+            // k-th was counted in is then part of the refusal.
+            occurrences = everyOccurrence(corpus);
+            scope = "no session of this corpus is a seed, so every session";
+        }
+        List<OccurrenceAddress> roots = new ArrayList<OccurrenceAddress>();
+        Set<String> resolved = new LinkedHashSet<String>();
+        for (String text : selectors) {
+            if (text.contains(RESOLVED_MARKER)) {
+                // Already an id: the scheduler resolved it, or a re-run
+                // passed back what an earlier manifest published.
+                try {
+                    OccurrenceAddress address = OccurrenceAddress.parse(text);
+                    if (resolved.add(address.id())) roots.add(address);
+                    continue;
+                } catch (IllegalArgumentException malformed) {
+                    gaps.add(GapRow.of(seed, GapKind.DECLARATION_MISSING,
+                            GapClass.BLOCKING, text,
+                            "not an occurrence id: "
+                                    + malformed.getMessage()));
+                    continue;
+                }
+            }
+            Selector selector;
+            try {
+                selector = OccurrenceAddress.parseSelector(text);
+            } catch (IllegalArgumentException malformed) {
+                gaps.add(GapRow.of(seed, GapKind.DECLARATION_MISSING,
+                        GapClass.BLOCKING, text,
+                        "not a case selector: " + malformed.getMessage()));
+                continue;
+            }
+            OccurrenceAddress match = match(selector, occurrences);
+            if (match == null) {
+                gaps.add(GapRow.of(seed, GapKind.ADMISSION_GAP,
+                        GapClass.BLOCKING, selector.render(),
+                        "no occurrence of " + scope + " matches it; that "
+                                + "region ran as: "
+                                + offered(selector, occurrences)));
+                continue;
+            }
+            if (resolved.add(match.id())) roots.add(match);
+        }
         return roots;
+    }
+
+    /** The k-th occurrence this selector matches, in the seed's own order. */
+    private static OccurrenceAddress match(Selector selector,
+                                           List<OccurrenceAddress> seed) {
+        int matched = 0;
+        for (OccurrenceAddress occurrence : seed) {
+            if (!selector.matches(occurrence, apiOf(selector, occurrence))) {
+                continue;
+            }
+            if (++matched == selector.k()) return occurrence;
+        }
+        return null;
+    }
+
+    /**
+     * The api of the message that started this occurrence, or "".
+     *
+     * <p>The contract will not guess an api out of a deployment's RPC static
+     * site spelling, and it is right not to; this is the rule for the one
+     * spelling the cases meet, and it is the composer's rule verbatim, so
+     * that one declaration elects one occurrence in both stages.  A v1
+     * declaration writes the api as the tail of the source it came from, so
+     * the two are compared on their last path segment; an exact site
+     * spelling still matches itself.</p>
+     */
+    private static String apiOf(Selector selector,
+                                OccurrenceAddress occurrence) {
+        if (occurrence.context().form() != CausalContext.Form.ANCHOR) {
+            return "";
+        }
+        String site = ((CausalContext.Anchor) occurrence.context()).rpcSite();
+        if (selector.api() == null) return site;
+        // Answer the selector's own spelling where the two name one api, so
+        // that the contract's equality decides and this rule only says which
+        // spellings are the same api.
+        return sameApi(selector.api(), site) ? selector.api() : site;
+    }
+
+    private static boolean sameApi(String declared, String site) {
+        if (declared.equals(site)) return true;
+        String left = tail(declared);
+        String right = tail(site);
+        return !left.isEmpty() && left.equals(right);
+    }
+
+    private static String tail(String value) {
+        int slash = value.lastIndexOf('/');
+        return slash < 0 ? value : value.substring(slash + 1);
+    }
+
+    /** What the seed session ran that region as, for a refusal to name. */
+    private static String offered(Selector selector,
+                                  List<OccurrenceAddress> seed) {
+        List<String> named = new ArrayList<String>();
+        for (OccurrenceAddress occurrence : seed) {
+            if (!selector.regionId().equals(occurrence.regionId())) continue;
+            if (named.size() >= 4) {
+                named.add("...");
+                break;
+            }
+            named.add(occurrence.node().render() + " "
+                    + occurrence.context().render());
+        }
+        return named.isEmpty() ? "(that region ran there not at all)"
+                : String.join(", ", named);
+    }
+
+    /** Every occurrence of the corpus, in session then activation order. */
+    private static List<OccurrenceAddress> everyOccurrence(Corpus corpus) {
+        List<OccurrenceAddress> occurrences =
+                new ArrayList<OccurrenceAddress>();
+        Set<String> seen = new LinkedHashSet<String>();
+        for (SessionReader.Session session : corpus.sessions()) {
+            for (ActivationRow activation : session.activations) {
+                if (seen.add(activation.occurrence().id())) {
+                    occurrences.add(activation.occurrence());
+                }
+            }
+        }
+        return occurrences;
+    }
+
+    /** The seed session's occurrences, in the order it activated them. */
+    private static List<OccurrenceAddress> seedOccurrences(Corpus corpus,
+                                                           String seed) {
+        List<OccurrenceAddress> occurrences =
+                new ArrayList<OccurrenceAddress>();
+        Set<String> seen = new LinkedHashSet<String>();
+        SessionReader.Session session = corpus.session(seed);
+        if (session == null) return occurrences;
+        for (ActivationRow activation : session.activations) {
+            if (seen.add(activation.occurrence().id())) {
+                occurrences.add(activation.occurrence());
+            }
+        }
+        return occurrences;
     }
 
     private static JsonObject manifest(List<OccurrenceAddress> roots,

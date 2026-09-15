@@ -2,6 +2,7 @@ package edu.uva.liftlab.graphchecker.d3.explore;
 
 import edu.uva.liftlab.graphchecker.d3.compose.SmtLowering;
 import edu.uva.liftlab.graphchecker.d3.contract.AttachRow;
+import edu.uva.liftlab.graphchecker.d3.contract.CausalContext;
 import edu.uva.liftlab.graphchecker.d3.contract.ExportRow;
 import edu.uva.liftlab.graphchecker.d3.contract.GapClass;
 import edu.uva.liftlab.graphchecker.d3.contract.GapKind;
@@ -161,6 +162,7 @@ public final class ClosurePlanner {
                     "attach is unpaired: no producer endpoint to close over"));
             return;
         }
+        crossCheck(attach, gaps);
         into.add(attach.producer().occurrence());
         SessionReader.Session session = corpus.session(attach.sessionId());
         if (session == null) return;
@@ -179,6 +181,36 @@ public final class ClosurePlanner {
                 }
             }
         }
+    }
+
+    /**
+     * The recorded pairing against the consumer's own causal context.
+     *
+     * <p>Under identity v3 a consumer started by a message carries its
+     * producer's endpoint id INSIDE its own id, so the run states the pairing
+     * twice: once as the attach row's producer endpoint, once as the
+     * occurrence's {@code Anchor} context.  The ROW is the authority -- it is
+     * the pairing the run recorded -- and the context is a cross-check: when
+     * the two disagree, the closure still follows the row and a reader is
+     * told, because two statements about one interaction that do not agree is
+     * the runtime's defect to fix and not this stage's to arbitrate.  A
+     * {@code Root} or {@code Lost} context raises nothing: there is no anchor
+     * to disagree with, and an unpaired attach already says
+     * {@code LINEAGE_LOST}.</p>
+     */
+    private static void crossCheck(AttachRow attach, List<GapRow> gaps) {
+        CausalContext context = attach.endpoint().occurrence().context();
+        if (!(context instanceof CausalContext.Anchor)) return;
+        String anchored = ((CausalContext.Anchor) context)
+                .producerEndpointId();
+        String recorded = attach.producer().id();
+        if (anchored.equals(recorded)) return;
+        gaps.add(GapRow.of(attach.sessionId(), GapKind.TOPOLOGY_DIVERGENCE,
+                GapClass.DIAGNOSTIC, attach.endpoint().toString(),
+                "the recorded pairing names producer endpoint " + recorded
+                        + " and the consumer's causal anchor names "
+                        + anchored + "; the closure follows the recorded "
+                        + "pairing"));
     }
 
     /**
