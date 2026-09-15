@@ -100,7 +100,7 @@ public final class ConcolicScheduler {
         SymbolicInputSelection symbolicInputs =
                 SymbolicInputSelection.read(arguments.symbolicInputs,
                         regions, regionPlans);
-        Map<String, Region> regionIndex = regionIndex(regions);
+        Set<String> regionIndex = regionIndex(regions);
         StaticScopeMap staticScopeMap = StaticScopeMap.read(
                 arguments.staticScopeMap);
         if (!staticScopeMap.stated()) {
@@ -132,12 +132,8 @@ public final class ConcolicScheduler {
                 LoopBoundPolicy.declaredDefault(), loaded.regionPlans);
         Result result = new Result();
         for (Candidate candidate : candidates) {
-            JsonArray edgeBindings = objectRows(
-                    candidate.goal.edgeBindings());
-            if (candidate.targetEdgeBindings != null) {
-                edgeBindings = candidate.targetEdgeBindings.deepCopy();
-            }
-            edgeBindings = deduplicateTopologyEdges(edgeBindings);
+            JsonArray edgeBindings = deduplicateTopologyEdges(objectRows(
+                    candidate.goal.edgeBindings()));
             JsonArray taskInputActions = candidate.inputActions;
             JsonArray selectedInputs = loaded.symbolicInputs.select(
                     candidate.goal.plan().regionId(), taskInputActions);
@@ -165,11 +161,11 @@ public final class ConcolicScheduler {
                 // (static_scope_map's TARGET_SITE row) and carried here so
                 // no later stage re-derives it.
                 JsonObject target = new JsonObject();
-                target.addProperty("siteId", candidate.target.siteId);
+                target.addProperty("siteId", candidate.targetSiteId);
                 target.addProperty("occurrence",
-                        candidate.target.selectedOccurrence);
+                        candidate.targetOccurrence);
                 target.addProperty("requiredOutcome",
-                        candidate.target.requiredOutcome);
+                        candidate.targetRequiredOutcome);
                 executionTask.add("targetBranch", target);
             }
 
@@ -578,7 +574,7 @@ public final class ConcolicScheduler {
     private static List<Candidate> candidates(Arguments arguments,
                                               List<RegionInstancePlan>
                                                       regionPlans,
-                                              Map<String, Region> regions,
+                                              Set<String> regions,
                                               DefinitionIndex definitions,
                                               StaticScopeMap scopeMap)
             throws IOException {
@@ -593,8 +589,7 @@ public final class ConcolicScheduler {
                     && !arguments.regionId.equals(plan.regionId())) {
                 continue;
             }
-            Region region = regions.get(plan.regionId());
-            if (region == null) {
+            if (!regions.contains(plan.regionId())) {
                 continue;
             }
             for (Goal goal : plan.goals()) {
@@ -640,197 +635,93 @@ public final class ConcolicScheduler {
         return LoopBoundPolicy.cfgBackedges(inheritedBound, declared);
     }
 
+    /**
+     * The one candidate of one replayable goal.
+     *
+     * <p>A region-path goal replays its own occurrence.  A target-reach goal
+     * additionally names the branch event it must decide: the branch the ONE
+     * guard authority named as a guard of the annotated throw, at the
+     * occurrence the recording decided it, on the arm that reaches the
+     * throw.  Nothing here searches for a path, ranks a branch or elects an
+     * occurrence: a case that states no target occurrence is refused by name
+     * in {@link RuntimeWorkflowDiscovery}, and one with no guarded failure
+     * branch is refused below.</p>
+     */
     private static void appendGoalCandidates(
             Arguments arguments, List<Candidate> result, Goal goal,
             DefinitionIndex definitions, StaticScopeMap scopeMap)
             throws IOException {
-            Set<String> definitionMethods =
-                    goal.runtimeDefinitionMethods();
-            if (goal.kind().capturesRegionPath()) {
-                JsonArray branches = goal.branches();
-                JsonArray inputActions = materializationPlan(
-                        goal, goal.symbolize(), definitions, definitionMethods,
-                        branches);
-                result.add(new Candidate(goal, branches,
-                        TargetBranch.regionPath(), true,
-                        inputActions,
-                        goal.plan().occurrenceId(),
-                        new JsonObject(), null));
-                return;
-            }
-            JsonArray branches = goal.branches();
-            int eligibleFailureTargets = 0;
-            Set<String> guardedTargets = new LinkedHashSet<>();
-            for (JsonElement element : branches) {
-                if (!element.isJsonObject()) continue;
-                JsonObject branch = element.getAsJsonObject();
-                if (!eligibleFailureTarget(branch, scopeMap)) continue;
-                eligibleFailureTargets++;
-                for (JsonElement cell : array(branch,
-                        RuntimeSelectedRegionFinalizer
-                                .FAILURE_TARGET_CELLS)) {
-                    if (cell.isJsonPrimitive()) {
-                        guardedTargets.add(cell.getAsString());
-                    }
-                }
-            }
-            // What may not be ambiguous is the failure this occurrence is
-            // planned for, not how many conditional sites decide it.
-            if (eligibleFailureTargets == 0 || guardedTargets.size() > 1) {
-                throw new IllegalArgumentException(
-                        "UNSUPPORTED_AMBIGUOUS_TARGET_PATH: expected one "
-                                + "guarded failure target; found "
-                                + (guardedTargets.size() > 1
-                                ? guardedTargets.size()
-                                + " guarded failure targets"
-                                : eligibleFailureTargets
-                                + " eligible failure targets"));
-            }
-            String queryInstance = targetQueryInstance(arguments, goal);
-            // One target task drives the bounded path worklist for the whole
-            // guarded throw.
-            JsonArray targetSourceFrontier = materializationPlan(goal,
-                    goal.symbolize(), definitions, definitionMethods,
-                    branches);
-            for (int index = 0; index < branches.size(); index++) {
-                JsonElement element = branches.get(index);
-                if (!element.isJsonObject()) {
-                    continue;
-                }
-                JsonObject branch = element.getAsJsonObject();
-                String siteId = optionalString(branch, "siteId");
-                if (!optionalBool(branch, "failureTarget", false)
-                        || !optionalBool(branch, "observed", false)) {
-                    continue;
-                }
-                Boolean arm = fatalArm(scopeMap, siteId);
-                if (arm == null) {
-                    continue;
-                }
-                boolean required = arm.booleanValue();
-                TargetBranch target = TargetBranch.select(
-                        siteId, array(branch, "occurrences"), required);
-                if (target == null) {
-                    continue;
-                }
-                boolean hasWitness = target.observedOutcome == required;
-                // A target task explores exactly one branch; the rest of the
-                // slice is replayed prefix.
-                JsonArray reachSlice = targetReachBranchSlice(branches,
-                        target);
-                JsonArray inputActions = materializationPlan(goal,
-                        goal.symbolize(), definitions,
-                        definitionMethods, reachSlice);
-                inputActions = targetSymbolicFrontier(inputActions);
-                inputActions = mergeSymbolicFrontier(inputActions,
-                        targetSourceFrontier);
-                JsonArray targetBindings = targetInputBindings(goal,
-                        queryInstance);
-                result.add(new Candidate(goal,
-                        reachSlice, target,
-                        hasWitness, inputActions,
-                        queryInstance,
-                        targetQueryOccurrence(arguments, goal,
-                                inputActions, targetBindings),
-                        targetBindings));
-            }
+        Set<String> definitionMethods = goal.runtimeDefinitionMethods();
+        JsonArray branches = goal.branches();
+        JsonArray inputActions = materializationPlan(goal, goal.symbolize(),
+                definitions, definitionMethods, branches);
+        if (goal.kind().capturesRegionPath()) {
+            result.add(new Candidate(goal, branches, "", 1, false,
+                    inputActions, goal.plan().occurrenceId()));
+            return;
+        }
+        JsonObject fatal = fatalBranch(branches, scopeMap);
+        result.add(new Candidate(goal, branches,
+                optionalString(fatal, "siteId"),
+                Math.max(1, optionalInteger(fatal, "selectedOccurrence", 1)),
+                fatalArm(scopeMap, optionalString(fatal, "siteId"))
+                        .booleanValue(),
+                inputActions,
+                targetQueryInstance(arguments, goal)));
     }
 
-    private static boolean eligibleFailureTarget(JsonObject branch,
-                                                 StaticScopeMap scopeMap) {
-        String siteId = optionalString(branch, "siteId");
-        Boolean arm = fatalArm(scopeMap, siteId);
-        if (!optionalBool(branch, "failureTarget", false)
-                || !optionalBool(branch, "observed", false)
-                || arm == null) {
-            return false;
+    /**
+     * The one branch of this region the annotated throw is guarded by.
+     *
+     * <p>Guarded means what {@code static_scope_map}'s TARGET_SITE row says
+     * it means, so a branch is a candidate here only if the map named it and
+     * the recording decided it.  Two of them, or none, is a named refusal:
+     * phi has one polarity and the anchor one site, and choosing between
+     * them is the offline path planning this replaced.</p>
+     */
+    private static JsonObject fatalBranch(JsonArray branches,
+                                          StaticScopeMap scopeMap)
+            throws IOException {
+        Map<String, JsonObject> bySite = new LinkedHashMap<>();
+        Set<String> guardedTargets = new LinkedHashSet<>();
+        for (JsonElement element : branches) {
+            if (!element.isJsonObject()) continue;
+            JsonObject branch = element.getAsJsonObject();
+            String siteId = optionalString(branch, "siteId");
+            if (!optionalBool(branch, "failureTarget", false)
+                    || !optionalBool(branch, "observed", false)
+                    || fatalArm(scopeMap, siteId) == null) {
+                continue;
+            }
+            for (JsonElement cell : array(branch,
+                    RuntimeSelectedRegionFinalizer.FAILURE_TARGET_CELLS)) {
+                if (cell.isJsonPrimitive()) {
+                    guardedTargets.add(cell.getAsString());
+                }
+            }
+            bySite.put(siteId, branch);
         }
-        return TargetBranch.select(siteId, array(branch, "occurrences"),
-                arm.booleanValue()) != null;
+        if (bySite.size() != 1 || guardedTargets.size() > 1) {
+            throw new IOException("UNSUPPORTED_AMBIGUOUS_TARGET_PATH: "
+                    + "expected one guarded failure target and one guard of "
+                    + "it; found " + guardedTargets.size()
+                    + " guarded failure target(s) and " + bySite.size()
+                    + " guard(s) the static scope map names: "
+                    + bySite.keySet());
+        }
+        return bySite.values().iterator().next();
     }
 
     private static String targetQueryInstance(
             Arguments arguments, Goal goal) {
-        return arguments.occurrenceId.isEmpty()
-                ? goal.plan().occurrenceId()
-                : arguments.occurrenceId;
-    }
-
-    private static JsonObject targetQueryOccurrence(
-            Arguments arguments, Goal goal, JsonArray actions,
-            JsonArray bindings) {
-        String selected = targetQueryInstance(arguments, goal);
+        String selected = arguments.occurrenceId.isEmpty()
+                ? goal.plan().occurrenceId() : arguments.occurrenceId;
         if (!selected.equals(goal.plan().occurrenceId())) {
             throw new IllegalArgumentException(
                     "target goal does not match selected occurrence "
                             + selected);
         }
-        JsonObject result = new JsonObject();
-        result.addProperty("occurrenceId", selected);
-        Set<String> selectedPorts = new LinkedHashSet<>();
-        for (JsonElement element : actions) {
-            if (!element.isJsonObject()) continue;
-            String port = optionalString(element.getAsJsonObject(), "symbol");
-            if (!port.isEmpty()) selectedPorts.add(port);
-        }
-        for (JsonElement element : bindings) {
-            if (!element.isJsonObject()) continue;
-            String port = optionalString(element.getAsJsonObject(), "toInputPort");
-            if (!port.isEmpty()) selectedPorts.add(port);
-        }
-        JsonArray ports = new JsonArray();
-        for (String port : selectedPorts) ports.add(port);
-        result.add("inputPorts", ports);
-        return result;
-    }
-
-    /** A target VM job has no reason to materialize a concrete owner merely
-     * because the backward slice traversed through it. */
-    private static JsonArray targetSymbolicFrontier(JsonArray actions) {
-        return copyMatching(actions,
-                action -> InputActionCatalog.Mode.SYMBOLIC.name().equals(
-                        optionalString(action, "mode")));
-    }
-
-    /** Adds every symbolic carrier needed by another guard of the same throw. */
-    private static JsonArray mergeSymbolicFrontier(
-            JsonArray branchActions, JsonArray guardedTargetActions) {
-        JsonArray result = branchActions == null
-                ? new JsonArray() : branchActions.deepCopy();
-        Set<String> represented = new LinkedHashSet<>();
-        for (JsonElement element : result) {
-            if (element.isJsonObject()) {
-                represented.add(optionalString(element.getAsJsonObject(), "symbol"));
-            }
-        }
-        for (JsonElement element : guardedTargetActions == null
-                ? new JsonArray() : guardedTargetActions) {
-            if (!element.isJsonObject()) continue;
-            JsonObject action = element.getAsJsonObject();
-            String symbol = optionalString(action, "symbol");
-            if (!symbol.isEmpty() && represented.add(symbol)
-                    && InputActionCatalog.Mode.SYMBOLIC.name().equals(
-                    optionalString(action, "mode"))) {
-                result.add(action.deepCopy());
-            }
-        }
-        return result;
-    }
-
-    /** Package-visible for the focused target-component admission contract. */
-    static JsonArray targetInputBindings(
-            Goal goal, String queryInstance) {
-        return copyMatching(goal.edgeBindings(),
-                binding -> queryInstance.equals(optionalString(binding,
-                        "toOccurrenceId"))
-                        && AutomaticRegionEdge.tracedExchangeCandidate(
-                        binding));
-    }
-
-    /** The branch catalog of a target task, as the region plan states it. */
-    private static JsonArray targetReachBranchSlice(
-            JsonArray branches, TargetBranch target) {
-        return objectRows(branches);
+        return selected;
     }
 
     /** Package-visible for the structure-carrier admission contract. */
@@ -1315,14 +1206,27 @@ public final class ConcolicScheduler {
                 ? "NONE" : dependencyRole);
     }
 
-    /** The region port catalog of one campaign, keyed by region id. */
-    private static Map<String, Region> regionIndex(List<JsonObject> regions) {
-        Map<String, Region> index = new LinkedHashMap<>();
+    /** The static region schema version this build reads. */
+    private static final int STATIC_REGION_SCHEMA_VERSION = 3;
+
+    /**
+     * The region ids of one campaign's port catalog.
+     *
+     * <p>Every row states the schema version it was written under and a row
+     * stating another is refused rather than partly read.  This used to be a
+     * {@code Region} class holding exactly that check and the id.</p>
+     */
+    private static Set<String> regionIndex(List<JsonObject> regions) {
+        Set<String> index = new LinkedHashSet<>();
         for (JsonObject row : regions) {
-            Region region = new Region(row);
-            if (!region.regionId.isEmpty()) {
-                index.put(region.regionId, region);
+            if (optionalInteger(row, "schemaVersion", -1)
+                    != STATIC_REGION_SCHEMA_VERSION) {
+                throw new IllegalArgumentException(
+                        "symbolic region requires schemaVersion "
+                                + STATIC_REGION_SCHEMA_VERSION);
             }
+            String regionId = optionalString(row, "regionId");
+            if (!regionId.isEmpty()) index.add(regionId);
         }
         return index;
     }
@@ -1463,110 +1367,45 @@ public final class ConcolicScheduler {
 
     }
 
-    private static final class Region {
-        private static final int STATIC_REGION_SCHEMA_VERSION = 3;
-        private final String regionId;
-
-        private Region(JsonObject row) {
-            int schemaVersion = optionalInteger(row, "schemaVersion", -1);
-            if (schemaVersion != STATIC_REGION_SCHEMA_VERSION) {
-                throw new IllegalArgumentException(
-                        "symbolic region requires schemaVersion "
-                                + STATIC_REGION_SCHEMA_VERSION);
-            }
-            this.regionId = optionalString(row, "regionId");
-        }
-
-    }
-
-    private static final class TargetBranch {
-        private final String siteId;
-        private final int selectedOccurrence;
-        private final long runtimeEventSeq;
-        private final boolean observedOutcome;
-        private final boolean requiredOutcome;
-        private final boolean desiredOutcome;
-
-        private TargetBranch(String siteId, int selectedOccurrence,
-                             long runtimeEventSeq,
-                             boolean observedOutcome,
-                             boolean requiredOutcome,
-                             boolean desiredOutcome) {
-            this.siteId = safe(siteId);
-            this.selectedOccurrence = Math.max(1, selectedOccurrence);
-            this.runtimeEventSeq = runtimeEventSeq;
-            this.observedOutcome = observedOutcome;
-            this.requiredOutcome = requiredOutcome;
-            this.desiredOutcome = desiredOutcome;
-        }
-
-        private static TargetBranch regionPath() {
-            return new TargetBranch("", 1, -1L,
-                    false, false, false);
-        }
-
-        private static TargetBranch select(
-                String siteId, JsonArray occurrences, boolean required) {
-            TargetBranch mismatch = null;
-            for (int index = 0; index < occurrences.size(); index++) {
-                JsonElement element = occurrences.get(index);
-                if (!element.isJsonObject()) continue;
-                JsonObject occurrence = element.getAsJsonObject();
-                boolean observed = optionalBool(occurrence, "outcome", false);
-                int ordinal = optionalInteger(occurrence, "occurrence", index + 1);
-                TargetBranch selected = new TargetBranch(siteId, ordinal,
-                        optionalLongInteger(occurrence, "eventSeq", -1L),
-                        observed, required,
-                        observed == required ? !observed : required);
-                if (observed == required) return selected;
-                if (mismatch == null) mismatch = selected;
-            }
-            return mismatch;
-        }
-
-    }
-
     private static final class Candidate {
+        /**
+         * Name order, not rank order.
+         *
+         * <p>It used to lead with "directed", then with the highest recorded
+         * event sequence of the target branch -- an evidence ranking over
+         * candidates, which is the offline path planning this file no longer
+         * does.  One selection produces one candidate, so this is only a
+         * stable order.</p>
+         */
         private static final Comparator<Candidate> ORDER =
-                Comparator.comparing((Candidate value) -> !value.directed)
-                        .thenComparing(Comparator.comparingLong(
-                                (Candidate value) ->
-                                        value.target.runtimeEventSeq)
-                                .reversed())
-                        .thenComparing(value -> value.target.siteId)
+                Comparator.comparing((Candidate value) -> value.targetSiteId)
                         .thenComparing(value ->
                                 value.goal.plan().occurrenceId())
                         .thenComparing(value -> value.goal.goalId());
 
         private final Goal goal;
         private final JsonArray branches;
-        private final TargetBranch target;
-        private final boolean directed;
+        /** The branch event a target task must decide; "" for region path. */
+        private final String targetSiteId;
+        private final int targetOccurrence;
+        private final boolean targetRequiredOutcome;
         private final JsonArray inputActions;
         private final String queryOccurrenceId;
-        private final JsonObject queryOccurrence;
-        private final JsonArray targetEdgeBindings;
 
         private Candidate(Goal goal, JsonArray branches,
-                          TargetBranch target,
-                          boolean hasRequiredWitness,
+                          String targetSiteId, int targetOccurrence,
+                          boolean targetRequiredOutcome,
                           JsonArray inputActions,
-                          String queryOccurrenceId,
-                          JsonObject queryOccurrence,
-                          JsonArray targetEdgeBindings) {
+                          String queryOccurrenceId) {
             this.goal = goal;
             this.branches = branches;
-            this.target = target;
-            this.directed = goal.kind().capturesRegionPath()
-                    || !hasRequiredWitness;
+            this.targetSiteId = safe(targetSiteId);
+            this.targetOccurrence = Math.max(1, targetOccurrence);
+            this.targetRequiredOutcome = targetRequiredOutcome;
             this.inputActions = inputActions;
             this.queryOccurrenceId = firstNonBlank(
                     queryOccurrenceId,
                     goal.plan().occurrenceId());
-            this.queryOccurrence = queryOccurrence == null
-                    ? new JsonObject() : queryOccurrence.deepCopy();
-            this.targetEdgeBindings = targetEdgeBindings == null
-                    ? null : targetEdgeBindings.deepCopy();
         }
 
         /** Stable task identity: source occurrence x relation content x exact
@@ -1580,11 +1419,9 @@ public final class ConcolicScheduler {
             identity.append('\n').append(goal.kind().name());
             identity.append('\n').append(regionContentHash());
             identity.append('\n').append(portSetHash(taskInputActions));
-            identity.append('\n').append(target.siteId)
-                    .append('\n').append(target.selectedOccurrence)
-                    .append('\n').append(target.observedOutcome)
-                    .append('\n').append(target.requiredOutcome)
-                    .append('\n').append(target.desiredOutcome);
+            identity.append('\n').append(targetSiteId)
+                    .append('\n').append(targetOccurrence)
+                    .append('\n').append(targetRequiredOutcome);
             return "TASK.SEED." + ArtifactIO.sha256(identity.toString());
         }
 
@@ -2278,7 +2115,7 @@ public final class ConcolicScheduler {
 
     private static final class LoadedInputs {
         private final List<RegionInstancePlan> regionPlans;
-        private final Map<String, Region> regionIndex;
+        private final Set<String> regionIndex;
         private final DefinitionIndex definitions;
         private final List<JsonObject> refinedGraph;
         private final StaticScopeMap staticScopeMap;
@@ -2289,7 +2126,7 @@ public final class ConcolicScheduler {
 
         private LoadedInputs(List<RegionInstancePlan> regionPlans,
 
-                             Map<String, Region> regionIndex,
+                             Set<String> regionIndex,
                              DefinitionIndex definitions,
                              List<JsonObject> refinedGraph,
                              StaticScopeMap staticScopeMap,
