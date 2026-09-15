@@ -13,15 +13,19 @@ import edu.uva.liftlab.graphchecker.d3.contract.ExecutionIndex;
 import edu.uva.liftlab.graphchecker.d3.contract.ExpressionTable;
 import edu.uva.liftlab.graphchecker.d3.contract.Frame;
 import edu.uva.liftlab.graphchecker.d3.contract.GapKind;
+import edu.uva.liftlab.graphchecker.d3.contract.LocationId;
+import edu.uva.liftlab.graphchecker.d3.contract.LocationKind;
 import edu.uva.liftlab.graphchecker.d3.contract.GapRow;
 import edu.uva.liftlab.graphchecker.d3.contract.NodeId;
 import edu.uva.liftlab.graphchecker.d3.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.d3.contract.Role;
 import edu.uva.liftlab.graphchecker.d3.contract.RootKind;
+import edu.uva.liftlab.graphchecker.d3.contract.ReadRow;
 import edu.uva.liftlab.graphchecker.d3.contract.RootMintRow;
 import edu.uva.liftlab.graphchecker.d3.contract.RowCodec;
 import edu.uva.liftlab.graphchecker.d3.contract.SessionDir;
 import edu.uva.liftlab.graphchecker.d3.contract.TargetRow;
+import edu.uva.liftlab.graphchecker.d3.contract.WriteRow;
 
 import org.junit.Assume;
 import org.junit.Rule;
@@ -445,6 +449,78 @@ public class D3ComposerTest {
     }
 
     // ------------------------------------------------------------------
+    // 11. Which writer the read could have seen (R-I7.1).
+    // ------------------------------------------------------------------
+
+    @Test
+    public void anHbConcurrentWriterIsAnAlternativeAndAnAncestorIsNot()
+            throws Exception {
+        Path iteration = folder.newFolder("state").toPath();
+        // The reader's own request; a writer concurrent with it; and a
+        // writer that STARTED it, which is therefore ordered before it.
+        OccurrenceAddress reader = occurrence("case/dn0", "REGION.read",
+                CausalContext.of(Endpoint.of(UPSTREAM, "PORT.rpc",
+                        at("call#1", 0), 0).id(), "case/client/read"),
+                frame("Reader#run#4", 0));
+        OccurrenceAddress concurrent = occurrence("case/dn0",
+                "REGION.heartbeat", CausalContext.of(Role.HEARTBEAT_TICK, 1),
+                frame("Heartbeat#run#9", 0));
+        LocationId keys = LocationId.of(LocationKind.MAP,
+                "BlockTokenSecretManager", "allKeys");
+
+        Session session = new Session(iteration, "s0", false);
+        session.occurrence = reader;
+        session.activation(reader);
+        session.activation(concurrent);
+        session.activation(UPSTREAM);
+        session.marker("false");
+        // The request that started the reader, as a row: without it the
+        // causal chain stops at an endpoint nothing places, and an
+        // unfollowable chain states no ordering at all.
+        session.expression("EXPR.v1.rpc", symbol(MARKER, "Z"));
+        session.export(Endpoint.of(UPSTREAM, "PORT.rpc", at("call#1", 0), 0),
+                "EXPR.v1.rpc", 1L, "false");
+        session.expression("EXPR.v1.first", symbol(MARKER, "Z"));
+        session.expression("EXPR.v1.second", symbol(MARKER, "Z"));
+        session.expression("EXPR.v1.ancestor", symbol(MARKER, "Z"));
+        // The ancestor writes, then the concurrent tick writes, then the
+        // reader reads -- and observes the ancestor's version.
+        session.decision(UPSTREAM, "up#u1", "(or " + MARKER + " (not "
+                + MARKER + "))");
+        session.write(Endpoint.of(UPSTREAM, "KeyManager#put#3:WRITE",
+                at("w#1", 0), 0), keys, 1L, "EXPR.v1.ancestor");
+        session.decision(concurrent, "hb#u1", "(or " + MARKER + " (not "
+                + MARKER + "))");
+        session.write(Endpoint.of(concurrent, "Heartbeat#put#7:WRITE",
+                at("w#1", 0), 0), keys, 2L, "EXPR.v1.second");
+        session.read(Endpoint.of(reader, "Reader#get#5:READ",
+                at("r#1", 0), 0), keys, 1L, "read_k", "false");
+        session.target("read_k", false, true);
+        session.write();
+
+        Composer.Composition composition = Composer.compose(
+                CorpusIndex.of(iteration), reader,
+                Collections.<String,
+                        edu.uva.liftlab.graphchecker.d3.contract.RootDomain>
+                        emptyMap(), 4);
+        assertEquals("one disjunct", 1, composition.disjuncts().size());
+        assertTrue("the concurrent writer is an alternative",
+                composition.body().contains("state_family__"));
+        assertTrue("and the composition says which slots it filled",
+                composition.families().size() >= 2);
+        // The ancestor started the reader's request, so it is ordered before
+        // it and is never an interleaving the reader could have taken.
+        assertFalse("an ancestor of the reader is not an alternative",
+                new edu.uva.liftlab.graphchecker.d3.smt.Arms(
+                        CorpusIndex.of(iteration))
+                        .concurrent(reader, UPSTREAM, "s0"));
+        assertTrue("a heartbeat tick beside it is",
+                new edu.uva.liftlab.graphchecker.d3.smt.Arms(
+                        CorpusIndex.of(iteration))
+                        .concurrent(reader, concurrent, "s0"));
+    }
+
+    // ------------------------------------------------------------------
     // Fixture.
     // ------------------------------------------------------------------
 
@@ -525,6 +601,8 @@ public class D3ComposerTest {
         private final List<RootMintRow> roots =
                 new ArrayList<RootMintRow>();
         private final List<TargetRow> targets = new ArrayList<TargetRow>();
+        private final List<WriteRow> writes = new ArrayList<WriteRow>();
+        private final List<ReadRow> reads = new ArrayList<ReadRow>();
         private final Map<String, JsonObject> expressions =
                 new LinkedHashMap<String, JsonObject>();
 
@@ -575,6 +653,18 @@ public class D3ComposerTest {
                     arrival, false, null, producer, "corr-" + symbol));
         }
 
+        void write(Endpoint endpoint, LocationId location, long version,
+                   String ref) {
+            writes.add(WriteRow.of(id, ++seq, endpoint, location, version,
+                    ref, "Z"));
+        }
+
+        void read(Endpoint endpoint, LocationId location, long version,
+                  String symbol, String concrete) {
+            reads.add(ReadRow.of(id, ++seq, endpoint, location, version,
+                    symbol, "Z", concrete));
+        }
+
         void decision(OccurrenceAddress at, String site, String term) {
             decisions.add(DecisionRow.of(id, ++seq, at, site,
                     decisions.size() + 1, true, term,
@@ -595,6 +685,8 @@ public class D3ComposerTest {
             RowCodec.writeAll(dir.exports(), exports, RowCodec::writeExport);
             RowCodec.writeAll(dir.attaches(), attaches,
                     RowCodec::writeAttach);
+            RowCodec.writeAll(dir.writes(), writes, RowCodec::writeWrite);
+            RowCodec.writeAll(dir.reads(), reads, RowCodec::writeRead);
             RowCodec.writeAll(dir.roots(), roots, RowCodec::writeRootMint);
             RowCodec.writeAll(dir.targets(), targets, RowCodec::writeTarget);
             RowCodec.writeExpressions(dir.expressions(),
