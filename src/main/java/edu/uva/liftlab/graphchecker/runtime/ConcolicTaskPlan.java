@@ -11,7 +11,7 @@ import edu.uva.liftlab.graphchecker.d3.plan.BranchReplayContract;
 import edu.uva.liftlab.graphchecker.d3.plan.SharedStateEvidence;
 import edu.uva.liftlab.graphchecker.d3.plan.CommunicationHandoffSpec;
 import edu.uva.liftlab.graphchecker.d3.plan.ConfiguredSourcePhaseContract;
-import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
+import edu.uva.liftlab.graphchecker.d3.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.d3.plan.ExecutionTask;
 import edu.uva.liftlab.graphchecker.d3.plan.FieldPathSpec;
 import edu.uva.liftlab.graphchecker.d3.plan.FieldPathSpec.DeclaredField;
@@ -247,10 +247,6 @@ final class ConcolicTaskPlan {
         SourceRef activationSource =
                 RuntimeTraceContext.activationSource(receiver);
         RuntimeTraceContext.View context = RuntimeTraceContext.current();
-        Map<String, Integer> actualOrdinalByScope = countEntry(true,
-                loopRootHookGroupKey, rootMethod, receiver, rootArguments,
-                threadName, registeredReceiverSource, activationSource,
-                context);
         Map<String, Integer> admitted = new LinkedHashMap<>();
         // An activation the recording never saw is not a candidate here
         // either.  The counting pass above skipped it, so looking its
@@ -275,8 +271,7 @@ final class ConcolicTaskPlan {
                 continue;
             }
             OccurrenceAddress observed = task.observedAddress(
-                    countedLifecycle(task, activationSource),
-                    actualOrdinalByScope);
+                    countedLifecycle(task, activationSource));
             // The whole address, and nothing standing in for it.  A
             // non-loop root publishes one occurrence and its unique OUT
             // anchor confirms the node before that publication, so entry may
@@ -288,7 +283,7 @@ final class ConcolicTaskPlan {
             // own two enclosing invocations.
             if (!task.acceptsRootInvocation(observed)) {
                 task.noteUnaddressedCandidate("matching enclosing root: "
-                        + task.address.difference(observed)
+                        + task.addressDifference(observed)
                         + attribution(activationSource));
                 continue;
             }
@@ -307,15 +302,18 @@ final class ConcolicTaskPlan {
             if (!task.claimsEnclosingInvocation(enclosingInvocationEvent)) {
                 task.noteUnaddressedCandidate(
                         "a second enclosing invocation of this region: "
-                                + "occurrence " + task.address.ordinal()
+                                + "occurrence " + task.occurrenceId
                                 + " already runs the bodies of entry event "
                                 + task.enclosingInvocationEvent()
-                                + ", so this entry is activation "
-                                + observed.ordinal()
+                                + ", so this entry is another activation"
                                 + attribution(activationSource));
                 continue;
             }
-            admitted.put(task.taskId, observed.ordinal());
+            // Which of this invocation's admissions this task is, not an
+            // ordinal of its address: identity v3 has none, and what the
+            // enclosing loop root needs to know is that this task's bodies
+            // are charged here and in what order they were admitted.
+            admitted.put(task.taskId, admitted.size() + 1);
         }
         return admitted;
     }
@@ -336,10 +334,6 @@ final class ConcolicTaskPlan {
         SourceRef activationSource =
                 RuntimeTraceContext.activationSource(receiver);
         RuntimeTraceContext.View context = RuntimeTraceContext.current();
-        Map<String, Integer> actualOrdinalByScope = countEntry(false,
-                rootHookGroupKey, rootMethod, receiver, rootArguments,
-                threadName, registeredReceiverSource, activationSource,
-                context);
 
         // Same rule as the counting pass: outside the recording window
         // there is no candidate to select.
@@ -365,8 +359,7 @@ final class ConcolicTaskPlan {
             if (!sourceAdmissionMismatch(task, registeredReceiverSource,
                     context).isEmpty()) continue;
             OccurrenceAddress observed = task.observedAddress(
-                    countedLifecycle(task, activationSource),
-                    actualOrdinalByScope);
+                    countedLifecycle(task, activationSource));
             if (!task.acceptsRootInvocation(observed)) {
                 // Said out loud, as the loop-body path already says it.  A
                 // non-loop root that ran and was refused on its address was
@@ -378,7 +371,7 @@ final class ConcolicTaskPlan {
                 // Client$Connection.sendRpcRequest were offered and refused
                 // on the ordinal, and the row said the root never executed.
                 task.noteUnaddressedCandidate("matching root: "
-                        + task.address.difference(observed)
+                        + task.addressDifference(observed)
                         + attribution(activationSource));
                 continue;
             }
@@ -580,75 +573,6 @@ final class ConcolicTaskPlan {
                 loopRoot ? task.enclosingRootArgumentSelector
                         : task.rootArgumentSelector,
                 receiver, rootArguments, threadName);
-    }
-
-    /**
-     * Counts this physical entry once in every matching stable scope, and
-     * records what the run can already say about it.
-     *
-     * <p>One pass for both roots.  It was written twice -- once for a method
-     * root and once for an enclosing loop root -- and the two copies
-     * diverged: the loop copy went on comparing {@code
-     * exactOutgoingAddress || address.matches(observed)} after the address
-     * became the whole admission, so any invocation under the planned
-     * request answered any k of that region and one occurrence owned two
-     * enclosing invocations.  Two spellings of one rule is how that
-     * happened, so there is one.</p>
-     *
-     * <p>The pass deliberately ignores task completion and candidate
-     * ownership: later planned ordinals must still see entries an earlier
-     * task already consumed.</p>
-     */
-    private Map<String, Integer> countEntry(
-            boolean loopRoot, String hookGroupKey, String rootMethod,
-            Object receiver, Object[] rootArguments, String threadName,
-            SourceRef registeredReceiverSource, SourceRef activationSource,
-            RuntimeTraceContext.View context) {
-        Map<String, Integer> actualOrdinalByScope = new LinkedHashMap<>();
-        for (RuntimeTask task : tasks) {
-            if (!countsEntry(task, loopRoot, hookGroupKey, rootMethod,
-                    receiver, rootArguments, threadName)) {
-                continue;
-            }
-            // Outside the recording window there is nothing to count.  A
-            // workload starts its cluster, names its sources, then does the
-            // thing being recorded; whatever the process did before the
-            // first registration the recording never saw, so the plan
-            // counted none of it.  Counting it here numbers a different
-            // population than the plan numbered.
-            if (!RuntimeTraceContext.recordingWindowOpen()) continue;
-            // Counted before anything else may refuse it: the planner
-            // counted every observed activation of this region, so a
-            // candidate the replay declines for another reason still
-            // occupies the ordinal the recording gave it.  Filtering first
-            // would renumber the activations after it.
-            countInvocation(task.invocationCounterKey(countedLifecycle(
-                    task, activationSource)), actualOrdinalByScope);
-            String sourceMismatch = sourceAdmissionMismatch(task,
-                    registeredReceiverSource, context);
-            if (!sourceMismatch.isEmpty()) {
-                task.noteUnaddressedCandidate(sourceMismatch);
-                continue;
-            }
-            // The request a root entered is recorded, never a refusal: an
-            // occurrence is (node, epoch, region, family, k), and the
-            // exchange that happened to be open around it is not part of
-            // that identity.
-            String enteredUnder = requestMismatch(task,
-                    registeredReceiverSource, context);
-            if (!enteredUnder.isEmpty()) {
-                task.noteRequestContext(enteredUnder);
-            }
-        }
-        return actualOrdinalByScope;
-    }
-
-    private synchronized void countInvocation(
-            String scope, Map<String, Integer> actualOrdinalByScope) {
-        if (actualOrdinalByScope.containsKey(scope)) return;
-        int ordinal = invocationOrdinals.getOrDefault(scope, 0) + 1;
-        invocationOrdinals.put(scope, ordinal);
-        actualOrdinalByScope.put(scope, ordinal);
     }
 
     /** The source keys this run attributed to one live root entry. */
@@ -1332,7 +1256,7 @@ final class ConcolicTaskPlan {
             this.regionId = task.regionId();
             this.sourceKey = task.sourceKey();
             this.occurrenceId = task.occurrenceId();
-            this.address = OccurrenceAddress.parse(this.occurrenceId);
+            this.address = parseAddress(this.occurrenceId);
             this.rootMethod = task.rootMethod();
             this.rootContextSelector = RootContextSelector.from(rootSelector);
             this.enclosingRootArgumentSelector =
@@ -1366,12 +1290,12 @@ final class ConcolicTaskPlan {
             // neither is something the recording said.  Refused here, at the
             // plan, because a plan that cannot be executed should not reach
             // a replay.
-            if (this.loopBodyRoot && !this.address.isNamed()) {
+            if (this.loopBodyRoot && this.address == null) {
                 throw new IllegalArgumentException(
                         "ROOT_LOOP_OCCURRENCE_UNADDRESSED: loop-body task "
                                 + this.taskId + " plans occurrence "
                                 + this.occurrenceId + ", which names no "
-                                + "k-th activation");
+                                + "occurrence");
             }
             this.rootLoopMethod = task.rootLoopMethod();
             this.rootLoopHeaderUnitIndex = task.rootLoopHeaderUnitIndex();
@@ -1842,42 +1766,6 @@ final class ConcolicTaskPlan {
         }
 
 
-        /**
-         * Whether this loop-body region has already published its bounded
-         * occurrence set (K_L rows), so a further iteration is a bounded cut.
-         *
-         * <p>README: a bounded loop is unrolled K_L times, and OCC-1 must not
-         * defeat that -- one occurrence per iteration would publish one row
-         * per heartbeat (~128 for the DN {@code offerService} loop) and make
-         * every iteration pay for full symbolic capture.  {@code
-         * publishedActivations} is the net kept-ordinal count, so an iteration
-         * whose occurrence was abandoned frees its slot and does not spend the
-         * budget: the cap is on published occurrences, not admissions.</p>
-         *
-         * <p>While an anchored slot is still open the cut waits: the address
-         * has not yet seen the exchange it was selected for, and cutting on
-         * the raw ordinal would end the window before that exchange happens.
-         * The raw number of polling turns is deliberately not bounded by
-         * K_L: K_L bounds the <em>published symbolic cases</em>, not how many
-         * concrete workload turns may be inspected before the selected RPC
-         * exchange occurs.  Workload termination bounds that inspection.  If
-         * the exchange never occurs, shutdown publishes a named coverage gap
-         * instead of silently substituting an unrelated prefix turn.</p>
-         */
-        /**
-         * Whether this task names an activation the bound cannot record.
-         *
-         * <p>A bounded loop publishes the activations some task addresses,
-         * and K_L is what the instrumentation records.  A k past it is an
-         * activation no replay reaches, and saying so is the difference
-         * between a stated gap and a silently missing occurrence.</p>
-         */
-        synchronized boolean addressesOccurrenceBeyondBound() {
-            return loopBodyRoot && address.isNamed()
-                    && loopOccurrenceBudget > 0
-                    && address.ordinal() > loopOccurrenceBudget;
-        }
-
         /** One bound gap per task, however many turns follow it. */
         synchronized boolean claimLoopBoundGapMarker() {
             if (loopBoundGapClaimed) return false;
@@ -1966,53 +1854,6 @@ final class ConcolicTaskPlan {
         }
 
         /**
-         * The bucket this region's activations are counted in.
-         *
-         * <p>An occurrence is the k-th activation of this region on this
-         * node and epoch.  Counting and matching have to use the same scope
-         * or the ordinal means one thing when the plan writes it and
-         * another when the replay checks it -- the planner counts every
-         * observed activation of the region ({@code
-         * RuntimeRegionPlanner.replayInvocationScope}), so the replay counts
-         * every compatible activation of it too.</p>
-         *
-         * <p>The request is in neither scope.  It used to be in both, which
-         * was consistent; then matching stopped comparing it while counting
-         * still partitioned by it, and "ordinal 1 of the bucket this
-         * candidate happens to be in" satisfied "ordinal 1 of the bucket the
-         * plan meant".  On hdfs-17960 that matched the checkpoint region's
-         * planned occurrence to the process's first saveNamespace, which
-         * serialized no snapshots and decided none of the branches the goal
-         * needs.  Which exchange an activation was reached under is
-         * information about it, and information does not partition a
-         * count.</p>
-         */
-        String invocationCounterKey() {
-            return invocationCounterKey(sourceKey);
-        }
-
-        /**
-         * The bucket an activation attributed to {@code lifecycle} counts in.
-         *
-         * <p>The k in "k-th activation" is counted within one node <em>and
-         * one epoch</em>, because that is what the address says.  Keying the
-         * bucket on the planned epoch made it a per-node counter instead:
-         * one JVM that restarts a node runs both lifecycles, so on
-         * hdfs-17960 the two {@code deleteSnapshot} activations before the
-         * NameNode restart took ordinals 1 and 2 and the two after it --
-         * the ones the plan addresses as epoch 1's first and second -- took
-         * 3 and 4 and matched nothing.  The planner already counts per
-         * observed source ({@code RuntimeRegionPlanner.replayInvocationScope}
-         * is handed each activation's own {@code rootSource}), so this is
-         * the replay counting the population the plan counted.</p>
-         */
-        String invocationCounterKey(String lifecycle) {
-            return OccurrenceAddress.of(safe(lifecycle).isEmpty()
-                    ? sourceKey : lifecycle, regionId, 1)
-                    .counterScope(rootMethod);
-        }
-
-        /**
          * The address this activation ran at: the lifecycle the run
          * attributed to it and the k it took in that lifecycle's bucket.
          *
@@ -2020,13 +1861,11 @@ final class ConcolicTaskPlan {
          * activation outside the recording window; an unnamed address
          * matches nothing rather than half-matching on the node.</p>
          */
-        OccurrenceAddress observedAddress(
-                String lifecycle, Map<String, Integer> ordinalByScope) {
-            Integer ordinal = ordinalByScope.get(
-                    invocationCounterKey(lifecycle));
-            return OccurrenceAddress.of(safe(lifecycle).isEmpty()
-                            ? sourceKey : lifecycle, regionId,
-                    ordinal == null ? 0 : ordinal.intValue());
+        OccurrenceAddress observedAddress(String lifecycle) {
+            return edu.uva.liftlab.graphchecker.runtime.d3
+                    .OccurrenceMinterV2.mint(
+                            safe(lifecycle).isEmpty() ? sourceKey : lifecycle,
+                            regionId, liveContext(), liveIndex());
         }
 
         /**
@@ -2046,8 +1885,62 @@ final class ConcolicTaskPlan {
          * under the planned request to any k of that region.  An occurrence
          * is its address.</p>
          */
+        /** The planned address, or null when the id names no occurrence. */
+        private static OccurrenceAddress parseAddress(String occurrenceId) {
+            String value = safe(occurrenceId);
+            if (value.isEmpty()) return null;
+            try {
+                return OccurrenceAddress.parse(value);
+            } catch (RuntimeException notAnAddress) {
+                return null;
+            }
+        }
+
+        /** The causal context this thread is in, as the minter reads it. */
+        private static edu.uva.liftlab.graphchecker.d3.contract.CausalContext
+                liveContext() {
+            return edu.uva.liftlab.graphchecker.runtime.d3.Identity.context(
+                    edu.uva.liftlab.graphchecker.runtime.d3.Lineage.anchor(),
+                    edu.uva.liftlab.graphchecker.runtime.d3.Lineage.rpcSite(),
+                    edu.uva.liftlab.graphchecker.runtime.d3.Lineage
+                            .rootRole(),
+                    edu.uva.liftlab.graphchecker.runtime.d3.Lineage
+                            .rootWindowIndex());
+        }
+
+        /**
+         * The execution index this activation would enter at.
+         *
+         * <p>{@code atScope()}, not {@code regionEnter()}: the same frames,
+         * and no side effect.  Admission asks the question before the
+         * session publisher opens the region, and opening it twice would
+         * move the base every endpoint inside is indexed from.</p>
+         */
+        private static edu.uva.liftlab.graphchecker.d3.contract.ExecutionIndex
+                liveIndex() {
+            return edu.uva.liftlab.graphchecker.runtime.d3.Identity.atScope();
+        }
+
         boolean acceptsRootInvocation(OccurrenceAddress observed) {
-            return address.matches(observed);
+            return address != null && observed != null
+                    && address.id().equals(observed.id());
+        }
+
+        /**
+         * Why {@code observed} is not this task's occurrence.
+         *
+         * <p>Both addresses, rendered.  Identity v1 could name the one
+         * component that differed because it had four; a v3 address is a
+         * node, a region, a causal context and an execution index, and the
+         * useful thing to put in a refusal is which two it is comparing.</p>
+         */
+        String addressDifference(OccurrenceAddress observed) {
+            if (address == null) return "the task plans no occurrence";
+            if (observed == null) {
+                return "the activation ran where this run cannot name it";
+            }
+            return "planned " + address.render() + ", ran at "
+                    + observed.render();
         }
 
 

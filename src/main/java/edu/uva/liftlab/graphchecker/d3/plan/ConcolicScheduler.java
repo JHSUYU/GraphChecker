@@ -265,6 +265,7 @@ public final class ConcolicScheduler {
                         loaded.regionPlans, arguments.targetOccurrence)
                 : RuntimeWorkflowDiscovery.candidateWorkflow(
                         loaded.regionPlans, arguments.targetOccurrence);
+        requireRetainedRegions(arguments.retainRegions, workflow);
         // The root-dependence slice scopes instrumentation and flips; it
         // does not decide which occurrences are scheduled.  A replay task
         // set is the anchor's closure, and an occurrence outside it runs
@@ -3190,6 +3191,40 @@ public final class ConcolicScheduler {
         }
     }
 
+    /**
+     * Every region a previous epoch's divergence said the retained set must
+     * grow to include (INTERACTION-ID section 8, case 2).
+     *
+     * <p>A flipped path reached a region the workload never retained -- only
+     * lightweight entry hooks ran there, so it published activations and no
+     * decisions.  The next epoch has to instrument it, and INSTRUMENT
+     * instruments the regions this plan names, so the plan has to name it.
+     * If no candidate of this recording carries the region, the epoch cannot
+     * grow the way the divergence asked and says so here rather than
+     * instrumenting the same set again and diverging identically.</p>
+     */
+    private static void requireRetainedRegions(
+            java.util.Set<String> required,
+            RuntimeWorkflowDiscovery.RankedWorkflow workflow) {
+        if (required.isEmpty()) return;
+        java.util.Set<String> planned = new LinkedHashSet<>();
+        for (RuntimeWorkflowDiscovery.Selection selection
+                : workflow.selections()) {
+            planned.add(selection.regionId);
+        }
+        List<String> missing = new ArrayList<>();
+        for (String regionId : required) {
+            if (!planned.contains(regionId)) missing.add(regionId);
+        }
+        if (!missing.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "RETAINED_SET_CANNOT_GROW: this epoch was asked to retain "
+                            + missing + ", and no candidate of this recording"
+                            + " carries them; instrumenting the same set again"
+                            + " would diverge identically");
+        }
+    }
+
     public static final class Arguments {
         public final Path regionPlan;
         public final Path refinedGraph;
@@ -3203,6 +3238,8 @@ public final class ConcolicScheduler {
         public final Path symbolicInputs;
         /** The occurrence of the annotated site the case declares, or "". */
         public final String targetOccurrence;
+        /** Regions a previous epoch's divergence requires this plan to keep. */
+        public final java.util.Set<String> retainRegions;
         private final ClosureMode closureMode;
 
         private Arguments(Path regionPlan, Path refinedGraph, Path summaries,
@@ -3210,7 +3247,12 @@ public final class ConcolicScheduler {
                           String occurrenceId, String goalId,
                           int maxJobs, int maxLoopIterations,
                           Path symbolicInputs, ClosureMode closureMode,
-                          String targetOccurrence) {
+                          String targetOccurrence,
+                          java.util.Set<String> retainRegions) {
+            this.retainRegions = retainRegions == null
+                    ? java.util.Collections.<String>emptySet()
+                    : java.util.Collections.unmodifiableSet(
+                            new LinkedHashSet<>(retainRegions));
             this.regionPlan = regionPlan;
             this.refinedGraph = refinedGraph;
             this.summaries = summaries;
@@ -3247,7 +3289,18 @@ public final class ConcolicScheduler {
                             LoopBoundPolicy.MAX_LOOP_BODY_ITERATIONS,
                             "max-loop-iterations"),
                     symbolicInputs, closureMode,
-                    values.get("target-occurrence"));
+                    values.get("target-occurrence"),
+                    splitRegions(values.get("retain-regions")));
+        }
+
+        /** {@code --retain-regions a,b,c}, or an empty set. */
+        private static java.util.Set<String> splitRegions(String value) {
+            java.util.Set<String> regions = new LinkedHashSet<>();
+            for (String part : (value == null ? "" : value).split(",")) {
+                String regionId = part.trim();
+                if (!regionId.isEmpty()) regions.add(regionId);
+            }
+            return regions;
         }
 
         private static Path requiredPath(Map<String, String> values,
@@ -3294,7 +3347,8 @@ public final class ConcolicScheduler {
                     summaries, outputDirectory,
                     selection.regionId, selection.occurrenceId,
                     selection.goalId, 1, maxLoopIterations,
-                    symbolicInputs, closureMode, targetOccurrence);
+                    symbolicInputs, closureMode, targetOccurrence,
+                    retainRegions);
         }
 
     }

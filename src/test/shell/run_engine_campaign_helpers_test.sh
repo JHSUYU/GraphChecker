@@ -676,6 +676,43 @@ for positive_key in "" abc 0 -1 "3 4"; do
     && fail "an invalid count was accepted: '${positive_key}'"
 done
 
+# EPOCH-1: two divergence causes, two epochs (INTERACTION-ID section 8).
+# A path that reached a region the workload never retained names that region,
+# and the next epoch has to INSTRUMENT it before it replays or it diverges
+# identically.  Every other divergence is a pairing or a context the catalog
+# did not carry: a new epoch over the same retained set.
+grow_dir="${test_tmp}/epoch-growth"
+mkdir -p "${grow_dir}/sessions/SESSION.a"
+printf '%s\n' \
+  '{"kind":"GAP_ROW","gapKind":"TOPOLOGY_DIVERGENCE","subject":"IXN.1","detail":"a replaced pairing: the catalog names another producer"}' \
+  '{"kind":"GAP_ROW","gapKind":"TOPOLOGY_DIVERGENCE","subject":"REGION.k","detail":"retained set must grow: REGION.k (entry hooks only)"}' \
+  '{"kind":"GAP_ROW","gapKind":"TOPOLOGY_DIVERGENCE","subject":"REGION.k","detail":"retained set must grow: REGION.k (entry hooks only)"}' \
+  '{"kind":"GAP_ROW","gapKind":"ADMISSION_GAP","subject":"x","detail":"retained set must grow: REGION.ignored"}' \
+  >"${grow_dir}/sessions/SESSION.a/gaps.jsonl"
+[[ "$(campaign_topology_divergences "${grow_dir}")" == "3" ]] \
+  || fail "the divergence rows were not counted: \
+$(campaign_topology_divergences "${grow_dir}")"
+[[ "$(campaign_retained_growth "${grow_dir}")" == "REGION.k" ]] \
+  || fail "the retained-set growth is not read off the divergence: \
+$(campaign_retained_growth "${grow_dir}")"
+
+# A divergence that names no growth grows nothing: the next epoch plans the
+# same retained set.
+pair_dir="${test_tmp}/epoch-pairing"
+mkdir -p "${pair_dir}/sessions/SESSION.a"
+printf '%s\n' \
+  '{"kind":"GAP_ROW","gapKind":"TOPOLOGY_DIVERGENCE","subject":"IXN.9","detail":"a replaced pairing"}' \
+  >"${pair_dir}/sessions/SESSION.a/gaps.jsonl"
+[[ "$(campaign_topology_divergences "${pair_dir}")" == "1" ]] \
+  || fail "a pairing divergence was not counted"
+[[ -z "$(campaign_retained_growth "${pair_dir}")" ]] \
+  || fail "a pairing divergence grew the retained set: \
+$(campaign_retained_growth "${pair_dir}")"
+
+# And an epoch that diverged not at all grows nothing either.
+[[ -z "$(campaign_retained_growth "${test_tmp}/epoch-absent")" ]] \
+  || fail "an iteration with no sessions grew the retained set"
+
 # A divergent epoch names the replay the next one is seeded from, and the
 # harness reads that name off the row rather than re-deriving which replay
 # diverged.  Both helpers answer empty when the topology closed, which is what

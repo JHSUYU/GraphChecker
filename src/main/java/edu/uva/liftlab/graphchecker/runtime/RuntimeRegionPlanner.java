@@ -20,7 +20,6 @@ import edu.uva.liftlab.graphchecker.d3.plan.SharedStateEvidence;
 import edu.uva.liftlab.graphchecker.d3.plan.CommunicationCatalogContract;
 import edu.uva.liftlab.graphchecker.d3.plan.CommunicationHandoffSpec;
 import edu.uva.liftlab.graphchecker.d3.plan.ConfiguredSourcePhaseContract;
-import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.d3.plan.ExecutionTask;
 import edu.uva.liftlab.graphchecker.d3.plan.DependencyRole;
 import edu.uva.liftlab.graphchecker.d3.plan.FieldPathSpec;
@@ -508,6 +507,10 @@ final class RuntimeRegionPlanner {
         activation.put("selection", skeleton.selection);
         activation.put("test", root.test);
         activation.put("thread", root.threadName);
+        // Identity v3: where this activation was, as the recording stated
+        // it.  The finalizer mints the occurrence address from these two.
+        activation.put("executionIndex", root.executionIndex);
+        activation.put("causalContext", root.causalContext);
         putTraceContext(activation, root,
                 activationSource(root, stampedSources(calls, trace)));
         putRecordedTraceIds(activation, root);
@@ -2525,19 +2528,20 @@ final class RuntimeRegionPlanner {
      * matching have to use one scope or the ordinal means one thing when it
      * is written and another when it is checked, so this is not merely the
      * same shape as the replay's bucket -- it is literally the same
-     * function, {@link OccurrenceAddress#counterScope}, which {@code
+     * function, which {@code
      * ConcolicTaskPlan.RuntimeTask.invocationCounterKey} also calls.  Two
      * spellings of one rule is how the ordinal drifted before.</p>
      *
-     * <p>The request, and then the request family, were in this key and in
-     * the replay's.  Both are gone from both at once: what a count is
-     * partitioned by has to be what matching compares, and matching compares
-     * the address.</p>
+     * <p>A grouping key for a local count, not an identity: an occurrence is
+     * its address, and the address is minted from where the activation was.
+     * This only says which invocations of one region on one component and
+     * one root method are being numbered together, for the selector the
+     * replay matches its root call on.</p>
      */
     private static String replayInvocationScope(
             String regionId, MethodEvent root, SourceRef source) {
-        return OccurrenceAddress.of(source.key(), safe(regionId), 1)
-                .counterScope(safe(root == null ? "" : root.method));
+        return source.key() + "\n" + safe(regionId) + "\n"
+                + safe(root == null ? "" : root.method);
     }
 
 
@@ -3273,6 +3277,17 @@ final class RuntimeRegionPlanner {
         boolean receiverAttributed;
         final String requestKey;
         final String requestApi;
+        /**
+         * Identity v3, as the recording stated it (IDENTITY-IMPL B).
+         *
+         * <p>{@code executionIndex} is the call path from the scope root to
+         * this event and {@code causalContext} is the scope it ran in.  PLAN
+         * mints offline, over this trace, so the address it mints can only
+         * be as precise as what the event carries -- and before these two it
+         * carried nothing an execution index could be built from.</p>
+         */
+        final String executionIndex;
+        final String causalContext;
         MethodEvent(long seq, String test, String threadName,
                     long tid, String method, int objectId, String receiverType,
                     long callId, long parentCallId, long parentSiteId,
@@ -3280,6 +3295,22 @@ final class RuntimeRegionPlanner {
                     long parentSpanId, long remoteParentSpanId,
                     SourceRef source, boolean receiverAttributed,
                     String requestKey, String requestApi) {
+            this(seq, test, threadName, tid, method, objectId, receiverType,
+                    callId, parentCallId, parentSiteId, laneId, spanId,
+                    parentSpanId, remoteParentSpanId, source,
+                    receiverAttributed, requestKey, requestApi, "", "");
+        }
+
+        MethodEvent(long seq, String test, String threadName,
+                    long tid, String method, int objectId, String receiverType,
+                    long callId, long parentCallId, long parentSiteId,
+                    long laneId, long spanId,
+                    long parentSpanId, long remoteParentSpanId,
+                    SourceRef source, boolean receiverAttributed,
+                    String requestKey, String requestApi,
+                    String executionIndex, String causalContext) {
+            this.executionIndex = safe(executionIndex);
+            this.causalContext = safe(causalContext);
             this.seq = seq;
             this.test = safe(test);
             this.threadName = safe(threadName);

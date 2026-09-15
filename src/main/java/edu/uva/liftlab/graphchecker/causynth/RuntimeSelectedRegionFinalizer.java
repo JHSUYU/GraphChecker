@@ -4,7 +4,7 @@ import edu.uva.liftlab.graphchecker.d3.plan.GapLedger;
 
 import edu.uva.liftlab.graphchecker.d3.plan.AutomaticRegionEdge;
 import edu.uva.liftlab.graphchecker.d3.plan.SharedFieldFlow;
-import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
+import edu.uva.liftlab.graphchecker.d3.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.d3.plan.CommunicationCatalogContract;
 import edu.uva.liftlab.graphchecker.d3.plan.DependencyRole;
 import edu.uva.liftlab.graphchecker.d3.plan.FieldPathSpec;
@@ -720,13 +720,19 @@ public final class RuntimeSelectedRegionFinalizer {
     static String occurrenceKey(Object encoded) {
         String occurrenceId = text(encoded);
         if (occurrenceId.isEmpty()) return "";
-        OccurrenceAddress address = OccurrenceAddress.parse(occurrenceId);
-        if (!address.isNamed()
-                || !address.render().equals(occurrenceId)) {
+        String rendered;
+        try {
+            rendered = OccurrenceAddress.parse(occurrenceId).render();
+        } catch (RuntimeException notAnAddress) {
+            throw new IllegalArgumentException("region graph occurrence id "
+                    + "is not one planned address: " + occurrenceId,
+                    notAnAddress);
+        }
+        if (!rendered.equals(occurrenceId)) {
             throw new IllegalArgumentException("region graph occurrence id "
                     + "is not one planned address: " + occurrenceId);
         }
-        return address.render();
+        return rendered;
     }
 
     private static void stampOccurrenceOwnedPort(
@@ -863,11 +869,12 @@ public final class RuntimeSelectedRegionFinalizer {
             String semanticSourceKey = semanticSourceKey(
                     targetPoliciesByRegion.get(regionId), instance,
                     observations, rootSourceKey);
-            int ordinal = minter.reserveOrdinal(semanticSourceKey, regionId);
             String occurrenceId;
             try {
                 occurrenceId = minter.mint(regionId, rootCallId,
-                        semanticSourceKey, ordinal);
+                        semanticSourceKey,
+                        text(instance.get("executionIndex")),
+                        text(instance.get("causalContext")));
             } catch (IllegalArgumentException duplicate) {
                 throw new IOException("duplicate runtime region activation: "
                         + regionId + "\n" + rootCallId);

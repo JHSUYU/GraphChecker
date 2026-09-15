@@ -1,10 +1,16 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
+import edu.uva.liftlab.graphchecker.d3.contract.OccurrenceAddress;
+import edu.uva.liftlab.graphchecker.d3.contract.Frame;
+import edu.uva.liftlab.graphchecker.d3.contract.ExecutionIndex;
+import edu.uva.liftlab.graphchecker.d3.contract.Role;
+import edu.uva.liftlab.graphchecker.d3.contract.CausalContext;
+import edu.uva.liftlab.graphchecker.d3.contract.NodeId;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import edu.uva.liftlab.graphchecker.d3.plan.ExecutionTask;
-import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
+
 import org.junit.After;
 import org.junit.Test;
 
@@ -82,8 +88,10 @@ public class OccurrenceAddressIsNotARequestTest {
                 task.acceptsRootInvocation(balancerAddress(3)));
         assertFalse("another activation of it does not",
                 task.acceptsRootInvocation(balancerAddress(2)));
-        assertFalse("nor does an unnamed address",
+        assertFalse("nor does an address no activation has",
                 task.acceptsRootInvocation(balancerAddress(0)));
+        assertFalse("nor does nothing at all",
+                task.acceptsRootInvocation(null));
 
         // An envelope naming another producer changes nothing either way: it
         // decides which v_H the attach mints, never which activation this is.
@@ -94,7 +102,7 @@ public class OccurrenceAddressIsNotARequestTest {
 
         assertTrue("the address still answers",
                 task.acceptsRootInvocation(balancerAddress(3)));
-        assertFalse("and still refuses every other k",
+        assertFalse("and still refuses every other occurrence",
                 task.acceptsRootInvocation(balancerAddress(4)));
 
         // Noting the request an activation entered is not a refusal.
@@ -165,210 +173,8 @@ public class OccurrenceAddressIsNotARequestTest {
                 deferred.enclosingInvocationEvent());
     }
 
-    /**
-     * The k in "k-th activation" is counted inside one epoch and inside one
-     * request family.
-     *
-     * <p>One JVM runs both lifecycles of a node it restarts, and one region
-     * answers two request families; each activation is the k-th of its own
-     * epoch and family.  The epoch refusal is on evidence, not on
-     * registration order.</p>
-     */
-    @Test
-    public void kIsCountedInsideOneEpochAndOneFamily() throws Exception {
-        RuntimeTraceContext.resetForTests();
-        Object node = new Object();
-        RuntimeTraceContext.registerSource(node,
-                new SourceRef("CLUSTER_NODE", "NAMENODE", NN0, 0L));
-        ConcolicTaskPlan.RuntimeTask epochOne = nodeTask(NN0 + "#epoch1", 1);
-        ConcolicTaskPlan plan = plan(epochOne);
 
-        assertNull("the first pre-restart activation is epoch 0's first",
-                plan.select(epochOne.rootHookGroupKey(), SNAPSHOT_ROOT, node,
-                        new Object[0]));
-        assertNull("and the second is epoch 0's second",
-                plan.select(epochOne.rootHookGroupKey(), SNAPSHOT_ROOT, node,
-                        new Object[0]));
 
-        RuntimeTraceContext.restartSource(node,
-                new SourceRef("CLUSTER_NODE", "NAMENODE", NN0, 1L));
-
-        assertNotNull("the third activation is epoch 1's first",
-                plan.select(epochOne.rootHookGroupKey(), SNAPSHOT_ROOT, node,
-                        new Object[0]));
-
-        // An epoch-0 activation is declined because it ran at epoch 0, an
-        // epoch-1 one is answered whenever it arrives, and an activation
-        // nothing attributed is still the occurrence.
-        String declined = ConcolicTaskPlan.lifecycleMismatch(NN0 + "#epoch1",
-                Collections.singleton(NN0 + "#epoch0"));
-        assertFalse("an epoch-0 activation is not the epoch-1 occurrence",
-                declined.isEmpty());
-        assertTrue(declined, declined.contains(NN0 + "#epoch0"));
-        assertTrue(declined, declined.contains(NN0 + "#epoch1"));
-        assertEquals("the epoch-1 activation answers", "",
-                ConcolicTaskPlan.lifecycleMismatch(NN0 + "#epoch1",
-                        Collections.singleton(NN0 + "#epoch1")));
-        assertEquals("an activation nothing attributed is still it", "",
-                ConcolicTaskPlan.lifecycleMismatch(NN0 + "#epoch1",
-                        Collections.<String>emptySet()));
-        assertNotEquals("epoch 0 is another bucket",
-                epochOne.invocationCounterKey(NN0 + "#epoch1"),
-                epochOne.invocationCounterKey(NN0 + "#epoch0"));
-
-        // Counting and matching use one scope, and the request is in
-        // neither: which request an activation was reached under is
-        // information about it, and information does not partition a count.
-        ConcolicTaskPlan.RuntimeTask task = task();
-        assertFalse("the request key is not in the bucket",
-                task.invocationCounterKey().contains("/request/"));
-        assertEquals("nor is the request family it used to be folded to",
-                task.invocationCounterKey(task.sourceKey),
-                task.invocationCounterKey());
-
-        // The k-th activation of one region on one node and epoch, counted
-        // in one bucket whatever request each arrived under.
-        Map<String, Integer> counted = new LinkedHashMap<>();
-        counted.put(task.invocationCounterKey(task.sourceKey), 2);
-        OccurrenceAddress observed = task.observedAddress(task.sourceKey,
-                counted);
-
-        assertEquals(2, observed.ordinal());
-        assertTrue("and it is the address the same bucket is keyed on",
-                observed.matches(OccurrenceAddress.parse(
-                        observed.render())));
-    }
-
-    /**
-     * An activation is counted, and addressed, where it RAN.
-     *
-     * <p>Three nodes in one JVM enter through a static decoder that belongs
-     * to no node, so what says where an activation ran is the execution
-     * context its thread carries.  The gate is evidence: another node
-     * refuses, the planned node decides, and an absence says nothing at
-     * all -- a flip replay carries no inherited context.</p>
-     */
-    @Test
-    public void anActivationIsCountedWhereItRan() throws Exception {
-        registerCluster();
-        ConcolicTaskPlan.RuntimeTask sourceTask =
-                sharedRootTask("TASK.source", SOURCE_DN);
-        ConcolicTaskPlan.RuntimeTask targetTask =
-                sharedRootTask("TASK.target", TARGET_DN);
-        // Plan order is the campaign's: source-dn's task is offered first.
-        ConcolicTaskPlan plan = new ConcolicTaskPlan(null,
-                Arrays.asList(sourceTask, targetTask));
-
-        assertNull("the NameNode's decode of target-dn's heartbeat is nn0's",
-                decode(plan, sourceTask, nameNode));
-        assertSame("target-dn's own decode is target-dn's first activation",
-                targetTask, decode(plan, sourceTask, targetDn));
-        assertNull("the NameNode's decode of source-dn's heartbeat is nn0's",
-                decode(plan, sourceTask, nameNode));
-        assertSame("source-dn's own decode is source-dn's first activation",
-                sourceTask, decode(plan, sourceTask, sourceDn));
-        assertNull("an activation no node claimed is nobody's occurrence",
-                decode(plan, sourceTask, null));
-
-        // Lane B2: a heartbeat runs before the workload registers the DataNode,
-        // so this run can name no node for it.  It is the unregistered source's
-        // activation -- the planner's third arm -- so the heartbeat that does
-        // carry the node is still target-dn's FIRST.
-        registerCluster();
-        ConcolicTaskPlan.RuntimeTask target =
-                sharedRootTask("TASK.target", TARGET_DN);
-        ConcolicTaskPlan targetPlan = plan(target);
-
-        assertNull("an activation nobody attributed is not target-dn's",
-                decode(targetPlan, target, null));
-        assertSame("the unstamped one took no k from target-dn",
-                target, decode(targetPlan, target, targetDn));
-
-        // And the refusal says which node the run attributed the activation to:
-        // "activation 2, not 1" read identically for the planned node's real
-        // second and for one nobody could name a node for.
-        assertNull(decode(targetPlan, target, targetDn));
-        assertTrue(target.unansweredAddress(),
-                target.unansweredAddress().contains(
-                        "(attributed to " + TARGET_DN + ")"));
-
-        // The bucket is the node that ran it, whatever the plan names.
-        assertEquals("the NameNode's activation counts as the NameNode's",
-                NN, ConcolicTaskPlan.countedLifecycle(target,
-                        RuntimeTraceContext.sourceFor(nameNode)));
-        assertEquals("an activation nothing attributed counts in the "
-                        + "unregistered source, as the planner counts it",
-                RuntimeTraceContext.UNREGISTERED_SOURCE.key(),
-                ConcolicTaskPlan.countedLifecycle(target, null));
-
-        // The gate, on the plan row the campaign carries.
-        ConcolicTaskPlan.RuntimeTask planned = task();
-        assertEquals("an absent inherited source is not a mismatch", "",
-                ConcolicTaskPlan.sourceMismatch(planned, null,
-                        RuntimeTraceContext.current()));
-        assertEquals("a registration naming the planned source decides", "",
-                ConcolicTaskPlan.sourceMismatch(planned,
-                        RuntimeTraceContext.sourceFor(nameNode),
-                        RuntimeTraceContext.current()));
-        Object elsewhere = new Object();
-        RuntimeTraceContext.registerSource(elsewhere,
-                new SourceRef("DATANODE", "dn", "hdfs-17899/dn9", 0L));
-        String refusal = ConcolicTaskPlan.sourceMismatch(planned,
-                RuntimeTraceContext.sourceFor(elsewhere),
-                RuntimeTraceContext.current());
-        assertTrue(refusal, refusal.contains("receiver belonged to"));
-        assertTrue(refusal, refusal.contains("hdfs-17899/dn9"));
-
-        String unattributed = planned.rootContextSelector.unconfirmed(
-                Collections.<String>emptySet());
-        assertTrue(unattributed, unattributed.contains("nothing attributed it"
-                + " to any node"));
-        assertTrue(unattributed, unattributed.contains(planned.sourceKey));
-        String otherNode = planned.rootContextSelector.unconfirmed(
-                Collections.singleton(SOURCE_DN));
-        assertTrue(otherNode, otherNode.contains("occurrence ran on"));
-        assertTrue(otherNode, otherNode.contains("source-dn"));
-    }
-
-    /**
-     * The counting window opens when the workload starts recording.
-     *
-     * <p>The plan counts what the recording saw; a replay that counts what
-     * the process did beforehand numbers a different population, and an
-     * activation before the window is compared against no ordinal.</p>
-     */
-    @Test
-    public void theCountingWindowOpensWhenTheWorkloadRecords() {
-        RuntimeTraceContext.resetForTests();
-        CausynthTraceRecorder.setRecordingStartedForTests(false);
-        ConcolicTaskPlan.RuntimeTask task = task();
-        ConcolicTaskPlan plan = plan(task);
-        // Outside the window means before the workload started recording, not
-        // before it named a source.
-        Object node = new Object();
-        RuntimeTraceContext.registerSource(node,
-                new SourceRef("NAMENODE", "nn", NAMENODE, 0L));
-
-        assertFalse("a named source is state, not the window",
-                RuntimeTraceContext.recordingWindowOpen());
-        assertTrue("the cluster start is outside the window",
-                plan.addressLoopRootInvocation(task.rootMethod,
-                        task.rootMethod, node, new Object[0], 11L).isEmpty());
-        assertTrue("and it is not a candidate that failed to answer",
-                task.unansweredAddress().startsWith(
-                        "0 compatible activation(s)"));
-        assertFalse("nothing is compared against a null ordinal",
-                task.unansweredAddress().contains("invocation null"));
-
-        CausynthTraceRecorder.startRecording();
-
-        assertTrue("the workload opens the window by recording",
-                RuntimeTraceContext.recordingWindowOpen());
-        assertEquals("the first activation the recording saw is occurrence 1",
-                Collections.singletonMap(task.taskId, 1),
-                plan.addressLoopRootInvocation(task.rootMethod,
-                        task.rootMethod, node, new Object[0], 12L));
-    }
 
     /**
      * A value arriving over the wire does not say where the receiver ran.
@@ -490,8 +296,25 @@ public class OccurrenceAddressIsNotARequestTest {
         }
     }
 
+    /**
+     * One occurrence of the balancer region, distinguished by where it ran.
+     *
+     * <p>Identity v3 has no activation ordinal: two runs of one region are
+     * two occurrences because their execution indexes differ, so the fixture
+     * varies the index rather than a k.  Index 0 is the address no
+     * activation has -- an empty index under an unattributable scope.</p>
+     */
     private static OccurrenceAddress balancerAddress(int ordinal) {
-        return OccurrenceAddress.of(BALANCER, BALANCER_REGION, ordinal);
+        if (ordinal <= 0) {
+            return OccurrenceAddress.of(NodeId.parse(BALANCER),
+                    BALANCER_REGION,
+                    CausalContext.of(Role.UNKNOWN), ExecutionIndex.empty());
+        }
+        return OccurrenceAddress.of(NodeId.parse(BALANCER), BALANCER_REGION,
+                CausalContext.of(Role.BALANCER, 1),
+                ExecutionIndex.of(Collections.singletonList(
+                        Frame.of("o.a.h.h.s.b.Balancer#dispatch#4",
+                                ordinal))));
     }
 
     private static ConcolicTaskPlan plan(ConcolicTaskPlan.RuntimeTask task) {
@@ -509,8 +332,12 @@ public class OccurrenceAddressIsNotARequestTest {
         JsonObject encoded = row(PLAN_ROW);
         String regionId = encoded.get("regionId").getAsString();
         encoded.addProperty("taskId", "TASK.SEED.occurrence" + ordinal);
-        encoded.addProperty("occurrenceId", NAMENODE + "#epoch0/region/"
-                + regionId + "#" + ordinal);
+        encoded.addProperty("occurrenceId", OccurrenceAddress.of(
+                NodeId.parse(NAMENODE + "#epoch0"), regionId,
+                CausalContext.of(Role.BP_SERVICE_ACTOR, 1),
+                ExecutionIndex.of(Collections.singletonList(
+                        Frame.of("o.a.h.h.s.b.BlockTokenSecretManager"
+                                + "#updateKeys#7", ordinal)))).render());
         encoded.getAsJsonObject("rootSelector")
                 .addProperty("invocationOrdinal", ordinal);
         return new ConcolicTaskPlan.RuntimeTask(ExecutionTask.decode(encoded));
@@ -520,7 +347,7 @@ public class OccurrenceAddressIsNotARequestTest {
     private static ConcolicTaskPlan.RuntimeTask handoffTask(int ordinal) {
         JsonObject encoded = encoded("TASK.SEED.address", BALANCER,
                 BALANCER_REGION, "<a.B: void run()>",
-                BALANCER + "/region/" + BALANCER_REGION + "#" + ordinal,
+                balancerAddress(ordinal).render(),
                 ordinal, "REGISTERED_SOURCE");
         JsonArray handoffs = new JsonArray();
         handoffs.add(json("{'portId':'" + PORT + "','handoffLeafPath':'" + PORT
@@ -533,12 +360,22 @@ public class OccurrenceAddressIsNotARequestTest {
     }
 
     /** One planned activation of the snapshot region on {@code sourceKey}. */
+    /**
+     * One task planned at the address this test's thread actually runs at.
+     *
+     * <p>No frames are pushed here, so the activation enters at the empty
+     * execution index under a scope nobody attributed -- and the plan has to
+     * address exactly that, because identity v3 admits an activation by
+     * where it was and not by a count of the ones before it.</p>
+     */
     private static ConcolicTaskPlan.RuntimeTask nodeTask(String sourceKey,
             int ordinal) {
+        String occurrence = OccurrenceAddress.of(NodeId.parse(sourceKey),
+                SNAPSHOT_REGION, CausalContext.of(Role.UNKNOWN),
+                ExecutionIndex.empty()).render();
         return new ConcolicTaskPlan.RuntimeTask(ExecutionTask.decode(
                 encoded("TASK." + ordinal, sourceKey, SNAPSHOT_REGION,
-                        SNAPSHOT_ROOT, sourceKey + "/region/" + SNAPSHOT_REGION
-                                + "#" + ordinal, ordinal,
+                        SNAPSHOT_ROOT, occurrence, ordinal,
                         "REGISTERED_SOURCE")));
     }
 

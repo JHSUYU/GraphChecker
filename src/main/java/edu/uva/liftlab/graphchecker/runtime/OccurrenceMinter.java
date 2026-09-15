@@ -1,7 +1,11 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
 import edu.uva.liftlab.graphchecker.causynth.MapFields;
-import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
+import edu.uva.liftlab.graphchecker.d3.contract.CausalContext;
+import edu.uva.liftlab.graphchecker.d3.contract.ExecutionIndex;
+import edu.uva.liftlab.graphchecker.d3.contract.OccurrenceAddress;
+import edu.uva.liftlab.graphchecker.d3.contract.Role;
+import edu.uva.liftlab.graphchecker.runtime.d3.OccurrenceMinterV2;
 import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -27,33 +31,28 @@ public final class OccurrenceMinter {
     public static final String UNREGISTERED_SOURCE_KEY =
             RuntimeRegionPlanner.UNREGISTERED_SOURCE.key();
 
-    private final Map<String, Integer> ordinals = new LinkedHashMap<>();
     private final Set<String> mintedActivations = new LinkedHashSet<>();
     private final Set<String> mintedOccurrences = new LinkedHashSet<>();
-
-    /**
-     * Reserves this activation's ordinal, once per observed activation, in
-     * recorded activation order and before any retention decision.  The
-     * counter is scoped by source and region and by nothing else - the same pair
-     * {@link #occurrenceId} names - because a narrower scope would restart the
-     * count inside one source and mint one identity twice.
-     */
-    public int reserveOrdinal(String semanticSourceKey, String regionId) {
-        return ordinals.merge(MapFields.safe(semanticSourceKey) + "\n"
-                        + MapFields.safe(regionId), 1,
-                Integer::sum);
-    }
 
     /**
      * Mints the activation identity.  Two records naming one observed
      * activation, or two activations minting one occurrence, would corrupt
      * identity at the boundary where trace evidence is consumed; both fail
      * closed here.
+     *
+     * <p>Identity v3: the address is (node, region, the causal context the
+     * activation ran in, the execution index it entered at), all four stated
+     * by the recording (IDENTITY-IMPL B).  There is no ordinal -- "the k-th
+     * activation" moves whenever an unrelated invocation is inserted earlier
+     * in the run, which is exactly what a branch flip does -- so two
+     * activations of one region are told apart by where they were, not by
+     * how many came before.</p>
      */
     public String mint(String regionId, long rootCallId,
-                       String semanticSourceKey, int ordinal) {
+                       String semanticSourceKey, String executionIndex,
+                       String causalContext) {
         String occurrenceId = occurrenceId(semanticSourceKey, regionId,
-                ordinal);
+                executionIndex, causalContext);
         if (!mintedActivations.add(MapFields.safe(regionId) + "\n" + rootCallId)
                 || !mintedOccurrences.add(occurrenceId)) {
             throw new IllegalArgumentException("duplicate runtime activation: "
@@ -65,14 +64,33 @@ public final class OccurrenceMinter {
     /**
      * The identity string, with no reservation or duplicate bookkeeping.
      *
-     * <p>Rendered by {@link OccurrenceAddress} itself rather than
-     * concatenated here, so the one place that knows the grammar is the
-     * address.</p>
+     * <p>Minted by {@link OccurrenceMinterV2}, the one computation of an
+     * address, so PLAN's offline pass and the replay's live one cannot
+     * disagree about what an occurrence is.</p>
      */
     public static String occurrenceId(String semanticSourceKey,
-                                      String regionId, int ordinal) {
-        return OccurrenceAddress.of(MapFields.safe(semanticSourceKey),
-                MapFields.safe(regionId), ordinal).render();
+                                      String regionId,
+                                      String executionIndex,
+                                      String causalContext) {
+        OccurrenceAddress address = OccurrenceMinterV2.mint(
+                MapFields.safe(semanticSourceKey), MapFields.safe(regionId),
+                context(causalContext),
+                ExecutionIndex.parse(MapFields.safe(executionIndex)));
+        return address == null ? "" : address.render();
+    }
+
+    /** The recorded context, or the one a scope nobody attributed has. */
+    private static CausalContext context(String recorded) {
+        String value = MapFields.safe(recorded);
+        if (value.isEmpty()) return CausalContext.of(Role.UNKNOWN);
+        try {
+            return CausalContext.parse(value);
+        } catch (RuntimeException unreadable) {
+            // Fail to the degraded form rather than to an exception: a
+            // context this build cannot read is a scope nobody attributed,
+            // which is a thing the identity can say.
+            return CausalContext.of(Role.UNKNOWN);
+        }
     }
 
     /**
