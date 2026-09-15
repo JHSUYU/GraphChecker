@@ -97,9 +97,13 @@ final class D3RowPublication {
             int ordinal = optionalInteger(mapping, "occurrence", 1);
             long seq = optionalLongInteger(mapping, "vmEventId", 0L);
             if (witness.size() > 0) {
+                // The term is the predicate as written at the site; the
+                // outcome is the arm this run took.  Nothing here applies
+                // one to the other -- CONTRACT-SPEC §2.
+                JsonObject written = object(mapping, "siteCondition");
                 D3Runtime.decision(occurrence, seq, siteId, ordinal,
                         optionalBool(witness, "sourceTakenOutcome", false),
-                        predicate(witness));
+                        written.size() > 0 ? written : predicate(witness));
             } else if (concrete.size() > 0) {
                 // A decision the VM held no condition for still happened,
                 // and the arm it took is a fact of this run.

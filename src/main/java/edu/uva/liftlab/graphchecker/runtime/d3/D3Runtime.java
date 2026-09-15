@@ -253,9 +253,11 @@ public final class D3Runtime {
         SessionPublisher session = publisher;
         if (session != null) {
             String ref = expressionRef(condition);
+            // Polarity-free: the row states the predicate and the arm,
+            // and the composer conjoins (outcome ? term : (not term)).
             session.decision(DecisionRow.of(sessionId(), sequence(seq),
-                    occurrence, Text.safe(siteId), ordinal, outcome,
-                    term(ref, outcome), clockReadings()));
+                    occurrence, Text.safe(siteId), ordinal, outcome, ref,
+                    clockReadings()));
         }
         FocusedReplay.observeDecision(occurrence, siteId, ordinal, outcome);
     }

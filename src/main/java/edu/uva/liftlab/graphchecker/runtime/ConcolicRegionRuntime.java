@@ -3548,6 +3548,18 @@ public final class ConcolicRegionRuntime {
                         observedOutcome, semanticCondition, conditionIndex,
                         metadata);
                 mapping.add("witness", witness.toImmutableJsonView());
+                // The predicate AS WRITTEN at the site, polarity-free: the
+                // DecisionRow states this and the arm separately, and the
+                // composer asserts (outcome ? term : (not term)).  The
+                // witness's own predicate is the one the taken arm
+                // satisfied, which is the same thing with the outcome
+                // already applied -- publishing that as the term would make
+                // every reader negate it a second time.
+                JsonElement written = semanticBranchCondition(expression,
+                        true, condition);
+                if (written != null && written.isJsonObject()) {
+                    mapping.add("siteCondition", written);
+                }
             }
         } else if (vmAttestation.valid
                 && vmAttestation.conditionIndices.isEmpty()) {
