@@ -1018,6 +1018,80 @@ public final class SmtLowering extends VmLoweringCore {
         return usedSymbols;
     }
 
+    /**
+     * Whether THIS LOWERING invented the name, rather than the recording.
+     *
+     * <p>Two kinds of name reach a lowered term and they are not the same
+     * fact.  A name the lowering minted -- a container subterm, an
+     * execution-local identity, an environment cell -- means exactly what
+     * the query says it means, because the query defines it.  A name that
+     * came off a {@code SymbolExpression} leaf means whatever the RECORDING
+     * says it means, and if no mint, attach or read declares it, nothing
+     * says: a caller must refuse it by name rather than declare it free.
+     * The second kind is {@link #usedSymbols}; this is the first.</p>
+     */
+    public boolean minted(String name) {
+        return defined(name) && !usedSymbols.contains(name);
+    }
+
+    /**
+     * Every name the fixed preamble gives a meaning to.
+     *
+     * <p>Sorts, datatype constructors and selectors, and the functions the
+     * container model is written in.  A caller that renders the preamble
+     * states these; one that reads a lowered term must not call them free.
+     * Read off the preamble text so the two cannot drift apart.</p>
+     */
+    public static Set<String> preambleNames() {
+        if (PREAMBLE_NAMES.isEmpty()) {
+            List<String> lines = new ArrayList<String>(
+                    VmTermLowering.preamble(false));
+            lines.add(VmTermLowering.JAVA_INT_TO_STRING);
+            lines.add(JavaPrimitiveSmtSemantics.INT_WRAP_DEFINITION);
+            lines.add(JavaPrimitiveSmtSemantics.LONG_WRAP_DEFINITION);
+            for (String line : lines) {
+                for (String name : declaredIn(line)) PREAMBLE_NAMES.add(name);
+            }
+        }
+        return PREAMBLE_NAMES;
+    }
+
+    private static final Set<String> PREAMBLE_NAMES =
+            new LinkedHashSet<String>();
+
+    /** The names one preamble line states: the head of every list in it. */
+    private static List<String> declaredIn(String line) {
+        List<String> names = new ArrayList<String>();
+        if (line == null) return names;
+        boolean datatype = line.startsWith("(declare-datatypes");
+        for (int index = 0; index < line.length(); index++) {
+            if (line.charAt(index) != '(') continue;
+            int end = index + 1;
+            while (end < line.length() && !breaks(line.charAt(end))) end++;
+            String head = line.substring(index + 1, end);
+            if (head.isEmpty()) continue;
+            // Outside a datatype only a declaration states a name, and it is
+            // the token after the keyword; inside one, every list opens with
+            // a sort, a constructor or a selector.
+            if (datatype) {
+                names.add(head);
+                continue;
+            }
+            if (!head.startsWith("declare-") && !head.startsWith("define-")) {
+                continue;
+            }
+            int from = end;
+            while (from < line.length()
+                    && Character.isWhitespace(line.charAt(from))) {
+                from++;
+            }
+            int to = from;
+            while (to < line.length() && !breaks(line.charAt(to))) to++;
+            if (to > from) names.add(line.substring(from, to));
+        }
+        return names;
+    }
+
     /** Lowers one boolean constraint, with its Java definedness. */
     public String condition(JsonElement expression, String origin) {
         Term value = dispatch(expression, Sort.BOOL, origin);
