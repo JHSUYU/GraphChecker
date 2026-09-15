@@ -203,7 +203,26 @@ final class D3RowPublication {
         // Naming the Java field signature instead left the read saying
         // AtomicInteger#value while the write log said
         // INSTANCE_FIELD/<rid>#<offset>.
+        // The mint this row is of, found by the symbol when the row carries
+        // the VM's own (an integral mint states its rawSymbol) and by the
+        // name the runtime REQUESTED otherwise: the VM answers a request for
+        // `field_<portId>` with `M_<sort>_field_<portId>`, so a reference
+        // mint -- whose row states no rawSymbol and whose expression leaf is
+        // the identity spelling `P_L'...'` -- is the same mint under the
+        // same request.  One spelling per symbol: the row publishes the VM's
+        // (which is what the version's expression and expressions.json
+        // carry), never the identity leaf.
         String[] installedAt = installed.get(symbol);
+        String minted = symbol;
+        if (installedAt == null) {
+            String requested = "_field_" + optionalString(row, "symbol");
+            for (Map.Entry<String, String[]> mint : installed.entrySet()) {
+                if (!mint.getKey().endsWith(requested)) continue;
+                installedAt = mint.getValue();
+                minted = mint.getKey();
+                break;
+            }
+        }
         String locationKey = installedAt == null ? "" : installedAt[0];
         LocationId location = location(locationKey);
         // The version this read OBSERVED.  The mint's own version is not a
@@ -236,8 +255,8 @@ final class D3RowPublication {
             return;
         }
         String declared = javaDescriptor(optionalString(row, "javaType"));
-        String minted = mintedSort(symbol);
-        if (!minted.isEmpty() && !minted.equals(declared)) {
+        String sort = mintedSort(minted);
+        if (!sort.isEmpty() && sort.charAt(0) != declared.charAt(0)) {
             // The mint symbolized the OBJECT, not the cell: on hdfs-17960
             // REGION.9492ec77 declares <Snapshot: int id> and the row came
             // back with the VM's reference symbol P_L'...Snapshot'_ beside
@@ -247,7 +266,7 @@ final class D3RowPublication {
             // which no lowering can hold; the run states the disagreement
             // instead of a row that hides it.
             D3Runtime.gap(GapKind.DECLARATION_MISSING, GapClass.DIAGNOSTIC,
-                    symbol, "a declared region input minted a " + minted
+                    minted, "a declared region input minted a " + sort
                             + "-sorted symbol for a " + declared + " cell ("
                             + optionalString(row, "fieldSignature")
                             + "), so this read states no one sort: "
@@ -256,6 +275,17 @@ final class D3RowPublication {
         }
         String value = optionalString(row, "observedValue");
         if (value.isEmpty()) value = optionalString(row, "recordedValue");
+        if (value.isEmpty() && declared.charAt(0) == 'L') {
+            // A reference cell records no decimal.  What the run states of
+            // it is the identity the VM spells on the leaf -- the same
+            // spelling FieldAccess.concreteValue carries, so one identity
+            // lowering serves both -- and "N" for null.
+            String identity = symbolLeaf(row.get("expression"), 0);
+            if (identity.startsWith("M_L'") || identity.startsWith("P_L'")
+                    || "N".equals(identity)) {
+                value = identity;
+            }
+        }
         if (observed < 0L && literal(value).isEmpty()) {
             D3Runtime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
                     symbol, "a declared region input states no value it"
@@ -284,7 +314,7 @@ final class D3RowPublication {
         }
         D3Runtime.read(occurrence, event,
                 Endpoint.stateSite(locationKey, "PLACEHOLDER", 0, false),
-                location, observed, symbol,
+                location, observed, minted,
                 declared, literal(value),
                 optionalString(row, "siteIndex"),
                 installedAt == null ? ReadRow.UNKNOWN_VERSION
@@ -295,9 +325,13 @@ final class D3RowPublication {
      * The sort the VM spelled into one of its symbols, or {@code ""}.
      *
      * <p>A VM symbol carries its own sort: {@code M_I_field_...},
-     * {@code M_Z_field_...}, {@code P_L'org/apache/...'_}.  A symbol the
-     * runtime made instead ({@code INSTANCE_FIELD/2#24@v178}) spells none
-     * and claims none, so nothing is inferred from its absence.</p>
+     * {@code M_Z_field_...}, {@code M_L_field_...}, {@code P_L'...'_}.  The
+     * SORT is what has to agree with the cell -- L against any reference
+     * descriptor, I against I -- because a reference symbol does not spell
+     * which class the cell is declared as, and demanding the whole
+     * descriptor refused every reference mint (P2l).  A symbol the runtime
+     * made instead ({@code INSTANCE_FIELD/2#24@v178}) spells no sort and
+     * claims none, so nothing is inferred from its absence.</p>
      */
     private static String mintedSort(String symbol) {
         String name = safe(symbol);
@@ -305,13 +339,7 @@ final class D3RowPublication {
         char sort = name.charAt(2);
         char after = name.charAt(3);
         if (after != '_' && after != '\'') return "";
-        if (sort == 'L') {
-            int open = name.indexOf('\'');
-            int close = name.indexOf('\'', open + 1);
-            return open < 0 || close < 0 ? "Ljava/lang/Object;"
-                    : "L" + name.substring(open + 1, close) + ";";
-        }
-        return "ZBCSIJFD".indexOf(sort) < 0 ? "" : String.valueOf(sort);
+        return "ZBCSIJFDL".indexOf(sort) < 0 ? "" : String.valueOf(sort);
     }
 
     /**

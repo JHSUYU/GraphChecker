@@ -257,8 +257,9 @@ public class D3RuntimeTest {
                 Collections.<String, String[]>emptyMap());
         placeholder(occurrence, placeholderRow("b", null), "M_I_unversioned",
                 Collections.<String, String[]>emptyMap());
-        // The mint symbolized the object, not the int cell: one row cannot
-        // state an int read and a reference unknown, so it states neither.
+        // The mint symbolized the object, not the int cell: the sorts
+        // disagree (L against I), so the row states neither.  A reference
+        // mint for a reference cell agrees and does publish (P2l).
         placeholder(occurrence, placeholderRow("f", null),
                 "P_L'org/apache/hadoop/hdfs/server/namenode/snapshot/"
                         + "Snapshot'_",
