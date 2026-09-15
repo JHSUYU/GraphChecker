@@ -657,7 +657,8 @@ public class D3ExploreTest {
         private void activation(OccurrenceAddress occurrence,
                                 boolean focused) {
             activations.add(ActivationRow.of(sessionId, occurrence,
-                    "task-" + occurrence.regionId(), focused));
+                    "task-" + occurrence.regionId(), focused, true,
+                    "fixture#1", null));
         }
 
         private void decision(OccurrenceAddress occurrence, String site,
