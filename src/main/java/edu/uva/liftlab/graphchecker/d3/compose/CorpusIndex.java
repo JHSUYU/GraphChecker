@@ -6,6 +6,7 @@ import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.d3.compose.VmTermLowering.Sort;
 import edu.uva.liftlab.graphchecker.d3.smt.Arms;
 
+import edu.uva.liftlab.graphchecker.d3.contract.ActivationRow;
 import edu.uva.liftlab.graphchecker.d3.contract.AttachRow;
 import edu.uva.liftlab.graphchecker.d3.contract.DecisionRow;
 import edu.uva.liftlab.graphchecker.d3.contract.Endpoint;
@@ -132,6 +133,9 @@ public final class CorpusIndex implements Arms.Rows {
     /** Endpoint id -> the occurrence it belongs to: the causal chain. */
     private final Map<String, OccurrenceAddress> occurrenceByEndpoint =
             new LinkedHashMap<String, OccurrenceAddress>();
+    /** session|occurrence -> that session's activation of it. */
+    private final Map<String, ActivationRow> activationByOccurrence =
+            new LinkedHashMap<String, ActivationRow>();
     /** session|endpoint -> the session event its row was sequenced at. */
     private final Map<String, Long> seqByEndpoint =
             new LinkedHashMap<String, Long>();
@@ -163,6 +167,10 @@ public final class CorpusIndex implements Arms.Rows {
     private void index(SessionReader session) {
         String sessionId = session.sessionId();
         bySessionId.put(sessionId, session);
+        for (ActivationRow activation : session.activations()) {
+            activationByOccurrence.put(sessionId + "|"
+                    + activation.occurrence().id(), activation);
+        }
 
         Map<String, List<DecisionRow>> byOccurrence =
                 new LinkedHashMap<String, List<DecisionRow>>();
@@ -329,11 +337,17 @@ public final class CorpusIndex implements Arms.Rows {
         return paths == null ? null : paths.get(occurrence.id());
     }
 
-    /** Whether this session decided anything at this occurrence. */
+    /**
+     * Whether this session explored that occurrence symbolically.
+     *
+     * <p>The rule is {@link Arms#attested}: instrumented, and symbolic in
+     * this session.  Asked through the same object both stages ask, so an
+     * arm the explorer treats as attested is not one the composition reads
+     * as concrete.</p>
+     */
     public boolean attested(String sessionId,
                             OccurrenceAddress occurrence) {
-        PathRecord path = path(sessionId, occurrence);
-        return path != null && !path.decisions().isEmpty();
+        return new Arms(this).attested(sessionId, occurrence);
     }
 
     /** The target rows one session published at one occurrence. */
@@ -500,6 +514,12 @@ public final class CorpusIndex implements Arms.Rows {
     @Override
     public OccurrenceAddress occurrenceOf(String endpointId) {
         return occurrenceByEndpoint.get(endpointId);
+    }
+
+    @Override
+    public ActivationRow activationOf(String sessionId,
+                                      String occurrenceId) {
+        return activationByOccurrence.get(sessionId + "|" + occurrenceId);
     }
 
     @Override

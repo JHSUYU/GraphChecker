@@ -165,8 +165,9 @@ public class D3ComposerTest {
                 at("export#1", 0), 0);
         Endpoint consumer = Endpoint.of(ANCHOR, "PORT.key",
                 at("attach#1", 0), 0);
-        // The producer ran concretely in both sessions: no decision of its
-        // occurrence is recorded anywhere, so every arm is unattested.
+        // The producer ran CONCRETELY in both sessions -- its activation is
+        // not instrumented -- so the recording can say what it delivered and
+        // nothing about what it would have delivered.
         session(iteration, "s0", false, "false", producer, consumer,
                 "vh", "false", null, false, false, "EXPR.v1.marker");
         session(iteration, "s1", true, "true", producer, consumer,
@@ -203,6 +204,8 @@ public class D3ComposerTest {
                 at("attach#1", 0), 0);
 
         Session session = new Session(iteration, "s0", false);
+        session.activation(PRODUCER);
+        session.activation(UPSTREAM);
         session.marker("false");
         session.expression("EXPR.v1.marker", symbol(MARKER, "Z"));
         // What the middle node exports is what it was itself handed.
@@ -619,6 +622,67 @@ public class D3ComposerTest {
     }
 
     // ------------------------------------------------------------------
+    // 14. One thread is one order, and a thread's starter is before it.
+    // ------------------------------------------------------------------
+
+    @Test
+    public void aThreadOrdersItsOwnActivationsAndWhatStartedIt()
+            throws Exception {
+        Path iteration = folder.newFolder("threads").toPath();
+        OccurrenceAddress earlier = occurrence("case/dn0", "REGION.earlier",
+                CausalContext.of(Role.BP_SERVICE_ACTOR, 1),
+                frame("Actor#run#1", 0));
+        OccurrenceAddress later = occurrence("case/dn0", "REGION.later",
+                CausalContext.of(Role.BP_SERVICE_ACTOR, 2),
+                frame("Actor#run#1", 1));
+        OccurrenceAddress started = occurrence("case/dn0", "REGION.started",
+                CausalContext.of(Role.EXECUTOR_TASK, 1),
+                frame("Task#run#1", 0));
+        LocationId keys = LocationId.of(LocationKind.MAP, "Manager", "keys");
+
+        Session session = new Session(iteration, "s0", false);
+        session.occurrence = earlier;
+        // Two activations of one thread, and a third on a thread the first
+        // of them started.
+        session.activation(earlier, "thread#actor", null, false);
+        session.activation(later, "thread#actor", null, false);
+        Endpoint starter = Endpoint.of(earlier, "Thread#start#2:NEW",
+                at("start#1", 0), 0);
+        session.activation(started, "thread#task", starter, false);
+        session.marker("false");
+        session.expression("EXPR.v1.k", constant("false"));
+        Endpoint first = Endpoint.of(earlier, "Actor#put#3:WRITE",
+                at("w#1", 0), 0);
+        Endpoint second = Endpoint.of(later, "Actor#put#4:WRITE",
+                at("w#2", 0), 0);
+        Endpoint third = Endpoint.of(started, "Task#put#5:WRITE",
+                at("w#3", 0), 0);
+        session.write(first, keys, 1L, "EXPR.v1.k");
+        session.write(second, keys, 2L, "EXPR.v1.k");
+        session.write(third, keys, 3L, "EXPR.v1.k");
+        session.target("true", false, true);
+        session.write();
+
+        edu.uva.liftlab.graphchecker.d3.smt.Arms rule =
+                new edu.uva.liftlab.graphchecker.d3.smt.Arms(
+                        CorpusIndex.of(iteration));
+        assertTrue("one thread is one order, whatever the occurrence",
+                rule.ancestor(first, second, "s0"));
+        assertFalse("and it runs one way",
+                rule.ancestor(second, first, "s0"));
+        assertFalse("so two activations of one thread never interleave",
+                rule.concurrent(earlier, later, "s0"));
+        assertFalse("what started a thread is before everything on it",
+                rule.concurrent(earlier, started, "s0"));
+        assertTrue("and the direction says which way",
+                rule.ancestor(first, third, "s0"));
+        // Attestation: instrumented and symbolic in this session -- the seed
+        // -- with no decision anywhere in it.
+        assertTrue("a symbolic straight-line region is attested",
+                rule.attested("s0", later));
+    }
+
+    // ------------------------------------------------------------------
     // Fixture.
     // ------------------------------------------------------------------
 
@@ -717,17 +781,32 @@ public class D3ComposerTest {
             this.iteration = iteration;
             this.id = id;
             this.explored = explored;
-            activations.add(ActivationRow.of(id, ANCHOR,
-                    explored ? "task-flip" : "task-seed", explored, true,
-                    "fixture#1", null));
+            activation(ANCHOR);
             this.seq = 0L;
         }
 
-        /** One more activation of this session, in its own order. */
+        /**
+         * One more activation, on a thread of its own.
+         *
+         * <p>Each occurrence gets its own thread unless a test says
+         * otherwise: sharing one would order every pair of them, which is
+         * true of a thread and not of this fixture.</p>
+         */
         void activation(OccurrenceAddress at) {
+            activation(at, "thread#" + at.regionId(), null, explored);
+        }
+
+        void activation(OccurrenceAddress at, String threadKey,
+                        Endpoint startedBy, boolean focused) {
+            activation(at, threadKey, startedBy, focused, true);
+        }
+
+        void activation(OccurrenceAddress at, String threadKey,
+                        Endpoint startedBy, boolean focused,
+                        boolean instrumented) {
             activations.add(ActivationRow.of(id, at,
-                    explored ? "task-flip" : "task-seed", explored, true,
-                    "fixture#1", null));
+                    explored ? "task-flip" : "task-seed", focused,
+                    instrumented, threadKey, startedBy));
         }
 
         void marker(String recorded) {
@@ -818,6 +897,10 @@ public class D3ComposerTest {
                          boolean attestProducer, boolean observedFatal,
                          String ref) throws IOException {
         Session session = new Session(iteration, id, explored);
+        // A producer the replay did not instrument is one that ran
+        // concretely: it states its delivery and attests nothing.
+        session.activation(PRODUCER, "thread#" + PRODUCER.regionId(), null,
+                explored, attestProducer);
         session.marker(marker);
         session.expression(ref, symbol(MARKER, "Z"));
         // The producer decides, then exports: a family arm is guarded by
