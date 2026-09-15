@@ -54,38 +54,6 @@ public final class ExploreCodec {
                 string(json, "seedSessionId"));
     }
 
-    /**
-     * The marker a wave with nothing left to ask writes instead of an empty
-     * file.
-     *
-     * <p>The campaign reads a wave's obligations with {@code jq -r
-     * '.obligationId'} and skips a blank one, so a marker row stops its loop
-     * where an empty file would be read as a stage that produced nothing.
-     * The row says why the wave is empty; nothing executes it.</p>
-     */
-    public static JsonObject fixedPoint(int wave, int answered) {
-        JsonObject json = new JsonObject();
-        json.addProperty("schemaVersion", 1);
-        json.addProperty("kind", "EXPLORE_FIXED_POINT");
-        json.addProperty("obligationId", "");
-        json.addProperty("wave", wave);
-        json.addProperty("answered", answered);
-        json.addProperty("detail", "every flip this closure offers has a "
-                + "recorded verdict: the frontier is closed");
-        return json;
-    }
-
-    /** One wave's obligations, without its fixed-point marker. */
-    public static List<Obligation> readObligations(java.nio.file.Path file)
-            throws java.io.IOException {
-        List<Obligation> obligations = new ArrayList<Obligation>();
-        for (JsonObject row : RowCodec.readJsonl(file)) {
-            if (string(row, "obligationId").isEmpty()) continue;
-            obligations.add(readObligation(row));
-        }
-        return obligations;
-    }
-
     public static JsonObject writeObligation(Obligation obligation) {
         JsonObject json = new JsonObject();
         json.addProperty("obligationId", obligation.obligationId());
