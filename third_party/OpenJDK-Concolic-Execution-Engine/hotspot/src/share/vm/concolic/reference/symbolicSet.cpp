@@ -41,6 +41,9 @@ bool SymSet::invoke_method_helper(MethodSymbolizerHandle &handle) {
     bool recording = handle.general_check_param_symbolized();
     if (recording) {
       handle.general_prepare_param();
+      // Before the body runs: state what the container already holds, while
+      // the receiver is still untouched by this operation.
+      ContainerSupport::state_base_before_operation(handle.get_param<oop>(0));
     }
     return recording;
   }

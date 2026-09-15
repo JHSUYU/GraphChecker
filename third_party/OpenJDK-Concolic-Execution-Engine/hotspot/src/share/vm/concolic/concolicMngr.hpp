@@ -229,14 +229,19 @@ public:
   // `owner` is the receiver for an instance field and the declaring class's
   // Class object for a static one; `index` selects one element of a
   // fixed-shape array.
-  static jlong selectSharedFieldCarrier(
-      Handle owner, const char *declaring_class, const char *field_name,
-      const char *descriptor);
+  /**
+   * Every location this session is tracking, as one
+   * SHARED_TRACKED_LOCATIONS document.  See
+   * SharedFieldVersions::tracked_locations() for the selection and budget
+   * rules; this is the Java-facing spelling of it.
+   */
+  static std::string getTrackedLocationVersions(jlong after_event_id,
+                                                jint max_bytes);
+
   static jlong armSharedPrimitiveFieldRead(
       Handle owner, const char *declaring_class, const char *field_name,
       const char *descriptor, jlong value_bits);
   static jlong confirmSharedPrimitiveFieldRead(jlong token);
-  static jlong selectSharedElementCarrier(Handle array, jint index);
   /**
    * Selects one supported associative container's *whole state* as a carrier.
    *
@@ -255,7 +260,6 @@ public:
    * @return a positive INITIAL version id, 0 if already selected, or a
    *         negative SharedFieldVersions::SelectStatus refusal
    */
-  static jlong selectSharedMapCarrier(Handle map);
   static std::string getSharedFieldVersions(
       Handle owner, const char *declaring_class, const char *field_name,
       const char *descriptor);
@@ -308,8 +312,6 @@ public:
     SNAPSHOT_ALREADY_STATED = 5
   };
 
-  static jint snapshotContainerExpression(
-      Handle container, Handle keys, Handle values, jint kind);
   static std::string getRegionSummary();
   static void symbolize(Handle handle, const char* prefix);
   static void symbolizeField(Handle handle, const char* field_name,

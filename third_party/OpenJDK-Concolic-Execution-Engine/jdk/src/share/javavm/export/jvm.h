@@ -178,11 +178,6 @@ JNIEXPORT jboolean JNICALL
 JVM_TrackContainerExpression(JNIEnv *env, jclass ignored, jobject container,
                              jstring prefix);
 
-JNIEXPORT jboolean JNICALL
-JVM_SnapshotContainerExpression(JNIEnv *env, jclass ignored,
-                                jobject container, jobjectArray keys,
-                                jobjectArray values, jint kind);
-
 JNIEXPORT jlong JNICALL
 JVM_ExportExpression(JNIEnv *env, jclass ignored, jobject owner,
                      jstring declaring_class, jstring field_name,
@@ -197,10 +192,9 @@ JNIEXPORT jstring JNICALL
 JVM_GetConcolicPathConditionRange(JNIEnv *env, jclass ignored,
                                   jint start_index, jint end_index);
 
-JNIEXPORT jlong JNICALL
-JVM_SelectSharedFieldCarrier(JNIEnv *env, jclass ignored, jobject owner,
-                             jstring declaring_class, jstring field_name,
-                             jstring descriptor);
+JNIEXPORT jstring JNICALL
+JVM_GetTrackedLocationVersions(JNIEnv *env, jclass ignored,
+                               jlong after_event_id, jint max_bytes);
 
 JNIEXPORT jlong JNICALL
 JVM_ArmSharedPrimitiveFieldRead(JNIEnv *env, jclass ignored, jobject owner,
@@ -210,13 +204,6 @@ JVM_ArmSharedPrimitiveFieldRead(JNIEnv *env, jclass ignored, jobject owner,
 JNIEXPORT jlong JNICALL
 JVM_ConfirmSharedPrimitiveFieldRead(JNIEnv *env, jclass ignored,
                                     jlong token);
-
-JNIEXPORT jlong JNICALL
-JVM_SelectSharedElementCarrier(JNIEnv *env, jclass ignored, jobject array,
-                               jint index);
-
-JNIEXPORT jlong JNICALL
-JVM_SelectSharedMapCarrier(JNIEnv *env, jclass ignored, jobject map);
 
 JNIEXPORT jstring JNICALL
 JVM_GetSharedFieldVersions(JNIEnv *env, jclass ignored, jobject owner,

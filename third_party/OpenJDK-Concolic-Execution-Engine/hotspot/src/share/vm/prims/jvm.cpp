@@ -656,34 +656,6 @@ JVM_END
 // mutation history, refused over the entry bound -- and a caller that cannot
 // tell them apart publishes a carrier with no stated base as though it had a
 // complete one.
-JVM_ENTRY(jint, JVM_SnapshotContainerExpression(
-    JNIEnv *env, jclass ignored, jobject container, jobjectArray keys,
-    jobjectArray values, jint kind))
-  JVMWrapper("JVM_SnapshotContainerExpression");
-#ifdef ENABLE_CONCOLIC
-  if (container == NULL || values == NULL) {
-    return ConcolicMngr::SNAPSHOT_NOT_SELECTABLE;
-  }
-  HandleMark hm;
-  Handle target(THREAD, JNIHandles::resolve_non_null(container));
-  Handle snapshot_keys(THREAD, JNIHandles::resolve(keys));
-  Handle snapshot_values(THREAD, JNIHandles::resolve_non_null(values));
-  return ConcolicMngr::snapshotContainerExpression(
-      target, snapshot_keys, snapshot_values, kind);
-#else
-  return 0;
-#endif
-JVM_END
-
-#ifdef ENABLE_CONCOLIC
-// Publishes one handoff endpoint identity into the caller's optional
-// out-array. Both endpoint identities are explicit because the same export
-// may be attached at several receivers.
-//
-// The array is resolved after the symbolic work has finished, so no oop is
-// held across a call that may safepoint.  A caller that passes anything other
-// than a long[] with room for the answer simply does not get one; there is no
-// status for it, because the call itself already succeeded.
 static void publish_handoff_event(jobject events, jlong event_id) {
   if (events == NULL || event_id <= 0) return;
   oop out = JNIHandles::resolve(events);
@@ -694,7 +666,6 @@ static void publish_handoff_event(jobject events, jlong event_id) {
   typeArrayOop slots = typeArrayOop(out);
   if (slots->length() >= 1) slots->long_at_put(0, event_id);
 }
-#endif
 
 JVM_ENTRY(jlong, JVM_ExportExpression(
     JNIEnv *env, jclass ignored, jobject owner, jstring declaring_class,
@@ -787,30 +758,6 @@ JVM_ENTRY(jstring, JVM_GetConcolicPathConditionRange(
 #endif
 JVM_END
 
-JVM_ENTRY(jlong, JVM_SelectSharedFieldCarrier(
-    JNIEnv *env, jclass ignored, jobject owner, jstring declaring_class,
-    jstring field_name, jstring descriptor))
-  JVMWrapper("JVM_SelectSharedFieldCarrier");
-#ifdef ENABLE_CONCOLIC
-  HandleMark hm;
-  ResourceMark rm(THREAD);
-  Handle field_owner(THREAD, JNIHandles::resolve(owner));
-  const char *holder = declaring_class == NULL ? NULL
-      : java_lang_String::as_utf8_string(
-          JNIHandles::resolve_non_null(declaring_class));
-  const char *name = field_name == NULL ? NULL
-      : java_lang_String::as_utf8_string(
-          JNIHandles::resolve_non_null(field_name));
-  const char *type = descriptor == NULL ? NULL
-      : java_lang_String::as_utf8_string(
-          JNIHandles::resolve_non_null(descriptor));
-  return ConcolicMngr::selectSharedFieldCarrier(
-      field_owner, holder, name, type);
-#else
-  return -1;
-#endif
-JVM_END
-
 JVM_ENTRY(jlong, JVM_ArmSharedPrimitiveFieldRead(
     JNIEnv *env, jclass ignored, jobject owner, jstring declaring_class,
     jstring field_name, jstring descriptor, jlong value_bits))
@@ -845,27 +792,28 @@ JVM_ENTRY(jlong, JVM_ConfirmSharedPrimitiveFieldRead(
 #endif
 JVM_END
 
-JVM_ENTRY(jlong, JVM_SelectSharedElementCarrier(
-    JNIEnv *env, jclass ignored, jobject array, jint index))
-  JVMWrapper("JVM_SelectSharedElementCarrier");
+JVM_ENTRY(jstring, JVM_GetTrackedLocationVersions(
+    JNIEnv *env, jclass ignored, jlong after_event_id, jint max_bytes))
+  JVMWrapper("JVM_GetTrackedLocationVersions");
 #ifdef ENABLE_CONCOLIC
   HandleMark hm;
-  Handle target(THREAD, JNIHandles::resolve(array));
-  return ConcolicMngr::selectSharedElementCarrier(target, index);
+  ResourceMark rm(THREAD);
+  std::string serialized =
+      ConcolicMngr::getTrackedLocationVersions(after_event_id, max_bytes);
+  Handle str = java_lang_String::create_from_str(serialized.c_str(), THREAD);
+  return (jstring) JNIHandles::make_local(env, str());
 #else
-  return -1;
-#endif
-JVM_END
-
-JVM_ENTRY(jlong, JVM_SelectSharedMapCarrier(
-    JNIEnv *env, jclass ignored, jobject map))
-  JVMWrapper("JVM_SelectSharedMapCarrier");
-#ifdef ENABLE_CONCOLIC
-  HandleMark hm;
-  Handle target(THREAD, JNIHandles::resolve(map));
-  return ConcolicMngr::selectSharedMapCarrier(target);
-#else
-  return -1;
+  // Concolic is compiled out.  The same members the live writer emits with
+  // nothing tracked, so a reader never has to special-case this build.
+  Handle str = java_lang_String::create_from_str(
+      "{\"schemaVersion\":1,\"kind\":\"SHARED_TRACKED_LOCATIONS\","
+      "\"sessionId\":0,\"authority\":\"VM_TRACKED_LOCATION_VERSIONS_V1\","
+      "\"locations\":[],\"locationCount\":0,\"complete\":true,"
+      "\"nextAfterEventId\":0,\"vmExpressionTable\":{\"schemaVersion\":1,"
+      "\"kind\":\"VM_EXPRESSION_TABLE\","
+      "\"authority\":\"VM_SESSION_EXPRESSION_ID_V1\",\"sessionId\":0,"
+      "\"definitionCount\":0,\"definitions\":[]}}", THREAD);
+  return (jstring) JNIHandles::make_local(env, str());
 #endif
 JVM_END
 

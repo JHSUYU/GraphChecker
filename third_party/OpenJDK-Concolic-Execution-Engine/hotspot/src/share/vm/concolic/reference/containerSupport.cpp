@@ -16,7 +16,10 @@
 #include "concolic/reference/symbolicString.hpp"
 
 #include <algorithm>
+#include <map>
 #include <stdio.h>
+#include <string.h>
+#include <vector>
 
 const char *ContainerSupport::shape(oop value) {
   if (value == NULL) return NULL;
@@ -136,6 +139,273 @@ std::string ContainerSupport::unsupported(const char *category,
 // Selected whole-container state.
 // ---------------------------------------------------------------------------
 
+namespace {
+
+// ---------------------------------------------------------------------------
+// Reading a container's concrete members from the heap.
+//
+// Retention is by value, so the moment a symbolic operand first reaches a
+// container the engine has to state what that container already held -- and
+// there is nobody to ask.  The Java side used to hand the members over
+// (System.snapshotContainerExpression), which made the record depend on
+// instrumentation reaching the object before the first symbolic access; the
+// race between that offer and the first write is what left bug3's allKeys
+// base unstated.  So the VM reads them itself, here.
+//
+// Only the classes SymMap/SymList/SymSet actually admit are walked, and only
+// their backing storage: the views and iterators those sets also name are
+// derived from a backing container and are reached through it.  Anything else
+// is reported by name rather than guessed at -- see unsupported_class below.
+// ---------------------------------------------------------------------------
+
+// One field offset, looked up by name on first use and then cached per klass.
+// find_field walks the field stream, and this runs on the first symbolic
+// access of every tracked container, so the lookup is done once per (klass,
+// field) and never again.
+class FieldOffsetCache {
+public:
+  FieldOffsetCache() {}
+
+  int offset(oop holder, const char *name, const char *signature) {
+    if (holder == NULL || holder->klass() == NULL) return -1;
+    const Key key(holder->klass(), name);
+    std::map<Key, int>::const_iterator found = _offsets.find(key);
+    if (found != _offsets.end()) return found->second;
+    fieldDescriptor fd;
+    const int resolved =
+        OopUtils::get_fd_by_name(holder, name, signature, fd) == NULL
+            ? -1 : fd.offset();
+    _offsets[key] = resolved;
+    return resolved;
+  }
+
+private:
+  struct Key {
+    Klass *klass;
+    const char *name;
+    Key(Klass *k, const char *n) : klass(k), name(n) {}
+    bool operator<(const Key &other) const {
+      if (klass != other.klass) return klass < other.klass;
+      return strcmp(name, other.name) < 0;
+    }
+  };
+  std::map<Key, int> _offsets;
+};
+
+FieldOffsetCache *field_offsets() {
+  // Function-local so it is constructed on first use and never during static
+  // initialisation; the engine is single-session and this is only reached
+  // with a context, which serialises it well enough for a cache whose worst
+  // case is a redundant lookup.
+  static FieldOffsetCache cache;
+  return &cache;
+}
+
+bool klass_name_is(oop obj, const char *name) {
+  if (obj == NULL || obj->klass() == NULL || obj->klass()->name() == NULL) {
+    return false;
+  }
+  return obj->klass()->name()->equals(name, (int) strlen(name));
+}
+
+bool read_hash_map(oop map, std::vector<oop> *keys, std::vector<oop> *values);
+
+// HashMap/LinkedHashMap: table is a Node[]; each bin is a chain linked by
+// `next`.  A treeified bin holds TreeNodes, and TreeNode extends
+// LinkedHashMap.Entry extends HashMap.Node, so `next` still threads every
+// member of the bin -- one chain walk covers both bin kinds and no red-black
+// traversal is needed.
+bool read_hash_map(oop map, std::vector<oop> *keys, std::vector<oop> *values) {
+  const int table_offset =
+      field_offsets()->offset(map, "table", "[Ljava/util/HashMap$Node;");
+  if (table_offset < 0) return false;
+  oop table = map->obj_field(table_offset);
+  // A HashMap that has never been written has a null table.  That is an
+  // exactly empty map, not an unreadable one.
+  if (table == NULL) return true;
+  if (!table->is_objArray()) return false;
+  objArrayOop bins = objArrayOop(table);
+  for (int bin = 0; bin < bins->length(); ++bin) {
+    oop node = bins->obj_at(bin);
+    // Bounded by the table length times the longest chain; a corrupted cycle
+    // would otherwise spin here.
+    int guard = 0;
+    while (node != NULL && guard++ < (1 << 20)) {
+      const int key_offset =
+          field_offsets()->offset(node, "key", "Ljava/lang/Object;");
+      const int value_offset =
+          field_offsets()->offset(node, "value", "Ljava/lang/Object;");
+      const int next_offset =
+          field_offsets()->offset(node, "next", "Ljava/util/HashMap$Node;");
+      if (key_offset < 0 || value_offset < 0 || next_offset < 0) return false;
+      keys->push_back(node->obj_field(key_offset));
+      values->push_back(node->obj_field(value_offset));
+      node = node->obj_field(next_offset);
+    }
+  }
+  return true;
+}
+
+// HashSet/LinkedHashSet are a HashMap whose values are a shared placeholder;
+// the members are its keys, and an ASSOCIATIVE shape is not what a set reads
+// back as, so the members are reported as values.
+bool read_hash_set(oop set, std::vector<oop> *values) {
+  const int map_offset =
+      field_offsets()->offset(set, "map", "Ljava/util/HashMap;");
+  if (map_offset < 0) return false;
+  oop map = set->obj_field(map_offset);
+  if (map == NULL) return true;
+  std::vector<oop> keys;
+  std::vector<oop> ignored;
+  if (!read_hash_map(map, &keys, &ignored)) return false;
+  for (size_t index = 0; index < keys.size(); ++index) {
+    values->push_back(keys[index]);
+  }
+  return true;
+}
+
+// ArrayList: elementData is the backing array and `size` is how much of it is
+// live.  The array is usually longer than the list; reading past `size` would
+// state stale members a clear() left behind.
+bool read_array_list(oop list, std::vector<oop> *values) {
+  const int data_offset =
+      field_offsets()->offset(list, "elementData", "[Ljava/lang/Object;");
+  const int size_offset = field_offsets()->offset(list, "size", "I");
+  if (data_offset < 0 || size_offset < 0) return false;
+  oop data = list->obj_field(data_offset);
+  const int size = list->int_field(size_offset);
+  if (data == NULL) return size == 0;
+  if (!data->is_objArray()) return false;
+  objArrayOop elements = objArrayOop(data);
+  if (size < 0 || size > elements->length()) return false;
+  for (int index = 0; index < size; ++index) {
+    values->push_back(elements->obj_at(index));
+  }
+  return true;
+}
+
+// ArrayDeque: a circular buffer between head and tail, so iteration order is
+// head..tail modulo the capacity rather than 0..length.
+bool read_array_deque(oop deque, std::vector<oop> *values) {
+  const int data_offset =
+      field_offsets()->offset(deque, "elements", "[Ljava/lang/Object;");
+  const int head_offset = field_offsets()->offset(deque, "head", "I");
+  const int tail_offset = field_offsets()->offset(deque, "tail", "I");
+  if (data_offset < 0 || head_offset < 0 || tail_offset < 0) return false;
+  oop data = deque->obj_field(data_offset);
+  if (data == NULL) return true;
+  if (!data->is_objArray()) return false;
+  objArrayOop elements = objArrayOop(data);
+  const int capacity = elements->length();
+  if (capacity == 0) return true;
+  const int head = deque->int_field(head_offset);
+  const int tail = deque->int_field(tail_offset);
+  if (head < 0 || head >= capacity || tail < 0 || tail >= capacity) {
+    return false;
+  }
+  for (int index = head; index != tail; index = (index + 1) % capacity) {
+    values->push_back(elements->obj_at(index));
+  }
+  return true;
+}
+
+} // anonymous namespace
+
+bool ContainerSupport::read_concrete_members(oop container,
+                                             std::vector<oop> *keys,
+                                             std::vector<oop> *values,
+                                             const char **unsupported_class) {
+  if (unsupported_class != NULL) *unsupported_class = NULL;
+  if (container == NULL || keys == NULL || values == NULL) return false;
+
+  if (container->is_array()) {
+    if (!container->is_objArray()) {
+      // A primitive array's elements are read by the element-store path, not
+      // here; nothing about its identity is unreadable, so this is not an
+      // unsupported class.
+      return true;
+    }
+    objArrayOop elements = objArrayOop(container);
+    for (int index = 0; index < elements->length(); ++index) {
+      values->push_back(elements->obj_at(index));
+    }
+    return true;
+  }
+
+  if (klass_name_is(container, "java/util/HashMap")
+      || klass_name_is(container, "java/util/LinkedHashMap")) {
+    return read_hash_map(container, keys, values);
+  }
+  if (klass_name_is(container, "java/util/HashSet")
+      || klass_name_is(container, "java/util/LinkedHashSet")) {
+    return read_hash_set(container, values);
+  }
+  if (klass_name_is(container, "java/util/ArrayList")) {
+    return read_array_list(container, values);
+  }
+  if (klass_name_is(container, "java/util/ArrayDeque")) {
+    return read_array_deque(container, values);
+  }
+
+  // Admitted by the model but not walked here.  Named, never guessed at: a
+  // reader that could not tell "held nothing" from "this engine cannot read
+  // it" would solve with an empty container.
+  if (unsupported_class != NULL && container->klass() != NULL
+      && container->klass()->name() != NULL) {
+    *unsupported_class = container->klass()->name()->as_C_string();
+  }
+  return false;
+}
+
+int ContainerSupport::install_receiver_snapshot(
+    oop container, const char *shape, bool *truncated,
+    const char **unsupported_class) {
+  if (truncated != NULL) *truncated = false;
+  if (unsupported_class != NULL) *unsupported_class = NULL;
+  if (container == NULL || shape == NULL || ConcolicMngr::ctx == NULL) {
+    return -1;
+  }
+
+  std::vector<oop> keys;
+  std::vector<oop> values;
+  if (!read_concrete_members(container, &keys, &values, unsupported_class)) {
+    return -1;
+  }
+
+  const bool associative = strcmp(shape, "ASSOCIATIVE") == 0;
+  if (associative && keys.size() != values.size()) return -1;
+  const int entries = (int) values.size();
+
+  // The same bound the Java-driven offer obeyed.  Past it the container keeps
+  // its opaque root and the refusal is stated: "held something this engine
+  // declined to state" is a different fact from "held nothing", and a reader
+  // that cannot tell them apart would solve with an empty container.
+  if (entries > ConcolicMngr::initialSnapshotMaxEntries()) {
+    ConcolicMngr::ctx->container_state(container, shape);
+    if (truncated != NULL) *truncated = true;
+    return -2;
+  }
+
+  exp_list_t no_arguments;
+  Expression *root = ConcolicMngr::ctx->container_state(container, shape);
+  if (root == NULL) return -1;
+  Expression *state =
+      new ContainerExpression(shape, "SNAPSHOT_BASE", root, no_arguments);
+  for (int index = 0; index < entries; ++index) {
+    exp_list_t arguments;
+    if (associative) {
+      arguments.push_back(concrete_value(keys[index]));
+      arguments.push_back(concrete_value(values[index]));
+    } else {
+      arguments.push_back(concrete_value(values[index]));
+    }
+    state = new ContainerExpression(
+        shape, associative ? "PUT" : "APPEND", state, arguments);
+  }
+  ConcolicMngr::ctx->set_container_state(container, state);
+  return entries;
+}
+
 int ContainerSupport::snapshot_entry_count(Expression *state) {
   int entries = 0;
   Expression *cursor = state;
@@ -250,22 +520,109 @@ SharedFieldVersions::Location ContainerSupport::state_location(oop container) {
       SharedFieldVersions::LOC_MAP_STATE);
 }
 
+void ContainerSupport::state_base_before_operation(oop container) {
+  if (container == NULL || ConcolicMngr::ctx == NULL) return;
+  if (shape(container) == NULL) return;
+
+  // Called from a model's invoke hook: the arguments are in hand and the
+  // callee body has NOT run, so the receiver still holds exactly the contents
+  // the log must begin from.  This is the only place a write-first container
+  // can be read honestly -- by the time the finish hook publishes the
+  // mutation, the concrete put has already happened and a walk would state a
+  // base that includes the entry being written.
+  SharedFieldVersions::Location existing = state_location(container);
+  if (existing.is_valid() && SharedFieldVersions::is_tracked(existing)) return;
+
+  SharedFieldVersions::InitialSnapshot snapshot;
+  snapshot_for_receiver(container, &snapshot, true);
+
+  // state_location needs the container shadow, which the walk above mints.
+  SharedFieldVersions::Location location = state_location(container);
+  if (!location.is_valid()) return;
+  if (SharedFieldVersions::is_tracked(location)) return;
+  Expression *base = ConcolicMngr::ctx->find_container_state(container);
+  if (base == NULL) return;
+  SharedFieldVersions::publish_initial(location, base, snapshot);
+}
+
+void ContainerSupport::snapshot_for_receiver(
+    oop container, SharedFieldVersions::InitialSnapshot *out, bool receiver_is_base) {
+  if (out == NULL) return;
+  *out = SharedFieldVersions::InitialSnapshot();
+  if (container == NULL) return;
+
+  // The walk reads the container as it is *now*.  That is the base only when
+  // nothing has been applied to it yet -- which is true on the first symbolic
+  // READ and false on a first symbolic WRITE, because the concrete mutation
+  // has already run by the time the model publishes its relation.  Counting
+  // then would overstate the base by the very entry being written, so the
+  // refusal is stated instead of a wrong number.
+  if (!receiver_is_base) {
+    out->unsupported_class = "MUTATED_BEFORE_FIRST_READ";
+    return;
+  }
+
+  const char *container_shape = shape(container);
+  if (container_shape == NULL) {
+    out->unsupported_class = "NO_MODELLED_SHAPE";
+    return;
+  }
+  bool truncated = false;
+  const char *unsupported = NULL;
+  const int entries =
+      install_receiver_snapshot(container, container_shape, &truncated,
+                                &unsupported);
+  if (entries >= 0) {
+    out->stated = true;
+    out->entries = entries;
+    return;
+  }
+  if (truncated) {
+    // Over the bound: the container kept its opaque root and the count is
+    // still worth stating -- "held more than this engine will write down" is
+    // a different fact from "held nothing".
+    out->truncated = true;
+    return;
+  }
+  out->unsupported_class =
+      unsupported == NULL ? "UNREADABLE_CONTAINER" : unsupported;
+}
+
 jlong ContainerSupport::publish_state(oop container, Expression *new_state,
                                       const char *operation) {
-  // The store's own relaxed counter first: with nothing selected anywhere
-  // there is no provenance question, and this is on the path of every tracked
-  // container mutation the workload performs.
-  if (new_state == NULL || !SharedFieldVersions::has_carriers()) return 0;
+  // A container state expression exists only because something symbolic went
+  // into the container, so reaching here at all is the by-value condition:
+  // the state is kept, and starts this container's log if it is the first.
+  if (new_state == NULL) return 0;
   SharedFieldVersions::Location location = state_location(container);
-  if (!location.is_valid() || !SharedFieldVersions::is_carrier(location)) {
-    return 0;
+  if (!location.is_valid()) return 0;
+  // Start the log at the state this mutation extends, not at the mutation.
+  // A container relation resolves as base + PUT/REMOVE_IF/..., so a log whose
+  // first entry is already a PUT leaves that PUT's receiver unresolvable --
+  // which is what retention by value did to bug3's allKeys base until this
+  // existed.  The receiver of the relation being published *is* that base,
+  // and publish_initial is a no-op once the location is tracked.
+  if (!SharedFieldVersions::is_tracked(location)) {
+    ContainerExpression *relation = new_state->as_container_expression();
+    Expression *base = relation == NULL ? NULL : relation->get_receiver();
+    if (base != NULL) {
+      // State what the container already held, from the container itself.
+      // The base is published with that fact attached, so a relation chain
+      // resolves against recorded contents instead of an opaque root.  A
+      // class the engine cannot walk is published as a stated refusal, never
+      // as an empty container.
+      SharedFieldVersions::InitialSnapshot snapshot;
+      snapshot_for_receiver(container, &snapshot, false);
+      SharedFieldVersions::publish_initial(location, base, snapshot);
+    }
   }
   // The publishing task already names the merged local path case.  Copying
   // the complete PC into every PUT/REMOVE version is both redundant and
   // prohibitively large in service loops; the Composer binds read-from arms
   // to that task's case selector instead.
-  return SharedFieldVersions::publish(
-      location, new_state, NULL, SharedFieldVersions::VERSION_STATE, operation);
+  return SharedFieldVersions::publish_value(
+      location, new_state, NULL, true, SharedFieldVersions::VERSION_STATE,
+      operation);
 }
 
 bool ContainerSupport::mark_state_gap(oop container, const char *reason) {
@@ -283,10 +640,19 @@ ContainerSupport::StateQuery ContainerSupport::query_state(
   const std::string type_name = java_type.empty()
       ? std::string(1, type2char(result_type)) : java_type;
 
-  if (!SharedFieldVersions::has_carriers()) return answer;
   SharedFieldVersions::Location location = state_location(container);
-  if (!location.is_valid() || !SharedFieldVersions::is_carrier(location)) {
-    return answer;
+  if (!location.is_valid()) return answer;
+  if (!SharedFieldVersions::is_tracked(location)) {
+    // First symbolic access of an untracked container, and it is a read: the
+    // value it answers depends on what the container already holds, so the
+    // log starts here with that content stated.  The receiver has not been
+    // mutated by this operation, so walking it now reads exactly the base.
+    SharedFieldVersions::InitialSnapshot snapshot;
+    snapshot_for_receiver(container, &snapshot, true);
+    Expression *base = ConcolicMngr::ctx->find_container_state(container);
+    if (base == NULL) return answer;
+    SharedFieldVersions::publish_initial(location, base, snapshot);
+    if (!SharedFieldVersions::is_tracked(location)) return answer;
   }
   answer.selected = true;
 
@@ -298,22 +664,16 @@ ContainerSupport::StateQuery ContainerSupport::query_state(
   // An untracked writer produces an open coverage result, not a symbolic map
   // state.  plan_read has already recorded that gap; keep the concrete query
   // path and do not manufacture a state the solver can choose.
-  if (plan.candidates.empty()) return answer;
+  if (plan.observed.value == NULL) return answer;
 
-  // The query applied to that writer's state, not the state.  This is the
-  // whole difference between a scalar arm and a container arm: two writers
-  // that installed different states give two different answers here even when
-  // the member they wrote happens to be equal.  Everything else about the
-  // node is the shared shape SharedFieldVersions::build_read_from writes.
-  std::vector<Expression *> arm_values;
-  arm_values.reserve(plan.candidates.size());
-  for (size_t index = 0; index < plan.candidates.size(); ++index) {
-    arm_values.push_back(new ContainerExpression(
-        shape, operation, plan.candidates[index].value, arguments,
-        result_type, type_name));
-  }
+  // The query applied to the observed writer's state, not the state.  This is
+  // the whole difference between a scalar read and a container one; everything
+  // else about the node is the shared shape
+  // SharedFieldVersions::build_read_from writes.
   answer.expression = SharedFieldVersions::build_read_from(
-      plan, location, type_name, arm_values);
+      plan, location, type_name,
+      new ContainerExpression(shape, operation, plan.observed.value,
+                              arguments, result_type, type_name));
   return answer;
 }
 

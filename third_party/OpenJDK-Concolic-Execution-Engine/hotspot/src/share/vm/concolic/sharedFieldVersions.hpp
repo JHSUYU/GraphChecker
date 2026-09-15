@@ -136,7 +136,7 @@ public:
    */
   static const int SLOT_WHOLE_STATE = -3;
 
-  /** Negative values are refusals; see select_carrier and the Java API. */
+  /** Negative values are refusals; see the Java API. */
   enum SelectStatus {
     SELECT_ALREADY_SELECTED   = 0,
     SELECT_NO_ACTIVE_CONTEXT  = -1,
@@ -206,12 +206,19 @@ public:
   struct InitialSnapshot {
     bool stated;
     bool truncated;
+    // Set when the container's class is admitted by a model but is not one
+    // the engine can read the members of.  Published by name so the runtime
+    // raises a blocking gap instead of reading an absent snapshot as "held
+    // nothing".
+    std::string unsupported_class;
     // Members the INITIAL value states, or the count that went unstated, or
     // -1 when even the count is unknown.
     int entries;
     InitialSnapshot() : stated(false), truncated(false), entries(0) {}
     // Whether the version should publish an `initialSnapshot` block at all.
-    bool present() const { return stated || truncated; }
+    bool present() const {
+      return stated || truncated || !unsupported_class.empty();
+    }
   };
 
   struct Version {
@@ -239,6 +246,9 @@ public:
     bool initial_snapshot_present;
     int initial_snapshot_entries;
     bool initial_snapshot_truncated;
+    // Non-empty when the snapshot was refused because the container's class
+    // is not one this engine walks.
+    std::string initial_snapshot_unsupported_class;
     Version()
         : version_id(0), version_kind(VERSION_WRITE), writer_context_id(0),
           region_enter_event_id(0), value(NULL), path_guard(NULL),
@@ -275,35 +285,43 @@ public:
    */
   struct ReadPlan {
     jlong read_event_id;
-    // Every retained version in this read-time snapshot.
-    VersionList candidates;
-    // Coverage metadata for the candidates.  False once a writer has been
-    // lost or an untracked one was detected; it blocks closed/final claims but
-    // never adds a synthetic candidate to the value expression.
+    // The version live when the read ran: the newest one retained for the
+    // location.  The run performed one read and the location held one value;
+    // the set of versions it did not hold was never evidence about it.
+    Version observed;
+    // Coverage metadata.  False once a writer has been lost or an untracked
+    // one was detected; it blocks closed/final claims but never changes which
+    // version the read observed.
     bool writer_set_complete;
     ReadPlan() : read_event_id(0), writer_set_complete(true) {}
   };
+
+  /**
+   * The version live at `location` right now, without selecting or recording.
+   *
+   * Returns 0 when the location is not a tracked carrier or holds no version.
+   * `version_kind`, when non-NULL, receives that version's label.
+   */
+  static jlong live_version(const Location &location,
+                            std::string *version_kind);
 
   static bool plan_read(const Location &location, ReadPlan *plan);
 
   /**
    * The read-from node every reader of a selected location publishes.
    *
-   * `arm_values[i]` is what candidate i resolves to for this particular read:
-   * its own value for a scalar location, the query applied to its state for a
-   * container one.  That one substitution is the whole difference between the
-   * scalar reader here and the container reader in containerSupport.cpp --
-   * the selector names, version ids, version labels, writer guards and the
-   * consumer boundary around the selection are identical, and used to be
-   * written out twice.
+   * `observed_value` is what the observed version resolves to for this
+   * particular read: its own value for a scalar location, the query applied to
+   * its state for a container one.  That one substitution is the whole
+   * difference between the scalar reader here and the container reader in
+   * containerSupport.cpp -- the version id, version label and the consumer
+   * boundary around it are identical.
    *
-   * `type_name` is the emitted Java type for both the selection and the
-   * boundary.
+   * `type_name` is the emitted Java type for both the node and the boundary.
    */
   static Expression *build_read_from(
       const ReadPlan &plan, const Location &location,
-      const std::string &type_name,
-      const std::vector<Expression *> &arm_values);
+      const std::string &type_name, Expression *observed_value);
 
   /**
    * Resolves one read of a selected location against its versions.
@@ -381,14 +399,11 @@ public:
    * INITIAL version id, or 0 if
    * the location was already selected or is not addressable.
    */
-  static jlong select_carrier(const Location &location, Expression *initial);
 
   /**
    * As above, recording what the INITIAL value says about the container's
    * pre-selection contents.
    */
-  static jlong select_carrier(const Location &location, Expression *initial,
-                              const InitialSnapshot &snapshot);
 
   /**
    * Remembers what one initial-snapshot offer did to `owner`, so the
@@ -402,28 +417,100 @@ public:
    * tell a container that held nothing from one whose contents the bound
    * refused, and both of those from one whose recorded history was kept.
    */
-  static void note_initial_snapshot(sym_rid_t owner, int answer, int entries);
 
   /**
    * What an offer for `owner` answered, or false when none was made.  A
    * container nobody offered is not the same as one that was offered and
    * declined, and only the second is a fact about this engine.
    */
-  static bool initial_snapshot_note(sym_rid_t owner, int *answer,
-                                    int *entries);
-  static bool is_carrier(const Location &location);
+  /**
+   * Whether this location's contents are being kept.
+   *
+   * They are, from the first symbolic value written here onwards.  There is
+   * no declaration: a location is tracked because of what was stored in it,
+   * not because anything said in advance that it might matter.
+   */
+  static bool is_tracked(const Location &location);
+
+  /**
+   * Every tracked location, as the envelopes `describe()` emits.
+   *
+   * The read-out the runtime needs once retention is by value: it no longer
+   * knows which locations exist, because it never saw the writes that started
+   * them.  One document, `SHARED_TRACKED_LOCATIONS`, holding one
+   * `SHARED_FIELD_VERSIONS` envelope per location and one expression table
+   * for all of them.
+   *
+   * `after_event_id` selects every location carrying a version or a read at
+   * or after that point on the session clock, and each selected location is
+   * returned with its *complete* retained version list -- a read that
+   * observed an older version still needs that version's expression.  0 means
+   * everything.  A region scopes itself by passing its entry event.
+   *
+   * `max_bytes` bounds one answer: the read-out stops at a location boundary,
+   * reports `complete: false` and names `nextAfterEventId` to resume from.  0
+   * means no budget.  The first location is always emitted, so a budget
+   * smaller than one envelope makes progress rather than looping.
+   *
+   * Locations ascend by their lowest event id, so a resume is well defined.
+   */
+  static std::string tracked_locations(jlong after_event_id, jint max_bytes);
+
+  /**
+   * Versions one completed write, by value.
+   *
+   * `symbolic` says whether the value being stored is itself symbolic.  A
+   * symbolic store is always kept, and starts this location's log if it is
+   * the first.  A concrete store is kept only where a log already exists --
+   * there it must be, or a later read would resolve to an expression this
+   * store has overwritten -- and is free everywhere else.
+   *
+   * Returns the new fieldVersionId, or 0 when nothing was recorded.
+   */
+  static jlong publish_value(const Location &location, Expression *value,
+                             Expression *path_guard, bool symbolic,
+                             int version_kind,
+                             const char *operation = NULL);
+
+  /**
+   * Starts an untracked location's log with an INITIAL base version.
+   *
+   * A container's relation chain resolves as base + PUT/REMOVE..., so the
+   * base has to be a version of its own or the first mutation has no
+   * receiver a reader can resolve.  Under retention by value the log begins
+   * at the first symbolic write, so the base is published there rather than
+   * at a declaration that may never come or may come later.
+   *
+   * Returns 0 when the location is already tracked.
+   */
+  static jlong publish_initial(const Location &location, Expression *base,
+                               const InitialSnapshot &snapshot);
+
+  /**
+   * Records what a location's INITIAL version says about the contents that
+   * predate tracking, when the version already exists.
+   *
+   * The snapshot offer and the first symbolic write race: whichever arrives
+   * first creates the version, and this lets the other one still contribute
+   * the fact it owns.  Only an INITIAL version can carry it and only once.
+   * Returns false when there is nothing to fill in.
+   */
 
   /**
    * Appends one version for a completed write.  `value` and `path_guard` must
    * already exist; nothing is constructed under the lock.  Returns the new
-   * fieldVersionId, or 0 when the location is not selected.
+   * fieldVersionId, or 0 when the location has no log and `start_tracking` is
+   * false.
    *
    * `operation` is the publisher's name for a whole-state mutation; NULL
-   * falls back to the version kind.
+   * falls back to the version kind.  Prefer publish_value(): it is the one
+   * that decides, from the value, whether the write is kept at all.
    */
   static jlong publish(const Location &location, Expression *value,
                        Expression *path_guard, int version_kind,
-                       const char *operation = NULL);
+                       const char *operation = NULL,
+                       bool start_tracking = false,
+                       const InitialSnapshot *snapshot = NULL);
 
   /**
    * Records that this location has a writer nobody can name.
@@ -457,6 +544,24 @@ public:
   static Expression *primitive_expression(BasicType type, jlong bits);
   static Expression *reference_expression(oop value);
 
+  /**
+   * What a field holds right now, as an expression.
+   *
+   * Read straight from the object rather than from an operand stack, so a
+   * projection can state the value this run observed wherever it is built --
+   * including before the concrete load has been pushed.
+   *
+   * A primitive field answers with its constant.  A reference-typed one
+   * answers with the referent's identity in the one spelling an owner
+   * identity has (`reference_expression`), so that a read reference and the
+   * owner of another read are the same term, and with the null symbol when
+   * the field held null.  Either way the read states what it read: a
+   * reference-typed field used to answer NULL, which left its projection
+   * with nothing for the composer to value it by.
+   */
+  static Expression *field_value(oop owner, int field_offset,
+                                 BasicType type);
+
   static const char *location_kind_name(int kind);
   static const char *version_kind_name(int kind);
   /**
@@ -470,10 +575,52 @@ public:
    */
   static std::string version_label(const Version &version);
 
+  /** One resolved read, kept so that a consumer can audit the decision. */
+  struct ReadRecord {
+    jlong read_event_id;
+    jlong reader_context_id;
+    std::string region_id;
+    std::string task_id;
+    jlong region_enter_event_id;
+    ReadRecord()
+        : read_event_id(0), reader_context_id(0),
+          region_enter_event_id(0) {}
+  };
+
+  /**
+   * One location's retained history.
+   *
+   * Public only because the read-out's ordering helpers take one by
+   * reference; it is engine-internal state and nothing outside this file
+   * constructs or mutates one.
+   */
+  struct Slot {
+    VersionList versions;
+    std::vector<ReadRecord> reads;
+    bool writer_set_complete;
+    bool read_log_complete;
+    Slot() : writer_set_complete(true), read_log_complete(true) {}
+  };
+
   /** Serializes one location's versions as evidence, for tests and tracing. */
   static std::string describe(const Location &location);
 
 private:
+  /**
+   * Writes one SHARED_FIELD_VERSIONS envelope, without closing its object and
+   * without an expression table: the caller owns both, so a single-location
+   * answer and the whole read-out emit byte-identical envelopes.  Returns
+   * true when the envelope was cut short by `budget_bytes` (0 = the default
+   * per-envelope bound).
+   */
+  static bool write_versions_envelope(
+      rapidjson::Writer<rapidjson::StringBuffer> &writer,
+      const rapidjson::StringBuffer &buffer,
+      VmExpressionArtifactScope &expression_artifact,
+      const Location &location, const VersionList &versions,
+      const std::vector<ReadRecord> &reads, bool selected, bool complete,
+      bool read_log_complete, size_t budget_bytes);
+
   // Bounded on purpose; see the retention note above.  A location that needs
   // more than this many live writers is not a bounded carrier.
   static const size_t MAX_VERSIONS_PER_LOCATION = 64;
@@ -483,27 +630,6 @@ private:
   // and by every observer of it: a few hundred reads per location is ordinary,
   // so this is generous enough that hitting it means something unexpected.
   static const size_t MAX_READS_PER_LOCATION = 1024;
-
-  /** One resolved read, kept so that a consumer can audit the decision. */
-  struct ReadRecord {
-    jlong read_event_id;
-    jlong reader_context_id;
-    std::string region_id;
-    std::string task_id;
-    jlong region_enter_event_id;
-    int candidate_count;
-    ReadRecord()
-        : read_event_id(0), reader_context_id(0), region_enter_event_id(0),
-          candidate_count(0) {}
-  };
-
-  struct Slot {
-    VersionList versions;
-    std::vector<ReadRecord> reads;
-    bool writer_set_complete;
-    bool read_log_complete;
-    Slot() : writer_set_complete(true), read_log_complete(true) {}
-  };
 
   typedef std::map<Location, Slot> SlotStore;
 

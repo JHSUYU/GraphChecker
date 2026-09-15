@@ -283,23 +283,41 @@ bool FieldSymbolizer::do_field_helper(fieldDescriptor *fd, oop obj) {
     Expression *symbol = new FieldSymbolExp(
         sym_inst->get_sym_rid(), symbolic_name, type);
     sym_inst->set_sym_exp(fd->offset(), symbol);
+    // Publish before the equation is built, so the equation can name the
+    // version it defines.  The mint is a write: the version published here
+    // *is* this symbol, and the projection on the left of the equation is a
+    // view of exactly that version.  Ordering is free -- publish reads
+    // path_guard(), the region's branch conjunction, while
+    // record_path_condition appends to the frame's auxiliary conditions, and
+    // neither reads the other.
+    // A mint is a symbolic write, whichever symbolizer performed it: it is
+    // kept by value and starts this field's log when it is the first symbolic
+    // value to reach it.  This used to run only for the exact
+    // (holder+name+descriptor) form, which left the by-name and whole-object
+    // symbolizers minting values no version named -- so a projection of one
+    // of those fields could say nothing about which write it read, which is
+    // the whole point of the member below.  laneVM4 showed the shape of that
+    // hole: ten FIELD[Long@24] / FIELD[Boolean@24] views of boxed region
+    // inputs, every one of them unstamped.
+    SharedFieldVersions::Location location(
+        sym_inst->get_sym_rid(), fd->offset(),
+        SharedFieldVersions::LOC_INSTANCE_FIELD);
+    // Folded outside every engine lock, as the store's concurrency contract
+    // requires; the same guard a putfield would publish.
+    Expression *guard = _ctx.path_guard();
+    jlong minted_version = SharedFieldVersions::publish_value(
+        location, symbol, guard, true, SharedFieldVersions::VERSION_WRITE);
+    std::string minted_version_kind;
+    if (minted_version > 0) {
+      minted_version_kind = SharedFieldVersions::version_kind_name(
+          SharedFieldVersions::VERSION_WRITE);
+    }
     _ctx.record_path_condition(new OpSymExpression(
         new FieldAccessExpression(
             sym_inst->get_or_create_ref_exp(obj),
-            obj->klass()->name()->as_C_string(), fd->offset(), type),
+            obj->klass()->name()->as_C_string(), fd->offset(), type,
+            std::string(), NULL, NULL, minted_version, minted_version_kind),
         symbol, op_eq, true));
-    if (exact && SharedFieldVersions::has_carriers()) {
-      SharedFieldVersions::Location location(
-          sym_inst->get_sym_rid(), fd->offset(),
-          SharedFieldVersions::LOC_INSTANCE_FIELD);
-      if (SharedFieldVersions::is_carrier(location)) {
-        // Folded outside every engine lock, as the store's concurrency
-        // contract requires; the same guard a putfield would publish.
-        Expression *guard = _ctx.path_guard();
-        SharedFieldVersions::publish(location, symbol, guard,
-                                     SharedFieldVersions::VERSION_WRITE);
-      }
-    }
     return false;
   }
 }

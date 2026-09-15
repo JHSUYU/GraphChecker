@@ -66,7 +66,6 @@ ThreadContext::ThreadContext(JavaThread *jt, jlong context_id)
           ? 0 : java_lang_Thread::thread_id(jt->threadObj())),
       _owner_os_thread_id(jt == NULL || jt->osthread() == NULL
           ? 0 : (jlong) jt->osthread()->thread_id()),
-      _branch_sequence(0),
       _pending_branch_active(false),
       _pending_branch_event_id(0), _pending_branch_owner_frame(NULL),
       _pending_branch_occurrence(0) {
@@ -249,7 +248,7 @@ jlong ThreadContext::mark_branch(const char *site_id, int occurrence) {
     cancel_pending_branch();
     return 0;
   }
-  _pending_branch_event_id = ++_branch_sequence;
+  _pending_branch_event_id = GlobalSymbolicSession::next_event_id();
   _pending_branch_site_id = site_id == NULL ? "" : site_id;
   _pending_branch_occurrence = occurrence;
   _pending_branch_owner_frame = owner_frame;

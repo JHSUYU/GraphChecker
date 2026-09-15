@@ -104,7 +104,7 @@ Expression *prepare_current_value(oop receiver, BasicType type,
   SharedFieldVersions::Location location(
       instance->get_sym_rid(), field->offset(),
       SharedFieldVersions::LOC_INSTANCE_FIELD);
-  if (SharedFieldVersions::is_carrier(location)) {
+  if (SharedFieldVersions::is_tracked(location)) {
     *deferred_selected_read = true;
     return NULL;
   }
@@ -119,8 +119,13 @@ Expression *prepare_current_value(oop receiver, BasicType type,
   if (owner == NULL) return NULL;
 
   ResourceMark rm;
+  // Same evidence every other primitive field read now states: the object this
+  // pre-state was read from and the value it held.  Without it the projection
+  // of an untracked atomic reaches the composer unpinned.
   return new FieldAccessExpression(
-      owner, receiver->klass()->name()->as_C_string(), field->offset(), type);
+      owner, receiver->klass()->name()->as_C_string(), field->offset(), type,
+      std::string(), SharedFieldVersions::reference_expression(receiver),
+      SharedFieldVersions::field_value(receiver, field->offset(), type));
 }
 
 
@@ -166,8 +171,10 @@ void publish_linearization(SymInstance *receiver_instance,
         ? extra_guard
         : (Expression *) new OpSymExpression(guard, extra_guard, op_land);
   }
-  SharedFieldVersions::publish(
-      location, new_value, guard, SharedFieldVersions::VERSION_RMW);
+  // An atomic's new value is built from its old one, so it is symbolic by
+  // construction and is kept by value like any other symbolic store.
+  SharedFieldVersions::publish_value(
+      location, new_value, guard, true, SharedFieldVersions::VERSION_RMW);
 }
 
 }  // namespace
@@ -235,7 +242,7 @@ Expression *SymbolicAtomic::finish_method_helper(
     SharedFieldVersions::Location location(
         receiver_instance->get_sym_rid(), value.offset(),
         SharedFieldVersions::LOC_INSTANCE_FIELD);
-    if (SharedFieldVersions::is_carrier(location)) {
+    if (SharedFieldVersions::is_tracked(location)) {
       old_value = resolve_selected_old(
           receiver_instance, value, operation.type);
       if (old_value == NULL) return NULL;
@@ -268,7 +275,7 @@ Expression *SymbolicAtomic::finish_method_helper(
   SharedFieldVersions::Location location(
       receiver_instance->get_sym_rid(), value.offset(),
       SharedFieldVersions::LOC_INSTANCE_FIELD);
-  if (SharedFieldVersions::is_carrier(location)) {
+  if (SharedFieldVersions::is_tracked(location)) {
     old_value = resolve_selected_old(
         receiver_instance, value, operation.type);
     if (old_value == NULL) return NULL;
