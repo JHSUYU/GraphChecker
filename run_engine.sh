@@ -1667,14 +1667,11 @@ campaign_replay() {
     campaign_fail REPLAY WORKLOAD "${results}" \
       "the concolic replay published only skipped regions (exit ${status}); the workload terminated before its selected regions ran and its exception is in ${worker}/replay.log"
   fi
-  # Some region ran, but not the failure target.  ConcolicScheduler publishes
-  # a branch query for a TARGET_REACH goal only when an imported summary
-  # answers that occurrence (ConcolicScheduler: exactTargetSummary), so a seed
-  # replay that skipped every target occurrence leaves branch_queries.jsonl
-  # empty.  EXPLORE still plans the TARGET member the kept slice names, and
-  # RegionPathWorklist refuses it as NO_OBSERVED_PATH_SEED -- four stages and
-  # one JVM wave away from the workload exception that caused it.  Name the
-  # unreached target here instead, beside the log that holds that exception.
+  # Some region ran, but not the failure target.  EXPLORE still plans the
+  # TARGET member the kept slice names, and refuses it as NO_OBSERVED_PATH_SEED
+  # -- stages and one JVM wave away from the workload exception that caused it.
+  # Name the unreached target here instead, beside the log that holds that
+  # exception.
   if [[ "${region_results}" == required ]]; then
     local unreached_targets
     unreached_targets=$(jq -r -n --slurpfile plan "${plan}" \

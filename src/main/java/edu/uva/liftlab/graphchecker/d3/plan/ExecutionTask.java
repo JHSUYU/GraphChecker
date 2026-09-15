@@ -4,7 +4,6 @@ package edu.uva.liftlab.graphchecker.d3.plan;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
-import edu.uva.liftlab.graphchecker.d3.plan.BranchReplayContract;
 import edu.uva.liftlab.graphchecker.d3.plan.SharedExpressionTable;
 
 import java.util.ArrayList;
@@ -475,19 +474,6 @@ public final class ExecutionTask extends PlanRow {
      */
     public JsonArray observedWriteSites() {
         return array(encoded, OBSERVED_WRITE_SITES).deepCopy();
-    }
-
-    /** Concrete replay decisions, decoded without expanding predicates. */
-    public BranchReplayContract.RuntimeSchedule replaySchedule() {
-        JsonElement contract = encoded.get("replayContract");
-        if (contract == null) return null;
-        if (!contract.isJsonObject()) {
-            throw new IllegalArgumentException(
-                    "replayContract must be an object");
-        }
-        return BranchReplayContract.runtimeScheduleFromJson(
-                contract.getAsJsonObject(), array(encoded,
-                        "retainedLoops"));
     }
 
     /**

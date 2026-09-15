@@ -3,10 +3,8 @@ package edu.uva.liftlab.graphchecker.d3.plan;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
-import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.primitiveInteger;
 import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.primitiveString;
 import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.requireText;
-import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.requiredObject;
 
 /**
  * Immutable authority for one observed binary branch.
@@ -138,44 +136,6 @@ public final class BranchWitness {
                 PC_PREDICATE_NORMALIZATION, decisionOrdinal, true, "");
     }
 
-    public static BranchWitness fromJson(JsonObject json) {
-        return fromJson(json, false);
-    }
-
-    /** Decoder-owned view used while validating an immutable summary DAG. */
-    static BranchWitness fromImmutableJson(JsonObject json) {
-        return fromJson(json, true);
-    }
-
-    private static BranchWitness fromJson(JsonObject json,
-                                          boolean immutablePredicate) {
-        if (primitiveInteger(json, "schemaVersion", -1) != SCHEMA_VERSION
-                || !KIND.equals(primitiveString(json, "kind"))) {
-            throw new IllegalArgumentException(
-                    "unsupported binary branch witness schema");
-        }
-        JsonObject site = requiredObject(json, "site");
-        JsonElement outcome = json.get("sourceTakenOutcome");
-        if (outcome == null || !outcome.isJsonPrimitive()
-                || !outcome.getAsJsonPrimitive().isBoolean()) {
-            throw new IllegalArgumentException(
-                    "sourceTakenOutcome must be Boolean");
-        }
-        JsonElement predicate = json.get("sourceSatisfiedPredicate");
-        return new BranchWitness(primitiveString(site, "siteId"),
-                primitiveString(site, "method"),
-                primitiveInteger(site, "unitIndex", -1),
-                primitiveInteger(site, "occurrence", -1),
-                outcome.getAsBoolean(), predicate,
-                primitiveInteger(json, "vmPcIndex", -1),
-                primitiveString(json, "predicateNormalization"),
-                primitiveInteger(json, "decisionOrdinal", 0),
-                immutablePredicate,
-                primitiveString(json, "symbolicSupportDigest"));
-    }
-
-    public JsonObject toJson() { return coreJson(true); }
-
     /**
      * Runtime artifact view for a predicate obtained from the immutable VM
      * decoder.  Existing public accessors remain defensive; callers of this
@@ -183,45 +143,6 @@ public final class BranchWitness {
      * contract.
      */
     public JsonObject toImmutableJsonView() { return coreJson(false); }
-
-    public String siteId() { return siteId; }
-
-    public String method() { return method; }
-
-    public int unitIndex() { return unitIndex; }
-
-    public int occurrence() { return occurrence; }
-
-    public boolean sourceTakenOutcome() { return sourceTakenOutcome; }
-
-    public JsonElement sourceSatisfiedPredicate() {
-        return BranchPredicateAlgebra.canonical(sourceSatisfiedPredicate);
-    }
-
-    /** Package-local immutable view for validators and artifact builders. */
-    JsonElement sourceSatisfiedPredicateView() {
-        return sourceSatisfiedPredicate;
-    }
-
-    public int vmPcIndex() { return vmPcIndex; }
-
-    public int decisionOrdinal() { return decisionOrdinal; }
-
-    public boolean isPcPredicateDecision() { return decisionOrdinal > 0; }
-
-    public String symbolicSupportDigest() { return symbolicSupportDigest; }
-
-    BranchWitness atPcIndex(int pcIndex, JsonElement summaryPredicate) {
-        return new BranchWitness(siteId, method, unitIndex, occurrence,
-                sourceTakenOutcome, summaryPredicate, pcIndex,
-                predicateNormalization, decisionOrdinal, true,
-                symbolicSupportDigest);
-    }
-
-    public String decisionIdentity() {
-        return siteId + "\u0000" + occurrence + "\u0000"
-                + decisionOrdinal;
-    }
 
     private JsonObject coreJson(boolean defensivePredicate) {
         JsonObject result = new JsonObject();

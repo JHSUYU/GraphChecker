@@ -12,7 +12,6 @@ import edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts;
 import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
 import edu.uva.liftlab.graphchecker.causynth.StaticProgram;
 import edu.uva.liftlab.graphchecker.d3.plan.AutomaticRegionEdge;
-import edu.uva.liftlab.graphchecker.d3.plan.ExactConcreteBranchObservation;
 import edu.uva.liftlab.graphchecker.d3.smt.JavaPrimitiveSmtSemantics;
 import edu.uva.liftlab.graphchecker.d3.plan.SharedFieldFlow;
 import edu.uva.liftlab.graphchecker.d3.plan.SharedStateEvidence;
@@ -2190,12 +2189,10 @@ final class RuntimeRegionPlanner {
             List<Map<String, Object>> encoded = new ArrayList<>();
             for (int index = 0; index < occurrences.size(); index++) {
                 RuntimeEvent event = occurrences.get(index);
-                Map<String, Object> occurrence = object(
+                encoded.add(object(
                         "occurrence", index + 1,
                         "outcome", event.outcome,
-                        "eventSeq", event.seq);
-                addExactSwitchDecision(occurrence, event);
-                encoded.add(occurrence);
+                        "eventSeq", event.seq));
             }
             int selectedIndex = 0;
             Object required = policy.get("requiredOutcome");
@@ -2233,52 +2230,6 @@ final class RuntimeRegionPlanner {
         return result;
     }
 
-
-    /** Copies a complete switch successor authority into a task occurrence. */
-    private static void addExactSwitchDecision(
-            Map<String, Object> occurrence, RuntimeEvent event) {
-        boolean statesSwitch = event != null
-                && (!event.branchKind.isEmpty()
-                || !event.switchCaseKeys.isEmpty()
-                || event.successorIndex != null);
-        if (!statesSwitch) return;
-        if (event.branchKind.isEmpty() || event.switchCaseKeys.isEmpty()
-                || event.successorIndex == null) {
-            throw new IllegalArgumentException(
-                    "incomplete exact switch decision at " + event.siteId);
-        }
-        List<Integer> keys = parseSwitchCaseKeys(event.switchCaseKeys);
-        // One validation owner for runtime summaries and seed tasks.
-        ExactConcreteBranchObservation.switchDecisionToken(
-                event.branchKind, keys, event.successorIndex);
-        boolean outcome = event.successorIndex < keys.size();
-        if (event.outcome == null || event.outcome != outcome) {
-            throw new IllegalArgumentException(
-                    "switch outcome differs from exact successor at "
-                            + event.siteId);
-        }
-        occurrence.put("branchKind", event.branchKind);
-        occurrence.put("caseKeys", keys);
-        occurrence.put("observedSuccessorIndex", event.successorIndex);
-    }
-
-    private static List<Integer> parseSwitchCaseKeys(String encoded) {
-        List<Integer> result = new ArrayList<>();
-        for (String token : safe(encoded).split(",", -1)) {
-            if (!token.matches("-?(?:0|[1-9][0-9]*)")) {
-                throw new IllegalArgumentException(
-                        "malformed switch case key " + token);
-            }
-            try {
-                result.add(Integer.valueOf(token));
-            } catch (NumberFormatException malformed) {
-                throw new IllegalArgumentException(
-                        "switch case key outside int domain " + token,
-                        malformed);
-            }
-        }
-        return result;
-    }
 
     /** The replay address of one activation: its stable selected source and
      * region root, plus the causal anchor that activation was entered under.

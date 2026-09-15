@@ -109,17 +109,6 @@ public final class SharedExpressionTable {
         return result;
     }
 
-    /** Replaces expression DAGs by their Merkle roots without serializing them. */
-    private static JsonObject compactRoot(JsonObject artifact,
-                                          Builder builder) {
-        JsonElement compact = builder.compact(artifact, true);
-        if (!compact.isJsonObject()) {
-            throw new IllegalArgumentException("artifact root must be object");
-        }
-        builder.requireReferencesDefined();
-        return compact.getAsJsonObject();
-    }
-
     /**
      * Expands several portable artifacts through one resolver.
      *
@@ -147,26 +136,6 @@ public final class SharedExpressionTable {
     public static final class Anchors {
         private final Builder builder = new Builder();
 
-        public String contentAnchor(JsonElement expression) {
-            if (declaresReference(expression)) {
-                requireReference(expression.getAsJsonObject(), false);
-                String value = anchor(expression);
-                return value;
-            }
-            if (expression == null || !expression.isJsonObject()
-                    || !expression(expression.getAsJsonObject())) {
-                throw new IllegalArgumentException(
-                        "content anchor requires one expression object");
-            }
-            JsonElement root = builder.compact(expression, false);
-            if (!isReference(root)) {
-                throw new IllegalStateException(
-                        "expression root did not compact to a reference");
-            }
-            String result = anchor(root);
-            builder.validateReference(result);
-            return result;
-        }
     }
 
     /** Incremental decoder which interns anchors across several envelopes. */
@@ -529,15 +498,6 @@ public final class SharedExpressionTable {
             for (String anchor : definitions.keySet()) {
                 validateReachable(anchor, validatedDefinitions, active);
             }
-        }
-
-        /**
-         * Starts one artifact's reachability.  Definitions and anchors carry
-         * over; what this artifact publishes must not.
-         */
-        private void beginArtifact() {
-            references.clear();
-            reachable = Collections.emptySet();
         }
 
         private void validateReachable(String anchor, Set<String> visited,

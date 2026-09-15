@@ -5,7 +5,6 @@ import edu.uva.liftlab.graphchecker.d3.plan.GapLedger;
 
 import edu.uva.liftlab.graphchecker.d3.plan.CommunicationCatalogContract;
 import edu.uva.liftlab.graphchecker.d3.plan.LoopBoundPolicy;
-import edu.uva.liftlab.graphchecker.d3.plan.ExactConcreteBranchObservation;
 import edu.uva.liftlab.graphchecker.d3.plan.SiteId;
 import soot.Body;
 import soot.Unit;
@@ -187,12 +186,6 @@ final class CommunicationCatalogPlanner {
                             shape.successors.get(successor))) continue;
                     Map<String, Object> exit = newRow("LOOP_EXIT_DECISION");
                     exit.put("siteId", site);
-                    exit.put("decisionToken", shape.isSwitch()
-                            ? ExactConcreteBranchObservation
-                            .switchDecisionToken(shape.kind, shape.caseKeys,
-                                    successor)
-                            : ExactConcreteBranchObservation
-                            .binaryDecisionToken(successor == 1));
                     exitDecisions.add(exit);
                 }
             }

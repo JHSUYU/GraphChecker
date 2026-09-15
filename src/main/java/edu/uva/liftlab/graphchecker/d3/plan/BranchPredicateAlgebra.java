@@ -135,58 +135,6 @@ public final class BranchPredicateAlgebra {
         return result;
     }
 
-    public static JsonElement complement(JsonElement predicate) {
-        return CanonicalJson.copy(complementView(predicate));
-    }
-
-    /** Immutable-DAG complement used while assembling a solver task. */
-    static JsonElement complementView(JsonElement predicate) {
-        JsonElement canonical = canonicalView(predicate);
-        if (canonical.isJsonObject()) {
-            JsonObject object = canonical.getAsJsonObject();
-            String type = optionalString(object, "_type");
-            if ("BinaryExpression".equals(type)) {
-                String opposite = COMPLEMENTS.get(optionalString(object, "_op"));
-                if (opposite != null) {
-                    JsonObject result = new JsonObject();
-                    for (Map.Entry<String, JsonElement> field
-                            : object.entrySet()) {
-                        if (!"_op".equals(field.getKey())) {
-                            result.add(field.getKey(), field.getValue());
-                        }
-                    }
-                    result.addProperty("_op", opposite);
-                    return result;
-                }
-            }
-            if ("NotExpression".equals(type)
-                    || "LogicalNotExpression".equals(type)) {
-                JsonElement operand = object.get("_operand");
-                return operand == null ? JsonNull.INSTANCE
-                        : operand;
-            }
-        }
-        JsonObject result = new JsonObject();
-        result.addProperty("_type", "NotExpression");
-        result.add("_operand", canonical);
-        return result;
-    }
-
-    public static boolean equivalent(JsonElement left, JsonElement right) {
-        if (left == right) return true;
-        JsonElement canonicalLeft = canonicalView(left);
-        JsonElement canonicalRight = canonicalView(right);
-        if (canonicalLeft == canonicalRight) return true;
-        if (expression(canonicalLeft) && expression(canonicalRight)) {
-            SharedExpressionTable.Anchors anchors =
-                    new SharedExpressionTable.Anchors();
-            return anchors.contentAnchor(canonicalLeft).equals(
-                    anchors.contentAnchor(canonicalRight));
-        }
-        return CanonicalJson.render(canonicalLeft)
-                .equals(CanonicalJson.render(canonicalRight));
-    }
-
     /**
      * Stable identity of the symbolic leaves that select one branch case.
      *
@@ -254,32 +202,6 @@ public final class BranchPredicateAlgebra {
         return support;
     }
 
-    /** Whether a predicate carries a reference no expansion resolved. */
-    public static boolean hasUnexpandedReference(JsonElement predicate) {
-        return unexpanded(predicate, Collections.newSetFromMap(
-                new IdentityHashMap<JsonElement, Boolean>()));
-    }
-
-    private static boolean unexpanded(JsonElement value,
-                                      Set<JsonElement> seen) {
-        if (value == null || value.isJsonNull() || value.isJsonPrimitive()
-                || !seen.add(value)) {
-            return false;
-        }
-        if (value.isJsonArray()) {
-            for (JsonElement child : value.getAsJsonArray()) {
-                if (unexpanded(child, seen)) return true;
-            }
-            return false;
-        }
-        JsonObject object = value.getAsJsonObject();
-        if (SharedExpressionTable.isReference(object)) return true;
-        for (Map.Entry<String, JsonElement> field : object.entrySet()) {
-            if (unexpanded(field.getValue(), seen)) return true;
-        }
-        return false;
-    }
-
     private static void collectSymbolicSupport(
             JsonElement value, Set<String> support, Set<JsonElement> seen) {
         if (value == null || value.isJsonNull() || value.isJsonPrimitive()
@@ -306,11 +228,6 @@ public final class BranchPredicateAlgebra {
         for (Map.Entry<String, JsonElement> field : object.entrySet()) {
             collectSymbolicSupport(field.getValue(), support, seen);
         }
-    }
-
-    private static boolean expression(JsonElement value) {
-        return value != null && value.isJsonObject()
-                && !optionalString(value.getAsJsonObject(), "_type").isEmpty();
     }
 
     public static String complementOperator(String operator) {

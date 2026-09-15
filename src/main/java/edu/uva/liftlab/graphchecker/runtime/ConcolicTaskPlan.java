@@ -7,7 +7,6 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.google.gson.JsonPrimitive;
-import edu.uva.liftlab.graphchecker.d3.plan.BranchReplayContract;
 import edu.uva.liftlab.graphchecker.d3.plan.SharedStateEvidence;
 import edu.uva.liftlab.graphchecker.d3.plan.CommunicationHandoffSpec;
 import edu.uva.liftlab.graphchecker.d3.plan.ConfiguredSourcePhaseContract;
@@ -789,21 +788,6 @@ final class ConcolicTaskPlan {
                     actualThreadName)));
         }
 
-        /** How the exchange this root entered differs, or {@code ""}. */
-        private String requestDifference(RuntimeTraceContext.View context) {
-            if (!requestKey.equals(safe(context.requestKey))) {
-                return "matching root entered request "
-                        + safe(context.requestKey) + " instead of "
-                        + requestKey;
-            }
-            if (!requestApi.equals(safe(context.requestApi))) {
-                return "matching root entered request API "
-                        + safe(context.requestApi) + " instead of "
-                        + requestApi;
-            }
-            return "";
-        }
-
         /** The circumstances on one line, for a named gap. */
         private String describe() {
             StringBuilder description = new StringBuilder();
@@ -1141,7 +1125,6 @@ final class ConcolicTaskPlan {
         /** Stable identity shared by every task in one linked replay. */
         final String replayGroupId;
         final String topologyEpoch;
-        final BranchReplayContract.RuntimeSchedule replayContract;
         /** The declared target branch event of a target-reach task. */
         final String targetBranchSite;
         final int targetBranchOccurrence;
@@ -1274,7 +1257,6 @@ final class ConcolicTaskPlan {
                 configuredSourcePhasesById.putIfAbsent(phase.phaseId(),
                         phase);
             }
-            this.replayContract = task.replaySchedule();
             JsonObject targetBranch = object(task.json(), "targetBranch");
             this.targetBranchSite = optionalString(targetBranch, "siteId");
             this.targetBranchOccurrence = optionalInteger(targetBranch,

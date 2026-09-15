@@ -1,8 +1,6 @@
 package edu.uva.liftlab.graphchecker.d3.plan;
 
-import edu.uva.liftlab.graphchecker.d3.plan.BranchReplayContract;
 import edu.uva.liftlab.graphchecker.d3.plan.SharedExpressionTable;
-import edu.uva.liftlab.graphchecker.d3.plan.SummaryBranchMapping;
 
 import edu.uva.liftlab.graphchecker.d3.smt.ArtifactIO;
 import edu.uva.liftlab.graphchecker.d3.smt.CanonicalJson;
@@ -23,7 +21,6 @@ import edu.uva.liftlab.graphchecker.d3.plan.InputActionCatalog;
 import edu.uva.liftlab.graphchecker.d3.smt.JavaContainerTypes;
 import edu.uva.liftlab.graphchecker.d3.smt.JavaPrimitiveBoxing;
 import edu.uva.liftlab.graphchecker.d3.plan.LoopBoundPolicy;
-import edu.uva.liftlab.graphchecker.d3.plan.PathObservation;
 import edu.uva.liftlab.graphchecker.d3.plan.RegionInstancePlan;
 import edu.uva.liftlab.graphchecker.d3.plan.RegionInstancePlan.Goal;
 import edu.uva.liftlab.graphchecker.d3.plan.RuntimePlanArtifact;
@@ -162,16 +159,6 @@ public final class ConcolicScheduler {
                     CommunicationHandoffSpec.decode(
                             candidate.goal.plan().json()));
             String taskId = candidate.seedTaskId(selectedInputs);
-            JsonObject taskQueryOccurrence = queryOccurrenceWithInputs(
-                    candidate.queryOccurrence, selectedInputs);
-            JsonObject captured = candidate.goal.kind().capturesTargetReach()
-                    ? exactTargetSummary(candidate, loaded.summaries) : null;
-            // A summary is evidence a previous replay already produced; making
-            // its solver query consumes no replay-job slot.
-            if (captured != null) {
-                result.queries.add(branchQuery(candidate, captured,
-                        taskId, taskQueryOccurrence));
-            }
             if (result.executionTasks.size() >= arguments.maxJobs) {
                 continue;
             }
@@ -363,7 +350,6 @@ public final class ConcolicScheduler {
                 workflow);
 
         Map<String, ExecutionTask> tasks = new LinkedHashMap<>();
-        Map<String, JsonObject> queries = new LinkedHashMap<>();
         for (int index = 0; index < scheduled.size(); index++) {
             RuntimeWorkflowDiscovery.Selection selection =
                     workflow.selections().get(index);
@@ -380,13 +366,9 @@ public final class ConcolicScheduler {
                 throw new IOException("conflicting scheduled taskId: "
                         + task.taskId());
             }
-            for (JsonObject query : selected.queries) {
-                indexTargetQuery(queries, query);
-            }
         }
         Result result = new Result();
         result.executionTasks.addAll(sortedValues(tasks));
-        result.queries.addAll(sortedValues(queries));
         Path taskPlan = arguments.outputDirectory.resolve(
                 "execution_task_plan.jsonl");
         List<JsonObject> taskRows = new ArrayList<>();
@@ -397,8 +379,6 @@ public final class ConcolicScheduler {
             taskRows = withSeedReplayGroup(taskRows);
         }
         ArtifactIO.replaceJsonl(taskPlan, taskRows);
-        ArtifactIO.replaceJsonl(arguments.outputDirectory.resolve(
-                "branch_queries.jsonl"), result.queries);
         // A root the selection file refused is invisible downstream: the
         // task simply carries a CONCRETE action.  Publishing the refusals
         // makes "why is there no clock root" answerable from one file.
@@ -500,19 +480,6 @@ public final class ConcolicScheduler {
         JsonObject actual = artifactIdentity(path);
         if (expected == null || !expected.equals(actual)) {
             throw new IOException(message + ": " + path);
-        }
-    }
-
-    /** The exact target-query aggregation seam used by target-first. */
-    static void indexTargetQuery(Map<String, JsonObject> queries,
-                                 JsonObject query) throws IOException {
-        String key = JsonFields.optionalString(query, "queryKey");
-        if (key.isEmpty()) {
-            throw new IOException("scheduled row has no queryKey");
-        }
-        JsonObject prior = queries.putIfAbsent(key, query);
-        if (prior != null && !prior.equals(query)) {
-            throw new IOException("conflicting scheduled queryKey: " + key);
         }
     }
 
@@ -848,29 +815,6 @@ public final class ConcolicScheduler {
                         "TARGET_REACH_PREFIX_CONTEXT");
             }
             result.add(branch);
-        }
-        return result;
-    }
-
-    /** Bounded control metadata needed to distinguish a terminal exception
-     * guard from an observed frontier leading to a still-unobserved guard. */
-    private static JsonArray targetGuardCatalog(JsonArray branches) {
-        JsonArray result = new JsonArray();
-        for (JsonElement element : branches) {
-            if (!element.isJsonObject()) continue;
-            JsonObject branch = element.getAsJsonObject();
-            if (!optionalBool(branch, "failureTarget", false)) continue;
-            JsonObject compact = new JsonObject();
-            for (String field : new String[]{
-                    "siteId", "failureTarget", "requiredOutcome",
-                    RuntimeSelectedRegionFinalizer.FAILURE_TARGET_CELLS,
-                    "guardedSiteOutcomes"}) {
-                JsonElement value = branch.get(field);
-                if (value != null && !value.isJsonNull()) {
-                    compact.add(field, value.deepCopy());
-                }
-            }
-            result.add(compact);
         }
         return result;
     }
@@ -1370,231 +1314,6 @@ public final class ConcolicScheduler {
         return index;
     }
 
-    private static JsonObject branchQuery(Candidate candidate,
-                                          JsonObject summary,
-                                          String seedTaskId,
-                                          JsonObject queryOccurrence) {
-        JsonObject query = new JsonObject();
-        query.addProperty("schemaVersion", 1);
-        query.addProperty("kind", "TARGET_BRANCH_SOLVER_QUERY");
-        // scheduleTargetFirst indexes every selected query by this stable
-        // semantic identity before the builder consumes its fields.
-        query.addProperty("queryKey",
-                targetBranchQueryKey(seedTaskId));
-        query.addProperty("goalId", candidate.goal.goalId());
-        query.addProperty("regionId", candidate.goal.plan().regionId());
-        query.addProperty("sourceKey", candidate.goal.plan().sourceKey());
-        query.addProperty("occurrenceId",
-                candidate.queryOccurrenceId);
-        query.add("selectedTargetOccurrence",
-                queryOccurrence.deepCopy());
-        query.addProperty("targetSiteId", candidate.target.siteId);
-        query.addProperty("fatalRequiredTakenOutcome",
-                candidate.target.requiredOutcome);
-        query.add("targetGuardCatalog",
-                targetGuardCatalog(candidate.branches));
-        // The query is the target relation consumed by composition.
-        LoopBoundPolicy.decode(summary).writeTo(query);
-        try {
-            SummaryBranchMapping concrete = directConcreteTarget(
-                    candidate, summary);
-            if (concrete != null) {
-                query.add(TARGET_CONCRETE_OBSERVATION,
-                        concrete.concreteObservation().toJson());
-            } else {
-                BranchReplayContract contract;
-                try {
-                    contract = BranchReplayContract.fromSummary(summary,
-                        candidate.target.siteId,
-                        candidate.target.selectedOccurrence);
-                    if (contract.source().isPcPredicateDecision()
-                            || contract.source().sourceTakenOutcome()
-                            != candidate.target.observedOutcome
-                            || contract.requiredTakenOutcome()
-                            != candidate.target.desiredOutcome) {
-                        throw new IllegalArgumentException(
-                                "captured branch polarity differs from selection");
-                    }
-                } catch (IllegalArgumentException noDirectTargetWitness) {
-                    contract = latestTargetSeedDecision(candidate, summary);
-                }
-                // This artifact is consumed by the target path-set builder,
-                // not by the local path-flip solver.
-                // The scheduler loaded summaries through one expression-DAG
-                // decoder.  Keep that sharing until this query is compacted;
-                // the public defensive view expands a long propagated
-                // predicate into a JSON tree before the artifact boundary.
-                query.add("replayContract",
-                        contract.toImmutableJsonView());
-            }
-            query.addProperty("readyForSolver", true);
-        } catch (IllegalArgumentException incompleteWitness) {
-            query.addProperty("readyForSolver", false);
-            query.addProperty("blocker", incompleteWitness.getMessage());
-        }
-        JsonObject symbolicContext = new JsonObject();
-        symbolicContext.addProperty("occurrenceId",
-                candidate.queryOccurrenceId);
-        query.add("symbolicContext", symbolicContext);
-        return SharedExpressionTable.compact(query);
-    }
-
-    /** An exact required target event needs no branch flip. */
-    private static SummaryBranchMapping directConcreteTarget(
-            Candidate candidate, JsonObject summary) {
-        SummaryBranchMapping selected = null;
-        for (SummaryBranchMapping mapping
-                : SummaryBranchMapping.fromSummary(summary)) {
-            if (candidate.target.siteId.equals(mapping.siteId())
-                    && candidate.target.selectedOccurrence
-                    == mapping.occurrence()) {
-                selected = mapping;
-                break;
-            }
-        }
-        if (selected == null || !selected.isConcreteObservation()
-                || selected.sourceTakenOutcome()
-                != candidate.target.requiredOutcome) {
-            return null;
-        }
-        if (selected.concreteObservation().isMultiwaySwitch()) {
-            throw new IllegalArgumentException(
-                    "multiway concrete target requires an exact successor, "
-                            + "but target policy states only a Boolean outcome");
-        }
-        JsonElement encoded = summary.get(
-                PathObservation.TargetReachEvent.FIELD);
-        if (encoded == null) {
-            throw new IllegalArgumentException(
-                    "concrete target branch has no target reach event");
-        }
-        PathObservation.TargetReachEvent event =
-                PathObservation.TargetReachEvent.decode(encoded);
-        if (!event.matches(selected.siteId(), selected.occurrence(),
-                selected.sourceTakenOutcome())) {
-            throw new IllegalArgumentException(
-                    "concrete target branch and target reach event differ");
-        }
-        return selected;
-    }
-
-    /** The solver query names every input frozen into the effective task. */
-    private static JsonObject queryOccurrenceWithInputs(
-            JsonObject encoded, JsonArray taskInputActions) {
-        JsonObject result = encoded == null
-                ? new JsonObject() : encoded.deepCopy();
-        Set<String> inputs = new java.util.TreeSet<>();
-        for (JsonElement element : array(result, "inputPorts")) {
-            if (element.isJsonPrimitive()
-                    && !element.getAsString().trim().isEmpty()) {
-                inputs.add(element.getAsString());
-            }
-        }
-        for (JsonElement element : taskInputActions == null
-                ? new JsonArray() : taskInputActions) {
-            if (!element.isJsonObject()) continue;
-            String input = firstNonBlank(optionalString(
-                    element.getAsJsonObject(), "symbol"),
-                    optionalString(element.getAsJsonObject(), "portId"));
-            if (!input.isEmpty()) inputs.add(input);
-        }
-        JsonArray ports = new JsonArray();
-        for (String input : inputs) ports.add(input);
-        result.add("inputPorts", ports);
-        return result;
-    }
-
-    /** Stable identity shared by target query publication and aggregation. */
-    static String targetBranchQueryKey(String seedTaskId) {
-        String task = seedTaskId == null ? "" : seedTaskId.trim();
-        if (task.isEmpty()) {
-            throw new IllegalArgumentException(
-                    "target branch query requires a seed task identity");
-        }
-        return task + "/target-branch";
-    }
-
-    /** Target closure starts from the imported seed path, not from one
-     * privileged Jimple branch. */
-    private static BranchReplayContract latestTargetSeedDecision(
-            Candidate candidate, JsonObject summary) {
-        Set<String> sites = new LinkedHashSet<>();
-        for (JsonElement element : candidate.branches) {
-            if (!element.isJsonObject()) continue;
-            JsonObject branch = element.getAsJsonObject();
-            if ("EXPLORE".equals(optionalString(branch, "policy"))) {
-                sites.add(optionalString(branch, "siteId"));
-            }
-        }
-        List<SummaryBranchMapping> mappings =
-                SummaryBranchMapping.fromSummary(summary);
-        SummaryBranchMapping selected = null;
-        for (SummaryBranchMapping mapping : mappings) {
-            if (!mapping.isWitnessed() || !mapping.isExplore()
-                    || !sites.contains(mapping.siteId())) {
-                continue;
-            }
-            if (selected == null || mapping.summaryPcIndex()
-                    > selected.summaryPcIndex()) {
-                selected = mapping;
-            }
-        }
-        if (selected == null) {
-            throw new IllegalArgumentException(
-                    "target seed path has no solver decision");
-        }
-        return BranchReplayContract.fromSummary(summary, mappings, selected);
-    }
-
-    /** Selects target-PC provenance only from the exact runtime region
-     * instance and closure goal. */
-    private static JsonObject exactTargetSummary(
-            Candidate candidate, List<JsonObject> summaries) {
-        String expectedInstance = candidate.goal.plan().occurrenceId();
-        if (expectedInstance.isEmpty()) return null;
-        // OCC-1: one target address publishes one summary per activation,
-        // named <address>#a<ordinal>.  The candidate is keyed on the planned
-        // address, so the seed is matched on the address and not on any one
-        // activation of it.
-        //
-        // The seed's replay contract is a FLIP base: it names a branch the
-        // replay took one way and requires the other way (the failure).  So
-        // the seed is a non-failing sibling of the throw -- an activation
-        // that did NOT reach the target, whose target branch flips to the
-        // required failure outcome.  The throw activation itself is consumed
-        // downstream by the reach-query builder as the direct failure
-        // witness (directRequiredWitness), which is where the studied
-        // exceptional exit actually enters the query; seeding the flip from
-        // the throw would require the branch to flip to a polarity the throw
-        // already took and the builder rejects it.
-        JsonObject flipSeed = null;
-        JsonObject anyComplete = null;
-        for (JsonObject summary : summaries) {
-            if (!candidate.goal.goalId().equals(optionalString(summary, "goalId"))
-                    || !candidate.goal.plan().regionId().equals(
-                    optionalString(summary, "regionId"))
-                    || !expectedInstance.equals(
-                    optionalString(summary, "occurrenceId"))
-                    || !ClosureGoalKind.fromTask(summary)
-                    .capturesTargetReach()
-                    || optionalString(summary, "summaryId").isEmpty()) {
-                continue;
-            }
-            if (anyComplete == null) anyComplete = summary;
-            if (flipSeed == null
-                    && !optionalBool(summary, PathObservation.TARGET_REACHED,
-                    false)) {
-                flipSeed = summary;
-            }
-        }
-        // Prefer the non-failing flip base.  When every activation of the
-        // address reached the target -- no sibling to flip from -- fall back
-        // to a complete target summary so a query is still published; the
-        // reach-query builder is the one authority that refuses a target
-        // with no attested flip.
-        return flipSeed != null ? flipSeed : anyComplete;
-    }
-
     /** The one option scan of this entry point: {@code --key value} pairs,
      *  a bare {@code --flag} reading "true", and no unknown key. */
     static Map<String, String> parseArgs(String[] args, String... known) {
@@ -2061,7 +1780,6 @@ public final class ConcolicScheduler {
 
     public static final class Result {
         public final List<ExecutionTask> executionTasks = new ArrayList<>();
-        public final List<JsonObject> queries = new ArrayList<>();
     }
 
     /**

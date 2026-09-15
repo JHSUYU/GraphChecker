@@ -111,14 +111,6 @@ public final class JsonFields {
         return "";
     }
 
-    public static JsonObject requiredObject(JsonObject object, String field) {
-        JsonElement value = object == null ? null : object.get(field);
-        if (value == null || !value.isJsonObject()) {
-            throw new IllegalArgumentException(field + " must be an object");
-        }
-        return value.getAsJsonObject();
-    }
-
     /** Copies one record shell while retaining its immutable nested values. */
     public static JsonObject shallowCopy(JsonObject source) {
         JsonObject result = new JsonObject();
@@ -130,29 +122,10 @@ public final class JsonFields {
         return result;
     }
 
-    public static JsonArray requiredArray(JsonObject object, String field) {
-        JsonElement value = object == null ? null : object.get(field);
-        if (value == null || !value.isJsonArray()) {
-            throw new IllegalArgumentException(field + " must be an array");
-        }
-        return value.getAsJsonArray();
-    }
-
     public static String primitiveString(JsonObject object, String field) {
         JsonElement value = object == null ? null : object.get(field);
         return value != null && value.isJsonPrimitive()
                 ? value.getAsString() : "";
-    }
-
-    public static int primitiveInteger(JsonObject object, String field,
-                                int fallback) {
-        JsonElement value = object == null ? null : object.get(field);
-        try {
-            return value == null || !value.isJsonPrimitive()
-                    ? fallback : value.getAsInt();
-        } catch (RuntimeException malformed) {
-            return fallback;
-        }
     }
 
     public static String textString(JsonObject object, String field) {
