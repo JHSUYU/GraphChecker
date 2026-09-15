@@ -8,7 +8,9 @@ import edu.uva.liftlab.graphchecker.d3.contract.GapKind;
 import edu.uva.liftlab.graphchecker.d3.contract.GapRow;
 import edu.uva.liftlab.graphchecker.d3.contract.Obligation;
 import edu.uva.liftlab.graphchecker.d3.contract.ObligationResult;
+import edu.uva.liftlab.graphchecker.d3.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.d3.contract.RowCodec;
+import edu.uva.liftlab.graphchecker.d3.contract.Task;
 import edu.uva.liftlab.graphchecker.d3.contract.Verdict;
 
 import java.io.IOException;
@@ -29,7 +31,7 @@ import java.util.Map;
  *   --obligation-id &lt;id&gt;      which row of it this worker owns
  *   --sessions &lt;dir&gt;          the corpus every wave so far has written
  *   --output-dir &lt;dir&gt;        obligation_result.jsonl, obligation.jsonl,
- *                             obligation_query.smt2, execution_task_plan.jsonl
+ *                             obligation_query.smt2, focused_task.jsonl
  *   --root-domains &lt;file&gt;     what the CASE says each root may be: the same
  *                             declaration the wave was planned under
  *   --z3 &lt;path&gt; --solver-timeout-ms &lt;n&gt; --clock-skew-ms &lt;n|unbounded&gt;
@@ -42,6 +44,9 @@ import java.util.Map;
  * outcomes the next wave reads, never a failure of the run.</p>
  */
 public final class ObligationSolverMain {
+    /** The file the focus row lives in, beside the seed's own plan. */
+    public static final String FOCUSED_TASK = "focused_task.jsonl";
+
     private ObligationSolverMain() {
     }
 
@@ -89,7 +94,8 @@ public final class ObligationSolverMain {
             // The corpus no longer states the path this obligation was cut
             // from.  That is this obligation's own admission gap, recorded
             // as its verdict, and nothing about any other task.
-            return publish(out, proposal, ObligationResult.of(obligationId,
+            return publish(out, null, proposal,
+                    ObligationResult.of(obligationId,
                             Verdict.NOT_ADMITTED, "",
                             "no session of this corpus still states path "
                                     + proposal.pathId() + " of task "
@@ -101,16 +107,26 @@ public final class ObligationSolverMain {
         }
         ObligationFactory.Outcome outcome = ObligationFactory.solve(corpus,
                 candidate, z3, timeoutMillis);
-        return publish(out, outcome.issued() ? outcome.obligation : proposal,
+        return publish(out, candidate.task,
+                outcome.issued() ? outcome.obligation : proposal,
                 outcome.result, outcome.smt2, outcome.gaps);
     }
 
     /**
      * Writes the worker's artifacts: the verdict row the campaign reads, the
      * completed obligation, the query whatever its verdict, and -- only for a
-     * satisfiable one -- the plan the focused replay is run from.
+     * satisfiable one -- the FOCUS row the replay is run from.
+     *
+     * <p>The focus row is {@code focused_task.jsonl} and not {@code
+     * execution_task_plan.jsonl}: that name belongs to the PLAN, whose rows
+     * are {@code d3.plan.ExecutionTask}s, and the workload session opener
+     * decodes whatever stands under it ({@code runtime.ConcolicTaskPlan.load}
+     * -> {@code ExecutionTask.decode}).  Writing a focus row there made every
+     * obligation replay die on "execution task requires sourceKey" before it
+     * started.  One file, one shape.</p>
      */
-    private static JsonObject publish(Path out, Obligation obligation,
+    private static JsonObject publish(Path out, Task task,
+                                      Obligation obligation,
                                       ObligationResult result, String smt2,
                                       List<GapRow> gaps) throws IOException {
         JsonObject row = ExploreCodec.writeResult(result);
@@ -133,11 +149,11 @@ public final class ObligationSolverMain {
                         ? "; no query was encoded: " + result.verdict() + " "
                         + result.detail() + System.lineSeparator()
                         : smt2).getBytes(StandardCharsets.UTF_8));
-        List<JsonObject> plan = new ArrayList<JsonObject>();
+        List<JsonObject> focus = new ArrayList<JsonObject>();
         if (result.verdict() == Verdict.SAT_MODEL_READY) {
-            plan.add(replayTask(obligation));
+            focus.add(replayTask(task, obligation));
         }
-        RowCodec.writeJsonl(out.resolve("execution_task_plan.jsonl"), plan);
+        RowCodec.writeJsonl(out.resolve(FOCUSED_TASK), focus);
         return row;
     }
 
@@ -149,11 +165,25 @@ public final class ObligationSolverMain {
      * every attach.  A handoff the corpus cannot produce is named rather than
      * hidden, so a replay that rests on one is a known hypothesis.</p>
      */
-    private static JsonObject replayTask(Obligation obligation) {
+    private static JsonObject replayTask(Task focused,
+                                         Obligation obligation) {
         JsonObject task = new JsonObject();
         task.addProperty("schemaVersion", 1);
-        task.addProperty("kind", "EXECUTION_TASK");
+        task.addProperty("kind", "FOCUSED_TASK");
         task.addProperty("taskId", obligation.taskId());
+        // The Task's own fields, so the replay knows WHICH occurrence it
+        // focuses without re-deriving a closure: the render is what
+        // OccurrenceAddress.parse reads back, the id is what a reader greps.
+        if (focused != null) {
+            task.addProperty("focused", focused.focused().render());
+            task.addProperty("focusedOccurrenceId", focused.focused().id());
+            task.addProperty("seedSessionId", focused.seedSessionId());
+            JsonArray factor = new JsonArray();
+            for (OccurrenceAddress member : focused.factor()) {
+                factor.add(member.render());
+            }
+            task.add("factor", factor);
+        }
         task.addProperty("obligationId", obligation.obligationId());
         task.addProperty("pathId", obligation.pathId());
         JsonObject flip = new JsonObject();

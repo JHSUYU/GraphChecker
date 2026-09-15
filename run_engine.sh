@@ -1796,13 +1796,22 @@ campaign_import_session() {
 # exception discarded ten finished replays and every verdict they carried.
 campaign_obligation_worker() {
   local obligation_id=$1 obligations=$2 classes=$3 worker=$4 sessions=$5
+  local seed_plan=$6
   local outcome replay_tasks status=0
   local -a domain_args=()
   # The same declaration EXPLORE and COMPOSE read: an answer is only as free
   # as the root domains behind the arm that produces it.
   [[ -z "${causynth_root_domains}" ]] \
     || domain_args+=(--root-domains "${causynth_root_domains}")
+  # Two files, one shape each.  execution_task_plan.jsonl is the PLAN, whose
+  # rows the workload session opener decodes (ConcolicTaskPlan.load ->
+  # d3.plan.ExecutionTask.decode), so a focused replay gets the SEED's plan
+  # here, hard-linked exactly as campaign_plan links it for seed workers.  The
+  # obligation's own focus row is focused_task.jsonl, written by the solver;
+  # it used to be written under the plan's name, and every obligation replay
+  # died on "execution task requires sourceKey" before it started.
   local plan="${worker}/execution_task_plan.jsonl"
+  local focus="${worker}/focused_task.jsonl"
   local results="${worker}/concolic_region_results.jsonl"
   local result_row="${worker}/obligation_result.jsonl"
   run_capturing_status run_java_main \
@@ -1837,9 +1846,11 @@ campaign_obligation_worker() {
   esac
   [[ "${outcome}" == "SAT_MODEL_READY" ]] \
     || die "the obligation verdict is not solver-backed: ${outcome}"
+  require_nonempty "obligation focus row" "${focus}"
+  ln -f "${seed_plan}" "${plan}"
   replay_tasks=$(campaign_task_ids "${plan}")
   [[ -n "${replay_tasks}" ]] \
-    || die "the solved obligation emitted no focused replay task"
+    || die "the seed plan names no task to replay: ${plan}"
   campaign_sessions_dir="${sessions}" \
     campaign_replay worker "${plan}" "${replay_tasks}" "${classes}" \
       "${results}" "${worker}" tolerated
@@ -1975,7 +1986,8 @@ workers=${concolic_worker_count}"
       (
         set -euo pipefail
         campaign_obligation_worker "${job}" "${obligations}" "${classes}" \
-          "${worker_dir}" "${sessions}"
+          "${worker_dir}" "${sessions}" \
+          "${iteration_dir}/seed-replay/execution_task_plan.jsonl"
       ) >"${worker_dir}/stdout.log" 2>"${worker_dir}/stderr.log" &
       pids+=("$!")
       if [[ ${#pids[@]} -eq ${concolic_worker_count} ]]; then
