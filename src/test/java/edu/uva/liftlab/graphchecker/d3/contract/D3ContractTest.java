@@ -168,26 +168,40 @@ public class D3ContractTest {
     @Test
     public void selectorsReadTheV1CaseDeclarations() {
         Selector declared = OccurrenceAddress.parseSelector(V1_WITH_API);
+        assertEquals(DN0, declared.node());
         assertEquals(REGION, declared.regionId());
         assertEquals(DECLARED_API, declared.api());
         assertEquals(1, declared.k());
-        Selector bare = OccurrenceAddress.parseSelector(V1_BARE);
-        assertEquals(REGION, bare.regionId());
-        assertNull(bare.api());
-        assertEquals(2, bare.k());
+        assertEquals(V1_WITH_API, declared.render());
+        Selector elsewhere = OccurrenceAddress.parseSelector(V1_BARE);
+        assertEquals(NodeId.of("hdfs-17899/dn0", 0), elsewhere.node());
+        assertEquals(REGION, elsewhere.regionId());
+        assertNull(elsewhere.api());
+        assertEquals(2, elsewhere.k());
 
         OccurrenceAddress anchored = OccurrenceAddress.of(DN0, REGION,
                 CausalContext.of(PRODUCER_ID, RPC), index(frame(RUN, 0)));
-        // Region only: every occurrence of that region is a candidate, and k
-        // among them is the scheduler's business, not this type's.
-        assertTrue(bare.matches(anchored, null));
+        // The same region on another component is another case: the node the
+        // declaration names is part of what selects.
+        assertFalse(elsewhere.matches(anchored, null));
+        // Region only, on this component: every occurrence of that region is a
+        // candidate, and k among them is the scheduler's business.
+        Selector here = OccurrenceAddress.parseSelector(
+                DN0.render() + "/region/" + REGION + "#2");
+        assertTrue(here.matches(anchored, null));
         assertTrue(declared.matches(anchored, DECLARED_API));
         assertFalse(declared.matches(anchored, "hdfs-17897/client#epoch0/x"));
-        assertFalse(bare.matches(OccurrenceAddress.of(DN0, "REGION.other",
+        assertFalse(here.matches(OccurrenceAddress.of(DN0, "REGION.other",
                 CausalContext.of(PRODUCER_ID, RPC), index(frame(RUN, 0))),
                 null));
         // A selector that names an api matches nothing no message started.
         assertFalse(declared.matches(tick(1), DECLARED_API));
+        // A declaration with no component selects on every component, and
+        // round-trips through its own rendering.
+        Selector anywhere = Selector.of(REGION, null, 1, null);
+        assertTrue(anywhere.matches(anchored, null));
+        assertEquals(anywhere, OccurrenceAddress.parseSelector(
+                anywhere.render()));
     }
 
     @Test

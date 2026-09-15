@@ -87,17 +87,18 @@ public final class OccurrenceAddress {
      * Reads a case declaration's v1 selector -- NOT an address.
      *
      * <p>Both v1 spellings: {@code node#epochN/region/REGION.x@src#epochM/api#k}
-     * and {@code node#epochN/region/REGION.x#k}.  The node prefix is read and
-     * dropped: a selector is resolved against one seed session, which already
-     * fixes the component, and the parts that select are the region, the api
-     * when one is given, and k.</p>
+     * and {@code node#epochN/region/REGION.x#k}.  The node prefix is kept --
+     * two components of one session can run the same region -- and a
+     * declaration written without one selects on every component.</p>
      */
     public static Selector parseSelector(String v1) {
         String value = v1 == null ? "" : v1.trim();
         int region = value.lastIndexOf(REGION_MARKER);
-        if (region <= 0) {
+        if (region < 0) {
             throw malformed(v1, "no " + REGION_MARKER + " segment");
         }
+        NodeId node = region == 0 ? null
+                : NodeId.parse(value.substring(0, region));
         String tail = value.substring(region + REGION_MARKER.length());
         int ordinal = tail.length() - 1;
         while (ordinal >= 0 && Character.isDigit(tail.charAt(ordinal))) {
@@ -110,8 +111,9 @@ public final class OccurrenceAddress {
         int k = Integer.parseInt(tail.substring(ordinal + 1));
         String head = tail.substring(0, ordinal);
         int at = head.indexOf('@');
-        return at < 0 ? Selector.of(head, null, k)
-                : Selector.of(head.substring(0, at), head.substring(at + 1), k);
+        return at < 0 ? Selector.of(head, null, k, node)
+                : Selector.of(head.substring(0, at), head.substring(at + 1), k,
+                node);
     }
 
     /** The component instance and epoch this occurrence ran on. */
