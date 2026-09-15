@@ -4,6 +4,8 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
 import edu.uva.liftlab.graphchecker.d3.compose.VmTermLowering.Sort;
+import edu.uva.liftlab.graphchecker.d3.smt.Arms;
+
 import edu.uva.liftlab.graphchecker.d3.contract.AttachRow;
 import edu.uva.liftlab.graphchecker.d3.contract.DecisionRow;
 import edu.uva.liftlab.graphchecker.d3.contract.Endpoint;
@@ -14,6 +16,7 @@ import edu.uva.liftlab.graphchecker.d3.contract.ReadRow;
 import edu.uva.liftlab.graphchecker.d3.contract.RootKind;
 import edu.uva.liftlab.graphchecker.d3.contract.RootMintRow;
 import edu.uva.liftlab.graphchecker.d3.contract.SessionDir;
+import edu.uva.liftlab.graphchecker.d3.contract.SessionReader;
 import edu.uva.liftlab.graphchecker.d3.contract.TargetRow;
 import edu.uva.liftlab.graphchecker.d3.contract.WriteRow;
 
@@ -36,7 +39,7 @@ import java.util.Set;
  * key is a request family, a port alone, or a consumer phase -- the three
  * spellings that let one producer's arm be read as another's.</p>
  */
-public final class CorpusIndex {
+public final class CorpusIndex implements Arms.Rows {
 
     /** One session's decisions at one occurrence: that session's path. */
     public static final class PathRecord {
@@ -126,6 +129,9 @@ public final class CorpusIndex {
     /** Root symbol -> every root id declared under it. */
     private final Map<String, Set<String>> rootIdsBySymbol =
             new LinkedHashMap<String, Set<String>>();
+    /** Endpoint id -> the occurrence it belongs to: the causal chain. */
+    private final Map<String, OccurrenceAddress> occurrenceByEndpoint =
+            new LinkedHashMap<String, OccurrenceAddress>();
 
     private CorpusIndex(Path iteration, List<SessionReader> sessions) {
         this.iteration = iteration;
@@ -214,9 +220,13 @@ public final class CorpusIndex {
 
         for (ExportRow export : session.exports()) {
             add(exportsByProducer, export.endpoint().id(), export);
+            occurrenceByEndpoint.put(export.endpoint().id(),
+                    export.endpoint().occurrence());
         }
         for (AttachRow attach : session.attaches()) {
             add(attachesByConsumer, attach.endpoint().id(), attach);
+            occurrenceByEndpoint.put(attach.endpoint().id(),
+                    attach.endpoint().occurrence());
             Interaction interaction = attach.interaction();
             if (interaction != null) {
                 interactions.put(interaction.id(), interaction);
@@ -236,6 +246,8 @@ public final class CorpusIndex {
         }
         Map<String, WriteRow> writes = new LinkedHashMap<String, WriteRow>();
         for (WriteRow write : session.writes()) {
+            occurrenceByEndpoint.put(write.endpoint().id(),
+                    write.endpoint().occurrence());
             writes.put(SmtLowering.locationKey(write.location()) + "#"
                     + write.version(), write);
         }
@@ -405,6 +417,25 @@ public final class CorpusIndex {
                 : writes.get(locationKey + "#" + version);
     }
 
+    /**
+     * The writes of one location this session made, in version order.
+     *
+     * <p>All of them: which of them a given read may have seen is a
+     * happens-before question, and the answer belongs to the composition
+     * that knows the read.</p>
+     */
+    public List<WriteRow> writesOf(String sessionId, String locationKey) {
+        List<WriteRow> found = new ArrayList<WriteRow>();
+        Map<String, WriteRow> writes = writesBySession.get(sessionId);
+        if (writes == null) return found;
+        for (Map.Entry<String, WriteRow> entry : writes.entrySet()) {
+            if (entry.getKey().startsWith(locationKey + "#")) {
+                found.add(entry.getValue());
+            }
+        }
+        return found;
+    }
+
     /** Every read one session made at one occurrence. */
     public List<ReadRow> readsAt(String sessionId,
                                  OccurrenceAddress occurrence) {
@@ -419,6 +450,44 @@ public final class CorpusIndex {
         return reads;
     }
 
+    // ------------------------------------------------------------------
+    // The shared arm rule reads the corpus through this.
+    // ------------------------------------------------------------------
+
+    @Override
+    public List<String> sessionIds() {
+        List<String> ids = new ArrayList<String>();
+        for (SessionReader session : sessions) ids.add(session.sessionId());
+        return ids;
+    }
+
+    @Override
+    public JsonObject expression(String sessionId, String expressionRef) {
+        SessionReader session = bySessionId.get(sessionId);
+        return session == null ? null
+                : session.expressions().expression(expressionRef);
+    }
+
+    @Override
+    public List<DecisionRow> decisionsOf(String sessionId,
+                                         OccurrenceAddress occurrence) {
+        PathRecord path = path(sessionId, occurrence);
+        return path == null ? Collections.<DecisionRow>emptyList()
+                : path.decisions();
+    }
+
+    @Override
+    public String pathIdOf(String sessionId, OccurrenceAddress occurrence) {
+        PathRecord path = path(sessionId, occurrence);
+        return path == null ? sessionId : path.pathId();
+    }
+
+    @Override
+    public OccurrenceAddress occurrenceOf(String endpointId) {
+        return occurrenceByEndpoint.get(endpointId);
+    }
+
+    @Override
     public Map<String, List<RootMintRow>> roots() {
         return Collections.unmodifiableMap(rootsById);
     }
@@ -476,17 +545,19 @@ public final class CorpusIndex {
     }
 
     /**
-     * The session that recorded the run, or null when every session
-     * explored something.
+     * The session that recorded the run, or null when that has no answer.
      *
-     * <p>Which recording a claim is about is a fact of the rows: the seed
-     * replay focused nothing.</p>
+     * <p>The rule is the contract's, stated once there; what a corpus with
+     * no seed or two seeds MEANS is this stage's, and the composer answers
+     * it with a BLOCKING gap.</p>
      */
     public String seedSessionId() {
-        for (SessionReader session : sessions) {
-            if (!session.explored()) return session.sessionId();
-        }
-        return null;
+        return SessionReader.seedSessionId(sessions);
+    }
+
+    /** Every session that focused nothing: what that gap names. */
+    public List<String> unfocusedSessionIds() {
+        return SessionReader.unfocusedSessionIds(sessions);
     }
 
     @Override

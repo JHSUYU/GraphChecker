@@ -1,29 +1,23 @@
-package edu.uva.liftlab.graphchecker.d3.compose;
-
-import edu.uva.liftlab.graphchecker.d3.contract.ActivationRow;
-import edu.uva.liftlab.graphchecker.d3.contract.AttachRow;
-import edu.uva.liftlab.graphchecker.d3.contract.DecisionRow;
-import edu.uva.liftlab.graphchecker.d3.contract.ExportRow;
-import edu.uva.liftlab.graphchecker.d3.contract.ExpressionTable;
-import edu.uva.liftlab.graphchecker.d3.contract.GapRow;
-import edu.uva.liftlab.graphchecker.d3.contract.ReadRow;
-import edu.uva.liftlab.graphchecker.d3.contract.RootMintRow;
-import edu.uva.liftlab.graphchecker.d3.contract.RowCodec;
-import edu.uva.liftlab.graphchecker.d3.contract.SessionDir;
-import edu.uva.liftlab.graphchecker.d3.contract.TargetRow;
-import edu.uva.liftlab.graphchecker.d3.contract.WriteRow;
+package edu.uva.liftlab.graphchecker.d3.contract;
 
 import java.io.IOException;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 
 /**
- * One replay session's rows, each kind read from its own file.
+ * One replay session's rows, one file per kind, read once.
  *
- * <p>A reader of one kind never parses another kind's file, which is what
- * lets a session be written incrementally and read by whoever needs only a
- * part of it.  Nothing here interprets a row: the session is a recording,
- * and what it means is decided in {@link Composer}.</p>
+ * <p>Every reader of the corpus goes through this class, so the contract's
+ * file layout is read in one place and not once per module.  A session is
+ * read whole because both stages join across its kinds -- a decision names a
+ * symbol a mint row declared and an attach minted -- and because a raw
+ * symbol, a version id and an expression ref are all session-local names.</p>
+ *
+ * <p>Nothing here interprets a row, and nothing here lowers one: the session
+ * is a recording, what it means is decided by the stage that reads it, and a
+ * lowering cache belongs to the stage that lowers.</p>
  */
 public final class SessionReader {
     private final SessionDir directory;
@@ -46,25 +40,25 @@ public final class SessionReader {
                           List<RootMintRow> roots, List<TargetRow> targets,
                           List<GapRow> gaps, ExpressionTable expressions) {
         this.directory = directory;
-        this.activations = activations;
-        this.decisions = decisions;
-        this.exports = exports;
-        this.attaches = attaches;
-        this.writes = writes;
-        this.reads = reads;
-        this.roots = roots;
-        this.targets = targets;
-        this.gaps = gaps;
+        this.activations = Collections.unmodifiableList(activations);
+        this.decisions = Collections.unmodifiableList(decisions);
+        this.exports = Collections.unmodifiableList(exports);
+        this.attaches = Collections.unmodifiableList(attaches);
+        this.writes = Collections.unmodifiableList(writes);
+        this.reads = Collections.unmodifiableList(reads);
+        this.roots = Collections.unmodifiableList(roots);
+        this.targets = Collections.unmodifiableList(targets);
+        this.gaps = Collections.unmodifiableList(gaps);
         this.expressions = expressions;
     }
 
-    /** Every row of one session under {@code <iteration>/sessions/<id>}. */
+    /** Reads one session directory of an iteration. */
     public static SessionReader read(Path iteration, String sessionId)
             throws IOException {
         return read(SessionDir.of(iteration, sessionId));
     }
 
-    /** Every row of one session directory. */
+    /** Reads one session directory. */
     public static SessionReader read(SessionDir dir) throws IOException {
         return new SessionReader(dir,
                 RowCodec.readAll(dir.activations(), RowCodec::readActivation),
@@ -77,6 +71,16 @@ public final class SessionReader {
                 RowCodec.readAll(dir.targets(), RowCodec::readTarget),
                 RowCodec.readAll(dir.gaps(), RowCodec::readGap),
                 RowCodec.readExpressions(dir.expressions()));
+    }
+
+    /** Every session of one iteration, in the layout's own order. */
+    public static List<SessionReader> readAll(Path iteration)
+            throws IOException {
+        List<SessionReader> sessions = new ArrayList<SessionReader>();
+        for (SessionDir dir : SessionDir.sessionsIn(iteration)) {
+            sessions.add(read(dir));
+        }
+        return sessions;
     }
 
     public String sessionId() {
@@ -136,10 +140,47 @@ public final class SessionReader {
      * and needs no naming convention on the session id.</p>
      */
     public boolean explored() {
+        return focused() != null;
+    }
+
+    /** The occurrence this session's task focused, or null. */
+    public OccurrenceAddress focused() {
         for (ActivationRow activation : activations) {
-            if (activation.focused()) return true;
+            if (activation.focused()) return activation.occurrence();
         }
-        return false;
+        return null;
+    }
+
+    /**
+     * Which session is the recording, or null when that has no answer.
+     *
+     * <p>One rule, in one place: the seed is the session whose activations
+     * focused nothing.  A corpus with none of those, or with more than one,
+     * does not state which recording a claim is about -- and the caller
+     * raises the BLOCKING gap, because what that means is the reading stage's
+     * to say, not the file layout's.  Never a fallback to "the first one":
+     * naming an exploration replay as the recording is how a claim comes to
+     * be about the wrong execution.</p>
+     */
+    public static String seedSessionId(Path iteration) throws IOException {
+        return seedSessionId(readAll(iteration));
+    }
+
+    /** The same rule, over sessions a caller already read. */
+    public static String seedSessionId(List<SessionReader> sessions) {
+        List<String> unfocused = unfocusedSessionIds(sessions);
+        return unfocused.size() == 1 ? unfocused.get(0) : null;
+    }
+
+    /** Every session that focused nothing: what the gap names. */
+    public static List<String> unfocusedSessionIds(
+            List<SessionReader> sessions) {
+        List<String> unfocused = new ArrayList<String>();
+        if (sessions == null) return unfocused;
+        for (SessionReader session : sessions) {
+            if (!session.explored()) unfocused.add(session.sessionId());
+        }
+        return unfocused;
     }
 
     @Override

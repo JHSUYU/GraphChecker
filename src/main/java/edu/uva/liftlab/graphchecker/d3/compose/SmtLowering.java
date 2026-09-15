@@ -12,6 +12,7 @@ import edu.uva.liftlab.graphchecker.d3.compose.VmTermLowering.Term;
 import edu.uva.liftlab.graphchecker.d3.contract.ExpressionTable;
 import edu.uva.liftlab.graphchecker.d3.contract.LocationId;
 import edu.uva.liftlab.graphchecker.d3.contract.LocationKind;
+import edu.uva.liftlab.graphchecker.d3.contract.SessionReader;
 
 import java.util.ArrayList;
 import java.util.Arrays;
