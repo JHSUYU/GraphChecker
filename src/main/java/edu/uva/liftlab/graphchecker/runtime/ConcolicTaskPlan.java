@@ -33,16 +33,12 @@ import java.util.Map;
 import java.util.Set;
 import java.util.regex.Matcher;
 
-import static edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics.javaTypeDescriptor;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.array;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.object;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalInteger;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalLongInteger;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
-import edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.ConsumerAccessAnchor;
-import edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.GuardedReadAssignment;
-import edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.ModelAssignment;
 import edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.RootHookGroup;
 import edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.SymbolizeAction;
 
@@ -1065,8 +1061,6 @@ final class ConcolicTaskPlan {
         final Map<String, String> branchPolicies;
         final Set<String> replayLoopExitSites;
         final LoopBoundPolicy loopBound;
-        final List<ModelAssignment> modelAssignments;
-        final List<GuardedReadAssignment> guardedReadAssignments;
         final boolean capturesTargetReach;
         /** Whether this non-loop address has already completed its goal. */
         volatile boolean completedGoalReserved;
@@ -1229,8 +1223,6 @@ final class ConcolicTaskPlan {
             // bound is under); an undeclared site inherits the default.
             this.loopOccurrenceBudget = this.loopBound
                     .maxBackedgeTraversals(task.rootLoopSiteId());
-            this.modelAssignments = new ArrayList<>();
-            this.guardedReadAssignments = new ArrayList<>();
             this.capturesTargetReach =
                     task.goalKind().capturesTargetReach();
             // The plan names the propagation ledger every task of this
@@ -1274,51 +1266,6 @@ final class ConcolicTaskPlan {
                 String siteId = optionalString(branch, "siteId");
                 branchPolicies.put(siteId, optionalString(branch, "policy"));
             }
-            JsonElement encodedAssignments = task.json().get(
-                    "modelAssignments");
-            if (encodedAssignments != null
-                    && !encodedAssignments.isJsonArray()) {
-                throw new IllegalArgumentException(
-                        "modelAssignments must be an array in " + taskId);
-            }
-            for (JsonElement element : task.modelAssignments()) {
-                modelAssignments.add(new ModelAssignment(
-                        element.getAsJsonObject()));
-            }
-            Set<String> assignmentKeys = new LinkedHashSet<>();
-            for (ModelAssignment assignment : modelAssignments) {
-                if (assignment.key.isEmpty()
-                        || !assignmentKeys.add(assignment.key)) {
-                    throw new IllegalArgumentException(
-                            "model assignment keys must be nonempty and "
-                                    + "unique in " + taskId);
-                }
-            }
-            Set<String> guardedReadIdentities = new LinkedHashSet<>();
-            Set<String> guardedReadAnchors = new LinkedHashSet<>();
-            for (JsonElement element : task.guardedReadAssignments()) {
-                if (!element.isJsonObject()) {
-                    throw new IllegalArgumentException(
-                            "guardedReadAssignments must contain objects in "
-                                    + taskId);
-                }
-                GuardedReadAssignment assignment =
-                        new GuardedReadAssignment(element.getAsJsonObject(),
-                                occurrenceId);
-                String anchor = assignment.consumerSiteId + "\n"
-                        + assignment.consumerSiteOccurrence + "\n"
-                        + assignment.declaringClass + "\n"
-                        + assignment.fieldName + "\n"
-                        + assignment.descriptor;
-                if (!guardedReadIdentities.add(assignment.readIdentity)
-                        || !guardedReadAnchors.add(anchor)) {
-                    throw new IllegalArgumentException(
-                            "guarded read assignments must have unique "
-                                    + "identities and exact anchors in "
-                                    + taskId);
-                }
-                guardedReadAssignments.add(assignment);
-            }
             for (CommunicationHandoffSpec site
                     : task.communicationHandoffs()) {
                 if (!site.outgoing()) {
@@ -1333,88 +1280,7 @@ final class ConcolicTaskPlan {
                             + "in " + taskId + ": " + site.portId());
                 }
             }
-            // A configured-source model names one mint SITE of the frozen
-            // catalog.  There is no selected-source row to agree with any
-            // more: the site is the identity.
-            for (ModelAssignment assignment : modelAssignments) {
-                if (!assignment.configuredSourceAssignment()) continue;
-                // Answering a handoff IS a configured-source assignment
-                // whose phase is a HANDOFF_PHASE, so it arrives here.  It
-                // names no publish site of the frozen catalog -- H is
-                // (port, consumer occurrence, k, element path) and the
-                // phase id hashes exactly that -- so it is admitted on the
-                // one thing this task can check at load: that the phase
-                // belongs to a port this task receives on.
-                if (answersHandoffPhase(assignment)) continue;
-                ConfiguredSourcePhaseContract.Occurrence publish =
-                        configuredSourcePhasesById.get(
-                                assignment.configuredSourcePhaseId);
-                if (publish == null
-                        || publish.phase()
-                        != ConfiguredSourcePhaseContract.Phase.PUBLISH
-                        || !assignment.configuredSourceId.equals(
-                        publish.sourceId())
-                        || !assignment.configuredSourceFieldSignature.equals(
-                        publish.fieldSignature())
-                        || !assignment.matchesConfiguredSource(
-                        publish.phaseId(), publish.sourceId(),
-                        publish.fieldSignature())) {
-                    throw new IllegalArgumentException(
-                            "model assignment names an undeclared or "
-                                    + "unsupported configured source in "
-                                    + taskId + ": " + assignment.key);
-                }
-            }
             indexExportConsumerOccurrences(task, edgeBindings);
-        }
-
-        /**
-         * Whether this task can answer the handoff phase this model names.
-         *
-         * <p>The phase id is a hash of H, so it cannot be inverted -- but
-         * the VM label the mint uses is {@code engineLabelForPhase(phase,
-         * port)}, and the assignment carries it in its engine symbol.  So a
-         * phase is this task's exactly when one of the ports it receives on
-         * reproduces that label: the k-th attach and the element path are
-         * inside the hash and need no enumeration.  A phase no declared
-         * port reproduces stays rejected by name, like any other model that
-         * names something this task does not have.</p>
-         */
-        private boolean answersHandoffPhase(ModelAssignment assignment) {
-            String phaseId = assignment.configuredSourcePhaseId;
-            if (!ConcolicRegionRuntime.isHandoffMintKey(phaseId)
-                    || !assignment.matchesConfiguredSource(phaseId, phaseId,
-                    "")) {
-                return false;
-            }
-            for (CommunicationHandoffSpec site
-                    : communicationHandoffs.values()) {
-                if (site.outgoing()) continue;
-                if (assignment.engineSymbol.contains(
-                        ConcolicRegionRuntime.handoffMintLabelFor(phaseId,
-                                site.portId()))) {
-                    return true;
-                }
-            }
-            return false;
-        }
-
-        /** Solver value for the one exact getfield this hook precedes. */
-        GuardedReadAssignment guardedReadAssignment(
-                ConsumerAccessAnchor consumer, String fieldSignature) {
-            DeclaredField field = FieldPathSpec.declaredField(fieldSignature);
-            GuardedReadAssignment selected = null;
-            for (GuardedReadAssignment candidate : guardedReadAssignments) {
-                if (!candidate.matches(consumer, field)) continue;
-                if (selected != null) {
-                    throw new IllegalStateException(
-                            "two guarded read assignments match "
-                                    + consumer.siteId + " occurrence "
-                                    + consumer.occurrence);
-                }
-                selected = candidate;
-            }
-            return selected;
         }
 
         /**
@@ -1473,8 +1339,7 @@ final class ConcolicTaskPlan {
          * locator for the field alone.  The plan does distinguish those
          * receivers: every action names the exact static access site and the
          * activation-local occurrence of that site which read it.  That pair
-         * is the same replay-stable access anchor the runtime builds at each
-         * read ({@link ConsumerAccessAnchor}) and the composer already uses
+         * is the same replay-stable access anchor the composer already uses
          * to name a read independently of any object id, so it is what binds
          * one live receiver to one planned locator.  The by-field index
          * stays as the answer for a field with a single receiver, including

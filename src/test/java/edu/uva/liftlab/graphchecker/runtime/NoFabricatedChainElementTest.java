@@ -60,12 +60,8 @@ public class NoFabricatedChainElementTest {
                     recorded, String.valueOf(ConcolicRegionRuntime
                             .materializeSymbolicBoolean(MARKER)));
         }
-        JsonObject flipped = faultAction(MARKER, "false");
-        modelledRegion(flipped, flipped.get("symbol").getAsString(), "true");
-        assertTrue("the model decides a flip",
-                ConcolicRegionRuntime.materializeSymbolicBoolean(MARKER));
-        // Neither a model nor a recorded value reads back as the idle
-        // polarity of a marker this plan controls.
+        // No recorded value is the unanswered case: the idle polarity of a
+        // marker this plan controls is not an answer to it.
         region(false, faultAction(MARKER, null));
         assertFalse(ConcolicRegionRuntime.materializeSymbolicBoolean(MARKER));
     }
@@ -135,16 +131,6 @@ public class NoFabricatedChainElementTest {
                     "{'siteId':'" + SITE + "','occurrence':1}"));
         }
         return ExecutionTask.decode(encoded);
-    }
-
-    /** One activation whose plan carries the model for that marker. */
-    private ConcolicRegionRuntime.ActiveRegion modelledRegion(
-            JsonObject action, String symbol, String value) throws Exception {
-        JsonObject json = task(false, action).json().deepCopy();
-        json.add("modelAssignments", new JsonParser().parse("[{'inputSymbol':'"
-                + symbol + "','engineSymbol':'" + symbol + "','valueType':"
-                + "'BOOL','value':'" + value + "'}]"));
-        return open(ExecutionTask.decode(json));
     }
 
     private ConcolicRegionRuntime.ActiveRegion region(boolean target,

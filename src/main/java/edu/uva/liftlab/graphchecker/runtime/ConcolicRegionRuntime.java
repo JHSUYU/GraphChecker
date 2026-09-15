@@ -40,7 +40,6 @@ import java.lang.reflect.Array;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Modifier;
-import java.math.BigInteger;
 import java.nio.file.Files;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -59,11 +58,9 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.function.Predicate;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-import static edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics.integralRange;
 import static edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics.javaTypeDescriptor;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.array;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalBool;
@@ -943,15 +940,10 @@ public final class ConcolicRegionRuntime {
                 continue;
             }
             if (value == null) {
-                if (active.hasAppliedExactNullReferenceAssignment(action)) {
-                    // The exact model assignment has already replaced this
-                    // declared reference argument with null.
-                    continue;
-                } else if ("ARGUMENT".equals(action.location)
+                if ("ARGUMENT".equals(action.location)
                         && action.declaresArrayInput(
                         Collections.<String>emptyList())) {
                     symbolize(active, action, null, engine());
-                } else {
                 }
                 continue;
             }
@@ -992,11 +984,11 @@ public final class ConcolicRegionRuntime {
     }
 
     /**
-     * Applies a solver model to the real root argument before ordinary Java
-     * control flow consumes it.  Soot writes the returned value back to the
-     * parameter local (including an unbox for primitive parameters).  No
-     * branch outcome is overridden here: the changed input must make the
-     * unmodified branch evaluate to the requested outcome during replay.
+     * Mints the declared root argument before ordinary Java control flow
+     * consumes it.  Soot writes the returned value back to the parameter
+     * local (including an unbox for primitive parameters).  No branch
+     * outcome is overridden here: a primitive live-in becomes a symbol and
+     * everything else is passed through as the program left it.
      */
     public static Object materializeArgument(long token, int argumentIndex,
                                              Object boxedOrReference,
@@ -1014,30 +1006,11 @@ public final class ConcolicRegionRuntime {
                 return materializePrimitiveValue(active, action,
                         boxedOrReference, null);
             }
-            if (boxedOrReference == null) {
-                Object modeled = modeledReference(active, action, null,
-                        "root reference");
-                return unmodeled(modeled) ? null : modeled;
-            }
-            if ("ARGUMENT_FIELD_PATH".equals(action.location)) {
-                for (List<String> path : action.fieldPaths) {
-                    applyFieldPathModel(active, action, boxedOrReference,
-                            path);
-                }
-            } else {
-                Object modeled = modeledReference(active, action,
-                        boxedOrReference, "root reference");
-                if (!unmodeled(modeled)) {
-                    trackMaterializedContainer(active, action, modeled);
-                    return modeled;
-                }
-            }
-            trackMaterializedContainer(active, action, boxedOrReference);
         }
         return boxedOrReference;
     }
 
-    /** Applies a solver model at an exact in-region helper parameter. */
+    /** Mints a declared live-in at an exact in-region helper parameter. */
     public static Object materializeMethodArgument(String method,
                                                    int argumentIndex,
                                                    Object boxedOrReference,
@@ -1056,15 +1029,7 @@ public final class ConcolicRegionRuntime {
                 return materializePrimitiveValue(active, action,
                         boxedOrReference, null);
             }
-            Object modeled = modeledReference(active, action,
-                    boxedOrReference, "method argument");
-            if (modeled == UnsupportedReplayValue.INSTANCE) {
-                return boxedOrReference;
-            }
-            Object materialized = modeled == MissingValue.INSTANCE
-                    ? boxedOrReference : modeled;
-            trackMaterializedContainer(active, action, materialized);
-            return materialized;
+            return boxedOrReference;
         }
         return boxedOrReference;
     }
@@ -1086,26 +1051,14 @@ public final class ConcolicRegionRuntime {
             if (!active.materialized.add(action.symbol)) {
                 continue;
             }
-            Object materialized = value;
-            ModelAssignment assignment = active.assignment(action, null);
-            if (assignment != null) {
-                Object modeled = assignment.referenceValue(value);
-                if (modeled == UnsupportedReplayValue.INSTANCE) {
-                    if (isPrimitiveBox(value)) {
-                        return materializePrimitiveValue(active, action,
-                                value, null);
-                    }
-                } else {
-                    materialized = modeled;
-                    active.recordModelAssignment(assignment);
-                }
+            if (isPrimitiveBox(value)) {
+                return materializePrimitiveValue(active, action, value, null);
             }
-            if (materialized != null
-                    || action.declaresArrayInput(
+            if (value != null || action.declaresArrayInput(
                     Collections.<String>emptyList())) {
-                symbolize(active, action, materialized, engine());
+                symbolize(active, action, value, engine());
             }
-            return materialized;
+            return value;
         }
         return value;
     }
@@ -1263,31 +1216,19 @@ public final class ConcolicRegionRuntime {
             return false;
         }
         SymbolizeAction selected = candidates.get(0);
-        ModelAssignment assignment = active.assignment(selected, null);
-        if (assignment == null) {
-            // A seed replay has no model by construction: it reproduces the
-            // recording, and the recording's own polarity is the answer.  The
-            // plan states it as this action's primitiveValue, gated on
-            // observed, so it is a value the mint witnessed and not a default
-            // chosen here -- which is the whole difference between answering
-            // the marker and pinning it.  Only a firing with neither a model
-            // nor a recorded value is unanswered.
-            Boolean recorded = recordedFaultPolarity(selected);
-            if (recorded == null) {
-                active.noteFaultIdle(name, occurrence, controlled,
-                        "NO_MODEL_ASSIGNMENT_AND_NO_RECORDED_VALUE");
-                return false;
-            }
-            active.noteRecordedFaultAnswer(name, occurrence, recorded);
-            return recorded;
-        }
-        Object value = coerceModelValue(assignment.valueType,
-                assignment.value, Boolean.class);
-        if (!(value instanceof Boolean)) {
+        // The recording's own polarity is the answer.  The plan states it as
+        // this action's primitiveValue, gated on observed, so it is a value
+        // the mint witnessed and not a default chosen here -- which is the
+        // whole difference between answering the marker and pinning it.
+        // Only a firing with no recorded value is unanswered.
+        Boolean recorded = recordedFaultPolarity(selected);
+        if (recorded == null) {
+            active.noteFaultIdle(name, occurrence, controlled,
+                    "NO_RECORDED_VALUE");
             return false;
         }
-        active.recordModelAssignment(assignment);
-        return (Boolean) value;
+        active.noteRecordedFaultAnswer(name, occurrence, recorded);
+        return recorded;
     }
 
     /**
@@ -1333,11 +1274,6 @@ public final class ConcolicRegionRuntime {
         if (active == null || owner == null) return;
         int occurrence = active.materializationOccurrences.field(
                 method, unitIndex);
-        ConsumerAccessAnchor consumer = consumerAccessAnchor(active, method,
-                unitIndex, occurrence, owner);
-        GuardedReadAssignment guardedRead =
-                active.activation.guardedReadAssignment(consumer,
-                        fieldSignature);
         List<SymbolizeAction> claimed = active.activation.symbolize;
         for (SymbolizeAction action : claimed) {
             if (!action.matchesField(method, unitIndex, owner, fieldSignature,
@@ -1395,7 +1331,6 @@ public final class ConcolicRegionRuntime {
             } catch (Throwable throwable) {
             }
         }
-        armGuardedRead(active, owner, guardedRead);
     }
 
     /**
@@ -1435,66 +1370,6 @@ public final class ConcolicRegionRuntime {
                     + safe(fieldSignature));
         } catch (Throwable failure) {
         }
-    }
-
-    /** Installs the selected arm at its exact consumer read. */
-    private static void armGuardedRead(ActiveRegion active, Object owner,
-                                       GuardedReadAssignment assignment) {
-        if (assignment == null || active.armedGuardedReads.containsKey(
-                assignment.readIdentity)) {
-            return;
-        }
-        try {
-            long token = engine().armSharedPrimitiveFieldRead(owner,
-                    assignment.declaringClass, assignment.fieldName,
-                    assignment.descriptor, assignment.valueBits);
-            if (token > 0L) {
-                active.armedGuardedReads.put(assignment.readIdentity, token);
-            } else {
-            }
-        } catch (Throwable failure) {
-        }
-    }
-
-    /**
-     * The address of one read inside one activation: an exact bytecode site
-     * and the occurrence of it this activation reached.
-     *
-     * <p>It named carriers once, and does not any more -- a location is named
-     * by the object the VM filed it under.  What is left is the job it was
-     * always doing underneath: saying <em>which read</em> a guarded-read model
-     * applies to, which is a fact about the access and not about the
-     * location.</p>
-     */
-    static final class ConsumerAccessAnchor {
-        final String siteId;
-        final int occurrence;
-
-        ConsumerAccessAnchor(String siteId, int occurrence) {
-            this.siteId = safe(siteId);
-            this.occurrence = occurrence;
-        }
-    }
-
-    /** The address of the read this hook stands on, or {@code null}. */
-    static ConsumerAccessAnchor consumerAccessAnchor(
-            ActiveRegion active, String method, int unitIndex,
-            int occurrence, Object owner) {
-        AccessorCallContext accessor = CURRENT_ACCESSOR_CALL_CONTEXT.get();
-        if (accessor != null && active != null
-                && accessor.regionToken == active.token
-                && accessor.thread == Thread.currentThread()
-                && accessor.receiver == owner
-                && !accessor.callSiteId.isEmpty()
-                && accessor.occurrence > 0) {
-            return new ConsumerAccessAnchor(accessor.callSiteId,
-                    accessor.occurrence);
-        }
-        if (safe(method).isEmpty() || unitIndex < 0 || occurrence < 1) {
-            return null;
-        }
-        return new ConsumerAccessAnchor(SiteId.of(method, unitIndex),
-                occurrence);
     }
 
     /** Records a stable logical source a live occurrence just entered. */
@@ -1599,21 +1474,11 @@ public final class ConcolicRegionRuntime {
             // source concrete.  Only a tree that actually names a VM symbol
             // root inside those wrappers is an expression of its own.
             boolean reused = configuredSourceCarriesAuthority(carried);
-            // The application's Map re-key reads the modeled value back
-            // through this same path, so the model is written first.
-            ModelAssignment assignment = reused ? null
-                    : active.configuredSourceAssignment(entry.phaseId(),
-                    safe(sourceId), safe(fieldSignature), owner);
-            if (assignment != null) {
-                if (!writeModeledField(owner, safe(fieldSignature),
-                        assignment)) {
-                    throw new IllegalStateException(
-                            "configured source model could not be written");
-                }
-            } else if (!reused) {
-                applyFocusedRootAssignment(active, safe(sourceId), owner,
-                        safe(fieldSignature), descriptor);
-            }
+            // The application's Map re-key reads the assigned value back
+            // through this same path, so the wave's value is written first.
+            boolean assigned = !reused && applyFocusedRootAssignment(
+                    active, safe(sourceId), owner, safe(fieldSignature),
+                    descriptor);
             String symbol = "";
             if (!reused) {
                 // The phase is the stable semantic source site.  Exact
@@ -1657,12 +1522,11 @@ public final class ConcolicRegionRuntime {
                             entry.ordinal, reused, symbol,
                             // Only an activation that read the field as the
                             // program left it observed a recorded value.  A
-                            // replay that wrote a model assignment into the
-                            // field above read the model back, and publishing
-                            // that as "recorded" is how a counterfactual
+                            // replay that wrote the wave's assignment into
+                            // the field above read that back, and publishing
+                            // it as "recorded" is how a counterfactual
                             // becomes the recording.
-                            assignment == null
-                                    ? recordedScalar(value) : null);
+                            assigned ? null : recordedScalar(value));
                 } catch (IllegalArgumentException refused) {
                     throw new IllegalStateException(refused.getMessage()
                             + " (VM read-back after symbolizeExactField: "
@@ -1671,15 +1535,9 @@ public final class ConcolicRegionRuntime {
             }
             active.recordConfiguredSourceMint(entry, safe(sourceId),
                     safe(fieldSignature), symbol, expression, reused,
-                    assignment == null ? recordedScalar(value) : null);
+                    assigned ? null : recordedScalar(value));
             if (evidence != null) {
                 active.recordSymbolicSource(entry.key(), evidence);
-            }
-            if (assignment != null) {
-                // A concrete write is not a materialized symbolic input until
-                // the VM has accepted the exact field and returned its
-                // expression.
-                active.recordModelAssignment(assignment);
             }
             return true;
         } catch (Throwable failure) {
@@ -2295,37 +2153,31 @@ public final class ConcolicRegionRuntime {
      * that merely runs alongside would make the run state something the
      * obligation never asked.</p>
      */
-    private static void applyFocusedRootAssignment(
+    private static boolean applyFocusedRootAssignment(
             ActiveRegion active, String sourceId, Object owner,
             String fieldSignature, String descriptor) {
-        if (active == null || active.d3Address == null) return;
+        if (active == null || active.d3Address == null) return false;
         if (!edu.uva.liftlab.graphchecker.runtime.FocusedReplay
                 .focused(active.d3Address)) {
-            return;
+            return false;
         }
         String value = edu.uva.liftlab.graphchecker.runtime.FocusedReplay
                 .rootAssignment(sourceId);
-        if (value.isEmpty()) return;
-        if (!writeModeledField(owner, fieldSignature,
-                modelValue(value, descriptor))) {
-            RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind
-                            .UNPRODUCIBLE_ANSWER,
-                    edu.uva.liftlab.graphchecker.contract.GapClass
-                            .BLOCKING, sourceId,
-                    "the wave's assignment for this root could not be"
-                            + " written into " + fieldSignature);
+        if (value.isEmpty()) return false;
+        if (!active.mintIsPlaceable(owner)) return false;
+        if (writeModeledField(owner, fieldSignature, descriptor, value)) {
+            return true;
         }
+        RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind
+                        .UNPRODUCIBLE_ANSWER,
+                edu.uva.liftlab.graphchecker.contract.GapClass
+                        .BLOCKING, sourceId,
+                "the wave's assignment for this root could not be"
+                        + " written into " + fieldSignature);
+        return false;
     }
 
     /** One value the wave stated, as the assignment the writer takes. */
-    private static ModelAssignment modelValue(String value,
-                                              String javaType) {
-        JsonObject stated = new JsonObject();
-        stated.addProperty("value", safe(value));
-        stated.addProperty("valueType", safe(javaType));
-        return new ModelAssignment(stated);
-    }
-
     /** The declared site of {@code portId} in this occurrence's plan. */
     /**
      * The declared site of {@code portId}, whoever is running.
@@ -2587,17 +2439,14 @@ public final class ConcolicRegionRuntime {
             edu.uva.liftlab.graphchecker.contract.Endpoint consumer =
                     RowRuntime.nextEndpoint(active.d3Address, portId,
                             attemptOf(RuntimeTraceContext.current()));
-            ModelAssignment assignment = active.configuredSourceAssignment(
-                    phaseId, phaseId, "", owner);
-            if (assignment == null && consumer != null) {
-                String answer = edu.uva.liftlab.graphchecker.runtime
-                        .FocusedReplay.answer(consumer.id());
-                if (!answer.isEmpty()) assignment = modelValue(answer, descriptor);
-            }
-            if (assignment != null
-                    && !writeModeledField(owner, signature, assignment)) {
+            String answer = consumer == null ? ""
+                    : edu.uva.liftlab.graphchecker.runtime.FocusedReplay
+                            .answer(consumer.id());
+            if (!answer.isEmpty() && !writeModeledField(owner, signature,
+                    descriptor, answer)) {
                 throw new IllegalStateException(
-                        "handoff model could not be written");
+                        "the wave's answer could not be written into "
+                                + signature);
             }
             api.symbolizeExactField(owner, signature,
                     handoffMintLabel(phaseId, portId));
@@ -2608,12 +2457,10 @@ public final class ConcolicRegionRuntime {
             if (minted == null) {
                 return;
             }
-            if (assignment != null) active.recordModelAssignment(assignment);
             publishAttachRow(consumer, portId,
                     optionalString(minted, "_exp"),
                     optionalString(minted, "_java_type"), recordedValue,
-                    assignment != null,
-                    assignment == null ? "" : safe(assignment.value));
+                    !answer.isEmpty(), answer);
         } catch (Throwable failure) {
         }
     }
@@ -3949,73 +3796,6 @@ public final class ConcolicRegionRuntime {
                     + " obligation flips: "
                     + edu.uva.liftlab.graphchecker.runtime.FocusedReplay
                             .refusal(active.d3Address));
-            return;
-        }
-        List<String> unapplied = new ArrayList<>();
-        for (ModelAssignment assignment
-                : active.activation.modelAssignments) {
-            if (active.appliedModelAssignments.contains(assignment.key)) {
-                continue;
-            }
-            // A model for a configured source names a mint SITE, and the
-            // site is reached by whichever activation runs it.  An
-            // activation that did not reach it minted nothing to write the
-            // model into and owes nothing: on lane VM12 six companions
-            // addressed at REGION.08ab84c9 carried the serialNo model whose
-            // mint site is in updateKeys() -- REGION.aaa1cfd7, another
-            // member of the same linked group -- and were refused at their
-            // terminal for not applying a model that was never theirs to
-            // apply.  A model this activation DID mint for and did not
-            // write is still a refusal, which is the case this gate is for.
-            if (assignment.configuredSourceAssignment()
-                    && !active.owesConfiguredSourceModel(
-                    assignment.configuredSourcePhaseId)) {
-                continue;
-            }
-            unapplied.add(assignment.key);
-        }
-        if (!unapplied.isEmpty()) {
-            // Every linked member owns its explicit source assignments.  A
-            // companion has no branch replay contract, but allowing it to
-            // publish before applying these rows would silently leave an
-            // upstream root concrete.
-            abandonOccurrence(active, "UNAPPLIED_MODEL_ASSIGNMENT: the"
-                    + " terminal was reached with unapplied model assignment"
-                    + " keys " + unapplied);
-            return;
-        }
-        List<String> unappliedReads = new ArrayList<>();
-        for (GuardedReadAssignment assignment
-                : active.activation.guardedReadAssignments) {
-            if (active.materializedGuardedReads.contains(
-                    assignment.readIdentity)) {
-                continue;
-            }
-            Long token = active.armedGuardedReads.get(
-                    assignment.readIdentity);
-            if (token == null) {
-                unappliedReads.add(assignment.readIdentity + ":NOT_ARMED");
-                continue;
-            }
-            try {
-                long status = engine().confirmSharedPrimitiveFieldRead(token);
-                if (status > 0L) {
-                    active.materializedGuardedReads.add(
-                            assignment.readIdentity);
-                } else {
-                    unappliedReads.add(assignment.readIdentity
-                            + ":NOT_CONSUMED(" + status + ")");
-                }
-            } catch (Throwable failure) {
-                unappliedReads.add(assignment.readIdentity
-                        + ":CONFIRM_FAILED(" + rootCause(failure) + ")");
-            }
-        }
-        if (!unappliedReads.isEmpty()) {
-            abandonOccurrence(active, "UNAPPLIED_MODEL_ASSIGNMENT: the"
-                    + " terminal was reached with unapplied guarded read"
-                    + " assignments " + unappliedReads);
-            return;
         }
     }
 
@@ -4231,154 +4011,6 @@ public final class ConcolicRegionRuntime {
         symbolizeField(active, action, leafOwner, label, path, api);
     }
 
-    private static void applyFieldPathModel(ActiveRegion active,
-                                            SymbolizeAction action,
-                                            Object root,
-                                            List<String> path) {
-        if (path == null || path.isEmpty()
-                || active.assignment(action, path) == null) {
-            return;
-        }
-        Object owner = resolveFieldPathLeafOwner(root, path);
-        if (owner == null || owner == MissingValue.INSTANCE) {
-            return;
-        }
-        applyFieldModel(active, action, owner, path);
-    }
-
-    private static void applyFieldModel(ActiveRegion active,
-                                        SymbolizeAction action,
-                                        Object owner, List<String> path) {
-        ModelAssignment assignment = active.assignment(action, path);
-        if (assignment == null) return;
-        if (!writeModeledField(owner, action.exactLeafFieldSignature(path),
-                assignment)) {
-            return;
-        }
-        active.recordModelAssignment(assignment);
-    }
-
-    /**
-     * Applies the solve's reference model for one action.  Returns the
-     * replacement (possibly null), {@code MissingValue} when the solve named
-     * no assignment, or {@code UnsupportedReplayValue} when it cannot be
-     * replayed as a reference - which is also filed as unresolved.
-     */
-    private static Object modeledReference(
-            ActiveRegion active, SymbolizeAction action, Object concrete,
-            String label) {
-        ModelAssignment assignment = active.assignment(action, null);
-        if (assignment == null) return MissingValue.INSTANCE;
-        Object modeled = assignment.referenceValue(concrete);
-        if (modeled == UnsupportedReplayValue.INSTANCE) {
-            return UnsupportedReplayValue.INSTANCE;
-        }
-        active.recordModelAssignment(assignment);
-        return modeled;
-    }
-
-    /** True for both {@link #modeledReference} outcomes that model nothing. */
-    private static boolean unmodeled(Object modeled) {
-        return modeled == MissingValue.INSTANCE
-                || modeled == UnsupportedReplayValue.INSTANCE;
-    }
-
-    /** Symbolizes a materialized container the first time an action claims it. */
-    private static void trackMaterializedContainer(
-            ActiveRegion active, SymbolizeAction action, Object value) {
-        if (containerValue(value) && active.materialized.add(action.symbol)) {
-            symbolize(active, action, value, engine());
-        }
-    }
-
-    /**
-     * The literal one declared root must return on this replay.
-     *
-     * <p>For every root but a clock this is the solver's value verbatim: an
-     * identity, a key id or a length has no run-relative reading, and the
-     * model means exactly the number it states.</p>
-     *
-     * <p>A wall clock is the exception, and it is why a clock-only
-     * experiment could not be won.  The model for a clock is an absolute
-     * millisecond stamp the solver derived from the constants the
-     * <em>seed</em> recording carried -- an expiry, a deadline, a lease.  A
-     * flip replay is a fresh JVM: it mints its own copies of those constants
-     * minutes later, so replaying the stamp literally puts the clock behind
-     * its own run, the flipped comparison keeps its recorded outcome, and
-     * the replay is refused with {@code REPLAY_PREFIX_UNMATCHED} -- "still
-     * waiting for the flipped source decision".  No flipped case is ever
-     * recorded, so the composer's exactly-one partition over observed cases
-     * keeps asserting the recorded polarity of that branch and no window,
-     * however wide, can admit the other one.</p>
-     *
-     * <p>What the solver actually chose is the <em>offset</em> from the
-     * value this read returned, which is what {@link ClockRootPhysics}
-     * bounds with a window and orders with monotonicity, and what a
-     * cross-node skew mechanism means in the first place.  Carrying that
-     * offset onto this run's own read reproduces the decision the model
-     * asked for against this run's own constants and keeps the replayed
-     * clock monotone with the rest of the JVM.  When the live read equals
-     * the recorded one the two readings coincide, so nothing changes for a
-     * replay that reproduces its recording.</p>
-     *
-     * <p>Soundness is unaffected: no injected value is ever asserted.  The
-     * replay records a new real case with its own recorded constants and its
-     * own path conditions, which the composer lowers as it lowers any other
-     * observed case.  Injection only steers the search, exactly as a fault
-     * marker's model does.</p>
-     */
-    static String replayModelLiteral(SymbolizeAction action,
-                                     ModelAssignment assignment,
-                                     Object concrete) {
-        String modeled = assignment == null ? "" : safe(assignment.value).trim();
-        if (action == null || modeled.isEmpty()
-                || !action.declaresWallClockRead()) {
-            return modeled;
-        }
-        return clockSkewLiteral(action.recordedPrimitiveValue, modeled,
-                concrete);
-    }
-
-    /**
-     * This run's clock, moved by the offset the model asked of the recorded
-     * one.  Anything that is not an exact integral triple replays the model
-     * value unchanged.
-     */
-    static String clockSkewLiteral(String recordedValue, String modelValue,
-                                   Object liveValue) {
-        String modeled = safe(modelValue).trim();
-        Long recorded = integralLiteral(safe(recordedValue).trim());
-        Long model = integralLiteral(modeled);
-        Long live = integralValue(liveValue);
-        if (recorded == null || model == null || live == null) {
-            return modeled;
-        }
-        try {
-            return Long.toString(Math.addExact(live,
-                    Math.subtractExact(model, recorded)));
-        } catch (ArithmeticException outsideTheDomain) {
-            // A skew a long cannot hold is not a clock any run could read.
-            return modeled;
-        }
-    }
-
-    private static Long integralLiteral(String value) {
-        if (value == null || value.isEmpty()) return null;
-        try {
-            return Long.valueOf(value);
-        } catch (NumberFormatException notIntegral) {
-            return null;
-        }
-    }
-
-    private static Long integralValue(Object value) {
-        if (value instanceof Long || value instanceof Integer
-                || value instanceof Short || value instanceof Byte) {
-            return ((Number) value).longValue();
-        }
-        return null;
-    }
-
     private static Object materializePrimitiveValue(
             ActiveRegion active, SymbolizeAction action, Object concrete,
             List<String> path) {
@@ -4399,20 +4031,7 @@ public final class ConcolicRegionRuntime {
                 action.symbol, exactPath, fieldSignature)) {
             return concrete;
         }
-        ModelAssignment assignment = active.assignment(action, path);
-        ModelAssignment applied = null;
-        Object modeled = concrete;
-        if (assignment != null) {
-            String literal = replayModelLiteral(action, assignment, concrete);
-            modeled = coerceModelValue(assignment.valueType, literal,
-                    concrete == null ? null : concrete.getClass());
-            if (modeled == UnsupportedReplayValue.INSTANCE) {
-                modeled = concrete;
-            } else {
-                applied = assignment;
-            }
-        }
-        Object fresh = freshPrimitiveBox(modeled);
+        Object fresh = freshPrimitiveBox(concrete);
         try {
             api.symbolizeField(fresh, "value", manualMintLabel(action.symbol,
                     active.activation.occurrenceId, true));
@@ -4420,12 +4039,7 @@ public final class ConcolicRegionRuntime {
             JsonElement expression = primitiveBoxExpression(api, fresh);
             active.recordManualSymbolization(action, action.symbol,
                     exactPath, fieldSignature, expression, true, false,
-                    // Only an activation that read the value as the program
-                    // left it observed a recorded value.
-                    applied == null ? recordedScalar(concrete) : "");
-            if (applied != null) {
-                active.recordModelAssignment(applied);
-            }
+                    recordedScalar(concrete));
             return fresh;
         } catch (Throwable throwable) {
             return concrete;
@@ -4443,102 +4057,26 @@ public final class ConcolicRegionRuntime {
                 boxed.getClass().getName(), "value", descriptor, boxed));
     }
 
-    static boolean writeModeledField(
-            Object owner, String fieldSignature,
-            ModelAssignment assignment) {
+    /**
+     * Writes one value the wave stated into one exact field.
+     *
+     * <p>The one place a replay's own value reaches the workload's heap:
+     * the focus row states it (a root assignment, or an answer at an
+     * attach) and this writes it where the declared cell is.</p>
+     */
+    static boolean writeModeledField(Object owner, String fieldSignature,
+                                     String valueType, String value) {
         Field field = declaredInstanceField(owner, fieldSignature);
         if (field == null) return false;
         try {
-            Object value = coerceModelValue(assignment.valueType,
-                    assignment.value, field.getType());
-            if (value == UnsupportedReplayValue.INSTANCE) return false;
-            field.set(owner, value);
+            Object modeled = coerceModelValue(valueType, value,
+                    field.getType());
+            if (modeled == UnsupportedReplayValue.INSTANCE) return false;
+            field.set(owner, modeled);
             return true;
         } catch (Throwable ignored) {
             return false;
         }
-    }
-
-    static boolean writeIndexedContainerElement(
-            Object container, int index, String valueType, String value) {
-        if (container == null || container == MissingValue.INSTANCE
-                || index < 0) {
-            return false;
-        }
-        try {
-            if (container.getClass().isArray()) {
-                if (index >= Array.getLength(container)) return false;
-                Object modeled = coerceModelValue(valueType, value,
-                        container.getClass().getComponentType());
-                if (modeled == UnsupportedReplayValue.INSTANCE
-                        || modeled == null
-                        && container.getClass().getComponentType()
-                        .isPrimitive()) {
-                    return false;
-                }
-                Array.set(container, index, modeled);
-                return true;
-            }
-            if (container instanceof List) {
-                List<Object> values = (List<Object>) container;
-                if (index >= values.size()) return false;
-                Object current = values.get(index);
-                Object modeled = modeledContainerValue(current, valueType,
-                        value);
-                if (modeled == UnsupportedReplayValue.INSTANCE) {
-                    return false;
-                }
-                values.set(index, modeled);
-                return true;
-            }
-        } catch (Throwable ignored) {
-            return false;
-        }
-        return false;
-    }
-
-    private static Object modeledContainerValue(
-            Object current, ModelAssignment assignment) {
-        return modeledContainerValue(current, assignment.valueType,
-                assignment.value);
-    }
-
-    /**
-     * The replacement a model names for a live container element.  A model
-     * may null an element out or re-coerce a present one; an absent element
-     * has no Java type to coerce against.
-     */
-    private static Object modeledContainerValue(
-            Object current, String valueType, String value) {
-        if ("NULL".equals(valueType)) return null;
-        return current == null ? UnsupportedReplayValue.INSTANCE
-                : coerceModelValue(valueType, value, current.getClass());
-    }
-
-    /** True when this write would merge two distinct live entries into one. */
-    private static boolean collidesWithLiveElement(
-            Object current, Object modeled, boolean alreadyPresent) {
-        return alreadyPresent && !(current == null ? modeled == null
-                : current.equals(modeled));
-    }
-
-    private static Object containerKey(String javaType, String value) {
-        String descriptor = javaTypeDescriptor(javaType);
-        if ("Z".equals(descriptor)) {
-            return coerceModelValue("BOOL", value, Boolean.class);
-        }
-        if (descriptor.length() == 1
-                && "BCSIJ".contains(descriptor)) {
-            Class<?> target = "B".equals(descriptor) ? Byte.class
-                    : "C".equals(descriptor) ? Character.class
-                    : "S".equals(descriptor) ? Short.class
-                    : "J".equals(descriptor) ? Long.class : Integer.class;
-            return coerceModelValue("INT", value, target);
-        }
-        if ("Ljava/lang/String;".equals(descriptor)) {
-            return unquoteSmtString(value);
-        }
-        return UnsupportedReplayValue.INSTANCE;
     }
 
     static Object coerceModelValue(String valueType, String value,
@@ -4594,10 +4132,6 @@ public final class ConcolicRegionRuntime {
             return UnsupportedReplayValue.INSTANCE;
         }
         return UnsupportedReplayValue.INSTANCE;
-    }
-
-    private static String unquoteSmtString(String value) {
-        return SmtModelValueCodec.decodeString(value);
     }
 
     private static boolean isPrimitiveBox(Object value) {
@@ -5828,12 +5362,6 @@ public final class ConcolicRegionRuntime {
         /** Read-out batch every record of this activation is stamped with. */
         private long evidenceSnapshot;
         private final Set<String> materialized = new LinkedHashSet<>();
-        private final Map<String, Long> armedGuardedReads =
-                new LinkedHashMap<>();
-        private final Set<String> materializedGuardedReads =
-                new LinkedHashSet<>();
-        private final Set<String> appliedModelAssignments =
-                new LinkedHashSet<>();
         private final Map<String, Integer> branchOccurrences =
                 new LinkedHashMap<>();
         private final OccurrenceCounter
@@ -6246,35 +5774,6 @@ public final class ConcolicRegionRuntime {
             configuredSourcePhaseObservations.add(observation);
         }
 
-        /**
-         * Whether a model for this phase is this activation's to apply.
-         *
-         * <p>Only an activation that minted the root FRESH owes it: the
-         * model is written into the value the mint is about to symbolize,
-         * so an activation that found the root already symbolic -- the
-         * second activation of a site the first one minted, which is what
-         * "one variable per phase" means -- has nothing to write it into.
-         * On hdfs-17899 bug3 that is the two companions addressed at
-         * REGION.08ab84c9#2, refused at their terminal for not applying a
-         * model to a root activation #1 had already minted.</p>
-         *
-         * <p>Reaching the site is not enough and never was: a hook that
-         * returns before minting (no declared owner, not an exact
-         * primitive) leaves nothing to write into either, and says so with
-         * its own unresolved note.</p>
-         */
-        private synchronized boolean owesConfiguredSourceModel(
-                String phaseId) {
-            String wanted = safe(phaseId);
-            if (wanted.isEmpty()) return false;
-            for (JsonObject row : symbolizedRows) {
-                if (wanted.equals(optionalString(row, "sourcePhaseId"))) {
-                    return !optionalBool(row, "reused", false);
-                }
-            }
-            return false;
-        }
-
         /** Publishes one mint row for one entry of a declared site. */
         private synchronized void recordConfiguredSourceMint(
                 SourceSiteEntry entry, String sourceId,
@@ -6452,62 +5951,27 @@ public final class ConcolicRegionRuntime {
         }
 
         /**
-         * The one unspent assignment matching {@code matcher}.  Two survivors
-         * address nothing, so the ambiguity is filed and neither applies.
+         * Whether this run can place this mint at the node and epoch the
+         * plan addresses, filing the gap that says why not.
+         *
+         * <p>A configured source names one mint SITE, and the site is
+         * reached once per node lifecycle.  The site is not the address: the
+         * address is (node, epoch, region, k-th activation), and the epoch
+         * is the half nothing was checking.  On hdfs-17960 the flip replay
+         * threw inside the workload before it restarted the NameNode, so
+         * the only activation it offered was epoch 0 -- and root=false was
+         * written there, at the mint the recording made before the restart,
+         * instead of at the epoch-1 mint the plan addresses.  The recorded
+         * execution was rewritten at a point the wave said nothing
+         * about.</p>
          */
-        private ModelAssignment uniqueAssignment(
-                Predicate<ModelAssignment> matcher, boolean reusable,
-                String subject, String ambiguity) {
-            ModelAssignment selected = null;
-            for (ModelAssignment candidate : activation.modelAssignments) {
-                if (!matcher.test(candidate) || !reusable
-                        && appliedModelAssignments.contains(candidate.key)) {
-                    continue;
-                }
-                if (selected != null) {
-                    return null;
-                }
-                selected = candidate;
-            }
-            return selected;
-        }
-
-        private ModelAssignment assignment(SymbolizeAction action,
-                                           List<String> path) {
-            return uniqueAssignment(
-                    candidate -> candidate.matches(action, path),
-                    action.repeatedPrimitiveAccessor(), action.symbol,
-                    ": ambiguous model assignments");
-        }
-
-        /** One solver value for one exact configured source hook. */
-        private ModelAssignment configuredSourceAssignment(
-                String sourcePhaseId, String sourceId,
-                String fieldSignature, Object mintOwner) {
-            ModelAssignment selected = uniqueAssignment(
-                    candidate -> candidate.matchesConfiguredSource(
-                            sourcePhaseId, sourceId, fieldSignature),
-                    false, sourcePhaseId,
-                    ": ambiguous configured source models");
-            if (selected == null) return null;
-            // A configured-source model names one mint SITE, and the site is
-            // reached once per node lifecycle.  The site is not the address:
-            // the address is (node, epoch, region, k-th activation), and the
-            // epoch is the half nothing here was checking.  On hdfs-17960 the
-            // flip replay threw inside the workload before it restarted the
-            // NameNode, so the only activation it offered was epoch 0 -- and
-            // root=false was written there, at the mint the recording made
-            // before the restart, instead of at the epoch-1 mint the plan
-            // addresses.  The recorded execution was rewritten at a point the
-            // solver said nothing about.
+        synchronized boolean mintIsPlaceable(Object mintOwner) {
             String unattributed = mintIsNotThePlannedNode(mintOwner);
-            if (!unattributed.isEmpty()) {
-                addSourcePhaseGap(mintAttribution(mintOwner).isEmpty()
-                        ? "MINT_UNATTRIBUTED" : "EPOCH_UNMATCHED", null,
-                        unattributed);
-                return null;
-            }
-            return selected;
+            if (unattributed.isEmpty()) return true;
+            addSourcePhaseGap(mintAttribution(mintOwner).isEmpty()
+                            ? "MINT_UNATTRIBUTED" : "EPOCH_UNMATCHED", null,
+                    unattributed);
+            return false;
         }
 
         /**
@@ -6570,30 +6034,6 @@ public final class ConcolicRegionRuntime {
                     + ", which does not include " + planned
                     : elsewhere;
         }
-
-        private boolean hasAppliedExactNullReferenceAssignment(
-                SymbolizeAction action) {
-            if (action == null || !action.declaresReferenceInput()) {
-                return false;
-            }
-            int matches = 0;
-            for (ModelAssignment assignment : activation.modelAssignments) {
-                if (assignment.matches(action, null)
-                        && assignment.inputSymbol.equals(action.symbol)
-                        && assignment.modelIsNull
-                        && ("NULL".equalsIgnoreCase(assignment.valueType)
-                        || "null".equalsIgnoreCase(assignment.value))
-                        && appliedModelAssignments.contains(assignment.key)) {
-                    matches++;
-                }
-            }
-            return matches == 1;
-        }
-
-        private void recordModelAssignment(ModelAssignment assignment) {
-            appliedModelAssignments.add(assignment.key);
-        }
-
     }
 
     /** Active identity of one dynamic fixed-count loop invocation. */
@@ -7071,189 +6511,4 @@ public final class ConcolicRegionRuntime {
             return selected;
         }
     }
-
-    /** One scalar assignment returned by a path-flip solve. */
-    static final class ModelAssignment {
-        final String key;
-        final String engineSymbol;
-        final String inputSymbol;
-        final String valueType;
-        final String value;
-        final String configuredSourcePhaseId;
-        final String configuredSourceId;
-        final String configuredSourceFieldSignature;
-        final boolean modelIsNull;
-        final List<String> path = new ArrayList<>();
-
-        ModelAssignment(JsonObject json) {
-            this.engineSymbol = firstNonBlank(optionalString(json, "engineSymbol"));
-            this.inputSymbol = optionalString(json, "inputSymbol");
-            this.valueType = optionalString(json, "valueType");
-            this.value = optionalString(json, "value");
-            this.configuredSourcePhaseId = optionalString(json,
-                    "configuredSourcePhaseId");
-            this.configuredSourceId = optionalString(json,
-                    "configuredSourceId");
-            this.configuredSourceFieldSignature = optionalString(json,
-                    "configuredSourceFieldSignature");
-            this.modelIsNull = optionalBool(json, "modelIsNull", false);
-            if (json.get("containerTarget") != null) {
-                // A container is symbolic only once a root-derived value is
-                // written into it, and the VM states that inside the
-                // expression the container then carries.  Nothing models a
-                // container cell, so an assignment that names one is refused
-                // rather than materialized into the live object.
-                throw new IllegalArgumentException(
-                        "model assignment names a container target: "
-                                + "containers are not modelled");
-            }
-            for (JsonElement element : array(json,
-                    "materializationPath")) {
-                if (element.isJsonPrimitive()) {
-                    path.add(element.getAsString());
-                }
-            }
-            this.key = firstNonBlank(optionalString(json, "modelAssignmentKey"),
-                    engineSymbol);
-        }
-
-        boolean configuredSourceAssignment() {
-            return !configuredSourcePhaseId.isEmpty()
-                    || !configuredSourceId.isEmpty()
-                    || !configuredSourceFieldSignature.isEmpty();
-        }
-
-        boolean matchesConfiguredSource(String sourcePhaseId,
-                                                 String sourceId,
-                                                 String fieldSignature) {
-            return configuredSourcePhaseId.equals(safe(sourcePhaseId))
-                    && configuredSourceId.equals(safe(sourceId))
-                    && configuredSourceFieldSignature.equals(
-                            safe(fieldSignature))
-                    && inputSymbol.equals("SOURCE_PHASE:"
-                    + safe(sourcePhaseId));
-        }
-
-        boolean matches(SymbolizeAction action,
-                                List<String> actualPath) {
-            if (!inputSymbol.equals(action.symbol)) return false;
-            if (path.isEmpty()) {
-                return actualPath == null || actualPath.isEmpty()
-                        || action.fieldPath.equals(actualPath);
-            }
-            return actualPath != null && path.equals(actualPath);
-        }
-
-        Object referenceValue(Object concrete) {
-            if ("STRING".equalsIgnoreCase(valueType)) {
-                return unquoteSmtString(value);
-            }
-            if ("NULL".equalsIgnoreCase(valueType)
-                    || "null".equalsIgnoreCase(value)) return null;
-            if ("UNCHANGED".equalsIgnoreCase(valueType)) return concrete;
-            return UnsupportedReplayValue.INSTANCE;
-        }
-
-    }
-
-    /** One solver-selected scalar arm for one exact shared-field read. */
-    static final class GuardedReadAssignment {
-        static final String KIND = "PRIMITIVE_FIELD_READ";
-        static final String AUTHORITY =
-                "SOLVER_SELECTED_GUARDED_READ_ARM_V1";
-
-        final String readIdentity;
-        final String candidateIdentity;
-        final String readerTaskId;
-        final String readerOccurrenceId;
-        final String consumerSiteId;
-        final int consumerSiteOccurrence;
-        final String declaringClass;
-        final String fieldName;
-        final String descriptor;
-        final long valueBits;
-
-        GuardedReadAssignment(JsonObject json, String taskOccurrenceId) {
-            if (optionalInteger(json, "schemaVersion", 0) != 1
-                    || !KIND.equals(optionalString(json, "kind"))
-                    || !AUTHORITY.equals(optionalString(json, "authority"))) {
-                throw new IllegalArgumentException(
-                        "unsupported guarded read assignment schema");
-            }
-            this.readIdentity = optionalString(json, "readIdentity");
-            this.candidateIdentity = optionalString(json, "candidateIdentity");
-            this.readerTaskId = optionalString(json, "readerTaskId");
-            this.readerOccurrenceId =
-                    optionalString(json, "readerOccurrenceId");
-            this.consumerSiteId = optionalString(json, "consumerSiteId");
-            this.consumerSiteOccurrence = optionalInteger(json,
-                    "consumerSiteOccurrence", 0);
-            this.declaringClass = optionalString(json, "declaringClass");
-            this.fieldName = optionalString(json, "fieldName");
-            this.descriptor = javaTypeDescriptor(optionalString(json, "descriptor"));
-            String valueType = optionalString(json, "valueType");
-            String value = optionalString(json, "value");
-            String plannedTaskOccurrence = taskOccurrenceId;
-            if (readIdentity.isEmpty() || candidateIdentity.isEmpty()
-                    || readerTaskId.isEmpty() || readerOccurrenceId.isEmpty()
-                    || !readerOccurrenceId.equals(plannedTaskOccurrence)
-                    || consumerSiteId.isEmpty() || consumerSiteOccurrence < 1
-                    || declaringClass.isEmpty() || fieldName.isEmpty()) {
-                throw new IllegalArgumentException(
-                        "incomplete guarded read assignment " + readIdentity);
-            }
-            this.valueBits = primitiveValueBits(descriptor, valueType, value);
-        }
-
-        static long primitiveValueBits(String descriptor,
-                                               String valueType,
-                                               String value) {
-            if ("Z".equals(descriptor)) {
-                if (!"BOOL".equals(valueType)
-                        || !("true".equals(value) || "false".equals(value))) {
-                    throw new IllegalArgumentException(
-                            "boolean guarded read has malformed value " + value);
-                }
-                return "true".equals(value) ? 1L : 0L;
-            }
-            if (!("B".equals(descriptor) || "C".equals(descriptor)
-                    || "S".equals(descriptor) || "I".equals(descriptor)
-                    || "J".equals(descriptor))
-                    || !"INT".equals(valueType)) {
-                throw new IllegalArgumentException(
-                        "unsupported guarded read descriptor/type "
-                                + descriptor + "/" + valueType);
-            }
-            final BigInteger parsed;
-            try {
-                parsed = new BigInteger(value);
-            } catch (NumberFormatException malformed) {
-                throw new IllegalArgumentException(
-                        "guarded read has malformed integer value " + value,
-                        malformed);
-            }
-            BigInteger[] range = integralRange(descriptor);
-            if (parsed.compareTo(range[0]) < 0
-                    || parsed.compareTo(range[1]) > 0) {
-                throw new IllegalArgumentException(
-                        "guarded read value is outside " + descriptor
-                                + " range: " + value);
-            }
-            return parsed.longValue();
-        }
-
-        boolean matches(ConsumerAccessAnchor consumer,
-                                DeclaredField field) {
-            return consumer != null && field != null
-                    && consumerSiteId.equals(consumer.siteId)
-                    && consumerSiteOccurrence == consumer.occurrence
-                    && declaringClass.equals(field.owner())
-                    && fieldName.equals(field.name())
-                    && descriptor.equals(javaTypeDescriptor(field.type()));
-        }
-    }
-
-
-
-
 }
