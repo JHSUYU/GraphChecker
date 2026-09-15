@@ -12,7 +12,6 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
-import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -57,8 +56,6 @@ import java.util.Set;
 public final class StaticScopeMap {
     /** The file this map is published as, beside the other plan artifacts. */
     public static final String FILE = "static_scope_map.jsonl";
-    /** Kind of the first row: the file's own schema. */
-    public static final String KIND = "STATIC_SCOPE_MAP";
     /** Kind of every other row: one site, one shape. */
     public static final String SITE_KIND = "STATIC_SCOPE_SITE";
     public static final int SCHEMA_VERSION = 1;
@@ -66,10 +63,6 @@ public final class StaticScopeMap {
     public static final String WRITE_SITE = "WRITE_SITE";
     public static final String EXPORT_SITE = "EXPORT_SITE";
     public static final String TARGET_SITE = "TARGET_SITE";
-
-    /** The members of a site row, in the order the kind row states them. */
-    static final String[] MEMBERS = {"role", "regionId", "siteId", "vmSite",
-            "cell", "carrier", "portId", "declaredCallee", "guards"};
 
     /** Graph edge kinds that store into a location. */
     private static final String[] WRITE_KINDS = {"field_write",
@@ -97,12 +90,11 @@ public final class StaticScopeMap {
         public final String carrier;
         /** The declared wire port, for an EXPORT_SITE. */
         public final String portId;
-        public final String declaredCallee;
         public final List<String> guards;
 
         Site(String role, String regionId, String siteId, String vmSite,
              String cell, String carrier, String portId,
-             String declaredCallee, List<String> guards) {
+             List<String> guards) {
             this.role = role;
             this.regionId = regionId;
             this.siteId = siteId;
@@ -110,14 +102,13 @@ public final class StaticScopeMap {
             this.cell = cell;
             this.carrier = carrier;
             this.portId = portId;
-            this.declaredCallee = declaredCallee;
             this.guards = Collections.unmodifiableList(
                     new ArrayList<String>(guards));
         }
 
         Site withGuards(List<String> found) {
             return new Site(role, regionId, siteId, vmSite, cell, carrier,
-                    portId, declaredCallee, found);
+                    portId, found);
         }
 
         @Override
@@ -154,16 +145,16 @@ public final class StaticScopeMap {
             if (method.isEmpty() || unitIndex < 0) continue;
             if (THROW_KIND.equals(kind)) {
                 add(found, seen, retained, TARGET_SITE, method, unitIndex,
-                        "", "", "", "");
+                        "", "", "");
                 continue;
             }
             if (!write(kind)) continue;
             String carrier = signature(text(edge.get("toCell")));
             if (carrier.isEmpty()) continue;
-            String callee = text(edge.get("invoke"));
-            String leaf = SharedFieldFlow.atomicValueField(carrier, callee);
+            String leaf = SharedFieldFlow.atomicValueField(carrier,
+                    text(edge.get("invoke")));
             add(found, seen, retained, WRITE_SITE, method, unitIndex,
-                    leaf.isEmpty() ? carrier : leaf, carrier, "", callee);
+                    leaf.isEmpty() ? carrier : leaf, carrier, "");
         }
         for (Region region : retained) {
             for (Map<String, Object> port : region.ports) {
@@ -182,8 +173,6 @@ public final class StaticScopeMap {
                 }
                 found.add(new Site(EXPORT_SITE, region.regionId, siteId,
                         vmSite(method), "", "", portId,
-                        text(port.get(CommunicationCatalogContract
-                                .DECLARED_CALLEE)),
                         Collections.<String>emptyList()));
             }
         }
@@ -197,50 +186,16 @@ public final class StaticScopeMap {
         return ids;
     }
 
-    /** The artifact's rows: the schema, then one row per site. */
+    /** The artifact's rows: one per site. */
     public static List<JsonObject> rows(List<Site> sites, Guards guards) {
         List<JsonObject> rows = new ArrayList<JsonObject>();
-        Map<String, Integer> byRole = new LinkedHashMap<String, Integer>();
-        List<JsonObject> siteRows = new ArrayList<JsonObject>();
         for (Site site : sites) {
             List<String> found = guards == null
                     ? Collections.<String>emptyList()
                     : guards.of(site.siteId);
-            siteRows.add(row(site.withGuards(found == null
+            rows.add(row(site.withGuards(found == null
                     ? Collections.<String>emptyList() : found)));
-            Integer count = byRole.get(site.role);
-            byRole.put(site.role, count == null ? 1 : count + 1);
         }
-        JsonObject schema = new JsonObject();
-        schema.addProperty("schemaVersion", SCHEMA_VERSION);
-        schema.addProperty("kind", KIND);
-        JsonArray members = new JsonArray();
-        for (String member : MEMBERS) members.add(member);
-        schema.add("schema", members);
-        JsonArray roles = new JsonArray();
-        roles.add(WRITE_SITE);
-        roles.add(EXPORT_SITE);
-        roles.add(TARGET_SITE);
-        schema.add("roles", roles);
-        schema.addProperty("join", "a recorded endpoint site of the VM's "
-                + "spelling begins with vmSite + '#'; the carriers of a "
-                + "recorded location are the carriers of the WRITE_SITE rows "
-                + "its recorded writes match, and its static writers are "
-                + "every WRITE_SITE row of those carriers; a port's "
-                + "producers are the EXPORT_SITE rows of that portId");
-        schema.addProperty("guards", "the branch sites the row's site is "
-                + "control-dependent on, by post-dominance in the enclosing "
-                + "method's CFG; EXPLORE flips only these");
-        schema.addProperty("regionId", "the innermost retained region whose "
-                + "methods hold the site; a site held by two regions neither "
-                + "of which contains the other is published under both");
-        for (String role : new String[]{WRITE_SITE, EXPORT_SITE,
-                TARGET_SITE}) {
-            Integer count = byRole.get(role);
-            schema.addProperty(role, count == null ? 0 : count.intValue());
-        }
-        rows.add(schema);
-        rows.addAll(siteRows);
         return rows;
     }
 
@@ -255,7 +210,6 @@ public final class StaticScopeMap {
         row.addProperty("cell", site.cell);
         row.addProperty("carrier", site.carrier);
         row.addProperty("portId", site.portId);
-        row.addProperty("declaredCallee", site.declaredCallee);
         JsonArray guards = new JsonArray();
         for (String guard : site.guards) guards.add(guard);
         row.add("guards", guards);
@@ -265,7 +219,7 @@ public final class StaticScopeMap {
     private static void add(List<Site> into, Set<String> seen,
                             List<Region> retained, String role, String method,
                             int unitIndex, String cell, String carrier,
-                            String portId, String callee) {
+                            String portId) {
         String siteId = SiteId.of(method, unitIndex);
         for (String regionId : holders(retained, method)) {
             if (!seen.add(role + "|" + regionId + "|" + siteId + "|"
@@ -273,8 +227,7 @@ public final class StaticScopeMap {
                 continue;
             }
             into.add(new Site(role, regionId, siteId, vmSite(method), cell,
-                    carrier, portId, callee,
-                    Collections.<String>emptyList()));
+                    carrier, portId, Collections.<String>emptyList()));
         }
     }
 
@@ -375,8 +328,7 @@ public final class StaticScopeMap {
             sites.add(new Site(string(row, "role"), string(row, "regionId"),
                     string(row, "siteId"), string(row, "vmSite"),
                     string(row, "cell"), string(row, "carrier"),
-                    string(row, "portId"), string(row, "declaredCallee"),
-                    guards));
+                    string(row, "portId"), guards));
         }
         return new StaticScopeMap(sites);
     }
@@ -470,15 +422,6 @@ public final class StaticScopeMap {
             if (TARGET_SITE.equals(site.role)) found.add(site);
         }
         return found;
-    }
-
-    /** The guard set of one site, over every row that names it. */
-    public Set<String> guardsOf(String siteId) {
-        Set<String> guards = new LinkedHashSet<String>();
-        for (Site site : sites) {
-            if (site.siteId.equals(siteId)) guards.addAll(site.guards);
-        }
-        return guards;
     }
 
     // ---- spellings ----------------------------------------------------

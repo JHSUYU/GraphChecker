@@ -16,7 +16,9 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.object;
  * every stage states a retained loop with.
  */
 public final class LoopBoundPolicy {
-    public static final String FIELD = "loopBound";
+
+    /** Task member carrying this contract; read only through this class. */
+    private static final String FIELD = "loopBound";
 
     public static final String LOOP_SITE_ID = "loopSiteId";
     public static final String LOOP_BODY_BOUND = "loopBodyBound";
@@ -35,7 +37,6 @@ public final class LoopBoundPolicy {
     public static final String LOOP_CLASSIFICATION = "loopClassification";
     public static final String LOOP_CLASSIFICATION_AUTHORITY =
             "loopClassificationAuthority";
-    public static final String PATH_LOOP_COUNTS = "pathLoopCounts";
     public static final String LOOP_CARDINALITY = "loopCardinality";
     public static final String LOOP_CARDINALITIES = "loopCardinalities";
     public static final String LOOP_CARDINALITY_GAPS =
@@ -56,25 +57,10 @@ public final class LoopBoundPolicy {
     public static final String DEMANDED_UNIT_INDEX = "demandedUnitIndex";
     public static final String PATH_CARDINALITY_AUTHORITY =
             "RUNTIME_ARRAY_CARDINALITY_V1";
-    public static final String PATH_LOOP_COUNT_GAPS = "pathLoopCountGaps";
-    /** Retained-loop member stating whether this loop's trip count can reach
-     *  anything the failure reads.  Absent means required: a declaration
-     *  that says nothing has not been decided, and silence never relaxes a
-     *  soundness device. */
-    public static final String LOOP_FAILURE_RELEVANT = "failureRelevant";
-    /** {@link #LOOP_FAILURE_RELEVANT}'s authority, so a reader can tell a
-     *  decided declaration from an old one that predates the decision. */
-    /** The one rule that decides {@link #LOOP_FAILURE_RELEVANT}. */
-    public static final String PATH_LOOP_COUNT_MISSING =
-            "PATH_LOCAL_LOOP_COUNT_MISSING";
+
+    /** One replay path states two different counts for one loop body. */
     public static final String PATH_LOOP_COUNT_AMBIGUOUS =
             "PATH_LOCAL_LOOP_COUNT_AMBIGUOUS";
-    public static final String PATH_LOOP_COUNT_OUT_OF_BOUND =
-            "PATH_LOCAL_LOOP_COUNT_OUT_OF_BOUND";
-    public static final String PATH_LOOP_REACHABILITY_MISSING =
-            "PATH_LOCAL_LOOP_REACHABILITY_MISSING";
-    public static final String PATH_ARRAY_CARDINALITY_MISSING =
-            "PATH_LOCAL_ARRAY_CARDINALITY_MISSING";
 
     /** An array-backed indexed {@code for}; a local early exit is a guarded
      *  path effect, not a semantic unroll bound. */
@@ -87,8 +73,6 @@ public final class LoopBoundPolicy {
     public static final String LOOP_CLASSIFIED_CONDITION_CONTROLLED =
             "STATIC_CONDITION_CONTROLLED_V1";
 
-    public static final String LOOP_SITE_UNDECLARED =
-            "BOUNDED_LOOP_SITE_UNDECLARED";
     /** The executor's backedge ceiling for a loop no declaration narrows: a
      *  resource limit, never a modeled {@code K_L}.  README {@code LOOP-1}
      *  forbids a retained condition loop inheriting a core default. */

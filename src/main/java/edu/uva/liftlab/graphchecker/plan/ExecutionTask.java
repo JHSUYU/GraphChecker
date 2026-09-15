@@ -71,7 +71,6 @@ public final class ExecutionTask extends PlanRow {
     private final Set<String> rootLoopControlSites;
     private final Set<String> fixedCountLoopSites;
     private final Map<String, List<String>> exportConsumerOccurrences;
-    private JsonElement expandedReplayContract;
 
     /** {@code bound} and {@code phases} are the values
      *  {@link #create} just encoded; a decoder passes null and the wire is

@@ -2,7 +2,6 @@ package edu.uva.liftlab.graphchecker.plan;
 
 
 import com.google.gson.JsonArray;
-import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import org.junit.Rule;
@@ -90,10 +89,6 @@ public class SymbolicRootPolicyTest {
         JsonObject cut = selection.select(DN, actions).get(3).getAsJsonObject();
         assertEquals("SYMBOLIC", cut.get("mode").getAsString());
         assertFalse("a cut port is not a declared root", cut.has(ROOT));
-        assertEquals("tracked, and never mint-eligible",
-                "false|" + InputActionCatalog
-                        .DECLARED_COMMUNICATION_CUT_PORT,
-                verdictOf(selection, "<C: int getKeyId()>.return"));
 
         // And the write side of a DECLARED cell: the VM retains a location
         // by value, so the stores of a declared counter publish nothing
@@ -150,19 +145,6 @@ public class SymbolicRootPolicyTest {
                         + ACCESSOR_RETURN + "\"]}");
         selection.resolveDeclaredNames(Collections.singletonList(edge));
         return selection;
-    }
-
-    /** {@code mintEligible|verdict} of the decision row naming one cell. */
-    private static String verdictOf(
-            ConcolicScheduler.SymbolicInputSelection selection, String cell) {
-        for (JsonElement element : selection.rootDecisions()) {
-            JsonObject row = element.getAsJsonObject();
-            if (cell.equals(row.get("cell").getAsString())) {
-                return row.get("mintEligible").getAsString() + "|"
-                        + row.get("verdict").getAsString();
-            }
-        }
-        return "";
     }
 
     /** The declared counter of hdfs-17960 and the store the graph names. */

@@ -13,8 +13,6 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.TreeMap;
-import java.util.TreeSet;
 import java.util.function.Predicate;
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.asMap;
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.text;
@@ -102,53 +100,24 @@ final class SymbolicRegionPlanner {
             }
             List<String> methods = forwardClosure(root, outgoing,
                     regionAuthorities);
-            String authority = regionAuthorities.get(root);
-            boolean admitted = addSkeleton(program, root, authority, methods,
+            addSkeleton(program, root, regionAuthorities.get(root), methods,
                     failureMethods,
                     communicationAnchors, stateAnchors, outgoing,
                     regionAuthorities, transportBoundaries);
-            if (!admitted) {
-                addAuthorityEnvelope(program, root, authority, methods);
-            }
         }
 
         List<String> communicationEntries = new ArrayList<>(
                 communicationEndpoints(program));
         Collections.sort(communicationEntries);
-        Map<String, Map<String, Set<Integer>>> callUnits =
-                callUnitsByCallee(program, selected);
-        Map<String, List<Map<String, Object>>> loopsByMethod =
-                retainedLoopsByMethod(program);
-        Set<String> producers = wireProducerEndpoints(program);
-        // An endpoint whose region moved up to its loop is held there; a
-        // second root at the endpoint itself would re-create the once-per-
-        // value activation this rule exists to remove.
-        Set<String> rerootedEndpoints = new LinkedHashSet<>();
         for (String endpoint : communicationEntries) {
             if (!selected.contains(endpoint)
                     || CausynthStaticFacts.constructor(endpoint)
                     || !program.regionsHolding(endpoint).isEmpty()) {
                 continue;
             }
-            String root = producers.contains(endpoint)
-                    ? producingLoopRoot(endpoint, selected, callUnits,
-                    loopsByMethod, regionAuthorities, transportBoundaries)
-                    : endpoint;
-            List<String> methods = forwardClosure(root, outgoing,
-                    regionAuthorities);
-            if (!methods.contains(endpoint)) {
-                // The caller's own context owns the endpoint; rooting there
-                // would declare a port the region does not hold.
-                root = endpoint;
-                methods = forwardClosure(root, outgoing, regionAuthorities);
-            }
-            if (!root.equals(endpoint)) {
-                rerootedEndpoints.add(endpoint);
-            }
-            if (hasSkeletonRoot(program, root)) {
-                continue;
-            }
-            addSkeleton(program, root, "COMMUNICATION_ENTRY", methods,
+            if (hasSkeletonRoot(program, endpoint)) continue;
+            addSkeleton(program, endpoint, "COMMUNICATION_ENTRY",
+                    forwardClosure(endpoint, outgoing, regionAuthorities),
                     failureMethods, communicationAnchors, stateAnchors,
                     outgoing, regionAuthorities, transportBoundaries);
         }
@@ -158,7 +127,6 @@ final class SymbolicRegionPlanner {
         for (String entry : stateEntries) {
             if (!selected.contains(entry)
                     || CausynthStaticFacts.constructor(entry)
-                    || rerootedEndpoints.contains(entry)
                     || hasSkeletonRoot(program, entry)) {
                 continue;
             }
@@ -170,123 +138,6 @@ final class SymbolicRegionPlanner {
 
         declareCommunicationPorts(program);
         declareRetainedLoops(program);
-    }
-
-    /**
-     * The method a wire producer's endpoint is rooted at: the nearest
-     * selected caller that issues the endpoint's call from inside one of its
-     * own retained loops, or the endpoint itself when no caller does.
-     *
-     * <p>One iteration of such a loop produces one wire value.  A region
-     * rooted at the endpoint is entered once per value and its activations
-     * can only be told apart by process-wide invocation ordinals, so the
-     * consumer's attach binds to whichever of them the ordinal cap left;
-     * rooted at the loop's own method the region spans the loop, {@link
-     * StaticProgram#loopBodyRoot} names the per-iteration boundary, and each
-     * activation exports exactly the element that iteration produced.  That
-     * is the shape the consumer half already has whenever the value it
-     * builds is also a demanded state anchor, so this makes the two sides of
-     * one wire symmetric rather than introducing a new kind of region.</p>
-     *
-     * <p>The walk stops below any method that already owns an execution
-     * context or a transport boundary: above those the endpoint's caller is
-     * no longer the frame the value was produced in.</p>
-     */
-    private static String producingLoopRoot(
-            String endpoint, Set<String> selected,
-            Map<String, Map<String, Set<Integer>>> callUnits,
-            Map<String, List<Map<String, Object>>> loopsByMethod,
-            Map<String, String> regionAuthorities,
-            Set<String> transportBoundaries) {
-        Set<String> visited = new LinkedHashSet<>();
-        List<String> frontier = Collections.singletonList(endpoint);
-        while (!frontier.isEmpty()) {
-            Set<String> next = new TreeSet<>();
-            for (String callee : frontier) {
-                if (!visited.add(callee)) continue;
-                for (Map.Entry<String, Set<Integer>> site
-                        : callUnits.getOrDefault(callee,
-                        Collections.<String, Set<Integer>>emptyMap())
-                        .entrySet()) {
-                    String caller = site.getKey();
-                    if (!selected.contains(caller)
-                            || CausynthStaticFacts.constructor(caller)
-                            || transportBoundaries.contains(caller)) {
-                        continue;
-                    }
-                    for (Map<String, Object> loop
-                            : loopsByMethod.getOrDefault(caller,
-                            Collections.<Map<String, Object>>emptyList())) {
-                        for (int unitIndex : site.getValue()) {
-                            if (StaticProgram.loopContains(loop, unitIndex)) {
-                                return caller;
-                            }
-                        }
-                    }
-                    // A caller that already owns an execution context is the
-                    // ceiling of this walk, not a step in it.
-                    if (!regionAuthorities.containsKey(caller)) {
-                        next.add(caller);
-                    }
-                }
-            }
-            next.removeAll(visited);
-            frontier = new ArrayList<>(next);
-        }
-        return endpoint;
-    }
-
-    /** The endpoint methods that define a declared wire value. */
-    private static Set<String> wireProducerEndpoints(StaticProgram program) {
-        Set<String> producers = new LinkedHashSet<>();
-        for (Map<String, Object> site : program.communicationCallSites) {
-            Map<String, Object> capture = asMap(site.get(
-                    WireFlowCatalog.PRODUCER));
-            if (capture != null) {
-                producers.add(text(capture.get(CommunicationCatalogContract
-                        .PORT_DEFINITION_METHOD)));
-            }
-        }
-        producers.remove("");
-        return producers;
-    }
-
-    /** Selected call sites as {@code callee -> caller -> unit indices}. */
-    private static Map<String, Map<String, Set<Integer>>> callUnitsByCallee(
-            StaticProgram program, Set<String> selected) {
-        Map<String, Map<String, Set<Integer>>> result = new LinkedHashMap<>();
-        for (Map<String, Object> edge : program.edges) {
-            String caller = text(edge.get("method"));
-            String callee = StaticProgram.invocationTarget(edge);
-            Object unit = edge.get("unitIndex");
-            if (callee.isEmpty() || caller.isEmpty() || caller.equals(callee)
-                    || !selected.contains(caller)
-                    || !(unit instanceof Number)) {
-                continue;
-            }
-            int unitIndex = ((Number) unit).intValue();
-            if (unitIndex < 0) continue;
-            result.computeIfAbsent(callee,
-                    ignored -> new TreeMap<String, Set<Integer>>())
-                    .computeIfAbsent(caller,
-                            ignored -> new TreeSet<Integer>())
-                    .add(unitIndex);
-        }
-        return result;
-    }
-
-    /** The declared retained loops of the slice, by the method that runs them. */
-    private static Map<String, List<Map<String, Object>>>
-            retainedLoopsByMethod(StaticProgram program) {
-        Map<String, List<Map<String, Object>>> result = new LinkedHashMap<>();
-        for (Map<String, Object> loop : program.retainedLoops) {
-            String method = text(loop.get("enclosingMethod"));
-            if (method.isEmpty()) continue;
-            result.computeIfAbsent(method,
-                    ignored -> new ArrayList<Map<String, Object>>())
-                    .add(loop);
-        }
-        return result;
     }
 
     /** A method held by another context still needs its own state occurrence. */
@@ -393,19 +244,13 @@ final class SymbolicRegionPlanner {
         Map<String, Object> producer = asMap(site.get(WireFlowCatalog.PRODUCER));
         Map<String, Object> consumer = asMap(site.get(WireFlowCatalog.CONSUMER));
         if (producer == null || consumer == null) return;
-        String direction = text(site.get(
-                CommunicationCatalogContract.PORT_DIRECTION));
-        boolean request = CommunicationCatalogContract.DIRECTION_REQUEST
-                .equals(direction);
-        declareWireEndpoint(program, site, producer, "OUT", request,
-                byRegion);
-        declareWireEndpoint(program, site, consumer, "IN", !request,
-                byRegion);
+        declareWireEndpoint(program, site, producer, "OUT", byRegion);
+        declareWireEndpoint(program, site, consumer, "IN", byRegion);
     }
 
     private static void declareWireEndpoint(
             StaticProgram program, Map<String, Object> flow,
-            Map<String, Object> capture, String side, boolean client,
+            Map<String, Object> capture, String side,
             Map<String, Map<String, Map<String, Object>>> byRegion) {
         String method = text(capture.get(
                 CommunicationCatalogContract.PORT_DEFINITION_METHOD));
@@ -431,9 +276,6 @@ final class SymbolicRegionPlanner {
             }
             row.put(CommunicationCatalogContract.PORT_HANDOFF_LEAF_PATH,
                     portId);
-            row.put(RuntimeSelectedRegionFinalizer.PORT_ROLE, client
-                    ? RuntimeSelectedRegionFinalizer.PORT_ROLE_CLIENT
-                    : RuntimeSelectedRegionFinalizer.PORT_ROLE_SERVER);
             row.putAll(capture);
             ports.putIfAbsent(side + "\n" + portId, row);
         }
@@ -489,17 +331,6 @@ final class SymbolicRegionPlanner {
                 ? "COMMUNICATION_CONTEXT" : "STATE_CONTEXT");
         program.regions.add(row);
         return true;
-    }
-
-    private static void addAuthorityEnvelope(
-            StaticProgram program, String root, String authority,
-            List<String> methods) {
-        Map<String, Object> row = skeletonRow(root, authority);
-        row.put("anchorMethod", "");
-        row.put("anchorMethods", Collections.emptyList());
-        row.put("methods", methods);
-        row.put("selection", "AUTHORITY_ENVELOPE");
-        program.regions.add(row);
     }
 
     /** The identity and root fields every skeleton row opens with. */

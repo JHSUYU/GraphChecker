@@ -440,10 +440,6 @@ public final class ConcolicInstrumentationSelections {
         void mergeFrom(ConcolicBranchSelection other) {
             mergeSets(unitsByMethod, other.unitsByMethod);
         }
-
-        int siteCount() {
-            return totalSize(unitsByMethod);
-        }
     }
 
     private static FieldTarget concolicFieldTarget(JsonObject action) {
@@ -793,27 +789,6 @@ public final class ConcolicInstrumentationSelections {
                                     + target.callSiteId);
                 }
             }
-        }
-
-        /** Unique local-definition sites this campaign named. */
-        int localSiteCount() {
-            int sites = 0;
-            for (Map<String, Set<Integer>> locals : localsByMethod.values()) {
-                for (Set<Integer> units : locals.values()) {
-                    sites += Math.max(1, units.size());
-                }
-            }
-            return sites;
-        }
-
-        /** Unique method-argument slots this campaign named. */
-        int methodArgumentCount() {
-            return totalSize(methodArguments);
-        }
-
-        /** Unique declared fields this campaign named. */
-        int fieldCount() {
-            return fields.size();
         }
     }
 
