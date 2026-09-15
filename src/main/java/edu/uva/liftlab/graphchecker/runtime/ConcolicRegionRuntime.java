@@ -15,9 +15,6 @@ import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
 import edu.uva.liftlab.graphchecker.plan.BranchPredicateAlgebra;
 import edu.uva.liftlab.graphchecker.plan.BranchWitness;
 import edu.uva.liftlab.graphchecker.smt.CanonicalJson;
-import edu.uva.liftlab.graphchecker.plan.RecordedEvidenceIdentity;
-import edu.uva.liftlab.graphchecker.plan.SharedStateEvidence;
-import edu.uva.liftlab.graphchecker.plan.SymbolicSourceEvidence;
 import edu.uva.liftlab.graphchecker.smt.VmExpressionIr;
 import edu.uva.liftlab.graphchecker.plan.VmExpressionTable;
 import edu.uva.liftlab.graphchecker.plan.SmtModelValueCodec;
@@ -76,7 +73,6 @@ import static edu.uva.liftlab.graphchecker.runtime.ConcolicResultPublisher.submi
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicResultPublisher.taskUnanswered;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicVmBroker.engine;
 import static edu.uva.liftlab.graphchecker.runtime.SharedStateCapture.captureRecordedSharedStateRaw;
-import static edu.uva.liftlab.graphchecker.runtime.SharedStateCapture.evidenceIdentity;
 import static edu.uva.liftlab.graphchecker.runtime.PathConditionWindow.contiguousConditionIndices;
 import static edu.uva.liftlab.graphchecker.runtime.PathConditionWindow.vmEventConditionIndices;
 
@@ -107,8 +103,6 @@ public final class ConcolicRegionRuntime {
     private static final AtomicLong TOKEN_COUNTER = new AtomicLong();
     private static final AtomicLong ACCESSOR_CONTEXT_TOKEN_COUNTER =
             new AtomicLong();
-    /** Monotonic ordinal of one recorded-evidence read-out batch. */
-    private static final AtomicLong EVIDENCE_SNAPSHOTS = new AtomicLong();
     static final String HALT_AFTER_SELECTED_RESULT_PROPERTY =
             "causynth.concolic.halt.after.selected.result";
     static final Map<Long, ActiveRegion> ACTIVE = new ConcurrentHashMap<>();
@@ -1596,8 +1590,8 @@ public final class ConcolicRegionRuntime {
                 symbol = "sym__" + safe(sourceId) + "__"
                         + safe(sourceOccurrence) + "__"
                         + entry.ordinal;
-                String label = SymbolicSourceEvidence.engineLabelForPhase(
-                        entry.phaseId(), safe(sourceId));
+                String label = ConfiguredSourcePhaseContract
+                        .engineLabelForPhase(entry.phaseId(), safe(sourceId));
                 api.symbolizeExactField(owner, exactFieldSignature(field),
                         entry.ordinal <= 1 ? label
                                 : label + "__" + entry.ordinal);
@@ -1610,42 +1604,9 @@ public final class ConcolicRegionRuntime {
             JsonElement expression = engineExpression(api.fieldExpression(
                     owner, declaringClass, field.getName(), descriptor,
                     value));
-            // Only the occurrence that minted the VM leaf owns source
-            // evidence and its model assignment.  A propagated bare or
-            // compound expression remains the consumer's exact input and is
-            // recorded below as reuse without acquiring a second identity.
-            JsonObject evidence = null;
-            if (!reused) {
-                // Fail closed: a concrete write is not a materialized
-                // symbolic input until the VM has accepted the exact field
-                // and returned one exact root for it.  The evidence row is
-                // built before the mint row so that a read-back the VM did
-                // not replace -- the shape this catch names -- leaves no row
-                // claiming a symbol it never published.
-                try {
-                    evidence = SymbolicSourceEvidence.event(entry.phaseId(),
-                            safe(sourceId), active.occurrenceId(),
-                            safe(fieldSignature), expression,
-                            entry.ordinal, reused, symbol,
-                            // Only an activation that read the field as the
-                            // program left it observed a recorded value.  A
-                            // replay that wrote the wave's assignment into
-                            // the field above read that back, and publishing
-                            // it as "recorded" is how a counterfactual
-                            // becomes the recording.
-                            assigned ? null : recordedScalar(value));
-                } catch (IllegalArgumentException refused) {
-                    throw new IllegalStateException(refused.getMessage()
-                            + " (VM read-back after symbolizeExactField: "
-                            + describeReadBack(expression) + ")", refused);
-                }
-            }
             active.recordConfiguredSourceMint(entry, safe(sourceId),
                     safe(fieldSignature), symbol, expression, reused,
                     assigned ? null : recordedScalar(value));
-            if (evidence != null) {
-                active.recordSymbolicSource(entry.key(), evidence);
-            }
             return true;
         } catch (Throwable failure) {
             return false;
@@ -3819,17 +3780,24 @@ public final class ConcolicRegionRuntime {
             pathConditionPaused = true;
             if (!active.abandoned) {
                 publishRows = true;
-                // One ordinal names every row assembled for this close.
-                active.evidenceSnapshot =
-                        EVIDENCE_SNAPSHOTS.incrementAndGet();
                 try {
                     rawSharedState = captureRecordedSharedStateRaw(active,
-                            api, evidenceIdentity(active));
+                            api);
                 } catch (Throwable throwable) {
-                    active.sharedStateGaps.add(SharedStateEvidence.gap(
-                            SharedStateEvidence.STAGE_VERSIONS,
-                            SharedStateEvidence.INVOCATION_FAILED, "",
-                            rootCause(throwable)));
+                    // A write log this run could not read out leaves every
+                    // location it held with no version to join to, so the
+                    // refusal is stated the way the one gap vocabulary states
+                    // it rather than on an artifact nobody publishes.
+                    RowRuntime.gap(
+                            edu.uva.liftlab.graphchecker.contract.GapKind
+                                    .UNSTATED_VALUE,
+                            edu.uva.liftlab.graphchecker.contract.GapClass
+                                    .DIAGNOSTIC,
+                            SharedStateCapture.STAGE_VERSIONS,
+                            "the tracked-location read-out could not be"
+                                    + " invoked, so no write version of this"
+                                    + " activation is stated: "
+                                    + rootCause(throwable));
                 }
             }
             api.finish();
@@ -5252,9 +5220,6 @@ public final class ConcolicRegionRuntime {
         Throwable exitThrowable;
         /** Exact configured-source and planned-action observations. */
         final List<JsonObject> symbolizedRows = new ArrayList<>();
-        /** Exact configured source roots materialized by this activation. */
-        final Map<String, JsonObject> symbolicSources =
-                new LinkedHashMap<>();
         /**
          * Mint sites, and the fields they mint, this activation reached.
          *
@@ -5293,9 +5258,7 @@ public final class ConcolicRegionRuntime {
         /** The write log this activation read out, and its gaps. */
         final Map<String, JsonObject> sharedStateRecords =
                 new LinkedHashMap<>();
-        final List<JsonObject> sharedStateGaps = new ArrayList<>();
         /** Read-out batch every record of this activation is stamped with. */
-        private long evidenceSnapshot;
         private final Set<String> materialized = new LinkedHashSet<>();
         private final Map<String, Integer> branchOccurrences =
                 new LinkedHashMap<>();
@@ -5739,7 +5702,7 @@ public final class ConcolicRegionRuntime {
          * The same row, with the concrete value the mint read.
          *
          * <p>One mint publication shape: a configured-source mint states
-         * what the field held ({@code SymbolicSourceEvidence.recordedValue})
+         * what the field held
          * and a manual one stated nothing, so a root the composer met
          * through a manual input had no recorded value to lower -- on lane
          * VM12 that is DelegationKey.expiryDate, minted as
@@ -5844,26 +5807,6 @@ public final class ConcolicRegionRuntime {
                     phase == null ? "" : phase.sourceId());
             gap.addProperty("detail", safe(detail));
             configuredSourcePhaseGaps.add(gap);
-        }
-
-        private synchronized void recordSymbolicSource(
-                String sourcePhaseId, JsonObject evidence) {
-            JsonObject prior = symbolicSources.putIfAbsent(sourcePhaseId,
-                    shallowCopy(evidence));
-            if (prior != null && !prior.equals(evidence)) {
-            }
-        }
-
-        /**
-         * The read-out batch this activation's evidence belongs to, allocated
-         * on first use so a capture outside the exit batch still gets its own
-         * comparable ordinal rather than borrowing a later one.
-         */
-        long evidenceSnapshot() {
-            if (evidenceSnapshot == 0L) {
-                evidenceSnapshot = EVIDENCE_SNAPSHOTS.incrementAndGet();
-            }
-            return evidenceSnapshot;
         }
 
         /**
