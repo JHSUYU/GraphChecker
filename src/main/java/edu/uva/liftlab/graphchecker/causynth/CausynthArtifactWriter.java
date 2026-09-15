@@ -17,7 +17,21 @@ import java.util.List;
 import java.util.zip.Deflater;
 import java.util.zip.GZIPOutputStream;
 
-/** Writes the stable discovery artifact set for one static analysis run. */
+/**
+ * Writes the stable discovery artifact set for one static analysis run.
+ *
+ * <p>Three files it used to write are gone, because nothing read their
+ * CONTENT: {@code target_resolved.json} (the declared target method, which
+ * the static scope map's TARGET_SITE row already names),
+ * {@code communication_call_sites.jsonl.gz} (20 bytes and 0 rows on 17960)
+ * and {@code retained_loops.jsonl.gz} (whose rows travel inside
+ * {@code region_skeletons}).  The in-process data behind all three is
+ * untouched -- {@code StaticProgram.targetResolved} feeds
+ * {@code SymbolicRegionPlanner:78} and {@code CausynthPipeline:308,373},
+ * {@code communicationCallSites} feeds {@code SymbolicRegionPlanner:227,358}
+ * and {@code retainedLoops} feeds {@code SymbolicRegionPlanner:158-163} --
+ * only the publication is.</p>
+ */
 final class CausynthArtifactWriter {
     private CausynthArtifactWriter() {
     }
@@ -27,19 +41,10 @@ final class CausynthArtifactWriter {
                                         List<JsonObject> staticScopeMap)
             throws IOException {
         Files.createDirectories(outputDir);
-        Files.write(outputDir.resolve("target_resolved.json"),
-                JsonFields.WRITER.toJson(program.targetResolved)
-                        .getBytes(StandardCharsets.UTF_8));
         writeGzipJsonl(outputDir.resolve(
                 "candidate_dataflow_edges.jsonl.gz"), program.edges);
         writeGzipJsonl(outputDir.resolve("region_skeletons.jsonl.gz"),
                 program.regions);
-        // Static communication and loop discovery.
-        writeGzipJsonl(outputDir.resolve(
-                        "communication_call_sites.jsonl.gz"),
-                program.communicationCallSites);
-        writeGzipJsonl(outputDir.resolve("retained_loops.jsonl.gz"),
-                program.retainedLoops);
         writeGzipJsonl(outputDir.resolve("communication_gaps.jsonl.gz"),
                 program.communicationGaps);
         // CLOSURE-V2 SS4: what the slice knows about the sites the target's
