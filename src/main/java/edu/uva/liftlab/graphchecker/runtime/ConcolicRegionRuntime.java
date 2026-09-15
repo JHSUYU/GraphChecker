@@ -4356,7 +4356,8 @@ public final class ConcolicRegionRuntime {
                         javaTypeDescriptor(field.type()), value));
             }
             active.recordManualSymbolization(action, symbol, exactFieldPath,
-                    leafFieldSignature, expression, true, false);
+                    leafFieldSignature, expression, true, false,
+                    recordedScalar(value));
         } catch (Throwable throwable) {
             active.unresolved.add(symbol + ": shallow field symbolize failed: "
                     + rootCause(throwable));
@@ -4993,7 +4994,8 @@ public final class ConcolicRegionRuntime {
             active.recordSymbolizedInputPort(action.symbol, value);
         }
         active.recordManualSymbolization(action, requestedSymbol, fieldPath,
-                fieldSignature, expression, false, true);
+                fieldSignature, expression, false, true,
+                recordedScalar(value));
         return true;
     }
 

@@ -110,33 +110,116 @@ final class D3RowPublication {
                 ? satisfied.getAsJsonObject() : null;
     }
 
-    /** One row per root this activation minted. */
+    /**
+     * The roots this activation minted, and the placeholders it did not.
+     *
+     * <p>A DECLARED root is a marker, a clock or a configured source: the
+     * case names it and the search may move it.  A region's declared input
+     * is not a root at all -- it is a READ PLACEHOLDER, the symbol standing
+     * for what that read returned -- and publishing it as a root is what
+     * pins it: the composer pins every domain-less root to its recorded
+     * value, and a placeholder that is pinned AND joined to its writer's
+     * expression makes every moved valuation unsatisfiable.</p>
+     */
     private static void roots(ActiveRegion active,
                               OccurrenceAddress occurrence) {
         for (JsonObject row : active.symbolizedRows) {
-            // The root's OWN name, not the VM's type-derived one: two roots
-            // minted on fields of one class share the VM's raw symbol
-            // (M_L'…BlockKey'_15), and a corpus where one solver name
-            // stands for three roots is refused -- rightly -- by the
-            // composer.  The requested symbol is per site by construction.
             String symbol = optionalString(row, "symbol");
             if (symbol.isEmpty()) symbol = optionalString(row, "rawSymbol");
             if (symbol.isEmpty()) continue;
-            String rootId = optionalString(row, "sourceId");
-            if (rootId.isEmpty()) rootId = optionalString(row, "portId");
-            RootKind kind = kindOf(row);
-            // A fault marker IS a declared root: the case names the cell
-            // and the search asks a question of it.  Published as declared,
-            // or Design 3 would pin the one root the claim rests on --
-            // bug2's and bug3's only marker is this cell.
-            boolean declared = kind == RootKind.MARKER
-                    || !optionalString(row, "sourceId").isEmpty();
+            String sourceId = optionalString(row, "sourceId");
+            String clock = optionalString(row, "declaredCallee");
+            String javaType = optionalString(row, "javaType");
+            boolean marker = "Z".equals(javaType)
+                    || "boolean".equals(javaType);
+            if (sourceId.isEmpty() && clock.isEmpty() && !marker) {
+                placeholder(occurrence, row, symbol);
+                continue;
+            }
+            String rootId = sourceId.isEmpty()
+                    ? optionalString(row, "portId") : sourceId;
+            RootKind kind = clock.isEmpty()
+                    ? (marker ? RootKind.MARKER : RootKind.INTEGRAL)
+                    : RootKind.CLOCK;
             D3Runtime.rootMint(occurrence,
                     optionalLongInteger(row, "eventSeq", 0L), rootId, symbol,
                     kind, optionalString(row, "recordedValue"),
                     optionalString(row, "domainMin"),
-                    optionalString(row, "domainMax"), declared);
+                    optionalString(row, "domainMax"), true);
         }
+    }
+
+    /**
+     * One declared region input, as the read it stands for.
+     *
+     * <p>The symbol is the placeholder the mint installed; the location is
+     * the field it was installed on; the value is what the field held when
+     * it was.  A reader joins it to the write of that location exactly as
+     * it joins any other read.</p>
+     */
+    private static void placeholder(OccurrenceAddress occurrence,
+                                    JsonObject row, String symbol) {
+        String signature = optionalString(row, "fieldSignature");
+        LocationId location = fieldLocation(signature);
+        if (location == null) {
+            D3Runtime.gap(GapKind.DECLARATION_MISSING, GapClass.DIAGNOSTIC,
+                    symbol, "a declared region input states no field to"
+                            + " read: " + optionalString(row, "portId"));
+            return;
+        }
+        String value = optionalString(row, "observedValue");
+        if (value.isEmpty()) value = optionalString(row, "recordedValue");
+        D3Runtime.read(occurrence,
+                optionalLongInteger(row, "eventSeq", 0L),
+                Endpoint.stateSite(signature, "PLACEHOLDER", 0, false),
+                location, ReadRow.UNKNOWN_VERSION, symbol,
+                javaDescriptor(optionalString(row, "javaType")),
+                literal(value));
+    }
+
+    /** {@code <Class: type field>} as the location it names. */
+    private static LocationId fieldLocation(String fieldSignature) {
+        String signature = safe(fieldSignature);
+        int owner = signature.indexOf(':');
+        int field = signature.lastIndexOf(' ');
+        if (!signature.startsWith("<") || owner <= 1 || field <= owner) {
+            return null;
+        }
+        return LocationId.of(LocationKind.INSTANCE,
+                signature.substring(1, owner),
+                signature.substring(field + 1).replace(">", ""));
+    }
+
+    /** A source type name as the JVM descriptor a row states. */
+    private static String javaDescriptor(String javaType) {
+        String type = safe(javaType);
+        if (type.isEmpty()) return "Ljava/lang/Object;";
+        if (type.length() == 1) return type;
+        if ("boolean".equals(type)) return "Z";
+        if ("byte".equals(type)) return "B";
+        if ("char".equals(type)) return "C";
+        if ("short".equals(type)) return "S";
+        if ("int".equals(type)) return "I";
+        if ("long".equals(type)) return "J";
+        if ("float".equals(type)) return "F";
+        if ("double".equals(type)) return "D";
+        return "L" + type.replace('.', '/') + ";";
+    }
+
+    /**
+     * The VM's constant spelling as the literal it stands for.
+     *
+     * <p>{@code Y_I_119992} is the VM's name for the int constant 119992 --
+     * {@code Y} marks a concrete value, the letter after it is the JVM type
+     * and the rest is the value.  A row states the value.</p>
+     */
+    static String literal(String value) {
+        String stated = safe(value);
+        if (stated.length() > 4 && stated.charAt(0) == 'Y'
+                && stated.charAt(1) == '_' && stated.charAt(3) == '_') {
+            return stated.substring(4);
+        }
+        return stated;
     }
 
     /**
@@ -277,10 +360,19 @@ final class D3RowPublication {
             // the version of the location, and that is what the row says.
             symbol = locationKey + "@v" + observed;
         }
+        String value = literal(concreteOf(node));
+        if (observed < 0L && value.isEmpty()) {
+            // Neither a version to join nor a value to pin: the row would
+            // say nothing a reader could use, and saying so is the point.
+            D3Runtime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
+                    locationKey, "a read states neither the version it"
+                            + " observed nor the value it returned");
+            return;
+        }
         D3Runtime.read(occurrence, Math.max(0L, observed),
                 Endpoint.stateSite(locationKey, "READ_FROM", 0, false),
                 location, observed, symbol,
-                optionalString(node, "_java_type"), "");
+                optionalString(node, "_java_type"), value);
     }
 
     /**
@@ -301,14 +393,32 @@ final class D3RowPublication {
                 ownerClass.isEmpty() ? "<unstated>" : ownerClass,
                 String.valueOf(offset));
         String projected = optionalString(node, "_exp");
+        String stated = literal(value.isJsonObject()
+                ? optionalString(value.getAsJsonObject(), "_exp")
+                : value.getAsString());
+        if (stated.isEmpty()) {
+            D3Runtime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
+                    locationKey, "a projected read states no value");
+            return;
+        }
         D3Runtime.read(occurrence, 0L,
                 Endpoint.stateSite(locationKey, "FIELD", offset, false),
                 location, ReadRow.UNKNOWN_VERSION,
                 projected.isEmpty() ? locationKey + "@concrete" : projected,
-                optionalString(node, "_java_type"),
-                value.isJsonObject()
-                        ? optionalString(value.getAsJsonObject(), "_exp")
-                        : value.getAsString());
+                optionalString(node, "_java_type"), stated);
+    }
+
+    /** What a read node says the read returned, or {@code ""}. */
+    private static String concreteOf(JsonObject node) {
+        JsonElement value = node.get("concreteValue");
+        if (value == null || value.isJsonNull()) {
+            JsonObject version = object(node, "observedVersion");
+            value = version.get("concreteValue");
+        }
+        if (value == null || value.isJsonNull()) return "";
+        return value.isJsonObject()
+                ? optionalString(value.getAsJsonObject(), "_exp")
+                : value.getAsString();
     }
 
     /** {@code KIND/owner#slot}, as the VM states one location. */
