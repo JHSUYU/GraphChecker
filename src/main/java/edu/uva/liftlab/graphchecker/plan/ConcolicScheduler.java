@@ -1,6 +1,5 @@
 package edu.uva.liftlab.graphchecker.plan;
 
-import edu.uva.liftlab.graphchecker.plan.SharedExpressionTable;
 
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 import edu.uva.liftlab.graphchecker.smt.CanonicalJson;
@@ -100,10 +99,6 @@ public final class ConcolicScheduler {
             throw new IOException("runtime plan contains no region plans: "
                     + arguments.regionPlan);
         }
-        List<JsonObject> summaries = arguments.summaries == null
-                ? Collections.<JsonObject>emptyList()
-                : SharedExpressionTable.expandAll(
-                        ArtifactIO.readJsonl(arguments.summaries));
         List<JsonObject> refinedGraph = ArtifactIO.readJsonl(
                 arguments.refinedGraph);
         requireRefinedGraph(refinedGraph);
@@ -114,7 +109,7 @@ public final class ConcolicScheduler {
         Map<String, Region> regionIndex = regionIndex(regions);
         // The identities recorded here are verified once, against the same
         // files, at the point the schedule index commits them.
-        return new LoadedInputs(regionPlans, summaries, regionIndex,
+        return new LoadedInputs(regionPlans, regionIndex,
                 definitions, refinedGraph, regionPlanIdentity,
                 refinedGraphIdentity, symbolicInputsIdentity,
                 symbolicInputs);
@@ -318,15 +313,8 @@ public final class ConcolicScheduler {
             throws IOException {
         LoadedInputs loaded = loadInputs(arguments);
         RuntimeWorkflowDiscovery.RankedWorkflow workflow =
-                arguments.closureMode == ClosureMode.ACTIVE_OBSERVED
-                ? RuntimeWorkflowDiscovery.rankedWorkflow(
-                        loaded.regionPlans, loaded.summaries,
-                        arguments.targetOccurrence)
-                : arguments.closureMode == ClosureMode.SEED_REPLAY
-                ? RuntimeWorkflowDiscovery.seedReplayWorkflow(
-                        loaded.regionPlans, arguments.targetOccurrence)
-                : RuntimeWorkflowDiscovery.candidateWorkflow(
-                        loaded.regionPlans, arguments.targetOccurrence);
+                RuntimeWorkflowDiscovery.workflow(loaded.regionPlans,
+                        arguments.targetOccurrence);
         requireRetainedRegions(arguments.retainRegions, workflow);
         if (workflow.scheduledTaskCount() > arguments.maxJobs) {
             // A bare count says only that the campaign is too big; what a
@@ -1717,7 +1705,7 @@ public final class ConcolicScheduler {
                 + " blockers=" + display(blockers)
                 + " artifacts={runtimePlan=" + artifact(arguments.regionPlan)
                 + ",refinedGraph=" + artifact(arguments.refinedGraph)
-                + ",summaries=" + artifact(arguments.summaries) + "}";
+                + "}";
     }
 
     private static String display(String value) {
@@ -2383,7 +2371,6 @@ public final class ConcolicScheduler {
 
     private static final class LoadedInputs {
         private final List<RegionInstancePlan> regionPlans;
-        private final List<JsonObject> summaries;
         private final Map<String, Region> regionIndex;
         private final DefinitionIndex definitions;
         private final List<JsonObject> refinedGraph;
@@ -2393,7 +2380,7 @@ public final class ConcolicScheduler {
         private final SymbolicInputSelection symbolicInputs;
 
         private LoadedInputs(List<RegionInstancePlan> regionPlans,
-                             List<JsonObject> summaries,
+
                              Map<String, Region> regionIndex,
                              DefinitionIndex definitions,
                              List<JsonObject> refinedGraph,
@@ -2402,7 +2389,6 @@ public final class ConcolicScheduler {
                              JsonObject symbolicInputsIdentity,
                              SymbolicInputSelection symbolicInputs) {
             this.regionPlans = regionPlans;
-            this.summaries = summaries;
             this.regionIndex = regionIndex;
             this.definitions = definitions;
             this.refinedGraph = refinedGraph;
@@ -2414,18 +2400,16 @@ public final class ConcolicScheduler {
     }
 
     /**
-     * Which closure the schedule is drawn from.  Exactly one of the three
-     * answers the question "which region occurrences are in scope", so the
-     * caller states it once rather than leaving two independent flags to
-     * contradict each other.
+     * Which closure the schedule is drawn from.  It names the scope once, so
+     * two independent flags cannot contradict each other; it is read by
+     * {@link #withSeedReplayGroup}, which is the one thing the seed replay
+     * does differently.
      */
     public enum ClosureMode {
         /** Every candidate occurrence the frozen region plan declares. */
         CANDIDATE("candidate"),
         /** Only the occurrences a seed activation can replay. */
-        SEED_REPLAY("seed-replay"),
-        /** Only the occurrences this iteration's summaries observed. */
-        ACTIVE_OBSERVED("active-observed");
+        SEED_REPLAY("seed-replay");
 
         private final String option;
 
@@ -2439,9 +2423,8 @@ public final class ConcolicScheduler {
             for (ClosureMode mode : values()) {
                 if (mode.option.equals(requested)) return mode;
             }
-            throw new IllegalArgumentException("--closure-mode must be one "
-                    + "of candidate|seed-replay|active-observed, not: "
-                    + requested);
+            throw new IllegalArgumentException("--closure-mode must be "
+                    + "candidate or seed-replay, not: " + requested);
         }
     }
 
@@ -2482,7 +2465,6 @@ public final class ConcolicScheduler {
     public static final class Arguments {
         public final Path regionPlan;
         public final Path refinedGraph;
-        public final Path summaries;
         public final Path outputDirectory;
         public final String regionId;
         public final String occurrenceId;
@@ -2496,7 +2478,7 @@ public final class ConcolicScheduler {
         public final java.util.Set<String> retainRegions;
         private final ClosureMode closureMode;
 
-        private Arguments(Path regionPlan, Path refinedGraph, Path summaries,
+        private Arguments(Path regionPlan, Path refinedGraph,
                           Path outputDirectory, String regionId,
                           String occurrenceId, String goalId,
                           int maxJobs, int maxLoopIterations,
@@ -2509,7 +2491,6 @@ public final class ConcolicScheduler {
                             new LinkedHashSet<>(retainRegions));
             this.regionPlan = regionPlan;
             this.refinedGraph = refinedGraph;
-            this.summaries = summaries;
             this.outputDirectory = outputDirectory;
             this.regionId = safe(regionId);
             this.occurrenceId = safe(occurrenceId);
@@ -2523,7 +2504,7 @@ public final class ConcolicScheduler {
 
         public static Arguments parse(String[] args) {
             Map<String, String> values = parseArgs(args, "region-plan",
-                    "refined-graph", "summaries", "output-dir", "max-jobs",
+                    "refined-graph", "output-dir", "max-jobs",
                     "symbolic-inputs", "max-loop-iterations",
                     "closure-mode", "target-occurrence");
             Path regionPlan = requiredPath(values, "region-plan");
@@ -2531,13 +2512,12 @@ public final class ConcolicScheduler {
                     ArtifactIO.sibling(regionPlan,
                             "concolic-schedule").toString()));
             Path refinedGraph = requiredPath(values, "refined-graph");
-            Path summaries = optionalPath(values.get("summaries"));
             Path symbolicInputs = optionalPath(
                     values.get("symbolic-inputs"));
             ClosureMode closureMode = ClosureMode.parse(
                     values.get("closure-mode"));
             return new Arguments(regionPlan, refinedGraph,
-                    summaries, output, "", "", "",
+                    output, "", "", "",
                     parseInt(values.get("max-jobs"), 1),
                     positiveInt(values.get("max-loop-iterations"),
                             LoopBoundPolicy.MAX_LOOP_BODY_ITERATIONS,
@@ -2597,8 +2577,7 @@ public final class ConcolicScheduler {
 
         private Arguments forSelection(
                 RuntimeWorkflowDiscovery.Selection selection) {
-            return new Arguments(regionPlan, refinedGraph,
-                    summaries, outputDirectory,
+            return new Arguments(regionPlan, refinedGraph, outputDirectory,
                     selection.regionId, selection.occurrenceId,
                     selection.goalId, 1, maxLoopIterations,
                     symbolicInputs, closureMode, targetOccurrence,

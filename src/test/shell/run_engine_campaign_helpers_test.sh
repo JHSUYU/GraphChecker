@@ -797,11 +797,11 @@ $(campaign_seeding_replay "${seed_dir}")"
 # It used to die before it started.  campaign_seeding_results handed
 # do_schedule a session DIRECTORY as --summaries, do_schedule ran require_file
 # on it, and [[ -f <dir> ]] is false -- so every epoch after the first exited
-# at that line.  The option it fed is gone with it: the scheduler's --summaries
-# rows are keyed on summaryId, which has exactly one occurrence in src/main
-# (the reader), and its only other consumer needs ClosureMode.ACTIVE_OBSERVED,
-# which this script never sets.  What a second epoch actually varies is the
-# retained set, through --retain-regions.
+# at that line.  The option it fed is gone with it, and so is the option: the
+# scheduler no longer declares --summaries at all, because its only consumer
+# was ClosureMode.ACTIVE_OBSERVED and no caller ever asked for that scope.
+# What a second epoch actually varies is the retained set, through
+# --retain-regions.
 epoch2_dir="${test_tmp}/epoch2"
 mkdir -p "${epoch2_dir}/out"
 : >"${epoch2_dir}/region_plan.jsonl"
