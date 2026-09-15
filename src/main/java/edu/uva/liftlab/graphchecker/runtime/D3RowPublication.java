@@ -186,29 +186,45 @@ final class D3RowPublication {
         }
     }
 
-    /** Every read one expression tree states, by the version it observed. */
-    private static void collect(JsonElement node, OccurrenceAddress occurrence,
+    /**
+     * Every read one expression tree states, by the version it observed.
+     *
+     * <p>Iteratively, over an explicit stack: a container's expression nests
+     * one relation per operation the recording saw, which on hdfs-17960's
+     * snapshot list is hundreds deep -- a recursion guard cuts the walk
+     * before the reads, and publishing no read row reads afterwards as a
+     * path that read nothing.</p>
+     */
+    private static void collect(JsonElement root, OccurrenceAddress occurrence,
                                 Set<String> published,
-                                Map<JsonElement, Boolean> seen, int depth) {
-        if (node == null || depth > 64) return;
-        if (node.isJsonArray()) {
-            for (JsonElement element : node.getAsJsonArray()) {
-                collect(element, occurrence, published, seen, depth + 1);
+                                Map<JsonElement, Boolean> seen, int unused) {
+        if (root == null) return;
+        java.util.Deque<JsonElement> pending =
+                new java.util.ArrayDeque<JsonElement>();
+        pending.push(root);
+        while (!pending.isEmpty()) {
+            JsonElement node = pending.pop();
+            if (node == null || node.isJsonNull()
+                    || node.isJsonPrimitive()) {
+                continue;
             }
-            return;
-        }
-        if (!node.isJsonObject()) return;
-        if (seen.put(node, Boolean.TRUE) != null) return;
-        JsonObject object = node.getAsJsonObject();
-        String type = optionalString(object, "_type");
-        if ("ReadFromExpression".equals(type)) {
-            readFrom(object, occurrence, published);
-        } else if ("FieldAccessExpression".equals(type)) {
-            fieldAccess(object, occurrence, published);
-        }
-        for (Map.Entry<String, JsonElement> member : object.entrySet()) {
-            collect(member.getValue(), occurrence, published, seen,
-                    depth + 1);
+            if (seen.put(node, Boolean.TRUE) != null) continue;
+            if (node.isJsonArray()) {
+                for (JsonElement element : node.getAsJsonArray()) {
+                    pending.push(element);
+                }
+                continue;
+            }
+            JsonObject object = node.getAsJsonObject();
+            String type = optionalString(object, "_type");
+            if ("ReadFromExpression".equals(type)) {
+                readFrom(object, occurrence, published);
+            } else if ("FieldAccessExpression".equals(type)) {
+                fieldAccess(object, occurrence, published);
+            }
+            for (Map.Entry<String, JsonElement> member : object.entrySet()) {
+                pending.push(member.getValue());
+            }
         }
     }
 
@@ -305,19 +321,28 @@ final class D3RowPublication {
     private static void target(ActiveRegion active,
                                OccurrenceAddress occurrence) {
         ConcolicTaskPlan.RuntimeTask task = active.activation;
-        if (!task.declaresTargetBranch()) return;
         JsonObject reach = active.targetReach;
+        if (!task.declaresTargetBranch() && reach == null) return;
         boolean reached = reach != null;
         boolean observed = reached && optionalBool(reach, "outcome", false);
-        boolean fatalArm = task.targetBranchRequiredOutcome;
+        // The fatal arm is the one the case declared; a seed task that
+        // captured the reach without declaring the arm states the arm it
+        // observed, which is a fact of the run rather than a derivation.
+        boolean fatalArm = task.declaresTargetBranch()
+                ? task.targetBranchRequiredOutcome : observed;
+        String anchor = task.declaresTargetBranch()
+                ? task.targetBranchLabel()
+                : optionalString(reach, "siteId") + "#"
+                        + optionalInteger(reach, "occurrence", 1);
         JsonObject condition = null;
+        String site = task.declaresTargetBranch() ? task.targetBranchSite
+                : optionalString(reach, "siteId");
+        int ordinal = task.declaresTargetBranch()
+                ? task.targetBranchOccurrence
+                : optionalInteger(reach, "occurrence", 1);
         for (JsonObject mapping : active.branchMappings) {
-            if (!task.targetBranchSite.equals(
-                    optionalString(mapping, "siteId"))) {
-                continue;
-            }
-            if (optionalInteger(mapping, "occurrence", -1)
-                    != task.targetBranchOccurrence) {
+            if (!site.equals(optionalString(mapping, "siteId"))) continue;
+            if (optionalInteger(mapping, "occurrence", -1) != ordinal) {
                 continue;
             }
             JsonObject witness = object(mapping, "witness");
@@ -325,8 +350,7 @@ final class D3RowPublication {
         }
         D3Runtime.target(occurrence,
                 reach == null ? 0L : optionalLongInteger(reach, "vmEventId",
-                        0L), task.targetBranchLabel(), condition,
-                observed == fatalArm, reached && observed == fatalArm,
-                reached);
+                        0L), anchor, condition, observed == fatalArm,
+                reached && observed == fatalArm, reached);
     }
 }
