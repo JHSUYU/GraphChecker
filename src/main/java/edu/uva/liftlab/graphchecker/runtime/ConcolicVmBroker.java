@@ -103,6 +103,7 @@ final class ConcolicVmBroker {
     private Method trackedLocations;
     private Method armPrimitiveFieldRead;
     private Method confirmPrimitiveFieldRead;
+    private Method installGuardedStoreSites;
 
     void requireCurrentCapabilities() {
         List<String> missing = new ArrayList<>();
@@ -334,6 +335,21 @@ final class ConcolicVmBroker {
                 maxBytes), "getTrackedLocationVersions");
     }
 
+    /**
+     * Installs the session's guarded-store table and answers how many store
+     * methods the VM kept.
+     *
+     * <p>One line per method, {@code <internal/Class>#<name><descriptor>} then
+     * a tab then that method's guard branch sites; installing replaces the
+     * table, and with no table no concrete store is ever evidence.  The
+     * table's content is {@link GuardedStoreSites}; this is only the call.</p>
+     */
+    int installGuardedStoreSites(String table) throws Exception {
+        Object kept = installGuardedStoreSites.invoke(null, table);
+        return kept instanceof Number
+                ? ((Number) kept).intValue() : MALFORMED_RESULT;
+    }
+
     private static String requiredVmJson(Object value, String api) {
         if (!(value instanceof String)
                 || ((String) value).trim().isEmpty()) {
@@ -395,6 +411,8 @@ final class ConcolicVmBroker {
                 String.class, String.class, String.class, long.class);
         api.confirmPrimitiveFieldRead = method(system,
                 "confirmSharedPrimitiveFieldRead", long.class);
+        api.installGuardedStoreSites = method(system,
+                "installGuardedStoreSites", String.class);
         return api;
     }
 

@@ -492,10 +492,34 @@ public final class System {
     public static native void resumeConcolicPathCondition();
 
     /**
-     * Reserves an exact branch event in the current VM thread context.  The
-     * next symbolic conditional bytecode binds this event to its real path
-     * condition index.  A zero result means there is no eligible context.
+     * Installs the session's guarded-store table and returns how many store
+     * methods it names.
+     *
+     * <p>A concrete store is evidence only when it is control-dependent on a
+     * symbolic decision -- the store a flipped branch would change.  That is
+     * a static fact the PLAN stage computes by post-dominance and publishes
+     * per write site, so the VM is told it rather than inferring it from "a
+     * branch happened earlier".</p>
+     *
+     * <p>One line per store method.  The line's first tab-separated field is
+     * the method key {@code <internal/Class>#<name><descriptor>}; every
+     * remaining field of that line is one guard site of that method's
+     * control-dependent stores.  Nothing is split on any other character: a
+     * guard site id is a woven site id -- a Soot signature followed by its
+     * unit index, whose parameter list contains commas -- so a guard id may
+     * contain a comma and may not contain a tab or a newline, which are the
+     * field and record separators.  The writer refuses one that does.  The
+     * guard sites are the branch site ids passed to
+     * {@link #markConcolicBranch}.  A method the table does not name never
+     * starts a location's log by a concrete store, and neither does one whose
+     * guard sites have decided nothing on the current path.</p>
+     *
+     * <p>Read-only with respect to symbolic state: it installs a table and
+     * records no value, no version and no path condition.  Installing
+     * replaces the whole table.</p>
      */
+    public static native int installGuardedStoreSites(String table);
+
     /**
      * The id of the last event the symbolic session published, or 0 before
      * the first one.  Read-only: it publishes nothing, records nothing and
@@ -507,28 +531,13 @@ public final class System {
      * window -- which is what lets a read or a write be attributed to the
      * frame it ran in.</p>
      */
-    /**
-     * Installs the session's guarded-store table and returns how many store
-     * methods it names.
-     *
-     * <p>A concrete store is evidence only when it is control-dependent on a
-     * symbolic decision -- the store a flipped branch would change.  That is
-     * a static fact the PLAN stage computes by post-dominance and publishes
-     * per write site, so the VM is told it rather than inferring it from "a
-     * branch happened earlier".  One line per store method,
-     * {@code <internal/Class>#<name><descriptor>\t<guardSite>[,<guardSite>]},
-     * where the guard sites are the branch site ids passed to
-     * {@link #markConcolicBranch}.  A method the table does not name never
-     * starts a location's log by a concrete store.</p>
-     *
-     * <p>Read-only with respect to symbolic state: it installs a table and
-     * records no value, no version and no path condition.  Installing
-     * replaces the whole table.</p>
-     */
-    public static native int installGuardedStoreSites(String table);
-
     public static native long currentSymbolicEventId();
 
+    /**
+     * Reserves an exact branch event in the current VM thread context.  The
+     * next symbolic conditional bytecode binds this event to its real path
+     * condition index.  A zero result means there is no eligible context.
+     */
     public static native long markConcolicBranch(String siteId,
                                                   int occurrence);
 
