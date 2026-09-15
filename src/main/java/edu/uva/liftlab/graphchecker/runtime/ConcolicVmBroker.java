@@ -1,14 +1,14 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
-import edu.uva.liftlab.graphchecker.d3.plan.FieldPathSpec;
-import edu.uva.liftlab.graphchecker.d3.plan.FieldPathSpec.DeclaredField;
+import edu.uva.liftlab.graphchecker.plan.FieldPathSpec;
+import edu.uva.liftlab.graphchecker.plan.FieldPathSpec.DeclaredField;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
-import static edu.uva.liftlab.graphchecker.d3.smt.JavaPrimitiveSmtSemantics.javaTypeDescriptor;
+import static edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics.javaTypeDescriptor;
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.safe;
 
 /**

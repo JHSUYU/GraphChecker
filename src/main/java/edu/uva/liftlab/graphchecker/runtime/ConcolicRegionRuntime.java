@@ -1,6 +1,6 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
-import edu.uva.liftlab.graphchecker.d3.plan.ConcolicScheduler;
+import edu.uva.liftlab.graphchecker.plan.ConcolicScheduler;
 
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.safe;
 
@@ -13,27 +13,27 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.google.gson.JsonPrimitive;
 import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
-import edu.uva.liftlab.graphchecker.d3.plan.BranchPredicateAlgebra;
-import edu.uva.liftlab.graphchecker.d3.plan.BranchWitness;
-import edu.uva.liftlab.graphchecker.d3.smt.CanonicalJson;
-import edu.uva.liftlab.graphchecker.d3.plan.ClockRootPhysics;
-import edu.uva.liftlab.graphchecker.d3.plan.RecordedEvidenceIdentity;
-import edu.uva.liftlab.graphchecker.d3.plan.SharedStateEvidence;
-import edu.uva.liftlab.graphchecker.d3.plan.SymbolicSourceEvidence;
-import edu.uva.liftlab.graphchecker.d3.smt.VmExpressionIr;
-import edu.uva.liftlab.graphchecker.d3.plan.VmExpressionTable;
-import edu.uva.liftlab.graphchecker.d3.plan.SmtModelValueCodec;
-import edu.uva.liftlab.graphchecker.d3.plan.CommunicationHandoffSpec;
-import edu.uva.liftlab.graphchecker.d3.plan.ConfiguredSourcePhaseContract;
-import edu.uva.liftlab.graphchecker.d3.plan.FieldPathSpec;
-import edu.uva.liftlab.graphchecker.d3.plan.FieldPathSpec.DeclaredField;
-import edu.uva.liftlab.graphchecker.d3.plan.InputActionCatalog;
-import edu.uva.liftlab.graphchecker.d3.smt.JavaPrimitiveBoxing;
-import edu.uva.liftlab.graphchecker.d3.plan.LoopBoundPolicy;
-import edu.uva.liftlab.graphchecker.runtime.d3.D3Runtime;
-import edu.uva.liftlab.graphchecker.runtime.d3.Interactions;
+import edu.uva.liftlab.graphchecker.plan.BranchPredicateAlgebra;
+import edu.uva.liftlab.graphchecker.plan.BranchWitness;
+import edu.uva.liftlab.graphchecker.smt.CanonicalJson;
+import edu.uva.liftlab.graphchecker.plan.ClockRootPhysics;
+import edu.uva.liftlab.graphchecker.plan.RecordedEvidenceIdentity;
+import edu.uva.liftlab.graphchecker.plan.SharedStateEvidence;
+import edu.uva.liftlab.graphchecker.plan.SymbolicSourceEvidence;
+import edu.uva.liftlab.graphchecker.smt.VmExpressionIr;
+import edu.uva.liftlab.graphchecker.plan.VmExpressionTable;
+import edu.uva.liftlab.graphchecker.plan.SmtModelValueCodec;
+import edu.uva.liftlab.graphchecker.plan.CommunicationHandoffSpec;
+import edu.uva.liftlab.graphchecker.plan.ConfiguredSourcePhaseContract;
+import edu.uva.liftlab.graphchecker.plan.FieldPathSpec;
+import edu.uva.liftlab.graphchecker.plan.FieldPathSpec.DeclaredField;
+import edu.uva.liftlab.graphchecker.plan.InputActionCatalog;
+import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveBoxing;
+import edu.uva.liftlab.graphchecker.plan.LoopBoundPolicy;
+import edu.uva.liftlab.graphchecker.runtime.RowRuntime;
+import edu.uva.liftlab.graphchecker.runtime.Interactions;
 
-import edu.uva.liftlab.graphchecker.d3.plan.SiteId;
+import edu.uva.liftlab.graphchecker.plan.SiteId;
 import edu.uva.liftlab.graphchecker.runtime.ConcolicTaskPlan.RuntimeTask;
 import edu.uva.liftlab.graphchecker.runtime.SharedStateCapture.RawSharedStateReadOut;
 import edu.uva.liftlab.graphchecker.runtime.SharedStateCapture.SharedStateResult;
@@ -64,16 +64,16 @@ import java.util.function.Predicate;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-import static edu.uva.liftlab.graphchecker.d3.smt.JavaPrimitiveSmtSemantics.integralRange;
-import static edu.uva.liftlab.graphchecker.d3.smt.JavaPrimitiveSmtSemantics.javaTypeDescriptor;
-import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.array;
-import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.optionalBool;
-import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.firstNonBlank;
-import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.optionalInteger;
-import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.optionalLongInteger;
-import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.object;
-import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.shallowCopy;
-import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.optionalString;
+import static edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics.integralRange;
+import static edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics.javaTypeDescriptor;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.array;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalBool;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalInteger;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalLongInteger;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.object;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.shallowCopy;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicTaskPlan.configuration;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicResultPublisher.beginLiveSelectedRegion;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicResultPublisher.beginSelectedResultPublication;
@@ -330,7 +330,7 @@ public final class ConcolicRegionRuntime {
         // The iteration an execution index frame carries (IDENTITY-V3):
         // charged whether or not a region is live, because the index is a
         // property of the control structure and not of the selection.
-        D3Runtime.loopIteration(backedgeId);
+        RowRuntime.loopIteration(backedgeId);
         ActiveRegion active = observingActiveRegion();
         if (active == null) return;
 
@@ -466,7 +466,7 @@ public final class ConcolicRegionRuntime {
     public static long enterAccessorCallContext(
             String callerMethod, int callUnitIndex, String callSiteId,
             String declaredCallee, Object receiver) {
-        D3Runtime.enterFrame(safe(callSiteId));
+        RowRuntime.enterFrame(safe(callSiteId));
         try {
             ActiveRegion active = activeRegion();
             String caller = safe(callerMethod);
@@ -504,7 +504,7 @@ public final class ConcolicRegionRuntime {
 
     /** Closes a lightweight accessor scope on normal or exceptional return. */
     public static void exitAccessorCallContext(long contextToken) {
-        D3Runtime.exitFrame();
+        RowRuntime.exitFrame();
         if (contextToken == 0L) return;
         try {
             AccessorCallContext current =
@@ -544,7 +544,7 @@ public final class ConcolicRegionRuntime {
         // export can cross a declared port before anything is selected, and
         // a row that is not published because nothing was live yet reads
         // afterwards as a site that never ran.
-        D3Runtime.configure(configuration().resultFile);
+        RowRuntime.configure(configuration().resultFile);
         if (configuration().tasks.isEmpty()) {
             workloadExpressionStore = new VmExpressionTable.Store();
             return "";
@@ -735,14 +735,14 @@ public final class ConcolicRegionRuntime {
             active.activationOrdinal = admitted.nextActivationOrdinal();
             // Identity v2, minted from the lineage this activation entered
             // under.  The session it publishes into is this replay's own.
-            edu.uva.liftlab.graphchecker.runtime.d3.D3Runtime.configure(
+            edu.uva.liftlab.graphchecker.runtime.RowRuntime.configure(
                     configuration().resultFile);
             // The node it RAN on, by the planner's own attribution rule --
             // not the node the plan addressed, which is what an activation
             // is being checked against.
             SourceRef ranOn = RuntimeTraceContext.activationSource(receiver);
-            active.d3Address = edu.uva.liftlab.graphchecker.runtime.d3
-                    .D3Runtime.beginActivation(active.token,
+            active.d3Address = edu.uva.liftlab.graphchecker.runtime
+                    .RowRuntime.beginActivation(active.token,
                             ranOn == null ? safe(admitted.sourceKey)
                                     : ranOn.key(),
                             admitted.regionId, admitted.taskId);
@@ -776,7 +776,7 @@ public final class ConcolicRegionRuntime {
             // addressable by the id every version and read the VM logs from
             // inside it carries, so a logged event can be given the frames
             // it stood on (FrameJournal).
-            edu.uva.liftlab.graphchecker.runtime.d3.D3Runtime.journalRegion(
+            edu.uva.liftlab.graphchecker.runtime.RowRuntime.journalRegion(
                     active.vmRegionEnterEventId, active.d3Address);
             // A delivery can establish the causal request immediately before
             // the selected handler entry.
@@ -805,7 +805,7 @@ public final class ConcolicRegionRuntime {
                 if (javaRegionPushed) {
                     popActiveRegion(active);
                 } else if (identityRegionEntered) {
-                    edu.uva.liftlab.graphchecker.runtime.d3.D3Runtime
+                    edu.uva.liftlab.graphchecker.runtime.RowRuntime
                             .exitRegionIndex();
                 }
                 active.releaseActivationOrdinal();
@@ -846,7 +846,7 @@ public final class ConcolicRegionRuntime {
         // are the region frames and the accessor call contexts -- the trace
         // recorder's call-site hooks belong to the recording pass -- so
         // this is where the control path is seen (IDENTITY-IMPL §B).
-        D3Runtime.enterFrame(safe(rootMethod));
+        RowRuntime.enterFrame(safe(rootMethod));
         ConcolicTaskPlan config = configuration();
         RootHookGroup group = config.rootHookGroup(
                 instrumentationSelector, rootMethod);
@@ -2179,9 +2179,9 @@ public final class ConcolicRegionRuntime {
             // The value crossed and the message could not carry its
             // expression: the row still states the endpoint, and the loss
             // is named rather than left as an export nobody can pair.
-            D3Runtime.gap(edu.uva.liftlab.graphchecker.d3.contract.GapKind
+            RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind
                             .UNSTATED_VALUE,
-                    edu.uva.liftlab.graphchecker.d3.contract.GapClass
+                    edu.uva.liftlab.graphchecker.contract.GapClass
                             .DIAGNOSTIC, site.portId(),
                     "the communication leaf could not enter the message");
         }
@@ -2205,16 +2205,16 @@ public final class ConcolicRegionRuntime {
                                          long exportEventId) {
         beginBookkeeping();
         try {
-            if (!D3Runtime.open()) return;
+            if (!RowRuntime.open()) return;
             RuntimeTraceContext.View view = RuntimeTraceContext.current();
             String nodeKey = view.source == null ? "" : view.source.key();
             ActiveRegion active = activeRegion();
-            edu.uva.liftlab.graphchecker.d3.contract.OccurrenceAddress
+            edu.uva.liftlab.graphchecker.contract.OccurrenceAddress
                     producer = active == null || active.d3Address == null
-                    ? D3Runtime.degraded(nodeKey, site.portId())
+                    ? RowRuntime.degraded(nodeKey, site.portId())
                     : active.d3Address;
             if (active == null || active.d3Address == null) {
-                D3Runtime.ambientActivation(producer);
+                RowRuntime.ambientActivation(producer);
             }
             JsonObject exported = null;
             String recordedValue = "";
@@ -2234,15 +2234,15 @@ public final class ConcolicRegionRuntime {
             } catch (Throwable unreadable) {
                 // The export happened; what it carried could not be read
                 // back here, and the row says the endpoint without it.
-                D3Runtime.gap(
-                        edu.uva.liftlab.graphchecker.d3.contract.GapKind
+                RowRuntime.gap(
+                        edu.uva.liftlab.graphchecker.contract.GapKind
                                 .UNSTATED_VALUE,
-                        edu.uva.liftlab.graphchecker.d3.contract.GapClass
+                        edu.uva.liftlab.graphchecker.contract.GapClass
                                 .DIAGNOSTIC, site.portId(),
                         "the exported leaf's expression could not be read: "
                                 + rootCause(unreadable));
             }
-            D3Runtime.exported(producer, exportEventId, site.portId(),
+            RowRuntime.exported(producer, exportEventId, site.portId(),
                     handle, view.exchangeCorrelationId, attemptOf(view),
                     exported, descriptor, recordedValue);
         } catch (Throwable ignored) {
@@ -2263,17 +2263,17 @@ public final class ConcolicRegionRuntime {
      */
     static void noteMessageSender(String transport, String correlationId,
                                   String half) {
-        if (!D3Runtime.open()) return;
+        if (!RowRuntime.open()) return;
         try {
             ActiveRegion active = activeRegion();
             RuntimeTraceContext.View view = RuntimeTraceContext.current();
             String nodeKey = view.source == null ? "" : view.source.key();
-            edu.uva.liftlab.graphchecker.d3.contract.OccurrenceAddress sender =
+            edu.uva.liftlab.graphchecker.contract.OccurrenceAddress sender =
                     active == null || active.d3Address == null
-                            ? D3Runtime.degraded(nodeKey,
+                            ? RowRuntime.degraded(nodeKey,
                                     safe(transport) + "#" + safe(half))
                             : active.d3Address;
-            D3Runtime.sending(sender, safe(transport), safe(correlationId),
+            RowRuntime.sending(sender, safe(transport), safe(correlationId),
                     safe(half));
         } catch (Throwable ignored) {
             // A message is sent whether or not its endpoint can be filed.
@@ -2296,15 +2296,15 @@ public final class ConcolicRegionRuntime {
         // the recording's own rows need it as much as a replay's do.
         try {
             ActiveRegion active = activeRegion();
-            edu.uva.liftlab.graphchecker.d3.contract.OccurrenceAddress from =
+            edu.uva.liftlab.graphchecker.contract.OccurrenceAddress from =
                     active == null || active.d3Address == null
-                            ? D3Runtime.degraded(nodeKey, "submit")
+                            ? RowRuntime.degraded(nodeKey, "submit")
                             : active.d3Address;
             if (from == null) return "";
-            edu.uva.liftlab.graphchecker.d3.contract.Endpoint submission =
-                    D3Runtime.submission(from);
+            edu.uva.liftlab.graphchecker.contract.Endpoint submission =
+                    RowRuntime.submission(from);
             if (submission == null) return "";
-            D3Runtime.starting(submission);
+            RowRuntime.starting(submission);
             return submission.id();
         } catch (Throwable ignored) {
             // Work is submitted whether or not its endpoint can be named.
@@ -2420,18 +2420,18 @@ public final class ConcolicRegionRuntime {
             ActiveRegion active, String sourceId, Object owner,
             String fieldSignature, String descriptor) {
         if (active == null || active.d3Address == null) return;
-        if (!edu.uva.liftlab.graphchecker.runtime.d3.FocusedReplay
+        if (!edu.uva.liftlab.graphchecker.runtime.FocusedReplay
                 .focused(active.d3Address)) {
             return;
         }
-        String value = edu.uva.liftlab.graphchecker.runtime.d3.FocusedReplay
+        String value = edu.uva.liftlab.graphchecker.runtime.FocusedReplay
                 .rootAssignment(sourceId);
         if (value.isEmpty()) return;
         if (!writeModeledField(owner, fieldSignature,
                 modelValue(value, descriptor))) {
-            D3Runtime.gap(edu.uva.liftlab.graphchecker.d3.contract.GapKind
+            RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind
                             .UNPRODUCIBLE_ANSWER,
-                    edu.uva.liftlab.graphchecker.d3.contract.GapClass
+                    edu.uva.liftlab.graphchecker.contract.GapClass
                             .BLOCKING, sourceId,
                     "the wave's assignment for this root could not be"
                             + " written into " + fieldSignature);
@@ -2705,13 +2705,13 @@ public final class ConcolicRegionRuntime {
             // The endpoint first: an obligation answers an attach BY its
             // endpoint id (INTERACTION-ID), so the consumer endpoint has to
             // be named before the answer is written into the leaf.
-            edu.uva.liftlab.graphchecker.d3.contract.Endpoint consumer =
-                    D3Runtime.nextEndpoint(active.d3Address, portId,
+            edu.uva.liftlab.graphchecker.contract.Endpoint consumer =
+                    RowRuntime.nextEndpoint(active.d3Address, portId,
                             attemptOf(RuntimeTraceContext.current()));
             ModelAssignment assignment = active.configuredSourceAssignment(
                     phaseId, phaseId, "", owner);
             if (assignment == null && consumer != null) {
-                String answer = edu.uva.liftlab.graphchecker.runtime.d3
+                String answer = edu.uva.liftlab.graphchecker.runtime
                         .FocusedReplay.answer(consumer.id());
                 if (!answer.isEmpty()) assignment = modelValue(answer, descriptor);
             }
@@ -2750,7 +2750,7 @@ public final class ConcolicRegionRuntime {
      * could be joined at.</p>
      *
      * <p>// D2: keyed by the consumer Endpoint and published as an AttachRow
-     * by runtime/d3 SessionPublisher (M2).</p>
+     * by SessionPublisher (M2).</p>
      */
     private static final String HANDOFF_MINT_PREFIX = "HANDOFF_PHASE.";
 
@@ -2833,13 +2833,13 @@ public final class ConcolicRegionRuntime {
      * paired says so rather than naming a producer it guessed.</p>
      */
     private static void publishAttachRow(
-            edu.uva.liftlab.graphchecker.d3.contract.Endpoint consumer,
+            edu.uva.liftlab.graphchecker.contract.Endpoint consumer,
             String portId, String symbol, String javaType, String arrival,
             boolean answered, String answeredValue) {
-        if (consumer == null || !D3Runtime.open()) return;
+        if (consumer == null || !RowRuntime.open()) return;
         try {
             RuntimeTraceContext.View view = RuntimeTraceContext.current();
-            D3Runtime.attachedAt(consumer, Interactions.deliverySeq(), portId,
+            RowRuntime.attachedAt(consumer, Interactions.deliverySeq(), portId,
                     Interactions.deliveryHandle(),
                     view.exchangeCorrelationId, symbol, javaType, arrival,
                     answered, answeredValue);
@@ -2864,28 +2864,28 @@ public final class ConcolicRegionRuntime {
             CommunicationHandoffSpec site, Object owner,
             String declaringClass, String fieldName, String descriptor) {
         String portId = safe(site.portId());
-        if (!D3Runtime.open()) return;
+        if (!RowRuntime.open()) return;
         RuntimeTraceContext.View view = RuntimeTraceContext.current();
         String nodeKey = view.source == null ? "" : view.source.key();
-        edu.uva.liftlab.graphchecker.d3.contract.OccurrenceAddress consumer =
-                D3Runtime.degraded(nodeKey, portId);
+        edu.uva.liftlab.graphchecker.contract.OccurrenceAddress consumer =
+                RowRuntime.degraded(nodeKey, portId);
         if (consumer == null) {
-            D3Runtime.gap(edu.uva.liftlab.graphchecker.d3.contract.GapKind
+            RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind
                             .LINEAGE_LOST,
-                    edu.uva.liftlab.graphchecker.d3.contract.GapClass
+                    edu.uva.liftlab.graphchecker.contract.GapClass
                             .BLOCKING, portId,
                     "a declared port arrived on a thread naming no node, so"
                             + " the delivery has no consumer address");
             return;
         }
-        D3Runtime.ambientActivation(consumer);
+        RowRuntime.ambientActivation(consumer);
         Field element = declaredInstanceField(owner, declaringClass,
                 fieldName, descriptor);
         List<HandoffLeaf> leaves = handoffLeaves(owner, element);
         if (leaves.isEmpty()) {
-            D3Runtime.gap(edu.uva.liftlab.graphchecker.d3.contract.GapKind
+            RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind
                             .UNSTATED_VALUE,
-                    edu.uva.liftlab.graphchecker.d3.contract.GapClass
+                    edu.uva.liftlab.graphchecker.contract.GapClass
                             .DIAGNOSTIC, portId,
                     "the delivered element exposes no primitive leaf to mint"
                             + " a boundary variable on");
@@ -2906,16 +2906,16 @@ public final class ConcolicRegionRuntime {
                                 field.getName(), javaTypeDescriptor(
                                         field.getType().getTypeName()),
                                 field.get(leaf.owner))));
-                publishAttachRow(D3Runtime.nextEndpoint(consumer, portId,
+                publishAttachRow(RowRuntime.nextEndpoint(consumer, portId,
                                 attemptOf(view)), portId,
                         minted == null ? "" : optionalString(minted, "_exp"),
                         minted == null ? ""
                                 : optionalString(minted, "_java_type"),
                         recordedValue, false, "");
             } catch (Throwable failure) {
-                D3Runtime.gap(edu.uva.liftlab.graphchecker.d3.contract.GapKind
+                RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind
                                 .UNSTATED_VALUE,
-                        edu.uva.liftlab.graphchecker.d3.contract.GapClass
+                        edu.uva.liftlab.graphchecker.contract.GapClass
                                 .DIAGNOSTIC, portId,
                         "the entry-rule mint failed at " + portId + ": "
                                 + rootCause(failure));
@@ -3128,7 +3128,7 @@ public final class ConcolicRegionRuntime {
 
     private static HandoffResult failed(String stage, int status, long handle,
                                         String detail) {
-        // D2: the refusal is a GapRow published by runtime/d3
+        // D2: the refusal is a GapRow published by
         // SessionPublisher (M2); here it stays the call's own answer.
         return new HandoffResult(stage, status, handle, null);
     }
@@ -3149,7 +3149,7 @@ public final class ConcolicRegionRuntime {
      */
     public static void exitRegionFrame(String instrumentationSelector,
                                        String rootMethod) {
-        D3Runtime.exitFrame();
+        RowRuntime.exitFrame();
         try {
             RootInvocationFrame frame = popRootInvocationFrame(
                     instrumentationSelector, rootMethod);
@@ -3169,7 +3169,7 @@ public final class ConcolicRegionRuntime {
     public static void throwRegionFrame(String instrumentationSelector,
                                         String rootMethod,
                                         Throwable throwable) {
-        D3Runtime.exitFrame();
+        RowRuntime.exitFrame();
         try {
             RootInvocationFrame frame = popRootInvocationFrame(
                     instrumentationSelector, rootMethod);
@@ -3431,7 +3431,7 @@ public final class ConcolicRegionRuntime {
             // address; the branch mapping beside it retains the actual
             // occurrence and symbolic support which matched that source.
             boolean permuted = decision.addressesPermutedTargetOccurrence()
-                    && edu.uva.liftlab.graphchecker.runtime.d3.FocusedReplay
+                    && edu.uva.liftlab.graphchecker.runtime.FocusedReplay
                             .focused(active.d3Address);
             if (statesTargetReach(recorded.decided, permuted,
                     active.activation.targetBranchSite,
@@ -4084,18 +4084,18 @@ public final class ConcolicRegionRuntime {
         if (active.replayPrefixContradicted()) {
             abandonOccurrence(active, SKIP_REPLAY_PREFIX_UNMATCHED,
                     "activation contradicts its obligation's prefix: "
-                            + edu.uva.liftlab.graphchecker.runtime.d3
+                            + edu.uva.liftlab.graphchecker.runtime
                                     .FocusedReplay.refusal(active.d3Address));
             return;
         }
         // The obligation is answered at this terminal, by the one matcher.
         if (active.d3Address != null
-                && !edu.uva.liftlab.graphchecker.runtime.d3.FocusedReplay
+                && !edu.uva.liftlab.graphchecker.runtime.FocusedReplay
                         .complete(active.d3Address)) {
             abandonOccurrence(active, SKIP_REPLAY_PREFIX_UNMATCHED,
                     "the focused occurrence did not take the decision its "
                             + "obligation flips: "
-                            + edu.uva.liftlab.graphchecker.runtime.d3
+                            + edu.uva.liftlab.graphchecker.runtime
                                     .FocusedReplay.refusal(active.d3Address));
             return;
         }
@@ -5182,7 +5182,7 @@ public final class ConcolicRegionRuntime {
         // the enclosing one resumes being the innermost here.  The journal
         // itself outlives the region: another activation publishes the rows
         // of events this one performed.
-        edu.uva.liftlab.graphchecker.runtime.d3.D3Runtime.exitRegionIndex();
+        edu.uva.liftlab.graphchecker.runtime.RowRuntime.exitRegionIndex();
     }
 
     /**
@@ -5194,8 +5194,8 @@ public final class ConcolicRegionRuntime {
      * start.</p>
      */
     private static void installEventClock(final ConcolicVmBroker api) {
-        edu.uva.liftlab.graphchecker.runtime.d3.D3Runtime.clock(
-                new edu.uva.liftlab.graphchecker.runtime.d3.FrameJournal
+        edu.uva.liftlab.graphchecker.runtime.RowRuntime.clock(
+                new edu.uva.liftlab.graphchecker.runtime.FrameJournal
                         .Clock() {
                     @Override
                     public long now() {
@@ -5937,12 +5937,12 @@ public final class ConcolicRegionRuntime {
          * name no node to put it on.
          *
          * <p>{@code node#epoch / lineage hops / region#k} (IDENTITY-V2): the
-         * address every Design 3 row of this activation is keyed by.  The v1
+         * address every contract row of this activation is keyed by.  The v1
          * {@link #occurrenceId()} is unchanged beside it -- the two are
          * minted from the same activation and nothing reads one for the
          * other.</p>
          */
-        edu.uva.liftlab.graphchecker.d3.contract.OccurrenceAddress d3Address;
+        edu.uva.liftlab.graphchecker.contract.OccurrenceAddress d3Address;
         /**
          * This activation's ordinal within its address, taken at admission so
          * every symbol, mint row and handoff lineage it publishes can name
@@ -6301,7 +6301,7 @@ public final class ConcolicRegionRuntime {
         /**
          * States one decision to the one prefix matcher.
          *
-         * <p>{@code runtime/d3/FocusedReplay} is the only account of
+         * <p>{@code runtime/FocusedReplay} is the only account of
          * whether a replay is following its obligation: it reads the
          * obligation and the published decisions, and a second account of
          * the same decisions is how two answers to one question appear.</p>
@@ -6315,17 +6315,17 @@ public final class ConcolicRegionRuntime {
                 String siteId, int occurrence, BranchDecision decision,
                 String symbolicSupportDigest) {
             if (d3Address == null) return true;
-            edu.uva.liftlab.graphchecker.runtime.d3.FocusedReplay
+            edu.uva.liftlab.graphchecker.runtime.FocusedReplay
                     .observeDecision(d3Address, siteId, occurrence,
                             decision.outcome);
-            boolean contradicted = edu.uva.liftlab.graphchecker.runtime.d3
+            boolean contradicted = edu.uva.liftlab.graphchecker.runtime
                     .FocusedReplay.contradicted(d3Address);
             diag("REPLAY_OBSERVE", siteId + " occ=" + occurrence
                     + decision.replayTrace(!contradicted)
                     + " contradicted=" + contradicted);
             if (contradicted) {
                 addUnresolvedOnce("REPLAY_PREFIX_MISMATCH:"
-                        + edu.uva.liftlab.graphchecker.runtime.d3
+                        + edu.uva.liftlab.graphchecker.runtime
                                 .FocusedReplay.refusal(d3Address));
             }
             return !contradicted;
@@ -6337,7 +6337,7 @@ public final class ConcolicRegionRuntime {
          */
         private boolean replayPrefixContradicted() {
             return d3Address != null
-                    && edu.uva.liftlab.graphchecker.runtime.d3.FocusedReplay
+                    && edu.uva.liftlab.graphchecker.runtime.FocusedReplay
                             .contradicted(d3Address);
         }
 
@@ -6661,10 +6661,10 @@ public final class ConcolicRegionRuntime {
             // WHERE in the region this read stood, captured here because
             // here is where it runs: the row is published at the end of the
             // activation, and the frames are gone by then.  The accessor
-            // call context pushes its own frame (D3Runtime.enterFrame), so
+            // call context pushes its own frame (RowRuntime.enterFrame), so
             // two reads of one accessor site inside one occurrence differ by
             // that frame's iteration rather than by an ordinal.
-            row.addProperty("siteIndex", D3Runtime.siteIndexHere());
+            row.addProperty("siteIndex", RowRuntime.siteIndexHere());
             row.addProperty("symbol", safe(requestedSymbol));
             JsonArray encodedPath = new JsonArray();
             for (String segment : fieldPath == null

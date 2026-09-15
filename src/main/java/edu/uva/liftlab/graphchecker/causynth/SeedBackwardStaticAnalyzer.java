@@ -2,9 +2,9 @@ package edu.uva.liftlab.graphchecker.causynth;
 
 import edu.uva.liftlab.graphchecker.annotation.Debug;
 
-import edu.uva.liftlab.graphchecker.d3.smt.JavaContainerTypes;
-import edu.uva.liftlab.graphchecker.d3.plan.DependencyRole;
-import edu.uva.liftlab.graphchecker.d3.plan.SiteId;
+import edu.uva.liftlab.graphchecker.smt.JavaContainerTypes;
+import edu.uva.liftlab.graphchecker.plan.DependencyRole;
+import edu.uva.liftlab.graphchecker.plan.SiteId;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import soot.Body;

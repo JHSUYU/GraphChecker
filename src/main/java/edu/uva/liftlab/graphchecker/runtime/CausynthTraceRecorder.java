@@ -8,9 +8,9 @@ import com.google.gson.JsonParser;
 import com.google.gson.JsonPrimitive;
 import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
 import edu.uva.liftlab.graphchecker.causynth.StaticProgram;
-import edu.uva.liftlab.graphchecker.d3.smt.ArtifactIO;
-import edu.uva.liftlab.graphchecker.d3.smt.CanonicalJson;
-import edu.uva.liftlab.graphchecker.d3.plan.SiteId;
+import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
+import edu.uva.liftlab.graphchecker.smt.CanonicalJson;
+import edu.uva.liftlab.graphchecker.plan.SiteId;
 import java.io.BufferedWriter;
 import java.io.BufferedReader;
 import java.io.File;
@@ -39,10 +39,10 @@ import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
-import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.firstNonBlank;
-import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.objectWithoutNulls;
-import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.optionalInteger;
-import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.optionalString;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.objectWithoutNulls;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalInteger;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 
 public final class CausynthTraceRecorder {
     private static final Object LOCK = new Object();
@@ -83,7 +83,7 @@ public final class CausynthTraceRecorder {
         // k is window-local on both ends: the recording counts from the
         // moment the workload opens its window and so does every replay of
         // it, so a hop's k names the same activation in both.
-        edu.uva.liftlab.graphchecker.runtime.d3.Lineage.openWindow();
+        edu.uva.liftlab.graphchecker.runtime.Lineage.openWindow();
     }
 
     /**
@@ -286,7 +286,7 @@ public final class CausynthTraceRecorder {
         }
         // The execution index's stack: one frame per instrumented call
         // site, carrying the iteration of the loop enclosing it.
-        edu.uva.liftlab.graphchecker.runtime.d3.Identity.enterCall(
+        edu.uva.liftlab.graphchecker.runtime.Identity.enterCall(
                 event.siteId);
         if (event.id > 0L) {
             ACTIVE_CALL_SITES.get().push(new ActiveCallSite(event.id, ownerCallId,
@@ -317,7 +317,7 @@ public final class CausynthTraceRecorder {
 
     /** Leaves the call site {@link #beginCall} pushed. */
     private static void exitCallFrame() {
-        edu.uva.liftlab.graphchecker.runtime.d3.Identity.exitCall();
+        edu.uva.liftlab.graphchecker.runtime.Identity.exitCall();
     }
 
     /**
@@ -333,13 +333,13 @@ public final class CausynthTraceRecorder {
      * method under the frame that encloses it.</p>
      */
     private static void pushMethodFrame(String method) {
-        edu.uva.liftlab.graphchecker.runtime.d3.Identity.enterCall(
+        edu.uva.liftlab.graphchecker.runtime.Identity.enterCall(
                 MapFields.safe(method));
     }
 
     /** Leaves the activation frame {@link #pushMethodFrame} pushed. */
     private static void popMethodFrame() {
-        edu.uva.liftlab.graphchecker.runtime.d3.Identity.exitCall();
+        edu.uva.liftlab.graphchecker.runtime.Identity.exitCall();
     }
 
     public static void endCall(long invocationId, Object returnValue,
@@ -565,7 +565,7 @@ public final class CausynthTraceRecorder {
                     carriedScope);
         } catch (IllegalStateException noFlow) {
             // D2: "this send had no request scope to name" is a GapRow
-            // published by runtime/d3 SessionPublisher (M2).
+            // published by SessionPublisher (M2).
             return "";
         }
         recordExchange("SEND", transport, correlationId, attemptId, half,
@@ -802,23 +802,23 @@ public final class CausynthTraceRecorder {
      * EXCHANGE_RECEIVE} rows lets it be resolved without guessing.</p>
      */
     private static String recordedCausalContext() {
-        String anchor = edu.uva.liftlab.graphchecker.runtime.d3.Lineage
+        String anchor = edu.uva.liftlab.graphchecker.runtime.Lineage
                 .anchor();
         if (!anchor.isEmpty()) {
             return "Anchor:" + anchor + "@"
-                    + edu.uva.liftlab.graphchecker.runtime.d3.Lineage
+                    + edu.uva.liftlab.graphchecker.runtime.Lineage
                             .rpcSite();
         }
-        String started = edu.uva.liftlab.graphchecker.runtime.d3.Lineage
+        String started = edu.uva.liftlab.graphchecker.runtime.Lineage
                 .startedBy();
         if (!started.isEmpty()) {
             return "Anchor:" + started + "@THREAD_START";
         }
-        edu.uva.liftlab.graphchecker.d3.contract.Role role =
-                edu.uva.liftlab.graphchecker.runtime.d3.Lineage.rootRole();
-        int window = edu.uva.liftlab.graphchecker.runtime.d3.Lineage
+        edu.uva.liftlab.graphchecker.contract.Role role =
+                edu.uva.liftlab.graphchecker.runtime.Lineage.rootRole();
+        int window = edu.uva.liftlab.graphchecker.runtime.Lineage
                 .rootWindowIndex();
-        if (role != edu.uva.liftlab.graphchecker.d3.contract.Role.UNKNOWN
+        if (role != edu.uva.liftlab.graphchecker.contract.Role.UNKNOWN
                 && window > 0) {
             return "Root:" + role.name() + "#" + window;
         }
@@ -1948,7 +1948,7 @@ public final class CausynthTraceRecorder {
                 "requestApi", event.requestApi,
                 // Identity v3, on the exchange rows too: an export's
                 // site-local index and the scope it crossed in.
-                "executionIndex", edu.uva.liftlab.graphchecker.runtime.d3
+                "executionIndex", edu.uva.liftlab.graphchecker.runtime
                         .Identity.atScope().render(),
                 "causalContext", recordedCausalContext());
     }
@@ -2031,7 +2031,7 @@ public final class CausynthTraceRecorder {
                 "requestApi", event.requestApi,
                 // Identity v3, on the exchange rows too: an export's
                 // site-local index and the scope it crossed in.
-                "executionIndex", edu.uva.liftlab.graphchecker.runtime.d3
+                "executionIndex", edu.uva.liftlab.graphchecker.runtime
                         .Identity.atScope().render(),
                 "causalContext", recordedCausalContext());
     }

@@ -1,20 +1,20 @@
 package edu.uva.liftlab.graphchecker.causynth;
 
-import edu.uva.liftlab.graphchecker.d3.plan.GapLedger;
+import edu.uva.liftlab.graphchecker.plan.GapLedger;
 
-import edu.uva.liftlab.graphchecker.d3.plan.AutomaticRegionEdge;
-import edu.uva.liftlab.graphchecker.d3.plan.SharedFieldFlow;
-import edu.uva.liftlab.graphchecker.d3.contract.OccurrenceAddress;
-import edu.uva.liftlab.graphchecker.d3.plan.CommunicationCatalogContract;
-import edu.uva.liftlab.graphchecker.d3.plan.DependencyRole;
-import edu.uva.liftlab.graphchecker.d3.plan.FieldPathSpec;
-import edu.uva.liftlab.graphchecker.d3.smt.JavaContainerTypes;
-import edu.uva.liftlab.graphchecker.d3.smt.JavaPrimitiveBoxing;
-import edu.uva.liftlab.graphchecker.d3.plan.LoopBoundPolicy;
-import edu.uva.liftlab.graphchecker.d3.plan.StaticSymbolicSourceDeclaration;
-import edu.uva.liftlab.graphchecker.d3.plan.ConfiguredSourcePhaseContract;
+import edu.uva.liftlab.graphchecker.plan.AutomaticRegionEdge;
+import edu.uva.liftlab.graphchecker.plan.SharedFieldFlow;
+import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
+import edu.uva.liftlab.graphchecker.plan.CommunicationCatalogContract;
+import edu.uva.liftlab.graphchecker.plan.DependencyRole;
+import edu.uva.liftlab.graphchecker.plan.FieldPathSpec;
+import edu.uva.liftlab.graphchecker.smt.JavaContainerTypes;
+import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveBoxing;
+import edu.uva.liftlab.graphchecker.plan.LoopBoundPolicy;
+import edu.uva.liftlab.graphchecker.plan.StaticSymbolicSourceDeclaration;
+import edu.uva.liftlab.graphchecker.plan.ConfiguredSourcePhaseContract;
 import edu.uva.liftlab.graphchecker.runtime.OccurrenceMinter;
-import edu.uva.liftlab.graphchecker.d3.plan.SiteId;
+import edu.uva.liftlab.graphchecker.plan.SiteId;
 
 import java.io.IOException;
 import java.util.ArrayDeque;
@@ -3510,7 +3510,7 @@ public final class RuntimeSelectedRegionFinalizer {
      * <p>{@code gaps} may be null where a caller builds ports outside a
      * finalize pass; the two truncations below both run inside one, so in
      * practice every raised gap reaches
-     * {@link edu.uva.liftlab.graphchecker.d3.plan.GapLedger}.</p>
+     * {@link edu.uva.liftlab.graphchecker.plan.GapLedger}.</p>
      */
     private static void planGap(List<Map<String, Object>> gaps, String code,
                                 String subject, String detail) {
@@ -4225,7 +4225,7 @@ public final class RuntimeSelectedRegionFinalizer {
          * says a recorded access or a recorded container observation was
          * dropped, which no later stage can see, so they travel into the
          * runtime plan artifact and are classed by
-         * {@link edu.uva.liftlab.graphchecker.d3.plan.GapLedger}.
+         * {@link edu.uva.liftlab.graphchecker.plan.GapLedger}.
          */
         public final List<Map<String, Object>> gaps;
         private Result(List<Map<String, Object>> regions,

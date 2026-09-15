@@ -1,8 +1,8 @@
 package edu.uva.liftlab.graphchecker.causynth;
 
-import edu.uva.liftlab.graphchecker.d3.plan.CommunicationCatalogContract;
+import edu.uva.liftlab.graphchecker.plan.CommunicationCatalogContract;
 
-import edu.uva.liftlab.graphchecker.d3.plan.SiteId;
+import edu.uva.liftlab.graphchecker.plan.SiteId;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.LinkedHashMap;

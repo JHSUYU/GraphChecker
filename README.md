@@ -178,12 +178,12 @@ case has installed the same Hadoop SNAPSHOT coordinates in Maven's cache.
 
 ## Results
 
-`schedule/final/` contains exactly six files: `candidate.smt2`,
+`schedule/final/` contains `candidate.smt2`,
 `candidate_composition_manifest.json` (which carries the SOLVE stage's
-valuations and claim under `solver`), `path-closures.json`,
-`gaps.json`, `result.json`, and `run-manifest.json`, which records the frozen
-provenance digests, the per-iteration manifests, and the digest of every other
-published artifact. The frozen inputs themselves are not in `final/`: the
+valuations and claim under `solver`), `gaps.json`, `gap_ledger.json`,
+`result.json`, and `run-manifest.json`, which records the frozen provenance
+digests, the per-iteration manifests, and the digest of every other published
+artifact. The frozen inputs themselves are not in `final/`: the
 private read-only copy of the tool the run executed is the `GraphChecker.jar`
 in `schedule/frozen-inputs/`. Accepted outcomes are:
 
@@ -195,11 +195,11 @@ in `schedule/frozen-inputs/`. Accepted outcomes are:
 `ClaimPolicy` decides the claim and names every reason it is not accepted in
 `result.json`: one `blockers` row per reason and one `whyNotAccepted` line,
 which EMIT also prints. A claim is accepted only when that list is empty, so a
-run needs zero aggregate gaps, a root space the solver decided is constrained,
-every declared `WIRE_FLOW` reaching the formula by its port family or by the
-field its consumer assigns, a fatal read whose own container was reconstructed,
-an injected fault marker that decides the verdict, and matching fresh
-provenance. Closed selected-path authority is required for `UNSAT_CLOSED`
+run needs zero BLOCKING gaps (the gap ledger classes every code, and a
+DIAGNOSTIC row withholds nothing), a root space the solver decided is
+constrained, every declared `WIRE_FLOW` reaching the formula by its port
+family, a declared root whose recorded valuation is unsatisfiable
+(`polarityDecides`), and matching fresh provenance. Closed selected-path authority is required for `UNSAT_CLOSED`
 alone; open sibling paths leave a SAT candidate accepted. The Composer's
 `finalStatus: FINAL_READY` states that the formula is complete, not that the
 run was accepted. A zero process exit or an old SMT file is not sufficient.
@@ -216,42 +216,8 @@ git diff --check
 ```
 
 Main code lives under `src/main/java/.../` in the packages `annotation`,
-`causynth`, `concolic`, `contract`, `option`, `runtime` and `transformer`; the
-identity and artifact contracts shared across stages live in `contract`. The
-custom VM is under `third_party/OpenJDK-Concolic-Execution-Engine`.
-
-## Outstanding work (refactor/flatten-handoff-next, 2026-09-12)
-
-`$SP` = `/tmp/claude-20003/-opt-GraphChecker/99c84a54-86ac-44a4-a030-760f664ae2a1/scratchpad`（本次会话的 scratchpad）。
-
-### 当前状态
-
-- staging 分支 `refactor/flatten-handoff-next` @ `1a6ca9429`（工作树干净，175 commits over `main`），`mvn -o test` 282 绿；`main` 仍在 `3d9355745`，未落地。
-- 验收标准：buggy 版本 `claim=SAT_CANDIDATE`、`blockers=[]`、`finalStatus=FINAL_READY`，且完整 `candidate.smt2` 上 buggy 极性 sat、另一极性 unsat（或 `mechanismNecessity` 判定为必要的命名机制）。工具：`$SP/final/accept_final.sh`（串行、`DRY=1` 预检）、`$SP/final/probe_final.sh`、`$SP/final/report_final.py`。
-- 17960：`$SP/l1/out5/schedule/final/result.json` = `finalStatus=FINAL_READY`、`gapCount=0`、`claim=INCONCLUSIVE_PARTIAL`、`solverState=CANDIDATE_READY`；`sym__HDFS_CONFIG_SNAPSHOT_DELETION_ORDERED` 取 `false` 时 sat、取 `true` 时 unsat；剩 1 个 blocker `UNDETERMINED_INITIAL_STATE`（subject `MAP_STATE/144#-3`，一个容器载体初始快照被截断，待查是白名单类还是超上限）。
-- bug3：链完整、`allKeys` 快照已判定、声明收窄后待终轮；最新语料 `$SP/snap/out/out/hdfs-17899-bug3` 仍是修复前的 `FINAL_REFUSED`、2 缺口、blockers `COMPOSER_NOT_FINAL_READY` / `COMPOSITION_GAPS_UNRESOLVED` / `FAULT_MARKER_NOT_DETERMINING`。
-- bug2：同 bug3 待终轮；最新语料 `$SP/verify-out3/out/hdfs-17899-bug2` = `FINAL_READY`、0 缺口、1 个 blocker `DECLARED_WIRE_FLOWS_UNREALIZED`、sat/unsat 两极性已分离。
-- 17897：待终轮；最新语料 `$SP/verify-out3/out/hdfs-17897`（13:11，非 staging tip）= `FINAL_READY`、0 缺口、3 个 blocker `UNDECIDED_ROOT_SPACE` / `TARGET_UNCONSTRAINED_BY_ROOTS` / `DECLARED_WIRE_FLOWS_UNREALIZED`，并无 `UNDETERMINED_INITIAL_STATE`。
-- bug1：首次跑通，旧 jar 的钉扎伪影已排除（诊断 `$SP/d-bug1/DIAGNOSIS.md`）；语料 `$SP/cap/out-bug1/out/hdfs-17899-bug1` = `FINAL_READY`、1 缺口、3 个 blocker、4 个 valuation（1 timeout + 3 unsat），待终轮。
-- 11741：首次通过 PLAN（`planned tasks: 88 by goal REGION_PATH_CLOSURE=84 TARGET_REACH_CLOSURE=4`）并进入 EXPLORE wave 0，被串行规则提前终止，无 `result.json`，待终轮完整跑。
-
-### 待做（按顺序）
-
-1. 完成并合入 `fix/fault-retain`（worktree `$SP/wt-fault`，2 个未提交改动，`ConcolicSmtComposer.java` +68 / `FaultRetainClosureTest.java` +69−6）：F1 契约自检 `FAULT_PARTITION_UNSPLIT`；F2 `FRONTIER_PINNED_UNSAT`（所有尝试的 unsat core 都与驱动自身钉子相交时不许报 unsat）；F3 故障保留语义（fault=true 时被 idle 的写者视为不存在，读回退到 LWW 前一版本或 INITIAL；传递依赖的下游分区随同一标记变为条件式；无前版本报 `FAULT_IDLE_NO_RETAINED_ARM`；manifest 按标记列出 retained (location, predecessor) 对）。诊断：`$SP/d-bug1/DIAGNOSIS.md`。
-2. 17960 剩余 blocker：找出 `$SP/l1/out5` 中被截断的初始快照载体（`INITIAL_CONTAINER_SNAPSHOT_TRUNCATED` 行，产生于 `SymbolicPropagationClosure.java:1628`），若是类不在 `InitialContainerSnapshot.VM_VERSIONED_CLASSES`（`InitialContainerSnapshot.java:85`）/ VM `ContainerSupport::whole_state_selectable`（`containerSupport.cpp:153`）白名单则补齐（VM 需增量重建 + smoke 36/36），若超上限则调 `-Dcausynth.concolic.initial.snapshot.max`（`InitialContainerSnapshot.java:41`）；从模型叙述 17960 见证链（无序删除 → 重试的第二次 deleteSnapshot → `DirectorySnapshottableFeature.removeSnapshot` 容忍路径保留列表元素 → `SnapshotManager.deleteSnapshot` 无条件 `numSnapshots.getAndDecrement()`（`SnapshotManager.java:552`）→ `numSnapshots != 1` → throw）。
-3. 六案串行终轮：`$SP/final/accept_final.sh`（默认 jar = `$SP/wt-stage/target/GraphChecker-1.0-SNAPSHOT-jar-with-dependencies.jar`，镜像 = `$SP/wt-l1/third_party/OpenJDK-Concolic-Execution-Engine/build/linux-x86_64-normal-zero-release/images/j2sdk-image`，输出 `summary.tsv` + 每案 `report/<case>/report.md`）；每案预算 ≤ 6 h（`CASE_TIMEOUT_SECONDS=21600`）；一次只跑一个战役。终轮同时验证：`run_engine.sh:1897` 硬链接共享 replay plan、声明即铸造（`declaredSymbolicRoot`，17960 的 `AtomicInteger value` 被强制铸造，见 `ConcolicInstrumentationSelections.java:479`）、`INITIAL_SNAPSHOT_SKIPPED` 行、17897 两条 flow 的 `CONSUMER_FIELD_READ` 路由（`ClaimPolicy.java:393`）。
-4. bug3 语义待确认（需 owner 决定）：fault=false 若仍 sat 且见证是录制顺序的竞态（NN 滚 key 68，目标 DN 的刷新在 fatal 读之后），是否作为额外发现而非 blocker；若要求“无故障即 UNSAT”，需把目标 DN 的刷新 RPC 也纳入故障控制（实验层调整）。
-5. 落地：写 `$SP/final/ACCEPTED` → `DRY=0 bash $SP/final/land.sh`（`git -C /opt/GraphChecker merge --ff-only refactor/flatten-handoff-next`；`mvn` 构建+测试；VM 镜像：staging `third_party` 树 `47bd04f7f` 与 L1 镜像同源（`wt-l1` 同树），可直接复制，否则 `third_party/OpenJDK-Concolic-Execution-Engine/scripts/causynth_build_in_docker.sh`（Docker+GCC 6）；smoke 36/36；gate 复核 17960/bug3 sha 与 staging jar 一致）。
-6. 结项报告：`$SP/final/REPORT_DRAFT.md` 填数（`$SP/final/LINECOUNT.md`：删冗余净 −739、模型完备性 +3227、门禁 +2141、测试 +6506；该表测于 `8c507bff7`，是 tip 的祖先。tip 上 `src/main` 为 78,104 行 vs 起点 `3d9355745` 的 71,522 行；`main..tip` 全树 210 files、+28696 / −13957）。
-
-### Owner 待决
-
-- VM `BigDecimal` 符号化路径 453 行（`symbolicBigDecimal.cpp` 370 + `.hpp` 83，Java 无消费者）：删或留。
-- `DelegationKey#keyId`/`serialNo` 是否恢复为符号根（当前已移除，`src/main` 中仅余注释，因与目标快照常量无恒等关系导致虚假 SAT；恢复需把快照条目表达为同一根的表达式）。
-- `edgeBindings` 行级规范化（需改 4 个 `experiments/hadoop/*/execute.sh`，收益约 1.5×）。
-- `ConcolicRegionRuntime.ActiveRegion`（831 行，`ConcolicRegionRuntime.java:4975`，全文件 6617 行）拆分。
-- 11741 无 DEK 过期检查读（bug 本身），不虚构声明行。
-
-### 已知可选/遗留
-
-- `callId`/`eventSeq` 证据字段；shell A3 项（`schedule_members.tsv`、flip solver own record）；增量 re-plan on topology delta。
+`causynth` (the static pass), `plan` (PLAN), `runtime` (the woven hooks and the
+replay's row publication), `contract` (the row contract and the IMPORT gate),
+`explore` (EXPLORE), `compose` (COMPOSE/SOLVE/DECIDE), `smt` (the shared SMT
+and JSON vocabulary), plus `option` and `transformer`. The custom VM is under
+`third_party/OpenJDK-Concolic-Execution-Engine`.

@@ -309,7 +309,7 @@ public final class SymbolicMessageEnvelope {
             for (int index = 0; index < entries.size(); index++) {
                 if (lookedUp[index]) continue;
                 // D2: "a message element nothing decoded" is a GapRow
-                // published by runtime/d3 SessionPublisher (M2).
+                // published by SessionPublisher (M2).
                 lookedUp[index] = true;
             }
         }

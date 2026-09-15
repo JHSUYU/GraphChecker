@@ -576,7 +576,7 @@ do_schedule() {
     || args+=(--retain-regions "${schedule_retain_regions}")
   [[ -z "${declared_target_occurrence}" ]] \
     || args+=(--target-occurrence "${declared_target_occurrence}")
-  run_java_main edu.uva.liftlab.graphchecker.d3.plan.ConcolicScheduler \
+  run_java_main edu.uva.liftlab.graphchecker.plan.ConcolicScheduler \
     "${args[@]}"
 }
 
@@ -588,7 +588,7 @@ do_compose() {
   [[ -z "${declared}" ]] || selection+=(--anchor "${declared}")
   [[ -z "${causynth_root_domains}" ]] \
     || selection+=(--root-domains "${causynth_root_domains}")
-  run_java_main edu.uva.liftlab.graphchecker.d3.compose.ComposeMain \
+  run_java_main edu.uva.liftlab.graphchecker.compose.ComposeMain \
     --sessions "${compose_sessions_dir}" \
     --output "${composed_smt}" \
     --manifest "${composition_manifest}" \
@@ -1778,7 +1778,7 @@ campaign_import_session() {
 # rows that EXPLORE and COMPOSE each read as valid -- a decision whose
 # `outcome` was the complement of its term's truth value, and a focused
 # session that published rows with an empty expression table -- and each stage
-# that met one reported something later and elsewhere.  d3.contract.
+# that met one reported something later and elsewhere.  contract.
 # RowInvariants states the contract's own sentences, and the gate runs them
 # here: a BLOCKING violation stops the campaign at IMPORT, naming the row, and
 # a DIAGNOSTIC one is recorded and the campaign goes on.
@@ -1790,7 +1790,7 @@ campaign_import_gate() {
   local gaps="${iteration_dir}/campaign_gaps.jsonl"
   local summary="${iteration_dir}/import_gate.json"
   local blocking violations first
-  run_java_main edu.uva.liftlab.graphchecker.d3.contract.ImportGateMain \
+  run_java_main edu.uva.liftlab.graphchecker.contract.ImportGateMain \
     --sessions "${iteration_dir}/sessions" \
     --out "${gaps}" \
     --topology-epoch "${iteration_id}" >"${summary}"
@@ -1827,7 +1827,7 @@ campaign_obligation_worker() {
     || domain_args+=(--root-domains "${causynth_root_domains}")
   # Two files, one shape each.  execution_task_plan.jsonl is the PLAN, whose
   # rows the workload session opener decodes (ConcolicTaskPlan.load ->
-  # d3.plan.ExecutionTask.decode), so a focused replay gets the SEED's plan
+  # plan.ExecutionTask.decode), so a focused replay gets the SEED's plan
   # here, hard-linked exactly as campaign_plan links it for seed workers.  The
   # obligation's own focus row is focused_task.jsonl, written by the solver;
   # it used to be written under the plan's name, and every obligation replay
@@ -1837,7 +1837,7 @@ campaign_obligation_worker() {
   local results="${worker}/concolic_region_results.jsonl"
   local result_row="${worker}/obligation_result.jsonl"
   run_capturing_status run_java_main \
-    edu.uva.liftlab.graphchecker.d3.explore.ObligationSolverMain \
+    edu.uva.liftlab.graphchecker.explore.ObligationSolverMain \
     --obligations "${obligations}" \
     --obligation-id "${obligation_id}" \
     --sessions "${sessions}" \
@@ -1888,7 +1888,7 @@ campaign_obligation_worker() {
 
 # EXPLORE: waves of focused obligations until the frontier stops moving.
 #
-# One JVM plans the wave -- d3.explore.ExploreMain reads every session this
+# One JVM plans the wave -- explore.ExploreMain reads every session this
 # epoch has produced and writes the obligations the frontier is owed -- and
 # one worker per obligation executes it.  A task is ONE focused occurrence
 # (or one state-connected factor); everything else in that replay runs
@@ -1937,7 +1937,7 @@ campaign_explore() {
     mkdir -p "${wave_dir}"
     obligations="${wave_dir}/obligations.jsonl"
     status=0
-    run_java_main edu.uva.liftlab.graphchecker.d3.explore.ExploreMain \
+    run_java_main edu.uva.liftlab.graphchecker.explore.ExploreMain \
       --sessions "${sessions}" \
       --results "${results}" \
       --topology-epoch "${iteration_id}" \
@@ -2087,7 +2087,7 @@ campaign_publish_iteration_manifest() {
   # What this epoch imported and explored, digested from the two artifacts
   # its own stages wrote before this point.  It used to digest
   # concolic_region_summaries.jsonl, which no stage has written since the
-  # Design 3 reduction: campaign_digest dies on a missing file, so the
+  # stage reduction: campaign_digest dies on a missing file, so the
   # campaign_fail below fired on every run that reached PLAN.  The manifest is
   # published after EXPLORE and before COMPOSE, so the composition manifest
   # and result.json do not exist yet and cannot be what it commits to; the
@@ -2254,7 +2254,7 @@ campaign_artifact_digests() {
 # ledger, which defaults an unregistered code to BLOCKING in both readers.
 campaign_write_gap_ledger() {
   local output=$1
-  run_java_main edu.uva.liftlab.graphchecker.d3.plan.GapLedger \
+  run_java_main edu.uva.liftlab.graphchecker.plan.GapLedger \
     --output "${output}"
   require_nonempty "gap ledger" "${output}"
   campaign_require_json "gap ledger" "${output}" \

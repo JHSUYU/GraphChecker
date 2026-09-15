@@ -3,7 +3,7 @@ package edu.uva.liftlab.graphchecker.causynth;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
-import edu.uva.liftlab.graphchecker.d3.plan.LoopBoundPolicy;
+import edu.uva.liftlab.graphchecker.plan.LoopBoundPolicy;
 
 import java.io.BufferedReader;
 import java.io.IOException;

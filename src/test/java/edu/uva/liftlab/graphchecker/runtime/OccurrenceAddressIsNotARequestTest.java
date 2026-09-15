@@ -1,15 +1,15 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
-import edu.uva.liftlab.graphchecker.d3.contract.OccurrenceAddress;
-import edu.uva.liftlab.graphchecker.d3.contract.Frame;
-import edu.uva.liftlab.graphchecker.d3.contract.ExecutionIndex;
-import edu.uva.liftlab.graphchecker.d3.contract.Role;
-import edu.uva.liftlab.graphchecker.d3.contract.CausalContext;
-import edu.uva.liftlab.graphchecker.d3.contract.NodeId;
+import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
+import edu.uva.liftlab.graphchecker.contract.Frame;
+import edu.uva.liftlab.graphchecker.contract.ExecutionIndex;
+import edu.uva.liftlab.graphchecker.contract.Role;
+import edu.uva.liftlab.graphchecker.contract.CausalContext;
+import edu.uva.liftlab.graphchecker.contract.NodeId;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
-import edu.uva.liftlab.graphchecker.d3.plan.ExecutionTask;
+import edu.uva.liftlab.graphchecker.plan.ExecutionTask;
 
 import org.junit.After;
 import org.junit.Test;

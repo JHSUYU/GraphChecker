@@ -1,22 +1,22 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
-import edu.uva.liftlab.graphchecker.d3.plan.ConcolicScheduler;
+import edu.uva.liftlab.graphchecker.plan.ConcolicScheduler;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.google.gson.JsonPrimitive;
-import edu.uva.liftlab.graphchecker.d3.plan.SharedStateEvidence;
-import edu.uva.liftlab.graphchecker.d3.plan.CommunicationHandoffSpec;
-import edu.uva.liftlab.graphchecker.d3.plan.ConfiguredSourcePhaseContract;
-import edu.uva.liftlab.graphchecker.d3.contract.OccurrenceAddress;
-import edu.uva.liftlab.graphchecker.d3.plan.ExecutionTask;
-import edu.uva.liftlab.graphchecker.d3.plan.FieldPathSpec;
-import edu.uva.liftlab.graphchecker.d3.plan.FieldPathSpec.DeclaredField;
-import edu.uva.liftlab.graphchecker.d3.plan.InputActionCatalog;
-import edu.uva.liftlab.graphchecker.d3.smt.JavaContainerTypes;
-import edu.uva.liftlab.graphchecker.d3.plan.LoopBoundPolicy;
+import edu.uva.liftlab.graphchecker.plan.SharedStateEvidence;
+import edu.uva.liftlab.graphchecker.plan.CommunicationHandoffSpec;
+import edu.uva.liftlab.graphchecker.plan.ConfiguredSourcePhaseContract;
+import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
+import edu.uva.liftlab.graphchecker.plan.ExecutionTask;
+import edu.uva.liftlab.graphchecker.plan.FieldPathSpec;
+import edu.uva.liftlab.graphchecker.plan.FieldPathSpec.DeclaredField;
+import edu.uva.liftlab.graphchecker.plan.InputActionCatalog;
+import edu.uva.liftlab.graphchecker.smt.JavaContainerTypes;
+import edu.uva.liftlab.graphchecker.plan.LoopBoundPolicy;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -33,13 +33,13 @@ import java.util.Map;
 import java.util.Set;
 import java.util.regex.Matcher;
 
-import static edu.uva.liftlab.graphchecker.d3.smt.JavaPrimitiveSmtSemantics.javaTypeDescriptor;
-import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.array;
-import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.firstNonBlank;
-import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.object;
-import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.optionalInteger;
-import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.optionalLongInteger;
-import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.optionalString;
+import static edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics.javaTypeDescriptor;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.array;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.object;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalInteger;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalLongInteger;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 import edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.ConsumerAccessAnchor;
 import edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.GuardedReadAssignment;
 import edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.ModelAssignment;
@@ -1766,7 +1766,7 @@ final class ConcolicTaskPlan {
          * matches nothing rather than half-matching on the node.</p>
          */
         OccurrenceAddress observedAddress(String lifecycle) {
-            return edu.uva.liftlab.graphchecker.runtime.d3
+            return edu.uva.liftlab.graphchecker.runtime
                     .OccurrenceMinterV2.mint(
                             safe(lifecycle).isEmpty() ? sourceKey : lifecycle,
                             regionId, liveContext(), liveIndex());
@@ -1801,14 +1801,14 @@ final class ConcolicTaskPlan {
         }
 
         /** The causal context this thread is in, as the minter reads it. */
-        private static edu.uva.liftlab.graphchecker.d3.contract.CausalContext
+        private static edu.uva.liftlab.graphchecker.contract.CausalContext
                 liveContext() {
-            return edu.uva.liftlab.graphchecker.runtime.d3.Identity.context(
-                    edu.uva.liftlab.graphchecker.runtime.d3.Lineage.anchor(),
-                    edu.uva.liftlab.graphchecker.runtime.d3.Lineage.rpcSite(),
-                    edu.uva.liftlab.graphchecker.runtime.d3.Lineage
+            return edu.uva.liftlab.graphchecker.runtime.Identity.context(
+                    edu.uva.liftlab.graphchecker.runtime.Lineage.anchor(),
+                    edu.uva.liftlab.graphchecker.runtime.Lineage.rpcSite(),
+                    edu.uva.liftlab.graphchecker.runtime.Lineage
                             .rootRole(),
-                    edu.uva.liftlab.graphchecker.runtime.d3.Lineage
+                    edu.uva.liftlab.graphchecker.runtime.Lineage
                             .rootWindowIndex());
         }
 
@@ -1820,9 +1820,9 @@ final class ConcolicTaskPlan {
          * session publisher opens the region, and opening it twice would
          * move the base every endpoint inside is indexed from.</p>
          */
-        private static edu.uva.liftlab.graphchecker.d3.contract.ExecutionIndex
+        private static edu.uva.liftlab.graphchecker.contract.ExecutionIndex
                 liveIndex() {
-            return edu.uva.liftlab.graphchecker.runtime.d3.Identity.atScope();
+            return edu.uva.liftlab.graphchecker.runtime.Identity.atScope();
         }
 
         boolean acceptsRootInvocation(OccurrenceAddress observed) {
@@ -1854,10 +1854,10 @@ final class ConcolicTaskPlan {
         void noteAddressDrift(OccurrenceAddress observed) {
             String difference = addressDifference(observed);
             if (!addressDrifts.add(difference)) return;
-            edu.uva.liftlab.graphchecker.runtime.d3.D3Runtime.gap(
-                    edu.uva.liftlab.graphchecker.d3.contract.GapKind
+            edu.uva.liftlab.graphchecker.runtime.RowRuntime.gap(
+                    edu.uva.liftlab.graphchecker.contract.GapKind
                             .LINEAGE_LOST,
-                    edu.uva.liftlab.graphchecker.d3.contract.GapClass
+                    edu.uva.liftlab.graphchecker.contract.GapClass
                             .DIAGNOSTIC,
                     safe(occurrenceId),
                     "the plan and this replay address one activation"

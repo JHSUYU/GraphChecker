@@ -1,7 +1,7 @@
 package edu.uva.liftlab.graphchecker.causynth;
 
-import edu.uva.liftlab.graphchecker.d3.plan.CommunicationCatalogContract;
-import edu.uva.liftlab.graphchecker.d3.plan.DependencyRole;
+import edu.uva.liftlab.graphchecker.plan.CommunicationCatalogContract;
+import edu.uva.liftlab.graphchecker.plan.DependencyRole;
 
 import java.util.ArrayList;
 import java.util.Collection;

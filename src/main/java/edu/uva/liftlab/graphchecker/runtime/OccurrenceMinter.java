@@ -1,11 +1,11 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
 import edu.uva.liftlab.graphchecker.causynth.MapFields;
-import edu.uva.liftlab.graphchecker.d3.contract.CausalContext;
-import edu.uva.liftlab.graphchecker.d3.contract.ExecutionIndex;
-import edu.uva.liftlab.graphchecker.d3.contract.OccurrenceAddress;
-import edu.uva.liftlab.graphchecker.d3.contract.Role;
-import edu.uva.liftlab.graphchecker.runtime.d3.OccurrenceMinterV2;
+import edu.uva.liftlab.graphchecker.contract.CausalContext;
+import edu.uva.liftlab.graphchecker.contract.ExecutionIndex;
+import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
+import edu.uva.liftlab.graphchecker.contract.Role;
+import edu.uva.liftlab.graphchecker.runtime.OccurrenceMinterV2;
 import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;

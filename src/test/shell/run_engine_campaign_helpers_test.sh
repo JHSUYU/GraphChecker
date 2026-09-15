@@ -643,11 +643,11 @@ done
 # whole helper test red on staging until REPORT-GAPJOIN found it -- and
 # `causynth_root_domains` joined it in a6da088f1, where the case gained a way
 # to say what a declared root may be.
-# `composer` left with the Design 3 stage reduction; `reach_max_inputs` and
+# `composer` left with the stage reduction; `reach_max_inputs` and
 # `reach_max_valuations` left with the separate solver process, because the
 # composer runs z3 per valuation while it composes and SOLVE reads the verdict
 # it wrote.  `compose_max_valuations` joined it in their place: the enumeration
-# is still the campaign's to bound, it is just the composer that runs it.  `composer` left it with the Design 3
+# is still the campaign's to bound, it is just the composer that runs it.  `composer` left it with the
 # stage reduction: there is one composition of the anchored target's paths,
 # and a key naming which one selected nothing.
 # 42: `campaign_stop_after` joined it when the IMPORT stop became a declared
@@ -914,7 +914,7 @@ $(tr '\n' ' ' <"${stop_after_dir}/labels-full.tsv")"
 
 # IMPORT-GATE: the row contract stops the campaign at IMPORT, or records.
 #
-# The gate's own rules are checked in D3ContractTest; what is checked here is
+# The gate's own rules are checked in ContractTest; what is checked here is
 # the control flow the stage wraps around them: a BLOCKING count fails the
 # stage naming the first subject, a DIAGNOSTIC-only run goes on, and either
 # way the gap file the gate appended is the artifact the failure names.
