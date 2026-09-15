@@ -15,6 +15,7 @@ import edu.uva.liftlab.graphchecker.d3.contract.InteractionKind;
 import edu.uva.liftlab.graphchecker.d3.contract.LocationId;
 import edu.uva.liftlab.graphchecker.d3.contract.LocationKind;
 import edu.uva.liftlab.graphchecker.d3.contract.OccurrenceAddress;
+import edu.uva.liftlab.graphchecker.d3.contract.RootKind;
 import edu.uva.liftlab.graphchecker.d3.contract.RootMintRow;
 import edu.uva.liftlab.graphchecker.d3.contract.WriteRow;
 
@@ -97,6 +98,30 @@ public final class Arms {
 
         /** Every root the corpus minted, by root id. */
         Map<String, List<RootMintRow>> roots();
+
+        /**
+         * Whether the sessions of this corpus mint this root at more than
+         * one value.
+         *
+         * <p>One definition, because "varied" decides two things that must
+         * agree: what a PATH carries (its own replay's valuation of every
+         * varied root) and what an ARM is guarded by (the delivering
+         * replay's).  Read off the rows, so a stage cannot hold a second
+         * opinion about it.</p>
+         */
+        default boolean varied(String rootId) {
+            List<RootMintRow> minted = roots().get(rootId);
+            if (minted == null) return false;
+            Set<String> values = new LinkedHashSet<String>();
+            for (RootMintRow row : minted) {
+                if (row.recordedValue() == null
+                        || row.recordedValue().isEmpty()) {
+                    continue;
+                }
+                values.add(row.recordedValue());
+            }
+            return values.size() > 1;
+        }
 
         /** The attach that minted this symbol in this session, or null. */
         AttachRow attachOfSymbol(String symbol, String sessionId);
@@ -539,7 +564,22 @@ public final class Arms {
                 : rows.roots().entrySet()) {
             RootMintRow row = rows.root(entry.getKey(), session);
             if (row == null) continue;
-            if (!symbols.contains(row.symbol())) continue;
+            // Never a clock: what a replay's clock read is already in the
+            // decisions its prefix carries, and pinning it here would
+            // close every skew witness that rests on this arm.
+            if (row.kind() == RootKind.CLOCK) continue;
+            // The delivering replay's valuation of every VARIED root, and
+            // of every root this arm's own expression names.  The arm is
+            // what that replay delivered UNDER ITS OWN values, so it is
+            // available under them and not under another valuation --
+            // guarded by the expression's roots alone, an arm delivered by
+            // a replay that ran with the marker one way was available
+            // under a valuation that put it the other way, which is a
+            // delivery no execution produced.
+            if (!rows.varied(entry.getKey())
+                    && !symbols.contains(row.symbol())) {
+                continue;
+            }
             if (row.recordedValue() == null
                     || row.recordedValue().isEmpty()) {
                 continue;
