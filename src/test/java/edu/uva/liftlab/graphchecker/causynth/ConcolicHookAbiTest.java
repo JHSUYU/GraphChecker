@@ -16,9 +16,16 @@ import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
 /**
- * The instrumentation ABI: every hook {@code HookCatalog.concolic()} weaves
- * into application bytecode must exist as a public static method of
- * {@code ConcolicRegionRuntime} with exactly the woven signature.
+ * The instrumentation ABI: every hook {@code HookCatalog.concolic()} and
+ * {@code HookCatalog.trace()} weave into application bytecode must exist as
+ * a public static method of {@code ConcolicRegionRuntime} or {@code
+ * CausynthTraceRecorder} with exactly the woven signature.
+ *
+ * <p>Both catalogs, because the identity is computed in both passes: the
+ * recording states an occurrence address at the entry hook of a region root
+ * and files a start frame at the work-start hook, so a trace hook whose
+ * signature drifts costs the recording its addresses -- at campaign SEED,
+ * with a NoSuchMethodError from woven bytecode.</p>
  *
  * <p>Soot resolves those references lazily against a phantom class, so a
  * rename or a moved method fails only in a full campaign run. This test
@@ -37,15 +44,34 @@ public class ConcolicHookAbiTest {
                     + "CausynthPipeline.java";
     private static final String RUNTIME_CLASS =
             "edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime";
+    private static final String RECORDER_CLASS =
+            "edu.uva.liftlab.graphchecker.runtime.CausynthTraceRecorder";
     private static final String PACKAGE = "edu.uva.liftlab.graphchecker.";
     /** APIs called from outside this repository; see the class javadoc. */
     private static final String EXTERNAL_CALLERS =
             "src/test/resources/external-callers.txt";
 
     @Test
-    public void everyWovenConcolicHookResolvesOnTheRuntime() throws Exception {
-        Class<?> runtime = Class.forName(RUNTIME_CLASS);
-        List<String[]> entries = catalogEntries("concolic");
+    public void everyWovenHookAndCalledApiResolves() throws Exception {
+        assertEquals("the custom VM keeps three java.lang.System hooks",
+                3, resolveCatalog("concolic", RUNTIME_CLASS));
+        // The recording's own hooks, against the recorder: startWork files
+        // the start frame and enterMethod states the occurrence address of
+        // a region root, and both are woven into application bytecode.
+        assertEquals("no java.lang.System hook is woven by the trace pass",
+                0, resolveCatalog("trace", RECORDER_CLASS));
+        assertExternalCallersResolve();
+    }
+
+    /**
+     * Resolves one catalog's hooks against {@code ownerClass}.
+     *
+     * @return how many of its entries are woven on {@code java.lang.System}
+     */
+    private static int resolveCatalog(String factory, String ownerClass)
+            throws Exception {
+        Class<?> owner = Class.forName(ownerClass);
+        List<String[]> entries = catalogEntries(factory);
         assertFalse("no hook entries parsed out of " + PIPELINE_SOURCE,
                 entries.isEmpty());
         int wovenOnSystem = 0;
@@ -54,7 +80,6 @@ public class ConcolicHookAbiTest {
                 wovenOnSystem++;
                 continue;
             }
-            assertEquals("unexpected hook owner", "runtime", entry[0]);
             String name = entry[1];
             Class<?> result = javaType(entry[2]);
             Class<?>[] parameters = new Class<?>[entry.length - 3];
@@ -63,18 +88,21 @@ public class ConcolicHookAbiTest {
             }
             Method hook;
             try {
-                hook = runtime.getMethod(name, parameters);
+                hook = owner.getMethod(name, parameters);
             } catch (NoSuchMethodException missing) {
-                fail("woven concolic hook " + name + " is no longer a public "
-                        + "method of " + RUNTIME_CLASS + ": " + missing);
-                return;
+                fail("woven " + factory + " hook " + name + " is no longer a"
+                        + " public method of " + ownerClass + ": " + missing);
+                return wovenOnSystem;
             }
             assertTrue(name + " must stay static",
                     Modifier.isStatic(hook.getModifiers()));
             assertEquals(name + " return type", result, hook.getReturnType());
         }
-        assertEquals("the custom VM keeps three java.lang.System hooks",
-                3, wovenOnSystem);
+        return wovenOnSystem;
+    }
+
+    /** The external half of the ABI: what the workload checkouts call. */
+    private static void assertExternalCallersResolve() throws Exception {
         for (String row : Files.readAllLines(Paths.get(EXTERNAL_CALLERS),
                 StandardCharsets.UTF_8)) {
             if (row.isEmpty() || row.startsWith("#")) continue;
