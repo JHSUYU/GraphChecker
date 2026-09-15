@@ -439,6 +439,25 @@ public final class Composer {
         clocks(clockCells, clockReadings);
         domains();
         lowering.assertIdentitiesDistinct();
+        // What the corpus states inconsistently, named and BLOCKING: one
+        // solver name at two sorts, and one truncated name for two
+        // identities.  Both make the query say something no execution
+        // said, so the composition closes fail-closed rather than
+        // answering over them -- and rather than throwing, which told a
+        // reader nothing at all.
+        for (Map.Entry<String, String> conflict
+                : lowering.sortConflicts().entrySet()) {
+            gap(GapKind.UNSTATED_VALUE, GapClass.BLOCKING,
+                    conflict.getKey(), "this corpus states one solver name "
+                            + "at two sorts: " + conflict.getValue());
+        }
+        for (Map.Entry<String, String> collision
+                : lowering.nameCollisions().entrySet()) {
+            gap(GapKind.UNSTATED_VALUE, GapClass.BLOCKING,
+                    collision.getKey(), "one solver name for two "
+                            + "identities of this corpus: "
+                            + collision.getValue());
+        }
         for (String cut : lowering.cuts()) {
             gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC, cut,
                     lowering.unsupportedDetail().containsKey(cut)
@@ -909,6 +928,8 @@ public final class Composer {
                             List<ReadRow> joined, List<String> observed,
                             Map<String, String> joins,
                             Set<String> answered) {
+        /** Name -> the one statement this path makes under it. */
+        Map<String, String> statedOnce = new LinkedHashMap<String, String>();
         for (ReadRow read : corpus.readsAt(session, anchor)) {
             if (read.symbol() == null || read.symbol().isEmpty()) continue;
             String key = SmtLowering.locationKey(read.location());
@@ -917,9 +938,34 @@ public final class Composer {
             if (write != null) {
                 JsonObject expression = corpus.session(session).expressions()
                         .expression(write.expressionRef());
+                // A row that cites a ref its own session's table does not
+                // hold is an inconsistency the CORPUS states, and the join
+                // is the chain: composed over the sort an absent
+                // expression refuses at, it declared this read's symbol as
+                // a reference while another session's row declared the
+                // same symbol Int -- which is how the first three-session
+                // 17960 corpus (two sessions with an empty table and 28
+                // cited refs each) came out of the composer as a stack
+                // trace instead of a claim.
+                if (expression == null) {
+                    refusals.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
+                            GapClass.BLOCKING, write.expressionRef(),
+                            "a write row of " + key + "@"
+                                    + read.observedVersion() + " cites an "
+                                    + "expression its session's table does "
+                                    + "not hold, so the chain this read "
+                                    + "joins to is not in this corpus"));
+                    continue;
+                }
+                // And a join whose lowering REFUSED is not a join: the
+                // term it hands back is the free constant the refusal left
+                // behind, and binding a read row's symbol to it declares
+                // that symbol at the refusal's sort.
+                int refusedBefore = lowering.openRefusals().size();
                 Term value = lowering.term(expression, null,
                         "state-join:" + key + "@" + read.observedVersion());
-                if (value != null) {
+                if (value != null
+                        && lowering.openRefusals().size() == refusedBefore) {
                     lowering.declareStated(read.symbol(), value.sort);
                     joins.put(read.symbol(), "(= " + read.symbol() + " "
                             + value.text + ")");
@@ -932,9 +978,33 @@ public final class Composer {
                         // is the interleaving the run actually took, and the
                         // claim policy asks for it when it needs to know
                         // whether a witness rests on another writer.
-                        observed.add("(assert (! (= " + read.symbol() + " "
-                                + literal + ") :named observed_read__"
-                                + JsonText.digest(read.symbol(), 10) + "))");
+                        //
+                        // ONE statement per symbol, as the arrivals are:
+                        // the name is the symbol's, and an occurrence
+                        // publishes one row per read of its declared input
+                        // -- two activations of the anchor, two rows, one
+                        // symbol.  Asserted twice the query has two
+                        // assertions of one :named, which z3 answers with
+                        // `named expression already defined` -- an (error
+                        // …), so no verdict at all, and it appeared only in
+                        // the WITNESS query, which runs only once a
+                        // valuation is sat.
+                        String name = "observed_read__"
+                                + JsonText.digest(read.symbol(), 10);
+                        String statement = "(assert (! (= " + read.symbol()
+                                + " " + literal + ") :named " + name + "))";
+                        String held = statedOnce.put(name, statement);
+                        if (held == null) {
+                            observed.add(statement);
+                        } else if (!held.equals(statement)) {
+                            refusals.add(GapRow.of(session,
+                                    GapKind.UNSTATED_VALUE,
+                                    GapClass.BLOCKING, read.symbol(),
+                                    "two read rows of this occurrence state "
+                                            + "different values for one "
+                                            + "symbol: " + held + " and "
+                                            + statement));
+                        }
                     }
                     continue;
                 }
@@ -1313,9 +1383,13 @@ public final class Composer {
         JsonObject expression = reader.expressions()
                 .expression(expressionRef);
         if (expression == null) {
-            gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC, expressionRef,
-                    "the session's expression table holds no expression "
-                            + "under this ref");
+            // Same inconsistency as the state join's, and the same class:
+            // a row of this corpus cites an expression the corpus does not
+            // contain, so what it stands for is not composable from these
+            // sessions at all.
+            gap(GapKind.UNSTATED_VALUE, GapClass.BLOCKING, expressionRef,
+                    "a row of session " + session + " cites an expression "
+                            + "its session's table does not hold");
             return null;
         }
         lowering.begin(session, corpus.joinOf(session));

@@ -212,6 +212,144 @@ public class D3ComposerTest {
                 flipped.claim().movedRoots());
         assertTrue(flipped.claim().polarityDecides());
 
+        // 1e. The three-session 17960 shape, as the first real corpus has
+        // it: one seed (marker true) whose counter is written only by the
+        // createSnapshot occurrence, and TWO exploration replays (marker
+        // false) in which the deleteSnapshot occurrence writes it as well
+        // -- each write ReadFrom{previous} +- 1, the anchor's placeholder
+        // joining the last of them, and phi published AS TAKEN (the FATAL
+        // arm, observedFatal true) because those replays reached the
+        // failure.  Two anchor activations per session, so six paths.
+        Path three = folder.newFolder("marker-three").toPath();
+        OccurrenceAddress saver = occurrence("case/nn0", "REGION.saver",
+                CausalContext.of(Role.IPC_HANDLER, 1),
+                frame("Saver#serializeSnapshotSection#8", 0));
+        OccurrenceAddress creating = occurrence("case/nn0",
+                "REGION.create", CausalContext.of(Role.CLIENT, 1),
+                frame("Manager#createSnapshot#27", 0));
+        OccurrenceAddress deleting = occurrence("case/nn0",
+                "REGION.delete", CausalContext.of(Role.CLIENT, 2),
+                frame("Manager#deleteSnapshot#31", 0));
+        // The counter, owned by its ALLOCATION and not by a session rid,
+        // so nothing about alternatives is withheld for the owner's
+        // spelling: what is asked here is the attestation rule.
+        Endpoint allocation = Endpoint.of(creating,
+                "AtomicInteger#<init>#1:NEW", at("alloc#1", 0), 0);
+        LocationId counter = LocationId.allocated(allocation,
+                LocationKind.INSTANCE, "value");
+        String owner = counter.owner();
+        for (String[] each : new String[][]{
+                {"s0", "true", "77", "2", "false"},
+                {"s1", "false", "141", "0", "true"},
+                {"s2", "false", "141", "0", "true"}}) {
+            boolean flip = "true".equals(each[4]);
+            Session session = new Session(three, each[0], flip);
+            session.occurrence = saver;
+            session.activation(saver, "thread#saver", null, flip);
+            session.activation(creating, "thread#create", null, false);
+            session.marker(each[1]);
+            // createSnapshot: 0 + 1, then that version + 1.
+            session.expression("EXPR.000000000000c050", binary("+",
+                    integer("I", 0L), integer("I", 1L)));
+            session.expression("EXPR.000000000000c077", binary("+",
+                    read("INSTANCE_FIELD", owner, "value", 50L, "I"),
+                    integer("I", 1L)));
+            session.write(Endpoint.of(creating, "Manager#create#27:WRITE",
+                            at("w#50", 0), 0), counter, 50L,
+                    "EXPR.000000000000c050");
+            session.write(Endpoint.of(creating, "Manager#create#27:WRITE",
+                            at("w#77", 0), 0), counter, 77L,
+                    "EXPR.000000000000c077");
+            if (flip) {
+                // deleteSnapshot ran the un-ordered arm -- the branch this
+                // case's marker gates -- and decremented twice.
+                session.activation(deleting, "thread#delete", null, false);
+                session.decision(deleting, "delete#u27", false, MARKER);
+                session.expression("EXPR.000000000000c125", binary("-",
+                        read("INSTANCE_FIELD", owner, "value", 77L, "I"),
+                        integer("I", 1L)));
+                session.expression("EXPR.000000000000c141", binary("-",
+                        read("INSTANCE_FIELD", owner, "value", 125L, "I"),
+                        integer("I", 1L)));
+                session.write(Endpoint.of(deleting,
+                                "Manager#delete#31:WRITE", at("w#125", 0), 0),
+                        counter, 125L, "EXPR.000000000000c125");
+                session.write(Endpoint.of(deleting,
+                                "Manager#delete#31:WRITE", at("w#141", 0), 0),
+                        counter, 141L, "EXPR.000000000000c141");
+            }
+            // The anchor's declared input: one placeholder row per
+            // activation, stating the version the mint was laid over and
+            // the value the read returned.
+            for (int activation = 0; activation < 2; activation++) {
+                session.read(Endpoint.of(saver,
+                                "INSTANCE_FIELD/counter#PLACEHOLDER#0:READ",
+                                at("count#" + activation, 0), 0),
+                        counter, Long.parseLong(each[2]), PLACEHOLDER, "I",
+                        each[3]);
+            }
+            session.expression("EXPR.0000000000000fe1", binary("!=",
+                    integer("I", 2L), symbol(PLACEHOLDER, "I")));
+            session.target("EXPR.0000000000000fe1", flip, true);
+            session.target("EXPR.0000000000000fe1", flip, true);
+            session.write();
+        }
+
+        Composer.Composition all = Composer.compose(CorpusIndex.of(three),
+                saver, Collections.<String,
+                        edu.uva.liftlab.graphchecker.d3.contract.RootDomain>
+                        emptyMap(), 8);
+        assertEquals("one path per anchor activation per session", 6,
+                all.paths().size());
+        assertEquals("the marker is what the three replays varied", 2,
+                all.valuations().size());
+        assertEquals("ordinal 0 is the seed's value", "true",
+                all.valuations().get(0).assignment().get(MARKER_ROOT));
+        assertTrue("each replay's counter is the chain of the writes it "
+                        + "made: " + fatalArm(all),
+                fatalArm(all).contains("(java_int_wrap (+ (java_int_wrap "
+                        + "(+ 0 1)) 1))"));
+        // The counter read's writer is delivered and registered -- one
+        // arm per exploration replay, the deleteSnapshot occurrence whose
+        // write the anchor's placeholder joined -- and it gets NO
+        // ALTERNATIVE, which is not the owner's doing: this owner is an
+        // allocation id.  In the seed the createSnapshot occurrence is the
+        // only writer of the counter, and one arm says nothing the join
+        // has not; in an exploration replay the createSnapshot occurrence
+        // is instrumented but is NOT the focused region, so it is
+        // unattested (Arms.attested) and an unattested writer is
+        // delivered, never offered as an alternative (Arms.stateArms).
+        // An alternative here would also let the RECORDED valuation reach
+        // the fatal arm, which is the FORMULA_SAT_AT_RECORDED_VALUATION
+        // alarm and not this claim.
+        assertEquals("one registered arm per replay that delivered the "
+                        + "counter: " + all.families(), 2,
+                all.families().size());
+        for (edu.uva.liftlab.graphchecker.d3.contract.Family family
+                : all.families()) {
+            assertEquals("delivered, not chosen between", 1,
+                    family.arms().size());
+        }
+        assertFalse("so no alternative family is composed over the read",
+                all.body().contains("state_family__"));
+        assertFalse("and nothing is withheld for the owner's spelling",
+                says(all.gaps(), GapKind.DECLARATION_MISSING,
+                        "neither an allocation endpoint id"));
+
+        ClaimPolicy.Decision three3 = ClaimPolicy.decide(all, solver());
+        assertEquals("the recording does not reach the fatal arm", "unsat",
+                three3.outcomes().get(0).answer().status());
+        assertEquals("the other polarity does", "sat",
+                three3.outcomes().get(1).answer().status());
+        assertEquals("claim gaps: " + three3.claim().gaps(),
+                ClaimKind.MARKER_FLIPPED, three3.claim().kind());
+        assertEquals(Collections.singletonMap(MARKER_ROOT, "false"),
+                three3.claim().movedRoots());
+        assertTrue(three3.claim().polarityDecides());
+        assertTrue("and the witness is one of the replays that reached it",
+                three3.outcomes().get(1).selected().path().sessionId()
+                        .startsWith("s"));
+
         // 1c. The negative: two replays that minted the marker the SAME
         // way vary nothing, so no path carries a valuation of it, nothing
         // declares it, and there is one question to ask.
@@ -619,6 +757,36 @@ public class D3ComposerTest {
                     integer("I", 1L)));
             session.decision(ANCHOR, "anchor#u12", true,
                     "EXPR.00000000000000b5");
+            // A write row citing an expression its OWN session's table
+            // does not hold, and a read joined to it.  The chain the read
+            // takes its value from is not in this corpus, which is an
+            // inconsistency the corpus states: named, BLOCKING, and no
+            // stack trace.  Composed over the sort an absent expression
+            // refuses at, it also declared the read's symbol as a
+            // reference -- and the same symbol is a scalar in the other
+            // session, which is how the first three-session 17960 corpus
+            // came out of the composer as IllegalStateException "declared
+            // as REF and INT".
+            session.write(Endpoint.of(ANCHOR, "Absent#put#1:WRITE",
+                            at("absent#1", 0), 0),
+                    LocationId.of(LocationKind.INSTANCE, "5", "8"), 3L,
+                    "EXPR.00000000000000ff");
+            session.read(Endpoint.of(ANCHOR, "Absent#get#1:READ",
+                            at("absent#2", 0), 0),
+                    LocationId.of(LocationKind.INSTANCE, "5", "8"), 3L,
+                    "absent_join", "I", null);
+            // And ONE solver name this corpus states at two sorts: the
+            // same read symbol pinned to a scalar by one session's row and
+            // to a reference by the other's.  One name has one sort, so
+            // the second is refused by name -- the first declaration
+            // stands, because a name already written into an assertion
+            // cannot be re-sorted under it without making that assertion
+            // ill-sorted and z3 answer (error …).
+            session.read(Endpoint.of(ANCHOR, "TwoSorts#get#1:READ",
+                            at("sorts#1", 0), 0),
+                    LocationId.of(LocationKind.INSTANCE, "6", "8"), -1L,
+                    "two_sorts", "s0".equals(each) ? "I" : "L",
+                    "s0".equals(each) ? "3" : "M_L'org/apache/Held'_9");
             session.write(Endpoint.of(ANCHOR, "Keys#put#9:WRITE",
                             at("put#1", 0), 0),
                     LocationId.of(LocationKind.MAP, "4", "-3"), 1L,
@@ -664,6 +832,21 @@ public class D3ComposerTest {
                         "this occurrence published two read rows of this "
                                 + "location under different symbols: "
                                 + "[two_a, two_b]"));
+        assertTrue("a row citing an expression its session's table does "
+                        + "not hold is BLOCKING, by the ref it names",
+                blocking(gaps, "EXPR.00000000000000ff"));
+        assertFalse("and the read that joined to it is not declared at the "
+                        + "sort an absent expression refuses at",
+                composition.body().contains("absent_join"));
+        assertTrue("and it says which row cited it",
+                says(gaps, GapKind.UNSTATED_VALUE,
+                        "cites an expression its session's table does not "
+                                + "hold"));
+        assertTrue("one solver name the corpus states at two sorts is "
+                        + "BLOCKING too, and not a stack trace",
+                blocking(gaps, "two_sorts") && says(gaps,
+                        GapKind.UNSTATED_VALUE, "one solver name at two "
+                                + "sorts: INT and REF"));
         assertFalse("the unplaceable symbol is not in the formula",
                 composition.body().contains("vh_ref"));
     }
@@ -1274,6 +1457,16 @@ public class D3ComposerTest {
     }
 
     /** Whether some gap names this subject. */
+    /** Whether a BLOCKING row of this subject was named. */
+    private static boolean blocking(List<GapRow> gaps, String subject) {
+        for (GapRow gap : gaps) {
+            if (gap.blocking() && gap.subject().endsWith(subject)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private static boolean named(List<GapRow> gaps, String subject) {
         for (GapRow gap : gaps) {
             if (gap.subject().endsWith(subject)) return true;
@@ -1352,6 +1545,19 @@ public class D3ComposerTest {
 
     /** One read of one cell, naming the version it observed and nothing else. */
     private static JsonObject read(String kind, long owner, long slot,
+                                   long version, String javaType) {
+        return read(kind, Long.toString(owner), Long.toString(slot),
+                version, javaType);
+    }
+
+    /**
+     * The same, where the owner NAMES the storage across replays.
+     *
+     * <p>An allocation endpoint id, not a session rid: the spelling a
+     * location needs before alternatives may be asked for it
+     * (IDENTITY-V3 sec 5, {@code Arms.namedOwner}).</p>
+     */
+    private static JsonObject read(String kind, String owner, String slot,
                                    long version, String javaType) {
         JsonObject location = new JsonObject();
         location.addProperty("locationKind", kind);

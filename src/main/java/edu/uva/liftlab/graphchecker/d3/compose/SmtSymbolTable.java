@@ -20,6 +20,19 @@ import java.util.Map;
  */
 public final class SmtSymbolTable {
     private final Map<String, String> minted = new HashMap<>();
+    /**
+     * Names two identities of this query would both be truncated to.
+     *
+     * <p>Recorded rather than thrown: the identities are the recording's
+     * own (a session id, a sort and a recorded symbol, or an expression
+     * digest), so a collision is something the CORPUS states, and a
+     * composer that dies on its input has told the reader nothing.  Both
+     * identities would then share one solver name, which makes the query
+     * unsound, so the caller raises it as a BLOCKING gap and the
+     * composition closes fail-closed.</p>
+     */
+    private final Map<String, String> collisions =
+            new java.util.LinkedHashMap<String, String>();
 
     /** {@code prefix} followed by the first {@code length} digest digits. */
     public String mint(String prefix, String identity, int length) {
@@ -33,10 +46,13 @@ public final class SmtSymbolTable {
         String name = prefix + digest.substring(0, length);
         String held = minted.putIfAbsent(name, identity);
         if (held != null && !held.equals(identity)) {
-            throw new IllegalStateException(
-                    "truncated SMT symbol collision: " + name + " names "
-                            + held + " and " + identity);
+            collisions.put(name, held + " and " + identity);
         }
         return name;
+    }
+
+    /** The truncated names that would stand for two identities. */
+    public Map<String, String> collisions() {
+        return java.util.Collections.unmodifiableMap(collisions);
     }
 }

@@ -58,6 +58,8 @@ public final class SmtLowering extends VmLoweringCore {
     public static final String CUT = "PROPAGATION_CUT";
     /** The refusal that means "the recording states no value here". */
     public static final String UNSTATED = "UNSTATED_VALUE";
+    /** The refusal that means "one solver name, two sorts". */
+    public static final String SORT_CONFLICT = "SORT_CONFLICT";
     /** How a published term names an expression of the session's table. */
     private static final String REFERENCE = "EXPR.";
     /** How deep a reference may stand for text naming another reference. */
@@ -190,6 +192,9 @@ public final class SmtLowering extends VmLoweringCore {
      */
     private final Map<String, Declared> declarations =
             new LinkedHashMap<String, Declared>();
+    /** What this corpus states at two sorts: name -> "<held> and <new>". */
+    private final Map<String, String> sortConflicts =
+            new LinkedHashMap<String, String>();
     private final List<String> assertions = new ArrayList<String>();
     private final Set<String> assertedOnce = new LinkedHashSet<String>();
     /** Declared symbols this lowering actually put in the formula. */
@@ -1408,14 +1413,49 @@ public final class SmtLowering extends VmLoweringCore {
         return true;
     }
 
+    /**
+     * One name, one sort -- and a second sort is a named refusal.
+     *
+     * <p>It used to throw, and a composer that dies on its input has told
+     * the reader nothing: the first three-session 17960 corpus reached it
+     * because two of its sessions published an EMPTY expression table
+     * while their rows cited 28 refs each, so one session bound a read
+     * row's symbol at {@code Int} and another bound the same symbol at the
+     * sort an ABSENT expression refuses at.  What two rows say about one
+     * symbol is something the CORPUS states, so it is refused by name --
+     * which drops the path being lowered -- and kept for the caller to
+     * raise as a BLOCKING gap, so the composition closes fail-closed
+     * instead of by a stack trace.</p>
+     *
+     * <p>The FIRST declaration stands.  A name already written into an
+     * assertion at one sort cannot be re-sorted under it without making
+     * that assertion ill-sorted, which z3 answers with {@code (error …)} --
+     * and no {@code (error …)} is ever acceptable.</p>
+     */
     private void put(String name, Sort sort, boolean stated) {
         Declared held = declarations.get(name);
         if (held != null && held.sort != sort) {
-            throw new IllegalStateException("SMT name " + name
-                    + " declared as " + held.sort + " and " + sort);
+            String detail = held.sort + " and " + sort;
+            sortConflicts.put(name, detail);
+            refuse(SORT_CONFLICT + ":" + name, "this corpus states one "
+                    + "solver name at two sorts, " + detail + ": the "
+                    + "first stands and nothing is composed over it");
+            declarations.put(name, new Declared(held.sort,
+                    stated || held.stated, true));
+            return;
         }
         declarations.put(name, new Declared(sort,
                 stated || held != null && held.stated, true));
+    }
+
+    /** Names this corpus would give two sorts, and the two sorts. */
+    public Map<String, String> sortConflicts() {
+        return Collections.unmodifiableMap(sortConflicts);
+    }
+
+    /** Truncated minted names that would stand for two identities. */
+    public Map<String, String> nameCollisions() {
+        return symbols.collisions();
     }
 
     /** Whether the recording states a meaning for one name. */
