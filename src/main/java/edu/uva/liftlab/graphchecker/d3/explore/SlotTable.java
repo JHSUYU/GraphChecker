@@ -1,7 +1,6 @@
 package edu.uva.liftlab.graphchecker.d3.explore;
 
 import edu.uva.liftlab.graphchecker.d3.contract.AttachRow;
-import edu.uva.liftlab.graphchecker.d3.contract.CausalContext;
 import edu.uva.liftlab.graphchecker.d3.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.d3.contract.GapClass;
 import edu.uva.liftlab.graphchecker.d3.contract.GapKind;
@@ -230,39 +229,14 @@ public final class SlotTable {
      * interleave, so seq orders events only INSIDE one of them.  What
      * contradicts is a read that observed a version its own activation wrote
      * later, or one written by an occurrence the reader itself caused -- a
-     * message cannot be answered before it is sent.  The causal walk is the
-     * one {@code d3.smt.Arms} does for concurrency; it does not expose the
-     * DIRECTION, which is what a contradiction needs, so it is stated here
-     * until it does.</p>
+     * message cannot be answered before it is sent.  Both are the one
+     * question {@code Arms.ancestor} answers: did the READ happen before the
+     * write it claims to have observed.</p>
      */
     private static boolean contradictsOrder(Corpus corpus, ReadRow read,
                                             WriteRow observed) {
-        OccurrenceAddress reader = read.endpoint().occurrence();
-        OccurrenceAddress writer = observed.endpoint().occurrence();
-        if (reader.equals(writer)) {
-            return observed.sessionId().equals(read.sessionId())
-                    && observed.seq() >= read.seq();
-        }
-        return caused(corpus, reader, writer);
-    }
-
-    /** Whether {@code earlier} started {@code later}, through the anchors. */
-    private static boolean caused(Corpus corpus, OccurrenceAddress earlier,
-                                  OccurrenceAddress later) {
-        Set<String> seen = new LinkedHashSet<String>();
-        OccurrenceAddress cursor = later;
-        while (cursor != null && seen.add(cursor.id())) {
-            if (!(cursor.context() instanceof CausalContext.Anchor)) {
-                return false;
-            }
-            OccurrenceAddress producer = corpus.occurrenceOf(
-                    ((CausalContext.Anchor) cursor.context())
-                            .producerEndpointId());
-            if (producer == null) return false;
-            if (producer.equals(earlier)) return true;
-            cursor = producer;
-        }
-        return false;
+        return corpus.arms().ancestor(read.endpoint(), observed.endpoint(),
+                read.sessionId());
     }
 
     private enum Outcome { OPENED, FILLED, REPLACED }
