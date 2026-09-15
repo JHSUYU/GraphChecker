@@ -235,13 +235,21 @@ final class ConcolicResultPublisher {
      * that nothing answered, and this run's handoff aggregates.
      */
     static void publishRunTotals() {
+        synchronized (RUN_TOTALS_LOCK) {
+            if (runTotalsPublished) return;
+            runTotalsPublished = true;
+        }
         configuration().publishUnansweredAddresses();
         // What only the end of a replay can state: the verdict of every
-        // obligation it was handed.  Called here because a campaign halts
-        // the JVM as soon as the selected result settles, which runs no
-        // shutdown hook.
+        // obligation it was handed, and the expression table every row that
+        // cites a ref needs.  Once per JVM, from whichever exit path gets
+        // here first: a campaign halts the JVM as soon as the selected
+        // result settles, which runs no shutdown hook, and a replay that
+        // ends by its workload throwing exits through JUnitMethodRunner.
         edu.uva.liftlab.graphchecker.runtime.d3.D3Runtime.closeSession();
     }
+
+    private static boolean runTotalsPublished;
 
     /** Transfers one completed native read-out to the bounded daemon pool. */
     static boolean submitCompletedResultPublication(

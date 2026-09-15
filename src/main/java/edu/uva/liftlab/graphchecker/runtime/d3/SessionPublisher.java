@@ -55,6 +55,8 @@ public final class SessionPublisher {
     private final Map<String, JsonObject> expressions =
             new LinkedHashMap<String, JsonObject>();
     private boolean failed;
+    /** Once closed, every further expression is written as it is filed. */
+    private boolean closed;
 
     private SessionPublisher(SessionDir layout) {
         this.layout = layout;
@@ -188,7 +190,11 @@ public final class SessionPublisher {
             // was most of a replay's wall time.  It is written when the
             // session closes, and every sixty-fourth expression so a
             // killed replay still leaves a table a reader can use.
-            if (expressions.size() % 64 != 0) return;
+            // A late expression -- a daemon publication that lands after the
+            // session was closed -- rewrites the table at once: a row that
+            // cites a ref the table does not hold is a row no reader can
+            // lower, and that is the one failure it cannot see.
+            if (!closed && expressions.size() % 64 != 0) return;
         }
         writeExpressions();
     }
@@ -258,6 +264,7 @@ public final class SessionPublisher {
     /** Closes every open file of this session. */
     public void close() {
         synchronized (LOCK) {
+            closed = true;
             writeExpressions();
             for (BufferedWriter writer : writers.values()) {
                 try {
