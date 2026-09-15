@@ -157,6 +157,28 @@ public final class ClaimPolicy {
         }
         Outcome recorded = outcomes.isEmpty() ? null : outcomes.get(0);
 
+        // A valuation the solver did not decide is NAMED, and it blocks.
+        // Neither a witness nor a refutation is closed over it, and the
+        // manifest used to carry it as a bare `state=unknown` with nothing
+        // to route: 17960's moved valuation sat there for 141 s and came
+        // back "(incomplete quantifiers)", which says the fragment the
+        // lowering wrote, not anything about the recording.
+        for (Outcome outcome : outcomes) {
+            if (outcome.answer().decided()) continue;
+            String reason = outcome.answer().reason();
+            gaps.add(GapRow.of(Composer.COMPOSITION,
+                    GapKind.DECLARATION_MISSING, GapClass.BLOCKING,
+                    "valuation " + outcome.valuation().ordinal() + ":"
+                            + outcome.answer().status(),
+                    "z3 did not decide this valuation"
+                            + (outcome.valuation().moved().isEmpty() ? ""
+                            : " (moved " + outcome.valuation().moved() + ")")
+                            + ", so neither a witness nor a refutation is "
+                            + "closed over it: "
+                            + (reason.isEmpty()
+                            ? "it stated no reason" : reason)));
+        }
+
         // The alarm: the run as it happened reaches the fatal arm on a path
         // whose own recording took the healthy one.
         if (recorded != null && recorded.answer().sat()

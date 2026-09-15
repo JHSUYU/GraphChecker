@@ -39,13 +39,30 @@ public final class Solver {
         private final Map<String, String> values;
         private final List<String> core;
         private final String output;
+        private final String reason;
 
         private Answer(String status, Map<String, String> values,
-                       List<String> core, String output) {
+                       List<String> core, String output, String reason) {
             this.status = status;
             this.values = Collections.unmodifiableMap(values);
             this.core = Collections.unmodifiableList(core);
             this.output = output;
+            this.reason = reason == null ? "" : reason;
+        }
+
+        /**
+         * Why the solver did not decide, in its own words, or "".
+         *
+         * <p>{@code (get-info :reason-unknown)}, asked only of an answer
+         * that is neither sat nor unsat.  Without it an undecided valuation
+         * reached the manifest as a bare {@code state=unknown}, which tells
+         * a reader nothing about whether the query was too hard, in the
+         * wrong fragment, or cut off -- 17960's moved valuation came back
+         * {@code (incomplete quantifiers)}, and that named the two
+         * {@code lambda} definitions it was about.</p>
+         */
+        public String reason() {
+            return reason;
         }
 
         public String status() {
@@ -164,7 +181,26 @@ public final class Solver {
                     + "(check-sat)\n(get-unsat-core)\n"));
             core = parseCore(coreOutput);
         }
-        return new Answer(status, values, core, output);
+        // Why it did not decide, asked the same way: one more run, only
+        // when there is something to ask for.  An undecided answer with no
+        // reason is a silence, and a silence is not a verdict.
+        String reason = "";
+        if (!"sat".equals(status) && !"unsat".equals(status)) {
+            reason = parseReason(run(SmtLowering.legalSymbols(question
+                    + "(check-sat)\n(get-info :reason-unknown)\n")));
+        }
+        return new Answer(status, values, core, output, reason);
+    }
+
+    /** The text of one {@code (:reason-unknown "…")} line, or "". */
+    private static String parseReason(String output) {
+        if (output == null) return "";
+        int at = output.indexOf(":reason-unknown");
+        if (at < 0) return "";
+        int open = output.indexOf('"', at);
+        int close = open < 0 ? -1 : output.indexOf('"', open + 1);
+        if (open < 0 || close < 0) return "";
+        return output.substring(open + 1, close).trim();
     }
 
     private static String join(List<String> assumptions) {

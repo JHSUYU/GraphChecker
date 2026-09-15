@@ -157,6 +157,25 @@ public class D3ComposerTest {
         assertFalse("nothing about the recording is decided by it",
                 errored.claim().polarityDecides());
 
+        // And the same composition answered `unknown`.  Undecided is not a
+        // refutation and not a witness, and it used to reach the manifest
+        // as a bare state=unknown with nothing to route: named, BLOCKING,
+        // and carrying the fragment z3 named.
+        ClaimPolicy.Decision undecided = ClaimPolicy.decide(composition,
+                new Solver(undecidingSolver(), 30000L));
+        assertEquals("an undecided valuation is not a finding",
+                ClaimKind.NO_SUPPORTED_WITNESS, undecided.claim().kind());
+        assertTrue("it blocks, and the row names the valuation",
+                undecided.claim().blocked() && named(
+                        undecided.claim().gaps(), "valuation 0:unknown"));
+        assertTrue("and carries z3's own reason, so a reader knows which "
+                        + "fragment it was: " + undecided.claim().gaps(),
+                says(undecided.claim().gaps(),
+                        GapKind.DECLARATION_MISSING,
+                        "(incomplete quantifiers)"));
+        assertFalse("and decides nothing about the recording",
+                undecided.claim().polarityDecides());
+
         // 1b. The same claim where the marker reaches the target only
         // through CONTROL dependence -- 17960's shape.  The marker gates a
         // branch of ANOTHER occurrence, so no decision of the anchor names
@@ -417,6 +436,25 @@ public class D3ComposerTest {
     }
 
     /** A solver that answers every question with an SMT-LIB read error. */
+    /**
+     * A solver that decides nothing, and says why.
+     *
+     * <p>z3 answers `unknown` on a formula in a fragment it is incomplete
+     * for, and it will name the fragment when asked: 17960's moved
+     * valuation came back "(incomplete quantifiers)" after 141 s, from the
+     * two `lambda` definitions the container preamble wrote.</p>
+     */
+    private Path undecidingSolver() throws IOException {
+        Path script = folder.newFile("z3-unknown.sh").toPath();
+        Files.write(script, Arrays.asList("#!/bin/sh",
+                "cat > /dev/null",
+                "echo unknown",
+                "echo '(:reason-unknown \"(incomplete quantifiers)\")'"));
+        assertTrue("the fixture solver is executable",
+                script.toFile().setExecutable(true));
+        return script;
+    }
+
     private Path erroringSolver() throws IOException {
         Path script = folder.newFile("z3-error.sh").toPath();
         Files.write(script, Arrays.asList("#!/bin/sh",
@@ -1107,6 +1145,41 @@ public class D3ComposerTest {
         session.expression("EXPR.00000000000000c2", binary("==",
                 symbol(SERIAL, "I"), integer("I", 41L)));
         session.decision(ANCHOR, "anchor#u6", true, "EXPR.00000000000000c2");
+        // A list the recording states the size of, inserted into twice --
+        // once at a literal index, once at a SYMBOLIC one.  The shift used
+        // to be a lambda over every index, which is the fragment z3
+        // answered "(incomplete quantifiers)" on for 141 s; the recording
+        // says how many elements the list held, so it is written out as
+        // that many stores at CONCRETE indices, and the index stays
+        // symbolic.
+        JsonObject empty = relation("INDEXED", "SNAPSHOT_BASE",
+                relation("INDEXED", "STATE",
+                        symbol("M_L'java/util/ArrayList'_3",
+                                "java/util/ArrayList")));
+        JsonObject one = relation("INDEXED", "INSERT", empty,
+                integer("I", 0L), integer("I", 7L));
+        JsonObject two = relation("INDEXED", "INSERT", one,
+                integer("I", 1L), integer("I", 9L));
+        // READ, not SIZE: a size is answered arithmetically along the
+        // chain, and it is the STATE the shift has to produce.
+        session.expression("EXPR.00000000000000c3", binary("==",
+                relation("INDEXED", "READ", "I", two, integer("I", 0L)),
+                integer("I", 7L)));
+        session.decision(ANCHOR, "anchor#u7", true,
+                "EXPR.00000000000000c3");
+        // And a read of the WHOLE list, joined to the write that made it:
+        // a read of one cell is answered through the mutations without
+        // materialising the state, and it is this one -- the list as a
+        // value -- that needs every index of it written out.
+        session.expression("EXPR.00000000000000c4", two);
+        session.write(Endpoint.of(ANCHOR, "Saver#snapshots#5:WRITE",
+                        at("list#1", 0), 0),
+                LocationId.of(LocationKind.INSTANCE, "8", "16"), 3L,
+                "EXPR.00000000000000c4");
+        session.read(Endpoint.of(ANCHOR, "Saver#snapshots#6:READ",
+                        at("list#2", 0), 0),
+                LocationId.of(LocationKind.INSTANCE, "8", "16"), 3L,
+                "INSTANCE/8#16@v3", "java/util/ArrayList", null);
         // Two reference-typed field reads, each asked the question every
         // key case's predicate asks of one: is what it returned null?  A
         // reference read states what it returned exactly as a primitive
@@ -1255,6 +1328,24 @@ public class D3ComposerTest {
                 composition.body().contains(MARKER));
         assertTrue("the arm it did not take is the negation",
                 composition.body().contains("(not " + MARKER + ")"));
+        // The shift, quantifier-free: no indexed_insert application is
+        // left, the elements are a store chain, and the index carries the
+        // operation's own definedness -- List.add(i, v) requires
+        // 0 <= i <= size and throws otherwise, so an out-of-range index is
+        // an execution that threw and not a path that reached the anchor.
+        assertFalse("no list mutation lowers to a quantified relation "
+                        + "any more: " + composition.body(),
+                composition.body().contains("(indexed_insert ")
+                        || composition.body().contains("(indexed_remove "));
+        assertTrue("each insertion carries the operation's own "
+                        + "definedness, at the size the recording stated: "
+                        + composition.body(),
+                composition.body().contains("(and (<= 0 0) (<= 0 0))")
+                        && composition.body().contains(
+                        "(and (<= 0 1) (<= 1 1))"));
+        assertTrue("and the element lands at the index, cell by cell, with "
+                        + "no quantifier over the indices",
+                composition.body().contains("(ite (= 0 1) "));
         assertTrue("an element read is the element, at the element's sort",
                 composition.body().contains("(valueInt (indexed_read "));
         assertTrue("and the cell it read is the slot the location names",
@@ -1597,6 +1688,36 @@ public class D3ComposerTest {
             node.add("concreteOwner", owner);
             node.add("concreteValue", concreteValue);
         }
+        return node;
+    }
+
+    /**
+     * One container relation, as the VM serializes it.
+     *
+     * <p>{@code CLEAR} with no receiver is the empty list the recording
+     * states the size of; {@code INSERT} and {@code REMOVE} are the
+     * mutations whose shift a lambda used to state.</p>
+     */
+    private static JsonObject relation(String shape, String operation,
+                                       JsonObject receiver,
+                                       JsonObject... arguments) {
+        return relation(shape, operation, "java/util/ArrayList", receiver,
+                arguments);
+    }
+
+    /** The same, where the relation answers a scalar rather than a list. */
+    private static JsonObject relation(String shape, String operation,
+                                       String javaType, JsonObject receiver,
+                                       JsonObject... arguments) {
+        JsonObject node = new JsonObject();
+        node.addProperty("_type", "ContainerRelation");
+        node.addProperty("shape", shape);
+        node.addProperty("operation", operation);
+        node.addProperty("_java_type", javaType);
+        if (receiver != null) node.add("receiver", receiver);
+        com.google.gson.JsonArray list = new com.google.gson.JsonArray();
+        for (JsonObject argument : arguments) list.add(argument);
+        node.add("arguments", list);
         return node;
     }
 

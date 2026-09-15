@@ -1335,7 +1335,7 @@ public final class SmtLowering extends VmLoweringCore {
             sharedTerms.put(digest, held);
         }
         return new ContainerSmtCodec.Term(held.name, value.sort,
-                value.integralWidth);
+                value.integralWidth, value.indexedSize);
     }
 
     // ------------------------------------------------------------------
