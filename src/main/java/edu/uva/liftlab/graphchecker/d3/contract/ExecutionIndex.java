@@ -1,5 +1,6 @@
 package edu.uva.liftlab.graphchecker.d3.contract;
 
+import edu.uva.liftlab.graphchecker.d3.smt.ArtifactIO;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -19,7 +20,7 @@ import java.util.Objects;
  */
 public final class ExecutionIndex {
     /** The fold's seed: the hash of the index with no frames at all. */
-    private static final String SEED = Ids.sha16("");
+    private static final String SEED = ArtifactIO.digest("", 16);
 
     private static final ExecutionIndex EMPTY =
             new ExecutionIndex(Collections.<Frame>emptyList(), SEED);
@@ -91,8 +92,8 @@ public final class ExecutionIndex {
     }
 
     private static String fold(String hash, Frame frame) {
-        return Ids.sha16(hash + "/" + frame.callSite() + "@"
-                + frame.iteration());
+        return ArtifactIO.digest(hash + "/" + frame.callSite() + "@"
+                + frame.iteration(), 16);
     }
 
     @Override

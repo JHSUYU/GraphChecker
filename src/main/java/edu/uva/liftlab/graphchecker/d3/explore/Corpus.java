@@ -1,5 +1,7 @@
 package edu.uva.liftlab.graphchecker.d3.explore;
 
+import edu.uva.liftlab.graphchecker.d3.smt.ArtifactIO;
+
 import edu.uva.liftlab.graphchecker.d3.contract.ActivationRow;
 import edu.uva.liftlab.graphchecker.d3.contract.AttachRow;
 import edu.uva.liftlab.graphchecker.d3.contract.DecisionRow;
@@ -265,7 +267,7 @@ public final class Corpus implements Arms.Rows {
     /** One path's id: the session it ran in and the occurrence it ran. */
     public static String pathId(String sessionId,
                                 OccurrenceAddress occurrence) {
-        return ExploreIds.sha16(sessionId + "|" + occurrence.id());
+        return ArtifactIO.digest(sessionId + "|" + occurrence.id(), 16);
     }
 
     /**

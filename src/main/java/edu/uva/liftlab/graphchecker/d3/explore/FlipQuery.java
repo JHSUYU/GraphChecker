@@ -321,8 +321,8 @@ final class FlipQuery {
          * repeats that either.</p>
          */
         private String conjunct(DecisionRow decision, String sessionId) {
-            String term = lower(decision.term(), sessionId);
-            return decision.outcome() ? term : "(not " + term + ")";
+            return Arms.conjunct(lower(decision.term(), sessionId),
+                    decision.outcome());
         }
 
         /** The fixed point: every symbol the query names gets its own rule. */

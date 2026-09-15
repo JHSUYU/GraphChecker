@@ -1,5 +1,7 @@
 package edu.uva.liftlab.graphchecker.d3.explore;
 
+import edu.uva.liftlab.graphchecker.d3.smt.JavaPrimitiveSmtSemantics;
+
 import java.math.BigInteger;
 import java.util.Arrays;
 import java.util.HashSet;
@@ -121,13 +123,7 @@ final class SmtText {
             }
             return "";
         }
-        try {
-            BigInteger number = new BigInteger(text);
-            return number.signum() < 0
-                    ? "(- " + number.negate() + ")" : number.toString();
-        } catch (NumberFormatException notAnInteger) {
-            return "";
-        }
+        return JavaPrimitiveSmtSemantics.integralLiteral(text);
     }
 
     /**

@@ -644,8 +644,19 @@ public final class Arms {
 
     /** One decision, as the arm of it that its run took. */
     public static String conjunct(DecisionRow decision) {
-        String term = decision.term();
-        return decision.outcome() ? term : "(not " + term + ")";
+        return conjunct(decision.term(), decision.outcome());
+    }
+
+    /**
+     * The same rule for a term a caller has already rewritten: the taken arm
+     * IS the term, and the other arm is its negation.
+     *
+     * <p>One place applies the polarity.  A second copy is how the two runs
+     * of one site end up with terms that differ while {@code outcome} is
+     * true in both, which is a flip nobody can see (P2f').</p>
+     */
+    public static String conjunct(String term, boolean outcome) {
+        return outcome ? term : "(not " + term + ")";
     }
 
     /** Every symbol a recorded expression names, whatever its depth. */

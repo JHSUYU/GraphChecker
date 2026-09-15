@@ -1,5 +1,7 @@
 package edu.uva.liftlab.graphchecker.d3.compose;
 
+import edu.uva.liftlab.graphchecker.d3.smt.ArtifactIO;
+
 import java.util.HashMap;
 import java.util.Map;
 
@@ -36,7 +38,7 @@ public final class SmtSymbolTable {
 
     /** {@code prefix} followed by the first {@code length} digest digits. */
     public String mint(String prefix, String identity, int length) {
-        return mintFromDigest(prefix, JsonText.sha256(identity),
+        return mintFromDigest(prefix, ArtifactIO.sha256(identity),
                 identity, length);
     }
 

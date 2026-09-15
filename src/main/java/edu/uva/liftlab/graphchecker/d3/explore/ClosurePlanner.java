@@ -1,5 +1,7 @@
 package edu.uva.liftlab.graphchecker.d3.explore;
 
+import edu.uva.liftlab.graphchecker.d3.smt.ArtifactIO;
+
 import edu.uva.liftlab.graphchecker.d3.compose.SmtLowering;
 import edu.uva.liftlab.graphchecker.d3.smt.Arms;
 import edu.uva.liftlab.graphchecker.d3.contract.ActivationRow;
@@ -121,7 +123,7 @@ public final class ClosurePlanner {
 
     /** One task's id: the occurrence it focuses and nothing else. */
     public static String taskId(OccurrenceAddress focused) {
-        return ExploreIds.sha16("task|" + focused.id());
+        return ArtifactIO.digest("task|" + focused.id(), 16);
     }
 
     /**

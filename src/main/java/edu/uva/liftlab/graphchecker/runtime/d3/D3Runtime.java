@@ -1,5 +1,9 @@
 package edu.uva.liftlab.graphchecker.runtime.d3;
 
+import edu.uva.liftlab.graphchecker.d3.smt.Arms;
+
+import edu.uva.liftlab.graphchecker.d3.smt.ArtifactIO;
+
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.d3.contract.ActivationRow;
@@ -143,9 +147,10 @@ public final class D3Runtime {
         Path parent = resultFile.toAbsolutePath().getParent();
         String where = parent == null || parent.getFileName() == null
                 ? "session" : parent.getFileName().toString();
-        return where + "-" + Text.sha16(resultFile.toAbsolutePath() + "\n"
+        return where + "-" + ArtifactIO.digest(Text.safe(
+                resultFile.toAbsolutePath() + "\n"
                 + ManagementFactory.getRuntimeMXBean().getName() + "\n"
-                + System.nanoTime()).substring(0, 8);
+                + System.nanoTime()), 8);
     }
 
     // ------------------------------------------------------------------
@@ -270,7 +275,7 @@ public final class D3Runtime {
     static String term(String expressionRef, boolean arm) {
         String ref = Text.safe(expressionRef);
         if (ref.isEmpty()) return "";
-        return arm ? ref : "(not " + ref + ")";
+        return Arms.conjunct(ref, arm);
     }
 
     /** One export, and the producer endpoint a delivery can be paired to. */
@@ -599,7 +604,8 @@ public final class D3Runtime {
         // workload.
         String ref = REFS.get(object);
         if (ref == null) {
-            ref = "EXPR." + Text.sha16(RowCodec.toLine(object));
+            ref = "EXPR." + ArtifactIO.digest(
+                    Text.safe(RowCodec.toLine(object)), 16);
             REFS.put(object, ref);
         }
         SessionPublisher session = publisher;

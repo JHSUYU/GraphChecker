@@ -1,5 +1,6 @@
 package edu.uva.liftlab.graphchecker.d3.contract;
 
+import edu.uva.liftlab.graphchecker.d3.smt.ArtifactIO;
 import java.util.Objects;
 
 /**
@@ -158,8 +159,8 @@ public final class OccurrenceAddress {
      * constant-size however deep the path was.</p>
      */
     public String id() {
-        return Ids.sha16(node.render() + "/" + regionId + "/"
-                + context.render() + "/" + index.hash());
+        return ArtifactIO.digest(node.render() + "/" + regionId + "/"
+                + context.render() + "/" + index.hash(), 16);
     }
 
     @Override

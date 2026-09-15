@@ -140,6 +140,23 @@ public final class JavaPrimitiveSmtSemantics {
      * exactly the same decimal-to-binary conversion used by replay, then
      * supplying those raw IEEE bits to SMT.
      */
+    /**
+     * One recorded decimal integer as SMT-LIB spells it, or "" when the text
+     * is not one.  SMT-LIB has no negative numerals, so a negative value is
+     * {@code (- N)}.
+     */
+    public static String integralLiteral(String value) {
+        String text = value == null ? "" : value.trim();
+        if (text.isEmpty()) return "";
+        try {
+            java.math.BigInteger number = new java.math.BigInteger(text);
+            return number.signum() < 0
+                    ? "(- " + number.negate() + ")" : number.toString();
+        } catch (NumberFormatException notAnInteger) {
+            return "";
+        }
+    }
+
     public static String floatingLiteral(String value, FloatingKind kind) {
         if (kind == null || kind == FloatingKind.NONE || value == null) {
             return null;

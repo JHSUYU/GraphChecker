@@ -1,5 +1,6 @@
 package edu.uva.liftlab.graphchecker.d3.contract;
 
+import edu.uva.liftlab.graphchecker.d3.smt.ArtifactIO;
 import java.util.Objects;
 
 /**
@@ -95,8 +96,8 @@ public final class Endpoint {
     }
 
     public String id() {
-        return Ids.sha16(occurrence.id() + "/" + site + "/"
-                + siteIndex.hash() + "/" + attempt);
+        return ArtifactIO.digest(occurrence.id() + "/" + site + "/"
+                + siteIndex.hash() + "/" + attempt, 16);
     }
 
     /** The canonical spelling, for reports and refusals. */

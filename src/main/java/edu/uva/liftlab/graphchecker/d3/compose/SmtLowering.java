@@ -1,5 +1,9 @@
 package edu.uva.liftlab.graphchecker.d3.compose;
 
+import edu.uva.liftlab.graphchecker.d3.smt.JsonFields;
+
+import edu.uva.liftlab.graphchecker.d3.smt.ArtifactIO;
+
 import edu.uva.liftlab.graphchecker.d3.smt.JavaPrimitiveSmtSemantics;
 import edu.uva.liftlab.graphchecker.d3.smt.VmExpressionIr;
 import edu.uva.liftlab.graphchecker.d3.smt.VmRows;
@@ -885,7 +889,7 @@ public final class SmtLowering extends VmLoweringCore {
     @Override
     public Term guardedReadTerm(JsonObject expression, Sort expected,
                                 String origin) {
-        JsonObject location = JsonText.object(expression, "location");
+        JsonObject location = JsonFields.object(expression, "location");
         String key = locationKey(location);
         long version = observedVersion(expression);
         if (!key.isEmpty() && version >= 0L) {
@@ -1113,7 +1117,7 @@ public final class SmtLowering extends VmLoweringCore {
             Map<Long, String> held = session.getValue();
             if (held.size() < 2) continue;
             assertNamed("identities_distinct__"
-                            + JsonText.digest(session.getKey(), 10),
+                            + ArtifactIO.digest(session.getKey(), 10),
                     "(distinct " + String.join(" ", held.values()) + ")");
         }
     }
@@ -1288,7 +1292,7 @@ public final class SmtLowering extends VmLoweringCore {
         // environment cell already carry the scope in their own mint; this
         // is the same rule for the one name that did not.
         String identity = sort.name() + SEPARATOR + scoped(value.text);
-        String digest = JsonText.digest(identity, 0);
+        String digest = ArtifactIO.digest(identity, 0);
         SharedTerm held = sharedTerms.get(digest);
         if (held == null) {
             held = new SharedTerm(symbols.mint("container_dag__", identity,

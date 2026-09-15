@@ -1,5 +1,6 @@
 package edu.uva.liftlab.graphchecker.d3.contract;
 
+import edu.uva.liftlab.graphchecker.d3.smt.ArtifactIO;
 import java.util.Objects;
 
 /**
@@ -44,7 +45,7 @@ public final class Interaction {
     }
 
     public String id() {
-        return Ids.sha16(kind.name() + producer.id() + consumer.id());
+        return ArtifactIO.digest(kind.name() + producer.id() + consumer.id(), 16);
     }
 
     /**

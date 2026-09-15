@@ -1,5 +1,7 @@
 package edu.uva.liftlab.graphchecker.d3.compose;
 
+import edu.uva.liftlab.graphchecker.d3.smt.ArtifactIO;
+
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
@@ -52,7 +54,7 @@ public final class CorpusIndex implements Arms.Rows {
 
         private PathRecord(String sessionId, OccurrenceAddress occurrence,
                            List<DecisionRow> decisions) {
-            this.pathId = JsonText.digest(sessionId + "|"
+            this.pathId = ArtifactIO.digest(sessionId + "|"
                     + occurrence.render(), 16);
             this.sessionId = sessionId;
             this.occurrence = occurrence;

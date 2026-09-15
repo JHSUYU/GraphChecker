@@ -171,6 +171,22 @@ public final class ArtifactIO {
         return hex(digest().digest(value == null ? new byte[0] : value));
     }
 
+    /**
+     * The one id spelling: lowercase hex sha256, truncated to {@code length}
+     * characters ({@code <= 0} or past the end means untruncated).
+     *
+     * <p>CONTRACT-SPEC: "Ids are lowercase hex sha256 truncated to 16 chars
+     * unless stated."  An id computed two ways is two ids, so every stage
+     * that mints one -- the contract's addresses, exploration's tasks and
+     * obligations, the composer's path and symbol names, the runtime's
+     * expression refs -- truncates the same hash here.</p>
+     */
+    public static String digest(String value, int length) {
+        String full = sha256(value);
+        return length <= 0 || length >= full.length()
+                ? full : full.substring(0, length);
+    }
+
     public static Path sibling(Path path, String name) {
         Path parent = path.toAbsolutePath().getParent();
         return parent == null ? Paths.get(name) : parent.resolve(name);

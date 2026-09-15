@@ -1,5 +1,7 @@
 package edu.uva.liftlab.graphchecker.d3.compose;
 
+import edu.uva.liftlab.graphchecker.d3.smt.JsonFields;
+
 import com.google.gson.JsonObject;
 
 import edu.uva.liftlab.graphchecker.d3.contract.AttachRow;
@@ -87,7 +89,7 @@ public final class SlotTable {
                                      String idMember) {
         String stated = JsonText.string(row, idMember);
         if (!stated.isEmpty()) return stated;
-        JsonObject endpoint = JsonText.object(row, member);
+        JsonObject endpoint = JsonFields.object(row, member);
         if (endpoint.size() == 0) return "";
         try {
             Endpoint read = RowCodec.readEndpoint(endpoint);

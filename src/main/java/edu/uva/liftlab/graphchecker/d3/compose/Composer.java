@@ -1,5 +1,7 @@
 package edu.uva.liftlab.graphchecker.d3.compose;
 
+import edu.uva.liftlab.graphchecker.d3.smt.ArtifactIO;
+
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
@@ -523,7 +525,7 @@ public final class Composer {
         TargetRow target = corpus.target(session, anchor);
         if (target == null) return null;
         String selector = "path_selector__" + ordinal + "__"
-                + JsonText.digest(path.pathId(), 10);
+                + ArtifactIO.digest(path.pathId(), 10);
         lowering.declare(selector, Sort.BOOL);
         // The rows of this path's session: a reader and the placeholder
         // that answers it are matched by the MINT VERSION, which is
@@ -990,7 +992,7 @@ public final class Composer {
                         // the WITNESS query, which runs only once a
                         // valuation is sat.
                         String name = "observed_read__"
-                                + JsonText.digest(read.symbol(), 10);
+                                + ArtifactIO.digest(read.symbol(), 10);
                         String statement = "(assert (! (= " + read.symbol()
                                 + " " + literal + ") :named " + name + "))";
                         String held = statedOnce.put(name, statement);
@@ -1085,7 +1087,7 @@ public final class Composer {
             if (literal.isEmpty()) continue;
             stated.add("(assert (! (= " + attach.symbol() + " " + literal
                     + ") :named observed_arrival__"
-                    + JsonText.digest(attach.symbol(), 10) + "))");
+                    + ArtifactIO.digest(attach.symbol(), 10) + "))");
         }
         return stated;
     }
@@ -1118,7 +1120,7 @@ public final class Composer {
                 families.put(family.getKey(), Family.of(family.getKey(),
                         rowsBySlot.get(family.getKey())));
                 lowering.assertNamed("handoff_family__" + ordinal + "__"
-                                + JsonText.digest(family.getKey(), 12),
+                                + ArtifactIO.digest(family.getKey(), 12),
                         "(=> " + selector + " "
                                 + VmTermLowering.or(family.getValue()) + ")");
             }
@@ -1362,7 +1364,7 @@ public final class Composer {
             if (armTerms.size() < 2) continue;
             chosen.addAll(symbols);
             lowering.assertNamed("state_family__" + ordinal + "__"
-                            + JsonText.digest(entry.getKey(), 12),
+                            + ArtifactIO.digest(entry.getKey(), 12),
                     "(=> " + selector + " "
                             + VmTermLowering.or(armTerms) + ")");
         }
@@ -1522,7 +1524,7 @@ public final class Composer {
                 break;
             }
             lowering.assertNamed("clock_floor__"
-                            + JsonText.digest(cell.getKey(), 10),
+                            + ArtifactIO.digest(cell.getKey(), 10),
                     "(>= " + cell.getKey() + " 0)");
         }
     }

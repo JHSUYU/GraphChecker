@@ -1,5 +1,7 @@
 package edu.uva.liftlab.graphchecker.d3.compose;
 
+import edu.uva.liftlab.graphchecker.d3.smt.ArtifactIO;
+
 import edu.uva.liftlab.graphchecker.d3.contract.Claim;
 import edu.uva.liftlab.graphchecker.d3.contract.ClaimKind;
 import edu.uva.liftlab.graphchecker.d3.contract.Family;
@@ -406,7 +408,7 @@ public final class ClaimPolicy {
             pinned.add("(assert (! (= " + cell + " "
                     + JsonText.smtInteger(Long.toString(reading))
                     + ") :named clock_pinned__"
-                    + JsonText.digest(cell, 10) + "))");
+                    + ArtifactIO.digest(cell, 10) + "))");
         }
         Solver.Answer answer = solver.ask(composition.body(), pinned,
                 Collections.<String>emptyList(), false);
@@ -469,7 +471,7 @@ public final class ClaimPolicy {
             if (!disjunct.path().sessionId().equals(seed)) continue;
             pinned.add("(assert (! " + disjunct.selector()
                     + " :named seed_disjunct__"
-                    + JsonText.digest(disjunct.path().pathId(), 10) + "))");
+                    + ArtifactIO.digest(disjunct.path().pathId(), 10) + "))");
             found = true;
         }
         if (!found) return false;

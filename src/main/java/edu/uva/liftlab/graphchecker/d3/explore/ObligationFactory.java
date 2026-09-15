@@ -1,5 +1,7 @@
 package edu.uva.liftlab.graphchecker.d3.explore;
 
+import edu.uva.liftlab.graphchecker.d3.smt.ArtifactIO;
+
 import edu.uva.liftlab.graphchecker.d3.contract.DecisionRow;
 import edu.uva.liftlab.graphchecker.d3.contract.GapClass;
 import edu.uva.liftlab.graphchecker.d3.contract.GapKind;
@@ -131,9 +133,9 @@ public final class ObligationFactory {
     /** One obligation's id: the task, the path and the decision it flips. */
     public static String obligationId(String taskId, String pathId,
                                       DecisionRow decision) {
-        return ExploreIds.sha16(taskId + "|" + pathId + "|"
+        return ArtifactIO.digest(taskId + "|" + pathId + "|"
                 + decision.siteId() + "|" + decision.ordinal() + "|"
-                + !decision.outcome());
+                + !decision.outcome(), 16);
     }
 
     /**

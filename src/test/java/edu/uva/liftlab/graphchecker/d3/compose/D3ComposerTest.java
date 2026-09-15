@@ -1,5 +1,7 @@
 package edu.uva.liftlab.graphchecker.d3.compose;
 
+import edu.uva.liftlab.graphchecker.d3.smt.ArtifactIO;
+
 import com.google.gson.JsonObject;
 
 import edu.uva.liftlab.graphchecker.d3.contract.ActivationRow;
@@ -1075,7 +1077,7 @@ public class D3ComposerTest {
         assertTrue("and the aliasing owner is named, not used", named);
         assertFalse("so no family chooses a writer for it",
                 composition.body().contains("state_family__0__"
-                        + JsonText.digest(aliasedKey, 12)));
+                        + ArtifactIO.digest(aliasedKey, 12)));
     }
 
     // ------------------------------------------------------------------
