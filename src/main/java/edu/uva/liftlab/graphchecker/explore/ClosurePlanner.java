@@ -109,8 +109,12 @@ public final class ClosurePlanner {
         Map<String, Demand> demands = new LinkedHashMap<String, Demand>();
         Deque<String> pending = new ArrayDeque<String>();
         Demand start = new Demand(anchor, CLOSURE_MEMBER, true);
+        // The anchor's flips are the GUARD SET of the annotated target and
+        // nothing else (CLOSURE-V2 SS1).  The target site itself is a throw,
+        // which is not a branch and which no DecisionRow stands at; the
+        // branch that decides whether the throw is reached is one of its
+        // guards, and on 17960 that is the fatal predicate's own site.
         for (StaticScopeMap.Site target : scope.targetSites()) {
-            start.flipSites.add(target.siteId);
             start.flipSites.addAll(target.guards);
         }
         demands.put(anchor.id(), start);
@@ -397,7 +401,6 @@ public final class ClosurePlanner {
         List<StaticScopeMap.Site> exports = map.exportsOf(portId);
         Set<String> guards = new LinkedHashSet<String>();
         for (StaticScopeMap.Site site : exports) {
-            guards.add(site.siteId);
             guards.addAll(site.guards);
         }
         if (attach.producer() == null) {
@@ -462,10 +465,9 @@ public final class ClosurePlanner {
         }
         for (String carrier : carriers) {
             for (StaticScopeMap.Site site : map.writersOf(carrier)) {
-                Set<String> own = new LinkedHashSet<String>(site.guards);
-                own.add(site.siteId);
-                candidates(corpus, site, STATIC_CANDIDATE_WRITER, own, into,
-                        gaps, row.sessionId(), "carrier " + carrier);
+                candidates(corpus, site, STATIC_CANDIDATE_WRITER,
+                        new LinkedHashSet<String>(site.guards), into, gaps,
+                        row.sessionId(), "carrier " + carrier);
             }
         }
     }
@@ -483,7 +485,6 @@ public final class ClosurePlanner {
                                         String recordedSite) {
         Set<String> guards = new LinkedHashSet<String>();
         for (StaticScopeMap.Site site : map.sitesAt(recordedSite)) {
-            guards.add(site.siteId);
             guards.addAll(site.guards);
         }
         return guards;
