@@ -228,8 +228,16 @@ public class D3RuntimeTest {
         // A declared region input is a READ of the location it stands for,
         // spelled the way the write log spells it, so the placeholder joins
         // the write above rather than naming a second location nobody wrote.
-        placeholder(occurrence, placeholderRow(vmRead(125L)), "M_I_placeholder");
-        placeholder(occurrence, placeholderRow(null), "M_I_unversioned");
+        placeholder(occurrence, placeholderRow(vmRead(125L)), "M_I_placeholder",
+                Collections.<String, String[]>emptyMap());
+        placeholder(occurrence, placeholderRow(null), "M_I_unversioned",
+                Collections.<String, String[]>emptyMap());
+        // And the write log's own answer wins over the retained read: a
+        // mint installs its symbol AS a version of a location, so that is
+        // the location and the version the row states.
+        placeholder(occurrence, placeholderRow(null), "M_I_installed",
+                Collections.singletonMap("M_I_installed",
+                        new String[]{"INSTANCE_FIELD/22#24", "125"}));
         D3Runtime.closeSession();
 
         SessionDir dir = session();
@@ -268,6 +276,9 @@ public class D3RuntimeTest {
         assertEquals(LocationId.of(LocationKind.INSTANCE,
                         "java.util.concurrent.atomic.AtomicInteger", "value"),
                 reads.get(2).location());
+        assertEquals("the version the mint installed the symbol as",
+                writes.get(0).version(), reads.get(3).observedVersion());
+        assertEquals(writes.get(0).location(), reads.get(3).location());
         List<RootMintRow> roots = RowCodec.readAll(dir.roots(),
                 RowCodec::readRootMint);
         assertEquals(RootKind.INTEGRAL, roots.get(0).kind());
@@ -335,13 +346,14 @@ public class D3RuntimeTest {
     }
 
     private static void placeholder(OccurrenceAddress occurrence,
-                                    JsonObject row, String symbol)
+                                    JsonObject row, String symbol,
+                                    java.util.Map<String, String[]> installed)
             throws Exception {
         java.lang.reflect.Method publish = D3RowPublication.class
                 .getDeclaredMethod("placeholder", OccurrenceAddress.class,
-                        JsonObject.class, String.class);
+                        JsonObject.class, String.class, java.util.Map.class);
         publish.setAccessible(true);
-        publish.invoke(null, occurrence, row, symbol);
+        publish.invoke(null, occurrence, row, symbol, installed);
     }
 
     private static RootKind kindOf(JsonObject row) throws Exception {

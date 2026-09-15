@@ -123,6 +123,7 @@ final class D3RowPublication {
      */
     private static void roots(ActiveRegion active,
                               OccurrenceAddress occurrence) {
+        Map<String, String[]> installed = mintedVersions(active);
         Set<String> stated = new LinkedHashSet<String>();
         for (JsonObject row : active.symbolizedRows) {
             String symbol = vmSymbol(row);
@@ -136,7 +137,7 @@ final class D3RowPublication {
             // for a range with two values in it.
             RootKind kind = kindOf(row);
             if (sourceId.isEmpty() && kind == RootKind.INTEGRAL) {
-                placeholder(occurrence, row, symbol);
+                placeholder(occurrence, row, symbol, installed);
                 continue;
             }
             String rootId = sourceId.isEmpty()
@@ -184,21 +185,31 @@ final class D3RowPublication {
      * it joins any other read.</p>
      */
     private static void placeholder(OccurrenceAddress occurrence,
-                                    JsonObject row, String symbol) {
+                                    JsonObject row, String symbol,
+                                    Map<String, String[]> installed) {
         String signature = optionalString(row, "fieldSignature");
         // The write log spells a location the VM's way -- owner rid, slot
-        // offset -- so when the mint's own expression carries the read the
-        // VM resolved, that is the spelling the row states and the two
+        // offset -- and that is the spelling this row states, so the two
         // sides of one location join.  Naming the Java field signature
         // instead left the read saying AtomicInteger#value while every
         // write of it said INSTANCE_FIELD/<rid>#<offset>, and the composer
-        // had a placeholder with no writer.
-        JsonObject read = nestedRead(row.get("expression"), 0);
-        String locationKey = read == null ? ""
-                : locationKey(object(read, "location"));
+        // refused the path with UndeclaredFreeSymbol: a placeholder with no
+        // writer.  Two sources, in order: the version the mint installed
+        // this very symbol as (the write log's own answer), then the read
+        // the VM resolved inside a retained expression.
+        String[] version = installed.get(symbol);
+        String locationKey = version == null ? "" : version[0];
         LocationId location = location(locationKey);
         long observed = location == null ? ReadRow.UNKNOWN_VERSION
-                : versionOf(read);
+                : Long.parseLong(version[1]);
+        if (location == null) {
+            JsonObject read = nestedRead(row.get("expression"), 0);
+            locationKey = read == null ? ""
+                    : locationKey(object(read, "location"));
+            location = location(locationKey);
+            observed = location == null ? ReadRow.UNKNOWN_VERSION
+                    : versionOf(read);
+        }
         if (location == null) {
             locationKey = signature;
             location = fieldLocation(signature);
@@ -223,6 +234,48 @@ final class D3RowPublication {
                 location, observed, symbol,
                 javaDescriptor(optionalString(row, "javaType")),
                 literal(value));
+    }
+
+    /**
+     * Where the VM says each minted symbol lives: symbol -&gt;
+     * {@code {locationKey, version}}.
+     *
+     * <p>A mint installs a symbol INTO a field the VM versions, so the
+     * write log already names the location and the exact version whose
+     * whole value that symbol is -- hdfs-17960's counter is version 172 of
+     * {@code INSTANCE_FIELD/19#24}, and the anchor's own branch reads that
+     * version.  Only a version whose expression IS the symbol counts (a
+     * later version computed FROM it is a different value), and the first
+     * such version wins.</p>
+     */
+    private static Map<String, String[]> mintedVersions(ActiveRegion active) {
+        Map<String, String[]> bySymbol =
+                new java.util.LinkedHashMap<String, String[]>();
+        for (JsonObject record : active.sharedStateRecords.values()) {
+            String locationKey = optionalString(record, "locationKey");
+            if (location(locationKey) == null) continue;
+            for (JsonElement element
+                    : array(object(record, "envelope"), "versions")) {
+                if (!element.isJsonObject()) continue;
+                JsonObject version = element.getAsJsonObject();
+                long id = optionalLongInteger(version, "fieldVersionId", -1L);
+                JsonElement written = version.get("expression");
+                if (id < 0L || written == null || !written.isJsonObject()) {
+                    continue;
+                }
+                JsonObject node = written.getAsJsonObject();
+                if (!optionalString(node, "_type").contains("Symbol")) {
+                    continue;
+                }
+                String symbol = optionalString(node, "_exp");
+                if (symbol.isEmpty()) continue;
+                if (!bySymbol.containsKey(symbol)) {
+                    bySymbol.put(symbol, new String[]{locationKey,
+                            Long.toString(id)});
+                }
+            }
+        }
+        return bySymbol;
     }
 
     /** {@code <Class: type field>} as the location it names. */
