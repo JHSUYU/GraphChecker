@@ -333,7 +333,19 @@ final class RowPublication {
                             + optionalString(row, "portId"));
             return;
         }
-        RowRuntime.read(occurrence, event,
+        // WHERE IN THE RUN this row sits is the VM event that created the
+        // mint: version ids and read event ids are handed out by one monotone
+        // session counter (REPORT-P2EF), so the mint's version IS its event
+        // id.  The runtime's per-activation eventSeq is not: a declared field
+        // input states none at all, so every placeholder of one activation
+        // fell back to "no earlier than the last event seen" and two mints of
+        // one location went out at one seq -- which is one row per event
+        // stating two events (invariant 4 BLOCKING on laneA9: `reads.jsonl
+        // seq=171 field=seq/location INSTANCE 1.24`, mints v138 and v149).
+        // A mint the VM numbered nothing keeps the activation's reading; such
+        // a row is already a stated failure (invariant 7).
+        RowRuntime.read(occurrence,
+                mintVersion < 0L ? event : mintVersion,
                 Endpoint.stateSite(locationKey, "PLACEHOLDER", 0, false),
                 location, observed, minted,
                 declared, literal(value),
