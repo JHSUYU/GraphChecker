@@ -390,10 +390,6 @@ public final class StaticScopeMap {
         return !sites.isEmpty();
     }
 
-    public List<Site> sites() {
-        return sites;
-    }
-
     /**
      * The carriers the static slice says one RECORDED write site stores
      * into.
