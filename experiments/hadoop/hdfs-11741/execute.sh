@@ -26,7 +26,7 @@ else
   work=$(mktemp -d /tmp/hdfs-11741-trace.XXXXXX)
   trace=${CAUSYNTH_TRACE_OUTPUT_DIR:?missing trace output directory}
   jdk=/usr/lib/jvm/java-8-openjdk-amd64
-  properties=("-Dcausynth.trace.output.dir=${trace}"
+  properties=(
     "-Dcausynth.trace.test=${test_name}"
     "-Dcausynth.trace.start.paused=true")
 fi

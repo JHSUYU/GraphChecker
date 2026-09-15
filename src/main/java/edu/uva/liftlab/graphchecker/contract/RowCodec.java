@@ -112,10 +112,10 @@ public final class RowCodec {
                 return CausalContext.of(string(json, "producerEndpointId"),
                         string(json, "rpcSite"));
             case ROOT:
-                return CausalContext.of(Role.valueOf(string(json, ROLE)),
+                return CausalContext.of(Role.of(string(json, ROLE)),
                         integer(json, "windowIndex"));
             default:
-                return CausalContext.of(Role.valueOf(string(json, ROLE)));
+                return CausalContext.of(Role.of(string(json, ROLE)));
         }
     }
 

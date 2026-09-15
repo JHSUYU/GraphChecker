@@ -668,7 +668,8 @@ public final class Identity {
         // used to stand here fired only in the recording -- the replay
         // always had the scope's anchor by then -- so one occurrence
         // carried two contexts.
-        if (role != null && role != Role.UNKNOWN && windowIndex > 0) {
+        if (role != null && !Role.UNKNOWN.equals(role)
+                && windowIndex > 0) {
             return CausalContext.of(role, windowIndex);
         }
         return CausalContext.of(role == null ? Role.UNKNOWN : role);

@@ -11,8 +11,6 @@ import edu.uva.liftlab.graphchecker.plan.CommunicationHandoffSpec;
 import edu.uva.liftlab.graphchecker.plan.ConfiguredSourcePhaseContract;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.plan.ExecutionTask;
-import edu.uva.liftlab.graphchecker.plan.FieldPathSpec;
-import edu.uva.liftlab.graphchecker.plan.FieldPathSpec.DeclaredField;
 import edu.uva.liftlab.graphchecker.plan.InputActionCatalog;
 import edu.uva.liftlab.graphchecker.smt.JavaContainerTypes;
 import edu.uva.liftlab.graphchecker.plan.LoopBoundPolicy;
@@ -30,10 +28,8 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.regex.Matcher;
 
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.array;
-import static edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.object;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalInteger;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalLongInteger;
@@ -41,8 +37,6 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 import edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.RootHookGroup;
 import edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.SymbolizeAction;
 
-import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.DEFAULT_EXECUTOR_THREAD_NAME;
-import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.DEFAULT_OBJECT_IDENTITY_THREAD_NAME;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.ROOT_ARGUMENT_PREDICATE_KIND;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.enclosingLoopRootAdmits;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicResultPublisher.registerRunTotalsHook;
@@ -221,7 +215,6 @@ final class ConcolicTaskPlan {
             String loopRootHookGroupKey, String rootMethod,
             Object receiver, Object[] rootArguments,
             long enclosingInvocationEvent) {
-        String threadName = Thread.currentThread().getName();
         SourceRef registeredReceiverSource =
                 RuntimeTraceContext.sourceFor(receiver);
         // Where this activation ran, by the one function the recorder
@@ -246,7 +239,7 @@ final class ConcolicTaskPlan {
                     || !compatibleRoot(task.rootMethod, rootMethod,
                     task.rootContextSelector,
                     task.enclosingRootArgumentSelector,
-                    receiver, rootArguments, threadName)
+                    receiver, rootArguments)
                     || !sourceAdmissionMismatch(task,
                     registeredReceiverSource,
                     context).isEmpty()) {
@@ -305,7 +298,6 @@ final class ConcolicTaskPlan {
                                             String rootMethod,
                                             Object receiver,
                                             Object[] rootArguments) {
-        String threadName = Thread.currentThread().getName();
         // A short-lived Runnable need not be registered as an alias
         // itself: an exact inherited async/request/RPC context can still
         // attribute its entry.
@@ -335,7 +327,7 @@ final class ConcolicTaskPlan {
             }
             if (!compatibleRoot(task.rootMethod, rootMethod,
                     task.rootContextSelector, task.rootArgumentSelector,
-                    receiver, rootArguments, threadName)) {
+                    receiver, rootArguments)) {
                 continue;
             }
             if (!sourceAdmissionMismatch(task, registeredReceiverSource,
@@ -693,101 +685,12 @@ final class ConcolicTaskPlan {
     static boolean compatibleRoot(
             String selectedMethod, String actualMethod,
             RootContextSelector context, RootArgumentSelector arguments,
-            Object receiver, Object[] rootArguments, String threadName) {
+            Object receiver, Object[] rootArguments) {
         if (!safe(selectedMethod).equals(safe(actualMethod))) return false;
-        if (!context.matches(receiver, threadName)) {
+        if (!context.matches(receiver)) {
             return false;
         }
         return !arguments.present || arguments.matches(rootArguments);
-    }
-
-    /**
-     * The replay address of one planned occurrence.
-     *
-     * <p>Two halves, decided at two different moments because that is when
-     * each becomes knowable.</p>
-     */
-    /**
-     * What an activation was reached under -- never what it is.
-     *
-     * <p>The RPC exchange, the request api, the thread it ran on, the
-     * receiver's runtime class, and whether the recording established the
-     * source by the receiver's own registration or by the thread's inherited
-     * context.  None of it is identity: an occurrence is (node, epoch,
-     * region, k-th activation), and these say where it was reached from and
-     * how the recording found it.</p>
-     *
-     * <p>They were identity fields of the selector, and each grew its own
-     * rule for when it might veto.  Two of the expensive 17960 failures were
-     * exactly that: the request veto refused every flip replay whose workload
-     * reached the planned activation by another path, and the
-     * inherited-source anchor made an absence read as a contradiction.  They
-     * are kept here because where an occurrence was reached from is worth
-     * saying -- it is written into the gap when an address goes unanswered --
-     * and matching never consults them.</p>
-     *
-     * <p>The one exception is {@link #candidate}, and it is not a matching
-     * rule: a receiver-scoped root hook stands on an object of a named class,
-     * so this decides which invocations are offered as candidates at all,
-     * the way an instrumentation scope does.  It cannot distinguish two
-     * activations of one address.</p>
-     */
-    static final class ReachedUnder {
-        private final boolean receiverScoped;
-        private final String receiverRuntimeClass;
-        private final String threadName;
-        private final String requestKey;
-        private final String requestApi;
-        /**
-         * How the recording established the planned source: the receiver's
-         * own registration, or the thread's inherited context.  Recorded
-         * because it says how the occurrence was found; it selected between
-         * three admission arms that asked one question, and the arms are
-         * gone.
-         */
-        private final boolean registeredSourceAnchor;
-        private final boolean inheritedContextAnchor;
-
-        private ReachedUnder(boolean receiverScoped,
-                             String receiverRuntimeClass, String threadName,
-                             String requestKey, String requestApi,
-                             boolean registeredSourceAnchor,
-                             boolean inheritedContextAnchor) {
-            this.receiverScoped = receiverScoped;
-            this.receiverRuntimeClass = safe(receiverRuntimeClass);
-            this.threadName = stableReplayThreadContext(threadName);
-            this.requestKey = safe(requestKey);
-            this.requestApi = safe(requestApi);
-            this.registeredSourceAnchor = registeredSourceAnchor;
-            this.inheritedContextAnchor = inheritedContextAnchor;
-        }
-
-        /** Whether this invocation is offered as a candidate at all. */
-        private boolean candidate(Object receiver, String actualThreadName) {
-            if (!receiverScoped) return true;
-            return receiver != null
-                    && receiverRuntimeClass.equals(
-                    receiver.getClass().getName())
-                    && (threadName.isEmpty()
-                    || threadName.equals(stableReplayThreadContext(
-                    actualThreadName)));
-        }
-
-        /** The circumstances on one line, for a named gap. */
-        private String describe() {
-            StringBuilder description = new StringBuilder();
-            if (!requestKey.isEmpty()) {
-                description.append("/requestKey=").append(requestKey);
-            }
-            if (!requestApi.isEmpty()) {
-                description.append("/requestApi=").append(requestApi);
-            }
-            return description.toString();
-        }
-
-        private static String stableReplayThreadContext(String value) {
-            return RootContextSelector.stableReplayThreadContext(value);
-        }
     }
 
     static final class RootContextSelector {
@@ -799,33 +702,39 @@ final class ConcolicTaskPlan {
          * replay counter.
          */
         private final int invocationOrdinal;
-        /** Everything this address is not: see {@link ReachedUnder}. */
-        private final ReachedUnder reachedUnder;
+        /**
+         * The class a receiver-scoped root hook stands on, or {@code ""}.
+         *
+         * <p>The one thing about "what this activation was reached under"
+         * that selection reads, and it is a DECLARED fact of the plan's
+         * selector rather than a circumstance of the run.  It is not a
+         * matching rule either: it decides which invocations are offered as
+         * candidates at all, the way an instrumentation scope does, and it
+         * cannot distinguish two activations of one address.</p>
+         *
+         * <p>The RPC exchange, the request api, how the recording
+         * established the source, and the thread the activation ran on used
+         * to travel beside it and each grew its own rule for when it might
+         * veto.  They are gone: an occurrence IS its address
+         * (IDENTITY-V3 SS1), and a thread name in particular is a timing
+         * fact no replay can be held to.</p>
+         */
+        private final String receiverRuntimeClass;
 
-        private RootContextSelector(boolean receiverScoped,
-                                    String receiverRuntimeClass,
-                                    String threadName, String sourceKey,
-                                    String requestKey, String requestApi,
-                                    int invocationOrdinal,
-                                    boolean registeredSourceAnchor,
-                                    boolean inheritedContextAnchor) {
+        private RootContextSelector(String receiverRuntimeClass,
+                                    String sourceKey,
+                                    int invocationOrdinal) {
             this.sourceKey = safe(sourceKey);
             this.invocationOrdinal = invocationOrdinal;
-            this.reachedUnder = new ReachedUnder(receiverScoped,
-                    receiverRuntimeClass, threadName, requestKey, requestApi,
-                    registeredSourceAnchor, inheritedContextAnchor);
+            this.receiverRuntimeClass = safe(receiverRuntimeClass);
         }
 
         private static RootContextSelector from(JsonObject selector) {
             String kind = optionalString(selector, "kind");
             boolean global = "GLOBAL_INVOCATION".equals(kind);
             String receiverClass = optionalString(selector, "receiverClass");
-            String thread = selector.has("thread")
-                    ? optionalString(selector, "thread") : "";
             JsonObject anchor = object(selector, "causalAnchor");
             String sourceKey = optionalString(anchor, "sourceKey");
-            String requestKey = optionalString(anchor, "requestKey");
-            String requestApi = optionalString(anchor, "requestApi");
             int invocationOrdinal = optionalInteger(selector,
                     "invocationOrdinal", -1);
             String anchorKind = optionalString(anchor, "kind");
@@ -839,9 +748,7 @@ final class ConcolicTaskPlan {
                     .key().equals(sourceKey);
             if (!global && (receiverClass.isEmpty()
                     || !receiverClass.equals(receiverClass.trim())
-                    || !"RECEIVER_CONTEXT".equals(kind)
-                    || selector.has("thread") && (thread.isEmpty()
-                    || !thread.equals(thread.trim())))
+                    || !"RECEIVER_CONTEXT".equals(kind))
                     || sourceKey.isEmpty()
                     || !sourceKey.equals(sourceKey.trim())
                     || invocationOrdinal < 1) {
@@ -863,15 +770,15 @@ final class ConcolicTaskPlan {
                                 + RuntimeRegionPlanner.UNREGISTERED_SOURCE
                                 .key());
             }
-            return new RootContextSelector(!global, receiverClass, thread,
-                    sourceKey, requestKey, requestApi, invocationOrdinal,
-                    registeredSource,
-                    inheritedContext);
+            return new RootContextSelector(global ? "" : receiverClass,
+                    sourceKey, invocationOrdinal);
         }
 
         /** Whether this root invocation is a candidate for the occurrence. */
-        private boolean matches(Object receiver, String actualThreadName) {
-            return reachedUnder.candidate(receiver, actualThreadName);
+        private boolean matches(Object receiver) {
+            return receiverRuntimeClass.isEmpty()
+                    || receiver != null && receiverRuntimeClass.equals(
+                            receiver.getClass().getName());
         }
 
         /**
@@ -917,8 +824,7 @@ final class ConcolicTaskPlan {
 
         /** This address on one line, for a named gap. */
         private String describe() {
-            return sourceKey + reachedUnder.describe() + "/invocation="
-                    + invocationOrdinal;
+            return sourceKey + "/invocation=" + invocationOrdinal;
         }
 
         /**
@@ -928,18 +834,6 @@ final class ConcolicTaskPlan {
         private boolean anchorSourceNeverExisted() {
             return !OccurrenceBinding.UNREGISTERED_SOURCE_KEY.equals(sourceKey)
                     && !RuntimeTraceContext.sourceIdentityRegistered(sourceKey);
-        }
-
-        static String stableReplayThreadContext(String value) {
-            String thread = safe(value);
-            Matcher executor = DEFAULT_EXECUTOR_THREAD_NAME.matcher(thread);
-            if (executor.matches()) {
-                return "pool-*-thread-" + executor.group(1);
-            }
-            Matcher objectIdentity =
-                    DEFAULT_OBJECT_IDENTITY_THREAD_NAME.matcher(thread);
-            return objectIdentity.matches()
-                    ? objectIdentity.group(1) + "@*" : thread;
         }
 
     }
@@ -1138,16 +1032,6 @@ final class ConcolicTaskPlan {
                 new LinkedHashMap<>();
         /** Frozen runtime bindings used to resolve exact Map producers. */
         final JsonArray edgeBindings;
-        /** Declared field -> unique frozen receiver locator for this task. */
-        final Map<String, Long> plannedReceiverObjectIdByField =
-                new LinkedHashMap<>();
-        /**
-         * Declared field and access anchor -> frozen receiver locator.  This
-         * is what names a per-instance field whose declaring class has
-         * several live receivers inside one activation.
-         */
-        final Map<String, Long> plannedReceiverObjectIdByFieldAccess =
-                new LinkedHashMap<>();
         /**
          * Activations that ran as candidates for this address and were not the
          * addressed occurrence, and every distinct reason they were not.
@@ -1222,7 +1106,6 @@ final class ConcolicTaskPlan {
                     "replayGroupId");
             this.topologyEpoch = optionalString(task.json(), "topologyEpoch");
             this.edgeBindings = task.edgeBindings();
-            indexPlannedReceiverObjectIds(task.inputActions().all());
             // The plan row decoded this catalog once; phase ids are already
             // one strict ordered ledger by then, so this is an index, not a
             // second admission.
@@ -1311,101 +1194,6 @@ final class ConcolicTaskPlan {
                     safe(portId));
             return consumers == null ? Collections.<String>emptyList()
                     : consumers;
-        }
-
-        /**
-         * Indexes the frozen receiver locator of every planned field access.
-         *
-         * <p>A per-instance field (one object per key, several receivers of
-         * the same declared field inside one activation) has no unique
-         * locator for the field alone.  The plan does distinguish those
-         * receivers: every action names the exact static access site and the
-         * activation-local occurrence of that site which read it.  That pair
-         * is the same replay-stable access anchor the composer already uses
-         * to name a read independently of any object id, so it is what binds
-         * one live receiver to one planned locator.  The by-field index
-         * stays as the answer for a field with a single receiver, including
-         * every carrier selected without ever being read.</p>
-         */
-        void indexPlannedReceiverObjectIds(JsonArray inputActions) {
-            Map<String, Set<Long>> candidates = new LinkedHashMap<>();
-            Map<String, Set<Long>> accessCandidates = new LinkedHashMap<>();
-            for (JsonElement element : inputActions) {
-                if (!element.isJsonObject()) continue;
-                JsonObject action = element.getAsJsonObject();
-                long receiver = optionalLongInteger(action,
-                        "fieldReceiverObjectId", 0L);
-                DeclaredField field = FieldPathSpec.declaredField(
-                        firstNonBlank(optionalString(action, "leafFieldSignature"),
-                                optionalString(action, "accessFieldSignature")));
-                if (field == null || receiver <= 0L) continue;
-                String fieldKey = field.owner() + "#" + field.name();
-                candidates.computeIfAbsent(fieldKey,
-                        ignored -> new LinkedHashSet<>()).add(receiver);
-                for (String site : plannedAccessSites(action)) {
-                    for (int occurrence : plannedAccessOccurrences(action)) {
-                        accessCandidates.computeIfAbsent(
-                                fieldAccessKey(fieldKey, site, occurrence),
-                                ignored -> new LinkedHashSet<>()).add(receiver);
-                    }
-                }
-            }
-            indexUniqueReceivers(candidates,
-                    plannedReceiverObjectIdByField);
-            indexUniqueReceivers(accessCandidates,
-                    plannedReceiverObjectIdByFieldAccess);
-        }
-
-        /** Keeps only the locators one key names without contradiction. */
-        private static void indexUniqueReceivers(
-                Map<String, Set<Long>> candidates, Map<String, Long> index) {
-            for (Map.Entry<String, Set<Long>> entry : candidates.entrySet()) {
-                if (entry.getValue().size() == 1) {
-                    index.put(entry.getKey(),
-                            entry.getValue().iterator().next());
-                }
-            }
-        }
-
-        /** Every static access site one planned action was observed at. */
-        private static Set<String> plannedAccessSites(JsonObject action) {
-            Set<String> sites = new LinkedHashSet<>();
-            for (String member : new String[]{"staticAccessSiteId", "siteId"}) {
-                String site = optionalString(action, member);
-                if (!site.isEmpty()) sites.add(site);
-            }
-            for (JsonElement element : array(action, "accessSites")) {
-                if (!element.isJsonPrimitive()) continue;
-                String site = safe(element.getAsString());
-                if (!site.isEmpty()) sites.add(site);
-            }
-            return sites;
-        }
-
-        /**
-         * Every activation-local occurrence the plan states for one access.
-         *
-         * <p>An accessor-mediated read counts calls of the accessor's call
-         * site and a direct read counts executions of the getfield site.  The
-         * plan names both under its own member, so every stated count is
-         * indexed and {@link #indexUniqueReceivers} drops a key two actions
-         * disagree on rather than guessing which counter was meant.</p>
-         */
-        private static Set<Integer> plannedAccessOccurrences(
-                JsonObject action) {
-            Set<Integer> occurrences = new LinkedHashSet<>();
-            for (String member : new String[]{"accessorOccurrence",
-                    "activationLocalStaticSiteOccurrence",
-                    "replayOccurrence"}) {
-                int occurrence = optionalInteger(action, member, 0);
-                if (occurrence > 0) occurrences.add(occurrence);
-            }
-            return occurrences;
-        }
-
-        private static String fieldAccessKey(String fieldKey, String site,
-                                             int occurrence) {
-            return fieldKey + "\n" + site + "\n" + occurrence;
         }
 
         static String handoffKey(String portId, boolean exporting) {

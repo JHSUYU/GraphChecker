@@ -46,7 +46,13 @@ final class SmtText {
         String name(String key, String preferred) {
             String existing = byKey.get(key);
             if (existing != null) return existing;
-            String base = sanitize(preferred);
+            // One sanitizer (VmTermLowering.smtName); the cap is this
+            // allocator's own concern -- a name a reader can scan -- and a
+            // truncation collision is resolved by the suffix below.
+            String legal = edu.uva.liftlab.graphchecker.compose
+                    .VmTermLowering.smtName(preferred);
+            String base = legal.length() > 48 ? legal.substring(0, 48)
+                    : legal;
             String candidate = base;
             int suffix = 2;
             while (!taken.add(candidate)) {
@@ -54,19 +60,6 @@ final class SmtText {
             }
             byKey.put(key, candidate);
             return candidate;
-        }
-
-        private static String sanitize(String text) {
-            StringBuilder clean = new StringBuilder();
-            for (int index = 0; index < text.length()
-                    && clean.length() < 48; index++) {
-                char at = text.charAt(index);
-                clean.append(Character.isLetterOrDigit(at) || at == '_'
-                        ? at : '_');
-            }
-            if (clean.length() == 0) clean.append('v');
-            if (Character.isDigit(clean.charAt(0))) clean.insert(0, 'v');
-            return clean.toString();
         }
     }
 }

@@ -26,29 +26,16 @@ public final class Interactions {
                     return size() > LIMIT;
                 }
             };
-    private static final Map<String, String> EXPRESSIONS =
-            new LinkedHashMap<String, String>(64, 0.75f, false) {
-                @Override
-                protected boolean removeEldestEntry(
-                        Map.Entry<String, String> eldest) {
-                    return size() > LIMIT;
-                }
-            };
-
     private Interactions() {
     }
 
-    /** Files the producer of one staged value, by handle and by port. */
+    /** Files the producer of one staged value, by every key it states. */
     public static synchronized void exported(String portId, long handle,
                                              String correlationId,
-                                             Endpoint producer,
-                                             String expressionRef) {
+                                             Endpoint producer) {
         if (producer == null) return;
         for (String key : keys(portId, handle, correlationId)) {
             PRODUCERS.put(key, producer);
-            if (!Text.safe(expressionRef).isEmpty()) {
-                EXPRESSIONS.put(key, Text.safe(expressionRef));
-            }
         }
     }
 
@@ -62,32 +49,28 @@ public final class Interactions {
         return null;
     }
 
-    /** The producer's expression ref for this delivery, or {@code ""}. */
-    public static synchronized String expressionRef(String portId,
-                                                    long handle,
-                                                    String correlationId) {
-        for (String key : keys(portId, handle, correlationId)) {
-            String ref = EXPRESSIONS.get(key);
-            if (ref != null) return ref;
-        }
-        return "";
-    }
-
     /**
-     * The keys one delivery can be paired on, strongest first: the VM
-     * expression handle, then the exchange correlation and port, then the
-     * port's last producer.
+     * The keys one delivery is paired on: the VM expression handle, and the
+     * exchange correlation with the port.
+     *
+     * <p>Both are RECORDED facts of the run -- the VM handed out the handle
+     * and the workload named the correlation -- which is the whole rule
+     * (INTERACTION-ID SS1).  "The port's last producer" used to stand behind
+     * them, and it is a guess: two sends on one port with no handle and no
+     * correlation pair the second delivery to the first producer, and the
+     * row then states a chain nobody made.  A delivery these two do not
+     * pair publishes an unpaired row and LINEAGE_LOST beside it, which is
+     * what {@link RowRuntime#attachedAt} does.</p>
      */
     private static java.util.List<String> keys(String portId, long handle,
                                                String correlationId) {
         String port = Text.safe(portId);
         String correlation = Text.safe(correlationId);
-        java.util.List<String> keys = new java.util.ArrayList<String>(3);
+        java.util.List<String> keys = new java.util.ArrayList<String>(2);
         if (handle > 0L) keys.add("H\n" + handle);
         if (!correlation.isEmpty() && !port.isEmpty()) {
             keys.add("C\n" + correlation + "\n" + port);
         }
-        if (!port.isEmpty()) keys.add("P\n" + port);
         return keys;
     }
 
@@ -174,6 +157,5 @@ public final class Interactions {
         MESSAGES.clear();
         DELIVERY.remove();
         PRODUCERS.clear();
-        EXPRESSIONS.clear();
     }
 }

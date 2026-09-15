@@ -2,12 +2,18 @@ package edu.uva.liftlab.graphchecker.runtime;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
+import edu.uva.liftlab.graphchecker.contract.GapKind;
+import edu.uva.liftlab.graphchecker.contract.GapRow;
+import edu.uva.liftlab.graphchecker.contract.RowCodec;
+import edu.uva.liftlab.graphchecker.contract.SessionDir;
 import edu.uva.liftlab.graphchecker.plan.ConfiguredSourcePhaseContract;
 import edu.uva.liftlab.graphchecker.plan.ExecutionTask;
 import edu.uva.liftlab.graphchecker.plan.SiteId;
 import org.junit.After;
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
+import org.junit.rules.TemporaryFolder;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
@@ -32,6 +38,9 @@ import static org.junit.Assert.assertTrue;
  * registry can place this mint at the address the plan named.</p>
  */
 public class ManualMintStatesItsValueTest {
+    @Rule
+    public final TemporaryFolder session = new TemporaryFolder();
+
     private static final String METHOD = "<a.B: void run()>";
     private static final String MANUAL_REGION = "REGION.aaa1cfd7";
     private static final String MANUAL_SOURCE = "hdfs-17899/nn0#epoch0";
@@ -53,6 +62,7 @@ public class ManualMintStatesItsValueTest {
     @Before
     public void clearRegistry() {
         RuntimeTraceContext.resetForTests();
+        RowRuntime.resetForTests();
     }
 
     @After
@@ -60,6 +70,8 @@ public class ManualMintStatesItsValueTest {
         opened.forEach(ConcolicRegionRuntime.ACTIVE::remove);
         opened.clear();
         RuntimeTraceContext.resetForTests();
+        System.clearProperty(FocusedReplay.PLAN_PROPERTY);
+        RowRuntime.resetForTests();
     }
 
     /**
@@ -94,6 +106,59 @@ public class ManualMintStatesItsValueTest {
                 "1789358343989", clock.get("recordedValue").getAsString());
         assertEquals("and this execution's own instant, beside it",
                 "1789358344655", clock.get("observedValue").getAsString());
+
+        // What the wave asks of a clock is a SKEW, and the mint applies it
+        // to the instant THIS run read: a model is an instant of the
+        // recording's window, and writing it absolutely would rewind the
+        // clock to an epoch no replay reads.  An ordinary root keeps its
+        // absolute value, and both come out of one decision.
+        focusRow("{\"taskId\":\"TASK.1\",\"obligationId\":\"OBL.1\","
+                + "\"pathId\":\"PATH.1\",\"seedSessionId\":\"s-seed\","
+                + "\"focused\":\"" + PLANNED_ADDRESS + "\","
+                + "\"flip\":{\"siteId\":\"Arrival#u8\",\"ordinal\":1,"
+                + "\"outcome\":true},"
+                + "\"rootAssignments\":{\"CASE.SERIAL\":\"12\"},"
+                + "\"clockDeltas\":{\"CASE.NOW\":\"-4200\"},"
+                + "\"answers\":{},\"unproducible\":[]}");
+        ConcolicRegionRuntime.ActiveRegion focused = manualRegion();
+        focused.d3Address = edu.uva.liftlab.graphchecker.contract
+                .OccurrenceAddress.parse(PLANNED_ADDRESS);
+        assertEquals("the skew moves this replay's own reading",
+                "1789358340455",
+                focusedRootValue(focused, "CASE.NOW",
+                        Long.valueOf(1789358344655L)));
+        assertEquals("a value is a value", "12",
+                focusedRootValue(focused, "CASE.SERIAL", Long.valueOf(7L)));
+        assertEquals("nothing was asked of this root", "",
+                focusedRootValue(focused, "CASE.OTHER", Long.valueOf(7L)));
+    }
+
+    /** The rendered v3 address the focus row names and the region carries. */
+    private static final String PLANNED_ADDRESS =
+            "hdfs/nn0#epoch1/region/" + MANUAL_REGION
+                    + "/ctx:Root:CLIENT#1/idx:";
+
+    /** Writes one focus row where this replay looks for it. */
+    private void focusRow(String row) throws Exception {
+        java.nio.file.Path dir = java.nio.file.Files.createTempDirectory(
+                "causynth-focus");
+        java.nio.file.Files.write(dir.resolve(FocusedReplay.FOCUS_FILE),
+                (row + System.lineSeparator()).getBytes("UTF-8"));
+        System.setProperty(FocusedReplay.PLAN_PROPERTY,
+                dir.resolve("execution_task_plan.jsonl").toString());
+        FocusedReplay.resetForTests();
+    }
+
+    /** The one decision every mint takes about the wave's value. */
+    private static String focusedRootValue(
+            ConcolicRegionRuntime.ActiveRegion active, String rootId,
+            Object observed) throws Exception {
+        Method value = ConcolicRegionRuntime.class.getDeclaredMethod(
+                "focusedRootValue",
+                ConcolicRegionRuntime.ActiveRegion.class, String.class,
+                Object.class);
+        value.setAccessible(true);
+        return (String) value.invoke(null, active, rootId, observed);
     }
 
     /**
@@ -107,6 +172,7 @@ public class ManualMintStatesItsValueTest {
      */
     @Test
     public void aModelIsAppliedOnlyAtAMintThisRunCanPlace() throws Exception {
+        openSession();
         ConcolicRegionRuntime.ActiveRegion active =
                 phaseRegion(NODE + "#epoch1", PLANNED);
         Object manager = new Object();
@@ -116,7 +182,9 @@ public class ManualMintStatesItsValueTest {
                 new SourceRef("CLUSTER_NODE", "NAMENODE", NODE, 0L));
         assertFalse("a mint of another epoch is not written",
                 placeable(active, manager));
-        assertEquals("EPOCH_UNMATCHED", gap(active, "gapKind"));
+        assertEquals(GapKind.EPOCH_UNMATCHED, gap().kind());
+        assertTrue("a mint the wave's value was not written at blocks",
+                gap().blocking());
 
         // The restart advances the same logical source.
         RuntimeTraceContext.restartSource(manager,
@@ -127,8 +195,8 @@ public class ManualMintStatesItsValueTest {
                 phaseRegion(NODE + "#epoch1", PLANNED);
         assertFalse("nothing places this mint, so nothing rewrites it",
                 placeable(orphan, new Object()));
-        assertEquals("MINT_UNATTRIBUTED", gap(orphan, "gapKind"));
-        String detail = gap(orphan, "detail");
+        assertEquals(GapKind.MINT_UNATTRIBUTED, gap().kind());
+        String detail = gap().detail();
         assertTrue(detail, detail.contains("attributes this mint to no node"));
         assertTrue(detail, detail.contains("recorded value stands"));
 
@@ -137,6 +205,8 @@ public class ManualMintStatesItsValueTest {
                         "workload/unregistered/region/" + REGION + "#1");
         assertTrue("nothing to place, nothing to refuse",
                 placeable(epochless, new Object()));
+        assertEquals("and files nothing", GapKind.MINT_UNATTRIBUTED,
+                gap().kind());
     }
 
     /**
@@ -260,17 +330,22 @@ public class ManualMintStatesItsValueTest {
         return (Boolean) method.invoke(active, mintOwner);
     }
 
-    /** One member of the last gap this activation filed, or "". */
-    @SuppressWarnings("unchecked")
-    private static String gap(ConcolicRegionRuntime.ActiveRegion active,
-                              String member) throws Exception {
-        Field field = active.getClass().getDeclaredField(
-                "configuredSourcePhaseGaps");
-        field.setAccessible(true);
-        List<JsonObject> gaps = (List<JsonObject>) field.get(active);
-        JsonObject last = gaps.isEmpty() ? new JsonObject()
-                : gaps.get(gaps.size() - 1);
-        return last.has(member) ? last.get(member).getAsString() : "";
+    /** The last gap ROW this session published: one gap vocabulary. */
+    private GapRow gap() throws Exception {
+        List<GapRow> rows = RowCodec.readAll(SessionDir.of(
+                        session.getRoot().toPath().resolve("iteration-0000"),
+                        RowRuntime.sessionId()).gaps(),
+                RowCodec::readGap);
+        return rows.isEmpty() ? null : rows.get(rows.size() - 1);
+    }
+
+    /** Opens the session the refusals are published into. */
+    private void openSession() throws Exception {
+        java.nio.file.Path results = session.getRoot().toPath()
+                .resolve("iteration-0000").resolve("seed-result")
+                .resolve("concolic_region_results.jsonl");
+        java.nio.file.Files.createDirectories(results.getParent());
+        RowRuntime.configure(results);
     }
 
     private static String phaseId(String occurrenceId) {

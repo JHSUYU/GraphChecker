@@ -38,7 +38,6 @@ public final class FocusedReplay {
     private static Task task;
     private static final List<Obligation> OBLIGATIONS =
             new ArrayList<Obligation>();
-    private static final Set<String> OBSERVED = new LinkedHashSet<String>();
     private static final Map<String, String> REFUSALS =
             new LinkedHashMap<String, String>();
     private static final Set<String> FLIPPED = new LinkedHashSet<String>();
@@ -106,6 +105,30 @@ public final class FocusedReplay {
         }
         return declared;
     }
+
+    /**
+     * The skew the wave asks of this clock, or null when it asks none.
+     *
+     * <p>A clock is the one root every execution reads differently, so the
+     * focus row states a DIFFERENCE and the mint adds it to the instant this
+     * replay read.  Null and zero are different answers: zero is "read the
+     * same instant the recording did", null is "the wave said nothing about
+     * this clock".</p>
+     */
+    public static Long clockSkew(String rootId) {
+        load();
+        String stated = CLOCK_DELTAS.get(Text.safe(rootId));
+        if (stated == null) return null;
+        try {
+            return Long.valueOf(stated);
+        } catch (NumberFormatException notASkew) {
+            return null;
+        }
+    }
+
+    /** The skew the focus row states for each clock, by root id. */
+    private static final Map<String, String> CLOCK_DELTAS =
+            new LinkedHashMap<String, String>();
 
     /** The value the wave assigned this root, or {@code ""}. */
     public static String rootAssignment(String rootId) {
@@ -224,15 +247,6 @@ public final class FocusedReplay {
         }
     }
 
-    /** States one interaction endpoint the focused occurrence reached. */
-    public static void observeInteraction(String endpointRender) {
-        load();
-        if (task == null) return;
-        synchronized (LOCK) {
-            OBSERVED.add(Text.safe(endpointRender));
-        }
-    }
-
     /**
      * What this replay settled, one row per obligation.
      *
@@ -279,8 +293,10 @@ public final class FocusedReplay {
      * <p>{@code explore.ObligationSolverMain} writes {@code
      * focused_task.jsonl} with {@code taskId}, {@code obligationId}, {@code
      * pathId}, {@code focused} (the occurrence, rendered), {@code flip} =
-     * {siteId, ordinal, outcome}, {@code rootAssignments}, {@code answers}
-     * (attach endpoint id to value) and {@code unproducible}.  That row IS
+     * {siteId, ordinal, outcome}, {@code rootAssignments}, {@code
+     * clockDeltas} (root id to the skew to add to this replay's own
+     * reading), {@code answers} (attach endpoint id to value) and {@code
+     * unproducible}.  That row IS
      * the focused task: the replay applies the assignments at the mints of
      * the focused occurrence, the answers at its attaches, and enforces the
      * flip at the named decision.</p>
@@ -313,6 +329,7 @@ public final class FocusedReplay {
                         strings(row, "rootAssignments"),
                         strings(row, "answers"),
                         list(row, "unproducible")));
+                CLOCK_DELTAS.putAll(strings(row, "clockDeltas"));
                 FOCUSED_TASKS.add(string(row, "taskId"));
                 // The row states which occurrence it focuses, so the Task
                 // this replay reports against is the recording's, not a stub
@@ -418,7 +435,7 @@ public final class FocusedReplay {
             loaded = false;
             task = null;
             OBLIGATIONS.clear();
-            OBSERVED.clear();
+            CLOCK_DELTAS.clear();
             REFUSALS.clear();
             FLIPPED.clear();
             FOCUSED_TASKS.clear();

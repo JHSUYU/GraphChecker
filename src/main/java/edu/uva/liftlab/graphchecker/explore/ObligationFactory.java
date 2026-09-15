@@ -106,16 +106,27 @@ public final class ObligationFactory {
         public final Obligation obligation;
         public final ObligationResult result;
         public final String smt2;
+        /**
+         * root id -> the skew the model asks of that clock, as a decimal.
+         *
+         * <p>{@code model - recordedValue}: a clock is the one root every
+         * execution reads differently, so the counterfactual an obligation
+         * states about one is how far off the reading is, and the replay
+         * adds it to the instant it reads for itself.</p>
+         */
+        public final Map<String, String> clockDeltas;
         public final List<GapRow> gaps;
 
         private Outcome(String obligationId, String taskId,
                         Obligation obligation, ObligationResult result,
-                        String smt2, List<GapRow> gaps) {
+                        String smt2, Map<String, String> clockDeltas,
+                        List<GapRow> gaps) {
             this.obligationId = obligationId;
             this.taskId = taskId;
             this.obligation = obligation;
             this.result = result;
             this.smt2 = smt2;
+            this.clockDeltas = Collections.unmodifiableMap(clockDeltas);
             this.gaps = Collections.unmodifiableList(gaps);
         }
 
@@ -125,6 +136,22 @@ public final class ObligationFactory {
 
         public Verdict verdict() {
             return result.verdict();
+        }
+    }
+
+    /** No clock was moved, which is every outcome but a satisfied one. */
+    private static final Map<String, String> NO_SKEW =
+            Collections.<String, String>emptyMap();
+
+    /** {@code model - recorded} as a decimal, or "" if either is not one. */
+    private static String skew(String model, String recorded) {
+        if (model == null || recorded == null) return "";
+        try {
+            return new java.math.BigInteger(model.trim())
+                    .subtract(new java.math.BigInteger(recorded.trim()))
+                    .toString();
+        } catch (NumberFormatException notAnInstant) {
+            return "";
         }
     }
 
@@ -311,7 +338,7 @@ public final class ObligationFactory {
             return new Outcome(id, candidate.task.taskId(), null,
                     ObligationResult.of(id, Verdict.NOT_ADMITTED, "",
                             "the query was refused: " + built.refusal),
-                    "", gaps);
+                    "", NO_SKEW, gaps);
         }
         long budget = timeoutMillis <= 0 ? Z3.DEFAULT_TIMEOUT_MILLIS
                 : timeoutMillis;
@@ -328,7 +355,7 @@ public final class ObligationFactory {
             return new Outcome(id, candidate.task.taskId(), null,
                     ObligationResult.of(id, Verdict.NOT_ADMITTED, "",
                             "SOLVER_TIMEOUT after " + budget + "ms"),
-                    query, gaps);
+                    query, NO_SKEW, gaps);
         }
         // An answer that is neither sat nor unsat is not a verdict about the
         // corpus: an "(error ...)" says z3 could not READ the query and an
@@ -345,7 +372,7 @@ public final class ObligationFactory {
                                     : " " + answer.reason())
                                     + (solver.errors().isEmpty() ? ""
                                     : " " + solver.errors())),
-                    query, gaps);
+                    query, NO_SKEW, gaps);
         }
         if (!answer.sat()) {
             return new Outcome(id, candidate.task.taskId(), null,
@@ -353,13 +380,33 @@ public final class ObligationFactory {
                             "no world of this corpus takes the other arm at "
                                     + decision.siteId() + "#"
                                     + decision.ordinal()),
-                    query, gaps);
+                    query, NO_SKEW, gaps);
         }
         Map<String, String> roots = new LinkedHashMap<String, String>();
         for (Map.Entry<String, String> variable
                 : built.rootVariables.entrySet()) {
             String value = answer.values().get(variable.getKey());
             if (value != null) roots.put(variable.getValue(), value);
+        }
+        // A clock's model is an instant of the window the RECORDING read in,
+        // so what the replay is owed is the difference: it reads its own
+        // instant and moves it by this much.
+        Map<String, String> clockDeltas = new LinkedHashMap<String, String>();
+        for (Map.Entry<String, String> variable
+                : built.clockVariables.entrySet()) {
+            String rootId = variable.getValue();
+            String delta = skew(answer.values().get(variable.getKey()),
+                    corpus.rootReading(candidate.path.sessionId, rootId));
+            if (delta.isEmpty()) {
+                gaps.add(GapRow.of(candidate.path.sessionId,
+                        GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC, rootId,
+                        "the model moves this clock but the reading it is "
+                                + "relative to is not an integer, so the "
+                                + "replay is owed no skew and reads its own "
+                                + "instant"));
+                continue;
+            }
+            clockDeltas.put(rootId, delta);
         }
         Map<String, String> answers = new LinkedHashMap<String, String>();
         List<String> unproducible = new ArrayList<String>();
@@ -385,7 +432,7 @@ public final class ObligationFactory {
                     GapKind.ADMISSION_GAP, GapClass.BLOCKING, id, recorded));
             return new Outcome(id, candidate.task.taskId(), null,
                     ObligationResult.of(id, Verdict.NOT_ADMITTED, "",
-                            recorded), query, gaps);
+                            recorded), query, NO_SKEW, gaps);
         }
         return new Outcome(id, candidate.task.taskId(), solved,
                 ObligationResult.of(id, Verdict.SAT_MODEL_READY, "",
@@ -393,6 +440,6 @@ public final class ObligationFactory {
                                 + decision.ordinal() + " is reachable under "
                                 + roots.size() + " root value(s) and "
                                 + answers.size() + " answered handoff(s)"),
-                query, gaps);
+                query, clockDeltas, gaps);
     }
 }
