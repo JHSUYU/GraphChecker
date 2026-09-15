@@ -158,7 +158,8 @@ public final class SlotTable {
      * recorded fact of the run that made it, and a replacement is two runs
      * disagreeing about it.</p>
      */
-    public java.util.List<Replacement> replacements(CorpusIndex corpus) {
+    public java.util.List<Replacement> replacements(
+            edu.uva.liftlab.graphchecker.explore.Corpus corpus) {
         java.util.List<Replacement> found =
                 new java.util.ArrayList<Replacement>();
         if (!stated) return found;

@@ -13,6 +13,7 @@ import edu.uva.liftlab.graphchecker.contract.AttachRow;
 import edu.uva.liftlab.graphchecker.contract.DecisionRow;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.ExportRow;
+import edu.uva.liftlab.graphchecker.explore.Corpus;
 import edu.uva.liftlab.graphchecker.contract.Family;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
@@ -116,12 +117,12 @@ public final class Composer {
 
     /** One admitted path, as the composition states it. */
     public static final class Disjunct {
-        private final CorpusIndex.PathRecord path;
+        private final Corpus.RecordedPath path;
         private final String selector;
         private final boolean fatalObserved;
         private final Set<String> interactionIds;
 
-        private Disjunct(CorpusIndex.PathRecord path, String selector,
+        private Disjunct(Corpus.RecordedPath path, String selector,
                          boolean fatalObserved, Set<String> interactionIds) {
             this.path = path;
             this.selector = selector;
@@ -129,7 +130,7 @@ public final class Composer {
             this.interactionIds = Collections.unmodifiableSet(interactionIds);
         }
 
-        public CorpusIndex.PathRecord path() {
+        public Corpus.RecordedPath path() {
             return path;
         }
 
@@ -278,7 +279,7 @@ public final class Composer {
         }
     }
 
-    private final CorpusIndex corpus;
+    private final Corpus corpus;
     private final OccurrenceAddress anchor;
     private final Map<String, RootDomain> declaredDomains;
     private final int maxValuations;
@@ -320,7 +321,7 @@ public final class Composer {
     /** Locations already named as aliasing, so one row says it once. */
     private final Set<String> aliasingNamed = new LinkedHashSet<String>();
 
-    private Composer(CorpusIndex corpus, OccurrenceAddress anchor,
+    private Composer(Corpus corpus, OccurrenceAddress anchor,
                      Map<String, RootDomain> declaredDomains,
                      int maxValuations) {
         this.corpus = corpus;
@@ -335,7 +336,7 @@ public final class Composer {
 
     /** Composes the declared occurrence; a missing one is a claim, not a
      *  crash. */
-    public static Composition compose(CorpusIndex corpus,
+    public static Composition compose(Corpus corpus,
                                       OccurrenceAddress anchor,
                                       Map<String, RootDomain> declaredDomains,
                                       int maxValuations) {
@@ -395,13 +396,13 @@ public final class Composer {
 
         List<Disjunct> disjuncts = new ArrayList<Disjunct>();
         List<PathEntry> entries = new ArrayList<PathEntry>();
-        List<CorpusIndex.PathRecord> admitted = admit();
+        List<Corpus.RecordedPath> admitted = admit();
         int ordinal = 0;
-        for (CorpusIndex.PathRecord path : admitted) {
+        for (Corpus.RecordedPath path : admitted) {
             Disjunct disjunct = compose(path, ordinal);
             if (disjunct != null) {
                 disjuncts.add(disjunct);
-                entries.add(PathEntry.of(path.pathId(), path.sessionId(),
+                entries.add(PathEntry.of(path.pathId, path.sessionId,
                         disjunct.selector(), disjunct.fatalObserved()));
                 ordinal++;
             }
@@ -471,7 +472,7 @@ public final class Composer {
                 new ArrayList<Family>(families.values()),
                 new ArrayList<RootDomain>(roots.values()), valuations(),
                 gaps, clockCells, clockReadings, unattestedRoots,
-                observedReads, observedArrivals, corpus.seedSessionId());
+                observedReads, observedArrivals, seed());
     }
 
     // ------------------------------------------------------------------
@@ -486,10 +487,10 @@ public final class Composer {
      * admission gap about that session -- never a reason to elect a
      * different occurrence.</p>
      */
-    private List<CorpusIndex.PathRecord> admit() {
-        List<CorpusIndex.PathRecord> admitted =
-                new ArrayList<CorpusIndex.PathRecord>();
-        List<TargetRow> targets = corpus.targetsAt(anchor);
+    private List<Corpus.RecordedPath> admit() {
+        List<Corpus.RecordedPath> admitted =
+                new ArrayList<Corpus.RecordedPath>();
+        List<TargetRow> targets = corpus.targetsOn(anchor);
         if (targets.isEmpty()) {
             gap(GapKind.DECLARATION_MISSING, GapClass.BLOCKING,
                     anchor.render(), "no session of this corpus published a "
@@ -497,7 +498,7 @@ public final class Composer {
             return admitted;
         }
         for (TargetRow target : targets) {
-            CorpusIndex.PathRecord path = corpus.path(target.sessionId(),
+            Corpus.RecordedPath path = corpus.path(target.sessionId(),
                     anchor);
             if (!target.reachedAnchor()) {
                 gap(GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
@@ -520,17 +521,18 @@ public final class Composer {
     // One path.
     // ------------------------------------------------------------------
 
-    private Disjunct compose(CorpusIndex.PathRecord path, int ordinal) {
-        String session = path.sessionId();
+    private Disjunct compose(Corpus.RecordedPath path, int ordinal) {
+        String session = path.sessionId;
         TargetRow target = corpus.target(session, anchor);
         if (target == null) return null;
         String selector = "path_selector__" + ordinal + "__"
-                + ArtifactIO.digest(path.pathId(), 10);
+                + ArtifactIO.digest(path.pathId, 10);
         lowering.declare(selector, Sort.BOOL);
         // The rows of this path's session: a reader and the placeholder
         // that answers it are matched by the MINT VERSION, which is
         // session-unique, so the view needs no narrower scope.
-        SmtLowering.SessionJoin rows = corpus.joinOf(session);
+        SmtLowering.SessionJoin rows =
+                SmtLowering.joinOf(corpus.session(session));
         lowering.begin(session, rows, corpus.expressions(session));
 
         List<String> terms = new ArrayList<String>();
@@ -575,10 +577,10 @@ public final class Composer {
         // (4) pi_p, through the one routine that applies each decision's
         //     polarity: a published term is the site's PREDICATE, and which
         //     arm this run took is the row's outcome.
-        List<String> pi = Arms.pathCondition(path.decisions(),
+        List<String> pi = Arms.pathCondition(path.decisions,
                 Long.MAX_VALUE);
         for (int index = 0; index < pi.size(); index++) {
-            DecisionRow decision = path.decisions().get(index);
+            DecisionRow decision = path.decisions.get(index);
             String subject = "decision " + decision.siteId() + "#"
                     + decision.ordinal();
             // The published term names the session's EXPRESSIONS by
@@ -640,8 +642,8 @@ public final class Composer {
 
         lowering.assertNamed("path_fatal__" + ordinal,
                 "(=> " + selector + " " + VmTermLowering.and(terms) + ")");
-        observedReads.put(path.pathId(), observed);
-        observedArrivals.put(path.pathId(), arrivals(session));
+        observedReads.put(path.pathId, observed);
+        observedArrivals.put(path.pathId, arrivals(session));
         return new Disjunct(path, selector, target.observedFatal(),
                 interactionIds);
     }
@@ -724,7 +726,7 @@ public final class Composer {
                                       List<GapRow> refusals) {
         List<String> reads = new ArrayList<String>();
         Set<String> stated = new LinkedHashSet<String>();
-        for (AttachRow attach : corpus.attachesRead(session, anchor)) {
+        for (AttachRow attach : corpus.attachesOn(session, anchor)) {
             if (!stated.add(attach.symbol())) continue;
             Interaction interaction = attach.interaction();
             if (interaction != null) {
@@ -873,7 +875,7 @@ public final class Composer {
     private void statedReads(String session, List<GapRow> refusals,
                              Map<String, String> joins,
                              Set<String> answered) {
-        for (ReadRow read : corpus.readsAt(session, anchor)) {
+        for (ReadRow read : corpus.readsOn(session, anchor)) {
             if (read.symbol() == null || read.symbol().isEmpty()) continue;
             if (joins.containsKey(read.symbol())) continue;
             if (joinable(session, read)) continue;
@@ -920,7 +922,7 @@ public final class Composer {
     /** Whether this session's write log covers the version this read saw. */
     private boolean joinable(String session, ReadRow read) {
         return read.observedVersion() >= 0L
-                && corpus.write(session,
+                && corpus.writeOf(session,
                 SmtLowering.locationKey(read.location()),
                 read.observedVersion()) != null;
     }
@@ -932,11 +934,12 @@ public final class Composer {
                             Set<String> answered) {
         /** Name -> the one statement this path makes under it. */
         Map<String, String> statedOnce = new LinkedHashMap<String, String>();
-        for (ReadRow read : corpus.readsAt(session, anchor)) {
+        for (ReadRow read : corpus.readsOn(session, anchor)) {
             if (read.symbol() == null || read.symbol().isEmpty()) continue;
             String key = SmtLowering.locationKey(read.location());
             WriteRow write = read.observedVersion() < 0L ? null
-                    : corpus.write(session, key, read.observedVersion());
+                    : corpus.writeOf(session, key,
+                            read.observedVersion());
             if (write != null) {
                 JsonObject expression = corpus.session(session).expressions()
                         .expression(write.expressionRef());
@@ -1080,7 +1083,7 @@ public final class Composer {
     private List<String> arrivals(String session) {
         List<String> stated = new ArrayList<String>();
         Set<String> seen = new LinkedHashSet<String>();
-        for (AttachRow attach : corpus.attachesRead(session, anchor)) {
+        for (AttachRow attach : corpus.attachesOn(session, anchor)) {
             if (!seen.add(attach.symbol())) continue;
             String literal = JsonText.smtLiteral(JsonText.firstNonBlank(
                     attach.answeredValue(), attach.arrival()));
@@ -1096,9 +1099,9 @@ public final class Composer {
     // Families.
     // ------------------------------------------------------------------
 
-    private void closeFamilies(CorpusIndex.PathRecord path, int ordinal,
+    private void closeFamilies(Corpus.RecordedPath path, int ordinal,
                                String selector, Set<String> reached) {
-        for (AttachRow attach : corpus.attachesRead(path.sessionId(),
+        for (AttachRow attach : corpus.attachesOn(path.sessionId,
                 anchor)) {
             Interaction slot = attach.interaction();
             if (slot == null) continue;
@@ -1195,7 +1198,7 @@ public final class Composer {
     private List<String> prefix(Arms.Arm arm) {
         List<String> conjuncts = new ArrayList<String>();
         String session = arm.sessionId();
-        lowering.begin(session, corpus.joinOf(session),
+        lowering.begin(session, SmtLowering.joinOf(corpus.session(session)),
                 corpus.expressions(session));
         boolean stated = true;
         for (String term : arm.pi()) {
@@ -1308,11 +1311,11 @@ public final class Composer {
                         + "composition states about it"));
     }
 
-    private Set<String> stateFamilies(CorpusIndex.PathRecord path,
+    private Set<String> stateFamilies(Corpus.RecordedPath path,
                                       int ordinal, String selector,
                                       List<ReadRow> joined,
                                       Set<String> reached) {
-        String session = path.sessionId();
+        String session = path.sessionId;
         Set<String> chosen = new LinkedHashSet<String>();
         // One choice per (reader occurrence, location): a writer's writes to
         // it move as a BLOCK, and every read of that location inside this
@@ -1398,7 +1401,8 @@ public final class Composer {
                             + "its session's table does not hold");
             return null;
         }
-        lowering.begin(session, corpus.joinOf(session));
+        lowering.begin(session,
+                SmtLowering.joinOf(corpus.session(session)));
         Term value = lowering.term(expression, null, origin);
         List<String> refused = new ArrayList<String>(
                 lowering.openRefusals());
@@ -1496,7 +1500,7 @@ public final class Composer {
         RootDomain domain = domainOf(row);
         if (!domain.pinned()) return false;
         for (RootMintRow mint : corpus.roots().get(row.rootId())) {
-            if (corpus.readSymbol(mint.sessionId(), mint.symbol())) {
+            if (corpus.read(mint.sessionId(), mint.symbol()) != null) {
                 return true;
             }
         }
@@ -1529,8 +1533,22 @@ public final class Composer {
         }
     }
 
+    /**
+     * The session that recorded the run, or null when that has no answer.
+     *
+     * <p>One spelling for "no answer", and it is the contract's: the corpus
+     * answers {@code ""} to a caller that asks for a name to print, and
+     * every claim that turns on WHICH session is the recording asks this,
+     * because {@code ""} equals no session id and would silently read as
+     * "not the seed" instead of "the corpus does not say".</p>
+     */
+    private String seed() {
+        String stated = corpus.seedSessionId();
+        return stated == null || stated.isEmpty() ? null : stated;
+    }
+
     private RootMintRow seedRow(List<RootMintRow> rows) {
-        String seed = corpus.seedSessionId();
+        String seed = seed();
         if (seed != null) {
             for (RootMintRow row : rows) {
                 if (row.sessionId().equals(seed)) return row;

@@ -299,8 +299,19 @@ public final class SmtLowering extends VmLoweringCore {
         return lowering;
     }
 
-    /** One session's write log and read rows, as the state join reads them. */
-    private static SessionJoin joinOf(final SessionReader session) {
+    /**
+     * One session's write log and read rows, as the state join reads them.
+     *
+     * <p>One view per session and no scope inside it: the write log is the
+     * session's, because versions are session-local counters, and a mint
+     * version is unique in it by construction.  The composer asks for it by
+     * session too -- it used to build a second one off its own index of the
+     * same rows -- so there is one implementation of "what this session's
+     * rows are worth to a join", and a session nobody read answers nothing
+     * rather than throwing.</p>
+     */
+    public static SessionJoin joinOf(final SessionReader session) {
+        if (session == null) return NO_JOIN;
         final Map<String, String> writes = new LinkedHashMap<String, String>();
         for (edu.uva.liftlab.graphchecker.contract.WriteRow write
                 : session.writes()) {
