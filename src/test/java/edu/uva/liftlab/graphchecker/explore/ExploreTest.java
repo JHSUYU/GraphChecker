@@ -1,5 +1,6 @@
 package edu.uva.liftlab.graphchecker.explore;
 
+import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
@@ -33,6 +34,7 @@ import edu.uva.liftlab.graphchecker.contract.TargetRow;
 import edu.uva.liftlab.graphchecker.contract.Task;
 import edu.uva.liftlab.graphchecker.contract.Verdict;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
+import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 
 import org.junit.Assume;
 import org.junit.Rule;
@@ -45,6 +47,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -110,6 +113,10 @@ public class ExploreTest {
         // A CONCRETE branch beside it: no predicate, so nothing to flip.
         seed.decision(target, "Concrete#u3", 1, false, "");
         seed.flush();
+        // What the wave may flip in the anchor is the guard set of the
+        // annotated target, and nothing else (CLOSURE-V2 SS1/SS3).
+        scopeMap(iteration, targetSite("REGION.target", "Throw#u30",
+                "Guard#u8", "Guard#u19"));
 
         // M3c: the recorded symbols of a term are the ones REACHABLE from
         // it -- the tokens the text shows are only the first hop.  The one
@@ -279,6 +286,11 @@ public class ExploreTest {
         rotated.decision(producer, "After#u9", 1, true,
                 "(> M_SERIAL 1000000)");
         rotated.flush();
+        scopeMap(iteration,
+                targetSite("REGION.target", "Throw#u30", "Lookup#u8"),
+                scopeSite(StaticScopeMap.EXPORT_SITE, "REGION.rotate",
+                        "PBHelper#convert#9", "PBHelper#convert", "", "",
+                        "XCH.resp.block-key-id", "Rotate#u3"));
 
         Path out = tree.newFolder("family-out").toPath();
         Path results = out.resolve("obligation_results.jsonl");
@@ -286,12 +298,17 @@ public class ExploreTest {
         plan(iteration, TARGET_SELECTOR, null, results, wave0, 0);
         List<Obligation> proposed = obligations(wave0);
         // The producer ran symbolically in the rotated session, so it is a
-        // task of its own and its own decisions are flips too -- the NN
-        // rotation is explored as a worker, not as the consumer's companion.
+        // task of its own -- the NN rotation is explored as a worker, not as
+        // the consumer's companion.  What it may flip is the guard set of the
+        // EXPORT it is in the closure for: the rotation decision that decides
+        // the delivery, and not the decision it took AFTER putting the value
+        // on the wire, which no delivery can depend on (CLOSURE-V2 SS3).
         List<String> sites = new ArrayList<String>();
         for (Obligation obligation : proposed) sites.add(obligation.siteId());
-        assertTrue("the rotation's own decisions are obligations: " + sites,
-                sites.contains("Rotate#u3") && sites.contains("After#u9"));
+        assertTrue("the export's own guard is an obligation: " + sites,
+                sites.contains("Rotate#u3"));
+        assertFalse("a decision after the export is no guard of it: " + sites,
+                sites.contains("After#u9"));
         Obligation consumerFlip = named(proposed, "Lookup#u8");
         assertNotNull("the consumer's own flip is proposed", consumerFlip);
         Worker worker = solve(iteration, wave0, consumerFlip, out, "w0");
@@ -311,6 +328,8 @@ public class ExploreTest {
         lone.attach(attached, "M_HOFF_KEY", "119992", exported);
         lone.decision(target, "Lookup#u8", 1, false, "(= M_HOFF_KEY 7)");
         lone.flush();
+        scopeMap(other, targetSite("REGION.target", "Throw#u30",
+                "Lookup#u8"));
         Path unsatOut = tree.newFolder("family-unsat-out").toPath();
         Path unsatWave = unsatOut.resolve("obligations-0000");
         plan(other, TARGET_SELECTOR, null,
@@ -335,6 +354,8 @@ public class ExploreTest {
         seed.attach(attached, "M_HOFF_REQ", "119992", null);
         seed.decision(target, "Lookup#u8", 1, false, "(= M_HOFF_REQ 5)");
         seed.flush();
+        scopeMap(iteration, targetSite("REGION.target", "Throw#u30",
+                "Lookup#u8"));
 
         Path out = tree.newFolder("unproducible-out").toPath();
         Path wave0 = out.resolve("obligations-0000");
@@ -368,6 +389,8 @@ public class ExploreTest {
                 null, null, false);
         seed.decision(target, "Arrival#u8", 1, false, "(> M_SERIAL 10)");
         seed.flush();
+        scopeMap(pinned, targetSite("REGION.target", "Throw#u30",
+                "Arrival#u8"));
         Path pinnedOut = tree.newFolder("pinned-out").toPath();
         Path pinnedWave = pinnedOut.resolve("obligations-0000");
         plan(pinned, TARGET_SELECTOR, null,
@@ -385,6 +408,8 @@ public class ExploreTest {
                 null, null, true);
         open.decision(target, "Arrival#u8", 1, false, "(> M_SERIAL 10)");
         open.flush();
+        scopeMap(declared, targetSite("REGION.target", "Throw#u30",
+                "Arrival#u8"));
         Path domains = declared.resolve("root-domains.jsonl");
         RowCodec.writeAll(domains, Collections.singletonList(RootDomain.of(
                         "CASE.SERIAL", RootKind.INTEGRAL, "7", "+4", "+5")),
@@ -445,9 +470,17 @@ public class ExploreTest {
         seed.target(target, "BlockTokenSecretManager"
                 + "#retrieveDataEncryptionKey#8", "(= M_READ_KEY 0)");
         seed.flush();
+        Path mapFile = scopeMap(iteration,
+                targetSite("REGION.target", "BlockTokenSecretManager#u120"),
+                scopeSite(StaticScopeMap.WRITE_SITE, "REGION.addkeys",
+                        "BlockTokenSecretManager#u12",
+                        "BlockTokenSecretManager#addKeys",
+                        "<example.Keys: int value>",
+                        "<example.Manager: example.Keys allKeys>", ""));
+        StaticScopeMap map = StaticScopeMap.read(mapFile);
 
         Corpus corpus = Corpus.read(iteration, null);
-        ClosurePlanner.Plan plan = ClosurePlanner.plan(corpus, target);
+        ClosurePlanner.Plan plan = ClosurePlanner.plan(corpus, target, map);
         List<String> focused = new ArrayList<String>();
         for (Task task : plan.tasks) focused.add(task.focused().render());
         assertTrue("the writer of the version the anchor read is in the "
@@ -501,7 +534,7 @@ public class ExploreTest {
                 "(= M_READ_KEY 0)");
         other.flush();
         ClosurePlanner.Plan divergent = ClosurePlanner.plan(
-                Corpus.read(split, null), confused);
+                Corpus.read(split, null), confused, map);
         List<String> divergentFocused = new ArrayList<String>();
         for (Task task : divergent.tasks) {
             divergentFocused.add(task.focused().render());
@@ -731,7 +764,7 @@ public class ExploreTest {
                 "(= M_READ_KEY 0)");
         partialRun.flush();
         ClosurePlanner.Plan withGhost = ClosurePlanner.plan(
-                Corpus.read(unrun, null), target);
+                Corpus.read(unrun, null), target, map);
         for (Task task : withGhost.tasks) {
             assertFalse("an occurrence no session ran is not a task",
                     task.focused().id().equals(ghost.id()));
@@ -770,7 +803,7 @@ public class ExploreTest {
                 "(not EXPR.0000000000000002)");
         stated.flush();
         ClosurePlanner.Plan lowered = ClosurePlanner.plan(
-                Corpus.read(viaRef, null), target);
+                Corpus.read(viaRef, null), target, map);
         for (GapRow gap : lowered.gaps) {
             assertFalse("the anchor's own read is what its phi rests on: "
                             + gap.detail(),
@@ -780,95 +813,139 @@ public class ExploreTest {
 
         theClosureHasOneRoot(iteration, writer);
 
-        // The static graph decides only what to TRACK -- carriers,
-        // occurrences to replay, BRANCHES TO FLIP -- so a decision resting on
-        // a DECLARED root is a flip candidate wherever in G_S^W it sits, and
-        // no row has to place it in the anchor's closure first.  On 17960 no
-        // row ever could: the seed runs the marker's true arm, where
-        // deleteSnapshot defers and the counter decrement never executes, so
-        // the anchor's dependence on the deletion region exists only on the
-        // arm the flip creates.
-        Path aside = tree.newFolder("closure-root-dependent").toPath();
+        // CLOSURE-V2 SS2: the closure grows by the STATIC write sites of the
+        // locations it demands, and not only by the writers some row paired.
+        // On 17960 the seed runs the marker's true arm, where deleteSnapshot
+        // defers and the counter decrement never executes, so NO row of any
+        // session can put the deletion region in the anchor's closure -- and
+        // that region's marker branch is the flip the wave exists to ask for.
+        // What the map states is the site (region, method#unit, the cell it
+        // stores into) and its guard set; which occurrences ran it is the
+        // recording's to say.
+        Path aside = tree.newFolder("closure-static-writer").toPath();
         OccurrenceAddress deferring = occurrence("hdfs-case/dn0",
                 "REGION.deferring", CausalContext.of(Role.CLIENT, 1),
                 "o.a.h.h.s.n.SnapshotManager#deleteSnapshot#7");
         OccurrenceAddress undeclared = occurrence("hdfs-case/dn0",
                 "REGION.undeclared", CausalContext.of(Role.CLIENT, 2),
                 "o.a.h.h.s.n.SnapshotManager#renameSnapshot#7");
+        LocationId counter = LocationId.allocated(at(writer,
+                        Endpoint.allocationSite("SnapshotManager", "<init>",
+                                4, false), "SnapshotManager#<init>#4"),
+                LocationKind.INSTANCE, "24");
         Session apart = new Session(aside, "s-seed");
         apart.activation(target, false);
+        apart.activation(writer, false);
         apart.activation(deferring, false);
         apart.activation(undeclared, false);
-        // An occurrence that decided nothing is not a task: the rows, not the
-        // graph, say what a declared root's value decides.
-        OccurrenceAddress silent = occurrence("hdfs-case/dn0",
-                "REGION.silent", CausalContext.of(Role.CLIENT, 3),
-                "o.a.h.h.s.n.SnapshotManager#deleteSnapshot#9");
-        apart.activation(silent, false);
+        apart.symbolic("e.count", "M_COUNT_IN");
+        apart.symbolic("EXPR.0000000000000003", "M_MARKER", "Z");
+        apart.symbolic("EXPR.0000000000000004", "M_READ_COUNT");
         apart.root(deferring, "CASE.MARKER", "M_MARKER", RootKind.MARKER,
                 "true", null, null, true);
-        apart.root(undeclared, "CASE.UNDECLARED", "M_UNDECLARED",
-                RootKind.MARKER, "true", null, null, false);
-        apart.symbolic("EXPR.0000000000000003", "M_MARKER", "Z");
+        // The increment the seed DID run, and the anchor's read of it.
+        apart.write(at(writer, Endpoint.stateSite("SnapshotManager",
+                        "createSnapshot", 621, true),
+                        "SnapshotManager#createSnapshot#621"), counter, 61L,
+                "e.count");
+        apart.read(at(target, Endpoint.stateSite("SnapshotManager",
+                        "getNumSnapshots", 2, false),
+                        "SnapshotManager#getNumSnapshots#2"), counter, 61L,
+                "M_READ_COUNT", "2");
+        apart.target(target, "SnapshotManager#getNumSnapshots#2",
+                "(not EXPR.0000000000000004)");
+        apart.decision(target, "Section#u61", 1, true,
+                "EXPR.0000000000000004");
+        // The deletion region decided the marker and wrote NOTHING.
         apart.decision(deferring, "SnapshotManager#u7", 1, false,
                 "EXPR.0000000000000003");
+        // A second symbolic decision of that same occurrence, at a site no
+        // guard set names: it decides nothing about the write.
+        apart.decision(deferring, "SnapshotManager#u90", 1, false,
+                "M_ELSEWHERE");
+        // And an occurrence the closure does not hold at all.
         apart.decision(undeclared, "SnapshotManager#u7", 1, false,
                 "M_UNDECLARED");
-        apart.target(target, "BlockTokenSecretManager#get#3",
-                "(= M_READ_KEY 0)");
         apart.flush();
-        Path asideWave = tree.newFolder("closure-root-dependent-wave")
+        scopeMap(aside,
+                targetSite("REGION.target", "SnapshotManager#u64",
+                        "Section#u61"),
+                scopeSite(StaticScopeMap.WRITE_SITE, "REGION.addkeys",
+                        "SnapshotManager#u27",
+                        "SnapshotManager#createSnapshot",
+                        "<java.util.concurrent.atomic.AtomicInteger: int"
+                                + " value>",
+                        "<SnapshotManager: AtomicInteger numSnapshots>", "",
+                        "SnapshotManager#u9"),
+                scopeSite(StaticScopeMap.WRITE_SITE, "REGION.deferring",
+                        "SnapshotManager#u35",
+                        "SnapshotManager#deleteSnapshot",
+                        "<java.util.concurrent.atomic.AtomicInteger: int"
+                                + " value>",
+                        "<SnapshotManager: AtomicInteger numSnapshots>", "",
+                        "SnapshotManager#u7"),
+                // A region of the program that no session of this corpus ran.
+                scopeSite(StaticScopeMap.WRITE_SITE, "REGION.neverran",
+                        "SnapshotManager#u3",
+                        "SnapshotManager#setNumSnapshots",
+                        "<java.util.concurrent.atomic.AtomicInteger: int"
+                                + " value>",
+                        "<SnapshotManager: AtomicInteger numSnapshots>", ""));
+        Path asideWave = tree.newFolder("closure-static-writer-wave")
                 .toPath();
-        JsonObject beside = ExploreMain.plan(aside, TARGET_SELECTOR, null,
-                aside.resolve("results.jsonl"), asideWave, 0, "epoch0",
-                ClosurePlanner.DEFAULT_MAX_TASKS,
-                ObligationFactory.Bounds.defaults());
+        JsonObject beside = plan(aside, TARGET_SELECTOR, null,
+                aside.resolve("results.jsonl"), asideWave, 0);
         Map<String, String> whyTask = new LinkedHashMap<String, String>();
         for (JsonElement element : beside.getAsJsonArray("taskRows")) {
-            JsonObject row = element.getAsJsonObject();
-            whyTask.put(row.get("focused").getAsString(),
-                    row.get("why").getAsString());
+            JsonObject taskRow = element.getAsJsonObject();
+            whyTask.put(taskRow.get("focused").getAsString(),
+                    taskRow.get("why").getAsString());
         }
         assertEquals("the anchor is a closure member",
-                "CLOSURE_MEMBER", whyTask.get(target.render()));
-        assertEquals("and the deferring region is a task on its decision, "
-                        + "with the manifest saying which: " + whyTask,
-                ExploreMain.SYMBOLIC_DECISION,
+                ClosurePlanner.CLOSURE_MEMBER, whyTask.get(target.render()));
+        assertEquals("the writer the rows paired is one too",
+                ClosurePlanner.CLOSURE_MEMBER, whyTask.get(writer.render()));
+        assertEquals("and the region that COULD have written the location is "
+                        + "in the closure through the static map, with the "
+                        + "manifest saying which: " + whyTask,
+                ClosurePlanner.STATIC_CANDIDATE_WRITER,
                 whyTask.get(deferring.render()));
-        // Owner's ruling: a branch that carries a SYMBOL is a flip target.
-        // Whether the flip is producible is the solver's verdict, not a
-        // pre-filter, so a decision over a root the case did not declare is
-        // a task too -- and refused by name below rather than never asked.
-        assertEquals("a decision over an undeclared symbol is a task: "
-                        + whyTask, ExploreMain.SYMBOLIC_DECISION,
-                whyTask.get(undeclared.render()));
-        assertFalse("an occurrence that decided nothing is not: " + whyTask,
-                whyTask.containsKey(silent.render()));
-        // It is a task, not a closure member: it opens no slot, so the
-        // skeleton still counts its interactions as outside the closure.
+        assertFalse("an occurrence no demanded value reaches is not a task: "
+                + whyTask, whyTask.containsKey(undeclared.render()));
+        // A candidate region no session ran is NAMED and is not a task:
+        // there is no run to focus (INTERACTION-ID SS8 case 2).
+        boolean grow = false;
+        for (GapRow gap : RowCodec.readAll(asideWave.resolve("gaps.jsonl"),
+                RowCodec::readGap)) {
+            grow |= gap.kind() == GapKind.ADMISSION_GAP
+                    && gap.cls() == GapClass.DIAGNOSTIC
+                    && gap.subject().equals("REGION.neverran")
+                    && gap.detail().contains("retained set would have to "
+                            + "grow");
+        }
+        assertTrue("the unrun candidate region is named", grow);
+
         List<Obligation> beyond = obligations(asideWave);
-        assertEquals("one flip per symbolic decision: " + beyond, 2,
-                beyond.size());
+        List<String> flips = new ArrayList<String>();
         for (Obligation flip : beyond) {
-            assertEquals("SnapshotManager#u7", flip.siteId());
-            assertTrue(flip.flippedOutcome());
+            flips.add(flip.siteId());
             assertTrue("a wave proposes no model: the worker solves it",
                     flip.rootAssignments().isEmpty());
         }
-        // And the one over the undeclared symbol is refused where the design
-        // says it is refused: by the solver, naming it, never as a model that
-        // answers with a value the chain does not reach (HANDOVER SS1.5).
-        if (z3Available()) {
-            Path asideOut = tree.newFolder("closure-root-dependent-out")
-                    .toPath();
-            String pinned = ClosurePlanner.taskId(undeclared);
-            for (Obligation flip : beyond) {
-                if (!flip.taskId().equals(pinned)) continue;
-                Worker refused = solve(aside, asideWave, flip, asideOut, "wu");
-                assertEquals("a flip over a symbol nothing binds is refused "
-                                + "by the solver, not by a pre-filter",
-                        Verdict.NOT_ADMITTED, refused.verdict);
-            }
+        assertEquals("the target's guard and the deletion region's own guard "
+                        + "of the write, and nothing else: " + flips,
+                Arrays.asList("Section#u61", "SnapshotManager#u7"), flips);
+        assertEquals("one flip from the anchor, one from the writer the seed "
+                        + "never ran", 1,
+                obligationsOf(beyond, ClosurePlanner.taskId(deferring))
+                        .size());
+        for (Obligation flip : beyond) {
+            assertFalse("a symbolic decision at a site no guard set names is "
+                            + "not a candidate: " + flips,
+                    "SnapshotManager#u90".equals(flip.siteId()));
+            assertFalse("and neither is one of an occurrence outside the "
+                            + "closure: " + flips,
+                    ClosurePlanner.taskId(undeclared).equals(flip.taskId()));
         }
 
         // Two reads of ONE location at one endpoint id that observed
@@ -939,7 +1016,8 @@ public class ExploreTest {
             throws IOException {
         Path waveDir = tree.newFolder("roots-wave").toPath();
         JsonObject manifest = ExploreMain.plan(iteration, TARGET_SELECTOR,
-                null, iteration.resolve("results.jsonl"), waveDir, 0,
+                null, iteration.resolve("results.jsonl"),
+                iteration.resolve(StaticScopeMap.FILE), waveDir, 0,
                 "epoch0", ClosurePlanner.DEFAULT_MAX_TASKS,
                 ObligationFactory.Bounds.defaults());
         List<String> anchors = new ArrayList<String>();
@@ -964,8 +1042,9 @@ public class ExploreTest {
         only.flush();
         Path absentWave = tree.newFolder("roots-absent-wave").toPath();
         ExploreMain.plan(elsewhere, TARGET.render(), null,
-                elsewhere.resolve("results.jsonl"), absentWave, 0, "epoch0",
-                ClosurePlanner.DEFAULT_MAX_TASKS,
+                elsewhere.resolve("results.jsonl"),
+                elsewhere.resolve(StaticScopeMap.FILE), absentWave, 0,
+                "epoch0", ClosurePlanner.DEFAULT_MAX_TASKS,
                 ObligationFactory.Bounds.defaults());
         boolean named = false;
         for (GapRow gap : RowCodec.readAll(absentWave.resolve("gaps.jsonl"),
@@ -980,13 +1059,66 @@ public class ExploreTest {
 
     // ---- driving the stage the way the campaign drives it -------------
 
-    /** One wave, planned from the case's own selector as the stage does. */
+    /**
+     * One wave, planned from the case's own selector as the stage does, over
+     * the static map the epoch published beside its sessions.
+     */
     private JsonObject plan(Path iteration, String selector, Path domains,
                             Path results, Path waveDir, int wave)
             throws IOException {
         return ExploreMain.plan(iteration, selector, domains, results,
-                waveDir, wave, "epoch0", ClosurePlanner.DEFAULT_MAX_TASKS,
+                iteration.resolve(StaticScopeMap.FILE), waveDir, wave,
+                "epoch0", ClosurePlanner.DEFAULT_MAX_TASKS,
                 ObligationFactory.Bounds.defaults());
+    }
+
+    /**
+     * The epoch's static scope map, as PLAN publishes it (CLOSURE-V2 SS4).
+     *
+     * <p>Written as the artifact's own text, so what these cases exercise is
+     * the published shape and not a builder's idea of it.</p>
+     */
+    private Path scopeMap(Path iteration, String... sites)
+            throws IOException {
+        List<String> lines = new ArrayList<String>();
+        JsonObject schema = new JsonObject();
+        schema.addProperty("schemaVersion", 1);
+        schema.addProperty("kind", StaticScopeMap.KIND);
+        lines.add(schema.toString());
+        lines.addAll(Arrays.asList(sites));
+        Path file = iteration.resolve(StaticScopeMap.FILE);
+        Files.write(file, (String.join(System.lineSeparator(), lines)
+                + System.lineSeparator()).getBytes("UTF-8"));
+        return file;
+    }
+
+    /** One site row of that map, in the artifact's one shape. */
+    private static String scopeSite(String role, String regionId,
+                                    String siteId, String vmSite,
+                                    String cell, String carrier,
+                                    String portId, String... guards) {
+        JsonObject row = new JsonObject();
+        row.addProperty("schemaVersion", 1);
+        row.addProperty("kind", StaticScopeMap.SITE_KIND);
+        row.addProperty("role", role);
+        row.addProperty("regionId", regionId);
+        row.addProperty("siteId", siteId);
+        row.addProperty("vmSite", vmSite);
+        row.addProperty("cell", cell);
+        row.addProperty("carrier", carrier);
+        row.addProperty("portId", portId);
+        row.addProperty("declaredCallee", "");
+        JsonArray stated = new JsonArray();
+        for (String guard : guards) stated.add(guard);
+        row.add("guards", stated);
+        return row.toString();
+    }
+
+    /** The annotated target and the branches it is control-dependent on. */
+    private static String targetSite(String regionId, String siteId,
+                                     String... guards) {
+        return scopeSite(StaticScopeMap.TARGET_SITE, regionId, siteId, "",
+                "", "", "", guards);
     }
 
     /**
@@ -1011,6 +1143,8 @@ public class ExploreTest {
                 recorded, null, null, true);
         seed.decision(TARGET, "Guard#u8", 1, outcome, term);
         seed.flush();
+        scopeMap(iteration, targetSite("REGION.target", "Throw#u30",
+                "Guard#u8"));
         Path out = tree.newFolder(name + "-out").toPath();
         Path results = out.resolve("obligation_results.jsonl");
         Files.write(results, new byte[0]);
@@ -1094,6 +1228,16 @@ public class ExploreTest {
             throws IOException {
         return RowCodec.readAll(waveDir.resolve("obligations.jsonl"),
                 ExploreCodec::readObligation);
+    }
+
+    /** The obligations one task offered, for a per-task count. */
+    private static List<Obligation> obligationsOf(
+            List<Obligation> obligations, String taskId) {
+        List<Obligation> found = new ArrayList<Obligation>();
+        for (Obligation obligation : obligations) {
+            if (obligation.taskId().equals(taskId)) found.add(obligation);
+        }
+        return found;
     }
 
     private static Obligation named(List<Obligation> obligations,

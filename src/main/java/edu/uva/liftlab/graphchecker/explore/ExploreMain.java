@@ -12,6 +12,7 @@ import edu.uva.liftlab.graphchecker.contract.GapRow;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.RowCodec;
 import edu.uva.liftlab.graphchecker.plan.SelectorResolution;
+import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;
 import edu.uva.liftlab.graphchecker.contract.Selector;
 import edu.uva.liftlab.graphchecker.contract.Task;
@@ -39,6 +40,10 @@ import java.util.Set;
  *   --results &lt;file&gt;           every ObligationResult the waves before this
  *                              one recorded; a query answered there is never
  *                              proposed again
+ *   --static-scope-map &lt;file&gt;  the epoch's plan artifact: the write sites of
+ *                              the locations the slice names, the export
+ *                              sites of its ports, and the guard set of each
+ *                              (CLOSURE-V2 SS4)
  *   --root-domains &lt;file&gt;      what the CASE says each root may be
  *   --wave &lt;n&gt;                 which wave this is
  *   --topology-epoch &lt;id&gt;      the epoch these sessions belong to
@@ -56,11 +61,6 @@ import java.util.Set;
  * ({@link ObligationSolverMain}).</p>
  */
 public final class ExploreMain {
-    /** A task the anchor's closure holds: it opens slots and joins families. */
-    static final String CLOSURE_MEMBER = "CLOSURE_MEMBER";
-    /** A task because it decided something over a SYMBOL. */
-    static final String SYMBOLIC_DECISION = "SYMBOLIC_DECISION";
-
     private ExploreMain() {
     }
 
@@ -86,8 +86,21 @@ public final class ExploreMain {
                     + "pass --target-occurrence. A case declares ONE anchor "
                     + "(HANDOVER SS1.6) and the closure is that anchor's");
         }
+        // Fail-closed: without the map the closure is the rows' alone, and
+        // on 17960 the rows alone never reach the region whose write the
+        // anchor's failure depends on (CLOSURE-V2 SS2).  A campaign that
+        // cannot say where its static map is has not planned this epoch.
+        Path scopeMap = path(options, "static-scope-map");
+        if (scopeMap == null) {
+            throw new IllegalArgumentException("the closure has no static "
+                    + "map: pass --static-scope-map. PLAN publishes "
+                    + StaticScopeMap.FILE + " per epoch, and the closure "
+                    + "needs it to name the writers a replay has not run "
+                    + "(CLOSURE-V2 SS2)");
+        }
         JsonObject manifest = plan(iteration, declaredAnchor,
-                path(options, "root-domains"), path(options, "results"), out,
+                path(options, "root-domains"), path(options, "results"),
+                scopeMap, out,
                 (int) number(options, "wave", 0),
                 value(options, "topology-epoch", ""),
                 (int) number(options, "max-tasks",
@@ -110,43 +123,34 @@ public final class ExploreMain {
      *                       identity and nothing downstream may see one.
      */
     public static JsonObject plan(Path iteration, String declaredAnchor,
-                                  Path rootDomains, Path results, Path out,
+                                  Path rootDomains, Path results,
+                                  Path scopeMap, Path out,
                                   int wave, String topologyEpoch,
                                   int maxTasks,
                                   ObligationFactory.Bounds bounds)
             throws IOException {
         Corpus corpus = Corpus.read(iteration, rootDomains);
+        StaticScopeMap scope = StaticScopeMap.read(scopeMap);
         List<GapRow> gaps = new ArrayList<GapRow>();
         List<OccurrenceAddress> roots = resolve(corpus, declaredAnchor, gaps);
         List<Task> tasks = new ArrayList<Task>();
         Map<String, String> why = new LinkedHashMap<String, String>();
+        Map<String, Set<String>> flipSites =
+                new LinkedHashMap<String, Set<String>>();
         Set<String> opened = new LinkedHashSet<String>();
         for (OccurrenceAddress root : roots) {
             ClosurePlanner.Plan plan = ClosurePlanner.plan(corpus, root,
-                    maxTasks);
+                    maxTasks, scope);
             gaps.addAll(plan.gaps);
             for (Task task : plan.tasks) {
                 if (!opened.add(task.taskId())) continue;
                 tasks.add(task);
-                why.put(task.taskId(), CLOSURE_MEMBER);
+                why.put(task.taskId(), plan.why.get(task.taskId()));
+                flipSites.put(task.taskId(),
+                        plan.flipSites.get(task.taskId()));
             }
         }
-        // The closure's own members, and nothing about slots or families,
-        // come from the rows.  A decision that rests on a DECLARED root is a
-        // flip candidate by definition -- the static graph's only job is to
-        // decide what to track, branches to flip included -- and on 17960 no
-        // row of the seed could ever put the deletion region in the anchor's
-        // closure: the seed runs the marker's true arm, where deleteSnapshot
-        // defers and the decrement never executes.  So those occurrences are
-        // tasks too, and stay OUTSIDE the closure until their own rows
-        // connect them (INTERACTION-ID SS8 case 1, which the next wave's
-        // recomputation does by itself).
         Set<String> closure = closureOf(tasks);
-        for (Task task : ClosurePlanner.symbolicDecision(corpus, opened)) {
-            if (!opened.add(task.taskId())) continue;
-            tasks.add(task);
-            why.put(task.taskId(), SYMBOLIC_DECISION);
-        }
         // The epoch's skeleton, reconciled against everything the replays
         // have said so far.  It is taken AFTER the closure is planned,
         // because a slot is opened only for an interaction whose consumer is
@@ -165,7 +169,8 @@ public final class ExploreMain {
                 new ArrayList<ObligationFactory.Candidate>();
         for (Task task : tasks) {
             candidates.addAll(ObligationFactory.candidates(corpus, task,
-                    bounds, frontier::asked, gaps));
+                    flipSites.get(task.taskId()), bounds, frontier::asked,
+                    gaps));
         }
         Frontier.Wave open = skeleton.replaced
                 ? frontier.open(wave,
