@@ -6,7 +6,6 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.d3.plan.LoopBoundPolicy;
-import edu.uva.liftlab.graphchecker.contract.OccurrenceId;
 
 import java.util.ArrayList;
 import java.util.Collection;
@@ -69,8 +68,7 @@ public final class BoundedLoopComposition {
      * way; bound authorities and observed cases arrive as activations of it.
      */
     private static String planned(JsonObject row) {
-        return OccurrenceId.parse(optionalString(row, "occurrenceId"))
-                .planned();
+        return optionalString(row, "occurrenceId");
     }
 
     /** Reads one declaration per {@code (occurrenceId, loopSiteId)}. */
@@ -234,7 +232,7 @@ public final class BoundedLoopComposition {
 
     /** Adds one complete region-path count vector to the audit model. */
     public void observeCase(String occurrenceId, JsonObject item) {
-        String occurrence = OccurrenceId.parse(occurrenceId).planned();
+        String occurrence = occurrenceId;
         Set<String> matched = new LinkedHashSet<>();
         Map<String, JsonObject> observed = new LinkedHashMap<>();
         Set<String> duplicates = new LinkedHashSet<>();

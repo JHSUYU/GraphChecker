@@ -47,17 +47,12 @@ public class OccurrenceAddressTest {
         assertTrue("so the two spellings are one occurrence",
                 address(withFamily).matches(address(PLANNED)));
 
-        // The same grammar read as an occurrence id: the activation splits
-        // off the address, and one can be put back on.
+        // An id carrying the suffix still reads back as the address it
+        // names: nothing mints one any more -- identity v3 tells two runs of
+        // an address apart by the execution index they entered under -- and
+        // a corpus written while something did is read, not refused.
         String occurrence = "hdfs-17960/nn0#epoch1/region/REGION.3cdc7049#1";
-        assertEquals(occurrence, OccurrenceId.parse(occurrence + "#a7")
-                .planned());
-        assertEquals(occurrence + "#a7",
-                OccurrenceId.parse(occurrence + "#a7").render());
-        assertEquals(occurrence + "#a1", OccurrenceId.parse(occurrence + "#a3")
-                .withActivation(1).render());
-        assertEquals(occurrence + "#a12", OccurrenceId.parse(occurrence)
-                .withActivation(12).render());
+        assertEquals(occurrence, address(occurrence + "#a7").render());
 
         // A source that names no epoch is still a node.
         OccurrenceAddress plain = OccurrenceAddress.of("dn0", "REGION.1", 1);

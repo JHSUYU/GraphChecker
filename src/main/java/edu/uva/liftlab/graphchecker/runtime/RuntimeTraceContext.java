@@ -1,6 +1,8 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
 import edu.uva.liftlab.graphchecker.causynth.MapFields;
+import edu.uva.liftlab.graphchecker.d3.contract.Role;
+import edu.uva.liftlab.graphchecker.runtime.d3.Lineage;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -124,7 +126,14 @@ final class RuntimeTraceContext {
         String requestKey = source.key() + "/request/" + normalizedApi
                 + "#" + requestOccurrence;
         Frame activeFrame = state.frames.peek();
-        state.scopes.push(new ScopeFrame(requestId, state, activeFrame));
+        ScopeFrame scope = new ScopeFrame(requestId, state, activeFrame);
+        // The workload's own action is the root of this lineage: every
+        // activation under it states which action it descends from, and
+        // which k-th one, instead of only which request key was in force.
+        scope.lineageToken = Lineage.push(source.key(), Role.CLIENT,
+                normalizedApi);
+        edu.uva.liftlab.graphchecker.runtime.d3.Identity.scopeStart();
+        state.scopes.push(scope);
         state.source = source;
         state.requestKey = requestKey;
         state.requestApi = normalizedApi;
@@ -173,11 +182,16 @@ final class RuntimeTraceContext {
         if (carrier == null) return;
         State state = CURRENT.get();
         View view = state.view();
+        // The lineage travels with the work, exactly as the request scope
+        // does: a pool thread created before the scope existed inherits
+        // neither, and both are facts about the work rather than the thread.
+        Object lineage = Lineage.capture(
+                view.source == null ? "" : view.source.key());
         synchronized (LOCK) {
             ASYNC_SEEDS.put(carrier, new Seed(view.spanId,
                     view.source, view.requestKey, view.requestApi,
                     view.exchangeTransport, view.exchangeCorrelationId,
-                    view.exchangeAttemptId, view.exchangeHalf));
+                    view.exchangeAttemptId, view.exchangeHalf, lineage));
         }
     }
 
@@ -213,6 +227,14 @@ final class RuntimeTraceContext {
                 state.requestKey, state.requestApi,
                 state.exchangeTransport, state.exchangeCorrelationId,
                 state.exchangeAttemptId, state.exchangeHalf);
+        if (seed != null) {
+            // The work was created inside a scope and is running on a
+            // thread that may never have been in one: the carried lineage
+            // is installed here, with the task itself as its own hop.
+            frame.lineageToken = Lineage.restore(seed.lineage,
+                    source == null ? "" : source.key(), Role.EXECUTOR_TASK,
+                    "");
+        }
         state.source = source;
         state.requestKey = requestKey;
         state.requestApi = requestApi;
@@ -232,6 +254,7 @@ final class RuntimeTraceContext {
         Frame frame = state.frames.peek();
         if (frame == null || frame.spanId != spanId) return;
         state.frames.pop();
+        if (frame.lineageToken > 0L) Lineage.release(frame.lineageToken);
         state.source = frame.previousSource;
         state.requestKey = frame.previousRequestKey;
         state.requestApi = frame.previousRequestApi;
@@ -266,7 +289,79 @@ final class RuntimeTraceContext {
     static Object captureScope() {
         View view = CURRENT.get().view();
         return new RequestScope(view.source, view.requestKey,
-                view.requestApi);
+                view.requestApi, Lineage.capture(
+                        view.source == null ? "" : view.source.key()));
+    }
+
+    /**
+     * Enters a scope captured where the work was created.
+     *
+     * <p>The dequeue half of a queue that outlives its enqueueing thread.
+     * Hadoop's IPC {@code Server.Call} is built on a reader thread and run
+     * on a handler thread of a pool created once at connection setup: an
+     * {@link InheritableThreadLocal} reaches a handler only if the handler
+     * happened to be created inside a scope, which is why on hdfs-17899
+     * bug3 two handlers of one pool carried the caller's scope and a third
+     * did not, varying run to run.  Carried at enqueue and restored here,
+     * the scope is the same in a recording and in a replay whatever the
+     * pool does.</p>
+     *
+     * @return the token that leaves the scope again, or 0 when the carried
+     *         value names none and nothing was entered
+     */
+    static long enterCarriedScope(Object carriedScope, String roleName,
+                                  String apiName) {
+        if (!(carriedScope instanceof RequestScope)) return 0L;
+        RequestScope scope = (RequestScope) carriedScope;
+        if (!scope.names()) return 0L;
+        State state = CURRENT.get();
+        Frame activeFrame = state.frames.peek();
+        long token = nextId();
+        ScopeFrame frame = new ScopeFrame(token, state, activeFrame);
+        state.scopes.push(frame);
+        state.source = scope.source;
+        state.requestKey = scope.requestKey;
+        state.requestApi = scope.requestApi;
+        if (activeFrame != null) activeFrame.source = scope.source;
+        String api = MapFields.safe(apiName).isEmpty()
+                ? scope.requestApi : MapFields.safe(apiName);
+        frame.lineageToken = Lineage.restore(scope.lineage,
+                scope.source.key(), Lineage.roleOf(roleName), api);
+        edu.uva.liftlab.graphchecker.runtime.d3.Identity.scopeStart();
+        publishCausalSource(state);
+        return token;
+    }
+
+    /** Leaves the scope {@link #enterCarriedScope} entered. */
+    static void exitCarriedScope(long token) {
+        if (token > 0L) restoreScope(token);
+    }
+
+    /**
+     * Opens one daemon tick as a lineage root.
+     *
+     * <p>A timer thread is created by no request and serves none, so it has
+     * no scope to repair: {@code HeartbeatManager$Monitor}, {@code
+     * BPServiceActor} and the key-manager updater measured 0% scoped on
+     * every run.  The tick is its own root -- role plus a window-local k --
+     * which is what makes the NameNode's key rotation an addressable
+     * occurrence instead of a family-less one (REPORT-NNCHAIN §5).  It
+     * touches no request scope: v1 addresses are exactly what they were.</p>
+     *
+     * @return the token that closes the tick
+     */
+    static long beginTick(Object owner, String roleName) {
+        State state = CURRENT.get();
+        SourceRef source = sourceFor(owner);
+        if (source == null) source = state.view().source;
+        edu.uva.liftlab.graphchecker.runtime.d3.Identity.scopeStart();
+        return Lineage.push(source == null ? "" : source.key(),
+                Lineage.roleOf(roleName), "");
+    }
+
+    /** Closes the tick {@link #beginTick} opened. */
+    static void endTick(long token) {
+        Lineage.pop(token);
     }
 
     /** One captured request scope; opaque to its carrier. */
@@ -274,12 +369,15 @@ final class RuntimeTraceContext {
         private final SourceRef source;
         private final String requestKey;
         private final String requestApi;
+        /** The lineage the work was created inside, as a value. */
+        private final Object lineage;
 
         private RequestScope(SourceRef source, String requestKey,
-                             String requestApi) {
+                             String requestApi, Object lineage) {
             this.source = source;
             this.requestKey = requestKey == null ? "" : requestKey;
             this.requestApi = requestApi == null ? "" : requestApi;
+            this.lineage = lineage;
         }
 
         boolean names() {
@@ -355,7 +453,8 @@ final class RuntimeTraceContext {
         State state = CURRENT.get();
         Frame activeFrame = state.frames.peek();
         long token = nextId();
-        state.scopes.push(new ScopeFrame(token, state, activeFrame));
+        ScopeFrame scope = new ScopeFrame(token, state, activeFrame);
+        state.scopes.push(scope);
         // Execution context is set by execution-scope events only: a node's
         // registration of its instances, or an async seed from a registered
         // source.  A value arriving over the wire is provenance, and the
@@ -386,8 +485,70 @@ final class RuntimeTraceContext {
             activeFrame.source = state.source;
             activeFrame.remoteParentSpanId = remote.parentSpanId;
         }
+        // The hop a served message opens: which role served it, for which
+        // remote family, and the k-th time this node served that family.
+        // The api is the remote family rather than the bare api because two
+        // callers of one api are two populations -- the v1 family suffix,
+        // stated as the hop it always was.
+        scope.lineageToken = Lineage.push(
+                state.source == null ? "" : state.source.key(),
+                servedRole(state.exchangeTransport),
+                inboundFamily(remote.requestKey, remote.requestApi));
+        edu.uva.liftlab.graphchecker.runtime.d3.Identity.scopeStart();
+        // The message that opened this scope names its producer; that
+        // endpoint IS this occurrence's causal context (IDENTITY-V3).
+        Lineage.anchor(edu.uva.liftlab.graphchecker.runtime.d3.Interactions
+                        .sender(state.exchangeTransport,
+                                state.exchangeCorrelationId,
+                                state.exchangeHalf),
+                // The api is the LAST path segment, which is how a case's
+                // selector is matched against it (ComposeMain.apiOf).
+                normalizedUpper(transport) + "/"
+                        + MapFields.safe(remote.requestApi));
         publishCausalSource(state);
         return token;
+    }
+
+    /**
+     * The scope kind a transport's receiver serves under.
+     *
+     * <p>Derived from the transport the workload named, never from the
+     * thread name: a role is a scope KIND (IDENTITY-V2 §0) and the thread
+     * that happens to run it is a circumstance.</p>
+     */
+    private static Role servedRole(String transport) {
+        String kind = normalizedUpper(transport);
+        if (kind.contains("IPC") || kind.contains("RPC")) {
+            return Role.IPC_HANDLER;
+        }
+        if (kind.contains("SASL") || kind.contains("DATA_TRANSFER")
+                || kind.contains("XCEIVER")) {
+            return Role.DATA_XCEIVER;
+        }
+        return kind.isEmpty() ? Role.UNKNOWN : Role.REQUEST;
+    }
+
+    /**
+     * Who the served message belongs to: {@code <source>/<api>} of the
+     * request in force, else the bare api.
+     *
+     * <p>Not the whole request key: its trailing ordinal counts requests in
+     * the recording window, which is the one part a replay cannot be held
+     * to.  Not a request FAMILY either, in the deleted sense -- nothing is
+     * addressed by it.  It is the hop's api, and it carries the caller
+     * because two callers of one api are two populations and their hops
+     * must not share a k.</p>
+     */
+    private static String inboundFamily(String requestKey, String requestApi) {
+        String key = MapFields.safe(requestKey).trim();
+        int marker = key.lastIndexOf("/request/");
+        if (marker <= 0) return MapFields.safe(requestApi).trim();
+        String source = key.substring(0, marker);
+        String api = key.substring(marker + "/request/".length());
+        int ordinal = api.lastIndexOf('#');
+        if (ordinal > 0) api = api.substring(0, ordinal);
+        return source.isEmpty() || api.isEmpty()
+                ? MapFields.safe(requestApi).trim() : source + "/" + api;
     }
 
     static void exitInbound(long token) {
@@ -470,6 +631,7 @@ final class RuntimeTraceContext {
                     "context scopes must end in LIFO order");
         }
         state.scopes.pop();
+        if (scope.lineageToken > 0L) Lineage.release(scope.lineageToken);
         state.source = scope.source;
         state.requestKey = scope.requestKey;
         state.requestApi = scope.requestApi;
@@ -500,6 +662,7 @@ final class RuntimeTraceContext {
     }
 
     static void resetForTests() {
+        Lineage.resetForTests();
         synchronized (LOCK) {
             SOURCE_ALIASES.clear();
             SOURCES_BY_KEY.clear();
@@ -888,6 +1051,8 @@ final class RuntimeTraceContext {
     private static final class Frame {
         private final long spanId;
         private final long parentSpanId;
+        /** The lineage hop this root opened, or 0 when it opened none. */
+        private long lineageToken;
         private long remoteParentSpanId;
         private final SourceRef previousSource;
         private SourceRef source;
@@ -934,11 +1099,15 @@ final class RuntimeTraceContext {
         private final String exchangeCorrelationId;
         private final String exchangeAttemptId;
         private final String exchangeHalf;
+        /** The lineage the submitting thread was inside, as a value. */
+        private final Object lineage;
 
         private Seed(long parentSpanId, SourceRef source,
                      String requestKey, String requestApi,
                      String exchangeTransport, String exchangeCorrelationId,
-                     String exchangeAttemptId, String exchangeHalf) {
+                     String exchangeAttemptId, String exchangeHalf,
+                     Object lineage) {
+            this.lineage = lineage;
             this.parentSpanId = parentSpanId;
             this.source = source;
             this.requestKey = MapFields.safe(requestKey);
@@ -952,6 +1121,8 @@ final class RuntimeTraceContext {
 
     private static final class ScopeFrame {
         private final long token;
+        /** The lineage hop this scope opened, or 0 when it opened none. */
+        private long lineageToken;
         private final SourceRef source;
         private final Frame activeFrame;
         private final SourceRef frameSource;

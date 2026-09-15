@@ -1,6 +1,5 @@
 package edu.uva.liftlab.graphchecker.d3.plan;
 
-import edu.uva.liftlab.graphchecker.contract.OccurrenceId;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
@@ -140,7 +139,7 @@ public final class ExecutionTask extends PlanRow {
         if (outgoing.isEmpty()) {
             return Collections.emptyMap();
         }
-        String producer = OccurrenceId.parse(task.occurrenceId()).planned();
+        String producer = task.occurrenceId();
         Map<String, List<String>> byPort = new LinkedHashMap<>();
         for (JsonElement element : task.edgeBindings()) {
             if (!element.isJsonObject()) continue;
@@ -149,23 +148,22 @@ public final class ExecutionTask extends PlanRow {
             if (!"RUNTIME_PROTOCOL_FLOW".equals(
                     optionalString(binding, "kind"))
                     || !outgoing.contains(portId)
-                    || !producer.equals(OccurrenceId.parse(optionalString(
-                            binding, "fromOccurrenceId")).planned())) {
+                    || !producer.equals(optionalString(
+                            binding, "fromOccurrenceId"))) {
                 continue;
             }
-            OccurrenceId consumer = OccurrenceId.parse(
-                    optionalString(binding, "toOccurrenceId"));
-            if (consumer.planned().isEmpty()) continue;
+            String consumer = optionalString(binding, "toOccurrenceId");
+            if (consumer.isEmpty()) continue;
             List<String> consumers = byPort.computeIfAbsent(portId,
                     ignored -> new ArrayList<String>());
-            if (!consumers.contains(consumer.planned())) {
-                consumers.add(consumer.planned());
+            if (!consumers.contains(consumer)) {
+                consumers.add(consumer);
             }
         }
         for (Map.Entry<String, List<String>> port : byPort.entrySet()) {
             Set<String> sources = new LinkedHashSet<>();
             for (String consumer : port.getValue()) {
-                sources.add(OccurrenceId.parse(consumer).sourceKey());
+                sources.add(sourceKeyOf(consumer));
             }
             if (sources.size() > 1) {
                 throw new IllegalArgumentException(
@@ -517,6 +515,20 @@ public final class ExecutionTask extends PlanRow {
         return BranchReplayContract.runtimeScheduleFromJson(
                 contract.getAsJsonObject(), array(encoded,
                         "retainedLoops"));
+    }
+
+    /**
+     * The component an occurrence id names: everything before its region.
+     *
+     * <p>One message is sent to one peer, so the component is what decides
+     * whether two occurrences can be two consumers of one delivery. Read off
+     * the id here rather than through an identity type, because the only
+     * thing this asks of the id is where its region segment starts -- and
+     * both the v1 and the v3 spelling put the component before it.</p>
+     */
+    private static String sourceKeyOf(String occurrenceId) {
+        int region = occurrenceId.indexOf("/region/");
+        return region <= 0 ? "" : occurrenceId.substring(0, region);
     }
 
 }

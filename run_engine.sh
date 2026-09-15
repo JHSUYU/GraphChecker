@@ -2823,6 +2823,14 @@ do_campaign() {
       "${iteration_dir}"
     campaign_stage "IMPORT[${iteration}]" campaign_import_session \
       "${iteration_dir}" "${iteration_id}"
+    # A measurement run stops where its measurement is complete.  The seed
+    # session and its census are what a runtime change is gated on, and
+    # running EXPLORE..EMIT to reach them costs hours and answers a
+    # different question.
+    if [[ "${CAUSYNTH_CAMPAIGN_STOP_AFTER:-}" == "IMPORT" ]]; then
+      campaign_log "stopping after IMPORT: CAUSYNTH_CAMPAIGN_STOP_AFTER"
+      return 0
+    fi
     campaign_stage "EXPLORE[${iteration}]" campaign_explore \
       "${iteration_dir}" "${iteration_id}"
     campaign_collect_diagnostics "${iteration_dir}"

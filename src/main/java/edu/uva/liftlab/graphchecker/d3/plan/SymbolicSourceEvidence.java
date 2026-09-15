@@ -8,7 +8,6 @@ import edu.uva.liftlab.graphchecker.d3.smt.JsonFields;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
-import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -544,8 +543,8 @@ public final class SymbolicSourceEvidence {
      */
     private static String nodeOf(String occurrenceId) {
         String id = occurrenceId == null ? "" : occurrenceId.trim();
-        OccurrenceAddress address = OccurrenceAddress.parse(id);
-        return address.isNamed() ? address.sourceKey() : id;
+        int region = id.indexOf("/region/");
+        return region <= 0 ? id : id.substring(0, region);
     }
 
 }
