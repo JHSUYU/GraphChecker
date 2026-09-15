@@ -12,6 +12,7 @@ import edu.uva.liftlab.graphchecker.d3.contract.GapKind;
 import edu.uva.liftlab.graphchecker.d3.contract.GapRow;
 import edu.uva.liftlab.graphchecker.d3.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.d3.contract.RowCodec;
+import edu.uva.liftlab.graphchecker.d3.plan.SelectorResolution;
 import edu.uva.liftlab.graphchecker.d3.contract.SessionReader;
 import edu.uva.liftlab.graphchecker.d3.contract.Selector;
 import edu.uva.liftlab.graphchecker.d3.contract.Task;
@@ -57,9 +58,6 @@ import java.util.Set;
  * ({@link ObligationSolverMain}).</p>
  */
 public final class ExploreMain {
-    /** What tells a resolved occurrence id from a case's v1 selector. */
-    private static final String RESOLVED_MARKER = "/ctx:";
-
     private ExploreMain() {
     }
 
@@ -192,17 +190,14 @@ public final class ExploreMain {
     /**
      * Resolves each declared selector against the seed session.
      *
-     * <p>Humans do not write execution indexes (IDENTITY-V3 SS2): a case
-     * declares a SELECTOR -- node, region, the api that started the
-     * occurrence when one is given, and which match -- and the seed session's
-     * own activation order decides which occurrence that is.  The resolved id
-     * is what exploration and composition use; a selector never leaves this
-     * method.</p>
-     *
-     * <p>A selector nothing matches is an {@code ADMISSION_GAP} naming it and
-     * what the seed session did offer for that region, because the reason is
-     * almost always a spelling the deployment and the case do not share, and
-     * a reader cannot see that from "no tasks".</p>
+     * <p>Humans do not write execution indexes (IDENTITY-V3 SS2), and which
+     * occurrence a case meant is one question with one answer:
+     * {@link SelectorResolution} is that answer, for PLAN, for the composer
+     * and for this stage. What is left here is what this stage does with an
+     * unresolved one — refuse the wave, naming the selector and what the seed
+     * session did run that region as, because the cause is nearly always a
+     * spelling the case and the deployment do not share and no reader can see
+     * that from "no tasks".</p>
      */
     private static List<OccurrenceAddress> resolve(Corpus corpus,
                                                    List<String> selectors,
@@ -212,7 +207,7 @@ public final class ExploreMain {
             // The contract's rule, and no fallback under it: the seed is the
             // session that focused nothing, and a corpus with none of those
             // or with several does not state which recording a declaration
-            // was written about.  Naming an exploration replay as the
+            // was written about. Naming an exploration replay as the
             // recording is how a claim comes to be about the wrong execution.
             gaps.add(GapRow.of("", GapKind.ADMISSION_GAP, GapClass.BLOCKING,
                     String.join(", ", selectors),
@@ -222,42 +217,27 @@ public final class ExploreMain {
                             + " sessions focused nothing"));
             return new ArrayList<OccurrenceAddress>();
         }
-        List<OccurrenceAddress> occurrences = seedOccurrences(corpus, seed);
-        String scope = "the seed session " + seed;
+        SessionReader session = corpus.session(seed);
+        List<ActivationRow> activations = session == null
+                ? new ArrayList<ActivationRow>() : session.activations();
         List<OccurrenceAddress> roots = new ArrayList<OccurrenceAddress>();
         Set<String> resolved = new LinkedHashSet<String>();
         for (String text : selectors) {
-            if (text.contains(RESOLVED_MARKER)) {
-                // Already an id: the scheduler resolved it, or a re-run
-                // passed back what an earlier manifest published.
-                try {
-                    OccurrenceAddress address = OccurrenceAddress.parse(text);
-                    if (resolved.add(address.id())) roots.add(address);
-                    continue;
-                } catch (IllegalArgumentException malformed) {
-                    gaps.add(GapRow.of(seed, GapKind.DECLARATION_MISSING,
-                            GapClass.BLOCKING, text,
-                            "not an occurrence id: "
-                                    + malformed.getMessage()));
-                    continue;
-                }
-            }
-            Selector selector;
+            OccurrenceAddress match;
             try {
-                selector = OccurrenceAddress.parseSelector(text);
+                match = SelectorResolution.resolve(text, activations);
             } catch (IllegalArgumentException malformed) {
                 gaps.add(GapRow.of(seed, GapKind.DECLARATION_MISSING,
                         GapClass.BLOCKING, text,
                         "not a case selector: " + malformed.getMessage()));
                 continue;
             }
-            OccurrenceAddress match = match(selector, occurrences);
-            if (match == null) {
+            if (SelectorResolution.unresolved(match)) {
                 gaps.add(GapRow.of(seed, GapKind.ADMISSION_GAP,
-                        GapClass.BLOCKING, selector.render(),
-                        "no occurrence of " + scope + " matches it; that "
-                                + "region ran as: "
-                                + offered(selector, occurrences)));
+                        GapClass.BLOCKING, text,
+                        "no occurrence of the seed session " + seed
+                                + " matches it; that region ran as: "
+                                + offered(text, activations)));
                 continue;
             }
             if (resolved.add(match.id())) roots.add(match);
@@ -265,60 +245,18 @@ public final class ExploreMain {
         return roots;
     }
 
-    /** The k-th occurrence this selector matches, in the seed's own order. */
-    private static OccurrenceAddress match(Selector selector,
-                                           List<OccurrenceAddress> seed) {
-        int matched = 0;
-        for (OccurrenceAddress occurrence : seed) {
-            if (!selector.matches(occurrence, apiOf(selector, occurrence))) {
-                continue;
-            }
-            if (++matched == selector.k()) return occurrence;
-        }
-        return null;
-    }
-
-    /**
-     * The api of the message that started this occurrence, or "".
-     *
-     * <p>The contract will not guess an api out of a deployment's RPC static
-     * site spelling, and it is right not to; this is the rule for the one
-     * spelling the cases meet, and it is the composer's rule verbatim, so
-     * that one declaration elects one occurrence in both stages.  A v1
-     * declaration writes the api as the tail of the source it came from, so
-     * the two are compared on their last path segment; an exact site
-     * spelling still matches itself.</p>
-     */
-    private static String apiOf(Selector selector,
-                                OccurrenceAddress occurrence) {
-        if (occurrence.context().form() != CausalContext.Form.ANCHOR) {
-            return "";
-        }
-        String site = ((CausalContext.Anchor) occurrence.context()).rpcSite();
-        if (selector.api() == null) return site;
-        // Answer the selector's own spelling where the two name one api, so
-        // that the contract's equality decides and this rule only says which
-        // spellings are the same api.
-        return sameApi(selector.api(), site) ? selector.api() : site;
-    }
-
-    private static boolean sameApi(String declared, String site) {
-        if (declared.equals(site)) return true;
-        String left = tail(declared);
-        String right = tail(site);
-        return !left.isEmpty() && left.equals(right);
-    }
-
-    private static String tail(String value) {
-        int slash = value.lastIndexOf('/');
-        return slash < 0 ? value : value.substring(slash + 1);
-    }
-
     /** What the seed session ran that region as, for a refusal to name. */
-    private static String offered(Selector selector,
-                                  List<OccurrenceAddress> seed) {
+    private static String offered(String declared,
+                                  List<ActivationRow> seed) {
+        Selector selector;
+        try {
+            selector = OccurrenceAddress.parseSelector(declared);
+        } catch (IllegalArgumentException notASelector) {
+            return "(not a selector)";
+        }
         List<String> named = new ArrayList<String>();
-        for (OccurrenceAddress occurrence : seed) {
+        for (ActivationRow activation : seed) {
+            OccurrenceAddress occurrence = activation.occurrence();
             if (!selector.regionId().equals(occurrence.regionId())) continue;
             if (named.size() >= 4) {
                 named.add("...");
@@ -329,22 +267,6 @@ public final class ExploreMain {
         }
         return named.isEmpty() ? "(that region ran there not at all)"
                 : String.join(", ", named);
-    }
-
-    /** The seed session's occurrences, in the order it activated them. */
-    private static List<OccurrenceAddress> seedOccurrences(Corpus corpus,
-                                                           String seed) {
-        List<OccurrenceAddress> occurrences =
-                new ArrayList<OccurrenceAddress>();
-        Set<String> seen = new LinkedHashSet<String>();
-        SessionReader session = corpus.session(seed);
-        if (session == null) return occurrences;
-        for (ActivationRow activation : session.activations()) {
-            if (seen.add(activation.occurrence().id())) {
-                occurrences.add(activation.occurrence());
-            }
-        }
-        return occurrences;
     }
 
     /** Every occurrence this wave's tasks hold: focused, and their factors. */
