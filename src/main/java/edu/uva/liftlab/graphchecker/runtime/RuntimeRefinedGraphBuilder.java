@@ -6,9 +6,9 @@ import com.google.gson.ToNumberPolicy;
 import com.google.gson.reflect.TypeToken;
 import edu.uva.liftlab.graphchecker.annotation.Debug;
 import edu.uva.liftlab.graphchecker.causynth.MapFields;
-import edu.uva.liftlab.graphchecker.concolic.JsonFields;
+import edu.uva.liftlab.graphchecker.d3.smt.JsonFields;
 import edu.uva.liftlab.graphchecker.causynth.StaticProgram;
-import edu.uva.liftlab.graphchecker.contract.JavaContainerTypes;
+import edu.uva.liftlab.graphchecker.d3.smt.JavaContainerTypes;
 
 import edu.uva.liftlab.graphchecker.contract.SiteId;
 import java.io.BufferedReader;

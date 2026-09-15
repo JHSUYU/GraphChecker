@@ -1,6 +1,10 @@
 package edu.uva.liftlab.graphchecker.d3.compose;
 
-import edu.uva.liftlab.graphchecker.d3.compose.JavaPrimitiveSmtSemantics.IntegralWidth;
+import edu.uva.liftlab.graphchecker.d3.smt.JavaPrimitiveSmtSemantics;
+import edu.uva.liftlab.graphchecker.d3.smt.VmExpressionIr;
+import edu.uva.liftlab.graphchecker.d3.smt.VmRows;
+
+import edu.uva.liftlab.graphchecker.d3.smt.JavaPrimitiveSmtSemantics.IntegralWidth;
 import edu.uva.liftlab.graphchecker.d3.compose.VmTermLowering.Reason;
 import edu.uva.liftlab.graphchecker.d3.compose.VmTermLowering.Sort;
 import edu.uva.liftlab.graphchecker.d3.compose.VmTermLowering.Term;
@@ -14,18 +18,18 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 
-import static edu.uva.liftlab.graphchecker.d3.compose.JsonFields.array;
-import static edu.uva.liftlab.graphchecker.d3.compose.JsonFields.firstNonBlank;
-import static edu.uva.liftlab.graphchecker.d3.compose.JsonFields.optionalBool;
-import static edu.uva.liftlab.graphchecker.d3.compose.JsonFields.optionalString;
-import static edu.uva.liftlab.graphchecker.d3.compose.VmExpressionIr.arithmetic;
-import static edu.uva.liftlab.graphchecker.d3.compose.VmExpressionIr.arithmeticOperator;
-import static edu.uva.liftlab.graphchecker.d3.compose.VmExpressionIr.bitwiseOperator;
-import static edu.uva.liftlab.graphchecker.d3.compose.VmExpressionIr.comparison;
-import static edu.uva.liftlab.graphchecker.d3.compose.VmExpressionIr.constantPayload;
-import static edu.uva.liftlab.graphchecker.d3.compose.VmExpressionIr.isPrimitiveIntExpression;
-import static edu.uva.liftlab.graphchecker.d3.compose.VmExpressionIr.quote;
-import static edu.uva.liftlab.graphchecker.d3.compose.VmExpressionIr.shiftOperator;
+import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.array;
+import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.firstNonBlank;
+import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.optionalBool;
+import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.optionalString;
+import static edu.uva.liftlab.graphchecker.d3.smt.VmExpressionIr.arithmetic;
+import static edu.uva.liftlab.graphchecker.d3.smt.VmExpressionIr.arithmeticOperator;
+import static edu.uva.liftlab.graphchecker.d3.smt.VmExpressionIr.bitwiseOperator;
+import static edu.uva.liftlab.graphchecker.d3.smt.VmExpressionIr.comparison;
+import static edu.uva.liftlab.graphchecker.d3.smt.VmExpressionIr.constantPayload;
+import static edu.uva.liftlab.graphchecker.d3.smt.VmExpressionIr.isPrimitiveIntExpression;
+import static edu.uva.liftlab.graphchecker.d3.smt.VmExpressionIr.quote;
+import static edu.uva.liftlab.graphchecker.d3.smt.VmExpressionIr.shiftOperator;
 import static edu.uva.liftlab.graphchecker.d3.compose.VmTermLowering.and;
 import static edu.uva.liftlab.graphchecker.d3.compose.VmTermLowering.floatingKind;
 import static edu.uva.liftlab.graphchecker.d3.compose.VmTermLowering.numeric;

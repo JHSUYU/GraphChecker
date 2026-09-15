@@ -3,7 +3,7 @@ package edu.uva.liftlab.graphchecker.contract;
 import java.nio.charset.StandardCharsets;
 import java.util.UUID;
 
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.nonNull;
+import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.nonNull;
 
 /**
  * The static catalog of communication call sites, their typed ports and the

@@ -5,12 +5,18 @@ import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 
+import edu.uva.liftlab.graphchecker.d3.contract.ActivationRow;
+import edu.uva.liftlab.graphchecker.d3.contract.CausalContext;
 import edu.uva.liftlab.graphchecker.d3.contract.Claim;
 import edu.uva.liftlab.graphchecker.d3.contract.ClaimKind;
 import edu.uva.liftlab.graphchecker.d3.contract.CompositionManifest;
+import edu.uva.liftlab.graphchecker.d3.contract.ExecutionIndex;
 import edu.uva.liftlab.graphchecker.d3.contract.GapClass;
 import edu.uva.liftlab.graphchecker.d3.contract.GapRow;
+import edu.uva.liftlab.graphchecker.d3.contract.NodeId;
 import edu.uva.liftlab.graphchecker.d3.contract.OccurrenceAddress;
+import edu.uva.liftlab.graphchecker.d3.contract.Role;
+import edu.uva.liftlab.graphchecker.d3.contract.Selector;
 import edu.uva.liftlab.graphchecker.d3.contract.RootDomain;
 import edu.uva.liftlab.graphchecker.d3.contract.RootKind;
 import edu.uva.liftlab.graphchecker.d3.contract.RowCodec;
@@ -89,8 +95,7 @@ public final class ComposeMain {
 
     public static Result run(Arguments arguments) throws IOException {
         CorpusIndex corpus = CorpusIndex.of(arguments.iteration);
-        OccurrenceAddress anchor =
-                OccurrenceAddress.parse(arguments.anchor);
+        OccurrenceAddress anchor = anchorOf(arguments.anchor, corpus);
         Composer.Composition composition = Composer.compose(corpus, anchor,
                 declaredDomains(arguments.rootDomains),
                 arguments.maxValuations);
@@ -110,6 +115,89 @@ public final class ComposeMain {
         return new Result(arguments.output, arguments.manifest, claimPath,
                 composed, decision,
                 summary(anchor, composition, decision, solver));
+    }
+
+    /**
+     * The occurrence the case declared: a full id, or a selector.
+     *
+     * <p>Humans do not write execution indexes.  A case declares the v1
+     * spelling -- a node, a region, an api when the request matters, and
+     * which of the matching activations -- and it is resolved HERE, against
+     * the SEED session, because the seed is the recording the declaration
+     * was written about.  What comes out is an OccurrenceId, and everything
+     * downstream corresponds by that id alone.</p>
+     *
+     * <p>A selector that matches nothing is not an exception: it becomes a
+     * degraded address of the region it names, which no session's rows will
+     * equal, so the composition answers DECLARATION_MISSING and the campaign
+     * reads why out of the artifact instead of out of a stack trace.</p>
+     */
+    static OccurrenceAddress anchorOf(String declared, CorpusIndex corpus) {
+        String value = declared == null ? "" : declared.trim();
+        if (value.contains("/ctx:")) {
+            // Already an id: the scheduler resolved it, or a re-run passed
+            // back what a previous manifest published.
+            return OccurrenceAddress.parse(value);
+        }
+        Selector selector = OccurrenceAddress.parseSelector(value);
+        String seed = corpus.seedSessionId();
+        SessionReader session = seed == null ? null : corpus.session(seed);
+        if (session != null) {
+            int matched = 0;
+            // Activation rows in the order the session wrote them: the
+            // seed's own event order, which is what "the k-th" counts.  The
+            // selector itself decides node, region and api; this loop only
+            // supplies the api spelling and counts.
+            for (ActivationRow activation : session.activations()) {
+                OccurrenceAddress occurrence = activation.occurrence();
+                if (!selector.matches(occurrence,
+                        apiOf(selector, occurrence))) {
+                    continue;
+                }
+                if (++matched == selector.k()) return occurrence;
+            }
+        }
+        return OccurrenceAddress.of(selector.node() == null
+                        ? NodeId.of("unresolved", 0) : selector.node(),
+                selector.regionId(), CausalContext.of(Role.UNKNOWN),
+                ExecutionIndex.empty());
+    }
+
+    /**
+     * The api of the message that started this occurrence, or "".
+     *
+     * <p>The contract will not guess an api out of a deployment's RPC static
+     * site spelling, and it is right not to; this is the composer's rule for
+     * the one spelling it meets.  A v1 declaration writes the api as the
+     * tail of the source it came from, so the two are compared on their last
+     * path segment: {@code …/striped-file-checksum} selects the site whose
+     * last segment is {@code striped-file-checksum}, and an exact site
+     * spelling still matches itself.</p>
+     */
+    private static String apiOf(Selector selector,
+                                OccurrenceAddress occurrence) {
+        if (occurrence.context().form() != CausalContext.Form.ANCHOR) {
+            return "";
+        }
+        String site = ((CausalContext.Anchor) occurrence.context())
+                .rpcSite();
+        if (selector.api() == null) return site;
+        // Answer the selector's own spelling where the two name one api, so
+        // that the contract's equality decides and this rule only says which
+        // spellings are the same api.
+        return sameApi(selector.api(), site) ? selector.api() : site;
+    }
+
+    private static boolean sameApi(String declared, String site) {
+        if (declared.equals(site)) return true;
+        String left = tail(declared);
+        String right = tail(site);
+        return !left.isEmpty() && left.equals(right);
+    }
+
+    private static String tail(String value) {
+        int slash = value.lastIndexOf('/');
+        return slash < 0 ? value : value.substring(slash + 1);
     }
 
     /**
@@ -152,6 +240,10 @@ public final class ComposeMain {
         row.addProperty("schemaVersion", 1);
         row.addProperty("kind", "D3_COMPOSITION_MANIFEST");
         row.addProperty("anchor", composition.anchor().render());
+        // The RESOLVED id, beside the render a human reads: exploration and
+        // composition correspond by id, and a reader checking that two runs
+        // anchored on the same occurrence compares this and nothing else.
+        row.addProperty("anchorId", composition.anchor().id());
         row.addProperty("seedSessionId",
                 composition.seedSessionId() == null ? ""
                         : composition.seedSessionId());

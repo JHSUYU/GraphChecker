@@ -4,7 +4,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
-import edu.uva.liftlab.graphchecker.concolic.JsonFields;
+import edu.uva.liftlab.graphchecker.d3.smt.JsonFields;
 import edu.uva.liftlab.graphchecker.concolic.SharedFieldFlow;
 import edu.uva.liftlab.graphchecker.contract.CommunicationCatalogContract;
 import edu.uva.liftlab.graphchecker.contract.CommunicationHandoffSpec;
@@ -13,7 +13,7 @@ import edu.uva.liftlab.graphchecker.contract.ExecutionTask;
 import edu.uva.liftlab.graphchecker.contract.FieldPathSpec;
 import edu.uva.liftlab.graphchecker.contract.FieldPathSpec.DeclaredField;
 import edu.uva.liftlab.graphchecker.contract.InputActionCatalog;
-import edu.uva.liftlab.graphchecker.contract.JavaContainerTypes;
+import edu.uva.liftlab.graphchecker.d3.smt.JavaContainerTypes;
 import edu.uva.liftlab.graphchecker.contract.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.contract.SiteId;
 import soot.PrimType;
@@ -40,8 +40,8 @@ import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.stringValue;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalInteger;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
+import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.optionalInteger;
+import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.optionalString;
 
 /** Execution-task parsing and immutable instrumentation selections. */
 public final class ConcolicInstrumentationSelections {

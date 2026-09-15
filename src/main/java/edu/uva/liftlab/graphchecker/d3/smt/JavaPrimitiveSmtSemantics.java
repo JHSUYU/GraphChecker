@@ -1,6 +1,5 @@
-package edu.uva.liftlab.graphchecker.concolic;
+package edu.uva.liftlab.graphchecker.d3.smt;
 
-import edu.uva.liftlab.graphchecker.contract.JavaContainerTypes;
 
 import java.math.BigInteger;
 import java.util.ArrayList;
@@ -9,32 +8,32 @@ import java.util.Locale;
 
 /** Shared SMT semantics for Java's integral computational types. */
 public final class JavaPrimitiveSmtSemantics {
-    static final String INT_WRAP_DEFINITION =
+    public static final String INT_WRAP_DEFINITION =
             "(define-fun java_int_wrap ((i Int)) Int"
                     + " (- (mod (+ i 2147483648) 4294967296)"
                     + " 2147483648))";
-    static final String LONG_WRAP_DEFINITION =
+    public static final String LONG_WRAP_DEFINITION =
             "(define-fun java_long_wrap ((i Int)) Int"
                     + " (- (mod (+ i 9223372036854775808)"
                     + " 18446744073709551616) 9223372036854775808))";
 
-    enum IntegralWidth {
+    public enum IntegralWidth {
         NONE,
         JAVA_INT,
         JAVA_LONG
     }
 
     /** Java's two binary IEEE-754 computational formats. */
-    enum FloatingKind {
+    public enum FloatingKind {
         NONE,
         JAVA_FLOAT,
         JAVA_DOUBLE
     }
 
-    static final class IntegralDomain {
-        final String lower;
-        final String upper;
-        final IntegralWidth width;
+    public static final class IntegralDomain {
+        public final String lower;
+        public final String upper;
+        public final IntegralWidth width;
 
         private IntegralDomain(String lower, String upper,
                                IntegralWidth width) {
@@ -154,7 +153,7 @@ public final class JavaPrimitiveSmtSemantics {
                 BigInteger.valueOf(maximum)};
     }
 
-    static IntegralWidth widthOfJavaType(String javaType) {
+    public static IntegralWidth widthOfJavaType(String javaType) {
         IntegralDomain domain = domainOfJavaType(javaType);
         return domain == null ? IntegralWidth.NONE : domain.width;
     }
@@ -175,7 +174,7 @@ public final class JavaPrimitiveSmtSemantics {
      * exactly the same decimal-to-binary conversion used by replay, then
      * supplying those raw IEEE bits to SMT.
      */
-    static String floatingLiteral(String value, FloatingKind kind) {
+    public static String floatingLiteral(String value, FloatingKind kind) {
         if (kind == null || kind == FloatingKind.NONE || value == null) {
             return null;
         }
@@ -196,11 +195,11 @@ public final class JavaPrimitiveSmtSemantics {
         }
     }
 
-    static String floatingNegate(String operand) {
+    public static String floatingNegate(String operand) {
         return "(fp.neg " + operand + ")";
     }
 
-    static String floatingComparison(String operator, String left,
+    public static String floatingComparison(String operator, String left,
                                      String right) {
         String predicate;
         if ("==".equals(operator)) predicate = "fp.eq";
@@ -216,7 +215,7 @@ public final class JavaPrimitiveSmtSemantics {
                 : comparison;
     }
 
-    static String floatingArithmetic(String operator, String left,
+    public static String floatingArithmetic(String operator, String left,
                                      String right) {
         String operation;
         if ("+".equals(operator)) operation = "fp.add";
@@ -232,7 +231,7 @@ public final class JavaPrimitiveSmtSemantics {
     }
 
     /** Exact JVM {@code fcmp*}/{@code dcmp*} result. */
-    static String floatingCompareResult(String left, String right,
+    public static String floatingCompareResult(String left, String right,
                                         boolean nanIsGreater) {
         String nanResult = nanIsGreater ? "1" : "(- 1)";
         return "(ite (or (fp.isNaN " + left + ") (fp.isNaN " + right
@@ -242,12 +241,12 @@ public final class JavaPrimitiveSmtSemantics {
     }
 
     /** Exact JVM {@code lcmp} result in the shared mathematical-Int model. */
-    static String integralCompareResult(String left, String right) {
+    public static String integralCompareResult(String left, String right) {
         return "(ite (< " + left + " " + right + ") (- 1)"
                 + " (ite (> " + left + " " + right + ") 1 0))";
     }
 
-    static String floatingConversion(String value, FloatingKind source,
+    public static String floatingConversion(String value, FloatingKind source,
                                      FloatingKind target) {
         if (source == null || target == null
                 || source == FloatingKind.NONE
@@ -261,7 +260,7 @@ public final class JavaPrimitiveSmtSemantics {
         return "((_ to_fp 11 53) RNE " + value + ")";
     }
 
-    static String integralToFloating(String value, FloatingKind target) {
+    public static String integralToFloating(String value, FloatingKind target) {
         if (target == FloatingKind.JAVA_FLOAT) {
             return "((_ to_fp 8 24) RNE (to_real " + value + "))";
         }
@@ -275,7 +274,7 @@ public final class JavaPrimitiveSmtSemantics {
      * Lowers one Java primitive conversion without introducing a fresh SMT
      * value.
      */
-    static String primitiveCast(String value, String sourceJavaType,
+    public static String primitiveCast(String value, String sourceJavaType,
                                 String targetJavaType) {
         String source = primitiveDescriptor(sourceJavaType);
         String target = primitiveDescriptor(targetJavaType);
@@ -308,13 +307,13 @@ public final class JavaPrimitiveSmtSemantics {
         return null;
     }
 
-    static String primitiveDescriptor(String javaType) {
+    public static String primitiveDescriptor(String javaType) {
         String type = javaType == null ? ""
                 : javaType.trim().replace('.', '/');
         return javaTypeDescriptor(type);
     }
 
-    static boolean primitiveNumericDescriptor(String descriptor) {
+    public static boolean primitiveNumericDescriptor(String descriptor) {
         return descriptor != null && descriptor.length() == 1
                 && "BCSIJFD".contains(descriptor);
     }
@@ -397,7 +396,7 @@ public final class JavaPrimitiveSmtSemantics {
     }
 
     /** Returns the runtime value domain of an explicitly typed Java leaf. */
-    static IntegralDomain domainOfJavaType(String javaType) {
+    public static IntegralDomain domainOfJavaType(String javaType) {
         String type = normalize(javaType);
         if ("Z".equals(type) || "java/lang/Boolean".equals(type)) {
             return new IntegralDomain("0", "1", IntegralWidth.JAVA_INT);
@@ -426,7 +425,7 @@ public final class JavaPrimitiveSmtSemantics {
     }
 
     /** Java binary numeric promotion, but only when both widths are known. */
-    static IntegralWidth promote(IntegralWidth left, IntegralWidth right) {
+    public static IntegralWidth promote(IntegralWidth left, IntegralWidth right) {
         if (left == null || right == null
                 || left == IntegralWidth.NONE
                 || right == IntegralWidth.NONE) {
@@ -439,7 +438,7 @@ public final class JavaPrimitiveSmtSemantics {
         return IntegralWidth.JAVA_INT;
     }
 
-    static String wrap(String expression, IntegralWidth width) {
+    public static String wrap(String expression, IntegralWidth width) {
         if (width == IntegralWidth.JAVA_INT) {
             return "(java_int_wrap " + expression + ")";
         }
@@ -451,7 +450,7 @@ public final class JavaPrimitiveSmtSemantics {
     }
 
     /** Exact Java two's-complement lowering for integral bitwise operators. */
-    static String bitwise(String operator, String left, String right,
+    public static String bitwise(String operator, String left, String right,
                           IntegralWidth width) {
         BigInteger constant = integerLiteral(right);
         String variable = left;
@@ -475,7 +474,7 @@ public final class JavaPrimitiveSmtSemantics {
     }
 
     /** Exact Java shift lowering, including the JVM shift-distance mask. */
-    static String shift(String operator, String left, String right,
+    public static String shift(String operator, String left, String right,
                         IntegralWidth width) {
         BigInteger constant = integerLiteral(right);
         if (constant != null) {
@@ -514,7 +513,7 @@ public final class JavaPrimitiveSmtSemantics {
      * which the width's wrap turns back into {@code MIN_VALUE}, exactly as
      * the JVM's overflow rule states.
      */
-    static String integralDivision(String left, String right,
+    public static String integralDivision(String left, String right,
                                    IntegralWidth width) {
         return wrap("(let ((java_idiv_a " + left + ")"
                 + " (java_idiv_b " + right + "))"
@@ -529,7 +528,7 @@ public final class JavaPrimitiveSmtSemantics {
      * {@code a - (a / b) * b} for every pair, {@code MIN_VALUE % -1 == 0}
      * included, and the result never leaves the width.
      */
-    static String integralRemainder(String left, String right,
+    public static String integralRemainder(String left, String right,
                                     IntegralWidth width) {
         return wrap("(let ((java_irem_a " + left + ")"
                 + " (java_irem_b " + right + "))"
@@ -543,7 +542,7 @@ public final class JavaPrimitiveSmtSemantics {
      * SMT-LIB leaves division by zero uninterpreted, so the divisor must be
      * stated non-zero rather than left for the solver to choose.
      */
-    static String integralDivisorDefined(String right) {
+    public static String integralDivisorDefined(String right) {
         BigInteger literal = integerLiteral(right);
         if (literal != null) {
             return literal.signum() == 0 ? "false" : "true";
@@ -552,7 +551,7 @@ public final class JavaPrimitiveSmtSemantics {
     }
 
     /** Exact Java integral complement. */
-    static String complement(String operand, IntegralWidth width) {
+    public static String complement(String operand, IntegralWidth width) {
         int bits = bits(width);
         return wrap("(bv2int (bvnot ((_ int2bv " + bits + ") "
                 + operand + ")))", width);
@@ -570,7 +569,7 @@ public final class JavaPrimitiveSmtSemantics {
      * The VM deliberately serializes {@code iushr}/{@code lushr} as
      * {@code >>u}; Java source and the SMT lowering use {@code >>>}.
      */
-    static String canonicalVmOperator(String operator) {
+    public static String canonicalVmOperator(String operator) {
         return ">>u".equals(operator) ? ">>>" : operator;
     }
 

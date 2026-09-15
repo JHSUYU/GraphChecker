@@ -14,12 +14,12 @@ import java.util.List;
 import java.util.Set;
 import java.util.TreeSet;
 
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.exactInteger;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.firstNonBlank;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.object;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.exactText;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
+import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.array;
+import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.exactInteger;
+import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.firstNonBlank;
+import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.object;
+import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.exactText;
+import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.optionalString;
 
 /**
  * Immutable, once-decoded view of one imported concolic path summary.  The

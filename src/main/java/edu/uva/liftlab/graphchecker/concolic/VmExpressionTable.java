@@ -13,9 +13,9 @@ import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Set;
 
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.array;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalInteger;
-import static edu.uva.liftlab.graphchecker.concolic.JsonFields.optionalString;
+import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.array;
+import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.optionalInteger;
+import static edu.uva.liftlab.graphchecker.d3.smt.JsonFields.optionalString;
 
 /**
  * Converts one VM-session expression-id DAG into portable Merkle anchors.
