@@ -58,7 +58,9 @@ first observed one (rule: first observed, full address) -- lane17897g observed
 
 ## Clock window
 
-`clock_skew_ms=900000` (15 min), against the engine default of 300 000 ms.
+A clock root is free above zero and has no window: the formula asserts
+`(>= clock 0)` and nothing else, in the composer and in the flip query alike
+(`d3.explore.FlipQuery` line 362).  Nothing declares a skew.
 
 Both removals this experiment needs are `expiryDate < now` at
 `BlockTokenSecretManager:220`, and the workload runs with

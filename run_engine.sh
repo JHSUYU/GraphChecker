@@ -110,10 +110,6 @@ workflow_config_keys=(
   # task it kept still runs.  Left unstated, the telemetry reports the
   # count and judges it against no expectation at all.
   "solver_timeout_ms CAUSYNTH_SOLVER_TIMEOUT_MS krp -"
-  # How far a witness may move a wall clock from the value that read
-  # returned.  Cross-node skew is a failure mechanism the checker explores,
-  # so this bounds it rather than pinning a clock to its recording.
-  "clock_skew_ms CAUSYNTH_CLOCK_SKEW_MS krp 300000"
   # How many root valuations the composer enumerates around the recorded one.
   # The composer runs z3 per valuation while it composes, so this bounds the
   # solving a campaign does, not a separate stage's budget.
@@ -437,14 +433,6 @@ validate_config() {
       region_path_max_waves compose_max_valuations; do
     require_positive_integer "${key}"
   done
-  # A zero skew is meaningful -- it pins every clock to its recording -- so
-  # this one is validated as non-negative rather than positive.
-  # "unbounded" is the case's statement that a wall clock has no physics to
-  # appeal to, so the formula asserts no window for any cell; a number is a
-  # window in milliseconds, and zero pins every clock to its recording.
-  [[ "${clock_skew_ms}" =~ ^[0-9]+$ || "${clock_skew_ms}" == unbounded ]] \
-    || die "clock_skew_ms must be a non-negative integer or unbounded: \
-${clock_skew_ms}"
   # The one stage a campaign may be asked to stop after.  Refused here rather
   # than in do_campaign so that `validate` and PREFLIGHT both name it before
   # any work starts: a value this table does not carry would otherwise match
@@ -608,7 +596,6 @@ do_compose() {
     --runtime-plan "${runtime_region_plan}" \
     --output "${composed_smt}" \
     --manifest "${composition_manifest}" \
-    --clock-skew-ms "${clock_skew_ms}" \
     --timeout-ms "${solver_timeout_ms}" \
     --max-valuations "${compose_max_valuations}" \
     --z3 "${z3_bin}" \
@@ -1822,7 +1809,6 @@ campaign_obligation_worker() {
     --output-dir "${worker}" \
     --z3 "${z3_bin}" \
     --solver-timeout-ms "${solver_timeout_ms}" \
-    --clock-skew-ms "${clock_skew_ms}" \
     "${domain_args[@]}"
   if [[ "${status}" -ne 0 ]]; then
     campaign_log "obligation solver failed on ${obligation_id} \

@@ -34,7 +34,7 @@ import java.util.Map;
  *                             obligation_query.smt2, focused_task.jsonl
  *   --root-domains &lt;file&gt;     what the CASE says each root may be: the same
  *                             declaration the wave was planned under
- *   --z3 &lt;path&gt; --solver-timeout-ms &lt;n&gt; --clock-skew-ms &lt;n|unbounded&gt;
+ *   --z3 &lt;path&gt; --solver-timeout-ms &lt;n&gt;
  * </pre>
  *
  * <p>One process per obligation: a solve is what an obligation costs before
