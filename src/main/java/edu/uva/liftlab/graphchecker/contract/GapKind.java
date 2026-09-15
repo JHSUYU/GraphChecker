@@ -24,6 +24,8 @@ public enum GapKind {
     DECLARATION_MISSING,
     /** An address degraded because a lineage hop was unattributable. */
     LINEAGE_LOST,
+    /** A planned task no activation of this replay answered. */
+    TASK_UNANSWERED,
     /** The solver gave no answer in the time it was given. */
     SOLVER_TIMEOUT,
     /**

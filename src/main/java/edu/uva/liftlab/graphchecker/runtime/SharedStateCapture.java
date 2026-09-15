@@ -15,7 +15,6 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalInteger;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalLongInteger;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.decodeVmEnvelope;
-import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.diag;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.parseJson;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.rootCause;
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.safe;
@@ -358,8 +357,6 @@ final class SharedStateCapture {
     /** Files one shared-state outcome with the active region. */
     private static void fileShared(SharedStateResult result,
                                    ActiveRegion active) {
-        diag(result.ok() ? "SHARED_STATE" : SharedStateEvidence.GAP_KIND,
-                result.toString());
         if (active == null) return;
         if (!result.ok()) {
             active.sharedStateGaps.add(result.record);

@@ -1,10 +1,6 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
-import java.lang.annotation.Annotation;
-import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
-import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 
 /**
@@ -18,9 +14,6 @@ import java.util.List;
  * expression outlive the producer's thread.</p>
  */
 public final class JUnitMethodRunner {
-    private static final String EXIT_AFTER_RUN_PROPERTY =
-            "causynth.junit.exit.after.run";
-
     private JUnitMethodRunner() {
     }
 
@@ -32,37 +25,26 @@ public final class JUnitMethodRunner {
             // cross-thread expression it exists to record.
             throw new IllegalStateException(refusedOpen);
         }
-        if (!Boolean.getBoolean(EXIT_AFTER_RUN_PROPERTY)) {
-            try {
-                run(args);
-            } finally {
-                reportWorkloadSessionClose();
-            }
-            return;
-        }
-        int status = 0;
         try {
             run(args);
-        } catch (Throwable failure) {
-            failure.printStackTrace(System.err);
-            status = 1;
+        } finally {
+            // Publications first: a result still being appended belongs to
+            // a region that is still a session member, and closing under it
+            // would be refused anyway.
+            ConcolicResultPublisher.awaitSelectedResultPublications();
+            // And then what only the end of a run can state, on the one
+            // exit path every replay takes.  The seed replay also reaches
+            // this through the halt after its selected result settled; a
+            // focused replay does not halt, and the shutdown hook that
+            // would have done it is registered only when some candidate
+            // went unaddressed -- so a focused session whose every
+            // candidate was addressed closed with no expression table at
+            // all (2 bytes, the "{}" written when the session dir was
+            // created) while its rows cited 28 refs.  One publication path
+            // for both kinds of session; publishRunTotals is once per JVM.
+            ConcolicResultPublisher.publishRunTotals();
+            reportWorkloadSessionClose();
         }
-        // Publications first: a result still being appended belongs to a
-        // region that is still a session member, and closing under it would
-        // be refused anyway.
-        ConcolicResultPublisher.awaitSelectedResultPublications();
-        // And then what only the end of a run can state, on the one exit
-        // path every replay takes.  The seed replay reached this through the
-        // halt after its selected result settled; a focused replay does not
-        // halt, and the shutdown hook that would have done it is registered
-        // only when some candidate went unaddressed -- so a focused session
-        // whose every candidate was addressed closed with no expression
-        // table at all (2 bytes, the "{}" written when the session dir was
-        // created) while its rows cited 28 refs.  One publication path for
-        // both kinds of session; publishRunTotals is once per JVM.
-        ConcolicResultPublisher.publishRunTotals();
-        reportWorkloadSessionClose();
-        System.exit(status);
     }
 
     /**
@@ -85,10 +67,6 @@ public final class JUnitMethodRunner {
                     "usage: JUnitMethodRunner <class> <method>");
         }
         Class<?> testClass = Class.forName(args[0]);
-        if (Boolean.getBoolean("causynth.junit.ignore.timeout")) {
-            runWithoutTimeout(testClass, args[1]);
-            return;
-        }
         Class<?> requestClass = Class.forName("org.junit.runner.Request");
         Object request = requestClass
                 .getMethod("method", Class.class, String.class)
@@ -109,82 +87,6 @@ public final class JUnitMethodRunner {
             }
             throw new AssertionError("JUnit method failed: "
                     + args[0] + "#" + args[1]);
-        }
-    }
-
-    private static void runWithoutTimeout(Class<?> testClass,
-                                          String methodName)
-            throws Exception {
-        Object test = testClass.newInstance();
-        Throwable failure = null;
-        try {
-            invokeLifecycle(test, testClass, true,
-                    "org.junit.Before", "org.junit.jupiter.api.BeforeEach");
-            invoke(test, testClass.getMethod(methodName));
-        } catch (Throwable throwable) {
-            failure = throwable;
-        } finally {
-            try {
-                invokeLifecycle(test, testClass, false,
-                        "org.junit.jupiter.api.AfterEach", "org.junit.After");
-            } catch (Throwable throwable) {
-                if (failure == null) {
-                    failure = throwable;
-                } else {
-                    failure.addSuppressed(throwable);
-                }
-            }
-        }
-        if (failure instanceof Exception) {
-            throw (Exception) failure;
-        }
-        if (failure instanceof Error) {
-            throw (Error) failure;
-        }
-        if (failure != null) {
-            throw new RuntimeException(failure);
-        }
-    }
-
-    private static void invokeLifecycle(Object test, Class<?> testClass,
-                                        boolean superclassFirst,
-                                        String... annotationNames)
-            throws Throwable {
-        List<Class<?>> hierarchy = new ArrayList<>();
-        for (Class<?> type = testClass; type != null;
-             type = type.getSuperclass()) {
-            hierarchy.add(type);
-        }
-        if (superclassFirst) {
-            Collections.reverse(hierarchy);
-        }
-        for (Class<?> type : hierarchy) {
-            for (Method method : type.getDeclaredMethods()) {
-                if (hasAnnotation(method, annotationNames)) {
-                    method.setAccessible(true);
-                    invoke(test, method);
-                }
-            }
-        }
-    }
-
-    private static boolean hasAnnotation(Method method, String... names) {
-        for (Annotation annotation : method.getDeclaredAnnotations()) {
-            for (String name : names) {
-                if (name.equals(annotation.annotationType().getName())) {
-                    return true;
-                }
-            }
-        }
-        return false;
-    }
-
-    private static void invoke(Object receiver, Method method)
-            throws Throwable {
-        try {
-            method.invoke(receiver);
-        } catch (InvocationTargetException exception) {
-            throw exception.getCause();
         }
     }
 }
