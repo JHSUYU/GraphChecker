@@ -127,6 +127,16 @@ says nothing about a SAT candidate, so the campaign still publishes what it
 established. Raise the budget for a workload whose closure legitimately needs
 more waves than it has members.
 
+`campaign_stop_after` (default empty, override
+`CAUSYNTH_CAMPAIGN_STOP_AFTER`) names the stage after which a campaign returns
+successfully, exit code 0. The only value it accepts is `IMPORT`: the campaign
+runs PREFLIGHT through IMPORT of its first epoch and stops there, having
+published the replay session and its per-kind row census, which is what a
+runtime change is gated on; reaching it through EXPLORE..EMIT costs hours and
+answers a different question. Left empty the campaign proceeds to EXPLORE
+and runs to EMIT as usual. Any other value is a configuration error, named by
+`validate` and by the campaign's own PREFLIGHT stage.
+
 Inspect and validate before running:
 
 ```bash

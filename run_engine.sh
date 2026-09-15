@@ -51,6 +51,16 @@ workflow_config_keys=(
   "concolic_replay_command CAUSYNTH_CONCOLIC_REPLAY_COMMAND krp -"
   "concolic_worker_count CAUSYNTH_CONCOLIC_JOBS krp -"
   "campaign_max_iterations CAUSYNTH_CAMPAIGN_MAX_ITERATIONS krp -"
+  # The stage a measurement run stops after, once its measurement is
+  # complete.  `IMPORT` returns successfully right after the IMPORT stage of
+  # the current epoch: the seed session and its per-kind row census are what a
+  # runtime change is gated on, and running EXPLORE..EMIT to reach them costs
+  # hours and answers a different question.  Empty -- the default -- runs the
+  # whole campaign, so an unconfigured workload is unaffected.  Only these two
+  # values exist; validate_config refuses any other, because a misspelling
+  # would silently run the full campaign and look like a measurement run that
+  # never stopped.
+  "campaign_stop_after CAUSYNTH_CAMPAIGN_STOP_AFTER krp -"
   "region_path_max_paths_per_region CAUSYNTH_REGION_PATH_MAX_PATHS_PER_REGION krp -"
   "region_path_max_flips_per_path CAUSYNTH_REGION_PATH_MAX_FLIPS_PER_PATH krp -"
   "region_path_max_tasks CAUSYNTH_REGION_PATH_MAX_TASKS krp -"
@@ -435,6 +445,16 @@ validate_config() {
   [[ "${clock_skew_ms}" =~ ^[0-9]+$ || "${clock_skew_ms}" == unbounded ]] \
     || die "clock_skew_ms must be a non-negative integer or unbounded: \
 ${clock_skew_ms}"
+  # The one stage a campaign may be asked to stop after.  Refused here rather
+  # than in do_campaign so that `validate` and PREFLIGHT both name it before
+  # any work starts: a value this table does not carry would otherwise match
+  # nothing, run the whole campaign, and be read back as a measurement run
+  # that never stopped.
+  case "${campaign_stop_after}" in
+    ''|IMPORT) ;;
+    *) die "campaign_stop_after must be empty or IMPORT: \
+${campaign_stop_after}" ;;
+  esac
   local bound
   for bound in "${region_path_max_paths_per_region}" \
       "${region_path_max_flips_per_path}" "${region_path_max_tasks}"; do
@@ -2723,6 +2743,16 @@ do_campaign() {
       "${iteration_dir}"
     campaign_stage "IMPORT[${iteration}]" campaign_import_session \
       "${iteration_dir}" "${iteration_id}"
+    # A measurement run stops where its measurement is complete: the seed
+    # session and its census, which IMPORT has just published for this epoch.
+    # Declared, defaulted empty and validated in the workflow-key table, so
+    # this reads a resolved key like every other bound rather than an
+    # environment variable of its own.
+    if [[ "${campaign_stop_after}" == "IMPORT" ]]; then
+      campaign_log "stopping after IMPORT[${iteration}]: \
+campaign_stop_after=IMPORT"
+      return 0
+    fi
     campaign_stage "EXPLORE[${iteration}]" campaign_explore \
       "${iteration_dir}" "${iteration_id}"
     campaign_publish_iteration_manifest "${iteration_dir}" "${iteration_id}" \

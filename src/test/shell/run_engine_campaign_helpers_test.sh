@@ -644,7 +644,11 @@ done
 # is still the campaign's to bound, it is just the composer that runs it.  `composer` left it with the Design 3
 # stage reduction: there is one composition of the anchored target's paths,
 # and a key naming which one selected nothing.
-[[ "$(print_normalized_config | wc -l)" -eq 41 ]] \
+# 42: `campaign_stop_after` joined it when the IMPORT stop became a declared
+# key, in place of the undeclared CAUSYNTH_CAMPAIGN_STOP_AFTER env switch
+# b70e1c7eb deleted.  Where a run stopped is part of the configuration a
+# campaign publishes, so `config` prints it whether or not it is set.
+[[ "$(print_normalized_config | wc -l)" -eq 42 ]] \
   || fail "config prints a different number of keys than it used to: \
 $(print_normalized_config | wc -l)"
 
@@ -776,5 +780,127 @@ ${scheduler_args}"
 writes: ${scheduler_args}"
 [[ "$(type -t campaign_seeding_results)" != function ]] \
   || fail "campaign_seeding_results survived the option it fed"
+
+# STOP-1: `campaign_stop_after` is a declared workflow key, so it answers the
+# four table questions, resolves from a config file, and resolves from
+# CAUSYNTH_CAMPAIGN_STOP_AFTER through the one override mechanism every other
+# key uses -- there is no second code path reading that variable.
+grep -q 'CAUSYNTH_CAMPAIGN_STOP_AFTER' "${repo}/run_engine.sh" \
+  || fail "the environment override for campaign_stop_after is not declared"
+[[ "$(grep -c 'CAUSYNTH_CAMPAIGN_STOP_AFTER' "${repo}/run_engine.sh")" -eq 1 ]] \
+  || fail "CAUSYNTH_CAMPAIGN_STOP_AFTER appears outside the key table: \
+it is honoured through apply_environment_overrides only"
+known_config_key campaign_stop_after \
+  || fail "campaign_stop_after is not loadable from a workflow file"
+stop_after_dir="${test_tmp}/stop-after"
+mkdir -p "${stop_after_dir}"
+printf 'campaign_stop_after=IMPORT\n' >"${stop_after_dir}/workflow.properties"
+reset_config
+[[ -z "${campaign_stop_after}" ]] \
+  || fail "campaign_stop_after does not default to empty: \
+${campaign_stop_after}"
+load_config_file "${stop_after_dir}/workflow.properties"
+[[ "${campaign_stop_after}" == IMPORT ]] \
+  || fail "a workflow file cannot set campaign_stop_after"
+reset_config
+CAUSYNTH_CAMPAIGN_STOP_AFTER=IMPORT apply_environment_overrides
+[[ "${campaign_stop_after}" == IMPORT ]] \
+  || fail "CAUSYNTH_CAMPAIGN_STOP_AFTER does not override campaign_stop_after"
+
+# STOP-2: only the two declared values exist.  A misspelling would otherwise
+# match nothing in do_campaign, run the whole campaign, and be read back as a
+# measurement run that never stopped, so validate_config names it -- which is
+# what `validate` and the campaign's own PREFLIGHT stage both call.
+stop_after_config() {
+  project_repo="${stop_after_dir}"
+  project_module_dir="${stop_after_dir}"
+  project_classes_dir="${stop_after_dir}"
+  project_classpath="${stop_after_dir}"
+  causynth_output_dir="${stop_after_dir}/out"
+  causynth_cache_dir="${stop_after_dir}/cache"
+  causynth_target_spec="${stop_after_dir}/target.yaml"
+  custom_jdk_home="${stop_after_dir}/jdk"
+  z3_bin=z3
+  workload_command="true"
+  trace_test=T
+  causynth_loop_bounds="${stop_after_dir}/loop-bounds.jsonl"
+  : >"${causynth_loop_bounds}"
+  causynth_communication_mappings=""
+  causynth_symbolic_inputs=""
+  causynth_root_domains=""
+  solver_timeout_ms=1000
+  schedule_max_jobs=1
+  concolic_worker_count=1
+  campaign_max_iterations=1
+  region_path_max_waves=1
+  compose_max_valuations=1
+  clock_skew_ms=0
+  region_path_max_paths_per_region=""
+  region_path_max_flips_per_path=""
+  region_path_max_tasks=""
+  campaign_stop_after=$1
+}
+stop_after_config ""
+validate_config >/dev/null \
+  || fail "an empty campaign_stop_after is refused"
+stop_after_config IMPORT
+validate_config >/dev/null \
+  || fail "campaign_stop_after=IMPORT is refused"
+# A subshell body, because validate_config refuses by `die`, which exits.
+stop_after_validate() (
+  stop_after_config "$1"
+  validate_config
+)
+run_capturing_status stop_after_validate EXPLORE \
+  >/dev/null 2>"${stop_after_dir}/validate.err"
+[[ "${status}" -ne 0 ]] \
+  || fail "validate accepted an undeclared campaign_stop_after value"
+grep -q 'campaign_stop_after must be empty or IMPORT: EXPLORE' \
+    "${stop_after_dir}/validate.err" \
+  || fail "the refusal does not name the key and the value it refused: \
+$(cat "${stop_after_dir}/validate.err")"
+
+# STOP-3: what the key does to the campaign.  IMPORT returns 0 right after the
+# IMPORT stage of epoch 0 -- EXPLORE and everything after it never run -- and
+# an empty value proceeds to EXPLORE and on through EMIT.  The stages are
+# driven through a campaign_stage stub, so this pins the control flow of
+# do_campaign itself rather than any stage's work.
+stop_after_epoch() {
+  local root=$1
+  local labels=$2
+  (
+    campaign_stage() { printf '%s\n' "$1" >>"${labels}"; }
+    campaign_publish_iteration_manifest() { :; }
+    campaign_publish_epoch_final() { :; }
+    campaign_topology_divergences() { printf '0\n'; }
+    campaign_retained_growth() { printf '\n'; }
+    campaign_seeding_replay() { printf '\n'; }
+    schedule_output_dir="${root}"
+    campaign_setup_command=""
+    campaign_max_iterations=1
+    do_campaign >/dev/null
+  )
+}
+stop_after_config IMPORT
+: >"${stop_after_dir}/labels-import.tsv"
+stop_after_epoch "${stop_after_dir}/campaign-import" \
+  "${stop_after_dir}/labels-import.tsv" \
+  || fail "a campaign stopping after IMPORT did not exit 0"
+[[ "$(tail -n 1 "${stop_after_dir}/labels-import.tsv")" == "IMPORT[0]" ]] \
+  || fail "the last stage of a stopped campaign is not IMPORT[0]: \
+$(tr '\n' ' ' <"${stop_after_dir}/labels-import.tsv")"
+! grep -q 'EXPLORE' "${stop_after_dir}/labels-import.tsv" \
+  || fail "a campaign stopping after IMPORT still ran EXPLORE"
+stop_after_config ""
+: >"${stop_after_dir}/labels-full.tsv"
+stop_after_epoch "${stop_after_dir}/campaign-full" \
+  "${stop_after_dir}/labels-full.tsv" \
+  || fail "a campaign with campaign_stop_after unset did not exit 0"
+grep -q 'EXPLORE\[0\]' "${stop_after_dir}/labels-full.tsv" \
+  || fail "an unset campaign_stop_after did not proceed to EXPLORE: \
+$(tr '\n' ' ' <"${stop_after_dir}/labels-full.tsv")"
+[[ "$(tail -n 1 "${stop_after_dir}/labels-full.tsv")" == "EMIT[0]" ]] \
+  || fail "an unset campaign_stop_after did not run through EMIT: \
+$(tr '\n' ' ' <"${stop_after_dir}/labels-full.tsv")"
 
 echo "run_engine campaign helper tests passed"
