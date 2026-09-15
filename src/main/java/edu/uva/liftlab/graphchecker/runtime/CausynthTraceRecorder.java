@@ -30,6 +30,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.Callable;
+import java.util.concurrent.ForkJoinTask;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
@@ -202,6 +203,7 @@ public final class CausynthTraceRecorder {
                         context.requestKey, context.requestApi);
         calls.push(new ActiveCall(id, parentSiteId, method,
                 context.spanId, parent == null));
+        pushMethodFrame(method);
         if (contextOnlyConcolicReplay) {
             return id;
         }
@@ -232,6 +234,7 @@ public final class CausynthTraceRecorder {
         // been exhausted; the silent exit hook must not pop the parent.
         calls.push(new ActiveCall(id, 0L, method, context.spanId,
                 parent == null));
+        pushMethodFrame(method);
         if (id > maxEvents) {
             return id;
         }
@@ -277,7 +280,8 @@ public final class CausynthTraceRecorder {
         event.objectId = identity(receiver);
         event.invocationId = event.id;
         emitExecutionEvent(event);
-        if (isThreadStart(declaredCallee, receiver)) {
+        if (isThreadStart(declaredCallee, receiver)
+                || isTaskFork(declaredCallee, receiver)) {
             RuntimeTraceContext.captureAsync(receiver);
         }
         // The execution index's stack: one frame per instrumented call
@@ -301,7 +305,10 @@ public final class CausynthTraceRecorder {
         event.runtimeType = runtimeType(value);
         event.objectId = identity(value);
         event.primitiveValue = MapFields.safe(primitiveValue);
-        if (argumentIndex == 0 && isAsyncTaskSubmission(
+        // Any argument, not only the first: a fork-join batch submits its
+        // tasks as the arguments of one invokeAll, and each of them is a
+        // submission whose endpoint the task it started runs under.
+        if (isAsyncTaskSubmission(
                 site == null ? "" : site.declaredCallee, value)) {
             RuntimeTraceContext.captureAsync(value);
         }
@@ -310,6 +317,28 @@ public final class CausynthTraceRecorder {
 
     /** Leaves the call site {@link #beginCall} pushed. */
     private static void exitCallFrame() {
+        edu.uva.liftlab.graphchecker.runtime.d3.Identity.exitCall();
+    }
+
+    /**
+     * Pushes the execution-index frame of one method ACTIVATION.
+     *
+     * <p>A call-site frame exists only where the caller was woven.  Plenty
+     * of callers are not -- a JDK callback, a lambda body, an unselected
+     * class -- and two activations entered from such a caller under one
+     * enclosing frame would otherwise carry the same index and mint the
+     * same address, which is exactly the duplicate the finalizer rejects.
+     * An activation frame is always there, so the index is defined for
+     * every activation, and its iteration counts the k-th entry of THIS
+     * method under the frame that encloses it.</p>
+     */
+    private static void pushMethodFrame(String method) {
+        edu.uva.liftlab.graphchecker.runtime.d3.Identity.enterCall(
+                MapFields.safe(method));
+    }
+
+    /** Leaves the activation frame {@link #pushMethodFrame} pushed. */
+    private static void popMethodFrame() {
         edu.uva.liftlab.graphchecker.runtime.d3.Identity.exitCall();
     }
 
@@ -379,6 +408,9 @@ public final class CausynthTraceRecorder {
         event.primitiveValue = MapFields.safe(primitiveValue);
         emitExecutionEvent(event);
         removeCall(resolvedCallId);
+        if (call != null) {
+            popMethodFrame();
+        }
         if (call != null && call.rootContext) {
             RuntimeTraceContext.exitRoot(call.spanId);
         }
@@ -407,6 +439,9 @@ public final class CausynthTraceRecorder {
             }
         }
         removeCall(resolvedCallId);
+        if (call != null) {
+            popMethodFrame();
+        }
         if (call != null && call.rootContext) {
             RuntimeTraceContext.exitRoot(call.spanId);
         }
@@ -422,6 +457,7 @@ public final class CausynthTraceRecorder {
         if (call != null) {
             closeCallSites(call.callId, callSiteExit);
             removeCall(call.callId);
+            popMethodFrame();
             if (call.rootContext) {
                 RuntimeTraceContext.exitRoot(call.spanId);
             }
@@ -746,9 +782,12 @@ public final class CausynthTraceRecorder {
         event.kind = MapFields.safe(kind);
         event.method = MapFields.safe(method);
         event.callId = callId;
-        event.executionIndex = edu.uva.liftlab.graphchecker.runtime.d3
-                .Identity.atScope().render();
-        event.causalContext = recordedCausalContext();
+        // No index and no context here.  Only the METHOD_ENTER and exchange
+        // rows are read for them, and folding the index's hash and
+        // rendering its path on every field read, branch and call site cost
+        // the recording more than everything else it does: one sha256 per
+        // frame per event, and a path string per event, for a member
+        // nothing downstream reads.
         return event;
     }
 
@@ -769,6 +808,11 @@ public final class CausynthTraceRecorder {
             return "Anchor:" + anchor + "@"
                     + edu.uva.liftlab.graphchecker.runtime.d3.Lineage
                             .rpcSite();
+        }
+        String started = edu.uva.liftlab.graphchecker.runtime.d3.Lineage
+                .startedBy();
+        if (!started.isEmpty()) {
+            return "Anchor:" + started + "@THREAD_START";
         }
         edu.uva.liftlab.graphchecker.d3.contract.Role role =
                 edu.uva.liftlab.graphchecker.runtime.d3.Lineage.rootRole();
@@ -858,13 +902,32 @@ public final class CausynthTraceRecorder {
 
     private static boolean isAsyncTaskSubmission(String declaredCallee,
                                                  Object task) {
-        if (!(task instanceof Runnable) && !(task instanceof Callable)) {
+        if (!(task instanceof Runnable) && !(task instanceof Callable)
+                && !(task instanceof ForkJoinTask)
+                && !(task instanceof Collection)) {
             return false;
         }
         String signature = MapFields.safe(declaredCallee);
         return signature.contains(" execute(")
                 || signature.contains(" submit(")
-                || signature.contains(" schedule(");
+                || signature.contains(" schedule(")
+                || signature.contains(" invokeAll(");
+    }
+
+    /**
+     * A fork-join task submitted through its own receiver.
+     *
+     * <p>{@code fork()} and {@code invoke()} name no argument: the work is
+     * the receiver.  A pool worker that steals such a task was created by
+     * some earlier submission and inherits nothing from this one, so
+     * without this the task runs with the worker's inherited scope and two
+     * subtasks of one batch are one address.</p>
+     */
+    private static boolean isTaskFork(String declaredCallee, Object receiver) {
+        if (!(receiver instanceof ForkJoinTask)) return false;
+        String signature = MapFields.safe(declaredCallee);
+        return signature.contains(" fork()>")
+                || signature.contains(" invoke()>");
     }
 
     private static void removeCallSite(long invocationId) {
@@ -2026,9 +2089,7 @@ public final class CausynthTraceRecorder {
                 "outcome", event.outcome,
                 "branchKind", event.branchKind,
                 "successorIndex", event.successorIndex,
-                "switchCaseKeys", event.switchCaseKeys,
-                "executionIndex", event.executionIndex,
-                "causalContext", event.causalContext);
+                "switchCaseKeys", event.switchCaseKeys);
     }
 
     private static void writeTraceRow(Object... fields) {

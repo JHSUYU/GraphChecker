@@ -52,9 +52,15 @@ public final class OccurrenceMinterV2 {
                                              String site) {
         if (Text.safe(nodeKey).isEmpty()) return null;
         Role kind = role == null ? Role.UNKNOWN : role;
+        // An activation no PLAN selected is not an activation with no
+        // CONTEXT: the message that opened its scope, or the root it
+        // descends from, is known exactly as it is for a selected one.
+        // Only a scope this run could not attribute at all is Lost.
+        CausalContext context = Identity.context(Lineage.anchor(),
+                Lineage.rpcSite(), Lineage.rootRole(),
+                Lineage.rootWindowIndex());
         return OccurrenceAddress.of(NodeId.parse(nodeKey),
-                "ROLE." + kind.name(), CausalContext.of(kind),
-                Identity.here());
+                "ROLE." + kind.name(), context, Identity.here());
     }
 
     public static void resetForTests() {

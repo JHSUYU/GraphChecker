@@ -321,8 +321,11 @@ public class D3RuntimeTest {
         Identity.exitCall();
         assertEquals(inner, Identity.atScope());
 
-        // A loop iteration on the path does move it: that is inherent.
-        Identity.loopIteration("LOOP.a");
+        // Re-entering one site under one frame IS the next iteration --
+        // the rule that makes a loop body's turns distinct, computed the
+        // same way in the recording and in the replay.
+        Identity.enterCall("Caller.body()#u9");
+        Identity.exitCall();
         Identity.enterCall("Caller.body()#u9");
         assertEquals("Caller.run()#u3@0/Caller.step()#u7@0"
                 + "/Caller.body()#u9@1", Identity.atScope().render());
@@ -333,7 +336,7 @@ public class D3RuntimeTest {
         assertEquals(3, atEntry.frames().size());
         assertTrue(Identity.siteIndex().isEmpty());
         Identity.enterCall("Region.port()#u2");
-        assertEquals("Region.port()#u2@1", Identity.siteIndex().render());
+        assertEquals("Region.port()#u2@0", Identity.siteIndex().render());
 
         // The three causal contexts, and the one that is not an ordinal.
         assertEquals("Root:HEARTBEAT_TICK#4", Identity.context("", "",

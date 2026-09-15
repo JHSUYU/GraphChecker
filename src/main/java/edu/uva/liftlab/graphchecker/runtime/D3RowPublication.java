@@ -91,23 +91,16 @@ final class D3RowPublication {
     private static void decisions(ActiveRegion active,
                                   OccurrenceAddress occurrence) {
         for (JsonObject mapping : active.branchMappings) {
-            JsonObject witness = object(mapping, "witness");
-            JsonObject concrete = object(mapping, "concreteObservation");
             String siteId = optionalString(mapping, "siteId");
             int ordinal = optionalInteger(mapping, "occurrence", 1);
             long seq = optionalLongInteger(mapping, "vmEventId", 0L);
-            if (witness.size() > 0) {
-                D3Runtime.decision(occurrence, seq, siteId, ordinal,
-                        optionalBool(witness, "sourceTakenOutcome", false),
-                        predicate(witness));
-            } else if (concrete.size() > 0) {
-                // A decision the VM held no condition for still happened,
-                // and the arm it took is a fact of this run.
-                D3Runtime.decision(occurrence, seq, siteId, ordinal,
-                        optionalBool(concrete, "observedOutcome",
-                                optionalBool(concrete, "outcome", false)),
-                        null);
-            }
+            // The row states the site, the arm it took and the predicate as
+            // written; nothing here applies one to the other
+            // (CONTRACT-SPEC §2), and nothing reads the old witness shapes.
+            JsonObject written = object(mapping, "siteCondition");
+            D3Runtime.decision(occurrence, seq, siteId, ordinal,
+                    optionalBool(mapping, "outcome", false),
+                    written.size() > 0 ? written : null);
         }
     }
 
@@ -117,22 +110,163 @@ final class D3RowPublication {
                 ? satisfied.getAsJsonObject() : null;
     }
 
-    /** One row per root this activation minted. */
+    /**
+     * The roots this activation minted, and the placeholders it did not.
+     *
+     * <p>A DECLARED root is a marker, a clock or a configured source: the
+     * case names it and the search may move it.  A region's declared input
+     * is not a root at all -- it is a READ PLACEHOLDER, the symbol standing
+     * for what that read returned -- and publishing it as a root is what
+     * pins it: the composer pins every domain-less root to its recorded
+     * value, and a placeholder that is pinned AND joined to its writer's
+     * expression makes every moved valuation unsatisfiable.</p>
+     */
     private static void roots(ActiveRegion active,
                               OccurrenceAddress occurrence) {
         for (JsonObject row : active.symbolizedRows) {
-            String symbol = optionalString(row, "rawSymbol");
-            if (symbol.isEmpty()) symbol = optionalString(row, "symbol");
+            String symbol = vmSymbol(row);
             if (symbol.isEmpty()) continue;
-            String rootId = optionalString(row, "sourceId");
-            if (rootId.isEmpty()) rootId = optionalString(row, "portId");
+            String sourceId = optionalString(row, "sourceId");
+            String clock = optionalString(row, "declaredCallee");
+            String javaType = optionalString(row, "javaType");
+            boolean marker = "Z".equals(javaType)
+                    || "boolean".equals(javaType);
+            if (sourceId.isEmpty() && clock.isEmpty() && !marker) {
+                placeholder(occurrence, row, symbol);
+                continue;
+            }
+            String rootId = sourceId.isEmpty()
+                    ? optionalString(row, "portId") : sourceId;
+            RootKind kind = clock.isEmpty()
+                    ? (marker ? RootKind.MARKER : RootKind.INTEGRAL)
+                    : RootKind.CLOCK;
             D3Runtime.rootMint(occurrence,
                     optionalLongInteger(row, "eventSeq", 0L), rootId, symbol,
-                    kindOf(row), optionalString(row, "recordedValue"),
+                    kind, literal(optionalString(row, "recordedValue")),
                     optionalString(row, "domainMin"),
-                    optionalString(row, "domainMax"),
-                    !optionalString(row, "sourceId").isEmpty());
+                    optionalString(row, "domainMax"), true);
         }
+    }
+
+    /**
+     * One declared region input, as the read it stands for.
+     *
+     * <p>The symbol is the placeholder the mint installed; the location is
+     * the field it was installed on; the value is what the field held when
+     * it was.  A reader joins it to the write of that location exactly as
+     * it joins any other read.</p>
+     */
+    private static void placeholder(OccurrenceAddress occurrence,
+                                    JsonObject row, String symbol) {
+        String signature = optionalString(row, "fieldSignature");
+        LocationId location = fieldLocation(signature);
+        if (location == null) {
+            D3Runtime.gap(GapKind.DECLARATION_MISSING, GapClass.DIAGNOSTIC,
+                    symbol, "a declared region input states no field to"
+                            + " read: " + optionalString(row, "portId"));
+            return;
+        }
+        String value = optionalString(row, "observedValue");
+        if (value.isEmpty()) value = optionalString(row, "recordedValue");
+        if (literal(value).isEmpty()) {
+            D3Runtime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
+                    symbol, "a declared region input states no value it"
+                            + " read: " + optionalString(row, "portId"));
+            return;
+        }
+        D3Runtime.read(occurrence,
+                optionalLongInteger(row, "eventSeq", 0L),
+                Endpoint.stateSite(signature, "PLACEHOLDER", 0, false),
+                location, ReadRow.UNKNOWN_VERSION, symbol,
+                javaDescriptor(optionalString(row, "javaType")),
+                literal(value));
+    }
+
+    /** {@code <Class: type field>} as the location it names. */
+    private static LocationId fieldLocation(String fieldSignature) {
+        String signature = safe(fieldSignature);
+        int owner = signature.indexOf(':');
+        int field = signature.lastIndexOf(' ');
+        if (!signature.startsWith("<") || owner <= 1 || field <= owner) {
+            return null;
+        }
+        return LocationId.of(LocationKind.INSTANCE,
+                signature.substring(1, owner),
+                signature.substring(field + 1).replace(">", ""));
+    }
+
+    /** A source type name as the JVM descriptor a row states. */
+    private static String javaDescriptor(String javaType) {
+        String type = safe(javaType);
+        if (type.isEmpty()) return "Ljava/lang/Object;";
+        if (type.length() == 1) return type;
+        if ("boolean".equals(type)) return "Z";
+        if ("byte".equals(type)) return "B";
+        if ("char".equals(type)) return "C";
+        if ("short".equals(type)) return "S";
+        if ("int".equals(type)) return "I";
+        if ("long".equals(type)) return "J";
+        if ("float".equals(type)) return "F";
+        if ("double".equals(type)) return "D";
+        return "L" + type.replace('.', '/') + ";";
+    }
+
+    /**
+     * The VM's constant spelling as the literal it stands for.
+     *
+     * <p>{@code Y_I_119992} is the VM's name for the int constant 119992 --
+     * {@code Y} marks a concrete value, the letter after it is the JVM type
+     * and the rest is the value.  A row states the value.</p>
+     */
+    static String literal(String value) {
+        String stated = safe(value);
+        if (stated.length() > 4 && stated.charAt(0) == 'Y'
+                && stated.charAt(1) == '_' && stated.charAt(3) == '_') {
+            return stated.substring(4);
+        }
+        return stated;
+    }
+
+    /**
+     * The one spelling of a symbol.
+     *
+     * <p>A row's symbol and the symbol leaf inside the expressions the
+     * same session publishes have to be the same string: the composer
+     * binds a root by finding its name in a lowered term, and a row that
+     * names {@code REGION.r.in.uuid} while every term says {@code
+     * M_J_field_REGION.r.in.uuid.occ.<hash>_java/lang/Long} binds
+     * nothing.  The VM's name is the one that appears in the terms, so
+     * that is the one the row states.</p>
+     */
+    private static String vmSymbol(JsonObject row) {
+        String raw = optionalString(row, "rawSymbol");
+        if (!raw.isEmpty()) return raw;
+        // A configured source mints through the VM's own label and states
+        // no raw symbol of its own; the expression it published names it.
+        String leaf = symbolLeaf(row.get("expression"), 0);
+        return leaf.isEmpty() ? optionalString(row, "symbol") : leaf;
+    }
+
+    /** The first symbol leaf an expression states, or {@code ""}. */
+    private static String symbolLeaf(JsonElement node, int depth) {
+        if (node == null || node.isJsonNull() || depth > 8) return "";
+        if (node.isJsonArray()) {
+            for (JsonElement element : node.getAsJsonArray()) {
+                String found = symbolLeaf(element, depth + 1);
+                if (!found.isEmpty()) return found;
+            }
+            return "";
+        }
+        if (!node.isJsonObject()) return "";
+        JsonObject object = node.getAsJsonObject();
+        if (optionalString(object, "_type").contains("Symbol")) {
+            return optionalString(object, "_exp");
+        }
+        for (Map.Entry<String, JsonElement> member : object.entrySet()) {
+            String found = symbolLeaf(member.getValue(), depth + 1);
+            if (!found.isEmpty()) return found;
+        }
+        return "";
     }
 
     /**
@@ -147,9 +281,47 @@ final class D3RowPublication {
         if (!optionalString(row, "declaredCallee").isEmpty()) {
             return RootKind.CLOCK;
         }
-        String javaType = optionalString(row, "javaType");
+        String javaType = javaTypeOf(row);
         return "Z".equals(javaType) || "boolean".equals(javaType)
                 ? RootKind.MARKER : RootKind.INTEGRAL;
+    }
+
+    /**
+     * The Java type a mint row states, or the one its expression does.
+     *
+     * <p>A configured source mints through the VM's own label and states
+     * no type of its own; the symbol it minted carries it.  Without this
+     * a boolean configured root -- hdfs-17960's
+     * {@code HDFS.CONFIG.SNAPSHOT_DELETION_ORDERED} -- is published
+     * INTEGRAL, and a composer then looks for a range where there are two
+     * values.</p>
+     */
+    private static String javaTypeOf(JsonObject row) {
+        String stated = optionalString(row, "javaType");
+        return stated.isEmpty() ? symbolType(row.get("expression"), 0)
+                : stated;
+    }
+
+    /** The type of the first symbol leaf an expression states. */
+    private static String symbolType(JsonElement node, int depth) {
+        if (node == null || node.isJsonNull() || depth > 8) return "";
+        if (node.isJsonArray()) {
+            for (JsonElement element : node.getAsJsonArray()) {
+                String found = symbolType(element, depth + 1);
+                if (!found.isEmpty()) return found;
+            }
+            return "";
+        }
+        if (!node.isJsonObject()) return "";
+        JsonObject object = node.getAsJsonObject();
+        if (optionalString(object, "_type").contains("Symbol")) {
+            return optionalString(object, "_java_type");
+        }
+        for (Map.Entry<String, JsonElement> member : object.entrySet()) {
+            String found = symbolType(member.getValue(), depth + 1);
+            if (!found.isEmpty()) return found;
+        }
+        return "";
     }
 
     /**
@@ -257,15 +429,9 @@ final class D3RowPublication {
         String locationKey = locationKey(where);
         LocationId location = location(locationKey);
         if (location == null) return;
-        JsonElement stated = node.get("observedVersion");
-        long observed = -1L;
-        if (stated != null && stated.isJsonObject()) {
-            observed = optionalLongInteger(stated.getAsJsonObject(),
-                    "fieldVersionId", -1L);
-        } else if (stated != null && stated.isJsonPrimitive()) {
-            observed = stated.getAsLong();
-        }
-        String identity = locationKey + "#" + observed;
+        long observed = versionOf(node);
+        long event = eventOf(node);
+        String identity = readIdentity(locationKey, observed, event);
         if (!published.add(identity)) return;
         String symbol = optionalString(node, "_exp");
         if (symbol.isEmpty()) {
@@ -273,15 +439,33 @@ final class D3RowPublication {
             // the version of the location, and that is what the row says.
             symbol = locationKey + "@v" + observed;
         }
-        D3Runtime.read(occurrence, Math.max(0L, observed),
+        String value = literal(concreteOf(node));
+        if (observed < 0L && value.isEmpty()) {
+            // Neither a version to join nor a value to pin: the row would
+            // say nothing a reader could use, and saying so is the point.
+            D3Runtime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
+                    locationKey, "a read states neither the version it"
+                            + " observed nor the value it returned");
+            return;
+        }
+        if (!D3Runtime.claimRead(identity)) return;
+        D3Runtime.read(occurrence, event >= 0L ? event : Math.max(0L, observed),
                 Endpoint.stateSite(locationKey, "READ_FROM", 0, false),
                 location, observed, symbol,
-                optionalString(node, "_java_type"), "");
+                optionalString(node, "_java_type"), value);
     }
 
     /**
      * A read the log does not cover: the object read from and what its
      * field then held, which is the pair the VM states (REPORT15).
+     *
+     * <p>The value the VM states here is an expression, not always a
+     * constant: a field read whose value came from another read carries
+     * that read, and with it the version it observed and the location it
+     * observed it at.  A row states the version when there is one and the
+     * literal when there is not -- never neither -- and spells the
+     * location the way the write log spells it, so the two sides of one
+     * location join.</p>
      */
     private static void fieldAccess(JsonObject node,
                                     OccurrenceAddress occurrence,
@@ -290,21 +474,114 @@ final class D3RowPublication {
         if (value == null || value.isJsonNull()) return;
         String ownerClass = optionalString(node, "ownerClass");
         int offset = optionalInteger(node, "fieldOffset", -1);
-        String locationKey = "INSTANCE_FIELD/" + ownerClass + "#" + offset;
-        String identity = locationKey + "#concrete";
+        JsonObject read = nestedRead(value, 0);
+        String locationKey = read == null ? ""
+                : locationKey(object(read, "location"));
+        LocationId location = location(locationKey);
+        if (location == null) {
+            locationKey = "INSTANCE_FIELD/" + ownerClass + "#" + offset;
+            location = LocationId.of(LocationKind.INSTANCE,
+                    ownerClass.isEmpty() ? "<unstated>" : ownerClass,
+                    String.valueOf(offset));
+        }
+        long observed = versionOf(node);
+        if (observed < 0L && read != null) observed = versionOf(read);
+        long event = eventOf(node);
+        if (event < 0L) event = eventOf(value);
+        if (event < 0L && read != null) event = eventOf(read);
+        String stated = literal(leaf(value, 0));
+        if (observed < 0L && stated.isEmpty()) {
+            D3Runtime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
+                    locationKey, "a projected read states neither the"
+                            + " version it observed nor the value it"
+                            + " returned");
+            return;
+        }
+        String identity = readIdentity(locationKey, observed, event);
         if (!published.add(identity)) return;
-        LocationId location = LocationId.of(LocationKind.INSTANCE,
-                ownerClass.isEmpty() ? "<unstated>" : ownerClass,
-                String.valueOf(offset));
         String projected = optionalString(node, "_exp");
-        D3Runtime.read(occurrence, 0L,
-                Endpoint.stateSite(locationKey, "FIELD", offset, false),
-                location, ReadRow.UNKNOWN_VERSION,
-                projected.isEmpty() ? locationKey + "@concrete" : projected,
-                optionalString(node, "_java_type"),
-                value.isJsonObject()
-                        ? optionalString(value.getAsJsonObject(), "_exp")
-                        : value.getAsString());
+        if (projected.isEmpty()) {
+            // One symbol per READ, not per field: the same name on every
+            // read of one field is one unknown the whole run shares.
+            projected = locationKey + (observed >= 0L ? "@v" + observed
+                    : "@e" + event);
+        }
+        if (!D3Runtime.claimRead(identity)) return;
+        D3Runtime.read(occurrence, event >= 0L ? event : Math.max(0L, observed),
+                Endpoint.stateSite(locationKey, "FIELD",
+                        Math.max(0, offset), false),
+                location, observed, projected,
+                optionalString(node, "_java_type"), stated);
+    }
+
+    /**
+     * One read event, wherever it is reached from.
+     *
+     * <p>A read happened once, inside one occurrence; the expression trees
+     * of every activation that later used the value carry the same node,
+     * and a row per tree counts one read many times.  The first activation
+     * to publish it states it -- activations finish innermost first, so
+     * that is the innermost region the read ran in.</p>
+     */
+    private static String readIdentity(String locationKey, long observed,
+                                       long event) {
+        return locationKey + "#" + observed + "#" + event;
+    }
+
+    /** The version a node observed, or {@code -1}. */
+    private static long versionOf(JsonObject node) {
+        JsonElement stated = node == null ? null : node.get("observedVersion");
+        if (stated == null) return -1L;
+        if (stated.isJsonObject()) {
+            return optionalLongInteger(stated.getAsJsonObject(),
+                    "fieldVersionId", -1L);
+        }
+        return stated.isJsonPrimitive() ? stated.getAsLong() : -1L;
+    }
+
+    /** The VM event a node names, or {@code -1}. */
+    private static long eventOf(JsonElement node) {
+        if (node == null || !node.isJsonObject()) return -1L;
+        JsonObject object = node.getAsJsonObject();
+        long read = optionalLongInteger(object, "readEventId", -1L);
+        return read >= 0L ? read
+                : optionalLongInteger(object, "eventId", -1L);
+    }
+
+    /** The read a value node states under the VM's boundary wrappers. */
+    private static JsonObject nestedRead(JsonElement value, int depth) {
+        if (value == null || !value.isJsonObject() || depth > 8) return null;
+        JsonObject object = value.getAsJsonObject();
+        if ("ReadFromExpression".equals(optionalString(object, "_type"))) {
+            return object;
+        }
+        return nestedRead(object.get("expression"), depth + 1);
+    }
+
+    /** The literal a value node states, under the VM's wrappers. */
+    private static String leaf(JsonElement value, int depth) {
+        if (value == null || value.isJsonNull() || depth > 8) return "";
+        if (value.isJsonPrimitive()) return value.getAsString();
+        if (!value.isJsonObject()) return "";
+        JsonObject object = value.getAsJsonObject();
+        String spelling = optionalString(object, "_exp");
+        if (!spelling.isEmpty()) return spelling;
+        String nested = leaf(object.get("expression"), depth + 1);
+        if (!nested.isEmpty()) return nested;
+        return leaf(object.get("concreteValue"), depth + 1);
+    }
+
+    /** What a read node says the read returned, or {@code ""}. */
+    private static String concreteOf(JsonObject node) {
+        JsonElement value = node.get("concreteValue");
+        if (value == null || value.isJsonNull()) {
+            JsonObject version = object(node, "observedVersion");
+            value = version.get("concreteValue");
+        }
+        if (value == null || value.isJsonNull()) return "";
+        return value.isJsonObject()
+                ? optionalString(value.getAsJsonObject(), "_exp")
+                : value.getAsString();
     }
 
     /** {@code KIND/owner#slot}, as the VM states one location. */
