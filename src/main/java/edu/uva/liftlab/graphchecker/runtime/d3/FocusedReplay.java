@@ -281,7 +281,7 @@ public final class FocusedReplay {
                     results.add(ObligationResult.of(id, Verdict.NOT_ADMITTED,
                             sessionId, REFUSALS.get(id)));
                 } else if (FLIPPED.contains(id)) {
-                    results.add(ObligationResult.of(id, Verdict.VALIDATED,
+                    results.add(ObligationResult.of(id, Verdict.ADMITTED,
                             sessionId, "the focused prefix reproduced and "
                             + Text.safe(obligation.siteId()) + "#"
                             + obligation.ordinal() + " took "

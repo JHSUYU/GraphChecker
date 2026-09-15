@@ -1951,7 +1951,7 @@ campaign_obligation_worker() {
       "${results}" "${worker}" tolerated
   # The replay's own session is the evidence; the row says which one it is.
   jq -c --arg session "$(jq -r '.sessionId // ""' "${result_row}")" \
-    '. + {verdict: "VALIDATED"}' "${result_row}" >"${result_row}.done" \
+    '. + {verdict: "ADMITTED"}' "${result_row}" >"${result_row}.done" \
     || campaign_fail EXPLORE ObligationSolverMain "${result_row}" \
       "the obligation result could not be completed"
   mv -- "${result_row}.done" "${result_row}"

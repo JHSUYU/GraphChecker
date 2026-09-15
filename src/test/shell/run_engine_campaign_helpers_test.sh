@@ -506,7 +506,7 @@ printf '%s\n' \
   '{"schemaVersion":1,"kind":"OBLIGATION_RESULT","obligationId":"OBL.slow","verdict":"NOT_ADMITTED","sessionId":"","detail":"SOLVER_TIMEOUT"}' \
   >"${wave_root}/obligations-0000/OBL.slow/obligation_result.jsonl"
 printf '%s\n' \
-  '{"schemaVersion":1,"kind":"OBLIGATION_RESULT","obligationId":"OBL.fast","verdict":"VALIDATED","sessionId":"SESSION.f","detail":""}' \
+  '{"schemaVersion":1,"kind":"OBLIGATION_RESULT","obligationId":"OBL.fast","verdict":"ADMITTED","sessionId":"SESSION.f","detail":""}' \
   >"${wave_root}/obligations-0000/OBL.fast/obligation_result.jsonl"
 : >"${wave_root}/obligation_results.jsonl"
 find "${wave_root}/obligations-0000" -mindepth 2 -maxdepth 2 \

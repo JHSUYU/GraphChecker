@@ -30,7 +30,7 @@ import java.util.Set;
  * -- one companion's mismatch rejected the primary -- and it is the reason a
  * result is keyed by obligation and never by replay.</p>
  *
- * <p>A {@link Verdict#VALIDATED} replay publishes a new session; that session
+ * <p>A {@link Verdict#ADMITTED} replay publishes a new session; that session
  * joins the corpus, and the new path it recorded yields new obligations with
  * new ids on the next wave.  That is how a nested guard chain deepens: wave
  * <i>n</i> flips {@code s1}, wave <i>n+1</i> finds {@code s2} on the path the
@@ -75,7 +75,7 @@ public final class Frontier {
     /**
      * Takes the verdicts the waves before this one recorded.
      *
-     * <p>Every verdict closes its own query. A VALIDATED replay's session is
+     * <p>Every verdict closes its own query. An ADMITTED replay's session is
      * in the corpus by now, where the path it recorded is what the next
      * proposal is cut from; NOT_ADMITTED and DIVERGED are recorded and not
      * retried, the first saying this task's own prefix did not match, the
@@ -85,7 +85,7 @@ public final class Frontier {
     public void consume(Collection<ObligationResult> results) {
         for (ObligationResult result : results) {
             answered.put(result.obligationId(), result.verdict());
-            if (result.verdict() == Verdict.VALIDATED
+            if (result.verdict() == Verdict.ADMITTED
                     && !result.sessionId().isEmpty()
                     && !validatedSessions.contains(result.sessionId())) {
                 validatedSessions.add(result.sessionId());
