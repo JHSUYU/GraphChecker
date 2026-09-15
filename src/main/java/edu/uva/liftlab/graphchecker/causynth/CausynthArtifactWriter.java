@@ -1,5 +1,7 @@
 package edu.uva.liftlab.graphchecker.causynth;
 
+import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
+import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 import edu.uva.liftlab.graphchecker.smt.JsonFields;
 
 import java.io.BufferedWriter;
@@ -37,6 +39,15 @@ final class CausynthArtifactWriter {
                 program.retainedLoops);
         writeGzipJsonl(outputDir.resolve("communication_gaps.jsonl.gz"),
                 program.communicationGaps);
+        // CLOSURE-V2 SS4: what the slice knows about the sites the target's
+        // demand can reach, for EXPLORE to join the recording against.  Plain
+        // JSONL and small (one row per site), because the stage that reads it
+        // reads nothing else of the static analysis.
+        List<StaticScopeMap.Site> sites = StaticScopeMap.sites(program.edges,
+                program.regions);
+        ArtifactIO.replaceJsonl(outputDir.resolve(StaticScopeMap.FILE),
+                StaticScopeMap.rows(sites, SiteControlDependence.over(
+                        StaticScopeMap.siteIds(sites))));
     }
 
     private static void writeGzipJsonl(Path output, List<?> values)

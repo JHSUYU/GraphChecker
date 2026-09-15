@@ -1,9 +1,16 @@
 package edu.uva.liftlab.graphchecker.causynth;
 
+import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.plan.CommunicationCatalogContract;
 import edu.uva.liftlab.graphchecker.plan.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.plan.SiteId;
+import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
+import java.io.IOException;
 import java.lang.reflect.Method;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -11,8 +18,22 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import org.junit.After;
+import org.junit.Rule;
 import org.junit.Test;
+import org.junit.rules.TemporaryFolder;
 import soot.G;
+import soot.IntType;
+import soot.Local;
+import soot.Modifier;
+import soot.Scene;
+import soot.SootClass;
+import soot.SootMethod;
+import soot.Unit;
+import soot.VoidType;
+import soot.jimple.IfStmt;
+import soot.jimple.IntConstant;
+import soot.jimple.Jimple;
+import soot.jimple.JimpleBody;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -35,6 +56,9 @@ public class RegionGraphOccurrenceKeyTest {
                     + "REGION.9492ec77-0f65-34ba-a3af-14753ac7347d"
                     + "/ctx:Root:KEY_MANAGER_TICK#1"
                     + "/idx:o.a.h.h.s.n.FSNamesystem#saveNamespace#12@0";
+
+    @Rule
+    public TemporaryFolder tree = new TemporaryFolder();
 
     @After
     public void resetSoot() {
@@ -283,9 +307,17 @@ public class RegionGraphOccurrenceKeyTest {
      * root.  A field the slice names but no root reaches is a constant for
      * this failure and stays out.  An explicit fault marker and a wire attach
      * point are symbolic roots of the same standing.
+     *
+     * <p>Then what the slice PUBLISHES about those cells (CLOSURE-V2 SS4):
+     * every write site of a cell it names, under the innermost region that
+     * would run it, with the guard set post-dominance gives that site -- and
+     * the guard set is where a may-reach guard and a control-dependence guard
+     * differ, which is the difference between finding 17960's marker flip and
+     * not finding it.</p>
      */
     @Test
-    public void careSetKeepsOnlySliceFieldsASymbolicRootReaches() {
+    public void careSetKeepsOnlySliceFieldsASymbolicRootReaches()
+            throws IOException {
         List<Map<String, Object>> graph = Arrays.asList(
                 // The fault symbol enters at the wire and flows to a cell
                 // that reads the rolled key.
@@ -317,6 +349,149 @@ public class RegionGraphOccurrenceKeyTest {
                                 "<example.Owner: java.util.Map allKeys>")));
         assertTrue(RuntimeSelectedRegionFinalizer.caredSharedLocations(handoff)
                 .contains("example.Owner#allKeys"));
+
+        theSliceNamesEveryWriteSiteOfACellItNames();
+        theGuardSetIsPostDominanceAndNotMayReach();
+    }
+
+    /**
+     * 17960's shape: one counter, two writers, and the writer the seed never
+     * ran is in the map exactly like the one it did.
+     */
+    private void theSliceNamesEveryWriteSiteOfACellItNames()
+            throws IOException {
+        String increment = "<example.Manager: java.lang.String create()>";
+        String decrement = "<example.Manager: void delete(int,long)>";
+        String saver = "<example.Saver: void save(java.io.OutputStream)>";
+        String carrier =
+                "<example.Manager: java.util.concurrent.atomic.AtomicInteger"
+                        + " count>";
+        List<Map<String, Object>> edges = Arrays.asList(
+                row("kind", "field_mutation", "method", increment,
+                        "unitIndex", 27, "toCell", carrier,
+                        "invoke", "<java.util.concurrent.atomic."
+                                + "AtomicInteger: int getAndIncrement()>"),
+                row("kind", "field_mutation", "method", decrement,
+                        "unitIndex", 35, "toCell", carrier,
+                        "invoke", "<java.util.concurrent.atomic."
+                                + "AtomicInteger: int getAndDecrement()>"),
+                row("kind", "exception_throw", "method", saver,
+                        "unitIndex", 64, "toCell", saver
+                                + "#u64#exception:java.lang.IllegalState"),
+                // A local-held container mutation names no shared location,
+                // so it is no candidate writer of one.
+                row("kind", "container_mutation_argument", "method", decrement,
+                        "unitIndex", 12, "toCell", decrement + "::$r5"));
+        Map<String, Object> port = row(
+                CommunicationCatalogContract.PORT_ID, "XCH.a.resp.count",
+                CommunicationCatalogContract.PORT_DEFINITION_METHOD, saver,
+                CommunicationCatalogContract.PORT_DEFINITION_UNIT_INDEX, 9);
+        List<Map<String, Object>> regions = Arrays.asList(
+                // The enclosing request region holds every method below it.
+                row("regionId", "REGION.request", "methods", Arrays.asList(
+                        "<example.Rpc: void handle()>", increment, decrement)),
+                row("regionId", "REGION.delete", "methods",
+                        Collections.singletonList(decrement)),
+                row("regionId", "REGION.create", "methods",
+                        Collections.singletonList(increment)),
+                row("regionId", "REGION.save", "methods",
+                        Collections.singletonList(saver),
+                        "communicationPorts",
+                        Collections.singletonList(port)));
+
+        List<StaticScopeMap.Site> sites = StaticScopeMap.sites(edges, regions);
+        Path file = tree.newFolder("scope-map").toPath()
+                .resolve(StaticScopeMap.FILE);
+        StringBuilder text = new StringBuilder();
+        for (JsonObject written : StaticScopeMap.rows(sites,
+                siteId -> siteId.endsWith("#u35")
+                        ? Arrays.asList(decrement + "#u7", decrement + "#u15")
+                        : Collections.<String>emptyList())) {
+            text.append(written.toString()).append('\n');
+        }
+        Files.write(file, text.toString().getBytes(StandardCharsets.UTF_8));
+        StaticScopeMap map = StaticScopeMap.read(file);
+
+        // The counter's carrier is found from the site the recording DID
+        // write at, spelled the way the VM spells an endpoint site.
+        Set<String> carriers = map.carriersAt(
+                "example.Manager#create()Ljava/lang/String;#621:WRITE", "I");
+        assertEquals(Collections.singleton(carrier), carriers);
+        // A write row of another type at that method is not that cell.
+        assertTrue(map.carriersAt(
+                "example.Manager#create()Ljava/lang/String;#621:WRITE", "Z")
+                .isEmpty());
+        List<String> writers = new ArrayList<>();
+        for (StaticScopeMap.Site site : map.writersOf(carrier)) {
+            writers.add(site.regionId + " " + site.siteId);
+        }
+        assertEquals("the writer the seed never ran is in the map, under the "
+                        + "innermost region that would run it: " + writers,
+                Arrays.asList("REGION.create " + increment + "#u27",
+                        "REGION.delete " + decrement + "#u35"), writers);
+        for (StaticScopeMap.Site site : map.writersOf(carrier)) {
+            assertEquals("<java.util.concurrent.atomic.AtomicInteger: int"
+                    + " value>", site.cell);
+        }
+        assertEquals(Arrays.asList(decrement + "#u7", decrement + "#u15"),
+                new ArrayList<>(map.guardsOf(decrement + "#u35")));
+        // The port's producer side, and the annotated target.
+        assertEquals(1, map.exportsOf("XCH.a.resp.count").size());
+        assertEquals("REGION.save",
+                map.exportsOf("XCH.a.resp.count").get(0).regionId);
+        assertEquals(1, map.targetSites().size());
+        assertEquals(saver + "#u64", map.targetSites().get(0).siteId);
+        assertEquals("example.Saver#save(Ljava/io/OutputStream;)V",
+                map.targetSites().get(0).vmSite);
+    }
+
+    /**
+     * The guard set of a write is post-dominance, not may-reach: the branch
+     * BOTH of whose arms can reach the write still decides it, because on one
+     * arm the write is unavoidable and on the other it is not.  That branch is
+     * 17960's ordered-deletion marker.
+     */
+    private void theGuardSetIsPostDominanceAndNotMayReach() {
+        G.reset();
+        SootClass owner = new SootClass("example.Guarded");
+        owner.setApplicationClass();
+        Scene.v().addClass(owner);
+        SootMethod method = new SootMethod("delete",
+                Collections.<soot.Type>emptyList(), VoidType.v(),
+                Modifier.PUBLIC);
+        owner.addMethod(method);
+        JimpleBody body = Jimple.v().newBody(method);
+        method.setActiveBody(body);
+        Local marker = Jimple.v().newLocal("i0", IntType.v());
+        Local earliest = Jimple.v().newLocal("i1", IntType.v());
+        Local count = Jimple.v().newLocal("i2", IntType.v());
+        body.getLocals().addAll(Arrays.asList(marker, earliest, count));
+        Unit u0 = Jimple.v().newAssignStmt(marker, IntConstant.v(0));
+        Unit u1 = Jimple.v().newAssignStmt(earliest, IntConstant.v(0));
+        Unit u2 = Jimple.v().newAssignStmt(count, IntConstant.v(0));
+        Unit write = Jimple.v().newAssignStmt(count, IntConstant.v(1));
+        Unit assertFirst = Jimple.v().newNopStmt();
+        IfStmt ordered = Jimple.v().newIfStmt(Jimple.v().newEqExpr(marker,
+                IntConstant.v(0)), write);
+        IfStmt first = Jimple.v().newIfStmt(Jimple.v().newEqExpr(earliest,
+                IntConstant.v(0)), assertFirst);
+        Unit deferred = Jimple.v().newReturnVoidStmt();
+        Unit done = Jimple.v().newReturnVoidStmt();
+        for (Unit unit : Arrays.asList(u0, u1, u2, ordered, first, deferred,
+                assertFirst, write, done)) {
+            body.getUnits().add(unit);
+        }
+        StaticScopeMap.Guards guards = SiteControlDependence.over(
+                Collections.singletonList(
+                        SiteId.of(method.getSignature(), 7)));
+        assertEquals(Arrays.asList(SiteId.of(method.getSignature(), 3),
+                        SiteId.of(method.getSignature(), 4)),
+                guards.of(SiteId.of(method.getSignature(), 7)));
+        // Both arms of the marker branch CAN reach the write, which is why
+        // the graph's may-reach guard rule drops it.
+        assertEquals(2, ((soot.toolkits.graph.UnitGraph)
+                new soot.toolkits.graph.BriefUnitGraph(body))
+                .getSuccsOf(ordered).size());
     }
 
     private static Map<String, Object> row(Object... fields) {
