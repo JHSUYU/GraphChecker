@@ -522,14 +522,18 @@ public final class Composer {
         Map<String, String> joins = new LinkedHashMap<String, String>();
         stateJoins(session, refusals, joined, observed, joins);
 
-        // (4) pi_p, as the runtime published it.
-        for (DecisionRow decision : path.decisions()) {
-            String term = decision.term();
-            if (unknown(term, refusals, "decision " + decision.siteId()
-                    + "#" + decision.ordinal())) {
+        // (4) pi_p, through the one routine that applies each decision's
+        //     polarity: a published term is the site's PREDICATE, and which
+        //     arm this run took is the row's outcome.
+        List<String> pi = Arms.pathCondition(path.decisions(),
+                Long.MAX_VALUE);
+        for (int index = 0; index < pi.size(); index++) {
+            DecisionRow decision = path.decisions().get(index);
+            if (unknown(pi.get(index), refusals, "decision "
+                    + decision.siteId() + "#" + decision.ordinal())) {
                 continue;
             }
-            terms.add(term);
+            terms.add(pi.get(index));
         }
 
         // (5) phi_p is the FATAL arm as published; the composer never

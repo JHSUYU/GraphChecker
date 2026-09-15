@@ -109,6 +109,9 @@ public final class Corpus implements Arms.Rows {
     private final Map<String, List<AttachRow>> attachesByInteraction =
             new LinkedHashMap<String, List<AttachRow>>();
     /** endpoint id -> the endpoint, so an anchor's producer can be found. */
+    /** session|endpoint -> the session event its row was sequenced at. */
+    private final Map<String, Long> seqByEndpoint =
+            new LinkedHashMap<String, Long>();
     private final Map<String, Endpoint> endpointById =
             new LinkedHashMap<String, Endpoint>();
     /** node|location -> every occurrence of that node touching it. */
@@ -164,11 +167,15 @@ public final class Corpus implements Arms.Rows {
         }
         for (ExportRow row : session.exports()) {
             remember(occurrenceById, row.endpoint().occurrence());
+            seqByEndpoint.put(session.sessionId() + "|"
+                    + row.endpoint().id(), row.seq());
             endpointById.put(row.endpoint().id(), row.endpoint());
             add(exports, row.endpoint().id(), row);
         }
         for (AttachRow row : session.attaches()) {
             remember(occurrenceById, row.endpoint().occurrence());
+            seqByEndpoint.put(session.sessionId() + "|"
+                    + row.endpoint().id(), row.seq());
             endpointById.put(row.endpoint().id(), row.endpoint());
             if (row.producer() != null) {
                 endpointById.put(row.producer().id(), row.producer());
@@ -194,6 +201,8 @@ public final class Corpus implements Arms.Rows {
         }
         for (WriteRow row : session.writes()) {
             remember(occurrenceById, row.endpoint().occurrence());
+            seqByEndpoint.put(session.sessionId() + "|"
+                    + row.endpoint().id(), row.seq());
             writeByVersion.put(versionKey(session.sessionId(), row.location(),
                     row.version()), row);
             add(writesOn, row.endpoint().occurrence().id(), row);
@@ -208,6 +217,8 @@ public final class Corpus implements Arms.Rows {
         }
         for (ReadRow row : session.reads()) {
             remember(occurrenceById, row.endpoint().occurrence());
+            seqByEndpoint.put(session.sessionId() + "|"
+                    + row.endpoint().id(), row.seq());
             if (!row.symbol().isEmpty()) {
                 readBySymbol.put(session.sessionId() + "|" + row.symbol(), row);
             }
@@ -433,6 +444,12 @@ public final class Corpus implements Arms.Rows {
     public OccurrenceAddress occurrenceOf(String endpointId) {
         Endpoint endpoint = endpointById.get(endpointId);
         return endpoint == null ? null : endpoint.occurrence();
+    }
+
+    @Override
+    public long seqOf(String sessionId, String endpointId) {
+        Long seq = seqByEndpoint.get(sessionId + "|" + endpointId);
+        return seq == null ? -1L : seq.longValue();
     }
 
     /** The arm builder both stages construct their families with. */
