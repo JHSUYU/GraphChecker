@@ -681,6 +681,18 @@ public final class SmtLowering extends VmLoweringCore {
         JsonObject location = JsonText.object(expression, "location");
         String key = locationKey(location);
         long version = observedVersion(expression);
+        // The VM publishes, ON the node, the expression of the version this
+        // read observed -- and it is the version's expression AS THIS READ
+        // SAW IT: for a map-state location that is assoc_read(state, key),
+        // not the state.  Taking the write log's entry instead hands a
+        // whole container back where a reference cell was read, which is
+        // how "allKeys.get(id) != null" came to compare a map with null and
+        // how a projected read had its projection thrown away.  Same
+        // version, same session, same join -- one step further along.
+        JsonElement stated = observedVersionExpression(expression);
+        if (stated != null && !stated.isJsonNull()) {
+            return dispatch(stated, expected, origin + ":observed");
+        }
         if (!key.isEmpty() && version >= 0L) {
             JsonElement written = join.writeExpression(key, version);
             if (written != null && !written.isJsonNull()) {
@@ -868,7 +880,16 @@ public final class SmtLowering extends VmLoweringCore {
                         VmTermLowering.expressionJavaType(expression);
                 String boxed = boxed(value, javaType);
                 if (boxed.isEmpty()) {
-                    unsupported("CannotBox:" + javaType);
+                    // Name what could not be boxed: "CannotBox:L" alone
+                    // says the declared type and not the shape the value
+                    // came out as, which is the half that decides whether
+                    // the cell or the lowering of it is wrong.
+                    refuse(CUT + ":CannotBox:" + javaType,
+                            "at " + origin + ": a container cell declared \""
+                                    + javaType + "\" lowered to "
+                                    + value.sort + ": "
+                                    + value.text.substring(0, Math.min(160,
+                                    value.text.length())));
                     return null;
                 }
                 return name(new ContainerSmtCodec.Term(boxed,
@@ -1279,6 +1300,13 @@ public final class SmtLowering extends VmLoweringCore {
         if (value.startsWith("ARRAY")) return LocationKind.ARRAY;
         if (value.startsWith("MAP")) return LocationKind.MAP;
         return LocationKind.INSTANCE;
+    }
+
+    /** What the node itself states the observed version's value was. */
+    private static JsonElement observedVersionExpression(JsonObject node) {
+        JsonElement observed = node.get(VmRows.OBSERVED_VERSION);
+        if (observed == null || !observed.isJsonObject()) return null;
+        return observed.getAsJsonObject().get("expression");
     }
 
     private static long observedVersion(JsonObject node) {

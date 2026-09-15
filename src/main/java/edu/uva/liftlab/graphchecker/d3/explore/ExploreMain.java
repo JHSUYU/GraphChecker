@@ -209,7 +209,7 @@ public final class ExploreMain {
             // or with several does not state which recording a declaration
             // was written about. Naming an exploration replay as the
             // recording is how a claim comes to be about the wrong execution.
-            gaps.add(GapRow.of("", GapKind.ADMISSION_GAP, GapClass.BLOCKING,
+            gaps.add(GapRow.of(ExploreCodec.EXPLORATION, GapKind.ADMISSION_GAP, GapClass.BLOCKING,
                     String.join(", ", selectors),
                     "this corpus states no single seed session: "
                             + corpus.unfocusedSessionIds().size()
