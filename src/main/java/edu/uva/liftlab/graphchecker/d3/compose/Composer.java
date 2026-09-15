@@ -1413,8 +1413,12 @@ public final class Composer {
      *
      * <p>Assignment-major: the recorded valuation first, then single moves
      * ordered by the distance moved (one rotation before three), then
-     * pairs.  A root the case declared no domain for is not enumerated --
-     * the composition pinned it to what the recording read.</p>
+     * pairs.  What a root may be is its KIND and the case's declaration: a
+     * declared MARKER is free in {recorded, flipped} by kind and needs no
+     * declared domain, an INTEGRAL without one is pinned to what the
+     * recording read and is not enumerated, and a CLOCK has a floor and no
+     * window.  Every root this skips is named, because which valuations
+     * were asked is what the claim's polarity gate is about.</p>
      */
     private List<Valuation> valuations() {
         List<String> declared = new ArrayList<String>();
@@ -1424,12 +1428,34 @@ public final class Composer {
             RootDomain domain = entry.getValue();
             if (domain.kind() == RootKind.CLOCK) continue;
             RootMintRow row = corpus.anyRoot(entry.getKey());
-            if (row == null || !row.declared()
-                    || !lowering.declared(row.symbol())) {
+            if (row == null || !row.declared()) continue;
+            if (!lowering.declared(row.symbol())) {
+                // No admitted path's formula names this root, so moving it
+                // would produce the same query twice and decide nothing --
+                // and the pin would name a constant the query never
+                // declares, which z3 answers with an error instead of a
+                // verdict.  Named rather than skipped in silence: on the
+                // 17960 seed this is the whole reason one valuation was
+                // asked, and reading it took a dig through the corpus.
+                gap(GapKind.DECLARATION_MISSING, GapClass.DIAGNOSTIC,
+                        entry.getKey(), "the case declares this root and no "
+                                + "admitted path's formula names it, so no "
+                                + "valuation of it was asked");
                 continue;
             }
             List<String> values = alternativesOf(domain);
-            if (values.isEmpty()) continue;
+            if (values.isEmpty()) {
+                if (domain.kind() == RootKind.MARKER) {
+                    gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
+                            entry.getKey(), "a declared marker is free in "
+                                    + "{recorded, flipped} by its kind, and "
+                                    + "this mint states \""
+                                    + domain.recordedValue()
+                                    + "\", which is neither polarity, so "
+                                    + "there is no flip to ask");
+                }
+                continue;
+            }
             declared.add(entry.getKey());
             alternatives.put(entry.getKey(), values);
         }

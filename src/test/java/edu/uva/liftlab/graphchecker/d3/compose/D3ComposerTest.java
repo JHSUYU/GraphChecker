@@ -480,6 +480,11 @@ public class D3ComposerTest {
         assertTrue("a cell the location does not name is refused by name, "
                         + "naming the location, the version and both sorts",
                 named(gaps, "ContainerElement:MAP/4#-3@1:MAP!=INT"));
+        assertTrue("a declared root no admitted path's formula names is "
+                        + "named too: which valuations were asked is what "
+                        + "the claim's polarity gate is about",
+                says(gaps, GapKind.DECLARATION_MISSING,
+                        "no admitted path's formula names it"));
         assertTrue("a scalar symbol no row of the session states is cut "
                         + "by name, and not declared free",
                 named(gaps, "PROPAGATION_CUT:UndeclaredFreeSymbol:"
@@ -722,7 +727,12 @@ public class D3ComposerTest {
     public void aDecisionContributesTheArmItsRunTook() throws Exception {
         Path iteration = folder.newFolder("polarity-arm").toPath();
         Session session = new Session(iteration, "s0", false);
+        // Two declared roots, and what each may be is its KIND: the marker
+        // is free in {recorded, flipped} with no domain row of its own,
+        // and the integral, which the case declares no window for, is
+        // pinned to what the recording read.
         session.marker("false");
+        session.serial("41", null, null);
         // One site, taken; one site, not taken.  The runtime publishes the
         // PREDICATE both times and the outcome says which arm ran.
         session.decision(ANCHOR, "anchor#u1", true, MARKER);
@@ -740,6 +750,9 @@ public class D3ComposerTest {
         session.write(store, LocationId.of(LocationKind.ARRAY, "7", "2"),
                 1L, "EXPR.00000000000000a1");
         session.decision(ANCHOR, "anchor#u3", true, "EXPR.00000000000000c1");
+        session.expression("EXPR.00000000000000c2", binary("==",
+                symbol(SERIAL, "I"), integer("I", 41L)));
+        session.decision(ANCHOR, "anchor#u6", true, "EXPR.00000000000000c2");
         // Two reference-typed field reads, each asked the question every
         // key case's predicate asks of one: is what it returned null?  A
         // reference read states what it returned exactly as a primitive
@@ -819,6 +832,29 @@ public class D3ComposerTest {
                 composition.body().contains("(valueInt (indexed_read "));
         assertTrue("and the cell it read is the slot the location names",
                 composition.body().contains(" 2)) 5)"));
+        // What each root may be, by kind, with no root-domains row for
+        // either: two valuations, the recorded one first.
+        assertEquals("a declared marker is free in {recorded, flipped} "
+                        + "by its kind, and needs no declared domain", 2,
+                composition.valuations().size());
+        assertEquals("ordinal 0 is the run as it happened", 0,
+                composition.valuations().get(0).ordinal());
+        assertTrue("so it moves nothing",
+                composition.valuations().get(0).moved().isEmpty());
+        assertEquals("at the value the recording read", "false",
+                composition.valuations().get(0).assignment()
+                        .get(MARKER_ROOT));
+        assertEquals("and the other polarity is the one move asked",
+                Collections.singletonMap(MARKER_ROOT, "true"),
+                composition.valuations().get(1).moved());
+        assertFalse("an integral the case declares no window for is not "
+                        + "enumerated",
+                composition.valuations().get(1).moved()
+                        .containsKey(SERIAL_ROOT));
+        assertTrue("it is pinned to what the recording read, by a named "
+                        + "conjunct an unsat core can read",
+                composition.body().contains("(= " + SERIAL + " 41)")
+                        && composition.body().contains("root_domain__"));
         assertTrue("a read whose value the ROW states is pinned to it: "
                         + fatalArm(composition),
                 fatalArm(composition).contains(SmtLowering.legalSymbols(
