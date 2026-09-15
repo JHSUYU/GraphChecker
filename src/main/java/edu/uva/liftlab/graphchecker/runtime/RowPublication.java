@@ -10,6 +10,7 @@ import edu.uva.liftlab.graphchecker.contract.LocationKind;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
 import edu.uva.liftlab.graphchecker.contract.RootKind;
+import edu.uva.liftlab.graphchecker.plan.InputActionCatalog;
 import edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.ActiveRegion;
 import edu.uva.liftlab.graphchecker.runtime.RowRuntime;
 import java.util.IdentityHashMap;
@@ -599,13 +600,15 @@ final class RowPublication {
     /**
      * What kind of root one mint row states.
      *
-     * <p>A clock declares its callee, a marker mints a boolean, everything
-     * else is integral.  The kind decides how the composer may move it --
-     * a clock is unbounded with a floor, a marker has two values -- so it
-     * is read from the declaration, never guessed from the value.</p>
+     * <p>The case declares which reads are clocks, a marker mints a boolean,
+     * everything else is integral.  The kind decides how the composer may
+     * move it -- a clock is unbounded with a floor, a marker has two values
+     * -- so it is read from the declaration, never guessed from the value or
+     * from the name of the callee that produced it.</p>
      */
     private static RootKind kindOf(JsonObject row) {
-        if (!optionalString(row, "declaredCallee").isEmpty()) {
+        if (optionalBool(row, InputActionCatalog.DECLARED_WALL_CLOCK,
+                false)) {
             return RootKind.CLOCK;
         }
         String javaType = javaTypeOf(row);

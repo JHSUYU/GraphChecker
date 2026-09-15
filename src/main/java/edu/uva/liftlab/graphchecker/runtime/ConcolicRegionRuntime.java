@@ -16,7 +16,6 @@ import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
 import edu.uva.liftlab.graphchecker.plan.BranchPredicateAlgebra;
 import edu.uva.liftlab.graphchecker.plan.BranchWitness;
 import edu.uva.liftlab.graphchecker.smt.CanonicalJson;
-import edu.uva.liftlab.graphchecker.plan.ClockRootPhysics;
 import edu.uva.liftlab.graphchecker.plan.RecordedEvidenceIdentity;
 import edu.uva.liftlab.graphchecker.plan.SharedStateEvidence;
 import edu.uva.liftlab.graphchecker.plan.SymbolicSourceEvidence;
@@ -4538,9 +4537,8 @@ public final class ConcolicRegionRuntime {
      * however wide, can admit the other one.</p>
      *
      * <p>What the solver actually chose is the <em>offset</em> from the
-     * value this read returned, which is what {@link ClockRootPhysics}
-     * bounds with a window and orders with monotonicity, and what a
-     * cross-node skew mechanism means in the first place.  Carrying that
+     * value this read returned, which is what a cross-node skew mechanism
+     * means in the first place.  Carrying that
      * offset onto this run's own read reproduces the decision the model
      * asked for against this run's own constants and keeps the replayed
      * clock monotone with the rest of the JVM.  When the live read equals
@@ -6723,18 +6721,15 @@ public final class ConcolicRegionRuntime {
                 row.addProperty("observedValue", recordedValue);
                 row.addProperty("recordedValue", recordedValue);
             }
-            // A cell minted through the clock hook is a wall-clock read by
-            // construction: the declaration names the callee, so the mint
-            // row states it and no reader downstream has to guess a clock
-            // from a site name.  The value it states is the one the
+            // The case declared this read a wall clock, so the mint row
+            // states it and no reader downstream has to guess a clock from a
+            // callee or a site name.  The value it states is the one the
             // RECORDING read, not this replay's: a clock is what every
             // replay reads differently, and pinning the root to one
             // replay's instant is what left eleven of bug3's twelve paths
-            // unsatisfiable at every valuation.  The recorded reading is
-            // the centre of the window the case's declared skew allows.
+            // unsatisfiable at every valuation.
             if (action.declaresWallClockRead()) {
-                row.addProperty("declaredCallee", action.declaredCallee);
-                row.addProperty("siteId", action.siteId);
+                row.addProperty(InputActionCatalog.DECLARED_WALL_CLOCK, true);
                 row.addProperty("eventSeq", action.eventSeq);
                 row.addProperty("recordedValue",
                         action.recordedPrimitiveValue);
@@ -7105,8 +7100,8 @@ public final class ConcolicRegionRuntime {
         final String accessorImplementationMethod;
         /** How the finalizer classified the port that minted this action. */
         final String sourceKind;
-        /** The external call whose return this action symbolizes, or "". */
-        final String declaredCallee;
+        /** Whether the case declared this read to be a wall clock. */
+        final boolean clock;
         /** The static site the plan observed this read at, or "". */
         final String siteId;
         /** The recorded event this read was observed at, or -1. */
@@ -7169,7 +7164,8 @@ public final class ConcolicRegionRuntime {
             this.accessorImplementationMethod = optionalString(json,
                     "accessorImplementationMethod");
             this.sourceKind = optionalString(json, "sourceKind");
-            this.declaredCallee = optionalString(json, "declaredCallee");
+            this.clock = optionalBool(json,
+                    InputActionCatalog.DECLARED_WALL_CLOCK, false);
             this.siteId = optionalString(json, "siteId");
             this.eventSeq = optionalLongInteger(json, "eventSeq", -1L);
             this.recordedPrimitiveValue = optionalBool(json, "observed", false)
@@ -7279,15 +7275,14 @@ public final class ConcolicRegionRuntime {
          * Whether this root is a wall-clock read whose recorded answer is
          * known.
          *
-         * <p>{@link ClockRootPhysics} already names the callees whose return
-         * is a millisecond clock; it is the same list that anchors each
-         * read's window and order in the composed formula, so a root it
-         * classifies as a clock here is exactly a root the composer lets
-         * move within a skew of what it read.</p>
+         * <p>The case's {@code symbolic-inputs.jsonl} row declares it
+         * ({@link InputActionCatalog#DECLARED_WALL_CLOCK}); nothing here
+         * matches a callee signature against a list of clock names.  A root
+         * the case declares a clock is exactly the root the composer moves by
+         * an offset from what the recording read.</p>
          */
         boolean declaresWallClockRead() {
-            return ClockRootPhysics.clockCallee(declaredCallee)
-                    && !recordedPrimitiveValue.isEmpty();
+            return clock && !recordedPrimitiveValue.isEmpty();
         }
 
         boolean matchesStaticField(String actualMethod,

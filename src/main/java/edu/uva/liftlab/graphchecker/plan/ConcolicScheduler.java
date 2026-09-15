@@ -1853,6 +1853,8 @@ public final class ConcolicScheduler {
         static final String UNDECLARED = "UNDECLARED_SYMBOLIC_INPUT";
         /** regionId -> the field signatures, port ids and cells it admits. */
         private final Map<String, Set<String>> admitted;
+        /** The subset of {@link #admitted} the case declared to be clocks. */
+        private final Map<String, Set<String>> clocks;
         /** regionId -> sourceId -> the one field that hook site mints. */
         private final Map<String, Map<String, String>> minted;
         /** One verdict per decided action, deduplicated, first-seen order. */
@@ -1863,9 +1865,11 @@ public final class ConcolicScheduler {
 
         private SymbolicInputSelection(
                 Map<String, Set<String>> admitted,
+                Map<String, Set<String>> clocks,
                 Map<String, Map<String, String>> minted,
                 List<JsonObject> declarationDiagnostics) {
             this.admitted = admitted;
+            this.clocks = clocks;
             this.minted = minted;
             this.declarationDiagnostics = declarationDiagnostics;
         }
@@ -1899,23 +1903,36 @@ public final class ConcolicScheduler {
                 }
             }
             Map<String, Set<String>> admitted = new LinkedHashMap<>();
+            Map<String, Set<String>> clocks = new LinkedHashMap<>();
             if (path == null) {
                 return new SymbolicInputSelection(
-                        admitted, minted, diagnostics);
+                        admitted, clocks, minted, diagnostics);
             }
             requireFile(path, "symbolic input selection");
             for (JsonObject row : ArtifactIO.readJsonl(path)) {
+                // A row that declares itself a clock declares every name on
+                // it a clock: the case states which of its reads is a wall
+                // clock, and the planner never decides that from a callee.
+                boolean clock = optionalBool(
+                        row, InputActionCatalog.DECLARED_WALL_CLOCK, false);
                 for (String regionId : declaredRegions(row, catalogRegions,
                         regionPlans, diagnostics)) {
                     Set<String> names = admitted.computeIfAbsent(regionId,
                             ignored -> new LinkedHashSet<>());
+                    Set<String> clockNames = clock
+                            ? clocks.computeIfAbsent(regionId,
+                                    ignored -> new LinkedHashSet<>())
+                            : null;
                     for (String field : new String[]{
                             "fieldSignatures", "portIds", "cells"}) {
                         addDeclaredNames(names, row, field);
+                        if (clockNames != null) {
+                            addDeclaredNames(clockNames, row, field);
+                        }
                     }
                 }
             }
-            return new SymbolicInputSelection(admitted, minted,
+            return new SymbolicInputSelection(admitted, clocks, minted,
                     diagnostics);
         }
 
@@ -2181,6 +2198,10 @@ public final class ConcolicScheduler {
                 // "the search starts at this cell" means.
                 retained.addProperty(
                         InputActionCatalog.DECLARED_SYMBOLIC_ROOT, true);
+                if (names(clocks, regionId, action)) {
+                    retained.addProperty(
+                            InputActionCatalog.DECLARED_WALL_CLOCK, true);
+                }
             }
             record(regionId, action, true, true, declared,
                     declared ? "DECLARED_SYMBOLIC_ROOT"
@@ -2271,7 +2292,13 @@ public final class ConcolicScheduler {
          * names the accessor's return.</p>
          */
         private boolean admits(String regionId, JsonObject action) {
-            Set<String> names = admitted.get(safe(regionId));
+            return names(admitted, regionId, action);
+        }
+
+        /** Whether one declared name set covers this action's port or cells. */
+        private static boolean names(Map<String, Set<String>> declared,
+                                     String regionId, JsonObject action) {
+            Set<String> names = declared.get(safe(regionId));
             if (names == null || names.isEmpty()) return false;
             if (names.contains(actionPort(action))) return true;
             for (String cell : actionCells(action)) {
@@ -2308,6 +2335,10 @@ public final class ConcolicScheduler {
          */
         private void renameDeclaredNames(List<JsonObject> refinedGraph) {
             if (admitted.isEmpty()) return;
+            // Both name sets are renamed: a declared clock cell and the
+            // exact copies of it are the same read under different Jimple
+            // names, so the flag travels with the declaration.
+
             Map<String, Set<String>> copies = new LinkedHashMap<>();
             for (JsonObject edge : refinedGraph == null
                     ? Collections.<JsonObject>emptyList() : refinedGraph) {
@@ -2322,17 +2353,20 @@ public final class ConcolicScheduler {
                         ignored -> new LinkedHashSet<>()).add(from);
             }
             if (copies.isEmpty()) return;
-            for (Set<String> names : admitted.values()) {
-                Set<String> renamed = new LinkedHashSet<>(names);
-                Deque<String> pending = new ArrayDeque<>(names);
-                while (!pending.isEmpty()) {
-                    for (String copied : copies.getOrDefault(
-                            pending.removeFirst(),
-                            Collections.<String>emptySet())) {
-                        if (renamed.add(copied)) pending.addLast(copied);
+            for (Map<String, Set<String>> declared
+                    : Arrays.asList(admitted, clocks)) {
+                for (Set<String> names : declared.values()) {
+                    Set<String> renamed = new LinkedHashSet<>(names);
+                    Deque<String> pending = new ArrayDeque<>(names);
+                    while (!pending.isEmpty()) {
+                        for (String copied : copies.getOrDefault(
+                                pending.removeFirst(),
+                                Collections.<String>emptySet())) {
+                            if (renamed.add(copied)) pending.addLast(copied);
+                        }
                     }
+                    names.addAll(renamed);
                 }
-                names.addAll(renamed);
             }
         }
 

@@ -1,2 +1,2 @@
-{"class":"org.apache.hadoop.hdfs.security.token.block.BlockTokenSecretManager","method":"boolean updateKeys()","cells":["<org.apache.hadoop.util.Timer: long now()>.return"]}
-{"class":"org.apache.hadoop.hdfs.security.token.block.BlockTokenSecretManager","method":"void addKeys(org.apache.hadoop.hdfs.security.token.block.ExportedBlockKeys,boolean)","cells":["<org.apache.hadoop.util.Timer: long now()>.return"]}
+{"class":"org.apache.hadoop.hdfs.security.token.block.BlockTokenSecretManager","method":"boolean updateKeys()","cells":["<org.apache.hadoop.util.Timer: long now()>.return"],"clock":true}
+{"class":"org.apache.hadoop.hdfs.security.token.block.BlockTokenSecretManager","method":"void addKeys(org.apache.hadoop.hdfs.security.token.block.ExportedBlockKeys,boolean)","cells":["<org.apache.hadoop.util.Timer: long now()>.return"],"clock":true}
