@@ -426,6 +426,18 @@ public final class GapLedger {
                         + " demanded is not in the recording");
 
         // ------------------------------------------------------------------
+        // REPLAY / IDENTITY -- the frames an occurrence stands on ARE its
+        // identity, so a frame pushed at an entry and not popped at its exit
+        // is not a diagnostic: every row published after it is addressed by
+        // the wrong occurrence.
+        // ------------------------------------------------------------------
+        blocking("REPLAY/IDENTITY", "FRAME_UNBALANCED",
+                "an activation closed at a different execution-index depth"
+                        + " than it opened at, so the rows published after"
+                        + " it name occurrences that never ran and the ones"
+                        + " that did are missing");
+
+        // ------------------------------------------------------------------
         // REPLAY / TASK_ADMISSION -- the one row a replay publishes about a
         // planned task no activation of it answered.
         // ------------------------------------------------------------------
@@ -459,6 +471,27 @@ public final class GapLedger {
                         + " row names which loops rest on that check and the"
                         + " case where the count is missing is withheld by"
                         + " name");
+        diagnostic(plan, "LINEAGE_LOST",
+                "the interaction or the frame is there and the naming"
+                        + " failed, which is a degraded identity rather than"
+                        + " a missing chain link: every row still carries the"
+                        + " occurrence and the endpoint it was published at,"
+                        + " in the degraded form IDENTITY-V3 names (Lost, or"
+                        + " an index without the start-site frame).  The"
+                        + " subject says which site could not be named, so"
+                        + " the hole is addressable");
+        diagnostic(plan, "OCCURRENCE_ADDRESS_SHARED",
+                "the activations are all published, each keeping its own"
+                        + " events, and the address they share is the one"
+                        + " IDENTITY-V3 gives them: node, region, causal"
+                        + " context and execution index all equal.  Nothing"
+                        + " is missing from a chain -- what is missing is a"
+                        + " fact that would tell the activations apart (a"
+                        + " role/window index, a call path, a loop or"
+                        + " start-site iteration), and the row names which"
+                        + " recorded root calls are involved so that fact"
+                        + " can be recorded; a declared selector's k picks"
+                        + " among them in seed order");
         blocking(plan, "BOUND_INSUFFICIENT",
                 "one static site demanded more activation-local accesses"
                         + " than the finalizer retains, so the port below it"

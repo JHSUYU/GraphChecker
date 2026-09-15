@@ -27,5 +27,18 @@ public enum GapKind {
     /** A planned task no activation of this replay answered. */
     TASK_UNANSWERED,
     /** The solver gave no answer in the time it was given. */
-    SOLVER_TIMEOUT
+    SOLVER_TIMEOUT,
+    /**
+     * An activation closed at a different execution-index depth than it
+     * opened at.
+     *
+     * <p>BLOCKING, and it has to be: the frames an occurrence stands on ARE
+     * its identity (IDENTITY-V3 §1), so a frame pushed at an entry and not
+     * popped at its exit moves the address of everything that runs after
+     * it -- on hdfs-17960 it moved four frames onto the replay's index and
+     * 34 of 81 planned tasks were refused on an address nobody could see
+     * was wrong.  A leak cannot be reported as a diagnostic, because every
+     * row published after it is addressed by the wrong occurrence.</p>
+     */
+    FRAME_UNBALANCED
 }

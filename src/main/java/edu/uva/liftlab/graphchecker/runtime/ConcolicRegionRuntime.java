@@ -266,10 +266,6 @@ public final class ConcolicRegionRuntime {
      */
     public static void checkLoopBackedge(
             String backedgeId, int instrumentedMaxTraversals) {
-        // The iteration an execution index frame carries (IDENTITY-V3):
-        // charged whether or not a region is live, because the index is a
-        // property of the control structure and not of the selection.
-        RowRuntime.loopIteration(backedgeId);
         ActiveRegion active = observingActiveRegion();
         if (active == null) return;
 
@@ -397,7 +393,14 @@ public final class ConcolicRegionRuntime {
     public static long enterAccessorCallContext(
             String callerMethod, int callUnitIndex, String callSiteId,
             String declaredCallee, Object receiver) {
-        RowRuntime.enterFrame(safe(callSiteId));
+        // No index frame.  An accessor call context is woven by the
+        // campaign and by nothing else, so a frame pushed here is a frame
+        // the recording never stands on: the replay's execution index was
+        // five frames deeper than the recorded one for the same occurrence
+        // (planned 8 frames, ran 13), and every address below it drifted.
+        // What the frame was for -- telling two reads of one accessor site
+        // inside one occurrence apart -- is Identity.eventSiteIndex's job,
+        // which counts per occurrence and per site in both passes alike.
         try {
             ActiveRegion active = activeRegion();
             String caller = safe(callerMethod);
@@ -435,7 +438,6 @@ public final class ConcolicRegionRuntime {
 
     /** Closes a lightweight accessor scope on normal or exceptional return. */
     public static void exitAccessorCallContext(long contextToken) {
-        RowRuntime.exitFrame();
         if (contextToken == 0L) return;
         try {
             AccessorCallContext current =
@@ -778,10 +780,129 @@ public final class ConcolicRegionRuntime {
      * started, which takes it when it runs.</p>
      */
     public static void startWork(String startSiteId, Object carrier) {
+        String site = safe(startSiteId);
         try {
-            RowRuntime.startWork(safe(startSiteId), carrier);
-        } catch (Throwable ignored) {
-            // Work is started whether or not its frame can be named.
+            RowRuntime.startWork(site, carrier);
+        } catch (Throwable unnamed) {
+            // The start happens either way -- a hook may not turn it into a
+            // failure -- and the hole is stated rather than swallowed: the
+            // work this start created will publish an occurrence whose
+            // index is missing the start-site frame.
+            RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind
+                            .LINEAGE_LOST,
+                    edu.uva.liftlab.graphchecker.contract.GapClass.DIAGNOSTIC,
+                    site, "the frame of this work start could not be filed, "
+                            + "so the work it started carries no start-site "
+                            + "frame in its execution index: " + unnamed);
+        }
+    }
+
+    /**
+     * Opens the execution-index region of one skeleton root the campaign did
+     * not select.
+     *
+     * <p>The recording opens a region at EVERY skeleton root
+     * (CausynthTraceRecorder.enterMethod), and an occurrence's execution
+     * index is the frames from its scope root while every endpoint inside
+     * it is indexed from its entry.  A replay that opened regions only at
+     * its own task roots therefore stood on a different frame stack and
+     * named a different occurrence for the same event -- the drift this
+     * branch exists to remove.  So the same rule is woven here, over the
+     * same skeleton file the recording read: frames and the occurrence
+     * address, and no row -- an activation row belongs to the planned
+     * occurrences alone.</p>
+     */
+    public static long enterRegionEntry(String regionId, String rootMethod,
+                                        Object receiver) {
+        RowRuntime.claimStart(receiver);
+        long entry = TOKEN_COUNTER.incrementAndGet();
+        int depth = edu.uva.liftlab.graphchecker.runtime.Identity.depth();
+        RowRuntime.enterFrame(safe(rootMethod));
+        edu.uva.liftlab.graphchecker.runtime.Identity.occurrence(
+                RuntimeTraceContext.activationSource(receiver).key(),
+                safe(regionId), true);
+        REGION_ENTRIES.get().push(new RegionEntry(entry, depth,
+                safe(rootMethod)));
+        return entry;
+    }
+
+    /** Closes the entry {@code entry} opened, and only that entry. */
+    public static void exitRegionEntry(long entry) {
+        closeRegionEntry(entry);
+    }
+
+    /** The exceptional edge of {@link #enterRegionEntry}. */
+    public static void throwRegionEntry(long entry, Throwable throwable) {
+        closeRegionEntry(entry);
+    }
+
+    /**
+     * One open region entry: the token the workload frame holds, the index
+     * depth it opened at, and the root it is the entry of.
+     */
+    private static final class RegionEntry {
+        private final long token;
+        private final int depthAtOpen;
+        private final String rootMethod;
+
+        private RegionEntry(long token, int depthAtOpen, String rootMethod) {
+            this.token = token;
+            this.depthAtOpen = depthAtOpen;
+            this.rootMethod = rootMethod;
+        }
+    }
+
+    private static final ThreadLocal<Deque<RegionEntry>> REGION_ENTRIES =
+            new ThreadLocal<Deque<RegionEntry>>() {
+                @Override
+                protected Deque<RegionEntry> initialValue() {
+                    return new ArrayDeque<RegionEntry>();
+                }
+            };
+
+    /**
+     * Closes the entry the token owns: its region, its index frame, and
+     * every entry that a missing exit left above it.
+     *
+     * <p>The token is a local of the workload frame the entry hook ran in,
+     * so recursion holds a different one at every depth and several hooks
+     * at ONE entry hold the same one -- which is what makes the push and
+     * the pop pair without guessing at ownership.  An entry still open
+     * above this one is an exit that did not run: its frames are dropped
+     * here (the stack cannot stay deeper than the entry that is closing)
+     * and the depth check below states it, fail-closed, because every row
+     * published after a leaked frame is addressed by the wrong
+     * occurrence.</p>
+     */
+    private static void closeRegionEntry(long entry) {
+        if (entry <= 0L) return;
+        Deque<RegionEntry> open = REGION_ENTRIES.get();
+        RegionEntry mine = null;
+        for (RegionEntry candidate : open) {
+            if (candidate.token == entry) {
+                mine = candidate;
+                break;
+            }
+        }
+        if (mine == null) return;
+        while (!open.isEmpty()) {
+            RegionEntry top = open.pop();
+            RowRuntime.exitRegionIndex();
+            RowRuntime.exitFrame();
+            if (top.token == entry) break;
+        }
+        if (open.isEmpty()) REGION_ENTRIES.remove();
+        int depth = edu.uva.liftlab.graphchecker.runtime.Identity.depth();
+        if (depth != mine.depthAtOpen) {
+            RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind
+                            .FRAME_UNBALANCED,
+                    edu.uva.liftlab.graphchecker.contract.GapClass.BLOCKING,
+                    mine.rootMethod,
+                    "this activation closed at execution-index depth "
+                            + depth + " and opened at " + mine.depthAtOpen
+                            + "; the innermost frame left standing is "
+                            + edu.uva.liftlab.graphchecker.runtime.Identity
+                                    .innermostFrame());
         }
     }
 
@@ -794,11 +915,6 @@ public final class ConcolicRegionRuntime {
         // inherits no frame from the submission: the start filed for THIS
         // task is claimed here, on the object the region was entered on.
         RowRuntime.claimStart(receiver);
-        // The execution index's frame stack.  In a replay the woven hooks
-        // are the region frames and the accessor call contexts -- the trace
-        // recorder's call-site hooks belong to the recording pass -- so
-        // this is where the control path is seen (IDENTITY-IMPL §B).
-        RowRuntime.enterFrame(safe(rootMethod));
         ConcolicTaskPlan config = configuration();
         RootHookGroup group = config.rootHookGroup(
                 instrumentationSelector, rootMethod);
@@ -819,6 +935,10 @@ public final class ConcolicRegionRuntime {
                 instrumentationSelector, rootMethod, group.key,
                 Math.max(0, group.hookCount - 1), 0L);
         frames.push(frame);
+        // No index frame here.  The ENTRY owns it -- one per Java frame,
+        // keyed by the token that frame holds (#enterRegionEntry) -- so a
+        // second plan row at one entry cannot push a second frame and a
+        // recursive entry cannot be mistaken for one.
         ActiveRegion active = admitRegion(config, group.key, rootMethod,
                 receiver, rootArguments);
         long token = active == null ? 0L : active.token;
@@ -847,6 +967,12 @@ public final class ConcolicRegionRuntime {
         // the bodies of one occurrence are the bodies of ONE enclosing
         // activation, and a second one is a second k.
         long token = TOKEN_COUNTER.incrementAndGet();
+        // No index frame: this hook is woven by the campaign and by nothing
+        // else, so a frame pushed here is a frame the recording never stands
+        // on.  The frame of this entry is the one its REGION hook pushes --
+        // the campaign's at a campaign root, the skeleton weave's at any
+        // other skeleton root -- which is exactly where the recording pushes
+        // one.
         Map<String, Integer> admittedTasks = config.addressLoopRootInvocation(
                 group.key, rootMethod, receiver, rootArguments, token);
         contexts.push(new LoopRootInvocationContext(token, group.key,
@@ -1970,65 +2096,7 @@ public final class ConcolicRegionRuntime {
         }
     }
 
-    /**
-     * Files the endpoint of the message this thread is sending.
-     *
-     * <p>IDENTITY-V3 §C: the producer endpoint travels with the message, so
-     * the receiving occurrence can state the anchor it ran under.  This
-     * transport has no spare header slot for 48 bytes, so it is filed by
-     * the exchange's own correlation id -- which is the same within-run
-     * pairing evidence the leaf handles use, not a second mechanism.</p>
-     */
-    static void noteMessageSender(String transport, String correlationId,
-                                  String half) {
-        if (!RowRuntime.open()) return;
-        try {
-            ActiveRegion active = activeRegion();
-            RuntimeTraceContext.View view = RuntimeTraceContext.current();
-            String nodeKey = view.source == null ? "" : view.source.key();
-            edu.uva.liftlab.graphchecker.contract.OccurrenceAddress sender =
-                    active == null || active.d3Address == null
-                            ? RowRuntime.degraded(nodeKey,
-                                    safe(transport) + "#" + safe(half))
-                            : active.d3Address;
-            RowRuntime.sending(sender, safe(transport), safe(correlationId),
-                    safe(half));
-        } catch (Throwable ignored) {
-            // A message is sent whether or not its endpoint can be filed.
-        }
-    }
 
-    /**
-     * The endpoint of one Thread.start or executor submission.
-     *
-     * <p>The child's activation row names it, which is the thread-start
-     * edge of happens-before (INTERACTION-ID §7.1): without it two
-     * occurrences on two threads have only their message causality, and a
-     * task submitted inside a scope has none.</p>
-     *
-     * @return the submission endpoint's id, or {@code ""}
-     */
-    static String noteWorkSubmission(String nodeKey) {
-        // Minted in the recording too, where there is no session to publish
-        // into: the id is what the started thread's causal context IS, and
-        // the recording's own rows need it as much as a replay's do.
-        try {
-            ActiveRegion active = activeRegion();
-            edu.uva.liftlab.graphchecker.contract.OccurrenceAddress from =
-                    active == null || active.d3Address == null
-                            ? RowRuntime.degraded(nodeKey, "submit")
-                            : active.d3Address;
-            if (from == null) return "";
-            edu.uva.liftlab.graphchecker.contract.Endpoint submission =
-                    RowRuntime.submission(from);
-            if (submission == null) return "";
-            RowRuntime.starting(submission);
-            return submission.id();
-        } catch (Throwable ignored) {
-            // Work is submitted whether or not its endpoint can be named.
-            return "";
-        }
-    }
 
     /** The transport's retry number for this leg, or 0. */
     private static int attemptOf(RuntimeTraceContext.View view) {
@@ -2856,7 +2924,6 @@ public final class ConcolicRegionRuntime {
      */
     public static void exitRegionFrame(String instrumentationSelector,
                                        String rootMethod) {
-        RowRuntime.exitFrame();
         try {
             RootInvocationFrame frame = popRootInvocationFrame(
                     instrumentationSelector, rootMethod);
@@ -2876,7 +2943,6 @@ public final class ConcolicRegionRuntime {
     public static void throwRegionFrame(String instrumentationSelector,
                                         String rootMethod,
                                         Throwable throwable) {
-        RowRuntime.exitFrame();
         try {
             RootInvocationFrame frame = popRootInvocationFrame(
                     instrumentationSelector, rootMethod);
@@ -5748,10 +5814,10 @@ public final class ConcolicRegionRuntime {
             row.addProperty("occurrenceId", occurrenceId());
             // WHERE in the region this read stood, captured here because
             // here is where it runs: the row is published at the end of the
-            // activation, and the frames are gone by then.  The accessor
-            // call context pushes its own frame (RowRuntime.enterFrame), so
-            // two reads of one accessor site inside one occurrence differ by
-            // that frame's iteration rather than by an ordinal.
+            // activation, and the frames are gone by then.  Two reads of one
+            // accessor site inside one occurrence differ by the site index's
+            // own innermost frame (Identity.eventSiteIndex), not by an
+            // ordinal and not by a frame only a replay stands on.
             row.addProperty("siteIndex", RowRuntime.siteIndexHere());
             row.addProperty("symbol", safe(requestedSymbol));
             JsonArray encodedPath = new JsonArray();

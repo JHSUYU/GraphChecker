@@ -199,7 +199,8 @@ final class RuntimeTraceContext {
         // as startedBy (R-I7.1's thread-start edge).
         String nodeKey = view.source == null ? "" : view.source.key();
         Object lineage = Lineage.capture(nodeKey,
-                ConcolicRegionRuntime.noteWorkSubmission(nodeKey));
+                edu.uva.liftlab.graphchecker.runtime.Identity
+                        .workSubmitted(nodeKey));
         synchronized (LOCK) {
             ASYNC_SEEDS.put(carrier, new Seed(view.spanId,
                     view.source, view.requestKey, view.requestApi,
@@ -208,18 +209,26 @@ final class RuntimeTraceContext {
         }
     }
 
-    /** Starts one root activation; nested methods reuse its span. */
+    /**
+     * Starts one root activation; nested methods reuse its span.
+     *
+     * <p>Opens no execution-index SCOPE.  This method is reached from the
+     * trace recorder's method hook and from nowhere else, so a scope opened
+     * here would exist in the recording and not in any replay, and the
+     * index of every occurrence under it would start at a different frame in
+     * the two passes -- which is a second identity.  A scope is opened where
+     * the workload says one begins (a request, a daemon tick, a carried
+     * scope, an inbound exchange), and those calls are the same code in both
+     * passes.  What this arm used to protect against -- a pool thread
+     * carrying the frames of whatever created it -- is answered by the start
+     * frame instead: {@link Identity#startWork} files the frame of the start
+     * that created the work, and {@link Identity} drops a finished task's
+     * start frame before the next one (REPORT-P2H).</p>
+     */
     static View enterRoot(Object receiver) {
         State state = CURRENT.get();
         Seed seed = takeSeed(Thread.currentThread());
         if (seed == null) seed = takeSeed(receiver);
-        // A root activation's execution index starts at the root.  A pool
-        // thread carries the frames of whatever created it -- a fork-join
-        // worker is created in the middle of the submitting call path --
-        // and indexing the work it runs from there would say that two
-        // tasks stolen by two workers ran at the same point.
-        edu.uva.liftlab.graphchecker.runtime.Identity.scopeStart();
-
         // The receiver's own registration first, and only then anything
         // ambient.
         SourceRef registered = sourceFor(receiver);
@@ -314,7 +323,8 @@ final class RuntimeTraceContext {
         // tells two calls of one api inside one request apart.
         return new RequestScope(view.source, view.requestKey,
                 view.requestApi, Lineage.capture(nodeKey,
-                        ConcolicRegionRuntime.noteWorkSubmission(nodeKey)));
+                        edu.uva.liftlab.graphchecker.runtime.Identity
+                                .workSubmitted(nodeKey)));
     }
 
     /**

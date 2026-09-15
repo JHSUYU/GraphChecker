@@ -13,7 +13,7 @@ import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveBoxing;
 import edu.uva.liftlab.graphchecker.plan.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.plan.StaticSymbolicSourceDeclaration;
 import edu.uva.liftlab.graphchecker.plan.ConfiguredSourcePhaseContract;
-import edu.uva.liftlab.graphchecker.runtime.OccurrenceMinter;
+import edu.uva.liftlab.graphchecker.runtime.OccurrenceBinding;
 import edu.uva.liftlab.graphchecker.plan.SiteId;
 
 import java.io.IOException;
@@ -155,6 +155,12 @@ public final class RuntimeSelectedRegionFinalizer {
     public static final int REGION_SCHEMA_VERSION = 3;
     /** {@code kind} of one planned region skeleton row. */
     public static final String SKELETON_KIND = "REGION_SKELETON";
+    /** Gap code: several activations, one occurrence address. */
+    public static final String OCCURRENCE_ADDRESS_SHARED =
+            "OCCURRENCE_ADDRESS_SHARED";
+    /** Activation member listing the root calls that share its address. */
+    public static final String SHARED_ADDRESS_ROOT_CALLS =
+            "sharedAddressRootCallIds";
 
     private RuntimeSelectedRegionFinalizer() {
     }
@@ -183,8 +189,8 @@ public final class RuntimeSelectedRegionFinalizer {
             program.skeletons.put(skeleton.regionId, skeleton);
         }
 
-        // Activation identity is minted before the first port of a region is
-        // built.
+        // Activation identity is read off the trace before the first port of
+        // a region is built.
         Map<String, List<Map<String, Object>>> targetPoliciesByRegion =
                 new LinkedHashMap<>();
         for (Map.Entry<String, StaticProgram.RegionRow> entry
@@ -195,10 +201,8 @@ public final class RuntimeSelectedRegionFinalizer {
         }
         List<Map<String, Object>> branchOrder = orderedBranchObservations(
                 runtimeObservations);
-        mintOccurrences(program, targetPoliciesByRegion, runtimeInstances,
-                branchOrder, skeletonSource);
         Map<String, String> occurrenceByRecordedRootCall =
-                recordedRootCallIndex(program.activations);
+                readOccurrences(program, runtimeInstances, skeletonSource);
 
         for (Map.Entry<String, StaticProgram.RegionRow> entry
                 : program.skeletons.entrySet()) {
@@ -839,37 +843,82 @@ public final class RuntimeSelectedRegionFinalizer {
     }
 
     /**
-     * Mints one {@code occurrenceId} per observed region activation and stamps
-     * it onto every row the recorded root call named.
+     * The node this activation ran on, as its own ADDRESS states it.
+     *
+     * <p>A component of the occurrence address the recording computed, read
+     * back out of it -- not a second reading of the trace rows.  Every
+     * activation in the program has an address ({@link #readOccurrences}
+     * refuses one that has none), so a string here that is not an address is
+     * a corrupt seed and says so by throwing.</p>
      */
-    private static void mintOccurrences(
+    private static String activationSourceKey(Map<String, Object> instance) {
+        return instance == null
+                ? OccurrenceBinding.UNREGISTERED_SOURCE_KEY
+                : edu.uva.liftlab.graphchecker.contract.OccurrenceAddress
+                        .parse(text(instance.get("occurrenceId")))
+                        .node().render();
+    }
+
+    /**
+     * Reads the occurrence address of every observed region activation and
+     * stamps it onto every row the recorded root call named.
+     *
+     * <p>READS.  The address was computed once, by {@code
+     * Identity.occurrence}, at the entry the recording woved it at, and a
+     * replay of the same occurrence computes the same string with the same
+     * function; an offline re-derivation here would be a second identity,
+     * and the two disagreed on 44 activations of hdfs-17960 (REPORT-M2
+     * §5).</p>
+     *
+     * <p>Two activations may still land on one address -- nothing IDENTITY-V3
+     * names separates them (same node, same region, same context, same
+     * index).  They are published under that one address and the collision
+     * is stated as a named diagnostic gap; their rows keep their own events,
+     * and the declared selector's {@code k} picks among them in seed order.
+     * Renumbering them would be an ordinal, which is what v3 exists to
+     * remove.</p>
+     *
+     * @return every recorded root call, by the occurrence it belongs to
+     */
+    private static Map<String, String> readOccurrences(
             StaticProgram program,
-            Map<String, List<Map<String, Object>>> targetPoliciesByRegion,
             Collection<Map<String, Object>> runtimeInstances,
-            List<Map<String, Object>> observations,
             String source) throws IOException {
-        OccurrenceMinter minter = new OccurrenceMinter();
+        Map<String, String> occurrenceByRecordedRootCall =
+                new LinkedHashMap<>();
+        Map<String, List<Long>> rootCallsByAddress = new LinkedHashMap<>();
         for (Map<String, Object> instance : canonicalRuntimeActivations(
                 runtimeInstances, source)) {
             String regionId = text(instance.get("regionId"));
             long rootCallId = longNumber(instance.get("rootCallId"), -1L);
-            String rootSourceKey = activationSourceKey(instance);
-            String semanticSourceKey = semanticSourceKey(
-                    targetPoliciesByRegion.get(regionId), instance,
-                    observations, rootSourceKey);
-            String occurrenceId;
-            try {
-                occurrenceId = minter.mint(regionId, rootCallId,
-                        semanticSourceKey,
-                        text(instance.get("executionIndex")),
-                        text(instance.get("causalContext")));
-            } catch (IllegalArgumentException duplicate) {
-                throw new IOException("duplicate runtime region activation: "
-                        + regionId + "\n" + rootCallId);
+            String occurrenceId = text(instance.get("occurrenceAddress"));
+            if (occurrenceId.isEmpty()) {
+                throw new IOException("runtime region activation states no "
+                        + "occurrence address, so the recording computed "
+                        + "none for it: " + regionId + "\n" + rootCallId);
             }
             instance.put("occurrenceId", occurrenceId);
-            program.activations.put(occurrenceId, instance);
+            occurrenceByRecordedRootCall.put(
+                    recordedRootCallKey(regionId, rootCallId), occurrenceId);
+            rootCallsByAddress.computeIfAbsent(occurrenceId,
+                    ignored -> new ArrayList<>()).add(rootCallId);
+            program.activations.putIfAbsent(occurrenceId, instance);
         }
+        for (Map.Entry<String, List<Long>> entry
+                : rootCallsByAddress.entrySet()) {
+            if (entry.getValue().size() < 2) continue;
+            program.activations.get(entry.getKey()).put(
+                    SHARED_ADDRESS_ROOT_CALLS, entry.getValue());
+            planGap(program.planGaps, OCCURRENCE_ADDRESS_SHARED,
+                    entry.getKey(), entry.getValue().size() + " activations "
+                            + "of this region share one address: nothing "
+                            + "IDENTITY-V3 names distinguishes them (same "
+                            + "node, causal context and execution index); "
+                            + "recorded root calls " + entry.getValue()
+                            + "; a declared selector's k picks among them in "
+                            + "seed order");
+        }
+        return occurrenceByRecordedRootCall;
     }
 
     /** Canonical activation records at the trace-aggregation boundary. */
@@ -934,67 +983,6 @@ public final class RuntimeSelectedRegionFinalizer {
             result.add(policy);
         }
         return result;
-    }
-
-    /**
-     * The stable logical scope current when this activation's root method was
-     * entered.
-     */
-    private static String activationSourceKey(Map<String, Object> instance) {
-        String sourceKey = text(instance.get("sourceKey"));
-        return sourceKey.isEmpty()
-                ? OccurrenceMinter.UNREGISTERED_SOURCE_KEY : sourceKey;
-    }
-
-    /** The source that owns the relation of this activation. */
-    private static String semanticSourceKey(
-            List<Map<String, Object>> targetPolicies,
-            Map<String, Object> instance,
-            List<Map<String, Object>> observations, String rootSourceKey) {
-        if (targetPolicies == null || !text(instance.get("selection"))
-                .startsWith("EXCEPTION")) {
-            return rootSourceKey;
-        }
-        Set<Long> calls = MapFields.longValues(instance.get("callIds"));
-        for (Map<String, Object> branch : targetPolicies) {
-            Map<String, Object> selected = selectedBranchObservation(branch,
-                    calls, observations);
-            if (selected == null) continue;
-            String selectedSourceKey = text(selected.get("callSourceKey"));
-            if (selectedSourceKey.isEmpty()) continue;
-            return selectedSourceKey;
-        }
-        return rootSourceKey;
-    }
-
-    /**
-     * The exact branch occurrence a replay of this activation would select:
-     * the first observation of the site whose outcome equals the required
-     * one, or the first observation when the policy demands no outcome.
-     */
-    private static Map<String, Object> selectedBranchObservation(
-            Map<String, Object> branch, Set<Long> calls,
-            List<Map<String, Object>> observations) {
-        String site = text(branch.get("siteId"));
-        if (site.isEmpty()) return null;
-        List<Map<String, Object>> occurrences = new ArrayList<>();
-        for (Map<String, Object> observation : observations) {
-            if (site.equals(text(observation.get("siteId")))
-                    && calls.contains(longNumber(
-                    observation.get("callId"), -1L))) {
-                occurrences.add(observation);
-            }
-        }
-        if (occurrences.isEmpty()) return null;
-        Object required = branch.get("requiredOutcome");
-        if (required instanceof Boolean) {
-            for (Map<String, Object> occurrence : occurrences) {
-                if (required.equals(occurrence.get("outcome"))) {
-                    return occurrence;
-                }
-            }
-        }
-        return occurrences.get(0);
     }
 
     /** Exact BRANCH observations in observed order. */
@@ -1332,7 +1320,7 @@ public final class RuntimeSelectedRegionFinalizer {
             long responseReceive = longNumber(
                     response.get("receiverEventSeq"), -1L);
             if (consumerSource.isEmpty()
-                    || OccurrenceMinter.UNREGISTERED_SOURCE_KEY.equals(
+                    || OccurrenceBinding.UNREGISTERED_SOURCE_KEY.equals(
                     consumerSource) || responseSend < 0L
                     || responseReceive <= responseSend) {
                 continue;
@@ -1449,7 +1437,7 @@ public final class RuntimeSelectedRegionFinalizer {
             }
             String sourceKey = activationSourceKey(producer);
             if (!sourceKey.isEmpty()
-                    && !OccurrenceMinter.UNREGISTERED_SOURCE_KEY.equals(
+                    && !OccurrenceBinding.UNREGISTERED_SOURCE_KEY.equals(
                     sourceKey)) {
                 result.add(sourceKey);
             }
@@ -2263,19 +2251,6 @@ public final class RuntimeSelectedRegionFinalizer {
      * for it.  Raw refined-graph rows carry only that trace evidence, so
      * this table is the single place they are resolved to an occurrence.
      */
-    private static Map<String, String> recordedRootCallIndex(
-            Map<String, Map<String, Object>> activations) {
-        Map<String, String> result = new LinkedHashMap<>();
-        for (Map.Entry<String, Map<String, Object>> entry
-                : activations.entrySet()) {
-            result.put(recordedRootCallKey(
-                    text(entry.getValue().get("regionId")),
-                    longNumber(entry.getValue().get("rootCallId"), -1L)),
-                    entry.getKey());
-        }
-        return result;
-    }
-
     private static String recordedRootCallKey(String regionId,
                                               long rootCallId) {
         return regionId + "\n" + rootCallId;

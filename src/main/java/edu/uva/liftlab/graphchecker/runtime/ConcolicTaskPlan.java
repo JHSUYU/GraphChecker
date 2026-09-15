@@ -265,13 +265,10 @@ final class ConcolicTaskPlan {
             // admitted to any address, which is how one occurrence came to
             // own two enclosing invocations.
             if (!task.acceptsRootInvocation(observed)) {
-                if (!task.addressDrifts(observed)) {
-                    task.noteUnaddressedCandidate("matching enclosing root: "
-                            + task.addressDifference(observed)
-                            + attribution(activationSource));
-                    continue;
-                }
-                task.noteAddressDrift(observed);
+                task.noteUnaddressedCandidate("matching enclosing root: "
+                        + task.addressDifference(observed)
+                        + attribution(activationSource));
+                continue;
             }
             // One occurrence, one enclosing activation.  The bodies of
             // occurrence k are the bodies of the invocation admitted for k;
@@ -346,8 +343,7 @@ final class ConcolicTaskPlan {
                     context).isEmpty()) continue;
             OccurrenceAddress observed = task.observedAddress(
                     countedLifecycle(task, activationSource));
-            if (!task.acceptsRootInvocation(observed)
-                    && !task.addressDrifts(observed)) {
+            if (!task.acceptsRootInvocation(observed)) {
                 // Said out loud, as the loop-body path already says it.  A
                 // non-loop root that ran and was refused on its address was
                 // refused in silence, and the end of the run then reported
@@ -363,9 +359,6 @@ final class ConcolicTaskPlan {
                 continue;
             }
             if (candidateLive[index]) continue;
-            if (!task.acceptsRootInvocation(observed)) {
-                task.noteAddressDrift(observed);
-            }
             candidateLive[index] = true;
             return task;
         }
@@ -543,7 +536,7 @@ final class ConcolicTaskPlan {
         boolean inheritedMatches = inherited != null
                 && RuntimeTraceContext.sameSourceIdentity(task.sourceKey,
                 inherited.key());
-        if (OccurrenceMinter.UNREGISTERED_SOURCE_KEY.equals(
+        if (OccurrenceBinding.UNREGISTERED_SOURCE_KEY.equals(
                 task.sourceKey)) {
             return registeredReceiverSource == null && inherited == null
                     ? "" : "matching root carried a registered source "
@@ -901,10 +894,10 @@ final class ConcolicTaskPlan {
                 // dn0's k, so the five genuine activations on main were
                 // numbered 1, 3, 5, 7 and the addressed activation 4 was
                 // consumed by an activation that was nobody's.
-                return OccurrenceMinter.UNREGISTERED_SOURCE_KEY.equals(
+                return OccurrenceBinding.UNREGISTERED_SOURCE_KEY.equals(
                         sourceKey) ? ""
                         : "occurrence ran on "
-                        + OccurrenceMinter.UNREGISTERED_SOURCE_KEY
+                        + OccurrenceBinding.UNREGISTERED_SOURCE_KEY
                         + " (nothing attributed it to any node), but its"
                         + " anchor names " + sourceKey;
             }
@@ -934,7 +927,7 @@ final class ConcolicTaskPlan {
          * makes the address unsatisfiable here rather than merely unmatched.
          */
         private boolean anchorSourceNeverExisted() {
-            return !OccurrenceMinter.UNREGISTERED_SOURCE_KEY.equals(sourceKey)
+            return !OccurrenceBinding.UNREGISTERED_SOURCE_KEY.equals(sourceKey)
                     && !RuntimeTraceContext.sourceIdentityRegistered(sourceKey);
         }
 
@@ -1628,10 +1621,16 @@ final class ConcolicTaskPlan {
          * matches nothing rather than half-matching on the node.</p>
          */
         OccurrenceAddress observedAddress(String lifecycle) {
-            return edu.uva.liftlab.graphchecker.runtime
-                    .OccurrenceMinterV2.mint(
-                            safe(lifecycle).isEmpty() ? sourceKey : lifecycle,
-                            regionId, liveContext(), liveIndex());
+            // Identity.occurrence, and nothing of this class's own: the
+            // address a replay computes here is the same function, over the
+            // same frame stack and scope, that the recorder ran on the stock
+            // JDK and wrote onto the activation the plan was built from.
+            // `open` is false -- admission asks the question before the
+            // session publisher opens the region, and opening it twice would
+            // move the base every endpoint inside is indexed from.
+            return edu.uva.liftlab.graphchecker.runtime.Identity.occurrence(
+                    safe(lifecycle).isEmpty() ? sourceKey : lifecycle,
+                    regionId, false);
         }
 
         /**
@@ -1662,72 +1661,10 @@ final class ConcolicTaskPlan {
             }
         }
 
-        /** The causal context this thread is in, as the minter reads it. */
-        private static edu.uva.liftlab.graphchecker.contract.CausalContext
-                liveContext() {
-            return edu.uva.liftlab.graphchecker.runtime.Identity.context(
-                    edu.uva.liftlab.graphchecker.runtime.Lineage.anchor(),
-                    edu.uva.liftlab.graphchecker.runtime.Lineage.rpcSite(),
-                    edu.uva.liftlab.graphchecker.runtime.Lineage
-                            .rootRole(),
-                    edu.uva.liftlab.graphchecker.runtime.Lineage
-                            .rootWindowIndex());
-        }
-
-        /**
-         * The execution index this activation would enter at.
-         *
-         * <p>{@code atScope()}, not {@code regionEnter()}: the same frames,
-         * and no side effect.  Admission asks the question before the
-         * session publisher opens the region, and opening it twice would
-         * move the base every endpoint inside is indexed from.</p>
-         */
-        private static edu.uva.liftlab.graphchecker.contract.ExecutionIndex
-                liveIndex() {
-            return edu.uva.liftlab.graphchecker.runtime.Identity.atScope();
-        }
-
         boolean acceptsRootInvocation(OccurrenceAddress observed) {
             return address != null && observed != null
                     && address.id().equals(observed.id());
         }
-
-        /**
-         * Whether {@code observed} is this occurrence up to what the two
-         * passes see differently.
-         *
-         * <p>The plan's address is computed offline from the recording's
-         * frames, the replay's live from its own; the node and the region
-         * are the two components both passes read from the same evidence,
-         * and a candidate that agrees on them and that this task's
-         * selector already picked out -- its receiver, its thread, its
-         * source -- is this occurrence.  Where the causal context or the
-         * execution index differ, the run does not refuse the occurrence
-         * silently: it admits it and states the drift, which is a fact
-         * about the two computations rather than about the activation.</p>
-         */
-        boolean addressDrifts(OccurrenceAddress observed) {
-            return address != null && observed != null
-                    && address.node().equals(observed.node())
-                    && address.regionId().equals(observed.regionId());
-        }
-
-        /** States one admitted activation whose address drifted. */
-        void noteAddressDrift(OccurrenceAddress observed) {
-            String difference = addressDifference(observed);
-            if (!addressDrifts.add(difference)) return;
-            edu.uva.liftlab.graphchecker.runtime.RowRuntime.gap(
-                    edu.uva.liftlab.graphchecker.contract.GapKind
-                            .LINEAGE_LOST,
-                    edu.uva.liftlab.graphchecker.contract.GapClass
-                            .DIAGNOSTIC,
-                    safe(occurrenceId),
-                    "the plan and this replay address one activation"
-                            + " differently: " + difference);
-        }
-
-        /** Drifts already stated, so one activation states one. */
-        private final Set<String> addressDrifts = new LinkedHashSet<>();
 
         /**
          * Why {@code observed} is not this task's occurrence.

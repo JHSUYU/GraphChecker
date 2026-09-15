@@ -1,8 +1,11 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
 import edu.uva.liftlab.graphchecker.contract.CausalContext;
+import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.ExecutionIndex;
 import edu.uva.liftlab.graphchecker.contract.Frame;
+import edu.uva.liftlab.graphchecker.contract.NodeId;
+import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.Role;
 import java.lang.ref.Reference;
 import java.lang.ref.ReferenceQueue;
@@ -63,10 +66,6 @@ public final class Identity {
             return entries.isEmpty() ? roots
                     : entries.get(entries.size() - 1);
         }
-        /** loop id -> iterations charged inside the innermost frame. */
-        private final Map<String, Integer> loops =
-                new HashMap<String, Integer>();
-        private String loop = "";
         private int scopeBase;
         /** Whether this thread has looked for the start that created it. */
         private boolean claimed;
@@ -77,6 +76,12 @@ public final class Identity {
         private int startDepth = -1;
         /** The region activations open on this thread, innermost last. */
         private final List<Region> regions = new ArrayList<Region>();
+        /**
+         * The node of the frame that started the work this thread runs, or
+         * {@code ""}: the component an occurrence belongs to when its own
+         * frames name none.
+         */
+        private String startNode = "";
 
         private State copy() {
             State child = new State();
@@ -85,14 +90,13 @@ public final class Identity {
                 child.entries.add(new HashMap<String, Integer>(frame));
             }
             child.roots.putAll(roots);
-            child.loops.putAll(loops);
-            child.loop = loop;
             child.scopeBase = scopeBase;
             // The start frame of the work THIS thread runs is not the start
             // frame of the work the child will run: the child claims its
             // own, at the site that started it.
             child.claimed = false;
             child.startDepth = -1;
+            child.startNode = "";
             for (Region region : regions) {
                 // The depth carries over -- a child thread's frames continue
                 // its parent's -- but not the journal: a journal is one
@@ -174,6 +178,23 @@ public final class Identity {
             return standing;
         }
 
+        /** The site counters of the innermost open occurrence. */
+        private Map<String, Integer> siteEvents() {
+            return regions.isEmpty() ? ambientSiteEvents
+                    : regions.get(regions.size() - 1).siteEvents;
+        }
+
+        /**
+         * The counters of events minted outside every region.
+         *
+         * <p>A thread that mints an endpoint with no occurrence open does it
+         * under its degraded role occurrence, and two such events at one
+         * site have to differ there too.  Per thread, because that is what
+         * the degraded occurrence is.</p>
+         */
+        private final Map<String, Integer> ambientSiteEvents =
+                new HashMap<String, Integer>();
+
         private ExecutionIndex from(int base) {
             int start = Math.max(0, Math.min(base, frames.size()));
             return start >= frames.size() ? ExecutionIndex.empty()
@@ -193,8 +214,27 @@ public final class Identity {
      * inherits its creator's state when it is CONSTRUCTED and the start
      * happens afterwards.</p>
      */
-    private static final Map<Carrier, Frame> STARTS =
-            new ConcurrentHashMap<Carrier, Frame>();
+    private static final Map<Carrier, Start> STARTS =
+            new ConcurrentHashMap<Carrier, Start>();
+
+    /**
+     * One filed start: where it was made, and on which node.
+     *
+     * <p>The node travels with the frame because it is the same fact about
+     * the same event.  A thread whose own frames name no component belongs
+     * to the component that STARTED it -- the DataNode whose
+     * BPServiceActor this is -- and that is a statement of the recording
+     * and of every replay alike, not an inference over the graph.</p>
+     */
+    private static final class Start {
+        private final Frame frame;
+        private final String nodeKey;
+
+        private Start(Frame frame, String nodeKey) {
+            this.frame = frame;
+            this.nodeKey = nodeKey;
+        }
+    }
 
     private static final ReferenceQueue<Object> COLLECTED =
             new ReferenceQueue<Object>();
@@ -248,8 +288,10 @@ public final class Identity {
 
     private static void adopt(State state, Object carrier) {
         if (carrier == null || STARTS.isEmpty()) return;
-        Frame frame = STARTS.remove(new Carrier(carrier, null));
-        if (frame != null) state.openStart(frame);
+        Start start = STARTS.remove(new Carrier(carrier, null));
+        if (start == null) return;
+        state.openStart(start.frame);
+        if (!start.nodeKey.isEmpty()) state.startNode = start.nodeKey;
     }
 
     /**
@@ -263,7 +305,8 @@ public final class Identity {
      * It is a structural count of starts, never a thread id, an address or
      * a session ordinal.</p>
      */
-    public static void startWork(String startSiteId, Object carrier) {
+    public static void startWork(String startSiteId, Object carrier,
+                                 String starterNodeKey) {
         String site = Text.safe(startSiteId);
         if (site.isEmpty() || carrier == null) return;
         State state = state();
@@ -273,7 +316,30 @@ public final class Identity {
         int iteration = made == null ? 0 : made;
         starts.put(key, iteration + 1);
         sweep();
-        STARTS.put(new Carrier(carrier, COLLECTED), Frame.of(site, iteration));
+        STARTS.put(new Carrier(carrier, COLLECTED),
+                new Start(Frame.of(site, iteration),
+                        attributable(starterNodeKey)
+                                ? Text.safe(starterNodeKey)
+                                : node()));
+    }
+
+    /** Whether a node key names a component rather than the degraded one. */
+    private static boolean attributable(String nodeKey) {
+        String key = Text.safe(nodeKey);
+        return !key.isEmpty()
+                && !OccurrenceBinding.UNREGISTERED_SOURCE_KEY.equals(key);
+    }
+
+    /**
+     * The node this thread belongs to when nothing else names one: the node
+     * of the start that created the work it is running.
+     *
+     * <p>Transitive by construction -- a thread that inherited a node hands
+     * it to what it starts -- so a component's own worker tree stays its
+     * own however deep it goes.</p>
+     */
+    public static String node() {
+        return state().startNode;
     }
 
     /**
@@ -343,15 +409,6 @@ public final class Identity {
         state.journal();
     }
 
-    /** Charges one iteration of {@code loopId} to the current frame. */
-    public static void loopIteration(String loopId) {
-        String loop = Text.safe(loopId);
-        if (loop.isEmpty()) return;
-        State state = state();
-        state.loop = loop;
-        Integer charged = state.loops.get(loop);
-        state.loops.put(loop, charged == null ? 1 : charged + 1);
-    }
 
     /** Opens a scope: the execution index of what runs inside starts here. */
     public static void scopeStart() {
@@ -406,10 +463,194 @@ public final class Identity {
         return state.from(state.regionBase());
     }
 
+    /** How many index frames this thread stands on. */
+    public static int depth() {
+        return state().frames.size();
+    }
+
+    /** The innermost frame's call site, for a report, or {@code ""}. */
+    public static String innermostFrame() {
+        State state = state();
+        return state.frames.isEmpty() ? ""
+                : state.frames.get(state.frames.size() - 1).callSite();
+    }
+
     /** The whole path this thread is at, for a degraded address. */
     public static ExecutionIndex here() {
         State state = state();
         return state.from(0);
+    }
+
+    /**
+     * The address of the activation entering here (IDENTITY-IMPL A).
+     *
+     * <p>THE one computation of an occurrence address, and there is no
+     * second one.  The recording calls it on the stock JDK from the trace
+     * recorder's own method hook, and the replay calls it on the custom VM
+     * from the region hook; both read the frame stack and the scope this
+     * class maintains, so the address the SEED trace carries and the address
+     * a replay computes for the same occurrence are the same string by
+     * construction rather than by reconciliation.  An offline pass over
+     * trace rows never re-derives it: it reads what the recording
+     * stated.</p>
+     *
+     * <p>{@code null} when this run can name no node to put the occurrence
+     * on -- a guessed node is a wrong causal chain.</p>
+     *
+     * @param open whether the region is opened here (the replay: every
+     *             endpoint inside is indexed from this entry) or only read
+     *             (the recording and admission, which must not move the base
+     *             the endpoints of an already-open region are indexed from)
+     */
+    public static OccurrenceAddress occurrence(String nodeKey, String regionId,
+                                               boolean open) {
+        String node = attributable(nodeKey) || !attributable(node())
+                ? Text.safe(nodeKey) : node();
+        if (node.isEmpty() || Text.safe(regionId).isEmpty()) {
+            return null;
+        }
+        nodeKey = node;
+        ExecutionIndex index = open ? regionEnter() : atScope();
+        OccurrenceAddress address = OccurrenceAddress.of(
+                NodeId.parse(Text.safe(nodeKey)), Text.safe(regionId),
+                here(Lineage.rootRole()), index);
+        if (open) {
+            State state = state();
+            Region region = state.region();
+            if (region != null) region.occurrence = address;
+        }
+        return address;
+    }
+
+    /**
+     * The occurrence an event on this thread belongs to.
+     *
+     * <p>The innermost region activation open here, whose address was filed
+     * when it was entered by {@link #occurrence} -- in the recording and in
+     * a replay alike, because both open their regions through that one
+     * call.  Outside every region it is the degraded role occurrence, which
+     * is still an occurrence an endpoint can be keyed by (INTERACTION-ID
+     * R-I1).</p>
+     */
+    public static OccurrenceAddress currentOccurrence(String nodeKey) {
+        State state = state();
+        for (int index = state.regions.size() - 1; index >= 0; index--) {
+            OccurrenceAddress occurrence = state.regions.get(index).occurrence;
+            if (occurrence != null) return occurrence;
+        }
+        return roleOccurrence(nodeKey,
+                Lineage.named() ? Lineage.role() : Role.UNKNOWN);
+    }
+
+    /**
+     * THE endpoint of one event: where it happened, in which occurrence.
+     *
+     * <p>IDENTITY-IMPL §A: (occurrence, site, site-local execution index,
+     * attempt).  One computation for both passes, as the occurrence address
+     * is: a producer endpoint the recording mints and a producer endpoint a
+     * replay mints are the same string for the same event, which is what
+     * lets the causal context of everything downstream of a message be the
+     * SAME context in the two passes.  Before this, the recording minted
+     * its senders from a degraded role occurrence (or, behind a session
+     * guard, not at all) and the replay from its live activation, so the
+     * anchor of every occurrence a message started drifted -- hdfs-17960's
+     * two FSImageSaver activations were planned at {@code
+     * Anchor:...@THREAD_START} and ran at {@code
+     * Anchor:...@HADOOP_IPC/checkpoint-namespace}.</p>
+     */
+    public static Endpoint endpoint(String nodeKey, String site, int attempt) {
+        return endpointAt(currentOccurrence(nodeKey), site, attempt);
+    }
+
+    /** The same endpoint, for an occurrence the caller already holds. */
+    public static Endpoint endpointAt(OccurrenceAddress occurrence,
+                                      String site, int attempt) {
+        return occurrence == null ? null
+                : Endpoint.of(occurrence, Text.safe(site),
+                        eventSiteIndex(site), attempt);
+    }
+
+    /**
+     * The site-local index of the event minting an endpoint HERE, with the
+     * event itself as the innermost frame.
+     *
+     * <p>IDENTITY-V3 §1: an Endpoint is (occurrence, site, site-local
+     * execution index, attempt), and two events of one occurrence at one
+     * site are two points of its control structure.  Without the innermost
+     * frame they share one endpoint id -- which is what RowInvariants:337
+     * states as "invariant 4 site index missing ... 2 events of this site in
+     * one occurrence share one endpoint id" and says is the identity's to
+     * fix with no ordinal and no counter of the session's.  The count is
+     * the occurrence's own ({@link Region#siteEvents}): it starts at zero
+     * when the activation opens, dies with it, and is therefore the same
+     * number in the recording and in a replay of that occurrence.  It is
+     * also what separates the five {@code record-ordered-deletes} messages
+     * one client occurrence sends at one transport site, whose consumers
+     * would otherwise share one causal context and one address.</p>
+     */
+    private static ExecutionIndex eventSiteIndex(String site) {
+        State state = state();
+        String key = Text.safe(site);
+        if (key.isEmpty()) return state.from(state.regionBase());
+        Map<String, Integer> events = state.siteEvents();
+        Integer made = events.get(key);
+        int iteration = made == null ? 0 : made;
+        events.put(key, iteration + 1);
+        List<Frame> frames = new ArrayList<Frame>(
+                state.from(state.regionBase()).frames());
+        frames.add(Frame.of(key, iteration));
+        return ExecutionIndex.of(frames);
+    }
+
+    /**
+     * Files the producer endpoint of one whole message, for the anchor its
+     * receiver states (IDENTITY-IMPL §C).
+     *
+     * @return the endpoint id filed, or {@code ""}
+     */
+    public static String messageSent(String nodeKey, String transport,
+                                     String correlationId, String half) {
+        Endpoint producer = endpoint(nodeKey,
+                Text.safe(transport) + "#" + Text.safe(half), 0);
+        if (producer == null) return "";
+        Interactions.sent(Text.safe(transport), Text.safe(correlationId),
+                Text.safe(half), producer.id());
+        return producer.id();
+    }
+
+    /**
+     * The endpoint of one work submission, for the row that names the
+     * thread-start edge (R-I7.1).
+     *
+     * @return the endpoint id, or {@code ""}
+     */
+    public static String workSubmitted(String nodeKey) {
+        Endpoint submission = endpoint(nodeKey, "SUBMIT", 0);
+        return submission == null ? "" : submission.id();
+    }
+
+    /**
+     * The address of work that ran under no region this plan selected: its
+     * role, on its node, at the path the thread stood on.
+     *
+     * <p>REPORT-ENTRY §4: the region slot carries a role id rather than a
+     * plan region, so a reader tells an ambient occurrence from a planned
+     * one by the visible {@code ROLE.} prefix.  An activation no PLAN
+     * selected is not an activation with no CONTEXT: the message that opened
+     * its scope, or the root it descends from, is known exactly as it is for
+     * a selected one.</p>
+     */
+    public static OccurrenceAddress roleOccurrence(String nodeKey, Role role) {
+        if (Text.safe(nodeKey).isEmpty()) return null;
+        Role kind = role == null ? Role.UNKNOWN : role;
+        return OccurrenceAddress.of(NodeId.parse(Text.safe(nodeKey)),
+                "ROLE." + kind.name(), here(kind), here());
+    }
+
+    /** The context the running thread is in, by the one rule. */
+    private static CausalContext here(Role role) {
+        return context(Lineage.anchor(), Lineage.rpcSite(), role,
+                Lineage.rootWindowIndex());
     }
 
     /** The context an occurrence entered under, from its scope frame. */
@@ -419,16 +660,14 @@ public final class Identity {
         if (!Text.safe(anchorEndpointId).isEmpty()) {
             return CausalContext.of(anchorEndpointId, Text.safe(rpcSite));
         }
-        // A thread started by a submission ran because of that submission:
-        // its endpoint is the anchor, exactly as a message's producer is.
-        // Two sibling threads doing the same work under one request -- the
-        // two FSImageSaver threads on hdfs-17960 -- share a role, a window
-        // index and a call path, and are told apart by the frame of the
-        // start that created each of them (see #startWork).
-        String started = Lineage.startedBy();
-        if (!started.isEmpty()) {
-            return CausalContext.of(started, "THREAD_START");
-        }
+        // No arm for "started by a submission".  A thread start is not a
+        // message: the work runs inside the scope its starter was in, whose
+        // anchor is the arm above, and two siblings started from one site
+        // are told apart by the start-site FRAME in the index (#startWork,
+        // REPORT-P2H) rather than by a second context form.  The arm that
+        // used to stand here fired only in the recording -- the replay
+        // always had the scope's anchor by then -- so one occurrence
+        // carried two contexts.
         if (role != null && role != Role.UNKNOWN && windowIndex > 0) {
             return CausalContext.of(role, windowIndex);
         }
@@ -460,6 +699,20 @@ public final class Identity {
     private static final class Region {
         private final int base;
         private FrameJournal journal;
+        /** The occurrence this activation is, for the endpoints inside it. */
+        private OccurrenceAddress occurrence;
+        /**
+         * How many events this occurrence has minted at each site.
+         *
+         * <p>Owned by the activation, so it starts at zero when the
+         * occurrence opens and is gone when it closes: it counts events of
+         * ONE occurrence at ONE site, which is what an Endpoint's
+         * site-local index has to separate (IDENTITY-V3 §1), and it is not
+         * a session ordinal -- nothing outside this activation can move
+         * it.</p>
+         */
+        private final Map<String, Integer> siteEvents =
+                new HashMap<String, Integer>();
 
         private Region(int base) {
             this.base = base;

@@ -260,20 +260,37 @@ public final class CausynthPipeline {
         HookCatalog refs = HookCatalog.trace();
         SootMethodRef recordFieldRef = refs.ref(Hook.RECORD_FIELD);
         SootMethodRef recordArrayRef = refs.ref(Hook.RECORD_ARRAY_ELEMENT);
+        // Which of the traced methods opens a region, read from the same
+        // skeleton file the concolic pass reads its roots from: the
+        // recording's execution index then has a frame exactly where the
+        // replay's does (IDENTITY-IMPL B).
+        Map<String, String> regionRoots =
+                RegionSkeletonInstrumentationSelection
+                        .regionRootsFromEnvironment();
         Set<String> rewritten = instrumentMethods(result.traceMethods,
                 "REGION_STATE method is outside production application "
                         + "scope: ",
                 (body, method, units, entry, lowerBound, receiver) -> {
                     instrumentRichMethod(body, method, units, entry,
-                            lowerBound, receiver, refs);
+                            lowerBound, receiver, refs,
+                            regionRoots.getOrDefault(method.getSignature(),
+                                    ""));
                     instrumentFieldTrace(body, method, recordFieldRef,
                             units, lowerBound);
                     instrumentReferenceArrayTrace(body, method, recordArrayRef,
                             units, lowerBound);
                 });
+        // The same hook, over the same methods, as the replay weaves: a
+        // thread inherits its creator's index when it is CONSTRUCTED, so
+        // without the start-site frame two siblings started from one loop
+        // stand on one index in the recording while the replay tells them
+        // apart (REPORT-P2H), and the address of every such occurrence
+        // drifts between the two passes.
+        instrumentWorkStarts(new LinkedHashSet<>(result.traceMethods), refs);
         LOG.info("Instrumented {} of {} runtime-selected methods for "
-                + "REGION_STATE trace", rewritten.size(),
-                result.traceMethods.size());
+                + "REGION_STATE trace; {} of them open a region",
+                rewritten.size(), result.traceMethods.size(),
+                regionRoots.size());
     }
 
     /** The methods the skeleton pass exists to watch. */
@@ -608,7 +625,13 @@ public final class CausynthPipeline {
         for (InstrumentationPlan plan : campaign) {
             instrumentConcolicRegion(plan, refs, envelope);
         }
-        instrumentConcolicWorkStarts(envelope.methods, refs);
+        // Every skeleton root, campaign roots included: ONE entry hook per
+        // root method, which owns that activation's index frame and the
+        // region it opens.  The plan rows' own hooks push nothing, so a
+        // second row at one entry cannot add a frame and a recursive entry
+        // cannot be mistaken for a second row.
+        instrumentSkeletonRegions(refs);
+        instrumentWorkStarts(envelope.methods, refs);
         instrumentConcolicConfiguredSourceCallContexts(
                 envelope.configuredSourcePhaseSites.values(), refs);
         instrumentConcolicAccessorCallContexts(envelope.materializations,
@@ -619,6 +642,81 @@ public final class CausynthPipeline {
         instrumentConcolicMaterializations(envelope, refs);
         instrumentConcolicBranches(envelope.branches, refs);
         envelope.report();
+    }
+
+    /**
+     * Opens the execution-index region of every skeleton root the campaign
+     * did NOT select.
+     *
+     * <p>The recording opens one at every skeleton root, so a replay that
+     * opened them only at its own task roots stood on a different frame
+     * stack: {@code Identity.currentOccurrence} then named a different
+     * occurrence for the same event, and every endpoint and every causal
+     * anchor computed from it drifted.  Same file, same rule, same
+     * one-region-per-activation: the campaign's own roots keep their rich
+     * hooks and are excluded here, so a root that is both opens once.</p>
+     */
+    private void instrumentSkeletonRegions(HookCatalog refs) {
+        Map<String, String> roots = RegionSkeletonInstrumentationSelection
+                .regionRootsFromEnvironment();
+        Set<SootMethod> entered = new LinkedHashSet<>();
+        Set<String> rewritten = instrumentMethods(
+                new ArrayList<>(roots.keySet()), "",
+                (body, method, units, entry, lowerBound, receiver) -> {
+                    // Fail closed: one entry hook per root method.  Two of
+                    // them push two frames at one entry, and an index with
+                    // a frame the recording does not have addresses a
+                    // different occurrence -- silently, which is how 33 of
+                    // 81 planned tasks came to be refused.
+                    if (!entered.add(method)) {
+                        throw new IllegalStateException(
+                                "one method would receive two region entry "
+                                        + "hooks: " + method.getSignature());
+                    }
+                    instrumentRegionEntry(body, method, units, entry,
+                            lowerBound, receiver, refs,
+                            roots.get(method.getSignature()));
+                });
+        LOG.info("Opened {} of {} skeleton region root(s) for the execution "
+                + "index, one entry hook each; the one-entry-one-frame check "
+                + "passed", rewritten.size(), roots.size());
+    }
+
+    /**
+     * The index frame and the occurrence of ONE region activation, owned by
+     * the token the workload frame holds.
+     *
+     * <p>The token is a local of this method, so every ENTRY has its own --
+     * recursion included -- and the exit hooks close the entry that token
+     * owns rather than whatever the runtime finds innermost.</p>
+     */
+    private void instrumentRegionEntry(Body body, SootMethod method,
+                                       List<Unit> originalUnits,
+                                       Unit insertionPoint, Unit lowerBound,
+                                       Value receiver, HookCatalog refs,
+                                       String regionId) {
+        Local entryToken = newTraceLocal(body, LongType.v(),
+                "$causynthRegionEntry");
+        List<Unit> entry = new ArrayList<>();
+        entry.add(Jimple.v().newAssignStmt(entryToken, LongConstant.v(0L)));
+        refs.bracket(entry, entryToken, Hook.ENTER_REGION_ENTRY,
+                StringConstant.v(regionId),
+                StringConstant.v(method.getSignature()), receiver);
+        insertBeforeOrAppendNoRedirect(body, insertionPoint, entry);
+        Unit regionStart = entry.isEmpty() ? insertionPoint : entry.get(0);
+        for (int index = instrumentableFrom(originalUnits, lowerBound);
+                index >= 0 && index < originalUnits.size(); index++) {
+            Unit unit = originalUnits.get(index);
+            if (!(unit instanceof ReturnStmt)
+                    && !(unit instanceof ReturnVoidStmt)) {
+                continue;
+            }
+            List<Unit> exit = new ArrayList<>();
+            refs.bracket(exit, Hook.EXIT_REGION_ENTRY, entryToken);
+            insertBeforeSequence(body, unit, exit);
+        }
+        addThrowHandler(body, regionStart, refs, Hook.THROW_REGION_ENTRY,
+                "$causynthRegionEntryThrown", entryToken);
     }
 
     /**
@@ -1708,10 +1806,14 @@ public final class CausynthPipeline {
      * and mint one address for two occurrences.</p>
      *
      * <p>One hook, and no frame on the starter: a start is an event of the
-     * starter, not a call it returns from.</p>
+     * starter, not a call it returns from.  Woven by BOTH passes over their
+     * own selected methods -- the recording's trace methods and the
+     * campaign's envelope -- because an index computed with the start frame
+     * on one side and without it on the other names two different
+     * occurrences for one execution point.</p>
      */
-    private void instrumentConcolicWorkStarts(Set<String> methods,
-                                              HookCatalog refs) {
+    private void instrumentWorkStarts(Set<String> methods,
+                                      HookCatalog refs) {
         int filed = 0;
         for (String signature : methods) {
             Body body;
@@ -1734,11 +1836,14 @@ public final class CausynthPipeline {
                 List<Unit> before = new ArrayList<>();
                 Value carrier = objectArg(body, carried, before);
                 if (carrier instanceof NullConstant) continue;
-                emit(before, refs.ref(Hook.PAUSE_OBSERVATION));
+                // Paused where there is symbolic observation to pause: the
+                // recording pass has none, and the hook is the same one.
+                boolean observed = refs.ref(Hook.PAUSE_OBSERVATION) != null;
+                if (observed) emit(before, refs.ref(Hook.PAUSE_OBSERVATION));
                 emit(before, refs.ref(Hook.START_WORK),
                         StringConstant.v(SiteId.of(signature, unitIndex)),
                         carrier);
-                emit(before, refs.ref(Hook.RESUME_OBSERVATION));
+                if (observed) emit(before, refs.ref(Hook.RESUME_OBSERVATION));
                 insertBeforeSequence(body, stmt, before);
                 filed++;
             }
@@ -2917,13 +3022,14 @@ public final class CausynthPipeline {
     private void instrumentRichMethod(
             Body body, SootMethod method, List<Unit> originalUnits,
             Unit insertionPoint, Unit lowerBound, Value receiver,
-            HookCatalog refs) {
+            HookCatalog refs, String openedRegionId) {
         Local callId = newTraceLocal(body, LongType.v(), "$causynthCallId");
         List<Unit> entryUnits = new ArrayList<>();
         // Keep the initialization as a defensive verifier-visible value.
         entryUnits.add(Jimple.v().newAssignStmt(callId, LongConstant.v(0L)));
         emit(entryUnits, callId, refs.ref(Hook.ENTER_METHOD),
-                StringConstant.v(method.getSignature()), receiver);
+                StringConstant.v(method.getSignature()), receiver,
+                StringConstant.v(openedRegionId));
         for (int index = 0; index < method.getParameterCount(); index++) {
             Value parameter = parameterLocal(body, index);
             if (parameter == null) continue;
@@ -3473,6 +3579,9 @@ public final class CausynthPipeline {
         EXIT_LOOP_ROOT_INVOCATION_FRAME,
         THROW_LOOP_ROOT_INVOCATION_FRAME,
         ENTER_REGION_FRAME,
+        ENTER_REGION_ENTRY,
+        EXIT_REGION_ENTRY,
+        THROW_REGION_ENTRY,
         START_WORK,
         ENTER_CONFIGURED_SOURCE_PHASE_SITE,
         EXIT_CONFIGURED_SOURCE_PHASE_SITE,
@@ -3555,7 +3664,10 @@ public final class CausynthPipeline {
                             "throwActiveMethodLite", VoidType.v(),
                             RefType.v("java.lang.Throwable"))
                     .add(Hook.ENTER_METHOD, recorder, "enterMethod",
-                            LongType.v(), string, object)
+                            LongType.v(), string, object, string)
+                    // The one work-start hook, woven by both passes.
+                    .add(Hook.START_WORK, recorder, "startWork",
+                            VoidType.v(), string, object)
                     .add(Hook.RECORD_METHOD_ARGUMENT, recorder,
                             "recordMethodArgument", VoidType.v(), LongType.v(),
                             IntType.v(), string, object, string)
@@ -3605,6 +3717,14 @@ public final class CausynthPipeline {
                     .add(Hook.ENTER_REGION_FRAME, runtime, "enterRegionFrame",
                             LongType.v(), string, string, object,
                             ArrayType.v(object, 1))
+                    .add(Hook.ENTER_REGION_ENTRY, runtime,
+                            "enterRegionEntry", LongType.v(), string,
+                            string, object)
+                    .add(Hook.EXIT_REGION_ENTRY, runtime,
+                            "exitRegionEntry", VoidType.v(), LongType.v())
+                    .add(Hook.THROW_REGION_ENTRY, runtime,
+                            "throwRegionEntry", VoidType.v(), LongType.v(),
+                            RefType.v("java.lang.Throwable"))
                     .add(Hook.START_WORK, runtime, "startWork",
                             VoidType.v(), string, object)
                     .add(Hook.ENTER_CONFIGURED_SOURCE_PHASE_SITE, runtime,
