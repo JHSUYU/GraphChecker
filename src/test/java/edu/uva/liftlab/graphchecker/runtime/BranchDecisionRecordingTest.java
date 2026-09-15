@@ -13,6 +13,7 @@ import java.io.PrintStream;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.ArrayDeque;
+import java.util.Collections;
 import java.util.Deque;
 
 import static org.junit.Assert.assertEquals;
@@ -70,6 +71,11 @@ public class BranchDecisionRecordingTest {
      * What a region writes down for one binary decision at a declared
      * site: one row naming the site, the arm it took and the empty
      * path-condition window, and the reach.
+     *
+     * <p>The site id in that row is also what the VM is told a guarded
+     * store depends on: the guarded-store table names the store's method
+     * with the internal owner the VM asks with and carries the guard branch
+     * site verbatim, exactly as this row spells it.</p>
      */
     @Test
     public void aBinaryDecisionPublishesOneRowAndTheReach() throws Exception {
@@ -80,6 +86,20 @@ public class BranchDecisionRecordingTest {
                 + "\"rawPathConditionSize\":0,\"siteId\":\"" + DECLARED
                 + "\",\"unitIndex\":4}]\n" + REACH,
                 publishes(binary(true)));
+        assertEquals("the store's method is internal, its guard verbatim",
+                "a/B#run(I)V\t" + DECLARED + "\n",
+                GuardedStoreSites.of(Collections.singletonList(
+                        writeSite("a.B#run(I)V", DECLARED))).text());
+    }
+
+    /** One {@code WRITE_SITE} row of a static scope map, with its guard. */
+    private static JsonObject writeSite(String vmSite, String guard) {
+        return JsonParser.parseString(("{'kind':'STATIC_SCOPE_SITE','role':"
+                + "'WRITE_SITE','regionId':'REGION.1','siteId':'" + METHOD
+                + "#u7','vmSite':'" + vmSite + "','cell':'<a.B: int f>',"
+                + "'carrier':'<a.B: int f>','portId':'','declaredCallee':'',"
+                + "'guards':['" + guard + "']}").replace('\'', '"'))
+                .getAsJsonObject();
     }
 
     /**
