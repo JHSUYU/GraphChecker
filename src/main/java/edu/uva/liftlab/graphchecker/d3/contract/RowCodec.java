@@ -1,6 +1,7 @@
 package edu.uva.liftlab.graphchecker.d3.contract;
 
 import com.google.gson.Gson;
+import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
@@ -32,6 +33,12 @@ import java.util.function.Function;
  * number) to the six event rows and {@code javaType} (the JVM descriptor) to
  * the four value-carrying ones; v1.2 added {@code seq} to the root mints.
  * Both are always written.</p>
+ *
+ * <p>v2.0 writes an occurrence structurally -- node, region, causal context,
+ * execution index -- rather than as one rendered string.  The render exists and
+ * round-trips, but a row that carries the parts needs no parser to be read by
+ * anything else, and the degraded case is the context's own {@code LOST} form
+ * rather than a flag beside it.</p>
  */
 public final class RowCodec {
     private static final Gson GSON = new Gson();
@@ -40,8 +47,15 @@ public final class RowCodec {
     private static final String OCCURRENCE = "occurrence";
     private static final String ENDPOINT = "endpoint";
     private static final String LOCATION = "location";
-    private static final String ADDRESS = "address";
-    private static final String LINEAGE_LOST = "lineageLost";
+    private static final String NODE = "node";
+    private static final String REGION_ID = "regionId";
+    private static final String CONTEXT = "context";
+    private static final String INDEX = "index";
+    private static final String SITE_INDEX = "siteIndex";
+    private static final String FORM = "form";
+    private static final String ROLE = "role";
+    private static final String CALL_SITE = "callSite";
+    private static final String ITERATION = "iteration";
     private static final String SEQ = "seq";
     private static final String JAVA_TYPE = "javaType";
 
@@ -50,35 +64,95 @@ public final class RowCodec {
 
     // ---- shared parts -------------------------------------------------
 
-    /** An address as {@code {address, lineageLost}}: the render, plus how. */
+    /** An address as its four parts; the render is for people, not rows. */
     public static JsonObject writeOccurrence(OccurrenceAddress occurrence) {
         JsonObject json = new JsonObject();
-        json.addProperty(ADDRESS, occurrence.render());
-        json.addProperty(LINEAGE_LOST, occurrence.lineageLost());
+        json.addProperty(NODE, occurrence.node().render());
+        json.addProperty(REGION_ID, occurrence.regionId());
+        json.add(CONTEXT, writeContext(occurrence.context()));
+        json.add(INDEX, writeIndex(occurrence.index()));
         return json;
     }
 
     public static OccurrenceAddress readOccurrence(JsonObject json) {
-        OccurrenceAddress parsed =
-                OccurrenceAddress.parse(string(json, ADDRESS));
-        boolean lost = bool(json, LINEAGE_LOST);
-        return lost == parsed.lineageLost() ? parsed
-                : OccurrenceAddress.of(parsed.node(), parsed.lineage(),
-                parsed.regionId(), parsed.k(), lost);
+        return OccurrenceAddress.of(NodeId.parse(string(json, NODE)),
+                string(json, REGION_ID), readContext(object(json, CONTEXT)),
+                readIndex(array(json, INDEX)));
+    }
+
+    /** A causal context as {@code {form, ...}}: one shape per form. */
+    public static JsonObject writeContext(CausalContext context) {
+        JsonObject json = new JsonObject();
+        json.addProperty(FORM, context.form().name());
+        switch (context.form()) {
+            case ANCHOR:
+                CausalContext.Anchor anchor = (CausalContext.Anchor) context;
+                json.addProperty("producerEndpointId",
+                        anchor.producerEndpointId());
+                json.addProperty("rpcSite", anchor.rpcSite());
+                break;
+            case ROOT:
+                CausalContext.Root root = (CausalContext.Root) context;
+                json.addProperty(ROLE, root.role().name());
+                json.addProperty("windowIndex", root.windowIndex());
+                break;
+            default:
+                json.addProperty(ROLE,
+                        ((CausalContext.Lost) context).role().name());
+                break;
+        }
+        return json;
+    }
+
+    public static CausalContext readContext(JsonObject json) {
+        CausalContext.Form form =
+                CausalContext.Form.valueOf(string(json, FORM));
+        switch (form) {
+            case ANCHOR:
+                return CausalContext.of(string(json, "producerEndpointId"),
+                        string(json, "rpcSite"));
+            case ROOT:
+                return CausalContext.of(Role.valueOf(string(json, ROLE)),
+                        integer(json, "windowIndex"));
+            default:
+                return CausalContext.of(Role.valueOf(string(json, ROLE)));
+        }
+    }
+
+    /** An execution index as its frames, outermost first. */
+    public static JsonArray writeIndex(ExecutionIndex index) {
+        JsonArray frames = new JsonArray();
+        for (Frame frame : index.frames()) {
+            JsonObject json = new JsonObject();
+            json.addProperty(CALL_SITE, frame.callSite());
+            json.addProperty(ITERATION, frame.iteration());
+            frames.add(json);
+        }
+        return frames;
+    }
+
+    public static ExecutionIndex readIndex(JsonArray frames) {
+        List<Frame> read = new ArrayList<>();
+        for (JsonElement frame : frames) {
+            JsonObject json = frame.getAsJsonObject();
+            read.add(Frame.of(string(json, CALL_SITE),
+                    integer(json, ITERATION)));
+        }
+        return ExecutionIndex.of(read);
     }
 
     public static JsonObject writeEndpoint(Endpoint endpoint) {
         JsonObject json = new JsonObject();
         json.add(OCCURRENCE, writeOccurrence(endpoint.occurrence()));
         json.addProperty("site", endpoint.site());
-        json.addProperty("ordinal", endpoint.ordinal());
+        json.add(SITE_INDEX, writeIndex(endpoint.siteIndex()));
         json.addProperty("attempt", endpoint.attempt());
         return json;
     }
 
     public static Endpoint readEndpoint(JsonObject json) {
         return Endpoint.of(readOccurrence(object(json, OCCURRENCE)),
-                string(json, "site"), integer(json, "ordinal"),
+                string(json, "site"), readIndex(array(json, SITE_INDEX)),
                 integer(json, "attempt"));
     }
 
@@ -435,6 +509,10 @@ public final class RowCodec {
 
     private static JsonObject object(JsonObject json, String name) {
         return member(json, name).getAsJsonObject();
+    }
+
+    private static JsonArray array(JsonObject json, String name) {
+        return member(json, name).getAsJsonArray();
     }
 
     private static JsonObject optionalObject(JsonObject json, String name) {

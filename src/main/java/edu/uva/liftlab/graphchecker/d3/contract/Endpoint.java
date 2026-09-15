@@ -3,63 +3,73 @@ package edu.uva.liftlab.graphchecker.d3.contract;
 import java.util.Objects;
 
 /**
- * CONTRACT-SPEC 1: one side of an interaction.
+ * IDENTITY-IMPL A: one side of an interaction.
  *
- * <p>{@code (occurrence, site, ordinal, attempt)} -- which activation, which
- * declared port or which read/write site inside it, the k-th event of that site
- * in that activation, and the retry number when the transport retried
- * (INTERACTION-ID sec 1).  The site is the declared port id for a WIRE endpoint
- * (e.g. {@code XCH.<uuid>.resp.block-key-id}) and
- * {@code <class>#<method>#<bci>:<READ|WRITE>} for a STATE endpoint, which
- * {@link #stateSite} spells so that the runtime that writes it and the composer
- * that joins on it cannot drift.</p>
+ * <p>{@code (occurrence, site, siteIndex, attempt)} -- which occurrence, which
+ * declared port or read/write site inside it, WHERE in the region's control
+ * structure that event happened (the frames from the region entry to the site),
+ * and the retry number when the transport retried.  The site index replaces
+ * v2's "k-th event of that site": an ordinal moves when an unrelated earlier
+ * event is inserted, an execution index does not.</p>
+ *
+ * <p>The site is the declared port id for a WIRE endpoint (e.g.
+ * {@code XCH.<uuid>.resp.block-key-id}), {@code <class>#<method>#<bci>:<READ|
+ * WRITE>} for a STATE endpoint, and {@code <class>#<method>#<bci>:NEW} or
+ * {@code :NEWARRAY} for an allocation -- {@link #stateSite} and
+ * {@link #allocationSite} spell those so the runtime that writes them and the
+ * composer that joins on them cannot drift.</p>
  *
  * <p>Neither endpoint alone identifies an interaction: the consumer side admits
- * a different producer that served the same k-th attach, the producer side a
+ * a different producer that served the same attach, the producer side a
  * different consumer.  That is why this type exists separately from
  * {@link Interaction}.</p>
  */
 public final class Endpoint {
     private final OccurrenceAddress occurrence;
     private final String site;
-    private final int ordinal;
+    private final ExecutionIndex siteIndex;
     private final int attempt;
 
-    private Endpoint(OccurrenceAddress occurrence, String site, int ordinal,
-                     int attempt) {
+    private Endpoint(OccurrenceAddress occurrence, String site,
+                     ExecutionIndex siteIndex, int attempt) {
         this.occurrence = occurrence;
         this.site = site;
-        this.ordinal = ordinal;
+        this.siteIndex = siteIndex;
         this.attempt = attempt;
     }
 
     public static Endpoint of(OccurrenceAddress occurrence, String site,
-                              int ordinal, int attempt) {
+                              ExecutionIndex siteIndex, int attempt) {
         return new Endpoint(Fields.required(occurrence, "occurrence"),
-                Fields.text(site, "site"), Fields.ordinal(ordinal, "ordinal"),
+                Fields.text(site, "site"),
+                Fields.required(siteIndex, "siteIndex"),
                 Fields.count(attempt, "attempt"));
     }
 
     /** The one spelling of a STATE endpoint's site. */
     public static String stateSite(String className, String method, int bci,
                                    boolean write) {
-        return Fields.text(className, "className") + "#"
-                + Fields.text(method, "method") + "#"
-                + Fields.count(bci, "bci") + ":" + (write ? "WRITE" : "READ");
+        return site(className, method, bci, write ? "WRITE" : "READ");
+    }
+
+    /** The one spelling of an allocation site (IDENTITY-V3 sec 5). */
+    public static String allocationSite(String className, String method,
+                                        int bci, boolean array) {
+        return site(className, method, bci, array ? "NEWARRAY" : "NEW");
     }
 
     public OccurrenceAddress occurrence() {
         return occurrence;
     }
 
-    /** The declared port id (WIRE) or the read/write site (STATE). */
+    /** The declared port id (WIRE), the read/write site, or the allocation. */
     public String site() {
         return site;
     }
 
-    /** The k-th event of this site inside this occurrence, 1-based. */
-    public int ordinal() {
-        return ordinal;
+    /** The frames from the region entry to this event. */
+    public ExecutionIndex siteIndex() {
+        return siteIndex;
     }
 
     /** The retry number, 0 when the transport did not retry. */
@@ -68,8 +78,14 @@ public final class Endpoint {
     }
 
     public String id() {
-        return Ids.sha16(occurrence.id() + "\n" + site + "\n" + ordinal
-                + "\n" + attempt);
+        return Ids.sha16(occurrence.id() + "/" + site + "/"
+                + siteIndex.hash() + "/" + attempt);
+    }
+
+    /** The canonical spelling, for reports and refusals. */
+    public String render() {
+        return occurrence.render() + "/site:" + site + "/sidx:"
+                + siteIndex.render() + "/att:" + attempt;
     }
 
     @Override
@@ -77,19 +93,25 @@ public final class Endpoint {
         if (this == value) return true;
         if (!(value instanceof Endpoint)) return false;
         Endpoint other = (Endpoint) value;
-        return ordinal == other.ordinal && attempt == other.attempt
-                && site.equals(other.site)
+        return attempt == other.attempt && site.equals(other.site)
+                && siteIndex.equals(other.siteIndex)
                 && occurrence.equals(other.occurrence);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(occurrence, site, ordinal, attempt);
+        return Objects.hash(occurrence, site, siteIndex, attempt);
     }
 
     @Override
     public String toString() {
-        return occurrence.render() + " " + site + "#" + ordinal
-                + (attempt == 0 ? "" : " attempt " + attempt);
+        return render();
+    }
+
+    private static String site(String className, String method, int bci,
+                               String kind) {
+        return Fields.text(className, "className") + "#"
+                + Fields.text(method, "method") + "#"
+                + Fields.count(bci, "bci") + ":" + kind;
     }
 }
