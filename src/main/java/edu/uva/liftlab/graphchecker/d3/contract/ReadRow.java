@@ -26,10 +26,11 @@ public final class ReadRow {
     private final String symbol;
     private final String javaType;
     private final String concreteValue;
+    private final long mintVersion;
 
     private ReadRow(String sessionId, long seq, Endpoint endpoint,
                     LocationId location, long observedVersion, String symbol,
-                    String javaType, String concreteValue) {
+                    String javaType, String concreteValue, long mintVersion) {
         this.sessionId = sessionId;
         this.seq = seq;
         this.endpoint = endpoint;
@@ -38,19 +39,47 @@ public final class ReadRow {
         this.symbol = symbol;
         this.javaType = javaType;
         this.concreteValue = concreteValue;
+        this.mintVersion = mintVersion;
     }
 
     public static ReadRow of(String sessionId, long seq, Endpoint endpoint,
                              LocationId location, long observedVersion,
                              String symbol, String javaType,
                              String concreteValue) {
+        return of(sessionId, seq, endpoint, location, observedVersion, symbol,
+                javaType, concreteValue, UNKNOWN_VERSION);
+    }
+
+    /** CONTRACT v2.4: the same row, stating the mint's own version. */
+    public static ReadRow of(String sessionId, long seq, Endpoint endpoint,
+                             LocationId location, long observedVersion,
+                             String symbol, String javaType,
+                             String concreteValue, long mintVersion) {
         return new ReadRow(Fields.text(sessionId, "sessionId"),
                 Fields.sequence(seq, "seq"),
                 Fields.required(endpoint, "endpoint"),
                 Fields.required(location, "location"), observedVersion,
                 Fields.text(symbol, "symbol"),
                 Fields.text(javaType, "javaType"),
-                Fields.optional(concreteValue));
+                Fields.optional(concreteValue), mintVersion);
+    }
+
+    /**
+     * The version the VM published for this mint's shadow store, or
+     * {@link #UNKNOWN_VERSION} when this row is not a placeholder.
+     *
+     * <p>A declared region input is a READ, so the mint's store is no write
+     * and no WriteRow states it -- but a term's {@code ReadFromExpression}
+     * names exactly that version, because that is what the location held
+     * when the read ran.  {@code observedVersion} is the last REAL write
+     * before the mint, which is the JOIN to the occurrence that wrote the
+     * cell; this is the other half, the version a reader arrives with.  One
+     * occurrence may declare one cell under several ports, so keying the
+     * bridge on (occurrence, location) cannot choose between them and this
+     * can: the mint's version is unique by construction.</p>
+     */
+    public long mintVersion() {
+        return mintVersion;
     }
 
     public String sessionId() {

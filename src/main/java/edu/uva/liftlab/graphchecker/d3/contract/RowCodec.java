@@ -290,6 +290,9 @@ public final class RowCodec {
         json.addProperty("observedVersion", row.observedVersion());
         json.addProperty("symbol", row.symbol());
         json.addProperty(JAVA_TYPE, row.javaType());
+        if (row.mintVersion() != ReadRow.UNKNOWN_VERSION) {
+            json.addProperty("mintVersion", row.mintVersion());
+        }
         if (row.concreteValue() != null) {
             json.addProperty("concreteValue", row.concreteValue());
         }
@@ -302,7 +305,9 @@ public final class RowCodec {
                 readLocation(object(json, LOCATION)),
                 number(json, "observedVersion"), string(json, "symbol"),
                 string(json, JAVA_TYPE),
-                optionalString(json, "concreteValue"));
+                optionalString(json, "concreteValue"),
+                json.has("mintVersion") ? number(json, "mintVersion")
+                        : ReadRow.UNKNOWN_VERSION);
     }
 
     public static JsonObject writeRootMint(RootMintRow row) {

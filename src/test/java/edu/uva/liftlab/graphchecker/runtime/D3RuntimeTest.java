@@ -257,8 +257,9 @@ public class D3RuntimeTest {
                 Collections.<String, String[]>emptyMap());
         placeholder(occurrence, placeholderRow("b", null), "M_I_unversioned",
                 Collections.<String, String[]>emptyMap());
-        // The mint symbolized the object, not the int cell: one row cannot
-        // state an int read and a reference unknown, so it states neither.
+        // The mint symbolized the object, not the int cell: the sorts
+        // disagree (L against I), so the row states neither.  A reference
+        // mint for a reference cell agrees and does publish (P2l).
         placeholder(occurrence, placeholderRow("f", null),
                 "P_L'org/apache/hadoop/hdfs/server/namenode/snapshot/"
                         + "Snapshot'_",
@@ -269,11 +270,22 @@ public class D3RuntimeTest {
         // join to that writer.
         placeholder(occurrence, placeholderRow("c", null), "M_I_installed",
                 Collections.singletonMap("M_I_installed",
-                        new String[]{"INSTANCE_FIELD/22#24", "126", "125"}));
+                        new String[]{"INSTANCE_FIELD/22#28", "126", "125"}));
+        // A second declared port of the SAME cell is a second read event
+        // and states its own row: two calls of a declared accessor in one
+        // occurrence are two values.
+        placeholder(occurrence, secondPortRow(), "M_I_second",
+                Collections.singletonMap("M_I_second",
+                        new String[]{"INSTANCE_FIELD/22#28", "127", "125"}));
+        // The SAME read event reached again -- the same mint row, from an
+        // activation the read also ran inside -- states no second row.
+        placeholder(occurrence, placeholderRow("c", null), "M_I_installed",
+                Collections.singletonMap("M_I_installed",
+                        new String[]{"INSTANCE_FIELD/22#28", "126", "125"}));
         // A mint with no write before it states -1 and pins the decimal.
         placeholder(occurrence, placeholderRow("e", null), "M_I_unwritten",
                 Collections.singletonMap("M_I_unwritten",
-                        new String[]{"INSTANCE_FIELD/22#24", "126", "-1"}));
+                        new String[]{"INSTANCE_FIELD/22#32", "126", "-1"}));
         D3Runtime.closeSession();
 
         SessionDir dir = session();
@@ -322,16 +334,29 @@ public class D3RuntimeTest {
                 reads.get(2).location());
         // The mint is not a write -- no WriteRow states its version -- so
         // the row names the VM's location and the LAST REAL WRITE before
-        // the mint, which is the write above: the placeholder read is the
-        // anchor's JOIN to the occurrence that wrote the cell.
-        assertEquals(writes.get(0).location(), reads.get(3).location());
+        // the mint: the placeholder read is the anchor's JOIN to the
+        // occurrence that wrote the cell.
+        assertEquals(LocationKind.INSTANCE, reads.get(3).location().kind());
         assertEquals(125L, reads.get(3).observedVersion());
         assertEquals("2", reads.get(3).concreteValue());
+        ReadRow unwritten = null;
+        for (ReadRow read : reads) {
+            if ("M_I_unwritten".equals(read.symbol())) unwritten = read;
+        }
+        assertNotNull("the unwritten mint states a row", unwritten);
+        // CONTRACT v2.4: the placeholder states the version its own mint
+        // published, which is what a term's ReadFrom names, beside the last
+        // real write it observed, which is the join to the writer.
+        assertEquals(126L, unwritten.mintVersion());
+        assertEquals(ReadRow.UNKNOWN_VERSION,
+                reads.get(0).mintVersion());
         assertEquals("no write precedes the mint: -1 and the decimal",
-                ReadRow.UNKNOWN_VERSION, reads.get(4).observedVersion());
-        assertEquals("2", reads.get(4).concreteValue());
-        assertEquals("a reference-sorted mint for an int cell states no row",
-                5, reads.size());
+                ReadRow.UNKNOWN_VERSION, unwritten.observedVersion());
+        assertEquals("2", unwritten.concreteValue());
+        assertEquals("a reference-sorted mint states no row; a second port"
+                        + " of one cell is a second read event and states"
+                        + " one; the same event reached twice states one",
+                6, reads.size());
         List<RootMintRow> roots = RowCodec.readAll(dir.roots(),
                 RowCodec::readRootMint);
         // The corpus invariant: a decision whose term is over declared root
@@ -525,6 +550,13 @@ public class D3RuntimeTest {
         binary.addProperty("_op", "+");
         binary.add("_right", right);
         return binary;
+    }
+
+    /** A second declared port of one cell: another read, another event. */
+    private static JsonObject secondPortRow() {
+        JsonObject row = placeholderRow("g", null);
+        row.addProperty("eventSeq", 19L);
+        return row;
     }
 
     /** One manual mint row, as {@code recordManualSymbolization} writes it. */

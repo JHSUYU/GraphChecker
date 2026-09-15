@@ -203,12 +203,31 @@ final class D3RowPublication {
         // Naming the Java field signature instead left the read saying
         // AtomicInteger#value while the write log said
         // INSTANCE_FIELD/<rid>#<offset>.
+        // The mint this row is of, found by the symbol when the row carries
+        // the VM's own (an integral mint states its rawSymbol) and by the
+        // name the runtime REQUESTED otherwise: the VM answers a request for
+        // `field_<portId>` with `M_<sort>_field_<portId>`, so a reference
+        // mint -- whose row states no rawSymbol and whose expression leaf is
+        // the identity spelling `P_L'...'` -- is the same mint under the
+        // same request.  One spelling per symbol: the row publishes the VM's
+        // (which is what the version's expression and expressions.json
+        // carry), never the identity leaf.
         String[] installedAt = installed.get(symbol);
+        String minted = symbol;
+        if (installedAt == null) {
+            String requested = "_field_" + optionalString(row, "symbol");
+            for (Map.Entry<String, String[]> mint : installed.entrySet()) {
+                if (!mint.getKey().endsWith(requested)) continue;
+                installedAt = mint.getValue();
+                minted = mint.getKey();
+                break;
+            }
+        }
         String locationKey = installedAt == null ? "" : installedAt[0];
         LocationId location = location(locationKey);
         // The version this read OBSERVED.  The mint's own version is not a
         // write -- nobody stored it, and no WriteRow states it (see
-        // #mintedVersion) -- so the version the read observed is the last
+        // #mintStores) -- so the version the read observed is the last
         // REAL write of the location before it, which the VM's version log
         // already holds.  That is what makes this row a JOIN to the writer
         // occurrence: on hdfs-17960 the two deletion occurrences write the
@@ -236,8 +255,8 @@ final class D3RowPublication {
             return;
         }
         String declared = javaDescriptor(optionalString(row, "javaType"));
-        String minted = mintedSort(symbol);
-        if (!minted.isEmpty() && !minted.equals(declared)) {
+        String sort = mintedSort(minted);
+        if (!sort.isEmpty() && sort.charAt(0) != declared.charAt(0)) {
             // The mint symbolized the OBJECT, not the cell: on hdfs-17960
             // REGION.9492ec77 declares <Snapshot: int id> and the row came
             // back with the VM's reference symbol P_L'...Snapshot'_ beside
@@ -247,7 +266,7 @@ final class D3RowPublication {
             // which no lowering can hold; the run states the disagreement
             // instead of a row that hides it.
             D3Runtime.gap(GapKind.DECLARATION_MISSING, GapClass.DIAGNOSTIC,
-                    symbol, "a declared region input minted a " + minted
+                    minted, "a declared region input minted a " + sort
                             + "-sorted symbol for a " + declared + " cell ("
                             + optionalString(row, "fieldSignature")
                             + "), so this read states no one sort: "
@@ -256,37 +275,63 @@ final class D3RowPublication {
         }
         String value = optionalString(row, "observedValue");
         if (value.isEmpty()) value = optionalString(row, "recordedValue");
+        if (value.isEmpty() && declared.charAt(0) == 'L') {
+            // A reference cell records no decimal.  What the run states of
+            // it is the identity the VM spells on the leaf -- the same
+            // spelling FieldAccess.concreteValue carries, so one identity
+            // lowering serves both -- and "N" for null.
+            String identity = symbolLeaf(row.get("expression"), 0);
+            if (identity.startsWith("M_L'") || identity.startsWith("P_L'")
+                    || "N".equals(identity)) {
+                value = identity;
+            }
+        }
         if (observed < 0L && literal(value).isEmpty()) {
             D3Runtime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
                     symbol, "a declared region input states no value it"
                             + " read: " + optionalString(row, "portId"));
             return;
         }
-        // One row per read, per activation.  The declared ports of one
-        // activation are reads of one location that carry one symbol -- the
-        // VM keeps the field's shadow, so the second mint finds the first
-        // symbol -- and the same manual row is reachable again from every
-        // activation the read ran inside.  One row states it.
-        if (!D3Runtime.claimEvent("placeholder",
-                optionalString(row, "occurrenceId") + "#" + locationKey
-                        + "#" + symbol)) {
+        // One row per read EVENT.  Each declared port's mint is its own
+        // read -- two calls of a declared accessor in one occurrence are two
+        // values, and a `<Timer: long now()>.return` cell proves it -- so
+        // the key is the event, not the cell: the occurrence, the location
+        // and the event this mint is.  Keying it on the cell alone would
+        // discard the second port's statement; keying it on the PLANNED
+        // occurrenceId (what it did before) let one event through twice,
+        // because two mints in one activation carry different planned ids,
+        // and the anchor stated INSTANCE/2#24 twice in every session of the
+        // P2f' corpus (seed seq 242/308, focused 185/209 and 208/210).
+        long event = optionalLongInteger(row, "eventSeq", 0L);
+        if (!D3Runtime.claimEvent("placeholder", occurrence.id() + "#"
+                + locationKey + "#" + event)) {
+            D3Runtime.gap(GapKind.DECLARATION_MISSING, GapClass.DIAGNOSTIC,
+                    symbol, "this occurrence already states read event "
+                            + event + " of " + locationKey
+                            + ", so this mint publishes no second row for"
+                            + " it: " + optionalString(row, "portId"));
             return;
         }
-        D3Runtime.read(occurrence,
-                optionalLongInteger(row, "eventSeq", 0L),
+        D3Runtime.read(occurrence, event,
                 Endpoint.stateSite(locationKey, "PLACEHOLDER", 0, false),
-                location, observed, symbol,
+                location, observed, minted,
                 declared, literal(value),
-                optionalString(row, "siteIndex"));
+                optionalString(row, "siteIndex"),
+                installedAt == null ? ReadRow.UNKNOWN_VERSION
+                        : Long.parseLong(installedAt[1]));
     }
 
     /**
      * The sort the VM spelled into one of its symbols, or {@code ""}.
      *
      * <p>A VM symbol carries its own sort: {@code M_I_field_...},
-     * {@code M_Z_field_...}, {@code P_L'org/apache/...'_}.  A symbol the
-     * runtime made instead ({@code INSTANCE_FIELD/2#24@v178}) spells none
-     * and claims none, so nothing is inferred from its absence.</p>
+     * {@code M_Z_field_...}, {@code M_L_field_...}, {@code P_L'...'_}.  The
+     * SORT is what has to agree with the cell -- L against any reference
+     * descriptor, I against I -- because a reference symbol does not spell
+     * which class the cell is declared as, and demanding the whole
+     * descriptor refused every reference mint (P2l).  A symbol the runtime
+     * made instead ({@code INSTANCE_FIELD/2#24@v178}) spells no sort and
+     * claims none, so nothing is inferred from its absence.</p>
      */
     private static String mintedSort(String symbol) {
         String name = safe(symbol);
@@ -294,62 +339,52 @@ final class D3RowPublication {
         char sort = name.charAt(2);
         char after = name.charAt(3);
         if (after != '_' && after != '\'') return "";
-        if (sort == 'L') {
-            int open = name.indexOf('\'');
-            int close = name.indexOf('\'', open + 1);
-            return open < 0 || close < 0 ? "Ljava/lang/Object;"
-                    : "L" + name.substring(open + 1, close) + ";";
-        }
-        return "ZBCSIJFD".indexOf(sort) < 0 ? "" : String.valueOf(sort);
+        return "ZBCSIJFDL".indexOf(sort) < 0 ? "" : String.valueOf(sort);
     }
 
     /**
-     * The symbols this activation minted at its declared region inputs.
+     * Every mint store of this activation, keyed {@code location#version}.
      *
-     * <p>Same test {@link #roots} publishes a placeholder by, so the two
-     * cannot disagree about which symbol is a read and which is a root.</p>
+     * <p>The same scan {@link #mintedLocations} performs, keyed the other
+     * way round: there by the symbol a placeholder row is found by, here by
+     * the store a WriteRow would have been published for.  One rule decides
+     * both -- a version whose whole value is the symbol a declared input
+     * minted is that mint's shadow store, and nobody wrote it.</p>
      */
-    private static Set<String> placeholderSymbols(ActiveRegion active) {
-        Set<String> symbols = new LinkedHashSet<String>();
-        for (JsonObject row : active.symbolizedRows) {
-            String symbol = vmSymbol(row);
-            if (symbol.isEmpty()
-                    || !optionalString(row, "sourceId").isEmpty()
-                    || kindOf(row) != RootKind.INTEGRAL) {
-                continue;
+    private static Map<String, String> mintStores(ActiveRegion active) {
+        Map<String, String> stores = new java.util.LinkedHashMap<String,
+                String>();
+        Set<String> minted = mintedLocations(active).keySet();
+        if (minted.isEmpty()) return stores;
+        // EVERY version whose whole value is a mint's symbol, not the first
+        // one per symbol: mintedLocations keeps the first because a
+        // placeholder row states one mint version, and a symbol that
+        // reaches a second store would then have left that store published
+        // as a write (v201 `M_L_field_REGION.692d5ed3...` survived exactly
+        // that way).  A store is a store wherever it stands.
+        for (JsonObject record : active.sharedStateRecords.values()) {
+            String locationKey = optionalString(record, "locationKey");
+            if (location(locationKey) == null) continue;
+            for (JsonElement element
+                    : array(object(record, "envelope"), "versions")) {
+                if (!element.isJsonObject()) continue;
+                JsonObject version = element.getAsJsonObject();
+                long id = optionalLongInteger(version, "fieldVersionId", -1L);
+                JsonElement written = version.get("expression");
+                if (id < 0L || written == null || !written.isJsonObject()) {
+                    continue;
+                }
+                JsonObject node = written.getAsJsonObject();
+                if (!optionalString(node, "_type").contains("Symbol")) {
+                    continue;
+                }
+                String symbol = optionalString(node, "_exp");
+                if (minted.contains(symbol)) {
+                    stores.put(locationKey + "#" + id, symbol);
+                }
             }
-            symbols.add(symbol);
         }
-        return symbols;
-    }
-
-    /**
-     * Whether one version of a location exists only because a mint set the
-     * field's shadow expression.
-     *
-     * <p>The VM has one way to root a symbol at a field
-     * ({@code System.symbolizeExactField}): it replaces the field's shadow
-     * expression, and the tracked-location log then records a new version
-     * whose whole value is that symbol.  <b>Nothing wrote the field.</b>
-     * Publishing that version as a WriteRow states a write nobody
-     * performed, hides the location's real history behind it, and hands the
-     * composer a writer for a value that is a READ -- on hdfs-17960 it put
-     * one fabricated version 172 of {@code INSTANCE_FIELD/19#24} into 14
-     * regions' write logs.  A declared region input is a read placeholder
-     * (HANDOVER section 1.3), so this version is not a write and states no
-     * row.  The VM item is that the mint is expressible only as a shadow
-     * store; the row contract is answered here.</p>
-     */
-    private static boolean mintedVersion(JsonObject version,
-                                         Set<String> mints) {
-        JsonElement written = version == null ? null
-                : version.get("expression");
-        if (written == null || !written.isJsonObject()) return false;
-        JsonObject node = written.getAsJsonObject();
-        if (!optionalString(node, "_type").contains("Symbol")) return false;
-        String symbol = optionalString(node, "_exp");
-        return mints.contains(symbol)
-                || D3Runtime.isPlaceholderSymbol(symbol);
+        return stores;
     }
 
     /**
@@ -575,7 +610,15 @@ final class D3RowPublication {
         Set<String> published = new LinkedHashSet<String>();
         Map<JsonElement, Boolean> seen =
                 new IdentityHashMap<JsonElement, Boolean>();
-        Set<String> mints = placeholderSymbols(active);
+        // The mint stores of this activation, by the one key the row's
+        // mintVersion is: (location, version).  A declared region input is a
+        // READ, so its store is no write and states no WriteRow -- and the
+        // key is the store itself, never the spelling of its symbol: the
+        // mint row's leaf reads `P_L'...'` where the version the VM
+        // published carries `M_L'...'`, so a symbol-set test let five
+        // "writes nobody performed" through (v86 the MARKER root's store,
+        // v203/v210/v269/v276 the FsImage reference mints).
+        Map<String, String> mints = mintStores(active);
         // The read log first, and for every location: a read node inside one
         // location's value is a read OF ANOTHER location, and the activation
         // that logged it is what its own log record states.
@@ -591,7 +634,10 @@ final class D3RowPublication {
                 if (!element.isJsonObject()) continue;
                 JsonObject version = element.getAsJsonObject();
                 long id = optionalLongInteger(version, "fieldVersionId", -1L);
-                if (id < 0L || mintedVersion(version, mints)) continue;
+                if (id < 0L
+                        || mints.containsKey(locationKey + "#" + id)) {
+                    continue;
+                }
                 if (!D3Runtime.claimEvent("write", locationKey + "#" + id)) {
                     continue;
                 }
