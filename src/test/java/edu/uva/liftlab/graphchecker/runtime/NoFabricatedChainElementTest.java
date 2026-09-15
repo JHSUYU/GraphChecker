@@ -69,18 +69,18 @@ public class NoFabricatedChainElementTest {
     /**
      * A throw is not a target reach; the declared occurrence still is.
      *
-     * <p>With no target occurrence declared there is no link to check.</p>
+     * <p>How an activation left is not an input of the question at all --
+     * the activation keeps no exit kind to be asked about -- so reaching
+     * the target is the declared site having decided at its required
+     * outcome, and nothing else.  With no target occurrence declared there
+     * is no link to check.</p>
      */
     @Test
     public void anyThrowIsNoLongerATargetReach() throws Exception {
-        ConcolicRegionRuntime.ActiveRegion undeclared = region(false);
-        undeclared.exitKind = "THROW";
-        undeclared.exceptionType = "java.lang.IllegalStateException";
         assertFalse("an undeclared target cannot have been reached",
-                ConcolicResultPublisher.targetReachedByActivation(undeclared));
+                ConcolicResultPublisher.targetReachedByActivation(
+                        region(false)));
         ConcolicRegionRuntime.ActiveRegion declared = region(true);
-        declared.exitKind = "THROW";
-        declared.exceptionType = "java.lang.IllegalStateException";
         recordReach(declared);
         assertTrue(ConcolicResultPublisher.targetReachedByActivation(declared));
     }

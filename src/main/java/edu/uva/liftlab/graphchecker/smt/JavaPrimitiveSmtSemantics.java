@@ -110,6 +110,22 @@ public final class JavaPrimitiveSmtSemantics {
                             "Ljava/lang/Double;", "Ljava/lang/Object;")));
 
     /**
+     * Whether one Java type name IS a primitive.
+     *
+     * <p>Asked where a declaration has to be primitive to be a root the VM
+     * can mint.  It is read off {@link #javaTypeDescriptor}, the one
+     * descriptor function, because "is it primitive" and "what is its
+     * descriptor" are one question asked twice; the runtime carried its own
+     * copy of this under the name {@code primitiveDescriptor}, which is
+     * also what {@link JavaPrimitiveBoxing#primitiveDescriptor} answers
+     * about a WRAPPER -- one name, two questions, three implementations.</p>
+     */
+    public static boolean primitive(String javaType) {
+        String descriptor = javaTypeDescriptor(javaType);
+        return descriptor.length() == 1 && "ZBCSIJFD".contains(descriptor);
+    }
+
+    /**
      * The closed value range of one integral Java type, as {@code {minimum,
      * maximum}}, or null when the type names no integral range.  A boolean
      * is not one: two named values are not a span of values.

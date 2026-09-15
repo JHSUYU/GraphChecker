@@ -1530,7 +1530,8 @@ public final class SmtLowering extends VmLoweringCore {
         for (int index = 0; index < line.length(); index++) {
             if (line.charAt(index) != '(') continue;
             int end = index + 1;
-            while (end < line.length() && !breaks(line.charAt(end))) end++;
+            while (end < line.length()
+                    && symbolCharacter(line.charAt(end))) end++;
             String head = line.substring(index + 1, end);
             if (head.isEmpty()) continue;
             // Outside a datatype only a declaration states a name, and it is
@@ -1549,7 +1550,8 @@ public final class SmtLowering extends VmLoweringCore {
                 from++;
             }
             int to = from;
-            while (to < line.length() && !breaks(line.charAt(to))) to++;
+            while (to < line.length()
+                    && symbolCharacter(line.charAt(to))) to++;
             if (to > from) names.add(line.substring(from, to));
         }
         return names;
@@ -1820,8 +1822,34 @@ public final class SmtLowering extends VmLoweringCore {
      * variables" -- so the three questions are asked of one tokenizer and
      * cannot disagree about where a name ends.</p>
      */
+    /** How the one tokenizer spells the names it copies through. */
+    private enum Spelling {
+        /** Exactly as written, which is what a rename pass needs. */
+        AS_WRITTEN,
+        /**
+         * Bar-quoted where SMT-LIB cannot spell the name bare.
+         *
+         * <p>A row's symbol is a NAME the runtime chose --
+         * {@code MAP_STATE/4#-3@v112} -- and {@code #} is not in SMT-LIB's
+         * simple-symbol alphabet: it opens a bit-vector literal, so z3
+         * answers the whole query with "invalid bit-vector literal" and the
+         * composition has no verdict at all.  {@code |...|} is the SAME
+         * symbol spelled legally, which is why the fix is a spelling and
+         * not a rename: renaming would need every published term rewritten
+         * in step, and a term the runtime wrote about {@code x} must stay
+         * about {@code x}.  Idempotent, because an already-quoted name is
+         * one token here and is copied through.</p>
+         */
+        LEGAL
+    }
+
     private static String pass(String text, Map<String, String> renames,
                                Collection<String> named) {
+        return pass(text, renames, named, Spelling.AS_WRITTEN);
+    }
+
+    private static String pass(String text, Map<String, String> renames,
+                               Collection<String> named, Spelling spelling) {
         StringBuilder out = new StringBuilder();
         if (text == null) return "";
         int index = 0;
@@ -1833,11 +1861,20 @@ public final class SmtLowering extends VmLoweringCore {
                 index = end;
                 continue;
             }
+            if (value == ';') {
+                // A comment runs to the end of the line and names nothing.
+                int end = text.indexOf('\n', index);
+                end = end < 0 ? text.length() : end;
+                out.append(text, index, end);
+                index = end;
+                continue;
+            }
             if (value == '|') {
                 int end = pastLiteral(text, index, '|');
                 String token = text.substring(index + 1,
                         Math.max(index + 1, end - 1));
-                index = emit(out, text, index, end, token, renames, named);
+                index = emit(out, text, index, end, token, renames, named,
+                        Spelling.AS_WRITTEN);
                 continue;
             }
             if (!symbolCharacter(value)) {
@@ -1851,7 +1888,7 @@ public final class SmtLowering extends VmLoweringCore {
                 end++;
             }
             index = emit(out, text, index, end, text.substring(index, end),
-                    renames, named);
+                    renames, named, spelling);
         }
         return out.toString();
     }
@@ -1864,9 +1901,9 @@ public final class SmtLowering extends VmLoweringCore {
     private static int emit(StringBuilder out, String text, int start,
                             int end, String token,
                             Map<String, String> renames,
-                            Collection<String> named) {
+                            Collection<String> named, Spelling spelling) {
         if (!name(token)) {
-            out.append(text, start, end);
+            append(out, text, start, end, token, spelling);
             return end;
         }
         String renamed = renames.get(token);
@@ -1874,9 +1911,18 @@ public final class SmtLowering extends VmLoweringCore {
             out.append(renamed);
             return end;
         }
-        out.append(text, start, end);
+        append(out, text, start, end, token, spelling);
         named.add(token);
         return end;
+    }
+
+    private static void append(StringBuilder out, String text, int start,
+                               int end, String token, Spelling spelling) {
+        if (spelling == Spelling.LEGAL && !simpleSymbol(token)) {
+            out.append('|').append(token).append('|');
+            return;
+        }
+        out.append(text, start, end);
     }
 
     /** One index past the literal that opens at {@code at}. */
@@ -1977,67 +2023,12 @@ public final class SmtLowering extends VmLoweringCore {
      */
     public static String legalSymbols(String query) {
         if (query == null || query.isEmpty()) return query;
-        StringBuilder text = new StringBuilder(query.length());
-        int index = 0;
-        while (index < query.length()) {
-            char value = query.charAt(index);
-            if (value == '"' || value == '|') {
-                index = copyLiteral(query, index, value, text);
-                continue;
-            }
-            if (value == ';') {
-                // A comment runs to the end of the line and is not a name.
-                while (index < query.length()
-                        && query.charAt(index) != '\n') {
-                    text.append(query.charAt(index));
-                    index++;
-                }
-                continue;
-            }
-            if (Character.isWhitespace(value) || value == '('
-                    || value == ')') {
-                text.append(value);
-                index++;
-                continue;
-            }
-            int end = index;
-            while (end < query.length() && !breaks(query.charAt(end))) {
-                end++;
-            }
-            String token = query.substring(index, end);
-            index = end;
-            text.append(simpleSymbol(token) ? token : "|" + token + "|");
-        }
-        return text.toString();
-    }
-
-    private static boolean breaks(char value) {
-        return Character.isWhitespace(value) || value == '(' || value == ')'
-                || value == '"' || value == '|';
+        return pass(query, Collections.<String, String>emptyMap(),
+                new ArrayList<String>(), Spelling.LEGAL);
     }
 
     /** Copies one string or one already-quoted symbol, closing mark and
      *  all. */
-    private static int copyLiteral(String query, int start, char mark,
-                                   StringBuilder text) {
-        text.append(mark);
-        int index = start + 1;
-        while (index < query.length()) {
-            char value = query.charAt(index);
-            text.append(value);
-            index++;
-            if (value != mark) continue;
-            if (mark == '"' && index < query.length()
-                    && query.charAt(index) == '"') {
-                text.append('"');
-                index++;
-                continue;
-            }
-            break;
-        }
-        return index;
-    }
-
     /** Whether SMT-LIB already spells this token the way it is written. */
     private static boolean simpleSymbol(String token) {
         if (token.isEmpty()) return true;

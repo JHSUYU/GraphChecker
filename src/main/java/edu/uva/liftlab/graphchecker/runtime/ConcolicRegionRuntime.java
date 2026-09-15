@@ -15,6 +15,7 @@ import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
 import edu.uva.liftlab.graphchecker.plan.BranchPredicateAlgebra;
 import edu.uva.liftlab.graphchecker.plan.BranchWitness;
 import edu.uva.liftlab.graphchecker.smt.CanonicalJson;
+import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 import edu.uva.liftlab.graphchecker.smt.VmExpressionIr;
 import edu.uva.liftlab.graphchecker.plan.VmExpressionTable;
 import edu.uva.liftlab.graphchecker.plan.SmtModelValueCodec;
@@ -54,6 +55,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics;
 import static edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics.javaTypeDescriptor;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.array;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalBool;
@@ -88,15 +90,6 @@ public final class ConcolicRegionRuntime {
             "MANUAL_SYMBOLIC_INPUT_OBSERVATION";
     private static final String MANUAL_INPUT_OBSERVATION_AUTHORITY =
             "EXACT_PLANNED_SYMBOLIZATION_ACTION_V1";
-    static final String CONFIGURED_SOURCE_PHASE_OBSERVATIONS =
-            "configuredSourcePhaseObservations";
-    static final String CONFIGURED_SOURCE_PHASE_GAPS =
-            "configuredSourcePhaseGaps";
-    static final Pattern DEFAULT_EXECUTOR_THREAD_NAME =
-            Pattern.compile("^pool-[0-9]+-thread-([0-9]+)$");
-    static final Pattern DEFAULT_OBJECT_IDENTITY_THREAD_NAME =
-            Pattern.compile("^([A-Za-z_$][A-Za-z0-9_$.]*?)@"
-                    + "[0-9a-fA-F]+$");
     static final String ROOT_ARGUMENT_PREDICATE_KIND =
             "EXACT_RUNTIME_TYPE";
     static final Gson GSON = new GsonBuilder().disableHtmlEscaping().create();
@@ -2156,23 +2149,62 @@ public final class ConcolicRegionRuntime {
     }
 
     /**
-     * Writes the value the wave assigned this root, at its mint.
+     * The value the wave asks of this root at its mint, or {@code ""}.
      *
-     * <p>Only on the focused occurrence: an obligation's assignment is a
-     * counterfactual about ONE region's roots, and writing it into a region
+     * <p>One decision for every mint, whatever the mint writes into.  Only
+     * on the focused occurrence: an obligation's assignment is a
+     * counterfactual about ONE region's roots, and applying it in a region
      * that merely runs alongside would make the run state something the
      * obligation never asked.</p>
+     *
+     * <p>A clock is stated as a SKEW rather than a value, because every
+     * execution reads a clock fresh: the focus row says how far off the
+     * reading is to be and this adds it to {@code observed}, the instant
+     * this run actually read.  Pinning a replay to the recording's instant
+     * is what left eleven of bug3's twelve paths unsatisfiable at every
+     * valuation.</p>
+     */
+    private static String focusedRootValue(ActiveRegion active,
+                                           String rootId, Object observed) {
+        if (active == null || active.d3Address == null) return "";
+        if (!edu.uva.liftlab.graphchecker.runtime.FocusedReplay
+                .focused(active.d3Address)) {
+            return "";
+        }
+        Long skew = edu.uva.liftlab.graphchecker.runtime.FocusedReplay
+                .clockSkew(rootId);
+        if (skew == null) {
+            return edu.uva.liftlab.graphchecker.runtime.FocusedReplay
+                    .rootAssignment(rootId);
+        }
+        Long reading = readingOf(observed);
+        if (reading == null) {
+            RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind
+                            .UNPRODUCIBLE_ANSWER,
+                    edu.uva.liftlab.graphchecker.contract.GapClass
+                            .BLOCKING, rootId,
+                    "the wave states a skew for this clock and the mint read"
+                            + " no instant to add it to");
+            return "";
+        }
+        return Long.toString(reading.longValue() + skew.longValue());
+    }
+
+    /** One integral reading, or null when the value is not one. */
+    private static Long readingOf(Object value) {
+        return value instanceof Number && !(value instanceof Float)
+                && !(value instanceof Double)
+                ? Long.valueOf(((Number) value).longValue()) : null;
+    }
+
+    /**
+     * Writes that value into the declared field the mint stands on.
      */
     private static boolean applyFocusedRootAssignment(
             ActiveRegion active, String sourceId, Object owner,
             String fieldSignature, String descriptor) {
-        if (active == null || active.d3Address == null) return false;
-        if (!edu.uva.liftlab.graphchecker.runtime.FocusedReplay
-                .focused(active.d3Address)) {
-            return false;
-        }
-        String value = edu.uva.liftlab.graphchecker.runtime.FocusedReplay
-                .rootAssignment(sourceId);
+        String value = focusedRootValue(active, sourceId,
+                readExactField(owner, fieldSignature));
         if (value.isEmpty()) return false;
         if (!active.mintIsPlaceable(owner)) return false;
         if (writeModeledField(owner, fieldSignature, descriptor, value)) {
@@ -2187,7 +2219,6 @@ public final class ConcolicRegionRuntime {
         return false;
     }
 
-    /** One value the wave stated, as the assignment the writer takes. */
     /** The declared site of {@code portId} in this occurrence's plan. */
     /**
      * The declared site of {@code portId}, whoever is running.
@@ -2523,7 +2554,7 @@ public final class ConcolicRegionRuntime {
     }
 
     private static String handoffMintLabel(String mintKey, String portId) {
-        return "HOFF." + CanonicalJson.sha256(mintKey + "\n"
+        return "HOFF." + ArtifactIO.sha256(mintKey + "\n"
                 + safe(portId));
     }
 
@@ -3689,9 +3720,6 @@ public final class ConcolicRegionRuntime {
                 if (scope != null && scope.regionToken == active.token) {
                     CURRENT_ACCESSOR_CALL_CONTEXT.remove();
                 }
-                active.exitKind = safe(exitKind);
-                active.exceptionType = safe(exceptionType);
-                active.exitThrowable = throwable;
                 judgeFinishedOccurrence(active);
             } finally {
                 publicationDeferred = closeOccurrence(active);
@@ -3951,7 +3979,8 @@ public final class ConcolicRegionRuntime {
         }
         api.symbolizeExactField(owner, leafFieldSignature,
                 manualMintLabel(symbol, active.activation.occurrenceId,
-                        primitiveDescriptor(field.type())));
+                        JavaPrimitiveSmtSemantics.primitive(
+                                field.type())));
         ensurePathRecordingStarted(active);
         return engineExpression(api.fieldExpression(owner, field.owner(),
                 field.name(), javaTypeDescriptor(field.type()), value));
@@ -3996,7 +4025,30 @@ public final class ConcolicRegionRuntime {
                 action.symbol, exactPath, fieldSignature)) {
             return concrete;
         }
-        Object fresh = freshPrimitiveBox(concrete);
+        // The wave's value reaches a manual root here, because the cell a
+        // manual mint stands on IS the box the region reads back -- the
+        // same decision the declared field's writer takes
+        // (#focusedRootValue), so a clock's skew applies wherever the clock
+        // is read and not only where a configured source happens to be.
+        String assigned = focusedRootValue(active, action.symbol, concrete);
+        Object planted = concrete;
+        if (!assigned.isEmpty()) {
+            Object modeled = coerceModelValue("", assigned,
+                    concrete == null ? null : concrete.getClass());
+            if (modeled == null
+                    || modeled == UnsupportedReplayValue.INSTANCE) {
+                RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind
+                                .UNPRODUCIBLE_ANSWER,
+                        edu.uva.liftlab.graphchecker.contract.GapClass
+                                .BLOCKING, action.symbol,
+                        "the wave's value for this root could not be read as"
+                                + " the type the mint reads");
+                assigned = "";
+            } else {
+                planted = modeled;
+            }
+        }
+        Object fresh = freshPrimitiveBox(planted);
         try {
             api.symbolizeField(fresh, "value", manualMintLabel(action.symbol,
                     active.activation.occurrenceId, true));
@@ -4004,7 +4056,10 @@ public final class ConcolicRegionRuntime {
             JsonElement expression = primitiveBoxExpression(api, fresh);
             active.recordManualSymbolization(action, action.symbol,
                     exactPath, fieldSignature, expression, true, false,
-                    recordedScalar(concrete));
+                    // A replay that planted the wave's value read the wave's
+                    // value back, and publishing that as "recorded" is how a
+                    // counterfactual becomes the recording.
+                    assigned.isEmpty() ? recordedScalar(concrete) : "");
             return fresh;
         } catch (Throwable throwable) {
             return concrete;
@@ -4260,7 +4315,7 @@ public final class ConcolicRegionRuntime {
                     "manual primitive mint requires symbol and occurrence");
         }
         return requested + ".occ."
-                + CanonicalJson.sha256(occurrence);
+                + ArtifactIO.sha256(occurrence);
     }
 
     /**
@@ -4282,7 +4337,7 @@ public final class ConcolicRegionRuntime {
     static boolean carriesInputAuthority(
             SymbolizeAction action, JsonElement expression) {
         return action != null && action.declaredSymbolicRoot
-                && primitiveDescriptor(action.javaType)
+                && JavaPrimitiveSmtSemantics.primitive(action.javaType)
                 ? VmExpressionIr.carriesSymbolicValue(expression)
                 : VmExpressionIr.carriesPropagatedValue(expression);
     }
@@ -4320,12 +4375,6 @@ public final class ConcolicRegionRuntime {
     /** Diagnostic name of one refused mint at a declared cut port. */
     static final String DECLARED_CUT_PORT_MINT_REFUSED =
             "DECLARED_CUT_PORT_MINT_REFUSED";
-
-    private static boolean primitiveDescriptor(String javaType) {
-        String descriptor = javaTypeDescriptor(javaType);
-        return descriptor.length() == 1
-                && "ZBCSIJFD".contains(descriptor);
-    }
 
     private static Object readField(Object receiver, String name) {
         if (receiver == null || name == null || name.isEmpty()) {
@@ -5215,9 +5264,6 @@ public final class ConcolicRegionRuntime {
             return true;
         }
 
-        String exitKind = "";
-        String exceptionType = "";
-        Throwable exitThrowable;
         /** Exact configured-source and planned-action observations. */
         final List<JsonObject> symbolizedRows = new ArrayList<>();
         /**
@@ -5234,14 +5280,6 @@ public final class ConcolicRegionRuntime {
         /** Phase entries used by this activation; committed on publication. */
         final Map<String, Integer> configuredSourcePhaseOrdinals =
                 new LinkedHashMap<>();
-        /** Ordered, structured replay ledger emitted with the raw result. */
-        final List<JsonObject> configuredSourcePhaseObservations =
-                new ArrayList<>();
-        /** Structured fail-closed phase replay gaps. */
-        final List<JsonObject> configuredSourcePhaseGaps =
-                new ArrayList<>();
-        private final Set<String> configuredSourcePhaseGapIdentities =
-                new LinkedHashSet<>();
         final List<JsonObject> branchMappings = new ArrayList<>();
         /**
          * Case-local references into the VM's own handoff ledger: the
@@ -5268,14 +5306,12 @@ public final class ConcolicRegionRuntime {
         private final Map<String, Integer> accessorCallOccurrences =
                 new LinkedHashMap<>();
         final LoopBackedgeBudget loopBackedges;
-        /** Current fixed-count invocation by runtime natural-loop id. */
-        private final Map<String, DynamicLoopCardinality>
-                activeLoopCardinalities = new LinkedHashMap<>();
+        /** Occurrence of the open fixed-count invocation, by loop id. */
+        private final Map<String, Integer> activeLoopCardinalities =
+                new LinkedHashMap<>();
         /** Next occurrence ordinal by runtime natural-loop id. */
         private final Map<String, Integer> loopCardinalityOccurrences =
                 new LinkedHashMap<>();
-        /** Exact N for every dynamic fixed-count invocation in this path. */
-        final List<JsonObject> loopCardinalities = new ArrayList<>();
         private final Map<Long, PreparedBranch> preparedBranches =
                 new LinkedHashMap<>();
         /** One shared expression DAG for all read-outs in this VM session. */
@@ -5345,40 +5381,30 @@ public final class ConcolicRegionRuntime {
             // id cuts ordinary code after (for example) two 16-element array
             // walks.  recordLoopCardinality opens the exact invocation before
             // the first body hook and completeLoopCardinality closes it.
-            DynamicLoopCardinality invocation =
-                    activeLoopCardinalities.get(loopId);
+            Integer invocation = activeLoopCardinalities.get(loopId);
             String budgetKey = invocation == null ? loopId
-                    : LoopBackedgeBudget.scoped(
-                    loopId, invocation.occurrence);
+                    : LoopBackedgeBudget.scoped(loopId,
+                            invocation.intValue());
             long entered = loopBackedges.recordBody(budgetKey);
             if (entered <= maxBodies) return null;
             replayResourceCut = true;
             return new ReplayLoopResourceCut(loopId, maxBodies, entered);
         }
 
+        /**
+         * Opens one dynamic invocation of a fixed-count loop.
+         *
+         * <p>The resource ceiling applies per invocation, so the backedge
+         * budget is scoped by which invocation this is; the count the hook
+         * states is what says one is open at all.</p>
+         */
         private synchronized void recordLoopCardinality(
                 String loopId, int cardinality) {
             if (loopId.isEmpty() || cardinality < 0) return;
-            DynamicLoopCardinality current =
-                    activeLoopCardinalities.get(loopId);
-            if (current == null) {
-                int occurrence = loopCardinalityOccurrences
-                        .getOrDefault(loopId, 0) + 1;
-                loopCardinalityOccurrences.put(loopId, occurrence);
-                current = new DynamicLoopCardinality(
-                        occurrence, cardinality);
-                activeLoopCardinalities.put(loopId, current);
-                JsonObject row = new JsonObject();
-                row.addProperty(LoopBoundPolicy.RUNTIME_LOOP_ID, loopId);
-                row.addProperty(LoopBoundPolicy.DYNAMIC_OCCURRENCE,
-                        occurrence);
-                row.addProperty(LoopBoundPolicy.LOOP_CARDINALITY,
-                        cardinality);
-                row.addProperty("cardinalityAuthority",
-                        LoopBoundPolicy.PATH_CARDINALITY_AUTHORITY);
-                loopCardinalities.add(row);
-                return;
-            }
+            if (activeLoopCardinalities.containsKey(loopId)) return;
+            activeLoopCardinalities.put(loopId,
+                    loopCardinalityOccurrences.merge(loopId, 1,
+                            Integer::sum));
         }
 
         private synchronized void completeLoopCardinality(String loopId) {
@@ -5592,16 +5618,19 @@ public final class ConcolicRegionRuntime {
                 }
             }
             if (context == null) {
-                addSourcePhaseGap("ACTIVE_CALL_SITE_MISSING",
+                refuseMint(edu.uva.liftlab.graphchecker.contract.GapKind
+                                .DECLARATION_MISSING,
                         declaration.isEmpty() ? null : declaration.get(0),
-                        "PUBLISH hook for " + safe(sourceId)
-                                + " has no active call-site context");
+                        "the PUBLISH hook for " + safe(sourceId)
+                                + " ran under no active call site, so the"
+                                + " mint is at no declared phase");
                 return null;
             }
             if (declaration.isEmpty()) {
-                addSourcePhaseGap("EXTRA", null,
-                        "PUBLISH " + site + " is outside the replay-call "
-                                + "catalog");
+                refuseMint(edu.uva.liftlab.graphchecker.contract.GapKind
+                                .DECLARATION_MISSING, null,
+                        "PUBLISH " + site + " is outside the frozen phase"
+                                + " catalog, so nothing declares this mint");
                 return null;
             }
             String ordinalKey = "PUBLISH\n" + safe(sourceId) + "\n" + site;
@@ -5614,7 +5643,8 @@ public final class ConcolicRegionRuntime {
                     ? declaration.get(ordinal - 1)
                     : declaration.get(declaration.size() - 1);
             if (!cataloged) {
-                addSourcePhaseGap("EXTRA", matched,
+                refuseMint(edu.uva.liftlab.graphchecker.contract.GapKind
+                                .DECLARATION_MISSING, matched,
                         "PUBLISH " + site + " occurrence " + ordinal
                                 + " exceeds the frozen phase catalog size "
                                 + declaration.size());
@@ -5624,36 +5654,15 @@ public final class ConcolicRegionRuntime {
                     safe(runtimeFieldSignature))
                     || !matched.runtimeDeclaredCallee().equals(
                     context.declaredCallee())) {
-                addSourcePhaseGap("DECLARATION_MISMATCH", matched,
-                        "runtime field/callee differs from the catalog site");
+                refuseMint(edu.uva.liftlab.graphchecker.contract.GapKind
+                                .DECLARATION_MISSING, matched,
+                        "the runtime field and callee differ from the ones"
+                                + " the catalog site declares");
                 return null;
             }
             reachedConfiguredSourceSites.add(matched.siteId());
             if (!site.isEmpty()) reachedConfiguredSourceSites.add(site);
-            recordConfiguredSourcePhaseObservation(matched, context);
             return new SourceSiteEntry(matched, site, ordinal);
-        }
-
-        /**
-         * Records that one named catalog entry was reached.  The row carries
-         * runtime facts only: everything else about the entry is read off the
-         * catalog row {@code matchedPhaseId} names.
-         */
-        private void recordConfiguredSourcePhaseObservation(
-                ConfiguredSourcePhaseContract.Occurrence matched,
-                CausynthTraceRecorder.ActiveCallSiteContext context) {
-            JsonObject observation = new JsonObject();
-            observation.addProperty("schemaVersion", 1);
-            observation.addProperty("kind",
-                    "CONFIGURED_SOURCE_PHASE_OBSERVATION");
-            observation.addProperty("authority",
-                    "EXACT_ACTIVE_CALL_SITE_REPLAY_V1");
-            observation.addProperty("observationIndex",
-                    configuredSourcePhaseObservations.size() + 1);
-            observation.addProperty("matchedPhaseId", matched.phaseId());
-            observation.addProperty("ownerCallId", context.ownerCallId());
-            observation.addProperty("invocationId", context.invocationId());
-            configuredSourcePhaseObservations.add(observation);
         }
 
         /** Publishes one mint row for one entry of a declared site. */
@@ -5782,31 +5791,24 @@ public final class ConcolicRegionRuntime {
             symbolizedRows.add(row);
         }
 
-        private synchronized void addSourcePhaseGap(
-                String gapKind,
+        /**
+         * Names one refusal at a configured source's mint, as a row.
+         *
+         * <p>One gap vocabulary: this used to build a second row shape into
+         * a list nothing downstream read, so a mint the replay refused was
+         * invisible to the claim.  Every one of these means the wave's value
+         * was NOT written at the mint the obligation is about, so they are
+         * BLOCKING for the session that met them and the subject is the
+         * phase the declaration names.</p>
+         */
+        private void refuseMint(
+                edu.uva.liftlab.graphchecker.contract.GapKind kind,
                 ConfiguredSourcePhaseContract.Occurrence phase,
                 String detail) {
-            String phaseId = phase == null ? "" : phase.phaseId();
-            String identity = safe(gapKind) + "\n" + phaseId + "\n"
-                    + safe(detail);
-            if (!configuredSourcePhaseGapIdentities.add(identity)) return;
-            JsonObject gap = new JsonObject();
-            gap.addProperty("schemaVersion", 1);
-            gap.addProperty("kind", "CONFIGURED_SOURCE_PHASE_GAP");
-            gap.addProperty("authority",
-                    "FAIL_CLOSED_EXACT_PHASE_REPLAY_V1");
-            gap.addProperty("gapKind", safe(gapKind));
-            gap.addProperty("phaseId", phaseId);
-            gap.addProperty("phaseKind",
-                    phase == null ? "" : phase.phase().name());
-            gap.addProperty("siteId",
-                    phase == null ? "" : phase.siteId());
-            gap.addProperty("baselineOrdinal",
-                    phase == null ? 0 : phase.baselineOrdinal());
-            gap.addProperty("sourceId",
-                    phase == null ? "" : phase.sourceId());
-            gap.addProperty("detail", safe(detail));
-            configuredSourcePhaseGaps.add(gap);
+            RowRuntime.gap(kind, edu.uva.liftlab.graphchecker.contract
+                            .GapClass.BLOCKING,
+                    phase == null ? occurrenceId() : phase.phaseId(),
+                    safe(detail));
         }
 
         /**
@@ -5827,9 +5829,11 @@ public final class ConcolicRegionRuntime {
         synchronized boolean mintIsPlaceable(Object mintOwner) {
             String unattributed = mintIsNotThePlannedNode(mintOwner);
             if (unattributed.isEmpty()) return true;
-            addSourcePhaseGap(mintAttribution(mintOwner).isEmpty()
-                            ? "MINT_UNATTRIBUTED" : "EPOCH_UNMATCHED", null,
-                    unattributed);
+            refuseMint(mintAttribution(mintOwner).isEmpty()
+                            ? edu.uva.liftlab.graphchecker.contract.GapKind
+                                    .MINT_UNATTRIBUTED
+                            : edu.uva.liftlab.graphchecker.contract.GapKind
+                                    .EPOCH_UNMATCHED, null, unattributed);
             return false;
         }
 
@@ -5892,17 +5896,6 @@ public final class ConcolicRegionRuntime {
                     ? "the registry attributes this mint to " + attributed
                     + ", which does not include " + planned
                     : elsewhere;
-        }
-    }
-
-    /** Active identity of one dynamic fixed-count loop invocation. */
-    private static final class DynamicLoopCardinality {
-        private final int occurrence;
-        private final int cardinality;
-
-        private DynamicLoopCardinality(int occurrence, int cardinality) {
-            this.occurrence = occurrence;
-            this.cardinality = cardinality;
         }
     }
 

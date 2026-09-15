@@ -76,11 +76,11 @@ public class ExploreTest {
             "hdfs-case/dn0#epoch0/region/REGION.target#1";
     /** The NameNode's key rotation: a daemon tick, nobody's request. */
     private static final OccurrenceAddress PRODUCER = occurrence("hdfs-case/nn0",
-            "REGION.rotate", CausalContext.of(Role.KEY_MANAGER_TICK, 1),
+            "REGION.rotate", CausalContext.of(Role.of("KEY_MANAGER_TICK"), 1),
             "o.a.h.h.s.b.BlockManager#run#8");
     /** The data node's fatal read: its own DataXceiver op. */
     private static final OccurrenceAddress TARGET = occurrence("hdfs-case/dn0",
-            "REGION.target", CausalContext.of(Role.DATA_XCEIVER, 1),
+            "REGION.target", CausalContext.of(Role.of("DATA_XCEIVER"), 1),
             "o.a.h.h.s.d.DataXceiver#run#12");
     /** addKeys on the same node: started by the rotation's own delivery. */
     private static final OccurrenceAddress WRITER = occurrence("hdfs-case/dn0",
@@ -430,6 +430,36 @@ public class ExploreTest {
         String value = moved.obligation.rootAssignments().get("CASE.SERIAL");
         assertTrue("free inside [11, 12], and nowhere else: " + value,
                 "11".equals(value) || "12".equals(value));
+
+        // A clock has no domain either, and is not pinned for it: it is free
+        // with a floor.  What the focus row states for one is the SKEW the
+        // replay adds to the instant it reads for itself -- never the
+        // recording's instant, which no other execution ever reads -- so it
+        // is written apart from the values a mint writes.
+        Path ticking = tree.newFolder("clock").toPath();
+        Session ticks = new Session(ticking, "s-seed");
+        ticks.activation(target, false);
+        ticks.root(target, "CASE.NOW", "M_NOW", RootKind.CLOCK, "700",
+                null, null, true);
+        ticks.decision(target, "Arrival#u8", 1, false, "(> M_NOW 1000)");
+        ticks.flush();
+        scopeMap(ticking, targetSite("REGION.target", "Throw#u30",
+                "Arrival#u8"));
+        Path clockOut = tree.newFolder("clock-out").toPath();
+        Path clockWave = clockOut.resolve("obligations-0000");
+        plan(ticking, TARGET_SELECTOR, null,
+                clockOut.resolve("results.jsonl"), clockWave, 0);
+        Worker ticked = solve(ticking, clockWave,
+                obligations(clockWave).get(0), clockOut, "w0");
+        assertEquals(Verdict.SAT_MODEL_READY, ticked.verdict);
+        assertTrue("a clock is not a value written at a mint",
+                ticked.obligation.rootAssignments().isEmpty());
+        JsonObject focus = RowCodec.readJsonl(ticked.directory
+                .resolve(ObligationSolverMain.FOCUSED_TASK)).get(0);
+        String skew = focus.getAsJsonObject("clockDeltas")
+                .get("CASE.NOW").getAsString();
+        assertTrue("the skew carries a reading of 700 past 1000: " + skew,
+                Long.parseLong(skew) > 300L);
     }
 
     // ---- (5) the closure holds the writer of every version read -------
@@ -662,7 +692,7 @@ public class ExploreTest {
         // The epoch has to be re-cut with it instrumented (SS8 case 2).
         Path unseen = tree.newFolder("closure-unretained").toPath();
         OccurrenceAddress lightweight = occurrence("hdfs-case/dn0",
-                "REGION.notretained", CausalContext.of(Role.DATA_XCEIVER, 2),
+                "REGION.notretained", CausalContext.of(Role.of("DATA_XCEIVER"), 2),
                 "o.a.h.h.s.d.DataXceiver#run#44");
         Session partial = new Session(unseen, "s-seed");
         partial.activation(target, false);
@@ -690,7 +720,7 @@ public class ExploreTest {
         // epoch to cut.  What it states is the lineage.
         Path roleOnly = tree.newFolder("closure-role").toPath();
         OccurrenceAddress lost = occurrence("hdfs-case/dn0",
-                "ROLE.IPC_HANDLER", CausalContext.of(Role.IPC_HANDLER),
+                "ROLE.IPC_HANDLER", CausalContext.of(Role.of("IPC_HANDLER")),
                 "o.a.h.ipc.Server$Handler#run#1");
         Session degraded = new Session(roleOnly, "s-seed");
         degraded.activation(target, false);
@@ -751,7 +781,7 @@ public class ExploreTest {
         // "seedSessionId is required"; the closure now refuses it by name.
         Path unrun = tree.newFolder("closure-unrun").toPath();
         OccurrenceAddress ghost = occurrence("hdfs-case/dn0",
-                "REGION.unrun", CausalContext.of(Role.DATA_XCEIVER, 7),
+                "REGION.unrun", CausalContext.of(Role.of("DATA_XCEIVER"), 7),
                 "o.a.h.h.s.d.DataXceiver#run#88");
         Session partialRun = new Session(unrun, "s-seed");
         partialRun.activation(target, false);
@@ -1271,7 +1301,7 @@ public class ExploreTest {
      */
     private static String exportedId() {
         return at(occurrence("hdfs-case/nn0", "REGION.rotate",
-                        CausalContext.of(Role.KEY_MANAGER_TICK, 1),
+                        CausalContext.of(Role.of("KEY_MANAGER_TICK"), 1),
                         "o.a.h.h.s.b.BlockManager#run#8"),
                 "XCH.resp.block-key-id", "PBHelper#convert#9").id();
     }

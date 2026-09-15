@@ -102,6 +102,7 @@ public final class ObligationSolverMain {
                             "no session of this corpus still states path "
                                     + proposal.pathId() + " of task "
                                     + proposal.taskId()), "",
+                    Collections.<String, String>emptyMap(),
                     Collections.singletonList(GapRow.of(ExploreCodec.EXPLORATION,
                             GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
                             obligationId, "the obligation names a path the "
@@ -111,7 +112,8 @@ public final class ObligationSolverMain {
                 candidate, z3, timeoutMillis);
         return publish(out, candidate.task,
                 outcome.issued() ? outcome.obligation : proposal,
-                outcome.result, outcome.smt2, outcome.gaps);
+                outcome.result, outcome.smt2, outcome.clockDeltas,
+                outcome.gaps);
     }
 
     /**
@@ -130,6 +132,7 @@ public final class ObligationSolverMain {
     private static JsonObject publish(Path out, Task task,
                                       Obligation obligation,
                                       ObligationResult result, String smt2,
+                                      Map<String, String> clockDeltas,
                                       List<GapRow> gaps) throws IOException {
         JsonObject row = ExploreCodec.writeResult(result);
         row.addProperty("schemaVersion", 1);
@@ -153,7 +156,7 @@ public final class ObligationSolverMain {
                         : smt2).getBytes(StandardCharsets.UTF_8));
         List<JsonObject> focus = new ArrayList<JsonObject>();
         if (result.verdict() == Verdict.SAT_MODEL_READY) {
-            focus.add(replayTask(task, obligation));
+            focus.add(replayTask(task, obligation, clockDeltas));
         }
         RowCodec.writeJsonl(out.resolve(FOCUSED_TASK), focus);
         return row;
@@ -163,12 +166,13 @@ public final class ObligationSolverMain {
      * The focused replay this obligation asks for.
      *
      * <p>One task: the obligation's own focused occurrence, the decision it
-     * flips, the value to apply at every mint and the value to answer at
-     * every attach.  A handoff the corpus cannot produce is named rather than
+     * flips, the value to apply at every mint (a clock's as the skew to add
+     * to the replay's own reading) and the value to answer at every attach.  A handoff the corpus cannot produce is named rather than
      * hidden, so a replay that rests on one is a known hypothesis.</p>
      */
     private static JsonObject replayTask(Task focused,
-                                         Obligation obligation) {
+                                         Obligation obligation,
+                                         Map<String, String> clockDeltas) {
         JsonObject task = new JsonObject();
         task.addProperty("schemaVersion", 1);
         task.addProperty("kind", "FOCUSED_TASK");
@@ -199,6 +203,15 @@ public final class ObligationSolverMain {
             roots.addProperty(assignment.getKey(), assignment.getValue());
         }
         task.add("rootAssignments", roots);
+        // A clock's counterfactual is a SKEW, never an instant: the replay
+        // reads the clock for itself and moves that reading by this much.
+        // Written apart from rootAssignments so nothing has to guess which
+        // of the two a value is.
+        JsonObject clocks = new JsonObject();
+        for (Map.Entry<String, String> delta : clockDeltas.entrySet()) {
+            clocks.addProperty(delta.getKey(), delta.getValue());
+        }
+        task.add("clockDeltas", clocks);
         JsonObject answers = new JsonObject();
         for (Map.Entry<String, String> answer
                 : obligation.answers().entrySet()) {

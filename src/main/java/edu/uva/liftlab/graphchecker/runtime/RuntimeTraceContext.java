@@ -360,7 +360,7 @@ final class RuntimeTraceContext {
         String api = MapFields.safe(apiName).isEmpty()
                 ? scope.requestApi : MapFields.safe(apiName);
         frame.lineageToken = Lineage.restore(scope.lineage,
-                scope.source.key(), Lineage.roleOf(roleName), api);
+                scope.source.key(), Role.of(roleName), api);
         edu.uva.liftlab.graphchecker.runtime.Identity.scopeStart();
         publishCausalSource(state);
         return token;
@@ -390,7 +390,7 @@ final class RuntimeTraceContext {
         if (source == null) source = state.view().source;
         edu.uva.liftlab.graphchecker.runtime.Identity.scopeStart();
         return Lineage.push(source == null ? "" : source.key(),
-                Lineage.roleOf(roleName), "");
+                Role.of(roleName), "");
     }
 
     /** Closes the tick {@link #beginTick} opened. */
@@ -520,9 +520,15 @@ final class RuntimeTraceContext {
         // The api is the remote family rather than the bare api because two
         // callers of one api are two populations -- the v1 family suffix,
         // stated as the hop it always was.
+        // The role a served message opens its scope under is the transport
+        // the WORKLOAD named at the exchange -- one string, carried.  A
+        // table here mapped IPC/RPC to one Hadoop role and
+        // SASL/DATA_TRANSFER/XCEIVER to another, which is a deployment's
+        // vocabulary in engine code and a guess for every transport it did
+        // not list.
         scope.lineageToken = Lineage.push(
                 state.source == null ? "" : state.source.key(),
-                servedRole(state.exchangeTransport),
+                Role.of(state.exchangeTransport),
                 inboundFamily(remote.requestKey, remote.requestApi));
         edu.uva.liftlab.graphchecker.runtime.Identity.scopeStart();
         // The message that opened this scope names its producer; that
@@ -537,25 +543,6 @@ final class RuntimeTraceContext {
                         + MapFields.safe(remote.requestApi));
         publishCausalSource(state);
         return token;
-    }
-
-    /**
-     * The scope kind a transport's receiver serves under.
-     *
-     * <p>Derived from the transport the workload named, never from the
-     * thread name: a role is a scope KIND (IDENTITY-V2 §0) and the thread
-     * that happens to run it is a circumstance.</p>
-     */
-    private static Role servedRole(String transport) {
-        String kind = normalizedUpper(transport);
-        if (kind.contains("IPC") || kind.contains("RPC")) {
-            return Role.IPC_HANDLER;
-        }
-        if (kind.contains("SASL") || kind.contains("DATA_TRANSFER")
-                || kind.contains("XCEIVER")) {
-            return Role.DATA_XCEIVER;
-        }
-        return kind.isEmpty() ? Role.UNKNOWN : Role.REQUEST;
     }
 
     /**
@@ -829,68 +816,22 @@ final class RuntimeTraceContext {
     }
 
     /**
-     * Resolves an anchor the workload named explicitly in an API call.
+     * The source an anchor the workload named explicitly is registered as.
      *
-     * <p>Registration is by object identity because identity is the only
-     * attribution a replay can reproduce.  The application is still free to
-     * replace the object it handed over with a value-equal successor:
-     * HDFS swaps {@code DataNode.id} for a fresh {@code DatanodeRegistration}
-     * on every DataNode re-registration, so the anchor a workload registered
-     * before a block-report lease expired is no longer the anchor it passes
-     * afterwards.  Refusing the successor throws out of instrumentation into
-     * the workload and ends the run; every region downstream of that source
-     * is then skipped as anchor-unmatched, and the campaign fails stages
-     * later with no trace of why.
-     *
-     * <p>Only an explicitly named anchor is resolved this way.  Root
-     * attribution keeps using {@link #sourceFor} and stays identity-exact: a
-     * receiver that registered nothing must go on inheriting its ambient
-     * source rather than being matched by value against unrelated objects.
+     * <p>Object identity, and nothing else: identity is the only attribution
+     * a replay can reproduce.  A value-equal successor used to be matched
+     * here too -- HDFS swaps {@code DataNode.id} for a fresh {@code
+     * DatanodeRegistration} on every re-registration -- but matching an
+     * object the workload never registered against the ones it did is a
+     * tolerance for a second spelling of the source, and which predecessor
+     * it lands on is decided by an equals() the engine does not own.  A
+     * workload that replaces the object it handed over registers the
+     * successor explicitly -- {@code registerSource} for the same logical
+     * source, {@code restartSource} when the replacement IS a new lifecycle
+     * epoch -- which is a statement rather than a guess.</p>
      */
     private static SourceRef resolveNamedAnchorLocked(Object anchor) {
-        SourceRef registered = SOURCE_ALIASES.get(anchor);
-        if (registered != null) return registered;
-        SourceRef replaced = replacedAnchorLocked(anchor);
-        // The successor is the identity every later call will carry, so bind
-        // it once instead of rescanning on each request.
-        if (replaced != null) bindSourceLocked(anchor, replaced);
-        return replaced;
-    }
-
-    /**
-     * The source a value-equal predecessor of {@code anchor} registered.
-     *
-     * <p>The successor names the same logical source only when both objects
-     * declare value equality, agree in both directions, and no second
-     * registered anchor answering to it names a different source.  Anything
-     * else stays unresolved: a guessed source is a wrong causal chain.
-     */
-    private static SourceRef replacedAnchorLocked(Object anchor) {
-        if (!declaresValueEquality(anchor)) return null;
-        SourceRef match = null;
-        for (Map.Entry<Object, SourceRef> entry : SOURCE_ALIASES.entrySet()) {
-            Object candidate = entry.getKey();
-            if (candidate == anchor
-                    || !declaresValueEquality(candidate)
-                    || !anchor.equals(candidate)
-                    || !candidate.equals(anchor)) {
-                continue;
-            }
-            if (match != null && !match.equals(entry.getValue())) return null;
-            match = entry.getValue();
-        }
-        return match;
-    }
-
-    /** Whether this object answers by value rather than only by identity. */
-    private static boolean declaresValueEquality(Object value) {
-        if (value == null) return false;
-        try {
-            return Object.class != value.getClass()
-                    .getMethod("equals", Object.class).getDeclaringClass();
-        } catch (NoSuchMethodException unreachable) {
-            return false;
-        }
+        return SOURCE_ALIASES.get(anchor);
     }
 
     /** Names an anchor a caller passed, without calling its toString(). */

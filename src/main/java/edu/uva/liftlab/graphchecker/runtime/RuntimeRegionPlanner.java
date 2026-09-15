@@ -502,7 +502,6 @@ final class RuntimeRegionPlanner {
         activation.put("anchorMethods", observedAnchors);
         activation.put("selection", skeleton.selection);
         activation.put("test", root.test);
-        activation.put("thread", root.threadName);
         // Identity v3: the address the recording computed at this entry,
         // carried verbatim.  Nothing offline re-derives it.
         activation.put("occurrenceAddress", root.occurrenceAddress);

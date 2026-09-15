@@ -75,6 +75,12 @@ public class RowRuntimeTest {
      * A scope reaches the work, not the thread: a thread started inside a
      * request and a task submitted to a pool created before it both carry
      * the lineage they were made in.
+     *
+     * <p>Asserted on the ADDRESS the scope produces rather than on a
+     * rendered chain: what an occurrence is addressed by is its causal
+     * context (IDENTITY-V3 SS4), so the root role and the window index the
+     * carried scope hands the worker are what "the scope reached the work"
+     * means -- the innermost role beside them says which hop is running.</p>
      */
     @Test
     public void aCarriedScopeReachesTheThreadThatRunsTheWork()
@@ -82,7 +88,8 @@ public class RowRuntimeTest {
         Object anchor = new Object();
         RuntimeTraceContext.registerSource(anchor, NN);
         long request = RuntimeTraceContext.beginRequest(NN, "balance-block");
-        assertEquals("CLIENT@balance-block#1", Lineage.path());
+        assertEquals("Root:CLIENT#1", rootContext());
+        assertEquals(Role.CLIENT, Lineage.role());
 
         // The IPC Server.Call queue: captured at enqueue on this thread,
         // restored at dequeue on a handler that never saw the request.
@@ -93,14 +100,13 @@ public class RowRuntimeTest {
             public void run() {
                 long scope = RuntimeTraceContext.enterCarriedScope(carried,
                         "IPC_HANDLER", "balance-block");
-                onHandler.set(Lineage.path());
+                onHandler.set(rootContext() + "/" + Lineage.role());
                 RuntimeTraceContext.exitCarriedScope(scope);
             }
         });
         handler.start();
         handler.join();
-        assertEquals("CLIENT@balance-block#1/IPC_HANDLER@balance-block#1",
-                onHandler.get());
+        assertEquals("Root:CLIENT#1/IPC_HANDLER", onHandler.get());
 
         // An executor submission: the same carry, through the seed the
         // recorder captures at Thread.start and at submit(task).
@@ -112,16 +118,21 @@ public class RowRuntimeTest {
             public void run() {
                 RuntimeTraceContext.View entered =
                         RuntimeTraceContext.enterRoot(task);
-                onWorker.set(Lineage.path());
+                onWorker.set(rootContext() + "/" + Lineage.role());
                 RuntimeTraceContext.exitRoot(entered.spanId);
             }
         });
         worker.start();
         worker.join();
-        assertEquals("CLIENT@balance-block#1/EXECUTOR_TASK#1",
-                onWorker.get());
+        assertEquals("Root:CLIENT#1/EXECUTOR_TASK", onWorker.get());
         RuntimeTraceContext.endRequest(request);
-        assertEquals("", Lineage.path());
+        assertFalse("the request's scope ended with it", Lineage.named());
+    }
+
+    /** The causal context the calling thread's outermost hop states. */
+    private static String rootContext() {
+        return CausalContext.of(Lineage.rootRole(),
+                Lineage.rootWindowIndex()).render();
     }
 
     /** One address, by the contract constructor the runtime calls. */
@@ -147,7 +158,7 @@ public class RowRuntimeTest {
                     "HEARTBEAT_TICK");
             addresses.add(address("hdfs-17899/nn0#epoch0",
                     "REGION.aaa1cfd7",
-                    CausalContext.of(Role.HEARTBEAT_TICK,
+                    CausalContext.of(Role.of("HEARTBEAT_TICK"),
                             Lineage.rootWindowIndex()),
                     ExecutionIndex.empty()));
             CausynthTraceRecorder.endDaemonTick(token);
@@ -162,7 +173,7 @@ public class RowRuntimeTest {
 
         // An unattributable scope degrades rather than disappearing.
         OccurrenceAddress lost = Identity.roleOccurrence(
-                "hdfs-17899/nn0#epoch0", Role.KEY_MANAGER_TICK);
+                "hdfs-17899/nn0#epoch0", Role.of("KEY_MANAGER_TICK"));
         assertTrue(lost.lineageLost());
         assertEquals("ROLE.KEY_MANAGER_TICK", lost.regionId());
         // A node this run cannot name addresses nothing: a guessed node is
@@ -181,7 +192,7 @@ public class RowRuntimeTest {
         RowRuntime.configure(sessionFile());
         OccurrenceAddress producer = address(
                 "hdfs-17899/nn0#epoch0", "REGION.2392e4b7",
-                CausalContext.of(Role.HEARTBEAT_TICK, 3),
+                CausalContext.of(Role.of("HEARTBEAT_TICK"), 3),
                 ExecutionIndex.parse("PBHelper.convert()#u2@0"));
         Endpoint exported = RowRuntime.exported(producer, 61L,
                 "XCH.resp.block-key-id", 4242L, "hadoop-ipc-7", 0, null, "J",
@@ -191,8 +202,9 @@ public class RowRuntimeTest {
         OccurrenceAddress consumer = RowRuntime.degraded(
                 "hdfs-17899/target-dn#epoch0", "XCH.resp.block-key-id");
         assertTrue(consumer.lineageLost());
-        Endpoint attached = RowRuntime.attached(consumer, 62L,
-                "XCH.resp.block-key-id", 4242L, "hadoop-ipc-7", 0,
+        Endpoint attached = RowRuntime.attachedAt(
+                RowRuntime.nextEndpoint(consumer, "XCH.resp.block-key-id", 0),
+                62L, "XCH.resp.block-key-id", 4242L, "hadoop-ipc-7",
                 "HOFF.5e10236f", "J", "119981", false, "");
         RowRuntime.closeSession();
 
@@ -204,9 +216,19 @@ public class RowRuntimeTest {
         assertEquals(exported, row.producer());
         assertTrue(row.interaction().producerDegraded() == false);
         assertTrue(row.endpoint().occurrence().lineageLost());
-        // Pairing is the run's own evidence: another port's delivery on the
-        // same correlation takes no producer from this one.
-        assertNull(Interactions.producer("XCH.resp.other", 0L, ""));
+        // Pairing is the run's own RECORDED evidence and nothing else: the
+        // handle the VM handed out, or the correlation the workload named
+        // with the port.  A delivery on the same port that carries neither
+        // pairs to nothing -- it used to take the port's last producer,
+        // which states a chain nobody made -- and another port's delivery
+        // takes no producer from this one either.
+        assertNull("no handle and no correlation is no pairing",
+                Interactions.producer("XCH.resp.block-key-id", 0L, ""));
+        assertNull("another port is another interaction",
+                Interactions.producer("XCH.resp.other", 0L, "hadoop-ipc-7"));
+        assertEquals("the handle is the strongest evidence there is",
+                exported,
+                Interactions.producer("XCH.resp.other", 4242L, ""));
     }
 
     /** Every row kind round-trips through the codec it is written with. */
@@ -843,12 +865,12 @@ public class RowRuntimeTest {
 
         // The three causal contexts, and the one that is not an ordinal.
         assertEquals("Root:HEARTBEAT_TICK#4", Identity.context("", "",
-                Role.HEARTBEAT_TICK, 4).render());
+                Role.of("HEARTBEAT_TICK"), 4).render());
         assertEquals("Anchor:abc123@HADOOP_IPC#heartbeat",
                 Identity.context("abc123", "HADOOP_IPC#heartbeat",
-                        Role.IPC_HANDLER, 2).render());
+                        Role.of("IPC_HANDLER"), 2).render());
         assertEquals("Lost:DATA_XCEIVER",
-                Identity.context("", "", Role.DATA_XCEIVER, 0).render());
+                Identity.context("", "", Role.of("DATA_XCEIVER"), 0).render());
     }
 
     /**
@@ -900,7 +922,6 @@ public class RowRuntimeTest {
                 .resolve("iteration-0000").resolve("seed-result")
                 .resolve("concolic_region_results.jsonl");
         Files.createDirectories(results.getParent());
-        System.setProperty(RowRuntime.SESSION_PROPERTY, "seed");
         return results;
     }
 

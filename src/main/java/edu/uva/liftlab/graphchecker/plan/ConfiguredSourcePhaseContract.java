@@ -1,7 +1,7 @@
 package edu.uva.liftlab.graphchecker.plan;
 
 import com.google.gson.JsonArray;
-import edu.uva.liftlab.graphchecker.smt.CanonicalJson;
+import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
@@ -243,7 +243,7 @@ public final class ConfiguredSourcePhaseContract {
      */
     public static String engineLabelForPhase(String sourcePhaseId,
                                              String sourceId) {
-        return "SRC." + CanonicalJson.sha256(
+        return "SRC." + ArtifactIO.sha256(
                 required(sourcePhaseId, "sourcePhaseId") + "\n"
                         + required(sourceId, "sourceId"));
     }
