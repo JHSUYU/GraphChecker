@@ -190,7 +190,13 @@ final class FlipQuery {
             for (int index = 0; index <= flipIndex; index++) {
                 DecisionRow decision = path.decisions.get(index);
                 Set<String> unknown = new LinkedHashSet<String>();
-                String term = rename(decision.term(), path.sessionId,
+                // What a published decision ASSERTS is one routine's answer,
+                // shared with the composer (Arms.conjunct: outcome ? term :
+                // (not term)), so a prefix means the same thing in the flip
+                // query and in the composed one.  Renaming comes after it:
+                // the polarity is the recording's, the names are this
+                // query's.
+                String held = rename(Arms.conjunct(decision), path.sessionId,
                         new LinkedHashSet<String>(), unknown);
                 boolean last = index == flipIndex;
                 if (!unknown.isEmpty()) {
@@ -210,8 +216,9 @@ final class FlipQuery {
                                     + " is undeclared"));
                     continue;
                 }
-                boolean holds = last ? !decision.outcome() : decision.outcome();
-                assertions.add(holds ? term : "(not " + term + ")");
+                // The obligation IS the complement of the arm the recording
+                // took, and nothing else.
+                assertions.add(last ? "(not " + held + ")" : held);
             }
             drain();
             if (!refusal.isEmpty()) {
