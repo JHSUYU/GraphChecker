@@ -7,7 +7,8 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.d3.plan.ExecutionTask;
-import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
+import edu.uva.liftlab.graphchecker.d3.contract.OccurrenceAddress;
+import edu.uva.liftlab.graphchecker.d3.contract.Selector;
 import edu.uva.liftlab.graphchecker.d3.plan.RegionInstancePlan;
 import edu.uva.liftlab.graphchecker.d3.plan.RegionInstancePlan.Goal;
 
@@ -243,15 +244,24 @@ public final class RuntimeWorkflowDiscovery {
      * the request family and k when the declaration states no region.
      */
     static boolean declares(String declared, String occurrenceId) {
-        OccurrenceAddress address = OccurrenceAddress.parse(occurrenceId);
-        if (!address.isNamed()) return false;
-        OccurrenceAddress stated = OccurrenceAddress.parse(declared);
-        if (stated.isNamed()) return stated.equals(address);
-        // A declaration that is not a full address states nothing this can
-        // match: the request family it used to name is not part of an
-        // occurrence's identity, and the control lineage that replaces it is
-        // not in a string a case wrote by hand.
-        return false;
+        String value = declared == null ? "" : declared.trim();
+        if (value.isEmpty()) return false;
+        if (value.equals(occurrenceId)) return true;
+        final OccurrenceAddress address;
+        final Selector selector;
+        try {
+            address = OccurrenceAddress.parse(occurrenceId);
+            selector = OccurrenceAddress.parseSelector(value);
+        } catch (RuntimeException unreadable) {
+            // Neither a resolved id nor a selector this build can read.
+            return false;
+        }
+        // The same rule SelectorResolution resolves by, minus the k: this
+        // asks whether an occurrence is one of the declaration's candidates,
+        // and which of them the campaign is about is resolved once, against
+        // the seed session, where the order that makes k mean anything is.
+        return selector.matches(address,
+                SelectorResolution.apiOf(selector, address));
     }
 
     /** All graph-connected occurrences of every execution of the same

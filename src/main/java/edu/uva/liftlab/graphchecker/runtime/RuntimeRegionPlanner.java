@@ -20,7 +20,6 @@ import edu.uva.liftlab.graphchecker.d3.plan.SharedStateEvidence;
 import edu.uva.liftlab.graphchecker.d3.plan.CommunicationCatalogContract;
 import edu.uva.liftlab.graphchecker.d3.plan.CommunicationHandoffSpec;
 import edu.uva.liftlab.graphchecker.d3.plan.ConfiguredSourcePhaseContract;
-import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.d3.plan.ExecutionTask;
 import edu.uva.liftlab.graphchecker.d3.plan.DependencyRole;
 import edu.uva.liftlab.graphchecker.d3.plan.FieldPathSpec;
@@ -2529,19 +2528,20 @@ final class RuntimeRegionPlanner {
      * matching have to use one scope or the ordinal means one thing when it
      * is written and another when it is checked, so this is not merely the
      * same shape as the replay's bucket -- it is literally the same
-     * function, {@link OccurrenceAddress#counterScope}, which {@code
+     * function, which {@code
      * ConcolicTaskPlan.RuntimeTask.invocationCounterKey} also calls.  Two
      * spellings of one rule is how the ordinal drifted before.</p>
      *
-     * <p>The request, and then the request family, were in this key and in
-     * the replay's.  Both are gone from both at once: what a count is
-     * partitioned by has to be what matching compares, and matching compares
-     * the address.</p>
+     * <p>A grouping key for a local count, not an identity: an occurrence is
+     * its address, and the address is minted from where the activation was.
+     * This only says which invocations of one region on one component and
+     * one root method are being numbered together, for the selector the
+     * replay matches its root call on.</p>
      */
     private static String replayInvocationScope(
             String regionId, MethodEvent root, SourceRef source) {
-        return OccurrenceAddress.of(source.key(), safe(regionId), 1)
-                .counterScope(safe(root == null ? "" : root.method));
+        return source.key() + "\n" + safe(regionId) + "\n"
+                + safe(root == null ? "" : root.method);
     }
 
 
