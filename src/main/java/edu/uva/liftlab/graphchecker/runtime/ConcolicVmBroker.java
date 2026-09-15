@@ -339,10 +339,11 @@ final class ConcolicVmBroker {
      * Installs the session's guarded-store table and answers how many store
      * methods the VM kept.
      *
-     * <p>One line per method, {@code <internal/Class>#<name><descriptor>} then
-     * a tab then that method's guard branch sites; installing replaces the
-     * table, and with no table no concrete store is ever evidence.  The
-     * table's content is {@link GuardedStoreSites}; this is only the call.</p>
+     * <p>One line per method: {@code <internal/Class>#<name><descriptor>}
+     * followed by that method's guard branch sites, one tab-separated field
+     * each.  Installing replaces the table, and with no table no concrete
+     * store is ever evidence.  The table's content is
+     * {@link GuardedStoreSites}; this is only the call.</p>
      */
     int installGuardedStoreSites(String table) throws Exception {
         Object kept = installGuardedStoreSites.invoke(null, table);

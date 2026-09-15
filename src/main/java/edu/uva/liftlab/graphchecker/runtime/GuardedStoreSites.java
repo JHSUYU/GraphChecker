@@ -11,7 +11,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -40,7 +39,10 @@ import java.util.Set;
  * the woven {@code markConcolicBranch} call passes
  * (CausynthPipeline:2730 renders it with {@link
  * edu.uva.liftlab.graphchecker.plan.SiteId#of}) and the string the map's
- * {@code guards} member carries.</p>
+ * {@code guards} member carries.  Its parameter list contains commas, which
+ * is why a line's guard sites are tab-separated fields (VM25) and not a
+ * comma list: a comma list fragmented 15 of 17960's 27 guard ids and every
+ * fragment matched nothing.</p>
  *
  * <p>Required since closure v2: the map is a PLAN artifact of the epoch the
  * replay belongs to, so a session that cannot read it is a broken campaign
@@ -53,18 +55,19 @@ final class GuardedStoreSites {
     static final String PATH_PROPERTY = "causynth.static.scope.map";
     static final String PATH_ENVIRONMENT = "CAUSYNTH_STATIC_SCOPE_MAP";
 
-    /** The VM's line format (sharedFieldVersions.cpp:557). */
+    /**
+     * The VM's grammar (sharedFieldVersions.cpp:557, VM25):
+     * {@code line ::= methodKey ( '\t' guardSite )*}, lines split on
+     * {@code '\n'} and fields on {@code '\t'} and on nothing else -- so a
+     * guard site id carries its parameter list's commas whole.
+     */
     private static final char LINE = '\n';
-    private static final char METHOD_END = '\t';
-    private static final char GUARD_END = ',';
+    private static final char FIELD = '\t';
 
     private final Map<String, Set<String>> guardsByMethod;
-    private final List<String> fragmentedGuards;
 
-    private GuardedStoreSites(Map<String, Set<String>> guardsByMethod,
-                              List<String> fragmentedGuards) {
+    private GuardedStoreSites(Map<String, Set<String>> guardsByMethod) {
         this.guardsByMethod = guardsByMethod;
-        this.fragmentedGuards = fragmentedGuards;
     }
 
     /**
@@ -99,26 +102,15 @@ final class GuardedStoreSites {
                     + failure.getClass().getName() + ": "
                     + failure.getMessage();
         }
+        // The VM drops a method with no guard site, and every method this
+        // table names has one, so the count it answers is the table's own.
         if (installed != table.methods()) {
             return "GUARDED_STORE_SITES_INSTALL_REFUSED: the VM kept "
                     + installed + " of the " + table.methods()
-                    + " store methods the table names";
+                    + " guarded store methods the table names";
         }
         log("GUARDED_STORE_SITES|installed=" + installed + "|guardSites="
                 + table.guardSites() + "|map=" + artifact);
-        if (!table.fragmentedGuards.isEmpty()) {
-            // Not silent: the VM's table splits a method's guard list on
-            // ',' and a branch site id spells its method's parameters with
-            // the same character, so these guard sites reach the VM as
-            // fragments that match no decision and admit no store. The
-            // effect is under-admission -- the pre-VM22 baseline for exactly
-            // these methods -- never a store admitted without a decision.
-            log("GUARDED_STORE_SITES_GUARD_FRAGMENTED|count="
-                    + table.fragmentedGuards.size() + "|first="
-                    + table.fragmentedGuards.get(0)
-                    + "|reason=the VM's guard list is ','-separated and this"
-                    + " site id contains ','");
-        }
         return "";
     }
 
@@ -133,7 +125,6 @@ final class GuardedStoreSites {
     static GuardedStoreSites of(List<JsonObject> rows) {
         Map<String, Set<String>> guardsByMethod =
                 new LinkedHashMap<String, Set<String>>();
-        List<String> fragmented = new ArrayList<String>();
         for (JsonObject row : rows) {
             if (!StaticScopeMap.SITE_KIND.equals(member(row, "kind"))
                     || !StaticScopeMap.WRITE_SITE.equals(
@@ -150,22 +141,17 @@ final class GuardedStoreSites {
                 guardsByMethod.put(method, stated);
             }
             for (String guard : guards) {
-                if (guard.indexOf(LINE) >= 0 || guard.indexOf(METHOD_END) >= 0) {
-                    // A guard that breaks the line framing would make the
-                    // VM read some other string as a store method, which is
-                    // an admission this map never stated.
+                if (guard.indexOf(LINE) >= 0 || guard.indexOf(FIELD) >= 0) {
+                    // A guard that breaks the framing would make the VM read
+                    // some other string as a store method, which is an
+                    // admission this map never stated.
                     throw new IllegalStateException("guard site id contains "
-                            + "the table's line framing: " + guard);
-                }
-                if (guard.indexOf(GUARD_END) >= 0
-                        && !fragmented.contains(guard)) {
-                    fragmented.add(guard);
+                            + "the table's field framing: " + guard);
                 }
                 stated.add(guard);
             }
         }
-        return new GuardedStoreSites(guardsByMethod,
-                Collections.unmodifiableList(fragmented));
+        return new GuardedStoreSites(guardsByMethod);
     }
 
     /** One line per store method, in the order the map states them. */
@@ -173,12 +159,9 @@ final class GuardedStoreSites {
         StringBuilder table = new StringBuilder();
         for (Map.Entry<String, Set<String>> entry
                 : guardsByMethod.entrySet()) {
-            table.append(entry.getKey()).append(METHOD_END);
-            boolean first = true;
+            table.append(entry.getKey());
             for (String guard : entry.getValue()) {
-                if (!first) table.append(GUARD_END);
-                table.append(guard);
-                first = false;
+                table.append(FIELD).append(guard);
             }
             table.append(LINE);
         }
