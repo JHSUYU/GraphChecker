@@ -583,7 +583,8 @@ public:
    * Control dependence is a static fact the PLAN stage already computes by
    * post-dominance and publishes per write site, so the VM is told it rather
    * than guessing: one line per store method,
-   * `<internal/Class>#<name><descriptor>\t<guardSite>[,<guardSite>...]`,
+   * `<internal/Class>#<name><descriptor>` followed by that method's guard
+   * sites as the remaining tab-separated fields,
    * where the guard sites are the woven branch site ids the runtime passes to
    * markConcolicBranch.  A method the table does not name never starts a log
    * by a concrete store, and neither does one whose guard sites have all not
