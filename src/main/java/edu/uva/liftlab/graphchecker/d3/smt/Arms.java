@@ -12,6 +12,8 @@ import edu.uva.liftlab.graphchecker.d3.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.d3.contract.ExportRow;
 import edu.uva.liftlab.graphchecker.d3.contract.Interaction;
 import edu.uva.liftlab.graphchecker.d3.contract.InteractionKind;
+import edu.uva.liftlab.graphchecker.d3.contract.LocationId;
+import edu.uva.liftlab.graphchecker.d3.contract.LocationKind;
 import edu.uva.liftlab.graphchecker.d3.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.d3.contract.RootMintRow;
 import edu.uva.liftlab.graphchecker.d3.contract.WriteRow;
@@ -297,6 +299,53 @@ public final class Arms {
      *                       happens-before and no other run's
      * @param location       the join key of L
      */
+    /**
+     * Whether a location's owner NAMES its storage across replays.
+     *
+     * <p>IDENTITY-V3 sec 5 (Memory Indexing): the three owner forms that
+     * name one storage are the allocating {@link Endpoint}'s id, the
+     * {@code preWindow:} form for an object older than the window, and --
+     * for a STATIC field only -- the class, which owns exactly one cell.
+     * Anything else is a name that is not an identity: a session rid is
+     * that run's counter and means nothing in another run, and a CLASS on
+     * a heap location aliases every instance of it at once.</p>
+     *
+     * <p>What follows is the whole use of it: alternatives (R-I7.1) are
+     * computed only where the owner names the storage.  A read on an
+     * aliasing owner gets its delivery and nothing else -- choosing among
+     * "writers" that may be writes to a different object is how a witness
+     * is invented rather than found.</p>
+     */
+    public static boolean namedOwner(LocationId location) {
+        if (location == null) return false;
+        if (location.preWindow()) return true;
+        if (location.kind() == LocationKind.STATIC) return true;
+        return allocationId(location.owner());
+    }
+
+    /** An allocation Endpoint id: sha16, optionally with its m-th object. */
+    private static boolean allocationId(String owner) {
+        if (owner == null) return false;
+        String digest = owner;
+        int at = owner.indexOf('#');
+        if (at >= 0) {
+            digest = owner.substring(0, at);
+            String ordinal = owner.substring(at + 1);
+            if (ordinal.isEmpty()) return false;
+            for (int index = 0; index < ordinal.length(); index++) {
+                if (!Character.isDigit(ordinal.charAt(index))) return false;
+            }
+        }
+        if (digest.length() != 16) return false;
+        for (int index = 0; index < digest.length(); index++) {
+            char value = digest.charAt(index);
+            boolean hex = value >= '0' && value <= '9'
+                    || value >= 'a' && value <= 'f';
+            if (!hex) return false;
+        }
+        return true;
+    }
+
     public List<Arm> stateArms(Endpoint readerEndpoint, String session,
                                String location, long observedVersion) {
         OccurrenceAddress reader = readerEndpoint.occurrence();

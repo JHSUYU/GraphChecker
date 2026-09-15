@@ -56,6 +56,10 @@ public final class SmtLowering extends VmLoweringCore {
     public static final String CUT = "PROPAGATION_CUT";
     /** The refusal that means "the recording states no value here". */
     public static final String UNSTATED = "UNSTATED_VALUE";
+    /** How a published term names an expression of the session's table. */
+    private static final String REFERENCE = "EXPR.";
+    /** How deep a reference may stand for text naming another reference. */
+    private static final int REFERENCE_ROUNDS = 4;
 
     /**
      * The write log of one session, as the state join reads it.
@@ -120,6 +124,11 @@ public final class SmtLowering extends VmLoweringCore {
     private List<String> openRefusals;
     private String scope = "";
     private SessionJoin join = NO_JOIN;
+    /** The expression table of the session whose conjunction is open. */
+    private ExpressionTable openTable;
+    /** The conjunctions a nested lowering interrupted, innermost first. */
+    private final java.util.Deque<Frame> frames =
+            new java.util.ArrayDeque<Frame>();
 
     /** The lowering of one CORPUS: its rows declare every symbol. */
     public SmtLowering(Map<String, Sort> declaredSymbols) {
@@ -212,6 +221,111 @@ public final class SmtLowering extends VmLoweringCore {
         return new Lowered(value.text, "", named);
     }
 
+    /**
+     * One published term, with every expression REFERENCE it names lowered.
+     *
+     * <p>A row's {@code term} -- a decision's predicate, a target's phi --
+     * is SMT text over the names the runtime published, and one of those
+     * spellings is a REFERENCE into the session's expression table: the VM
+     * propagates values as a shared DAG, so a branch over a propagated
+     * value is published as {@code (not EXPR.1f3c6978d870b1bc)} rather
+     * than as the tree that stands behind it.  Lowering it HERE, through
+     * the same routine that lowers an export's {@code expressionRef}, is
+     * what makes pi and phi the same expressions the deliveries are.  The
+     * alternative -- treating {@code EXPR.<ref>} as a free name -- puts the
+     * whole propagation outside the formula and refuses every path that
+     * carries one, which is what it did.</p>
+     *
+     * <p>Answered "" when the lowering refused: a reference the session's
+     * table does not hold is {@code UNSTATED_VALUE} by the reference's own
+     * name, and a caller that cannot state a conjunct must not keep the
+     * rest of it.</p>
+     */
+    public String statedTerm(String term, String origin) {
+        if (term == null || term.isEmpty()) return "";
+        String text = term;
+        for (int round = 0; text.indexOf(REFERENCE) >= 0; round++) {
+            if (round >= REFERENCE_ROUNDS) {
+                refuse(UNSTATED + ":" + REFERENCE + "closure",
+                        "an expression this term names lowers to text that "
+                                + "names an expression reference again");
+                return "";
+            }
+            String lowered = expand(text, origin);
+            if (lowered.isEmpty()) return "";
+            text = lowered;
+        }
+        return text;
+    }
+
+    /** One pass: every reference token of this text, lowered in place. */
+    private String expand(String term, String origin) {
+        StringBuilder text = new StringBuilder();
+        int index = 0;
+        while (index < term.length()) {
+            char value = term.charAt(index);
+            if (!symbolCharacter(value)) {
+                text.append(value);
+                index++;
+                continue;
+            }
+            int end = index;
+            while (end < term.length()
+                    && symbolCharacter(term.charAt(end))) {
+                end++;
+            }
+            String token = term.substring(index, end);
+            index = end;
+            if (!reference(token)) {
+                text.append(token);
+                continue;
+            }
+            String lowered = loweredReference(token, origin);
+            if (lowered.isEmpty()) return "";
+            text.append(lowered);
+        }
+        return text.toString();
+    }
+
+    /** Whether one token is an expression reference: EXPR. and 16 hex. */
+    static boolean reference(String token) {
+        if (token == null || !token.startsWith(REFERENCE)) return false;
+        String digest = token.substring(REFERENCE.length());
+        if (digest.length() != 16) return false;
+        for (int index = 0; index < digest.length(); index++) {
+            char value = digest.charAt(index);
+            boolean hex = value >= '0' && value <= '9'
+                    || value >= 'a' && value <= 'f';
+            if (!hex) return false;
+        }
+        return true;
+    }
+
+    /** One reference, lowered in the open session's scope, or "". */
+    private String loweredReference(String reference, String origin) {
+        ExpressionTable expressions = openTable == null ? table : openTable;
+        JsonObject expression = expressions == null ? null
+                : expressions.expression(reference);
+        if (expression == null) {
+            refuse(UNSTATED + ":" + reference,
+                    "a published term names this expression reference and "
+                            + "the session's expression table does not "
+                            + "hold it");
+            return "";
+        }
+        Term value = dispatch(expression, null, origin + ":" + reference);
+        if (value == null) {
+            refuse(UNSTATED + ":" + reference,
+                    "this expression reference lowers to nothing");
+            return "";
+        }
+        // The JVM evaluated the term, so its Java definedness held where
+        // the row was written: it is this conjunction's own fact, exactly
+        // as a joined read's observation is.
+        sideCondition(value.precondition);
+        return value.text;
+    }
+
     /** The SMT sort one recorded Java type denotes. */
     public static String sortOf(String javaType) {
         return JavaSmtSorts.sortOfJava(javaType).smt;
@@ -294,21 +408,63 @@ public final class SmtLowering extends VmLoweringCore {
      * where that execution ran and nowhere else.</p>
      */
     public void begin(String sessionId, SessionJoin sessionJoin) {
+        begin(sessionId, sessionJoin, null);
+    }
+
+    /**
+     * The same, with the session's expression table.
+     *
+     * <p>The table is what {@link #statedTerm} resolves a published term's
+     * expression REFERENCES against, and it is per session for the same
+     * reason the join and the identities are: a reference is a name in one
+     * recording's table, not a name in the corpus.</p>
+     */
+    public void begin(String sessionId, SessionJoin sessionJoin,
+                      ExpressionTable expressions) {
+        // NESTED, not replaced.  One arm of a family is lowered in its own
+        // producer's scope in the middle of composing a path, and a begin
+        // that overwrote the path's frame left the rest of that path
+        // lowered with no write log to join to, no table to resolve a
+        // reference against and nowhere to put a refusal -- which is a
+        // path admitted on free constants instead of refused by name.
+        frames.push(new Frame(openSideConditions, openRefusals, scope, join,
+                openTable));
         this.openSideConditions = new ArrayList<String>();
         this.openRefusals = new ArrayList<String>();
         this.scope = sessionId == null ? "" : sessionId;
         this.join = sessionJoin == null ? NO_JOIN : sessionJoin;
+        this.openTable = expressions;
     }
 
     /** Closes it, answering the side conditions its lowering raised. */
     public List<String> end() {
         List<String> conditions = openSideConditions == null
                 ? Collections.<String>emptyList() : openSideConditions;
-        openSideConditions = null;
-        openRefusals = null;
-        scope = "";
-        join = NO_JOIN;
+        Frame previous = frames.isEmpty() ? null : frames.pop();
+        openSideConditions = previous == null ? null : previous.conditions;
+        openRefusals = previous == null ? null : previous.refusals;
+        scope = previous == null ? "" : previous.scope;
+        join = previous == null ? NO_JOIN : previous.join;
+        openTable = previous == null ? null : previous.table;
         return conditions;
+    }
+
+    /** One enclosing conjunction, kept while a nested one is open. */
+    private static final class Frame {
+        private final List<String> conditions;
+        private final List<String> refusals;
+        private final String scope;
+        private final SessionJoin join;
+        private final ExpressionTable table;
+
+        private Frame(List<String> conditions, List<String> refusals,
+                      String scope, SessionJoin join, ExpressionTable table) {
+            this.conditions = conditions;
+            this.refusals = refusals;
+            this.scope = scope;
+            this.join = join;
+            this.table = table;
+        }
     }
 
     /** What the conjunction now open refused. */
@@ -816,6 +972,22 @@ public final class SmtLowering extends VmLoweringCore {
         return declarations.containsKey(name);
     }
 
+    /**
+     * Whether this query gives one name a meaning at all.
+     *
+     * <p>Two ways it can: a {@code declare-const}, or a {@code define-fun}
+     * for a named container subterm.  A caller asking "is this term over
+     * things the query states" means both -- a shared term is a definition,
+     * which is more than a declaration, not less.</p>
+     */
+    public boolean defined(String name) {
+        if (declarations.containsKey(name)) return true;
+        for (SharedTerm shared : sharedTerms.values()) {
+            if (shared.name.equals(name)) return true;
+        }
+        return false;
+    }
+
     public Map<String, Sort> declarations() {
         return Collections.unmodifiableMap(declarations);
     }
@@ -915,7 +1087,7 @@ public final class SmtLowering extends VmLoweringCore {
     public String declarationsOnly() {
         StringBuilder query = new StringBuilder();
         appendPreamble(query);
-        return query.toString();
+        return legalSymbols(query.toString());
     }
 
     private void appendPreamble(StringBuilder query) {
@@ -955,7 +1127,105 @@ public final class SmtLowering extends VmLoweringCore {
         for (String assertion : assertions) {
             query.append(assertion).append('\n');
         }
-        return query.toString();
+        return legalSymbols(query.toString());
+    }
+
+    /**
+     * The same text, with every name SMT-LIB cannot spell bare quoted.
+     *
+     * <p>A row's symbol is a NAME the runtime chose --
+     * {@code MAP_STATE/4#-3@v112} -- and {@code #} is not in SMT-LIB's
+     * simple-symbol alphabet: it opens a bit-vector literal, so z3 answers
+     * the whole query with "invalid bit-vector literal" and the
+     * composition has no verdict at all.  {@code |...|} is the SAME symbol
+     * spelled legally, which is why the fix is a spelling and not a
+     * rename: renaming would need every published term rewritten in step,
+     * and a term the runtime wrote about {@code x} must stay about
+     * {@code x}.</p>
+     *
+     * <p>Idempotent: an already-quoted name is copied through, so a body
+     * that passes here twice is the text it was.</p>
+     */
+    public static String legalSymbols(String query) {
+        if (query == null || query.isEmpty()) return query;
+        StringBuilder text = new StringBuilder(query.length());
+        int index = 0;
+        while (index < query.length()) {
+            char value = query.charAt(index);
+            if (value == '"' || value == '|') {
+                index = copyLiteral(query, index, value, text);
+                continue;
+            }
+            if (value == ';') {
+                // A comment runs to the end of the line and is not a name.
+                while (index < query.length()
+                        && query.charAt(index) != '\n') {
+                    text.append(query.charAt(index));
+                    index++;
+                }
+                continue;
+            }
+            if (Character.isWhitespace(value) || value == '('
+                    || value == ')') {
+                text.append(value);
+                index++;
+                continue;
+            }
+            int end = index;
+            while (end < query.length() && !breaks(query.charAt(end))) {
+                end++;
+            }
+            String token = query.substring(index, end);
+            index = end;
+            text.append(simpleSymbol(token) ? token : "|" + token + "|");
+        }
+        return text.toString();
+    }
+
+    private static boolean breaks(char value) {
+        return Character.isWhitespace(value) || value == '(' || value == ')'
+                || value == '"' || value == '|';
+    }
+
+    /** Copies one string or one already-quoted symbol, closing mark and
+     *  all. */
+    private static int copyLiteral(String query, int start, char mark,
+                                   StringBuilder text) {
+        text.append(mark);
+        int index = start + 1;
+        while (index < query.length()) {
+            char value = query.charAt(index);
+            text.append(value);
+            index++;
+            if (value != mark) continue;
+            if (mark == '"' && index < query.length()
+                    && query.charAt(index) == '"') {
+                text.append('"');
+                index++;
+                continue;
+            }
+            break;
+        }
+        return index;
+    }
+
+    /** Whether SMT-LIB already spells this token the way it is written. */
+    private static boolean simpleSymbol(String token) {
+        if (token.isEmpty()) return true;
+        char first = token.charAt(0);
+        // A keyword, a numeral or a radix literal is not a symbol at all.
+        if (first == ':' || first == '#' || Character.isDigit(first)) {
+            return true;
+        }
+        for (int index = 0; index < token.length(); index++) {
+            if (!simpleCharacter(token.charAt(index))) return false;
+        }
+        return true;
+    }
+
+    private static boolean simpleCharacter(char value) {
+        if (Character.isLetterOrDigit(value)) return true;
+        return "~!@$%^&*_-+=<>.?/".indexOf(value) >= 0;
     }
 
     /** The whole query, at the assertions it holds. */
