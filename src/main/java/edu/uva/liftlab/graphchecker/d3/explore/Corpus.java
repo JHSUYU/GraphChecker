@@ -109,6 +109,9 @@ public final class Corpus implements Arms.Rows {
     private final Map<String, List<AttachRow>> attachesByInteraction =
             new LinkedHashMap<String, List<AttachRow>>();
     /** endpoint id -> the endpoint, so an anchor's producer can be found. */
+    /** session|occurrence -> that session's activation of it. */
+    private final Map<String, ActivationRow> activationByOccurrence =
+            new LinkedHashMap<String, ActivationRow>();
     /** session|endpoint -> the session event its row was sequenced at. */
     private final Map<String, Long> seqByEndpoint =
             new LinkedHashMap<String, Long>();
@@ -158,6 +161,8 @@ public final class Corpus implements Arms.Rows {
         sessionById.put(session.sessionId(), session);
         loweringById.put(session.sessionId(), SmtLowering.forSession(session));
         for (ActivationRow row : session.activations()) {
+            activationByOccurrence.put(session.sessionId() + "|"
+                    + row.occurrence().id(), row);
             remember(occurrenceById, row.occurrence());
             add(activations, row.occurrence().id(), row);
         }
@@ -472,6 +477,12 @@ public final class Corpus implements Arms.Rows {
     public OccurrenceAddress occurrenceOf(String endpointId) {
         Endpoint endpoint = endpointById.get(endpointId);
         return endpoint == null ? null : endpoint.occurrence();
+    }
+
+    @Override
+    public ActivationRow activationOf(String sessionId,
+                                      String occurrenceId) {
+        return activationByOccurrence.get(sessionId + "|" + occurrenceId);
     }
 
     @Override
