@@ -194,12 +194,12 @@ public final class SlotTable {
                     continue;
                 }
                 // R-I7.1: what contradicts is not "a later version by seq"
-                // -- two activations of one session interleave, so seq orders
-                // events only inside one of them.  A pairing contradicts the
-                // run when the read observed a version its own activation
-                // wrote later, or one written by an occurrence the reader
-                // itself caused: a message cannot be answered before it is
-                // sent.
+                // -- two activations that no order relates interleave, so a
+                // session's event counter alone orders nothing.  A pairing
+                // contradicts the run when the read HAPPENED BEFORE the write
+                // it claims to have observed, which is the one question
+                // Arms.ancestor answers: same thread (one occurrence or two),
+                // the causal-anchor chain, and thread start/join.
                 if (contradictsOrder(corpus, read, writer)) {
                     gaps.add(GapRow.of(session.sessionId(),
                             GapKind.TOPOLOGY_DIVERGENCE, GapClass.BLOCKING,
@@ -227,13 +227,15 @@ public final class SlotTable {
     /**
      * Whether the recorded pairing contradicts the run's own order.
      *
-     * <p>Not "an earlier version by seq": two activations of one session
-     * interleave, so seq orders events only INSIDE one of them.  What
-     * contradicts is a read that observed a version its own activation wrote
-     * later, or one written by an occurrence the reader itself caused -- a
-     * message cannot be answered before it is sent.  Both are the one
-     * question {@code Arms.ancestor} answers: did the READ happen before the
-     * write it claims to have observed.</p>
+     * <p>Not "an earlier version by seq": two activations that no order
+     * relates interleave, so a session's event counter alone orders nothing.
+     * What contradicts is a read that HAPPENED BEFORE the write it claims to
+     * have observed -- because its own thread wrote later, because the
+     * writing activation ran on that same thread afterwards, because the
+     * reader caused the writer through the message it sent, or because the
+     * reader started the thread the writer ran on.  All four are the one
+     * question {@code Arms.ancestor} answers, and this stage asks it rather
+     * than keeping a fifth opinion about happens-before.</p>
      */
     private static boolean contradictsOrder(Corpus corpus, ReadRow read,
                                             WriteRow observed) {
