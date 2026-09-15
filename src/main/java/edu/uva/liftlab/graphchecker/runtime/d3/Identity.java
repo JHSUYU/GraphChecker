@@ -48,7 +48,6 @@ public final class Identity {
     private static final class State {
         private final List<Frame> frames =
                 new ArrayList<Frame>();
-        private final List<String> hashes = new ArrayList<String>();
         /** loop id -> iterations charged inside the innermost frame. */
         private final Map<String, Integer> loops =
                 new HashMap<String, Integer>();
@@ -59,16 +58,11 @@ public final class Identity {
         private State copy() {
             State child = new State();
             child.frames.addAll(frames);
-            child.hashes.addAll(hashes);
             child.loops.putAll(loops);
             child.loop = loop;
             child.scopeBase = scopeBase;
             child.regionBase = regionBase;
             return child;
-        }
-
-        private String hashAt(int depth) {
-            return depth <= 0 ? "" : hashes.get(depth - 1);
         }
 
         private ExecutionIndex from(int base) {
@@ -85,10 +79,7 @@ public final class Identity {
         int iteration = state.loop.isEmpty() ? 0
                 : state.loops.containsKey(state.loop)
                         ? state.loops.get(state.loop) : 0;
-        Frame frame = Frame.of(callSiteId, iteration);
-        state.frames.add(frame);
-        state.hashes.add(Text.sha16(
-                state.hashAt(state.hashes.size()) + "/" + frame.render()));
+        state.frames.add(Frame.of(callSiteId, iteration));
     }
 
     /** Leaves the innermost call site. */
@@ -97,7 +88,6 @@ public final class Identity {
         int depth = state.frames.size();
         if (depth == 0) return;
         state.frames.remove(depth - 1);
-        state.hashes.remove(depth - 1);
     }
 
     /** Charges one iteration of {@code loopId} to the current frame. */
