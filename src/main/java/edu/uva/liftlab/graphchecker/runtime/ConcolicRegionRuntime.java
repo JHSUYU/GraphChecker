@@ -551,6 +551,17 @@ public final class ConcolicRegionRuntime {
         }
         ConcolicVmBroker api = engine();
         api.requireCurrentCapabilities();
+        // The static slice's control-dependence answer, before any region can
+        // store anything: a concrete store starts a location's log only in a
+        // method the map names and only under one of that method's guard
+        // decisions.  The artifact is this epoch's PLAN output and has been
+        // required since closure v2, so a session that cannot read it is
+        // refused by name rather than replaying as the pre-VM22 baseline in
+        // which no concrete store is evidence at all.
+        String guardedStores = GuardedStoreSites.install(api);
+        if (!guardedStores.isEmpty()) {
+            return guardedStores;
+        }
         final long status;
         try {
             status = api.openWorkloadSession();
