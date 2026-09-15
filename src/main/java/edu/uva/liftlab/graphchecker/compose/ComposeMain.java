@@ -22,6 +22,7 @@ import edu.uva.liftlab.graphchecker.contract.RootDomain;
 import edu.uva.liftlab.graphchecker.contract.RootKind;
 import edu.uva.liftlab.graphchecker.contract.RowCodec;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;
+import edu.uva.liftlab.graphchecker.smt.JsonFields;
 import edu.uva.liftlab.graphchecker.explore.Corpus;
 
 import java.io.IOException;
@@ -502,15 +503,15 @@ public final class ComposeMain {
                 new LinkedHashMap<String, RootDomain>();
         if (file == null || !Files.isRegularFile(file)) return domains;
         for (JsonObject row : RowCodec.readJsonl(file)) {
-            String key = JsonText.firstNonBlank(
+            String key = JsonFields.firstNonBlank(
                     JsonText.string(row, "rootId"),
                     JsonText.string(row, "symbol"),
                     JsonText.string(row, "sourceId"));
             if (key.isEmpty()) continue;
-            String min = JsonText.firstNonBlank(
+            String min = JsonFields.firstNonBlank(
                     JsonText.string(row, "min"),
                     JsonText.string(row, "declaredDomainMin"));
-            String max = JsonText.firstNonBlank(
+            String max = JsonFields.firstNonBlank(
                     JsonText.string(row, "max"),
                     JsonText.string(row, "declaredDomainMax"));
             domains.put(key, RootDomain.of(key, RootKind.INTEGRAL, "",

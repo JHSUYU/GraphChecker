@@ -28,6 +28,7 @@ import edu.uva.liftlab.graphchecker.contract.RootKind;
 import edu.uva.liftlab.graphchecker.contract.RootDomain;
 import edu.uva.liftlab.graphchecker.contract.RootMintRow;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;
+import edu.uva.liftlab.graphchecker.smt.JsonFields;
 import edu.uva.liftlab.graphchecker.contract.TargetRow;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
 
@@ -593,7 +594,7 @@ public final class Composer {
             // has to be a name something declares.
             String conjunct = lowering.statedTerm(pi.get(index),
                     "pi:" + subject);
-            if (!predicate(conjunct)) continue;
+            if (!Arms.predicate(conjunct)) continue;
             if (unknown(conjunct, refusals, subject)) continue;
             terms.add(conjunct);
         }
@@ -1090,7 +1091,7 @@ public final class Composer {
         Set<String> seen = new LinkedHashSet<String>();
         for (AttachRow attach : corpus.attachesOn(session, anchor)) {
             if (!seen.add(attach.symbol())) continue;
-            String literal = JsonText.smtLiteral(JsonText.firstNonBlank(
+            String literal = JsonText.smtLiteral(JsonFields.firstNonBlank(
                     attach.answeredValue(), attach.arrival()));
             if (literal.isEmpty()) continue;
             stated.add("(assert (! (= " + attach.symbol() + " " + literal
@@ -1209,7 +1210,7 @@ public final class Composer {
         for (String term : arm.pi()) {
             String conjunct = lowering.statedTerm(term,
                     "arm-pi:" + arm.slotId());
-            if (!predicate(conjunct)) continue;
+            if (!Arms.predicate(conjunct)) continue;
             if (unknown(conjunct, null, "")) {
                 stated = false;
                 break;
@@ -1219,21 +1220,6 @@ public final class Composer {
         stated = stated && lowering.openRefusals().isEmpty();
         conjuncts.addAll(lowering.end());
         return stated ? conjuncts : null;
-    }
-
-    /**
-     * Whether a decision's published term states a predicate at all.
-     *
-     * <p>A CONCRETE branch is published with an empty term: the VM had no
-     * symbolic value at the site, so the arm the run took depends on no
-     * root and constrains no variable.  Omitting it is exact -- and the
-     * two spellings an empty term reaches here in, {@code ""} and
-     * {@code "(not )"}, are not SMT, so conjoining them voids the whole
-     * query rather than adding a tautology to it.</p>
-     */
-    private static boolean predicate(String conjunct) {
-        String text = conjunct == null ? "" : conjunct.trim();
-        return !text.isEmpty() && !"(not )".equals(text);
     }
 
     /** One arm as the manifest states it. */
