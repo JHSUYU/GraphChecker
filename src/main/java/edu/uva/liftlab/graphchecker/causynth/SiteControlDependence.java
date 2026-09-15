@@ -83,7 +83,7 @@ public final class SiteControlDependence {
                 new LinkedHashMap<String, List<StaticScopeMap.Guard>>();
         for (String siteId : siteIds == null
                 ? Collections.<String>emptyList() : siteIds) {
-            String method = methodOf(siteId);
+            String method = SiteId.methodOf(siteId);
             if (method.isEmpty()) continue;
             MethodGuards computed = byMethod.get(method);
             if (computed == null) {
@@ -312,10 +312,4 @@ public final class SiteControlDependence {
         }
     }
 
-    /** The method one site id names, or "" when it names no unit. */
-    private static String methodOf(String siteId) {
-        int marker = siteId == null ? -1 : siteId.lastIndexOf("#u");
-        return marker < 0 || SiteId.unitIndexOf(siteId) < 0 ? ""
-                : siteId.substring(0, marker);
-    }
 }

@@ -166,8 +166,7 @@ public class BranchDecisionRecordingTest {
                 + "{'state':'EXECUTABLE'},'rootSelector':{'kind':"
                 + "'GLOBAL_INVOCATION','invocationOrdinal':1,'causalAnchor':"
                 + "{'sourceKey':'dn0#epoch0','kind':'REGISTERED_SOURCE'}},"
-                + "'branches':[{'siteId':'" + DECLARED
-                + "','selectedOccurrence':1}],"
+                + "'branchMethods':['" + METHOD + "'],"
                 + "'inputActions':[{'symbol':'sym.f','mode':'SYMBOLIC',"
                 + "'bindingMode':'FIELD_ACCESS','accessFieldSignature':"
                 + "'<a.B: int f>','accessSites':['" + DECLARED + "']}],"

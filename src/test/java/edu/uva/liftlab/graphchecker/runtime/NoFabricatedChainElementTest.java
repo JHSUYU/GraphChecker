@@ -121,8 +121,7 @@ public class NoFabricatedChainElementTest {
                 + "'admission':{'state':'EXECUTABLE'},'rootSelector':{'kind':"
                 + "'GLOBAL_INVOCATION','invocationOrdinal':1,'causalAnchor':"
                 + "{'sourceKey':'dn0#epoch0','kind':'REGISTERED_SOURCE'}},"
-                + "'branches':[{'siteId':'" + SITE + "',"
-                + "'selectedOccurrence':1}]}")
+                + "'branchMethods':['" + METHOD + "']}")
                 .getAsJsonObject();
         JsonArray inputActions = new JsonArray();
         for (JsonObject action : acts) inputActions.add(action);

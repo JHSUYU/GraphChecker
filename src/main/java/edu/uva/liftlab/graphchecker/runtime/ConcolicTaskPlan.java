@@ -1050,8 +1050,6 @@ final class ConcolicTaskPlan {
         final RootArgumentSelector rootArgumentSelector;
         /** Actions that execute directly at ordinary instrumentation hooks. */
         final List<SymbolizeAction> symbolize;
-        final Map<String, String> branchPolicies;
-        final Set<String> replayLoopExitSites;
         final LoopBoundPolicy loopBound;
         final boolean capturesTargetReach;
         /** Whether this non-loop address has already completed its goal. */
@@ -1190,8 +1188,6 @@ final class ConcolicTaskPlan {
                             Collections.<RootArgumentTypePredicate>emptyList())
                             : RootArgumentSelector.from(rootSelector);
             this.symbolize = new ArrayList<>();
-            this.branchPolicies = new LinkedHashMap<>();
-            this.replayLoopExitSites = task.loopExitSites();
             this.loopBound = task.loopBound();
             this.loopBodyRoot = LoopBoundPolicy.LOOP_BODY_ROOT.equals(
                     task.rootAuthority());
@@ -1251,11 +1247,6 @@ final class ConcolicTaskPlan {
                         optionalString(encoded, "mode"))) {
                     this.symbolize.add(action);
                 }
-            }
-            for (JsonElement element : task.branches()) {
-                JsonObject branch = element.getAsJsonObject();
-                String siteId = optionalString(branch, "siteId");
-                branchPolicies.put(siteId, optionalString(branch, "policy"));
             }
             for (CommunicationHandoffSpec site
                     : task.communicationHandoffs()) {
@@ -1478,16 +1469,6 @@ final class ConcolicTaskPlan {
         /** Body entries this loop may run before the replay is cut. */
         int maxLoopBodies(String loopId) {
             return LoopBoundPolicy.MAX_REPLAY_PATH_LOOP_BODIES;
-        }
-
-        /** Whether the frozen plan declares a policy for this branch site. */
-        boolean declaresBranch(String siteId) {
-            return branchPolicies.containsKey(safe(siteId));
-        }
-
-        /** Boundary-only loop controls advance replay invocation identity. */
-        boolean observesReplayBoundary(String siteId) {
-            return replayLoopExitSites.contains(safe(siteId));
         }
 
         /**

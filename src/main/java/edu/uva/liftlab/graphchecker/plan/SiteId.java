@@ -55,6 +55,19 @@ public final class SiteId {
                 + UNIT_MARKER + unitIndex;
     }
 
+    /**
+     * The method one site id names, or "" when it names no unit.
+     *
+     * <p>The one parse of the other half of this grammar: two files used to
+     * spell it themselves, one with {@code lastIndexOf} and one with a
+     * regex.</p>
+     */
+    public static String methodOf(String siteId) {
+        int marker = siteId == null ? -1 : siteId.lastIndexOf(UNIT_MARKER);
+        return marker < 0 || unitIndexOf(siteId) < 0 ? ""
+                : siteId.substring(0, marker);
+    }
+
     /** The unit index one site id names, or -1 when it names none. */
     public static int unitIndexOf(String siteId) {
         int marker = siteId == null ? -1 : siteId.lastIndexOf(UNIT_MARKER);

@@ -187,15 +187,18 @@ public final class ExecutionTask extends PlanRow {
         return new ExecutionTask(encoded.deepCopy(), null, null);
     }
 
+    /** The methods whose conditional branches this task has woven. */
+    public static final String BRANCH_METHODS = "branchMethods";
+
     /** Creates the one task for a scheduler-selected occurrence union. */
     public static ExecutionTask create(
             RegionInstancePlan.Goal goal,
             String taskId,
             JsonArray inputActions,
-            JsonArray branches,
+            JsonArray branchMethods,
             JsonArray edgeBindings,
             LoopBoundPolicy loopBound) {
-        if (goal == null || inputActions == null || branches == null
+        if (goal == null || inputActions == null || branchMethods == null
                 || edgeBindings == null || loopBound == null) {
             throw new IllegalArgumentException(
                     "goal and task contract values are required");
@@ -206,7 +209,7 @@ public final class ExecutionTask extends PlanRow {
         task.addProperty("taskId", taskId);
         goal.kind().writeToTask(task);
         task.add(InputActionCatalog.FIELD, compactInputActions(inputActions));
-        task.add("branches", branches.deepCopy());
+        task.add(BRANCH_METHODS, branchMethods.deepCopy());
         loopBound.writeTo(task);
         if (edgeBindings.size() > 0) {
             task.add("edgeBindings", edgeBindings.deepCopy());
@@ -371,24 +374,6 @@ public final class ExecutionTask extends PlanRow {
         return array(encoded, "retainedLoops").deepCopy();
     }
 
-    /** Loop-exit sites captured as boundary evidence even without an SMT PC. */
-    public Set<String> loopExitSites() {
-        Set<String> result = new LinkedHashSet<>();
-        for (JsonElement encodedLoop : array(encoded, "retainedLoops")) {
-            if (encodedLoop == null || !encodedLoop.isJsonObject()) continue;
-            for (JsonElement encodedExit : array(
-                    encodedLoop.getAsJsonObject(),
-                    LoopBoundPolicy.LOOP_EXIT_DECISIONS)) {
-                if (encodedExit != null && encodedExit.isJsonObject()) {
-                    String site = optionalString(encodedExit.getAsJsonObject(),
-                            "siteId");
-                    if (!site.isEmpty()) result.add(site);
-                }
-            }
-        }
-        return Collections.unmodifiableSet(result);
-    }
-
     private static Set<String> fixedCountLoopSites(JsonObject task) {
         Set<String> result = new LinkedHashSet<>();
         for (JsonElement element : array(task, "retainedLoops")) {
@@ -423,8 +408,19 @@ public final class ExecutionTask extends PlanRow {
 
     public InputActionCatalog inputActions() { return inputActions; }
 
-    public JsonArray branches() {
-        return array(encoded, "branches").deepCopy();
+    /**
+     * The methods whose conditional branches INSTRUMENT weaves.
+     *
+     * <p>The plan says which methods are instrumented; which branches inside
+     * them are woven is the Soot bodies' answer and INSTRUMENT's to take
+     * (LEAN section 1: any decision whose term has a symbolic operand is
+     * recorded, so there is no per-branch selection to publish).  This used
+     * to be a {@code branches[]} array of one row per site -- 636 of them on
+     * the 17960 seed -- carrying a {@code policy}, an outcome and the
+     * operand cells, and the weave read the site ids out of it.</p>
+     */
+    public JsonArray branchMethods() {
+        return array(encoded, BRANCH_METHODS).deepCopy();
     }
 
     public LoopBoundPolicy loopBound() { return loopBound; }

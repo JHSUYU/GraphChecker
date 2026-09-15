@@ -99,7 +99,8 @@ public final class ConcolicInstrumentationSelections {
         /** Exact plan selector shared by a seed task and its replays. */
         private final String instrumentationSelector;
         private final String rootMethod;
-        private final ConcolicBranchSelection branches;
+        /** Methods whose conditional branches this task's weave covers. */
+        private final Set<String> branchMethods;
         private final LoopBoundPolicy loopBound;
         /** Array-indexed loops whose concrete cardinality is not a K_L. */
         private final Set<String> fixedCountLoopSites;
@@ -139,8 +140,7 @@ public final class ConcolicInstrumentationSelections {
             InputActionCatalog inputActions = task.inputActions();
             JsonArray symbolic = inputActions.symbolic();
             targetMethod = task.targetMethod();
-            branches = ConcolicBranchSelection.from(task.branches());
-            branches.addLoopExitSites(task.retainedLoops());
+            branchMethods = branchMethodsOf(task);
             loopBound = task.loopBound();
             fixedCountLoopSites = task.fixedCountLoopSites();
             rootLoopMethod = task.rootLoopMethod();
@@ -160,8 +160,8 @@ public final class ConcolicInstrumentationSelections {
 
             LinkedHashSet<String> methods = new LinkedHashSet<>();
             methods.add(rootMethod);
-            methods.addAll(branches.methods());
-            anchorMethods.addAll(branches.methods());
+            methods.addAll(branchMethods);
+            anchorMethods.addAll(branchMethods);
             // A cut's own frame is where the port's value is presented and
             // received.
             for (CommunicationHandoffSpec site : communicationHandoffs) {
@@ -287,8 +287,44 @@ public final class ConcolicInstrumentationSelections {
             return instrumentationSelector;
         }
 
-        ConcolicBranchSelection branches() {
-            return branches;
+        Set<String> branchMethods() {
+            return branchMethods;
+        }
+
+        /**
+         * The methods the plan says are instrumented for their decisions:
+         * the ones it names, plus the owners of every retained loop's exit
+         * decisions, which are replay-address boundaries even where they add
+         * no SMT predicate of their own.
+         */
+        private static Set<String> branchMethodsOf(ExecutionTask task) {
+            Set<String> methods = new LinkedHashSet<>();
+            for (JsonElement element : task.branchMethods()) {
+                if (element.isJsonPrimitive()) {
+                    methods.add(element.getAsString().trim());
+                }
+            }
+            for (JsonElement encodedLoop : task.retainedLoops()) {
+                if (encodedLoop == null || !encodedLoop.isJsonObject()) {
+                    continue;
+                }
+                JsonElement encodedExits = encodedLoop.getAsJsonObject().get(
+                        LoopBoundPolicy.LOOP_EXIT_DECISIONS);
+                if (encodedExits == null || !encodedExits.isJsonArray()) {
+                    continue;
+                }
+                for (JsonElement encodedExit
+                        : encodedExits.getAsJsonArray()) {
+                    if (encodedExit == null
+                            || !encodedExit.isJsonObject()) {
+                        continue;
+                    }
+                    methods.add(SiteId.methodOf(optionalString(
+                            encodedExit.getAsJsonObject(), "siteId")));
+                }
+            }
+            methods.remove("");
+            return Collections.unmodifiableSet(methods);
         }
 
         LoopBoundPolicy loopBound() {
@@ -360,7 +396,7 @@ public final class ConcolicInstrumentationSelections {
         /** The methods whose effects a delayed engine arm may not skip. */
         Set<String> replayDemandMethods() {
             Set<String> methods = new LinkedHashSet<>();
-            methods.addAll(branches.methods());
+            methods.addAll(branchMethods);
             methods.addAll(materializations.localMethods());
             methods.addAll(materializations.methodArgumentMethods());
             methods.addAll(materializations.accessorCallerMethods());
@@ -371,75 +407,6 @@ public final class ConcolicInstrumentationSelections {
             return methods;
         }
 
-    }
-
-    static final class ConcolicBranchSelection {
-        private final Map<String, Set<Integer>> unitsByMethod =
-                new LinkedHashMap<>();
-
-        static ConcolicBranchSelection from(JsonArray branches) {
-            ConcolicBranchSelection result = new ConcolicBranchSelection();
-            for (JsonElement element : branches) {
-                if (!element.isJsonObject()) {
-                    continue;
-                }
-                JsonObject branch = element.getAsJsonObject();
-                String method = optionalString(branch, "method");
-                int unit = JsonFields.optionalInteger(branch, "unitIndex", -1);
-                Matcher site = SITE_ID.matcher(
-                        optionalString(branch, "siteId"));
-                if (site.matches()) {
-                    method = site.group(1);
-                    unit = Integer.parseInt(site.group(2));
-                }
-                if (!method.isEmpty() && unit >= 0) {
-                    result.unitsByMethod.computeIfAbsent(method,
-                            ignored -> new LinkedHashSet<>()).add(unit);
-                }
-            }
-            return result;
-        }
-
-        /** Loop exits are replay-address boundaries even when they add no SMT
-         * predicate of their own. */
-        private void addLoopExitSites(JsonArray retainedLoops) {
-            for (JsonElement encodedLoop : retainedLoops) {
-                if (encodedLoop == null || !encodedLoop.isJsonObject()) {
-                    continue;
-                }
-                JsonElement encodedExits = encodedLoop.getAsJsonObject().get(
-                        LoopBoundPolicy.LOOP_EXIT_DECISIONS);
-                if (encodedExits == null || !encodedExits.isJsonArray()) {
-                    continue;
-                }
-                for (JsonElement encodedExit : encodedExits.getAsJsonArray()) {
-                    if (encodedExit == null || !encodedExit.isJsonObject()) {
-                        continue;
-                    }
-                    Matcher site = SITE_ID.matcher(optionalString(
-                            encodedExit.getAsJsonObject(), "siteId"));
-                    if (site.matches()) {
-                        unitsByMethod.computeIfAbsent(site.group(1),
-                                ignored -> new LinkedHashSet<>()).add(
-                                Integer.parseInt(site.group(2)));
-                    }
-                }
-            }
-        }
-
-        Set<String> methods() {
-            return unitsByMethod.keySet();
-        }
-
-        Set<Integer> units(String method) {
-            Set<Integer> units = unitsByMethod.get(method);
-            return units == null ? Collections.emptySet() : units;
-        }
-
-        /** Unions another task's branch sites into this one. */
-        void mergeFrom(ConcolicBranchSelection other) {
-            mergeSets(unitsByMethod, other.unitsByMethod);
-        }
     }
 
     private static FieldTarget concolicFieldTarget(JsonObject action) {
@@ -859,10 +826,6 @@ public final class ConcolicInstrumentationSelections {
         }
     }
 
-
-    /** The project-wide {@code <method>#u<unitIndex>} site-id form. */
-    private static final Pattern SITE_ID =
-            Pattern.compile("^(<.*>)#u([0-9]+)$");
 
     private static int totalSize(Map<?, ? extends Collection<?>> byKey) {
         int total = 0;

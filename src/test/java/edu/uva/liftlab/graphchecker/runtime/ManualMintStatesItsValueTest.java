@@ -304,7 +304,7 @@ public class ManualMintStatesItsValueTest {
         anchor.addProperty("kind", "REGISTERED_SOURCE");
         selector.add("causalAnchor", anchor);
         encoded.add("rootSelector", selector);
-        encoded.add("branches", new JsonArray());
+        encoded.add("branchMethods", new JsonArray());
         encoded.add("inputActions", new JsonArray());
         JsonObject loopBound = new JsonObject();
         loopBound.addProperty("schemaVersion", 1);

@@ -152,7 +152,8 @@ public final class ConcolicScheduler {
             }
             ExecutionTask scheduled = ExecutionTask.create(candidate.goal,
                     taskId, selectedInputs,
-                    candidate.branches, edgeBindings, loopBound);
+                    branchMethods(candidate.branches), edgeBindings,
+                    loopBound);
             // json() is the live row by decision (contract/PlanRow): the
             // scheduler annotates the task it has just created, and no typed
             // member it already decoded is derived from these carriers.
@@ -314,6 +315,31 @@ public final class ConcolicScheduler {
             retained.add(action.deepCopy());
         }
         return retained;
+    }
+
+    /**
+     * The methods whose conditional branches this task's weave covers.
+     *
+     * <p>The plan names methods, not sites: INSTRUMENT weaves
+     * {@code markConcolicBranch} at every conditional branch of every method
+     * it instruments, so the site list the region plan carries is the
+     * scheduler's own scope answer and not a per-branch selection anything
+     * downstream has to honour.</p>
+     */
+    private static JsonArray branchMethods(JsonArray branches) {
+        java.util.TreeSet<String> methods = new java.util.TreeSet<>();
+        for (JsonElement element : branches == null
+                ? new JsonArray() : branches) {
+            if (!element.isJsonObject()) continue;
+            JsonObject branch = element.getAsJsonObject();
+            String method = firstNonBlank(
+                    optionalString(branch, "method"),
+                    SiteId.methodOf(optionalString(branch, "siteId")));
+            if (!method.isEmpty()) methods.add(method);
+        }
+        JsonArray result = new JsonArray();
+        for (String method : methods) result.add(method);
+        return result;
     }
 
     /**
