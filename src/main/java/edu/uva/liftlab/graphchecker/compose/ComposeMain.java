@@ -104,7 +104,7 @@ public final class ComposeMain {
         Corpus corpus = Corpus.read(arguments.iteration, null);
         OccurrenceAddress anchor = anchorOf(arguments.anchor, corpus);
         Composer.Composition composition = Composer.compose(corpus, anchor,
-                declaredDomains(arguments.rootDomains),
+                RootDomain.declared(arguments.rootDomains),
                 arguments.maxValuations);
         Z3 solver = new Z3(arguments.z3, arguments.timeoutMillis);
         ClaimPolicy.Decision decision = ClaimPolicy.decide(composition,
@@ -488,40 +488,6 @@ public final class ComposeMain {
         }
         Files.write(file, (GSON.toJson(row) + "\n")
                 .getBytes(StandardCharsets.UTF_8));
-    }
-
-    /**
-     * What the CASE says each of its roots may be.
-     *
-     * <p>One JSONL row per root: {@code rootId} (or {@code symbol}) and the
-     * two bounds, in either spelling and either form -- an absolute value,
-     * or {@code +k}/{@code -k} steps from what the recording read.  The
-     * recording says what a root WAS; only the case can say what else it
-     * could have been, so the two are joined rather than either overwriting
-     * the other.</p>
-     */
-    static Map<String, RootDomain> declaredDomains(Path file)
-            throws IOException {
-        Map<String, RootDomain> domains =
-                new LinkedHashMap<String, RootDomain>();
-        if (file == null || !Files.isRegularFile(file)) return domains;
-        for (JsonObject row : RowCodec.readJsonl(file)) {
-            String key = JsonFields.firstNonBlank(
-                    JsonText.string(row, "rootId"),
-                    JsonText.string(row, "symbol"),
-                    JsonText.string(row, "sourceId"));
-            if (key.isEmpty()) continue;
-            String min = JsonFields.firstNonBlank(
-                    JsonText.string(row, "min"),
-                    JsonText.string(row, "declaredDomainMin"));
-            String max = JsonFields.firstNonBlank(
-                    JsonText.string(row, "max"),
-                    JsonText.string(row, "declaredDomainMax"));
-            domains.put(key, RootDomain.of(key, RootKind.INTEGRAL, "",
-                    min.isEmpty() ? null : min,
-                    max.isEmpty() ? null : max));
-        }
-        return domains;
     }
 
     /** The CLI, in both the campaign's spelling and the brief's. */

@@ -169,12 +169,8 @@ public final class Corpus implements Arms.Rows {
         Corpus corpus = new Corpus(iteration,
                 SessionReader.readAll(iteration));
         if (rootDomains != null && Files.isRegularFile(rootDomains)) {
-            for (RootDomain domain : RowCodec.readAll(rootDomains,
-                    ExploreCodec::readDomain)) {
-                if (!domain.rootId().isEmpty()) {
-                    corpus.declaredDomains.put(domain.rootId(), domain);
-                }
-            }
+            corpus.declaredDomains.putAll(
+                    RootDomain.declared(rootDomains));
         }
         return corpus;
     }
@@ -696,33 +692,13 @@ public final class Corpus implements Arms.Rows {
         return declaredDomains.get(rootId);
     }
 
+    /** The window this root may move in, or null when it is pinned. */
     public String[] domainOf(RootMintRow root) {
+        // A CLOCK has a floor and no window: every execution reads it fresh,
+        // so it is never an equality between paths (FlipQuery's rule).
         if (root == null || root.kind() == RootKind.CLOCK) return null;
-        RootDomain declared = declaredDomains.get(root.rootId());
-        String min = declared == null ? root.domainMin()
-                : resolve(declared.min(), root.recordedValue());
-        String max = declared == null ? root.domainMax()
-                : resolve(declared.max(), root.recordedValue());
-        if (min == null || max == null || min.isEmpty() || max.isEmpty()) {
-            return null;
-        }
-        return new String[]{min, max};
-    }
-
-    /** One declared bound as an absolute integer; relative bounds resolved. */
-    static String resolve(String bound, String recorded) {
-        String stated = bound == null ? "" : bound.trim();
-        if (stated.isEmpty()) return "";
-        try {
-            if (stated.startsWith("+") || stated.startsWith("-")) {
-                String offset = stated.startsWith("+")
-                        ? stated.substring(1) : stated;
-                return new BigInteger(recorded.trim())
-                        .add(new BigInteger(offset.trim())).toString();
-            }
-            return new BigInteger(stated).toString();
-        } catch (NumberFormatException malformed) {
-            return "";
-        }
+        RootDomain domain = RootDomain.resolved(root, declaredDomains);
+        return domain.min() == null || domain.max() == null ? null
+                : new String[]{domain.min(), domain.max()};
     }
 }

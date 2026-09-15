@@ -8,8 +8,6 @@ import edu.uva.liftlab.graphchecker.contract.InteractionKind;
 import edu.uva.liftlab.graphchecker.contract.Obligation;
 import edu.uva.liftlab.graphchecker.contract.ObligationResult;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
-import edu.uva.liftlab.graphchecker.contract.RootDomain;
-import edu.uva.liftlab.graphchecker.contract.RootKind;
 import edu.uva.liftlab.graphchecker.contract.RowCodec;
 import edu.uva.liftlab.graphchecker.contract.Task;
 import edu.uva.liftlab.graphchecker.contract.Verdict;
@@ -120,40 +118,6 @@ public final class ExploreCodec {
                 RowCodec.readEndpoint(object(json, "consumer")),
                 string(json, "openedBySession"),
                 integer(json, "openedAtWave"));
-    }
-
-    /**
-     * One row of the case's {@code root-domains.jsonl}.
-     *
-     * <p>TWO spellings, one reader, because one file has two readers: the
-     * case writes {@code sourceId} with {@code declaredDomainMin/Max}, and
-     * a manifest writes {@code rootId} with {@code min/max}.  The composer
-     * already accepts both (ComposeMain); an explorer that accepted only
-     * one threw on the very file the case declares.</p>
-     */
-    public static RootDomain readDomain(JsonObject json) {
-        String kind = string(json, "kind");
-        String rootId = has(json, "rootId") ? string(json, "rootId")
-                : string(json, "sourceId");
-        String min = has(json, "min") ? string(json, "min")
-                : has(json, "declaredDomainMin")
-                ? string(json, "declaredDomainMin") : null;
-        String max = has(json, "max") ? string(json, "max")
-                : has(json, "declaredDomainMax")
-                ? string(json, "declaredDomainMax") : null;
-        return RootDomain.of(rootId,
-                kind.isEmpty() ? RootKind.INTEGRAL : RootKind.valueOf(kind),
-                string(json, "recordedValue"), min, max);
-    }
-
-    public static JsonObject writeDomain(RootDomain domain) {
-        JsonObject json = new JsonObject();
-        json.addProperty("rootId", domain.rootId());
-        json.addProperty("kind", domain.kind().name());
-        json.addProperty("recordedValue", domain.recordedValue());
-        if (domain.min() != null) json.addProperty("min", domain.min());
-        if (domain.max() != null) json.addProperty("max", domain.max());
-        return json;
     }
 
     private static JsonObject strings(Map<String, String> values) {

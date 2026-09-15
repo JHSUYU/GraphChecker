@@ -1575,36 +1575,7 @@ public final class Composer {
 
     /** The case's declaration where there is one, the mint's otherwise. */
     private RootDomain domainOf(RootMintRow row) {
-        RootDomain declared = declaredDomains.get(row.rootId());
-        if (declared == null) declared = declaredDomains.get(row.symbol());
-        String min = declared == null ? row.domainMin() : declared.min();
-        String max = declared == null ? row.domainMax() : declared.max();
-        return RootDomain.of(row.rootId(), row.kind(), row.recordedValue(),
-                resolve(min, row.recordedValue()),
-                resolve(max, row.recordedValue()));
-    }
-
-    /**
-     * One bound, absolute.
-     *
-     * <p>Two spellings, one notion: an absolute bound is the value itself,
-     * and a bound written {@code +k} or {@code -k} is that many steps from
-     * what the recording read -- the only way a case can state the domain
-     * of a counter whose zero nobody chose.</p>
-     */
-    private static String resolve(String bound, String recorded) {
-        String stated = bound == null ? "" : bound.trim();
-        if (stated.isEmpty()) return null;
-        if (!stated.startsWith("+") && !stated.startsWith("-")) {
-            return JsonText.smtInteger(stated).isEmpty() ? null : stated;
-        }
-        String offset = stated.startsWith("+") ? stated.substring(1) : stated;
-        if (JsonText.smtInteger(offset).isEmpty()
-                || JsonText.smtInteger(recorded).isEmpty()) {
-            return null;
-        }
-        return new BigInteger(recorded.trim())
-                .add(new BigInteger(offset.trim())).toString();
+        return RootDomain.resolved(row, declaredDomains);
     }
 
     /**
