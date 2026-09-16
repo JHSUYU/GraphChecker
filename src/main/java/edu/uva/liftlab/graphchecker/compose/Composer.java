@@ -21,6 +21,7 @@ import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.GapRow;
 import edu.uva.liftlab.graphchecker.contract.Interaction;
 import edu.uva.liftlab.graphchecker.contract.InteractionKind;
+import edu.uva.liftlab.graphchecker.contract.ObligationResult;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.PathEntry;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
@@ -30,6 +31,7 @@ import edu.uva.liftlab.graphchecker.contract.RootMintRow;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;
 import edu.uva.liftlab.graphchecker.smt.JsonFields;
 import edu.uva.liftlab.graphchecker.contract.TargetRow;
+import edu.uva.liftlab.graphchecker.contract.Verdict;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
 
 import java.math.BigInteger;
@@ -399,6 +401,32 @@ public final class Composer {
                             + "whole: " + session.incomplete());
         }
 
+        // A VERDICT IS THE SESSION'S OWN ROW, and the wave's aggregate copy
+        // of it is checked against that row rather than believed.  The
+        // campaign shell stamped ADMITTED onto the aggregate after every
+        // replay that merely finished, so on hdfs-11741 campaign #3 six of
+        // eleven obligations were aggregated ADMITTED while their own
+        // sessions said NOT_ADMITTED, and the composition took all eleven
+        // as paths.  A corpus that states one verdict twice and differently
+        // says nothing about that obligation at all.
+        for (edu.uva.liftlab.graphchecker.contract.SessionReader session
+                : corpus.sessions()) {
+            for (ObligationResult settled : session.obligations()) {
+                ObligationResult wave =
+                        corpus.waveVerdict(settled.obligationId());
+                if (wave == null || wave.verdict() == settled.verdict()) {
+                    continue;
+                }
+                gap(GapKind.UNSTATED_VALUE, GapClass.BLOCKING,
+                        settled.obligationId(), "the replay that ran this "
+                                + "obligation states " + settled.verdict()
+                                + " in session " + session.sessionId()
+                                + " and the wave's own file states "
+                                + wave.verdict() + ", so what it settled is "
+                                + "stated twice and differently");
+            }
+        }
+
         // Which recording a claim is about has to have one answer, and the
         // sessions STATE it (manifest.json, role: SEED | FOCUSED).  It used
         // to be inferred -- "the session that focused nothing" -- and the
@@ -570,7 +598,53 @@ public final class Composer {
                                 + "and published no path at the occurrence");
                 continue;
             }
+            if (!settled(target.sessionId())) continue;
             admitted.add(path);
+        }
+        return admitted;
+    }
+
+    /**
+     * Whether this session's OWN rows admit the obligation it ran.
+     *
+     * <p>The session's manifest names the obligations it was handed and its
+     * {@code obligations.jsonl} states what each of them settled; the
+     * replay owns that verdict, because whether the focused prefix
+     * reproduced and the flipped decision was taken is a fact of the run.
+     * A replay that refused its obligation collected no arm the seed lacks,
+     * so its path is not a disjunct of this composition: it is the
+     * recording again, under a valuation the wave asked for and the run did
+     * not take.</p>
+     *
+     * <p>A SEED session is asked nothing and admits itself.  An obligation
+     * the manifest names and the rows do not settle is BLOCKING: the
+     * session ran it and cannot say what happened, which is not the same as
+     * a refusal.</p>
+     */
+    private boolean settled(String session) {
+        SessionReader reader = corpus.session(session);
+        if (reader == null || reader.seed()) return true;
+        Set<String> stated = new LinkedHashSet<String>();
+        boolean admitted = true;
+        for (ObligationResult result : reader.obligations()) {
+            stated.add(result.obligationId());
+            if (result.verdict() == Verdict.ADMITTED) continue;
+            admitted = false;
+            gap(GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC, session,
+                    "this replay states " + result.verdict() + " for the "
+                            + "obligation it ran (" + result.obligationId()
+                            + "): " + result.detail());
+        }
+        List<String> asked = reader.manifest() == null
+                ? Collections.<String>emptyList()
+                : reader.manifest().obligationIds();
+        for (String obligation : asked) {
+            if (stated.contains(obligation)) continue;
+            admitted = false;
+            gap(GapKind.UNSTATED_VALUE, GapClass.BLOCKING, obligation,
+                    "session " + session + " states it ran this obligation "
+                            + "and publishes no verdict for it, so what it "
+                            + "settled is not in this corpus");
         }
         return admitted;
     }
@@ -622,7 +696,9 @@ public final class Composer {
         //     else the paired arm where it carries a movable root, else
         //     this session's own arrival.  Never a corpus-wide arrival.
         Set<String> interactionIds = new LinkedHashSet<String>();
-        terms.addAll(handoffReads(session, interactionIds, refusals));
+        Set<String> handoffs = new LinkedHashSet<String>();
+        terms.addAll(handoffReads(session, interactionIds, handoffs,
+                refusals));
 
         // (3) The state joins: read := the expression of the write version
         //     it observed, within this session.  Kept by symbol, because a
@@ -663,6 +739,15 @@ public final class Composer {
                 terms.add(phi);
             }
         }
+
+        // (5b) Every OTHER handoff this conjunction reaches, by the same
+        //      three rules: the state joins are what carry them, so this is
+        //      asked once the joins, pi and phi are lowered and the text is
+        //      what it will be.
+        List<String> reaching = new ArrayList<String>(terms);
+        reaching.addAll(joins.values());
+        terms.addAll(reachedHandoffs(session, reaching, interactionIds,
+                handoffs, refusals));
 
         // BEFORE end(), which closes the conjunction and forgets them: a
         // refusal raised while this path was lowered is the reason the
@@ -826,53 +911,112 @@ public final class Composer {
      */
     private List<String> handoffReads(String session,
                                       Set<String> interactionIds,
+                                      Set<String> handoffs,
                                       List<GapRow> refusals) {
         List<String> reads = new ArrayList<String>();
-        Set<String> stated = new LinkedHashSet<String>();
         for (AttachRow attach : corpus.attachesOn(session, anchor)) {
-            if (!stated.add(attach.symbol())) continue;
-            Interaction interaction = attach.interaction();
-            if (interaction != null) {
-                interactionIds.add(interaction.id());
-            } else {
-                // The wire delivered something and the recording cannot say
-                // from where.  The arrival is still this path's own fact,
-                // stated below, but there is no interaction to build a
-                // family on -- and a variable no family constrains is the
-                // one thing a witness must not rest on unremarked.
-                unpaired(session, attach);
-            }
-            if (attach.answered()) {
-                String literal = smtLiteral(attach.answeredValue());
-                if (literal.isEmpty()) {
-                    refusals.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
-                            GapClass.DIAGNOSTIC, attach.symbol(),
-                            "an answered attach whose value is not a "
-                                    + "literal: " + attach.answeredValue()));
-                    continue;
-                }
-                String read = bind(attach.symbol(), literal, attach,
-                        refusals);
-                if (!read.isEmpty()) reads.add(read);
-                continue;
-            }
-            String paired = pairedArm(session, attach);
-            if (!paired.isEmpty()) {
-                reads.add("(= " + attach.symbol() + " " + paired + ")");
-                continue;
-            }
-            String arrival = smtLiteral(attach.arrival());
-            if (arrival.isEmpty()) {
-                refusals.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
-                        GapClass.DIAGNOSTIC, attach.symbol(),
-                        "this session recorded no arrival at this attach "
-                                + "and no producer arm delivers it"));
-                continue;
-            }
-            String read = bind(attach.symbol(), arrival, attach, refusals);
-            if (!read.isEmpty()) reads.add(read);
+            handoffRead(session, attach, reads, interactionIds, handoffs,
+                    refusals);
         }
         return reads;
+    }
+
+    /**
+     * Every OTHER handoff this path's own conjunction reaches.
+     *
+     * <p>The same three rules, on the set the formula actually names.  A
+     * handoff variable is not the anchor's business alone: the anchor's
+     * read of a container joins to the write that PUT a delivered value
+     * into it, so what the anchor read is itself a delivery, one occurrence
+     * further back, and its variable stands in this path's formula.  Bound
+     * by nothing it is a free constant -- on hdfs-11741 campaign #3 dn1's
+     * {@code addKeys} arrival {@code M_I_field_HOFF.29a470e4...} is
+     * declared twelve times inside the {@code allKeys} dag and stated by no
+     * assertion at all -- and a free constant is how a model answers a
+     * question the execution never asked.</p>
+     *
+     * <p>To a fixed point, because an arm's own expression names the
+     * handoffs its producer was itself handed: the same closure {@link
+     * Arms#wireArms} takes over a family, taken here over the path.</p>
+     */
+    private List<String> reachedHandoffs(String session, List<String> terms,
+                                         Set<String> interactionIds,
+                                         Set<String> handoffs,
+                                         List<GapRow> refusals) {
+        List<String> reads = new ArrayList<String>();
+        List<String> pending = new ArrayList<String>(terms);
+        while (!pending.isEmpty()) {
+            Set<String> reached = new LinkedHashSet<String>();
+            for (String text : pending) {
+                lowering.reachedSymbols(text, reached,
+                        new LinkedHashSet<String>());
+            }
+            pending = new ArrayList<String>();
+            for (String name : reached) {
+                if (handoffs.contains(name)) continue;
+                AttachRow attach = corpus.attach(session, name);
+                if (attach == null) continue;
+                List<String> bound = new ArrayList<String>();
+                handoffRead(session, attach, bound, interactionIds,
+                        handoffs, refusals);
+                reads.addAll(bound);
+                pending.addAll(bound);
+            }
+        }
+        return reads;
+    }
+
+    /**
+     * One attach, by the three rules, stated once per symbol.
+     *
+     * <p>{@code handoffs} is the set of symbols this path has already
+     * bound: one attach row per symbol reaches the formula, whichever
+     * occurrence of the path named it first, and a symbol stated twice is
+     * two assertions about one variable.</p>
+     */
+    private void handoffRead(String session, AttachRow attach,
+                             List<String> reads, Set<String> interactionIds,
+                             Set<String> handoffs, List<GapRow> refusals) {
+        if (!handoffs.add(attach.symbol())) return;
+        Interaction interaction = attach.interaction();
+        if (interaction != null) {
+            interactionIds.add(interaction.id());
+        } else {
+            // The wire delivered something and the recording cannot say
+            // from where.  The arrival is still this path's own fact,
+            // stated below, but there is no interaction to build a
+            // family on -- and a variable no family constrains is the
+            // one thing a witness must not rest on unremarked.
+            unpaired(session, attach);
+        }
+        if (attach.answered()) {
+            String literal = smtLiteral(attach.answeredValue());
+            if (literal.isEmpty()) {
+                refusals.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
+                        GapClass.DIAGNOSTIC, attach.symbol(),
+                        "an answered attach whose value is not a "
+                                + "literal: " + attach.answeredValue()));
+                return;
+            }
+            String read = bind(attach.symbol(), literal, attach, refusals);
+            if (!read.isEmpty()) reads.add(read);
+            return;
+        }
+        String paired = pairedArm(attach);
+        if (!paired.isEmpty()) {
+            reads.add("(= " + attach.symbol() + " " + paired + ")");
+            return;
+        }
+        String arrival = smtLiteral(attach.arrival());
+        if (arrival.isEmpty()) {
+            refusals.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
+                    GapClass.DIAGNOSTIC, attach.symbol(),
+                    "this session recorded no arrival at this attach "
+                            + "and no producer arm delivers it"));
+            return;
+        }
+        String read = bind(attach.symbol(), arrival, attach, refusals);
+        if (!read.isEmpty()) reads.add(read);
     }
 
     /**
@@ -922,20 +1066,28 @@ public final class Composer {
     /**
      * The paired producer's delivered expression, when it may carry a move.
      *
-     * <p>Only where the arm is ATTESTED (the producer occurrence has
-     * decisions in this session, so the composition can say under what the
-     * delivery happened) and its expression mentions a root the case
-     * declared a domain for.  Where the arm carries no movable root, the
-     * literal the consumer read states a fact the root cannot explain, and
-     * the literal is kept.</p>
+     * <p>Only where the arm is ATTESTED and its expression mentions a root
+     * the case declared a domain for.  Where the arm carries no movable
+     * root, the literal the consumer read states a fact the root cannot
+     * explain, and the literal is kept.</p>
+     *
+     * <p>ATTESTED IS THE PRODUCER'S PROPERTY, and {@link
+     * Arms#attestedExports} is the one rule for it: any session of the
+     * corpus that ran the producer occurrence symbolically can say under
+     * what the delivery happened, and the pairing then uses THAT session's
+     * export at this same endpoint -- lowered in its own session's scope,
+     * because the identities inside it are that execution's.  Asking
+     * whether the CONSUMER's session attests the producer asks a question
+     * about the wrong run: on hdfs-11741 campaign #3 nn0's export
+     * occurrence was nobody's focus, so all eleven focused paths fell back
+     * to the arrival literal 182905/182907 and nn0's symbols reached no
+     * dn1 formula at all.</p>
      */
-    private String pairedArm(String session, AttachRow attach) {
+    private String pairedArm(AttachRow attach) {
         Endpoint producer = attach.producer();
         if (producer == null) return "";
-        if (!corpus.attested(session, producer.occurrence())) return "";
-        for (ExportRow export : corpus.exportsOf(producer)) {
-            if (!export.sessionId().equals(session)) continue;
-            Term delivered = lower(session, export, "paired-arm");
+        for (ExportRow export : arms.attestedExports(producer)) {
+            Term delivered = lower(export.sessionId(), export, "paired-arm");
             if (delivered == null) continue;
             if (!movableRoot(delivered.text)) continue;
             // The arm's own sort declares the variable: the arrival's

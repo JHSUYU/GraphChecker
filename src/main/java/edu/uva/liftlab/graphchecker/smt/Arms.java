@@ -634,6 +634,44 @@ public final class Arms {
     }
 
     /**
+     * The exports at one producer endpoint that an ATTESTING session made.
+     *
+     * <p>Attestation is a property of the PRODUCER's run, not of the
+     * consumer's: what the recording can say about that occurrence it says
+     * in whichever session explored it symbolically, and every session of
+     * one corpus replays one workload.  So a consumer whose own replay
+     * focused elsewhere is not thereby left with the literal it happened to
+     * receive -- the corpus does state where that literal came from, in the
+     * session that ran the producer symbolically (the seed, which attests
+     * every instrumented occurrence, or the focused replay whose focus it
+     * was).  Requiring the CONSUMER's session to attest the producer is
+     * what kept nn0's expressions out of every dn1 path but the seed's on
+     * hdfs-11741 campaign #3.</p>
+     *
+     * <p>The SEED's export first, then the corpus's own order: the seed is
+     * the recording, so its delivery is the fact a claim about the
+     * recording rests on, and the rest are ordered as the sessions were
+     * read.  Same rule, same spelling, as the composer's {@code seedRow}
+     * for a root that several sessions minted.</p>
+     */
+    public List<ExportRow> attestedExports(Endpoint producer) {
+        List<ExportRow> attested = new ArrayList<ExportRow>();
+        if (producer == null) return attested;
+        String seed = rows.seedSessionId();
+        for (ExportRow export : rows.exportsOf(producer)) {
+            if (!attested(export.sessionId(), producer.occurrence())) {
+                continue;
+            }
+            if (seed != null && seed.equals(export.sessionId())) {
+                attested.add(0, export);
+            } else {
+                attested.add(export);
+            }
+        }
+        return attested;
+    }
+
+    /**
      * Whether a published term states a predicate at all.
      *
      * <p>A CONCRETE branch is published with an empty term: the VM had no

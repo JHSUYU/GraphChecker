@@ -168,7 +168,7 @@ public final class ExploreMain {
         // recorded, and the arms the waves answered (Frontier).
         Frontier frontier = new Frontier(corpus, tasks);
         frontier.consume(RowCodec.readAll(results,
-                ExploreCodec::readResult));
+                RowCodec::readObligationResult));
         List<ObligationFactory.Candidate> candidates =
                 new ArrayList<ObligationFactory.Candidate>();
         for (Task task : tasks) {

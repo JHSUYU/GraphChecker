@@ -132,6 +132,8 @@ public class ManualMintStatesItsValueTest {
         focusRow("{\"taskId\":\"TASK.1\",\"obligationId\":\"OBL.1\","
                 + "\"pathId\":\"PATH.1\",\"seedSessionId\":\"s-seed\","
                 + "\"focused\":\"" + PLANNED_ADDRESS + "\","
+                + "\"focusedOccurrenceId\":\"" + address(PLANNED_ADDRESS)
+                .id() + "\","
                 + "\"flip\":{\"siteId\":\"Arrival#u8\",\"ordinal\":1,"
                 + "\"outcome\":true},"
                 + "\"rootAssignments\":{\"CASE.SERIAL\":\"12\"},"
@@ -139,6 +141,37 @@ public class ManualMintStatesItsValueTest {
                 + "\"rootMints\":{\"CASE.SERIAL\":\"" + MINT_ADDRESS
                 + "\"},"
                 + "\"answers\":{},\"unproducible\":[]}");
+
+        // R4a: THE FLIP IS ADDRESSED AT ONE OCCURRENCE.  (siteId, ordinal)
+        // alone is not an address: an ordinal restarts per activation, and
+        // 11741's four nodes run one BlockTokenSecretManager, so
+        // removeExpiredKeys#u15#1 happens on nn0, dn0, dn1 and the balancer
+        // and whichever ran first decided the obligation (6 of 11
+        // campaign-#3 flips landed on the wrong node).  The occurrence's
+        // own focused gate does not narrow it either: every member of the
+        // focused set answers it, the assigned root's MINT included -- and
+        // MINT_ADDRESS is exactly such a member here.
+        FocusedReplay.observeDecision(address(MINT_ADDRESS),
+                "Arrival#u8", 1, true);
+        FocusedReplay.observeDecision(address(ALONGSIDE_ADDRESS),
+                "Arrival#u8", 1, true);
+        assertEquals("a decision at another occurrence settles nothing, "
+                        + "whatever its site and ordinal", 1,
+                FocusedReplay.results("s-flip").size());
+        assertEquals(edu.uva.liftlab.graphchecker.contract.Verdict
+                        .NOT_ADMITTED,
+                FocusedReplay.results("s-flip").get(0).verdict());
+        assertTrue("and the refusal names the occurrence that never "
+                        + "reached it: "
+                        + FocusedReplay.results("s-flip").get(0).detail(),
+                FocusedReplay.results("s-flip").get(0).detail()
+                        .contains(address(PLANNED_ADDRESS).id()));
+        FocusedReplay.observeDecision(address(PLANNED_ADDRESS),
+                "Arrival#u8", 1, true);
+        assertEquals("the obligation's own occurrence taking the flipped "
+                        + "arm is what admits it",
+                edu.uva.liftlab.graphchecker.contract.Verdict.ADMITTED,
+                FocusedReplay.results("s-flip").get(0).verdict());
         ConcolicRegionRuntime.ActiveRegion focused = manualRegion();
         focused.d3Address = edu.uva.liftlab.graphchecker.contract
                 .OccurrenceAddress.parse(PLANNED_ADDRESS);
@@ -184,8 +217,18 @@ public class ManualMintStatesItsValueTest {
         RuntimeTraceContext.registerSource(keys,
                 new SourceRef("CLUSTER_NODE", "NAMENODE", "hdfs-17899/nn0",
                         0L));
-        assertEquals("the wave's value is unplanted until a mint plants it",
-                Collections.singletonMap("CASE.SERIAL", "12"),
+        // R3: ONE RULE OVER BOTH SPELLINGS of what a wave asks of a root.
+        // A clock is asked for as a DELTA and ASSIGNMENT_UNPLANTED covered
+        // the absolute assignments only -- and a clock is the root eleven
+        // of hdfs-11741 campaign #3's twelve obligations ask about, six of
+        // them stating a delta no mint of their replay ever planted, every
+        // one of them silently.
+        java.util.Map<String, String> owed =
+                new java.util.LinkedHashMap<String, String>();
+        owed.put("CASE.SERIAL", "12");
+        owed.put("CASE.NOW", "-4200");
+        assertEquals("what the wave asked of a root is unplanted until a "
+                        + "mint plants it, a clock's skew included", owed,
                 FocusedReplay.unplantedAssignments());
         assertEquals("a field mint that planted states no recordedValue", "",
                 ConcolicRegionRuntime.fieldMintRecordedValue(focused,
@@ -194,8 +237,10 @@ public class ManualMintStatesItsValueTest {
                         keys, SERIAL_FIELD, "I", Integer.valueOf(182907)));
         assertEquals("and the region reads the wave's value back",
                 12, keys.serialNo);
-        assertTrue("so the replay owes no ASSIGNMENT_UNPLANTED refusal",
-                FocusedReplay.unplantedAssignments().isEmpty());
+        assertEquals("so the replay owes no ASSIGNMENT_UNPLANTED refusal "
+                        + "for it, and still owes the clock's",
+                Collections.singletonMap("CASE.NOW", "-4200"),
+                FocusedReplay.unplantedAssignments());
 
         // A root the wave said nothing about keeps its reading, and states
         // it: the recording is what every delta is relative to.
@@ -234,6 +279,13 @@ public class ManualMintStatesItsValueTest {
     /** And one the wave named nowhere, which merely runs alongside. */
     private static final String ALONGSIDE_ADDRESS =
             "hdfs/dn0#epoch0/region/REGION.094a8e3d/ctx:Root:CLIENT#1/idx:";
+
+    /** One rendered address, as the contract parses one. */
+    private static edu.uva.liftlab.graphchecker.contract.OccurrenceAddress
+            address(String rendered) {
+        return edu.uva.liftlab.graphchecker.contract.OccurrenceAddress
+                .parse(rendered);
+    }
 
     /** Writes one focus row where this replay looks for it. */
     private void focusRow(String row) throws Exception {

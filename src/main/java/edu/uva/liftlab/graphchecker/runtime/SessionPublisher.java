@@ -45,8 +45,6 @@ public final class SessionPublisher {
     private static final Object LOCK = new Object();
     private static final Map<String, SessionPublisher> SESSIONS =
             new LinkedHashMap<String, SessionPublisher>();
-    /** Results of the obligations this replay was handed. */
-    public static final String OBLIGATION_RESULTS = "obligations.jsonl";
 
     private final SessionDir layout;
     private final Map<String, BufferedWriter> writers =
@@ -171,12 +169,8 @@ public final class SessionPublisher {
     /** What one obligation's focused replay settled. */
     public void obligationResult(ObligationResult row) {
         if (row == null) return;
-        JsonObject json = new JsonObject();
-        json.addProperty("obligationId", row.obligationId());
-        json.addProperty("verdict", row.verdict().name());
-        json.addProperty("sessionId", row.sessionId());
-        json.addProperty("detail", row.detail());
-        append(layout.dir().resolve(OBLIGATION_RESULTS), json);
+        append(layout.obligations(),
+                RowCodec.writeObligationResult(row));
     }
 
     /** Files one expression under the ref the rows name it by. */

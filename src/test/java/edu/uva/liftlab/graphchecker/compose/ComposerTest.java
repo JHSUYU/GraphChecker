@@ -16,6 +16,7 @@ import edu.uva.liftlab.graphchecker.contract.ExportRow;
 import edu.uva.liftlab.graphchecker.contract.ExecutionIndex;
 import edu.uva.liftlab.graphchecker.contract.ExpressionTable;
 import edu.uva.liftlab.graphchecker.contract.Frame;
+import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.LocationId;
 import edu.uva.liftlab.graphchecker.contract.LocationKind;
@@ -616,7 +617,7 @@ public class ComposerTest {
                                 Collections.<String, String>emptyMap(),
                                 Collections.<String>emptyList()))));
         RowCodec.writeJsonl(worker.resolve(ObligationDir.RESULT),
-                Collections.singletonList(ExploreCodec.writeResult(
+                Collections.singletonList(RowCodec.writeObligationResult(
                         ObligationResult.of("ob-" + sessionId,
                                 Verdict.ADMITTED, sessionId,
                                 "the focused prefix reproduced"))));
@@ -807,6 +808,27 @@ public class ComposerTest {
                     "sat", solver.ask(composition.query(pinned),
                             Collections.<String>emptyList(), false).status());
         }
+
+        // R1: ATTESTATION IS THE PRODUCER'S PROPERTY.  The same two paths,
+        // where the SEED instrumented the producer and the focused replay
+        // did not: what that occurrence would have delivered is stated by
+        // the session that ran it symbolically, so BOTH paths bind the
+        // attach to that session's export expression and neither falls back
+        // to the arrival it happened to receive.  Asking whether the
+        // CONSUMER's own session attests the producer asked about the wrong
+        // run, and left every hdfs-11741 focused path on the literal.
+        Path attested = folder.newFolder("attested").toPath();
+        session(attested, "s0", false, "false", producer, consumer,
+                "vh", "false", null, true, false, "EXPR.v1.marker");
+        session(attested, "s1", true, "false", producer, consumer,
+                "vh", "true", null, false, false, "EXPR.v1.marker");
+        Composer.Composition across = compose(attested, 4);
+        assertEquals("both sessions reached the anchor", 2,
+                across.disjuncts().size());
+        assertTrue("the arm the seed attests binds the consumer's variable",
+                across.body().contains("(= vh " + MARKER + ")"));
+        assertFalse("so the focused replay's own arrival is not the answer",
+                across.body().contains("(= vh true)"));
     }
 
     // ------------------------------------------------------------------
@@ -843,6 +865,49 @@ public class ComposerTest {
                         + GapKind.DECLARATION_MISSING.name() + ":"));
         assertTrue("with check-sat after it and nothing else",
                 candidate.endsWith("(check-sat)\n"));
+
+        // R4b: A VERDICT IS THE SESSION'S OWN ROW.  A replay that refused
+        // the obligation it ran collected no arm the seed lacks, so its
+        // path is not a disjunct -- and where the WAVE's aggregate copy
+        // states a different verdict than the session's own, the corpus
+        // states one verdict twice and differently and the composition
+        // refuses by name.  The campaign shell stamped ADMITTED onto the
+        // aggregate after every replay that merely finished, so hdfs-11741
+        // campaign #3 composed all eleven focused paths, six of whose own
+        // sessions said NOT_ADMITTED.
+        Path refused = folder.newFolder("verdicts").toPath();
+        Session recording = new Session(refused, "s0", false);
+        recording.marker("false");
+        recording.target("true", false, true);
+        recording.write();
+        Session flip = new Session(refused, "s1", true);
+        flip.marker("false");
+        flip.refused("wrong decision at nn#u1: took true, the obligation "
+                + "flips it to false");
+        flip.target("true", false, true);
+        flip.write();
+        // The wave's own copy of that verdict, as the aggregate holds it.
+        Path worker = refused.resolve("obligations-0000").resolve("OBL.s1");
+        Files.createDirectories(worker);
+        RowCodec.writeAll(worker.resolve(ObligationDir.RESULT),
+                Collections.singletonList(ObligationResult.of("OBL.s1",
+                        Verdict.ADMITTED, "s1", "the shell said so")),
+                RowCodec::writeObligationResult);
+
+        Composer.Composition verdicts = compose(refused, 4);
+        assertEquals("only the recording is a path", 1,
+                verdicts.disjuncts().size());
+        assertEquals("s0", verdicts.disjuncts().get(0).path().sessionId);
+        assertTrue("the refusal is named",
+                named(verdicts.gaps(), GapKind.ADMISSION_GAP));
+        boolean twice = false;
+        for (GapRow gap : verdicts.gaps()) {
+            twice |= gap.cls() == GapClass.BLOCKING
+                    && gap.kind() == GapKind.UNSTATED_VALUE
+                    && "OBL.s1".equals(gap.subject());
+        }
+        assertTrue("and so is the disagreement with the wave's own file",
+                twice);
     }
 
     // ------------------------------------------------------------------
@@ -915,6 +980,41 @@ public class ComposerTest {
         assertTrue("and the alarm says why",
                 named(decision.claim().gaps(),
                         GapKind.FORMULA_SAT_AT_RECORDED_VALUATION));
+
+        // R2: A CLOCK IS PART OF THE WITNESS.  phi holds only where the
+        // clock sits past an instant this run did not read, and pinning the
+        // cell to what it DID read refutes it -- so the clock is necessary,
+        // the mechanism is CLOCK_SKEW, and the claim has to say WHERE the
+        // cell had to sit.  A clock has a floor and no window, so no
+        // valuation pins one and no valuation can report one: the model is
+        // the only statement of it, and CLOCK_SKEW was published with
+        // movedRoots {} -- 11741 campaign #3's own claim -- about the one
+        // finding whose whole content is that something moved.
+        Path skew = folder.newFolder("clock-skew").toPath();
+        Session skewed = new Session(skew, "s0", false);
+        skewed.clock("700");
+        // The predicate names the cell so the formula declares it, which is
+        // what makes the cell a cell of this composition at all.
+        skewed.decision(ANCHOR, "anchor#u1", "(or (> " + CLOCK + " 1000) "
+                + "(not (> " + CLOCK + " 1000)))", CLOCK_ROOT, 700L);
+        skewed.target("(> " + CLOCK + " 1000)", false, true);
+        skewed.write();
+
+        Composer.Composition clocked = compose(skew, 4);
+        assertEquals("the cell is the name the formula names",
+                Collections.singletonList(CLOCK), clocked.clockCells());
+        ClaimPolicy.Decision skewing = ClaimPolicy.decide(clocked,
+                solver());
+        assertEquals("the arm is reachable with the clock free", "sat",
+                skewing.outcomes().get(0).answer().status());
+        assertEquals("no declared root moved, and the clock is necessary",
+                ClaimKind.CLOCK_SKEW, skewing.claim().kind());
+        String at = skewing.claim().movedRoots().get(CLOCK);
+        assertNotNull("the witness states where the cell had to sit: "
+                + skewing.claim().movedRoots(), at);
+        assertTrue("past the instant its session read, which is what the "
+                        + "skew IS: " + at,
+                Long.parseLong(at.trim()) > 1000L);
     }
 
     // ------------------------------------------------------------------
@@ -1244,7 +1344,23 @@ public class ComposerTest {
                 "EXPR.v1.rpc", 1L, "false");
         session.expression("EXPR.v1.first", symbol(MARKER, "Z"));
         session.expression("EXPR.v1.second", symbol(MARKER, "Z"));
-        session.expression("EXPR.v1.ancestor", symbol(MARKER, "Z"));
+        // R1: what the ancestor STORED is what it was handed over the wire,
+        // so the state join reaches a handoff variable the anchor has no
+        // attach of its own for.  Bound by nothing it is a free constant in
+        // the query -- hdfs-11741 #3 declared dn1's addKeys arrival twelve
+        // times inside the allKeys dag and asserted nothing about it -- so
+        // the path binds every handoff its own conjunction reaches, by the
+        // same three rules the anchor's attaches take.
+        session.expression("EXPR.v1.ancestor", symbol("vh_wire", "Z"));
+        session.expression("EXPR.v1.wired", symbol(MARKER, "Z"));
+        session.activation(PRODUCER);
+        Endpoint wireProducer = Endpoint.of(PRODUCER, "PORT.wire",
+                at("export#1", 0), 0);
+        session.decision(PRODUCER, "nn#u1", "(or " + MARKER + " (not "
+                + MARKER + "))");
+        session.export(wireProducer, "EXPR.v1.wired", 9L, "false");
+        session.attach(Endpoint.of(UPSTREAM, "PORT.wire",
+                at("attach#1", 0), 0), "vh_wire", "false", wireProducer);
         // The ancestor writes, then the concurrent tick writes, then the
         // reader reads -- and observes the ancestor's version.
         session.decision(UPSTREAM, "up#u1", "(or " + MARKER + " (not "
@@ -1276,6 +1392,8 @@ public class ComposerTest {
         assertEquals("one disjunct", 1, composition.disjuncts().size());
         assertTrue("the concurrent writer is an alternative",
                 composition.body().contains("state_family__"));
+        assertTrue("a handoff the state join reaches is bound, not free",
+                composition.body().contains("(= vh_wire " + MARKER + ")"));
         assertTrue("and the composition says which slots it filled",
                 composition.families().size() >= 2);
         // The ancestor started the reader's request, so it is ordered before
@@ -2087,8 +2205,20 @@ public class ComposerTest {
             this.iteration = iteration;
             this.id = id;
             this.explored = explored;
+            this.settled = ObligationResult.of("OBL." + id,
+                    Verdict.ADMITTED, id, "the fixture's replay took the "
+                            + "arm the obligation asked for");
             activation(ANCHOR);
             this.seq = 0L;
+        }
+
+        /** What this replay states it settled; ignored for a SEED. */
+        private ObligationResult settled;
+
+        /** The same session, whose replay refused its own obligation. */
+        void refused(String detail) {
+            settled = ObligationResult.of("OBL." + id,
+                    Verdict.NOT_ADMITTED, id, detail);
         }
 
         /**
@@ -2240,6 +2370,13 @@ public class ComposerTest {
                             : SessionManifest.Role.SEED,
                     explored ? Collections.singletonList("OBL." + id)
                             : Collections.<String>emptyList()));
+            // And the VERDICT, which the replay owns: a focused session
+            // that states none settled nothing, and the composition asks
+            // the session's own row rather than the wave's copy of it.
+            RowCodec.writeAll(dir.obligations(), explored
+                            ? Collections.singletonList(settled)
+                            : Collections.<ObligationResult>emptyList(),
+                    RowCodec::writeObligationResult);
         }
     }
 

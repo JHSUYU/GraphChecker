@@ -1959,12 +1959,23 @@ campaign_obligation_worker() {
   campaign_sessions_dir="${sessions}" \
     campaign_replay worker "${plan}" "${replay_tasks}" "${classes}" \
       "${results}" "${worker}" tolerated
-  # The replay's own session is the evidence; the row says which one it is.
-  jq -c --arg session "$(jq -r '.sessionId // ""' "${result_row}")" \
-    '. + {verdict: "ADMITTED"}' "${result_row}" >"${result_row}.done" \
-    || campaign_fail EXPLORE ObligationSolverMain "${result_row}" \
-      "the obligation result could not be completed"
-  mv -- "${result_row}.done" "${result_row}"
+  # THE REPLAY OWNS THE VERDICT.  RowRuntime.closeSession rewrites this
+  # file with the rows FocusedReplay.results built -- the same rows it
+  # publishes into the session, which is the evidence -- so there is
+  # nothing to stamp here and never was: `. + {verdict: "ADMITTED"}` said
+  # ADMITTED of every replay that merely finished, and on hdfs-11741
+  # campaign #3 six of eleven obligations were aggregated ADMITTED while
+  # their own sessions said NOT_ADMITTED.  What is checked instead is that
+  # the replay DID state one: a row still carrying the solver's
+  # SAT_MODEL_READY means the replay published no verdict for it, which is
+  # neither an admission nor a refusal.
+  outcome=$(jq -r '.verdict // ""' "${result_row}")
+  case "${outcome}" in
+    ADMITTED|NOT_ADMITTED|UNSAT) ;;
+    *) campaign_fail EXPLORE ObligationSolverMain "${result_row}" \
+        "the replay of ${obligation_id} published no verdict for it \
+(the row still states \"${outcome}\")" ;;
+  esac
 }
 
 # Region-path obligations are coordinated in closure-wide waves below.

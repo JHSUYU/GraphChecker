@@ -1311,8 +1311,15 @@ public final class ConcolicScheduler {
                 // A row that declares itself a clock declares every name on
                 // it a clock: the case states which of its reads is a wall
                 // clock, and the planner never decides that from a callee.
+                // ONE statement, two spellings the file may use for it --
+                // the cell form's `clock: true` and the callee form's
+                // `kind: CLOCK` -- exactly as declaredMethod accepts a whole
+                // signature or a class plus a method half.
+                String callee = DeclaredSymbolicInputs.declaredCallee(row);
                 boolean clock = optionalBool(
-                        row, InputActionCatalog.DECLARED_WALL_CLOCK, false);
+                        row, InputActionCatalog.DECLARED_WALL_CLOCK, false)
+                        || DeclaredSymbolicInputs.CLOCK_KIND.equals(
+                        firstNonBlank(optionalString(row, "kind")));
                 for (String regionId : declaredRegions(row, catalogRegions,
                         regionPlans, declaredRootRegions)) {
                     Set<String> names = admitted.computeIfAbsent(regionId,
@@ -1327,6 +1334,16 @@ public final class ConcolicScheduler {
                         if (clockNames != null) {
                             addDeclaredNames(clockNames, row, field);
                         }
+                    }
+                    // A callee declaration's name is its RETURN cell, which
+                    // is the cell every external-call-return port of it
+                    // carries: one name, so the admission test and the clock
+                    // test are the same tests they were.
+                    if (!callee.isEmpty()) {
+                        String cell = DeclaredSymbolicInputs
+                                .returnCell(callee);
+                        names.add(cell);
+                        if (clockNames != null) clockNames.add(cell);
                     }
                 }
             }
@@ -1377,9 +1394,22 @@ public final class ConcolicScheduler {
             }
             String method = DeclaredSymbolicInputs.declaredMethod(row);
             if (method.isEmpty()) {
+                // A CALLEE declaration names no site of its own: it is
+                // about every call of that method in the application scope,
+                // and WHICH regions actually call it is answered by the
+                // port walk over the recording
+                // (RuntimeSelectedRegionFinalizer
+                // #semanticExternalCallReturnEdges), not here.  So it
+                // admits its name in every planned region of its declared
+                // scope, and a region that never calls the callee carries
+                // the name and no port.
+                if (!DeclaredSymbolicInputs.declaredCallee(row).isEmpty()) {
+                    return everyPlannedRegion(row, catalogRegions,
+                            regionPlans);
+                }
                 throw new IOException("symbolic input selection row declares "
                         + "neither a regionId nor a static site "
-                        + "(class + method): " + row);
+                        + "(class + method) nor a callee: " + row);
             }
             String node = firstNonBlank(optionalString(row, "node"));
             String epoch = firstNonBlank(optionalString(row, "epoch"));
@@ -1425,6 +1455,35 @@ public final class ConcolicScheduler {
                         + "roots " + declaredRootRegions.keySet() + ", so "
                         + "it was planned without this declaration and must "
                         + "be re-planned with it");
+            }
+            return resolved;
+        }
+
+        /**
+         * Every planned region of one declaration's scope, for a callee.
+         *
+         * <p>Empty is legal and is not an error: a callee declaration that
+         * resolves to no region says the plan retained none in that scope,
+         * which the case's own target declaration already refuses if it
+         * matters.  The method form's DECLARED_INPUT_NOT_PLANNED refusal is
+         * about a SITE the plan must carry a region for, and a callee names
+         * no site.</p>
+         */
+        private static List<String> everyPlannedRegion(
+                JsonObject row, Set<String> catalogRegions,
+                List<RegionInstancePlan> regionPlans) {
+            String node = firstNonBlank(optionalString(row, "node"));
+            String epoch = firstNonBlank(optionalString(row, "epoch"));
+            List<String> resolved = new ArrayList<>();
+            Set<String> seen = new LinkedHashSet<>();
+            for (RegionInstancePlan plan : regionPlans == null
+                    ? Collections.<RegionInstancePlan>emptyList()
+                    : regionPlans) {
+                if (!scopeAdmits(plan.sourceKey(), node, epoch)
+                        || !catalogRegions.contains(plan.regionId())) {
+                    continue;
+                }
+                if (seen.add(plan.regionId())) resolved.add(plan.regionId());
             }
             return resolved;
         }

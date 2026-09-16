@@ -32,10 +32,17 @@ import static edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics.integra
  *   <li><b>MARKER_FLIPPED</b> -- a declared root moved inside its declared
  *       domain reaches the fatal arm.  The polarity is what makes it a
  *       finding: ordinal 0, the run as it happened, must be unsat.</li>
- *   <li><b>CLOCK_SKEW</b> -- the fatal arm is reached with no root moved,
- *       and only because a clock cell may sit elsewhere: pinning every cell
- *       to what its session read makes it unsat.  A clock that is not
- *       necessary is a decoration, never the mechanism.</li>
+ *   <li><b>CLOCK_SKEW</b> -- the fatal arm is reached with no DECLARED root
+ *       moved, and only because a clock cell may sit elsewhere: pinning
+ *       every cell to what its session read makes it unsat.  A clock that
+ *       is not necessary is a decoration, never the mechanism.  The cells
+ *       the model put elsewhere are the witness's moved roots ({@link
+ *       Claim#movedRoots}, read in {@link #movedRoots}): a clock has a
+ *       floor and no window, so no valuation pins one and the model is the
+ *       only thing that can say where it had to sit.  A MARKER moved is
+ *       MARKER_FLIPPED and is asked first -- {@link #mechanism} names the
+ *       narrowest mechanism the evidence supports, and a clock beside a
+ *       moved marker is not what made the difference.</li>
  *   <li><b>MESSAGE_PAIRING_FLIPPED</b> -- a fatal-observed path of an
  *       EXPLORED session is satisfiable at the recorded roots through
  *       attested arms, while the seed session's own disjunct is not: the
@@ -153,11 +160,23 @@ public final class ClaimPolicy {
                     Collections.<String, String>emptyMap(), false, gaps),
                     outcomes);
         }
+        // WHAT A SAT MODEL MUST CARRY BACK: the selectors, so the claim
+        // can say which disjunct it is about, and every CLOCK CELL, so it
+        // can say where the clocks had to sit.  A clock has a floor and no
+        // window, so no valuation pins one and no valuation can report one
+        // either: the only statement of where a witness put a clock is the
+        // model.  Legal spelling here and not at the query boundary --
+        // Z3.modelQuery appends the names raw, and a cell is spelled
+        // CLOCK/... .
         List<String> selectors = composition.selectors();
+        List<String> asked = new ArrayList<String>(selectors);
+        for (String cell : composition.clockCells()) {
+            asked.add(SmtLowering.legalSymbols(cell));
+        }
         for (Composer.Valuation valuation : composition.valuations()) {
             Z3.Answer answer = solver.ask(
                     composition.query(valuation.assertions()),
-                    selectors, valuation.ordinal() == 0);
+                    asked, valuation.ordinal() == 0);
             outcomes.add(new Outcome(valuation, answer,
                     selectedOf(composition, answer)));
         }
@@ -246,7 +265,7 @@ public final class ClaimPolicy {
             }
             return new Decision(Claim.of(moved,
                     outcome.valuation().ordinal(),
-                    outcome.valuation().moved(), true, gaps),
+                    movedRoots(composition, outcome), true, gaps),
                     outcomes);
         }
 
@@ -282,7 +301,7 @@ public final class ClaimPolicy {
             }
             return new Decision(Claim.of(still,
                     outcome.valuation().ordinal(),
-                    Collections.<String, String>emptyMap(), true,
+                    movedRoots(composition, outcome), true,
                     gaps), outcomes);
         }
 
@@ -297,7 +316,7 @@ public final class ClaimPolicy {
                 ClaimKind kind = mechanism(composition, solver, recorded,
                         outcomes);
                 return new Decision(Claim.of(kind, 0,
-                        Collections.<String, String>emptyMap(),
+                        movedRoots(composition, recorded),
                         kind != ClaimKind.RECORDED_FAILURE_EXPLAINED
                                 && kind != ClaimKind.NO_SUPPORTED_WITNESS,
                         gaps), outcomes);
@@ -315,7 +334,7 @@ public final class ClaimPolicy {
                         outcomes);
                 if (kind != ClaimKind.NO_SUPPORTED_WITNESS) {
                     return new Decision(Claim.of(kind, 0,
-                            Collections.<String, String>emptyMap(), true,
+                            movedRoots(composition, recorded), true,
                             gaps), outcomes);
                 }
                 gaps.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
@@ -426,6 +445,49 @@ public final class ClaimPolicy {
             return ClaimKind.RECORDED_FAILURE_EXPLAINED;
         }
         return ClaimKind.NO_SUPPORTED_WITNESS;
+    }
+
+    /**
+     * WHICH ROOTS THIS WITNESS MOVED -- the one statement of it.
+     *
+     * <p>Two halves, and the claim has to carry both or it names a
+     * mechanism it does not exhibit:</p>
+     *
+     * <ul>
+     *   <li>the roots the VALUATION moved, which the enumeration asked for
+     *       and pinned;</li>
+     *   <li>the CLOCK CELLS the model put somewhere other than the instant
+     *       its session read.  A clock has a floor and no window, so it is
+     *       free in every valuation including ordinal 0 and no valuation
+     *       can pin one; where it had to sit is stated by the model and by
+     *       nothing else.  CLOCK_SKEW was published with {@code
+     *       movedRoots {}} -- 11741 campaign #3's own claim -- which reads
+     *       as "nothing had to move" about the one finding whose whole
+     *       content is that something did.</li>
+     * </ul>
+     *
+     * <p>A cell the model did not answer for, or answered at the recorded
+     * instant, is not stated: it is a clock the witness did not need, and
+     * {@link #clockNecessary} is what says whether any of them were.  A
+     * claim that names no witness states no moved roots at all, which is
+     * why the three NO_SUPPORTED_WITNESS returns hand an empty map rather
+     * than asking this.</p>
+     */
+    private static Map<String, String> movedRoots(
+            Composer.Composition composition, Outcome outcome) {
+        Map<String, String> moved = new LinkedHashMap<String, String>();
+        if (outcome == null) return moved;
+        moved.putAll(outcome.valuation().moved());
+        Map<String, String> model = outcome.answer().values();
+        for (String cell : composition.clockCells()) {
+            Long reading = composition.clockReadings().get(cell);
+            String answered = model.get(cell);
+            if (answered == null || reading == null) continue;
+            String at = answered.trim();
+            if (at.isEmpty() || at.equals(Long.toString(reading))) continue;
+            moved.put(cell, at);
+        }
+        return moved;
     }
 
     /** This valuation, this disjunct, and what the run actually paired. */

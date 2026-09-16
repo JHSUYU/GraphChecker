@@ -2735,7 +2735,23 @@ public final class RuntimeSelectedRegionFinalizer {
                 + callId + "\n" + eventSeq;
     }
 
-    /** Exact external primitive definitions reached by explored guards. */
+    /**
+     * Exact external primitive definitions: demanded, or DECLARED.
+     *
+     * <p>Two authorities, and the declaration is not the weaker one.  The
+     * demand walk answers "which external return does an explored guard
+     * read", which is the right question for a value the failure reaches
+     * through a branch.  A CALLEE the case declares
+     * ({@code symbolic-inputs.jsonl}, {@code callee} + {@code kind})
+     * answers a different one -- "where does a symbol enter at all" -- and
+     * the two differ exactly where they matter: hdfs-11741's slice calls
+     * {@code Timer.now()} at seven sites, and the ones no guard of the
+     * explored set consumes entered every formula as a constant, which is
+     * why a DataNode-side expiry could not be symbolic at all.  A declared
+     * callee's every OBSERVED return is a port; the one thing the
+     * declaration does not buy is an activation, so an unobserved site
+     * mints nothing.</p>
+     */
     private static Set<String> semanticExternalCallReturnEdges(
             StaticProgram program, String regionId,
             List<Map<String, Object>> branchPolicies) {
@@ -2744,6 +2760,27 @@ public final class RuntimeSelectedRegionFinalizer {
             seeds.addAll(strings(branch.get("operandCells")));
         }
         Set<String> selected = new LinkedHashSet<>();
+        Set<String> declared =
+                DeclaredSymbolicInputs.configuredCallees().keySet();
+        if (!declared.isEmpty()) {
+            for (Map<String, Object> edge : program.regionGraph(regionId)) {
+                String callee = text(edge.get("invoke"));
+                if (!declared.contains(callee)) continue;
+                if (!"call_return".equals(text(edge.get("kind")))) continue;
+                if (!Boolean.TRUE.equals(booleanValue(
+                        edge.get("runtimeObserved")))) {
+                    continue;
+                }
+                if (primitiveReturnType(callee).isEmpty()) continue;
+                // A callee that is its own region publishes its own rows;
+                // minting a call-result symbol beside them would give one
+                // value two authorities, which is the same rule the demand
+                // walk applies.
+                if (!program.regionsHolding(callee).isEmpty()) continue;
+                String id = text(edge.get("id"));
+                if (!id.isEmpty()) selected.add(id);
+            }
+        }
         Map<String, List<Map<String, Object>>> incoming =
                 program.regionIncoming(regionId);
         StaticProgram.closure(seeds, cell -> {

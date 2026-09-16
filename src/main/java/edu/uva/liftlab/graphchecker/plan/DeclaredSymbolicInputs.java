@@ -7,7 +7,9 @@ import java.io.IOException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
+import java.util.Map;
 import java.util.Set;
 
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank;
@@ -104,6 +106,87 @@ public final class DeclaredSymbolicInputs {
         }
         return "<" + declaring + ": " + method + ">";
     }
+
+    /**
+     * The CALLEE one declaration row names, or {@code ""}.
+     *
+     * <p>A callee-level declaration says "every read of this method's
+     * return is a root", wherever in the application scope it is called.
+     * That is the form a CLOCK wants: {@code Timer.now()} is read at seven
+     * sites of hdfs-11741's slice and the per-method cell form named one of
+     * them per declared method, so a clock read in a method the case did
+     * not list -- {@code generateKeys}, {@code
+     * generateDataEncryptionKey} -- entered the formula as a constant.  The
+     * declaration answers "where does a symbol enter at all", and for a
+     * clock the honest answer is "wherever the program asks the clock".</p>
+     *
+     * <p>{@code kind} is the root kind the case declares for it; a row that
+     * states none states {@code ""} and the planner never decides a kind
+     * from a callee name.</p>
+     */
+    public static String declaredCallee(JsonObject row) throws IOException {
+        String callee = firstNonBlank(optionalString(row, "callee"));
+        if (callee.isEmpty()) return "";
+        if (!callee.startsWith("<") || !callee.endsWith(">")
+                || !callee.contains(": ")) {
+            throw new IOException("symbolic input selection callee is not a "
+                    + "signature: " + callee);
+        }
+        return callee;
+    }
+
+    /** The cell a callee declaration names: its return. */
+    public static String returnCell(String callee) {
+        return callee == null || callee.isEmpty() ? "" : callee + ".return";
+    }
+
+    /**
+     * Every callee the declaration file names, with the kind it declares.
+     *
+     * <p>In file order, so two rows naming one callee are one entry and the
+     * first kind stands: a callee declared twice at two kinds is a case
+     * file contradiction, and {@link #callees} refuses it rather than
+     * letting the later row win in silence.</p>
+     */
+    public static Map<String, String> callees(Path path) throws IOException {
+        Map<String, String> declared = new LinkedHashMap<>();
+        if (path == null) return declared;
+        for (JsonObject row : ArtifactIO.readJsonl(path)) {
+            String callee = declaredCallee(row);
+            if (callee.isEmpty()) continue;
+            String kind = firstNonBlank(optionalString(row, "kind"));
+            String held = declared.put(callee, kind);
+            if (held != null && !held.equals(kind)) {
+                throw new IOException("symbolic input selection declares "
+                        + callee + " at two kinds: " + held + " and " + kind);
+            }
+        }
+        return declared;
+    }
+
+    /**
+     * The declared callees of the configured case, for the port walk.
+     *
+     * <p>Same key, same refusal, same "an unset key is a case that declares
+     * none" as {@link #configured}: one file, read the one way.</p>
+     */
+    public static Map<String, String> configuredCallees() {
+        String configured = firstNonBlank(System.getProperty(PROPERTY),
+                System.getenv(ENVIRONMENT), "");
+        if (configured.isEmpty()) return Collections.emptyMap();
+        Path path = Paths.get(configured);
+        try {
+            return callees(path);
+        } catch (IOException | RuntimeException unreadable) {
+            throw new IllegalStateException(
+                    "DECLARED_INPUT_FILE_UNREADABLE: cannot read the case's "
+                            + "symbolic input declarations from " + path,
+                    unreadable);
+        }
+    }
+
+    /** The kind a CLOCK declaration states. */
+    public static final String CLOCK_KIND = "CLOCK";
 
     /** Every method signature the declaration file names, in file order. */
     public static Set<String> methods(Path path) throws IOException {

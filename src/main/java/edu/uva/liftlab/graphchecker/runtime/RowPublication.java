@@ -169,13 +169,44 @@ final class RowPublication {
             }
             String rootId = sourceId.isEmpty()
                     ? optionalString(row, "portId") : sourceId;
-            RowRuntime.rootMint(occurrence,
+            RowRuntime.rootMint(mintOccurrence(row, occurrence),
                     optionalLongInteger(row, "eventSeq", 0L), rootId, symbol,
                     kind, literal(optionalString(row, "recordedValue")),
                     optionalString(row, "domainMin"),
                     optionalString(row, "domainMax"), true);
         }
         refusedDeclarations(active, occurrence, stated);
+    }
+
+    /**
+     * The occurrence a ROOT MINT row is addressed at.
+     *
+     * <p>The activation of the region whose plan OWNS the mint, which the
+     * mint stated when it ran ({@code ConcolicRegionRuntime.ActiveRegion
+     * #mintOccurrence}) because that is where the region stack was live.
+     * The publishing activation is not the answer: regions nest, and a mint
+     * site inside a method two regions both hold runs under whichever
+     * activation happened to be innermost, so the seed and a replay
+     * addressed one mint at two occurrences and the focus row's rootMints
+     * matched neither.</p>
+     *
+     * <p>A row the mint could not address states {@code ""} and is
+     * published where it was published, which is the same rule the
+     * declaring-region walk itself ends on.  A stamp this reader cannot
+     * parse is NAMED: it is a spelling the runtime wrote and nothing else
+     * could, so reading past it would hide a bug in one of the two.</p>
+     */
+    private static OccurrenceAddress mintOccurrence(
+            JsonObject row, OccurrenceAddress publishing) {
+        String stated = optionalString(row, "mintOccurrence");
+        if (stated.isEmpty()) return publishing;
+        OccurrenceAddress owner = OccurrenceAddress.parse(stated);
+        if (owner != null) return owner;
+        RowRuntime.gap(GapKind.DECLARATION_MISSING, GapClass.DIAGNOSTIC,
+                stated, "a mint stated an occurrence this row reader cannot "
+                        + "parse, so it is published at the activation that "
+                        + "held it: " + publishing.render());
+        return publishing;
     }
 
     /**

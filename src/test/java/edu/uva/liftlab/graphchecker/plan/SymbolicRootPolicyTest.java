@@ -305,7 +305,56 @@ public class SymbolicRootPolicyTest {
         activation.put("regionId", EXPIRE);
         RuntimeSelectedRegionFinalizer.refuseUnactivatedDeclaredInputs(
                 declared, Collections.singletonList(activation));
+
+        // CLK: A CALLEE DECLARATION IS ABOUT NO SITE.  It says every read of
+        // that method's return is a root, wherever in the application scope
+        // it is called, so it declares the RETURN cell in every planned
+        // region of its scope -- and `kind: CLOCK` is the same statement
+        // `clock: true` is for the cell form.  The per-method cell form
+        // named ONE site per declared method, and hdfs-11741's slice calls
+        // Timer.now() at seven: the reads in generateKeys and
+        // generateDataEncryptionKey entered every formula as constants.
+        ConcolicScheduler.SymbolicInputSelection everywhere = read(
+                "{\"callee\":\"<org.apache.hadoop.util.Timer: long now()>\","
+                        + "\"kind\":\"CLOCK\"}");
+        for (String id : Arrays.asList(NN, NN_TWIN, DN, EXPIRE)) {
+            assertTrue("a declared callee's return is a root in " + id,
+                    everywhere.declares(id, CLOCK_CELL));
+        }
+        assertTrue("and the case declared it a clock by its kind",
+                everywhere.select(NN, proposals()).get(0).getAsJsonObject()
+                        .get(InputActionCatalog.DECLARED_WALL_CLOCK)
+                        .getAsBoolean());
+        // A node scope still narrows it, because a declaration's scope is
+        // one rule whatever it names.
+        ConcolicScheduler.SymbolicInputSelection onDn = read(
+                "{\"callee\":\"<org.apache.hadoop.util.Timer: long now()>\","
+                        + "\"kind\":\"CLOCK\",\"node\":\"dn0\"}");
+        assertTrue(onDn.declares(DN, CLOCK_CELL));
+        assertFalse("and not the regions planned elsewhere",
+                onDn.declares(NN, CLOCK_CELL));
+        // A callee stated twice at two kinds is a contradiction in the case
+        // file, refused by name rather than letting the later row win.
+        Path twice = folder.newFolder().toPath()
+                .resolve("symbolic-inputs.jsonl");
+        Files.write(twice, ("{\"callee\":\"" + TIMER_NOW
+                + "\",\"kind\":\"CLOCK\"}\n{\"callee\":\"" + TIMER_NOW
+                + "\",\"kind\":\"INTEGRAL\"}\n")
+                .getBytes(StandardCharsets.UTF_8));
+        try {
+            DeclaredSymbolicInputs.callees(twice);
+            fail("one callee was admitted at two kinds");
+        } catch (IOException refused) {
+            assertTrue(refused.getMessage(),
+                    refused.getMessage().contains("at two kinds"));
+        }
+        assertEquals("and the cell a callee declaration names is its return",
+                CLOCK_CELL, DeclaredSymbolicInputs.returnCell(TIMER_NOW));
     }
+
+    /** The callee hdfs-11741 and hdfs-17897 declare a CLOCK. */
+    private static final String TIMER_NOW =
+            "<org.apache.hadoop.util.Timer: long now()>";
 
     /** The skeleton PLAN publishes for hdfs-11741's declared clock site. */
     private static Map<String, Object> declaredRootSkeleton() {

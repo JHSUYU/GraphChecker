@@ -33,6 +33,7 @@ public final class SessionReader {
     private final List<RootMintRow> roots;
     private final List<TargetRow> targets;
     private final List<GapRow> gaps;
+    private final List<ObligationResult> obligations;
     private final ExpressionTable expressions;
     private final SessionManifest manifest;
     private final String incomplete;
@@ -43,7 +44,9 @@ public final class SessionReader {
                           List<ExportRow> exports, List<AttachRow> attaches,
                           List<WriteRow> writes, List<ReadRow> reads,
                           List<RootMintRow> roots, List<TargetRow> targets,
-                          List<GapRow> gaps, ExpressionTable expressions,
+                          List<GapRow> gaps,
+                          List<ObligationResult> obligations,
+                          ExpressionTable expressions,
                           SessionManifest manifest, String incomplete) {
         this.manifest = manifest;
         this.incomplete = incomplete;
@@ -57,6 +60,7 @@ public final class SessionReader {
         this.roots = Collections.unmodifiableList(roots);
         this.targets = Collections.unmodifiableList(targets);
         this.gaps = Collections.unmodifiableList(gaps);
+        this.obligations = Collections.unmodifiableList(obligations);
         this.expressions = expressions;
     }
 
@@ -96,6 +100,8 @@ public final class SessionReader {
         List<TargetRow> targets = partial.rows(dir.targets(),
                 RowCodec::readTarget);
         List<GapRow> gaps = partial.rows(dir.gaps(), RowCodec::readGap);
+        List<ObligationResult> obligations = partial.rows(dir.obligations(),
+                RowCodec::readObligationResult);
         ExpressionTable expressions;
         try {
             expressions = RowCodec.readExpressions(dir.expressions());
@@ -111,8 +117,8 @@ public final class SessionReader {
             manifest = null;
         }
         return new SessionReader(dir, activations, decisions, exports,
-                attaches, writes, reads, roots, targets, gaps, expressions,
-                manifest, partial.reason);
+                attaches, writes, reads, roots, targets, gaps, obligations,
+                expressions, manifest, partial.reason);
     }
 
     /** One session's read, and the first file of it that would not read. */
@@ -181,6 +187,18 @@ public final class SessionReader {
 
     public List<TargetRow> targets() {
         return targets;
+    }
+
+    /**
+     * WHAT THIS REPLAY SETTLED, one row per obligation it ran.
+     *
+     * <p>The verdict, and the only statement of it a reader of the corpus
+     * may take: the replay owns whether the focused prefix reproduced and
+     * the flipped decision was taken.  A SEED session states none -- it was
+     * asked nothing -- and none is not a verdict.</p>
+     */
+    public List<ObligationResult> obligations() {
+        return obligations;
     }
 
     public ExpressionTable expressions() {
