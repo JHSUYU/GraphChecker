@@ -505,9 +505,7 @@ public final class StaticScopeMap {
                     || !site.startsWith(named.vmSite + "#")) {
                 continue;
             }
-            String stated = descriptorOfCellType(named.cell);
-            if (javaType != null && !javaType.isEmpty() && !stated.isEmpty()
-                    && !stated.equals(javaType)) {
+            if (!sameType(descriptorOfCellType(named.cell), javaType)) {
                 continue;
             }
             carriers.add(named.carrier);
@@ -659,6 +657,47 @@ public final class StaticScopeMap {
         }
         return descriptor.append(')').append(descriptorOf(returnType))
                 .toString();
+    }
+
+    /**
+     * Whether the type a ROW states and the type this MAP states can be
+     * the same type.
+     *
+     * <p>Disagreement, not equality.  The map always spells the field's
+     * exact descriptor; a row spells whatever the VM had -- {@code I},
+     * {@code Lorg/…;}, the bare internal name, or {@code L}, which says
+     * "a reference" and names no class.  Read as equality, every MAP write
+     * row of 11741 -- all 36 of them are {@code L}, because the value a
+     * container store writes is the container -- disagreed with
+     * {@code java.util.Map allKeys}, {@code carriersAt} answered nothing,
+     * and the anchor's own map had no carrier and so no static writer:
+     * {@code DECLARATION_MISSING}, and nn0's expiry branch unreachable
+     * even once the read was demanded.  What two types really disagree
+     * about is the SORT, and the class where both sides name one.</p>
+     */
+    private static boolean sameType(String stated, String javaType) {
+        String row = rowDescriptor(javaType);
+        if (stated.isEmpty() || row.isEmpty()) return true;
+        if (stated.charAt(0) != row.charAt(0)) return false;
+        // "L" alone is a reference whose class the row did not state, and a
+        // class nothing names cannot be the wrong one.
+        if (row.length() == 1 || stated.length() == 1) return true;
+        return stated.equals(row);
+    }
+
+    /**
+     * One ROW's Java type as a descriptor, keeping what it left unstated.
+     *
+     * <p>A descriptor stays one, a bare internal or source class name
+     * becomes one, and the bare sort letters -- {@code L} above all --
+     * stay themselves, because {@code L} is the row saying "a reference"
+     * and not the class {@code L}.</p>
+     */
+    private static String rowDescriptor(String javaType) {
+        String type = javaType == null ? "" : javaType.trim();
+        if (type.isEmpty() || type.length() == 1) return type;
+        if (type.charAt(0) == '[' || type.endsWith(";")) return type;
+        return descriptorOf(type.replace('/', '.'));
     }
 
     /** The descriptor of the type a declared cell holds, or "". */

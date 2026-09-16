@@ -982,6 +982,113 @@ public class ExploreTest {
                     ClosurePlanner.taskId(undeclared).equals(flip.taskId()));
         }
 
+        // CLOSURE-V2, the v_C rule: the same growth where the demanded read
+        // is a CONTAINER.  The join INLINES the version a read observed, and
+        // a container version is lowered once and NAMED, so an anchor guard
+        // `allKeys.get(id) == null` stands in the text as one
+        // container_dag__ name.  Behind it is the chain of PUTs, whose base
+        // is the empty map; the read's OWN symbol is in neither.  Matching
+        // rows against the names the text SAYS therefore demanded nothing of
+        // the anchor's map, writers() was never asked about it, and on 11741
+        // no NameNode occurrence could enter the closure at all -- wave 0
+        // had the anchor's own guard to flip and nothing else.  What a term
+        // RESTS ON includes the state the subterm is the value of.
+        Path inlined = tree.newFolder("closure-container-demand").toPath();
+        OccurrenceAddress expiring = occurrence("hdfs-case/nn0",
+                "REGION.expiry", CausalContext.of(
+                        Role.of("KEY_MANAGER_TICK"), "", 2),
+                "o.a.h.h.s.b.BlockManager#run#19");
+        Endpoint mapRead = at(target, Endpoint.stateSite(
+                        "BlockTokenSecretManager", "retrieveDataEncryptionKey",
+                        437, false),
+                "BlockTokenSecretManager#retrieveDataEncryptionKey#437");
+        String mapState = "MAP_STATE/" + allKeys.owner() + "#allKeys@v5";
+        JsonObject chain = relation("ASSOCIATIVE", "PUT", "java/util/HashMap",
+                relation("ASSOCIATIVE", "SNAPSHOT_BASE", "java/util/HashMap",
+                        relation("ASSOCIATIVE", "STATE", "java/util/HashMap",
+                                leaf("M_L'java/util/HashMap'_3",
+                                        "java/util/HashMap"))),
+                literal(119992), leaf("M_HOFF_KEY", "I"));
+        Session container = new Session(inlined, "s-seed");
+        container.activation(target, false);
+        container.activation(writer, false);
+        container.activation(expiring, false);
+        container.expression("e.map", chain);
+        container.expression("EXPR.0000000000000005", binary("==",
+                guardedRead(allKeys, 5L, "L", relation("ASSOCIATIVE", "READ",
+                        "L", chain, literal(119992))),
+                leaf("N", "")));
+        container.write(at(writer, Endpoint.stateSite(
+                        "BlockTokenSecretManager", "addKeys", 12, true),
+                        "BlockTokenSecretManager#addKeys#12"), allKeys, 5L,
+                "e.map", "L");
+        container.read(mapRead, allKeys, 5L, mapState, "119992");
+        container.target(target, "BlockTokenSecretManager#u120",
+                "EXPR.0000000000000005");
+        container.flush();
+        StaticScopeMap ofAllKeys = StaticScopeMap.read(scopeMap(inlined,
+                targetSite("REGION.target", "BlockTokenSecretManager#u120",
+                        "BlockTokenSecretManager#u8"),
+                scopeSite(StaticScopeMap.WRITE_SITE, "REGION.addkeys",
+                        "BlockTokenSecretManager#u27",
+                        "BlockTokenSecretManager#addKeys",
+                        "<example.Manager: java.util.Map allKeys>",
+                        "<example.Manager: java.util.Map allKeys>", "",
+                        "BlockTokenSecretManager#u21"),
+                scopeSite(StaticScopeMap.WRITE_SITE, "REGION.expiry",
+                        "BlockTokenSecretManager#u16",
+                        "BlockTokenSecretManager#removeExpiredKeys",
+                        "<example.Manager: java.util.Map allKeys>",
+                        "<example.Manager: java.util.Map allKeys>", "",
+                        "BlockTokenSecretManager#u15")));
+        Corpus vC = Corpus.read(inlined, null);
+        SmtLowering lowering = vC.lowering("s-seed");
+        String mapGuard = lowering.statedTerm("EXPR.0000000000000005",
+                "test");
+        assertTrue("the container version stands in the text as one name: "
+                + mapGuard, mapGuard.contains("container_dag__"));
+        Set<String> says = lowering.reachedSymbols(mapGuard,
+                new LinkedHashSet<String>());
+        assertFalse("and the text does not SAY the read behind it, which is "
+                        + "what a query binds its variables by: " + says,
+                says.contains(mapState));
+        Set<String> restsOn = new LinkedHashSet<String>();
+        lowering.reachedSymbols(mapGuard, new LinkedHashSet<String>(),
+                restsOn);
+        assertTrue("it RESTS ON it, which is what the closure demands: "
+                + restsOn, restsOn.contains(mapState));
+        ClosurePlanner.Plan demanded = ClosurePlanner.plan(vC, target,
+                ofAllKeys);
+        Map<String, String> whyMap = new LinkedHashMap<String, String>();
+        Map<String, Set<String>> flipsOf =
+                new LinkedHashMap<String, Set<String>>();
+        for (Task task : demanded.tasks) {
+            whyMap.put(task.focused().render(),
+                    demanded.why.get(task.taskId()));
+            flipsOf.put(task.focused().render(),
+                    demanded.flipSites.get(task.taskId()));
+        }
+        assertEquals("the writer of the version the map read observed is a "
+                        + "closure member: " + whyMap,
+                ClosurePlanner.CLOSURE_MEMBER, whyMap.get(writer.render()));
+        assertEquals("and the region that COULD have expired a key out of "
+                        + "that same map joins through the static map -- the "
+                        + "flip 11741 needs, and no row connects it: "
+                        + whyMap, ClosurePlanner.STATIC_CANDIDATE_WRITER,
+                whyMap.get(expiring.render()));
+        assertTrue("with the guard of its write as the branch a wave may "
+                        + "flip there: " + flipsOf,
+                flipsOf.get(expiring.render())
+                        .contains("BlockTokenSecretManager#u15"));
+        for (GapRow gap : demanded.gaps) {
+            // The row states the value it wrote as a bare reference and the
+            // map states the field's descriptor; read as equality, every
+            // container write row disagreed with its own cell and the
+            // location had no carrier at all.
+            assertFalse("and the cell's carrier is named: " + gap.detail(),
+                    gap.kind() == GapKind.DECLARATION_MISSING);
+        }
+
         // Two reads of ONE location at one endpoint id that observed
         // DIFFERENT versions are two events the identity cannot separate --
         // a read the runtime does not stand at carries no site index.  That
@@ -1026,6 +1133,77 @@ public class ExploreTest {
             assertFalse("neither read opens a slot",
                     slot.consumer.id().equals(twice.id()));
         }
+    }
+
+    /** One symbolic leaf, as the VM serializes it ({@code "N"} is null). */
+    private static JsonObject leaf(String symbol, String javaType) {
+        JsonObject node = new JsonObject();
+        node.addProperty("_type", "SymbolExpression");
+        node.addProperty("_exp", symbol);
+        node.addProperty("_java_type", javaType);
+        return node;
+    }
+
+    /** One int literal, as the VM serializes it. */
+    private static JsonObject literal(long value) {
+        JsonObject node = new JsonObject();
+        node.addProperty("_type", "ConstExpr");
+        node.addProperty("_java_type", "I");
+        node.addProperty("_exp", "Y_I_" + value);
+        return node;
+    }
+
+    private static JsonObject binary(String operator, JsonObject left,
+                                     JsonObject right) {
+        JsonObject node = new JsonObject();
+        node.addProperty("_type", "BinaryExpression");
+        node.addProperty("_op", operator);
+        node.add("_left", left);
+        node.add("_right", right);
+        return node;
+    }
+
+    /** One container relation, as the VM serializes it. */
+    private static JsonObject relation(String shape, String operation,
+                                       String javaType, JsonObject receiver,
+                                       JsonObject... arguments) {
+        JsonObject node = new JsonObject();
+        node.addProperty("_type", "ContainerRelation");
+        node.addProperty("shape", shape);
+        node.addProperty("operation", operation);
+        node.addProperty("_java_type", javaType);
+        if (receiver != null) node.add("receiver", receiver);
+        JsonArray list = new JsonArray();
+        for (JsonObject argument : arguments) list.add(argument);
+        node.add("arguments", list);
+        return node;
+    }
+
+    /**
+     * One guarded read: the location, the version it observed, and the
+     * PROJECTION the execution performed on that version.
+     *
+     * <p>The shape 11741's anchor guard has -- the map state the write log
+     * covers, and the one entry this read took out of it.</p>
+     */
+    private static JsonObject guardedRead(LocationId location, long version,
+                                          String javaType,
+                                          JsonObject projection) {
+        JsonObject where = new JsonObject();
+        where.addProperty("locationKind", location.kind().name());
+        where.addProperty("ownerSymRid", location.owner());
+        where.addProperty("slot", location.slot());
+        JsonObject observed = new JsonObject();
+        observed.addProperty("fieldVersionId", version);
+        observed.addProperty("versionKind", "STATE_PUT");
+        if (projection != null) observed.add("expression", projection);
+        JsonObject node = new JsonObject();
+        node.addProperty("_type", "ReadFromExpression");
+        node.addProperty("_java_type", javaType);
+        node.addProperty("expressionAuthority", "VM_GUARDED_READ_FROM_V1");
+        node.add("location", where);
+        node.add("observedVersion", observed);
+        return node;
     }
 
     /** The slots one reconciliation opened, for an assertion to look at. */
@@ -1398,8 +1576,14 @@ public class ExploreTest {
 
         private void write(Endpoint endpoint, LocationId location,
                            long version, String ref) {
+            write(endpoint, location, version, ref, "I");
+        }
+
+        /** The same, at the Java type the runtime states for the value. */
+        private void write(Endpoint endpoint, LocationId location,
+                           long version, String ref, String javaType) {
             writes.add(WriteRow.of(sessionId, ++seq, endpoint, location,
-                    version, ref, "I"));
+                    version, ref, javaType));
         }
 
         private void read(Endpoint endpoint, LocationId location,
@@ -1419,6 +1603,11 @@ public class ExploreTest {
             expression.addProperty("_exp", symbol);
             expression.addProperty("_java_type", javaType);
             expressions.put(ref, expression);
+        }
+
+        /** One expression of the session's table, as the VM built it. */
+        private void expression(String ref, JsonObject node) {
+            expressions.put(ref, node);
         }
 
         /** One literal the VM recorded as a delivered constant. */

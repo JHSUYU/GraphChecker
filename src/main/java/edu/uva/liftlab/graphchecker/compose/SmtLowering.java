@@ -104,6 +104,30 @@ public final class SmtLowering extends VmLoweringCore {
          * occurrence for {@code INSTANCE/2#24} refusing each other.</p>
          */
         Set<String> mintedReadSymbols(long version);
+
+        /**
+         * The symbols this session's READ ROWS state for reads of one
+         * location at one version.
+         *
+         * <p>The join INLINES: a read of a version the write log covers
+         * lowers to the writer's own propagation, so the read's own symbol
+         * -- the name the ROW gives what the location held at that version
+         * -- stands nowhere in the lowered text.  For a scalar that is
+         * harmless, because the inlined chain ends at the recording's
+         * leaves; for a CONTAINER it is not, because the chain is named
+         * once as a {@code container_dag__} and the state it stands for is
+         * a version, not a leaf.  This is the row that names it, so that
+         * {@link #reachedSymbols} can answer "which recorded state is this
+         * subterm the value of" out of the recording rather than by
+         * re-spelling the runtime's name.</p>
+         *
+         * <p>Placeholder rows are not here: a mint states a symbol for the
+         * version the MINT created ({@link #mintedReadSymbols}), and its
+         * {@code observedVersion} is the last real write it was laid over
+         * -- naming it here would put the minted value on the write's own
+         * readers.</p>
+         */
+        Set<String> readSymbols(String locationKey, long version);
     }
 
     private static final SessionJoin NO_JOIN = new SessionJoin() {
@@ -114,6 +138,11 @@ public final class SmtLowering extends VmLoweringCore {
 
         @Override
         public Set<String> mintedReadSymbols(long version) {
+            return Collections.<String>emptySet();
+        }
+
+        @Override
+        public Set<String> readSymbols(String locationKey, long version) {
             return Collections.<String>emptySet();
         }
     };
@@ -197,6 +226,17 @@ public final class SmtLowering extends VmLoweringCore {
     private final Map<String, String> opaqueIdentities =
             new LinkedHashMap<String, String>();
     private final Map<String, SharedTerm> sharedTerms =
+            new LinkedHashMap<String, SharedTerm>();
+    /**
+     * The same subterms by the NAME they were minted under.
+     *
+     * <p>{@link #sharedTerms} is keyed by the digest of the definition,
+     * which is what dedupes them; every reader asks the other question --
+     * "what stands behind this name" -- and each rebuilt its own map or
+     * scanned the values to answer it.  One index, built where the name is
+     * minted.</p>
+     */
+    private final Map<String, SharedTerm> sharedByName =
             new LinkedHashMap<String, SharedTerm>();
     private final Set<String> unsupported = new LinkedHashSet<String>();
     private final Map<String, String> unsupportedDetail =
@@ -327,6 +367,21 @@ public final class SmtLowering extends VmLoweringCore {
         }
         final Map<Long, Set<String>> minted =
                 mintedReadIndex(session.reads());
+        final Map<String, Set<String>> observed =
+                new LinkedHashMap<String, Set<String>>();
+        for (ReadRow read : session.reads()) {
+            if (read == null || read.mintVersion() >= 0L) continue;
+            if (read.observedVersion() < 0L) continue;
+            if (read.symbol() == null || read.symbol().isEmpty()) continue;
+            String at = locationKey(read.location()) + "#"
+                    + read.observedVersion();
+            Set<String> symbols = observed.get(at);
+            if (symbols == null) {
+                symbols = new LinkedHashSet<String>();
+                observed.put(at, symbols);
+            }
+            symbols.add(read.symbol());
+        }
         return new SessionJoin() {
             @Override
             public JsonElement writeExpression(String locationKey,
@@ -340,6 +395,14 @@ public final class SmtLowering extends VmLoweringCore {
             public Set<String> mintedReadSymbols(long version) {
                 Set<String> symbols =
                         minted.get(Long.valueOf(version));
+                return symbols == null
+                        ? Collections.<String>emptySet() : symbols;
+            }
+
+            @Override
+            public Set<String> readSymbols(String locationKey, long version) {
+                Set<String> symbols =
+                        observed.get(locationKey + "#" + version);
                 return symbols == null
                         ? Collections.<String>emptySet() : symbols;
             }
@@ -914,11 +977,11 @@ public final class SmtLowering extends VmLoweringCore {
             JsonElement written = join.writeExpression(key, version);
             if (written != null && !written.isJsonNull()) {
                 JsonElement projected = observedVersionExpression(expression);
-                return element(dispatch(projected != null
+                return observing(element(dispatch(projected != null
                                         && !projected.isJsonNull()
                                         ? projected : written, expected,
                                 origin + ":join"), expression, location,
-                        key, version, expected, origin);
+                        key, version, expected, origin), key, version);
             }
             String minted = mintedReadSymbol(join, version);
             if (minted == null) {
@@ -946,6 +1009,32 @@ public final class SmtLowering extends VmLoweringCore {
                 "no write of this location at this version in this session, "
                         + "and the recording states no value it returned",
                 expected);
+    }
+
+    /**
+     * The state a NAMED subterm is the value of, kept on the name.
+     *
+     * <p>The join inlines, so a read of a version the write log covers
+     * leaves no trace of the read in the text -- and where the joined value
+     * is a container, the text is one {@code container_dag__} name whose
+     * body holds the mutation chain and nothing that names the cell.  The
+     * read row is what names it, so the row's symbol is recorded ON the
+     * subterm the read produced, which is where {@link #reachedSymbols}
+     * finds it.  A scalar join is inlined down to the recording's own
+     * leaves and names nothing here: this is the one thing a name can hide
+     * that a body cannot show.</p>
+     *
+     * <p>A subterm two reads produce is the SAME closed term, so it is the
+     * value of both and carries both rows; nothing is chosen between
+     * them.</p>
+     */
+    private Term observing(Term value, String key, long version) {
+        if (value == null) return value;
+        SharedTerm shared = sharedByName.get(value.text);
+        if (shared != null) {
+            shared.states.addAll(join.readSymbols(key, version));
+        }
+        return value;
     }
 
     /**
@@ -1280,6 +1369,21 @@ public final class SmtLowering extends VmLoweringCore {
         private final String name;
         private final Sort sort;
         private final String body;
+        /**
+         * The recorded STATE this subterm is the value of: the symbols the
+         * read rows of the version it was lowered from state.
+         *
+         * <p>Not in the body and not derivable from it.  A container
+         * version is the chain of the mutations that built it, and the
+         * chain's own base is an empty container as often as it is a
+         * symbol -- 11741's {@code allKeys} is six {@code PUT}s over a
+         * {@code SNAPSHOT_BASE} -- so the body names the values that were
+         * put in and nothing that names the CELL they were put in.  The
+         * read that produced the subterm is what names it, and this is
+         * where that row's symbol is kept, so that a term reaching the
+         * subterm reaches the state the recording read.</p>
+         */
+        private final Set<String> states = new LinkedHashSet<String>();
 
         private SharedTerm(String name, Sort sort, String body) {
             this.name = name;
@@ -1316,6 +1420,7 @@ public final class SmtLowering extends VmLoweringCore {
             held = new SharedTerm(symbols.mint("container_dag__", identity,
                     24), sort, value.text);
             sharedTerms.put(digest, held);
+            sharedByName.put(held.name, held);
         }
         return new ContainerSmtCodec.Term(held.name, value.sort,
                 value.integralWidth, value.indexedSize);
@@ -1462,11 +1567,7 @@ public final class SmtLowering extends VmLoweringCore {
      * which is more than a declaration, not less.</p>
      */
     public boolean defined(String name) {
-        if (declared(name)) return true;
-        for (SharedTerm shared : sharedTerms.values()) {
-            if (shared.name.equals(name)) return true;
-        }
-        return false;
+        return declared(name) || sharedByName.containsKey(name);
     }
 
     /** The names this query declares, at the sorts it declares them. */
@@ -1667,28 +1768,23 @@ public final class SmtLowering extends VmLoweringCore {
     public List<Declaration> reachedBy(Iterable<String> texts) {
         List<Declaration> ordered = new ArrayList<Declaration>();
         Set<String> done = new LinkedHashSet<String>();
-        Map<String, SharedTerm> byName = new LinkedHashMap<String, SharedTerm>();
-        for (SharedTerm shared : sharedTerms.values()) {
-            byName.put(shared.name, shared);
-        }
         if (texts != null) {
             for (String text : texts) {
-                reach(text, byName, done, ordered, 0);
+                reach(text, done, ordered, 0);
             }
         }
         return ordered;
     }
 
-    private void reach(String text, Map<String, SharedTerm> byName,
-                       Set<String> done, List<Declaration> ordered,
-                       int depth) {
+    private void reach(String text, Set<String> done,
+                       List<Declaration> ordered, int depth) {
         if (text == null || text.isEmpty() || depth > 512) return;
         for (String token : names(text)) {
             if (!done.add(token)) continue;
-            SharedTerm shared = byName.get(token);
+            SharedTerm shared = sharedByName.get(token);
             if (shared != null) {
                 // Its own dependencies first: a define-fun may name another.
-                reach(shared.body, byName, done, ordered, depth + 1);
+                reach(shared.body, done, ordered, depth + 1);
                 ordered.add(new Declaration(shared.name, shared.sort.smt,
                         shared.body));
                 continue;
@@ -1791,25 +1887,51 @@ public final class SmtLowering extends VmLoweringCore {
      * of the recording's, so it is walked through and never reported.</p>
      */
     public Set<String> reachedSymbols(String text, Set<String> into) {
-        Map<String, SharedTerm> byName =
-                new LinkedHashMap<String, SharedTerm>();
-        for (SharedTerm shared : sharedTerms.values()) {
-            byName.put(shared.name, shared);
-        }
-        reachedSymbols(text, byName, new LinkedHashSet<String>(), into, 0);
+        return reachedSymbols(text, into, null);
+    }
+
+    /**
+     * The same walk, also collecting the recorded STATE behind each name.
+     *
+     * <p>Two facts about one term, and one walk that tells them apart.
+     * {@code into} is what the term SAYS: the recording's names, reachable
+     * through the bodies of the subterms it names, which is what a caller
+     * binding the variables of a query wants -- a variable for a symbol the
+     * text never mentions is a declaration nothing constrains, and it took
+     * 11741's anchor obligation from {@code SAT_MODEL_READY} to a refusal
+     * on the sort of a map its query does not name.  {@code states} is what
+     * the term RESTS ON and does not say: the version a named container
+     * subterm is the value of ({@link SharedTerm#states}), which the join
+     * inlined.  The closure planner asks both -- it is asking what the
+     * failure can depend on -- and passes one set for both.</p>
+     */
+    public Set<String> reachedSymbols(String text, Set<String> into,
+                                      Set<String> states) {
+        reachedSymbols(text, new LinkedHashSet<String>(), into, states, 0);
         return into;
     }
 
-    private void reachedSymbols(String text,
-                                Map<String, SharedTerm> byName,
-                                Set<String> seen, Set<String> into,
+    private void reachedSymbols(String text, Set<String> seen,
+                                Set<String> into, Set<String> states,
                                 int depth) {
         if (text == null || text.isEmpty() || depth > 512) return;
         for (String name : names(text)) {
             if (BUILTIN.contains(name) || !seen.add(name)) continue;
-            SharedTerm shared = byName.get(name);
+            SharedTerm shared = sharedByName.get(name);
             if (shared != null) {
-                reachedSymbols(shared.body, byName, seen, into, depth + 1);
+                // A container subterm is the value of a recorded STATE, and
+                // that state is the subterm's own fact and not a name in its
+                // body: the chain the dag holds is the mutations, whose base
+                // is as often the empty container as a symbol.  11741's
+                // anchor guard is exactly that -- six PUTs over a
+                // SNAPSHOT_BASE -- so the body named the five handoffs that
+                // were put in and nothing that named the cell, the anchor's
+                // own read row was ADMISSION_GAP, writers() was never asked
+                // for it, and no NameNode occurrence could enter the
+                // closure.  The v_C rule (CLOSURE-V2): a term that reaches
+                // the dag rests on the state the dag stands for.
+                if (states != null) states.addAll(shared.states);
+                reachedSymbols(shared.body, seen, into, states, depth + 1);
                 continue;
             }
             // A name this lowering MINTED means what the query says it
