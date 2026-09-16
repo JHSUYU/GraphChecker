@@ -1,78 +1,63 @@
-# HDFS-11741 campaign
+# HDFS-11741
 
-The workload retains the original HDFS-11741 behavior: the Balancer caches a
-DataEncryptionKey and does not check its expiry on reuse. The Hadoop checkout
-ports that cache predicate to the same current tracing and RPC interfaces used
-by the other experiments.
+## The bug
 
-The Balancer caches a key before two ordinary NameNode key rotations. DataNodes
-refresh through the block-key RPC. The manual symbolic roots are the NameNode's
-key id, time and expiry, and they come from two authorities. Two are minted by
-configured-source hooks in `BlockTokenSecretManager.updateKeys`:
-`CausynthSymbolicSource.symbolize("HDFS.BLOCK_KEY.SERIAL_NO", this, ...)` roots
-`<org.apache.hadoop.hdfs.security.token.block.BlockTokenSecretManager: int
-serialNo>`, the counter each new `BlockKey` takes its id from, and
-`CausynthSymbolicSource.symbolize("HDFS.BLOCK_KEY.EXPIRY_DATE", nextKey, ...)`
-roots `<org.apache.hadoop.security.token.delegation.DelegationKey: long
-expiryDate>` (the field `BlockKey` inherits). A hook site owns its field: every
-competing field-read candidate for it is stamped
-`CONFIGURED_SYMBOLIC_SOURCE_FIELD_OWNED` and left concrete, so each root is
-minted once, at its hook -- which is why neither field is listed in
-`symbolic-inputs.jsonl`. The third root, the clock
-`<org.apache.hadoop.util.Timer: long now()>.return`, has no hook and is still
-declared there -- by the two static sites it is read at,
-`BlockTokenSecretManager.updateKeys()` and `.addKeys(...)`, which PLAN resolves
-to whichever regions cover them. The key id *on the wire* is not a fourth root: it is a
-*propagated* value carrying the NameNode's minted `serialNo`, moved by the
-`block-key-id` and `data-encryption-key-id` flows in
-`communication-mappings.jsonl`, whose declared cut ports are tracked and
-mint nothing: the consumer reuses the producer's propagated expression.
-`allKeys` is not modelled at region entry at all -- the map becomes symbolic
-only where a root-derived value is put into it, and the VM then carries the
-INITIAL snapshot base inside the expression the reader gets back.
-There is no Boolean fault marker in this workload --
-`/opt/hadoop-hdfs-11741` contains no `Debug.makeSymbolicBoolean` anywhere -- so
-the only thing that can open the target branch is the symbolic clock. The
-custom JDK propagates the root expressions through the fixed sequence of
-replies into the Balancer and DataNode state. Consumer anchors retain each
-receive boundary, and selected shared reads retain bounded GuardedRead
-snapshots of their writer expressions. The target is a DataNode lookup that
-cannot find the Balancer's cached key.
+[HDFS-11741](https://issues.apache.org/jira/browse/HDFS-11741). The Balancer caches a
+`DataEncryptionKey` and does not check its expiry before reusing it. The workload keeps that
+original behaviour: the Balancer caches a key, the NameNode performs two ordinary block-key
+rotations, the DataNodes refresh through the block-key RPC, and the DataNode the Balancer
+then talks to can no longer find the key id the Balancer presents. The target is that lookup
+miss on the DataNode. Whether it happens is a disagreement between two nodes about which key
+set is current — an expiry decided against one node's clock while another node's key map has
+already moved on — so the witness needs two clock-driven flips on two nodes, recorded
+separately and joined in the SMT. There is no Boolean fault marker anywhere in this
+workload, so nothing but the declared clock and the block-key serial can open the target arm.
 
-`declared_target_occurrence` in `workflow.properties` names which occurrence
-of that lookup the campaign is about, as a full occurrence address. The owner
-assumes the failing instance is known; a recording is the healthy path by
-nature, so no occurrence is distinguished by the corpus and the case names the
-first observed one (rule: first observed, full address). lane11741h observed
-four -- `balance-block#1` and `#2`, on dn0 and on dn1 -- and composing all
-four cost 76 minutes; naming one turns that into one composition. The family
-and k alone would not do: both DataNodes answer `balance-block#1`.
+## What this case declares
 
-The causal graph selects this closure and its instrumentation sites. Each
-region contributes its own path condition; the composer recursively merges the
-consumer-anchor families and directly lowers their propagated expressions.
-Retained key-update loops use the configured fixed unroll, while every repeated
-RPC and shared-state access keeps its boundary occurrence and candidate writer
-versions.
+| Declaration | Where | What it says |
+| --- | --- | --- |
+| the failure | `@CausynthExceptionTarget` in the Hadoop checkout; `target.yaml` | `exception_target_id: hdfs-11741` |
+| the occurrence | `declared_target_occurrence` in `workflow.properties` | `hdfs-11741/dn1#epoch0/region/REGION.53092d3e-263d-3a18-b7a5-ae5b437d96de@hdfs-11741/balancer#epoch0/balance-block#1` — the campaign is target-directed, and both DataNodes answer `balance-block#1`, so the family and k alone would name two |
+| clock roots | `symbolic-inputs.jsonl`, three callee-level rows | `<org.apache.hadoop.util.Timer: long now()>`, `<org.apache.hadoop.util.Time: long now()>` and `<org.apache.hadoop.util.Time: long monotonicNow()>`, each `"kind": "CLOCK"`. A callee-level declaration makes *every* call site of that clock a root, wherever in the application scope it is called |
+| declared region roots | `symbolic-inputs.jsonl`, three method rows | `BlockTokenSecretManager.updateKeys()`, `.addKeys(ExportedBlockKeys,boolean)` and `.removeExpiredKeys()`. A declared method is a region root by declaration, whether or not the backward slice reaches it — `removeExpiredKeys` reads the clock, decides an expiry and removes nothing in a healthy run, so no demand-directed walk over recorded flows would ever reach it |
+| hook-minted roots | the Hadoop checkout, not this directory | `CausynthSymbolicSource.symbolize("HDFS.BLOCK_KEY.SERIAL_NO", …)` in `BlockTokenSecretManager.updateKeys` roots the counter each new `BlockKey` takes its id from, and `…("HDFS.BLOCK_KEY.EXPIRY_DATE", …)` roots the inherited `DelegationKey#expiryDate`. A hook site owns its field (`CONFIGURED_SYMBOLIC_SOURCE_FIELD_OWNED`), which is why neither field is listed in `symbolic-inputs.jsonl` |
+| root domains | `root-domains.jsonl`, one row | `HDFS.BLOCK_KEY.SERIAL_NO`, `declaredDomainMin "+0"`, `declaredDomainMax "+3"`: the recorded value and up to three rotations past it. Relative, because the serial starts at a `SecureRandom` int and increments by one per roll, so an absolute range would state something about one recording. A root with no row is pinned to its recording; a clock has a floor of zero and no window |
+| wire mappings | `communication-mappings.jsonl`, three `WIRE_FLOW` rows | `block-key-id` and `block-key-expiry-date` (`CALL_ARGUMENT` into the `BlockKeyProto` builder, `CALL_RETURN` out of the proto getter) and `data-encryption-key-id` (`CALL_ARGUMENT` at the SASL client, `METHOD_PARAMETER` 0 of `retrieveDataEncryptionKey`). Declared ports are tracked and mint nothing: the consumer gets the producer's own propagated expression |
+| loop bounds | `loop-bounds.jsonl`: three rows at `loopBodyBound: 8`; `causynth_loop_default_bound=8` | the expiry scan, the block-key reply conversion and the Balancer's key-updater loop. The file's header says which key-plumbing loops are deliberately left undeclared, and why |
 
-Hadoop checkout: `/opt/hadoop-hdfs-11741`, branch `gc/hdfs-11741-current`.
-Run `./run.sh build`, then `./run.sh campaign` from this directory. Set
-`CAUSYNTH_OUTPUT_DIR` to a fresh directory for each campaign. The trace starts
-after all stable sources and aliases are registered and before the cache and
-key-map transitions, so cluster startup cannot create unregistered regions.
+## Build and run
 
-## The block-key serial number's declared domain
+Hadoop checkout `/opt/hadoop-hdfs-11741`, branch `gc/hdfs-11741-current`. From this
+directory:
 
-`root-domains.jsonl` states what `HDFS.BLOCK_KEY.SERIAL_NO` may be:
-`declaredDomainMin="+0"`, `declaredDomainMax="+3"` — the value this run
-recorded, and up to three rotations past it.
+```bash
+./run.sh build        # installs the current GraphChecker API, builds the tree,
+                      # runs the concrete workload test, refuses unless it alone passes
+./run.sh validate
+./run.sh campaign
+```
 
-The bound is relative because an absolute one would be a statement about one
-recording: the NameNode's serial starts at a `SecureRandom` int and increments
-by one per key roll, so "119994..119997" says nothing a second run would
-recognise. Three rotations is the physical assumption this case is about — the
-ad hoc coordination failure here is a key-set disagreement after a rotation,
-and a consumer that is more than a few rolls behind has a different problem.
-With the domain declared, a witness that moves the serial inside it is a
-MARKER_FLIPPED finding naming the rotation; with no domain the root is pinned
-to its recording and no key-set disagreement can be witnessed at all.
+Use a fresh `CAUSYNTH_OUTPUT_DIR` per campaign. The recording opens only after the workload
+has registered its stable node sources and aliases, so cluster startup creates no
+unregistered regions. The in-tree acceptance harness
+(`experiments/hadoop/accept/README.md`) runs campaign, z3 probe and report together:
+
+```bash
+export CAUSYNTH_CUSTOM_JDK_HOME=/absolute/path/to/j2sdk-image
+CASES=hdfs-11741 bash experiments/hadoop/accept/accept.sh
+```
+
+## What the harness expects
+
+`report.py` passes this case on `claim` `SAT_CANDIDATE`, `finalStatus` `FINAL_READY`, empty
+`blockers` and no open BLOCKING gap, `polarityDecides` true, `valuationOrdinal` >= 1,
+non-empty `movedRoots`, and a `findingKind` of `CLOCK_SKEW` or `MARKER_FLIPPED` — either the
+clocks disagreed, or the serial moved inside its declared domain.
+
+## Status
+
+Exercised end to end: the seed passes the `IMPORT` gate, the closure reaches the DataNode's
+key map through the declared wire ports and that map's static write sites, and exploration
+converges. It is at its last round, pending the acceptance campaign, and has **not** yet
+published an accepted claim. No artifacts are committed for this case.

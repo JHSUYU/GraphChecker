@@ -1,99 +1,69 @@
-# HDFS-17897 campaign
+# HDFS-17897
 
-This experiment detects the striped-file checksum failure fixed by Hadoop
-PR #8364. The normal seed caches data-encryption key `G` in the DFS client and
-performs two production key rotations, then uses the block-key RPC to update
-each DataNode. GraphChecker
-symbolically propagates the wire key IDs and the DataNode's bounded `allKeys`
-state; the failure model derives that `G` is absent without a test hook that
-replaces the map. The buggy checksum loop treats the returned
-`InvalidEncryptionKeyException` as an ordinary per-DataNode I/O failure and
-ultimately throws `PathIOException` instead of clearing the cache and retrying.
+## The bug
 
-The causal graph selects the two flows that meet at the DataNode:
+[Hadoop PR #8364](https://github.com/apache/hadoop/pull/8364). The striped-file checksum
+loop treats an `InvalidEncryptionKeyException` from a DataNode as an ordinary per-DataNode
+I/O failure and ultimately throws `PathIOException`, instead of clearing the cached
+data-encryption key and retrying. The workload caches a key in the DFS client, performs two
+production key rotations and updates each DataNode through the block-key RPC. The client
+then presents the stale key, the DataNode rejects the SASL handshake, and the checksum loop
+turns that into the wrong failure. Whether the DataNode rejects the key is again a
+disagreement between two nodes about which key set is current, so the two flows meet at the
+DataNode: the client's cached key on one side, the DataNode's own refreshed `allKeys` on the
+other. There is no Boolean fault marker in this workload.
 
-```text
-client -> NameNode (cached key G) -> DataNode request --+
-                                                     +-> SASL rejection -> client checksum failure
-DataNode -> NameNode (current key G+1) -> DN state ----+
+## What this case declares
+
+| Declaration | Where | What it says |
+| --- | --- | --- |
+| the failure | `@CausynthExceptionTarget` in the Hadoop checkout; `target.yaml` | `exception_target_id: hdfs-17897` |
+| the occurrence | `declared_target_occurrence` in `workflow.properties` | `hdfs-17897/dn0#epoch0/region/REGION.53092d3e-263d-3a18-b7a5-ae5b437d96de@hdfs-17897/client#epoch0/striped-file-checksum#1` — the campaign composes and judges that one and reports the others |
+| clock roots | `symbolic-inputs.jsonl`, three callee-level rows | `<org.apache.hadoop.util.Timer: long now()>`, `<org.apache.hadoop.util.Time: long now()>` and `<org.apache.hadoop.util.Time: long monotonicNow()>`, each `"kind": "CLOCK"`, so every call site of those clocks in the application scope is a root |
+| declared region roots | `symbolic-inputs.jsonl`, two method rows | `BlockTokenSecretManager.updateKeys()` and `.addKeys(ExportedBlockKeys,boolean)`: declared methods are region roots by declaration, independent of the backward slice |
+| hook-minted roots | the Hadoop checkout, not this directory | `CausynthSymbolicSource.symbolize("HDFS.BLOCK_KEY.SERIAL_NO", …)` roots the counter each new `BlockKey` takes its id from; `…("HDFS.BLOCK_KEY.EXPIRY_DATE", …)` roots the inherited `DelegationKey#expiryDate`. A hook site owns its field (`CONFIGURED_SYMBOLIC_SOURCE_FIELD_OWNED`), so neither field appears in `symbolic-inputs.jsonl` |
+| root domains | `root-domains.jsonl`, one row | `HDFS.BLOCK_KEY.SERIAL_NO`, `declaredDomainMin "+0"`, `declaredDomainMax "+3"`: the recorded value and up to three rotations past it, relative because the serial starts at a `SecureRandom` int and increments once per roll. A root with no row is pinned to its recording |
+| wire mappings | `communication-mappings.jsonl`, four `WIRE_FLOW` rows | `namenode-data-encryption-key-id`, `block-key-id`, `block-key-expiry-date` (`CALL_ARGUMENT` into the proto builder, `CALL_RETURN` out of the proto getter) and `data-encryption-key-id` (`CALL_ARGUMENT` at the SASL client, `METHOD_PARAMETER` 0 of `retrieveDataEncryptionKey`). The key ids on the wire are declared cut ports, not roots: they are tracked and mint nothing, because `attachCommunicationLeaf` installs the producer's own propagated expression at the consumer |
+| loop bounds | `loop-bounds.jsonl`: two rows at `loopBodyBound: 8`; `causynth_loop_default_bound=8` | the retained expiry scan and the bounded block-key reply conversion. The file's header says which key-plumbing loops stay undeclared because their trip count is an exact array length |
+
+**No clock window is declared, and none exists to declare.** A clock root is free above zero
+and nothing else: the composer asserts one `clock_floor__…` per declared clock symbol
+(`compose/Composer.java`) and the flip query states the same rule (`explore/FlipQuery.java`
+— "a CLOCK is per path, unbounded, with a `>= 0` floor only"). `workflow.properties` records
+why: a bound on two nodes' difference is a number somebody picked, and the checker has no
+physics to appeal to. What the execution fixes is stated where it belongs — the order a
+node's own readings came in, and the value each path read.
+
+## Build and run
+
+Hadoop checkout `/opt/hadoop-hdfs-17897`, branch `gc/hdfs-17897-striped-checksum`. Replay
+concurrency is fixed at `concolic_worker_count=8` in `workflow.properties`. From this
+directory:
+
+```bash
+./run.sh build        # installs the current GraphChecker API, builds the tree,
+                      # runs the concrete workload test, refuses unless it alone passes
+./run.sh validate
+./run.sh campaign
 ```
 
-Values follow the live execution rather than graph edges. The custom JDK
-propagates the key expressions across each RPC and shared-state read, leaving a
-consumer anchor at every boundary. Region-local path conditions are merged in
-closure-wide waves. Each selected shared read carries a bounded GuardedRead
-snapshot of every retained writer expression; its exactly-one selector is
-coupled to the corresponding writer case and local path condition.
+Use a fresh `CAUSYNTH_OUTPUT_DIR` per campaign. The in-tree acceptance harness
+(`experiments/hadoop/accept/README.md`) runs campaign, z3 probe and report together:
 
-The manual symbolic roots are the NameNode's key id, time and expiry, and they
-come from two authorities. Two are minted by configured-source hooks in
-`BlockTokenSecretManager.updateKeys`:
-`CausynthSymbolicSource.symbolize("HDFS.BLOCK_KEY.SERIAL_NO", this, ...)` roots
-`<org.apache.hadoop.hdfs.security.token.block.BlockTokenSecretManager: int
-serialNo>`, the counter each new `BlockKey` takes its id from, and
-`CausynthSymbolicSource.symbolize("HDFS.BLOCK_KEY.EXPIRY_DATE", nextKey, ...)`
-roots `<org.apache.hadoop.security.token.delegation.DelegationKey: long
-expiryDate>` (the field `BlockKey` inherits). A hook site owns its field: every
-competing field-read candidate for it is stamped
-`CONFIGURED_SYMBOLIC_SOURCE_FIELD_OWNED` and left concrete, so each root is
-minted once, at its hook -- which is why neither field is listed in
-`symbolic-inputs.jsonl`. The third root, the clock
-`<org.apache.hadoop.util.Timer: long now()>.return`, has no hook and is still
-declared there -- by the two static sites it is read at,
-`BlockTokenSecretManager.updateKeys()` and `.addKeys(...)`, which PLAN resolves
-to whichever regions cover them. The key IDs observed on the wire are
-declared cut ports, not roots of their own: they are tracked and mint
-nothing, because `attachCommunicationLeaf` installs the NameNode's own
-propagated expression at the consumer. `allKeys` is not modelled at region
-entry: the map carries whatever expression a root-derived put left in it.
+```bash
+export CAUSYNTH_CUSTOM_JDK_HOME=/absolute/path/to/j2sdk-image
+CASES=hdfs-17897 bash experiments/hadoop/accept/accept.sh
+```
 
-## Target occurrence
+## What the harness expects
 
-`declared_target_occurrence` in `workflow.properties` names the occurrence of
-the annotated site the campaign is about, as a full occurrence address. The
-campaign composes and judges that one and reports the others. The owner
-assumes the failing instance is known; a recording is the healthy path by
-nature, so no occurrence is distinguished by the corpus and the case names the
-first observed one (rule: first observed, full address) -- lane17897g observed
-`striped-file-checksum#1` and `#2`.
+`report.py` passes this case on `claim` `SAT_CANDIDATE`, `finalStatus` `FINAL_READY`, empty
+`blockers` and no open BLOCKING gap, `polarityDecides` true, `valuationOrdinal` >= 1,
+non-empty `movedRoots`, and `findingKind` `CLOCK_SKEW`. This is the one case whose expected
+set has a single entry: `EXPECTED_MECHANISM` in `report.py` names no other mechanism for it,
+so a witness of any other kind fails the case rather than passing it.
 
-## Clock window
+## Status
 
-A clock root is free above zero and has no window: the formula asserts
-`(>= clock 0)` and nothing else, in the composer and in the flip query alike
-(`explore.FlipQuery` line 362).  Nothing declares a skew.
-
-Both removals this experiment needs are `expiryDate < now` at
-`BlockTokenSecretManager:220`, and the workload runs with
-`keyUpdateInterval = tokenLifetime = 1 min`, so each key's expiry sits a
-small multiple of a minute past the clock that minted it.  Measured on the
-recorded corpus, the DataNode's `addKeys` case needs **+278.8 s** of skew
-for the registration-time copy of K1 -- inside a +/-300 s window, but with
-only 21 s of headroom -- while the two copies the recorded RPC refresh
-installed need **+653 s** and **+658 s**.  At the default width those two
-cases are decided before the solver sees them, so the window, not the
-mechanism, picks which copy of the key can expire.
-
-900 000 ms admits all three with room, and it is still a *skew*: every
-clock stays within 15 minutes of what that read actually returned, and the
-recorded per-node order is unchanged.  Every other experiment keeps the
-default; nothing here widens the window globally.
-
-Run `./run.sh campaign`.  Replay concurrency is fixed at 8 in
-`workflow.properties`.
-
-## The block-key serial number's declared domain
-
-`root-domains.jsonl` states what `HDFS.BLOCK_KEY.SERIAL_NO` may be:
-`declaredDomainMin="+0"`, `declaredDomainMax="+3"` — the value this run
-recorded, and up to three rotations past it.
-
-The bound is relative because an absolute one would be a statement about one
-recording: the NameNode's serial starts at a `SecureRandom` int and increments
-by one per key roll, so "119994..119997" says nothing a second run would
-recognise. Three rotations is the physical assumption this case is about — the
-ad hoc coordination failure here is a key-set disagreement after a rotation,
-and a consumer that is more than a few rolls behind has a different problem.
-With the domain declared, a witness that moves the serial inside it is a
-MARKER_FLIPPED finding naming the rotation; with no domain the root is pinned
-to its recording and no key-set disagreement can be witnessed at all.
+Prepared, not run under the current design. No claim, and no artifacts are committed for
+this case.

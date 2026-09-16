@@ -1,77 +1,70 @@
-# HDFS-17899 campaigns
+# HDFS-17899
 
-The three cases share one target: a stale data-encryption key reaches
-`BlockTokenSecretManager.retrieveDataEncryptionKey` after a modeled key-refresh
-RPC failure.
+## The bug
 
-For every case, the graph chooses the relevant region and communication
-closure. The custom JDK carries the exact symbolic key expression through the
-listed RPC chain and anchors it at each consumer. Each region records only its
-local path condition. Closure-wide symbolic merging combines those cases, and
-each selected shared read retains a complete bounded GuardedRead snapshot of
-the writer expressions available to the SMT choice.
+[HDFS-17899](https://issues.apache.org/jira/browse/HDFS-17899). A stale data-encryption key
+reaches `BlockTokenSecretManager.retrieveDataEncryptionKey` on a DataNode after a key-refresh
+RPC has failed. The consumer of the key — Balancer, SPS or a source DataNode — keeps using
+the key it holds; the DataNode that has to verify it has already rotated. The three cases
+share that one target and differ only in which request flow carries the key to it. The
+workloads model the refresh RPC failure with a `Debug.makeSymbolicBoolean` marker in
+`org.apache.hadoop.ipc.Client`, so a witness here can be the marker moving, the clocks
+disagreeing, or both.
 
-The manual symbolic roots are the NameNode's key id, time and expiry, and they
-come from two authorities. Two are minted by configured-source hooks in
-`BlockTokenSecretManager.updateKeys`:
-`CausynthSymbolicSource.symbolize("HDFS.BLOCK_KEY.SERIAL_NO", this, ...)` roots
-`<org.apache.hadoop.hdfs.security.token.block.BlockTokenSecretManager: int
-serialNo>`, the counter each new `BlockKey` takes its id from, and
-`CausynthSymbolicSource.symbolize("HDFS.BLOCK_KEY.EXPIRY_DATE", nextKey, ...)`
-roots `<org.apache.hadoop.security.token.delegation.DelegationKey: long
-expiryDate>` (the field `BlockKey` inherits). A hook site owns its field: every
-competing field-read candidate for it is stamped
-`CONFIGURED_SYMBOLIC_SOURCE_FIELD_OWNED` and left concrete, so each root is
-minted once, at its hook -- which is why neither field is listed in
-`symbolic-inputs.jsonl`. The third root, the clock
-`<org.apache.hadoop.util.Timer: long now()>.return`, has no hook and is still
-declared there -- by the two static sites it is read at,
-`BlockTokenSecretManager.updateKeys()` and `.addKeys(...)`, which PLAN resolves
-to whichever regions cover them; the same file is shared by all three cases.
-The key ids observed on the wire are declared cut ports, not roots of their
-own: they are tracked and mint nothing, because the attach installs the
-NameNode's own propagated `serialNo` expression at the consumer.
+| Case | Request flow | Hadoop checkout | Branch |
+| --- | --- | --- | --- |
+| `bug1` | NameNode -> Balancer -> DataNode | `/opt/hadoop-hdfs-17899-bug1` | `gc/hdfs-17899-bug1` |
+| `bug2` | NameNode -> SPS -> DataNode | `/opt/hadoop-hdfs-17899-bug2` | `gc/hdfs-17899-bug2` |
+| `bug3` | NameNode -> source DataNode -> target DataNode | `/opt/hadoop-hdfs-17899-bug3` | `gc/hdfs-17899-bug3` |
 
-One more declaration is per case rather than shared: `target_occurrence` in
-`case.sh` names the occurrence of the annotated site the campaign is about, as
-a full occurrence address. The campaign composes and judges that occurrence
-and reports the others; left empty it keeps every observed one. The owner
-assumes the failing instance is known; a recording is the healthy path by
-nature -- the fatal condition is what COMPOSE builds -- so no occurrence is
-distinguished by the corpus and each case names the first observed one (rule:
-first observed, full address). `bug2` and `bug3` observed exactly one;
-`bug1` observed four and names the first.
+## What these cases declare
 
-| Case | Request flow | Hadoop worktree |
+`workflow.properties`, `symbolic-inputs.jsonl`, `root-domains.jsonl` and
+`communication-mappings.jsonl` are shared by all three; `case.sh` carries what is per case.
+
+| Declaration | Where | What it says |
 | --- | --- | --- |
-| `bug1` | NameNode -> Balancer -> DataNode | `/opt/hadoop-hdfs-17899-bug1` |
-| `bug2` | NameNode -> SPS -> DataNode | `/opt/hadoop-hdfs-17899-bug2` |
-| `bug3` | NameNode -> source DataNode -> target DataNode | `/opt/hadoop-hdfs-17899-bug3` |
+| the failure | `@CausynthExceptionTarget` in each Hadoop checkout; `target.yaml` | `exception_target_id: hdfs-17899` |
+| the occurrence | `target_occurrence` in `case.sh`, exported as `CAUSYNTH_TARGET_OCCURRENCE` | `bug1` `hdfs-17899/dn1#epoch0/…@hdfs-17899/balancer#epoch0/balance-block#1`; `bug2` `…/target-dn#epoch0/…@hdfs-17899/sps#epoch0/satisfy-storage-policy#1`; `bug3` `…/target-dn#epoch0/…@hdfs-17899/source-dn#epoch0/replicate-block#1`. Left empty, the run keeps every observed occurrence |
+| clock roots | `symbolic-inputs.jsonl`, two rows | per-method clock cells, not callee-level ones: `BlockTokenSecretManager.updateKeys()` and `.addKeys(ExportedBlockKeys,boolean)`, each declaring the cell `<org.apache.hadoop.util.Timer: long now()>.return` with `"clock": true`. Those two methods are therefore also region roots by declaration |
+| marker root | the Hadoop checkouts, not this directory | `Debug.makeSymbolicBoolean` in `org.apache.hadoop.ipc.Client` models the key-refresh RPC failure. `bug1` plants two of them on the Balancer side, and they are not both the bug |
+| hook-minted roots | the Hadoop checkouts | `CausynthSymbolicSource.symbolize("HDFS.BLOCK_KEY.SERIAL_NO", …)` roots the counter each new `BlockKey` takes its id from; `…("HDFS.BLOCK_KEY.EXPIRY_DATE", …)` roots the inherited `DelegationKey#expiryDate`. A hook site owns its field (`CONFIGURED_SYMBOLIC_SOURCE_FIELD_OWNED`), so neither is listed in `symbolic-inputs.jsonl` |
+| root domains | `root-domains.jsonl`, one row | `HDFS.BLOCK_KEY.SERIAL_NO`, `declaredDomainMin "+0"`, `declaredDomainMax "+3"`: the recorded value and up to three rotations past it, relative because the serial starts at a `SecureRandom` int and increments once per roll. A root with no row is pinned to its recording; a clock has a floor of zero and no window |
+| wire mappings | `communication-mappings.jsonl`, four `WIRE_FLOW` rows | `block-key-id`, `block-key-expiry-date`, `data-encryption-key-id` and `namenode-data-encryption-key-id`, each with an exact producer and consumer capture (`CALL_ARGUMENT`, `CALL_RETURN`, `METHOD_PARAMETER`). Declared ports are tracked and mint nothing: the attach installs the producer's own propagated expression at the consumer |
+| loop bounds | `loop-bounds.jsonl` (five rows) for `bug1`/`bug2`, `loop-bounds-datanode.jsonl` (four rows) for `bug3`, every row at `loopBodyBound: 8`; `causynth_loop_default_bound=8` | `case.sh` selects the file and `run.sh` exports it as `CAUSYNTH_LOOP_BOUNDS` |
 
-Build each Hadoop checkout with `./run.sh bug1 build`, replacing `bug1` as
-needed, then run `./run.sh bug1 campaign`. The shared build script installs the
-current GraphChecker API before compiling Hadoop. Each replay loads the
-common, client and HDFS classes from that case's own checkout.
+## Build and run
 
-Set `CAUSYNTH_OUTPUT_DIR` to a fresh directory for each campaign. The result and
-its SMT, path closures and provenance are written under `schedule/final` there.
-The trace pass starts paused; each workload opens the recording boundary only
-after its stable node/application sources and aliases have been registered.
-A fresh run must close every selected consumer-anchor family and reproduce the
-complete root-to-target causal chain before its SAT result is accepted.
+Each case has its own Hadoop checkout, so its source changes and compiled classes stay
+independent, and each replay loads that checkout's common, client and HDFS classes. From
+this directory, replacing `bug1` as needed:
 
-## The block-key serial number's declared domain
+```bash
+./run.sh bug1 build      # installs the current GraphChecker API, builds that checkout,
+                         # runs the concrete workload test, refuses unless it alone passes
+./run.sh bug1 validate
+./run.sh bug1 campaign
+```
 
-`root-domains.jsonl` states what `HDFS.BLOCK_KEY.SERIAL_NO` may be:
-`declaredDomainMin="+0"`, `declaredDomainMax="+3"` — the value this run
-recorded, and up to three rotations past it.
+`run.sh` sets a per-case `CAUSYNTH_OUTPUT_DIR` and `CAUSYNTH_CACHE_DIR`; override
+`CAUSYNTH_OUTPUT_DIR` with a fresh directory per campaign. Each workload opens its recording
+boundary only after its stable node and application sources and aliases are registered. The
+in-tree acceptance harness (`experiments/hadoop/accept/README.md`) runs campaign, z3 probe
+and report together, one case at a time:
 
-The bound is relative because an absolute one would be a statement about one
-recording: the NameNode's serial starts at a `SecureRandom` int and increments
-by one per key roll, so "119994..119997" says nothing a second run would
-recognise. Three rotations is the physical assumption this case is about — the
-ad hoc coordination failure here is a key-set disagreement after a rotation,
-and a consumer that is more than a few rolls behind has a different problem.
-With the domain declared, a witness that moves the serial inside it is a
-MARKER_FLIPPED finding naming the rotation; with no domain the root is pinned
-to its recording and no key-set disagreement can be witnessed at all.
+```bash
+export CAUSYNTH_CUSTOM_JDK_HOME=/absolute/path/to/j2sdk-image
+CASES="hdfs-17899-bug1 hdfs-17899-bug2 hdfs-17899-bug3" bash experiments/hadoop/accept/accept.sh
+```
+
+## What the harness expects
+
+`report.py` passes each of the three on `claim` `SAT_CANDIDATE`, `finalStatus`
+`FINAL_READY`, empty `blockers` and no open BLOCKING gap, `polarityDecides` true,
+`valuationOrdinal` >= 1, non-empty `movedRoots`, and a `findingKind` of `MARKER_FLIPPED` or
+`CLOCK_SKEW`.
+
+## Status
+
+All three are prepared and none has been run under the current design. No claims, and no
+artifacts are committed for them.
