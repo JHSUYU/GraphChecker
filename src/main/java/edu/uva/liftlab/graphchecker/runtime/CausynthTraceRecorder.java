@@ -265,8 +265,8 @@ public final class CausynthTraceRecorder {
             // Same rule as the filing half: the work runs either way, and a
             // frame nobody could claim is stated where it happened rather
             // than swallowed.
-            String subject = carrier == null ? "" : carrier.getClass()
-                    .getName();
+            String subject = lineageSubject(carrier == null ? ""
+                    : carrier.getClass().getName());
             RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind
                             .LINEAGE_LOST,
                     edu.uva.liftlab.graphchecker.contract.GapClass.DIAGNOSTIC,
@@ -290,11 +290,15 @@ public final class CausynthTraceRecorder {
             RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind
                             .LINEAGE_LOST,
                     edu.uva.liftlab.graphchecker.contract.GapClass.DIAGNOSTIC,
-                    site, "the frame of this work start could not be filed, "
+                    lineageSubject(site.isEmpty() && carrier != null
+                                    ? carrier.getClass().getName() : site),
+                    "the frame of this work start could not be filed, "
                             + "so the work it started carries no start-site "
                             + "frame in its execution index: "
                             + unnamed);
-            writeLineageGap(site, "the frame of this work start could not be "
+            writeLineageGap(lineageSubject(site.isEmpty() && carrier != null
+                            ? carrier.getClass().getName() : site),
+                    "the frame of this work start could not be "
                     + "filed, so the work it started carries no start-site "
                     + "frame in its execution index: " + unnamed);
         }
@@ -312,6 +316,34 @@ public final class CausynthTraceRecorder {
      * gap list.  A gap the recording cannot state is a gap nobody ever
      * hears about.</p>
      */
+    /**
+     * A gap row names its own subject.
+     *
+     * <p>Both lineage gaps above are raised exactly where an identity could
+     * NOT be established, which is where the name they would like to state
+     * is most likely missing: a null carrier, a blank start site.  The row's
+     * door substitutes the session for a blank subject, so the row was still
+     * filed -- and named the session rather than the thing that lost its
+     * frame, which is the one fact a reader needs from it.  The fallbacks
+     * are the frames this thread is actually in: the source key the
+     * recording attributes its work to, then the thread itself, which always
+     * has a name and an id.</p>
+     */
+    private static String lineageSubject(String named) {
+        String subject = MapFields.safe(named);
+        if (!subject.isEmpty()) return subject;
+        try {
+            subject = MapFields.safe(
+                    RuntimeTraceContext.activationSource(null).key());
+        } catch (Throwable unnamed) {
+            subject = "";
+        }
+        if (!subject.isEmpty()) return subject;
+        Thread current = Thread.currentThread();
+        return "thread:" + MapFields.safe(current.getName())
+                + "#" + current.getId();
+    }
+
     private static void writeLineageGap(String subject, String detail) {
         if (!recordingEnabled) return;
         synchronized (LOCK) {
