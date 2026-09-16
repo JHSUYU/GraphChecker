@@ -92,6 +92,25 @@ public final class RuntimeSelectedRegionFinalizer {
     public static final String DEMAND_DEPTH = "demandDepth";
     /** The fatal target is the origin of every shared-location demand. */
     private static final int TARGET_DEMAND_DEPTH = 0;
+    /**
+     * {@code admissionBasis} of an activation the plan carries because its
+     * region declares a communication capture.
+     *
+     * <p>Same rule, same reason, as {@link DeclaredSymbolicInputs#ADMISSION}
+     * one authority further out: a capture site the case DECLARED in
+     * {@code communication-mappings.jsonl} is where a value leaves one
+     * component and arrives in another, and an export that runs outside
+     * every instrumented activation has no decision prefix, so its arm can
+     * never be attested -- which is how hdfs-11741 campaign #4 published
+     * all 13 arms of the key-id family as {@code attested:false} with the
+     * producing side {@code instrumented:false} in every session.  Nothing
+     * demands an export's outputs (the value's consumer is on another node,
+     * and the walk is over this node's recorded flows), so a demand-directed
+     * closure cannot arrive on it.  The declaration is what puts it in the
+     * plan.</p>
+     */
+    private static final String DECLARED_COMMUNICATION_ADMISSION =
+            "DECLARED_COMMUNICATION_CAPTURE_V1";
     /** Communication ports whose exact export/attach sites need hooks. */
     public static final String COMMUNICATION_PORTS = "communicationPorts";
 
@@ -884,6 +903,32 @@ public final class RuntimeSelectedRegionFinalizer {
         // here and this rule leaves its rows untouched.
         declaredInputOccurrences.removeAll(targets);
         admittedStateWriters.addAll(declaredInputOccurrences);
+        // Every activation that PERFORMED a declared communication capture,
+        // admitted the same way and for the reason
+        // DECLARED_COMMUNICATION_ADMISSION states: the export or attach the
+        // declaration names happened in this activation, so the activation
+        // has to be one the replay instrumented.
+        //
+        // The recording's own statement, not the declaration's scope: a
+        // region that declares a port is entered once per value the workload
+        // converts, and admitting every one of those activations put 146 of
+        // hdfs-11741's occurrences in the plan (202 tasks against a declared
+        // cap of 128) for the 22 that carried a capture.  An activation
+        // states its own captures, so that is what is read.
+        Set<String> declaredCaptureOccurrences = new LinkedHashSet<>();
+        for (Map.Entry<String, Map<String, Object>> entry
+                : instances.entrySet()) {
+            StaticProgram.RegionRow skeleton = program.skeletons.get(
+                    text(entry.getValue().get("regionId")));
+            if (skeleton == null || skeleton.communicationPorts.isEmpty()
+                    || rows(entry.getValue().get(
+                            OBSERVED_COMMUNICATION_CAPTURES)).isEmpty()) {
+                continue;
+            }
+            declaredCaptureOccurrences.add(entry.getKey());
+        }
+        declaredCaptureOccurrences.removeAll(targets);
+        admittedStateWriters.addAll(declaredCaptureOccurrences);
 
         Map<String, List<Map<String, Object>>> predecessors =
                 new LinkedHashMap<>();
@@ -965,6 +1010,15 @@ public final class RuntimeSelectedRegionFinalizer {
                 continue;
             }
             activation.put(ADMISSION_BASIS, DeclaredSymbolicInputs.ADMISSION);
+        }
+        for (String occurrence : declaredCaptureOccurrences) {
+            Map<String, Object> activation = instances.get(occurrence);
+            if (activation == null
+                    || !text(activation.get(ADMISSION_BASIS)).isEmpty()) {
+                continue;
+            }
+            activation.put(ADMISSION_BASIS,
+                    DECLARED_COMMUNICATION_ADMISSION);
         }
         return union;
     }
