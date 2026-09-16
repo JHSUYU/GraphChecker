@@ -706,13 +706,33 @@ public final class Composer {
         stateJoins(session, rows, refusals, joined, observed, joins,
                 answered);
 
-        // (4) pi_p, through the one routine that applies each decision's
-        //     polarity: a published term is the site's PREDICATE, and which
-        //     arm this run took is the row's outcome.
-        List<String> pi = Arms.pathCondition(path.decisions,
-                Long.MAX_VALUE);
+        // (4) pi_p: THE PREFIX STRICTLY BEFORE THE TARGET OBSERVATION,
+        //     through the one routine that applies each decision's
+        //     polarity -- a published term is the site's PREDICATE, and
+        //     which arm this run took is the row's outcome.
+        //
+        //     `before` is the target row's own seq, and that is what makes
+        //     the conjunction a question rather than a contradiction: the
+        //     anchor's decision and the target row share a seq in every
+        //     session, so a pi taken over ALL of the occurrence's
+        //     decisions carries the anchor's own RECORDED polarity while
+        //     phi below asserts its complement.  Every path whose session
+        //     did not observe the fatal arm was then unsat before any root
+        //     was considered -- all 7 paths of hdfs-11741 campaign #4 and
+        //     all 11 of #3, with z3's core `path_fatal__* + fatal_target`
+        //     and no valuation assertion in it, and 17960's own third
+        //     path, the one with fatalObserved=false.  The composer could
+        //     only ever witness from a replay that had already failed.
+        //     `Arms.wireArms` applies exactly this rule at an export
+        //     (`Arms.arm`, `pathCondition(decisions, deliveredAt)`): what
+        //     a run had decided BY THE TIME of the event, never after it.
+        List<String> pi = Arms.pathCondition(path.decisions, target.seq());
+        List<DecisionRow> inPi = new ArrayList<DecisionRow>();
+        for (DecisionRow decision : path.decisions) {
+            if (decision.seq() < target.seq()) inPi.add(decision);
+        }
         for (int index = 0; index < pi.size(); index++) {
-            DecisionRow decision = path.decisions.get(index);
+            DecisionRow decision = inPi.get(index);
             String subject = "decision " + decision.siteId() + "#"
                     + decision.ordinal();
             // The published term names the session's EXPRESSIONS by
@@ -1062,12 +1082,20 @@ public final class Composer {
     }
 
     /**
-     * The paired producer's delivered expression, when it may carry a move.
+     * The paired producer's delivered expression.
      *
-     * <p>Only where the arm is ATTESTED and its expression mentions a root
-     * the case declared a domain for.  Where the arm carries no movable
-     * root, the literal the consumer read states a fact the root cannot
-     * explain, and the literal is kept.</p>
+     * <p>Wherever the arm is ATTESTED, and for no further condition.  It
+     * used to be kept only when the delivered expression mentioned a root
+     * the case declared a movable domain for, and a key IDENTITY mentions
+     * none: the freedom in a handoff is not "which value a root took" but
+     * WHICH WORLD THE PRODUCER WAS IN, and the producer's own flip is what
+     * changed the delivery.  On hdfs-11741 campaign #4 that filter pinned
+     * dn1's arrived key-id to the recorded literal 182905, so nn0's
+     * rotation -- the second flip of the two-flip mechanism the case was
+     * recorded for, admitted as sessions af9801b6 and 14eb8358 -- could
+     * never change what dn1 received, and z3's own model on the same
+     * formula with that one pin dropped wants exactly that arrival
+     * different ({@code HOFF.836a0f0e = 4}).</p>
      *
      * <p>ATTESTED IS THE PRODUCER'S PROPERTY, and {@link
      * Arms#attestedExports} is the one rule for it: any session of the
@@ -1087,7 +1115,6 @@ public final class Composer {
         for (ExportRow export : arms.attestedExports(producer)) {
             Term delivered = lower(export.sessionId(), export, "paired-arm");
             if (delivered == null) continue;
-            if (!movableRoot(delivered.text)) continue;
             // The arm's own sort declares the variable: the arrival's
             // spelling says what it looked like, the delivery says what it
             // is, and one variable has one sort.
