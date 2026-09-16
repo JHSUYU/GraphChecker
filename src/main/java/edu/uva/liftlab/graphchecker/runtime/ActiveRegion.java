@@ -230,7 +230,25 @@ final class ActiveRegion {
                         invocation.intValue());
         long entered = loopBackedges.recordBody(budgetKey);
         if (entered <= maxBodies) return null;
-        return new ReplayLoopResourceCut(loopId, maxBodies, entered);
+        return replayBodyCut(loopId, maxBodies, entered,
+                ReplayLoopResourceCut.REASON);
+    }
+
+    /**
+     * Records the terminal of this activation's spent body budget.
+     *
+     * <p>The sibling of {@link #loopBoundCut}, and now the same two
+     * statements: the activation IS cut ({@code loopBoundCut = true}), and
+     * the cut carries the REASON it was taken.  The body cut used to be
+     * built at its hook with neither -- so an activation cut for spending
+     * its budget did not read as cut, and a cut taken because the hook
+     * itself failed was indistinguishable from one taken at the bound.</p>
+     */
+    ReplayLoopResourceCut replayBodyCut(String loopId, int maxBodies,
+                                        long attemptedBody, String reason) {
+        loopBoundCut = true;
+        return new ReplayLoopResourceCut(loopId, maxBodies, attemptedBody,
+                reason);
     }
 
     /**

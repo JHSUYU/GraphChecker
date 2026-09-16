@@ -92,6 +92,17 @@ final class LoopAccounting {
     /**
      * Charges one loop body to the replay resource cap without consulting the
      * unroll bound.
+     *
+     * <p>ONE CONTROL FLOW WITH {@link #checkBackedge}.  A body past its
+     * bound is cut and NAMED, and so is one whose accounting could not be
+     * done: this arm used to be fail-OPEN where the sibling is fail-closed
+     * -- the same {@code Throwable} becomes a {@code BOUND_HOOK_FAILURE} cut
+     * there, while here the body went uncharged, the activation was not
+     * marked cut, and the resource ceiling silently stopped being enforced
+     * for that loop.  Both hooks now take their terminal through the
+     * activation ({@code ActiveRegion#loopBoundCut},
+     * {@code #replayBodyCut}) and both end at {@link #endAtCut}, which
+     * states the cut as one gap row.</p>
      */
     static void checkReplayBody(
             String loopId, int instrumentedMaxTraversals) {
@@ -109,18 +120,22 @@ final class LoopAccounting {
                     != active.activation.loopBound.maxBackedgeTraversals()) {
                 // The class was instrumented under a different policy, so its
                 // loop identities cannot be trusted to account for anything.
-                cut = new ReplayLoopResourceCut(loop, 0, 0L);
+                cut = active.replayBodyCut(loop, 0, 0L,
+                        "INSTRUMENTATION_POLICY_MISMATCH");
             } else {
                 cut = active.chargeLoopBody(loop);
             }
         } catch (Throwable failure) {
-            // Fail-OPEN, unlike the sibling: checkLoopBackedge turns the
-            // same failure into a BOUND_HOOK_FAILURE cut, while here the
-            // body goes uncharged and the replay resource cap stops being
-            // enforced for it.  Left as it stands because the fix is the
-            // sibling's control flow (end the activation), not a row.
+            cut = active.replayBodyCut(safe(loopId),
+                    instrumentedMaxTraversals, 0L,
+                    "BODY_HOOK_FAILURE:"
+                            + ConcolicRegionRuntime.rootCause(failure));
         } finally {
-            resumeLoopAccounting(active, api, paused);
+            if (resumeLoopAccounting(active, api, paused) && cut == null) {
+                cut = active.replayBodyCut(safe(loopId),
+                        instrumentedMaxTraversals, 0L,
+                        "BODY_HOOK_RESUME_FAILURE");
+            }
         }
         endAtCut(active, cut);
     }
@@ -164,9 +179,28 @@ final class LoopAccounting {
         }
     }
 
-    /** Publishes the bounded prefix and detaches symbolic observation. */
+    /**
+     * Publishes the bounded prefix, NAMES the cut, and detaches symbolic
+     * observation.
+     *
+     * <p>One place for both hooks' terminal, and the cut carries its own
+     * reason into one row.  It did not: the activation ended and the corpus
+     * said nothing about why, so a path cut at its declared unroll bound and
+     * a path cut because the accounting hook threw were the same silence.
+     * {@code BOUND_INSUFFICIENT} is the standing name for a bound that
+     * stopped a run short; the cut happens at most once per activation
+     * ({@code finish} is a compare-and-set) and {@code RowRuntime#gap}
+     * states one row per distinct reason, so this is bounded by
+     * activations.</p>
+     */
     private static void endAtCut(ActiveRegion active, Error cut) {
         if (cut == null) return;
+        RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind
+                        .BOUND_INSUFFICIENT,
+                edu.uva.liftlab.graphchecker.contract.GapClass.DIAGNOSTIC,
+                edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank(
+                        active.occurrenceId(), Long.toString(active.token)),
+                "this activation's local path was cut: " + cut.getMessage());
         ConcolicRegionRuntime.finish(active.token, "CUT", "", null);
     }
 
@@ -313,8 +347,8 @@ final class LoopAccounting {
         static final String REASON = "REPLAY_LOOP_RESOURCE_CAP";
 
         ReplayLoopResourceCut(String loopId, int maxBodies,
-                              long attemptedBody) {
-            super(REASON + " at " + safe(loopId) + ": body "
+                              long attemptedBody, String reason) {
+            super(safe(reason) + " at " + safe(loopId) + ": body "
                     + attemptedBody + " exceeds " + maxBodies);
         }
 
@@ -325,7 +359,7 @@ final class LoopAccounting {
         private static final long serialVersionUID = 1L;
 
         LoopBoundCut(String backedgeId, int maxTraversals, String reason) {
-            super("concolic path cut at " + safe(backedgeId)
+            super(safe(reason) + " at " + safe(backedgeId)
                     + " after " + maxTraversals
                     + " loop body iterations");
         }
