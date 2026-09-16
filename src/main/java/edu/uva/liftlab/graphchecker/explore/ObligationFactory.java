@@ -423,10 +423,22 @@ public final class ObligationFactory {
         // under another name: whatever it satisfies, it is not a world the
         // corpus lacks, and a replay spent on it would record the rows it
         // already has.  Refused by name rather than run.
+        //
+        // THE WAVE'S GAP, DIAGNOSTIC.  It says "the flipped decision does
+        // not depend on the declared roots on this prefix", which is a
+        // fact about the question this wave asked and about no execution:
+        // the verdict row already refuses the obligation, so nothing is
+        // admitted on it either way.  It used to be raised BLOCKING under
+        // candidate.path.sessionId -- the SEED's id for every wave-0 flip
+        // -- so 5 rows of hdfs-11741 campaign #4 landed in the recording's
+        // own ledger saying the recording had a blocking defect, and
+        // run_engine.sh campaign_write_gaps exited 3 on them.  A session's
+        // gaps are the session's own.
         String recorded = recordedValuation(corpus, candidate, roots, answers);
         if (!recorded.isEmpty()) {
-            gaps.add(GapRow.of(candidate.path.sessionId,
-                    GapKind.ADMISSION_GAP, GapClass.BLOCKING, id, recorded));
+            gaps.add(GapRow.of(ExploreCodec.EXPLORATION,
+                    GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC, id,
+                    recorded));
             return new Outcome(id, candidate.task.taskId(), null,
                     ObligationResult.of(id, Verdict.NOT_ADMITTED, "",
                             recorded), query, NO_SKEW, NO_MINTS, gaps);

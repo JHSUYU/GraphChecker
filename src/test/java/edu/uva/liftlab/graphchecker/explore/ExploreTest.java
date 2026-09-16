@@ -1578,11 +1578,21 @@ public class ExploreTest {
             for (GapRow gap : RowCodec.readAll(
                     solved.directory.resolve("gaps.jsonl"),
                     RowCodec::readGap)) {
-                refused |= gap.cls() == GapClass.BLOCKING
+                // THE WAVE'S, and DIAGNOSTIC.  "This flip does not depend
+                // on the declared roots on this prefix" is a fact about
+                // the question the wave asked and about no execution, so
+                // it is not a blocking defect and it is not filed under
+                // the session whose path the flip was cut from -- which
+                // for a wave-0 flip is the SEED, whose ledger then said
+                // the recording had a blocking defect and made
+                // campaign_write_gaps exit 3.
+                refused |= gap.cls() == GapClass.DIAGNOSTIC
+                        && ExploreCodec.EXPLORATION.equals(gap.sessionId())
                         && gap.detail().contains(
                                 "the recording's own valuation");
             }
-            assertTrue("and the refusal is named", refused);
+            assertTrue("and the refusal is named, as the wave's own "
+                    + "diagnostic", refused);
             return;
         }
         assertEquals(Verdict.SAT_MODEL_READY, solved.verdict);

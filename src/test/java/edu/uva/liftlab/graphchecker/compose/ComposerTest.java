@@ -397,28 +397,21 @@ public class ComposerTest {
                         + PLACEHOLDER_TWO)
                         || says(all.gaps(), GapKind.UNSTATED_VALUE,
                         "nothing binds it"));
-        // The counter read's writer is delivered and registered -- one
-        // arm per exploration replay, the deleteSnapshot occurrence whose
-        // write the anchor's placeholder joined -- and it gets NO
-        // ALTERNATIVE, which is not the owner's doing: this owner is an
-        // allocation id.  In the seed the createSnapshot occurrence is the
-        // only writer of the counter, and one arm says nothing the join
-        // has not; in an exploration replay the createSnapshot occurrence
-        // is instrumented but is NOT the focused region, so it is
-        // unattested (Arms.attested) and an unattested writer is
-        // delivered, never offered as an alternative (Arms.stateArms).
-        // An alternative here would also let the RECORDED valuation reach
-        // the fatal arm, which is the FORMULA_SAT_AT_RECORDED_VALUATION
-        // alarm and not this claim.
-        assertEquals("one registered arm per replay that delivered the "
-                        + "counter: " + all.families(), 2,
-                all.families().size());
-        for (edu.uva.liftlab.graphchecker.contract.Family family
-                : all.families()) {
-            assertEquals("delivered, not chosen between", 1,
-                    family.arms().size());
-        }
-        assertFalse("so no alternative family is composed over the read",
+        // The counter read's writer is delivered and registered, one slot
+        // per replay that delivered it -- the deleteSnapshot occurrence
+        // whose write the anchor's placeholder joined.  In an exploration
+        // replay the createSnapshot occurrence is instrumented but is NOT
+        // the focused region, and ATTESTATION IS ABOUT THE ROWS AND NOT
+        // ABOUT THE FOCUS: this session states its activation and its
+        // decisions, so it is attested and it IS offered as an alternative
+        // writer (Arms.attested, Arms.stateArms).  That is the point of
+        // the rule -- the concurrent writer's prefix is a world the corpus
+        // states -- and it does NOT let the recorded valuation reach the
+        // fatal arm, which is what the asserts below measure: outcome 0 is
+        // still unsat and the polarity still decides.
+        assertEquals("one slot per replay that delivered the counter: "
+                        + all.families(), 2, all.families().size());
+        assertTrue("so an alternative writer IS composed over the read",
                 all.body().contains("state_family__"));
         assertFalse("and nothing is withheld for the owner's spelling",
                 says(all.gaps(), GapKind.DECLARATION_MISSING,
@@ -676,6 +669,12 @@ public class ComposerTest {
         Endpoint second = Endpoint.of(PRODUCER, "PORT.key",
                 at("export#2", 0), 0);
         Session session = new Session(iteration, "s0", false);
+        // The producer's own rows: an activation, instrumented, so its
+        // decisions are recorded and its arms are attested (Arms.attested).
+        // Without the activation row the corpus states a producer's
+        // decisions and not that it ran, and a read no attested arm
+        // delivers is refused rather than pinned to its arrival.
+        session.activation(PRODUCER);
         session.marker("false");
         session.expression("EXPR.v1.marker", symbol(MARKER, "Z"));
         session.decision(PRODUCER, "nn#u1", "(or " + MARKER + " (not "
@@ -704,17 +703,32 @@ public class ComposerTest {
     public void aWitnessMayNotMoveARootInsideAnUnattestedArm()
             throws Exception {
         Path iteration = folder.newFolder("unattested").toPath();
-        Endpoint producer = Endpoint.of(PRODUCER, "PORT.key",
-                at("export#1", 0), 0);
-        Endpoint consumer = Endpoint.of(ANCHOR, "PORT.key",
-                at("attach#1", 0), 0);
-        // The producer ran CONCRETELY in both sessions -- its activation is
-        // not instrumented -- so the recording can say what it delivered and
-        // nothing about what it would have delivered.
-        session(iteration, "s0", false, "false", producer, consumer,
-                "vh", "false", null, false, false, "EXPR.v1.marker");
-        session(iteration, "s1", true, "true", producer, consumer,
-                "vh", "true", null, false, true, "EXPR.v1.marker");
+        LocationId cell = LocationId.of(LocationKind.INSTANCE, "5", "8");
+        // A STATE arm, which is where this rule still bites: the OBSERVED
+        // writer is stated whatever it is (it is what the run did), so an
+        // unattested one reaches the formula and carries the marker.  On a
+        // WIRE read the rule is now stronger and earlier -- a read no
+        // attested arm delivers is refused by name and its path never
+        // enters the disjunction at all (Composer.handoffRead) -- so the
+        // witness this test is about cannot be built there.
+        for (String[] each : new String[][]{{"s0", "false", "false"},
+                {"s1", "true", "true"}}) {
+            boolean flip = "true".equals(each[2]);
+            Session session = new Session(iteration, each[0], flip);
+            // The WRITER ran CONCRETELY -- its activation is not
+            // instrumented -- so the recording can say what it wrote and
+            // nothing about what it would have written.
+            session.activation(PRODUCER, "thread#nn", flip, false);
+            session.marker(each[1]);
+            session.expression("EXPR.v1.marker", symbol(MARKER, "Z"));
+            session.write(Endpoint.of(PRODUCER, "Keys#put#1:WRITE",
+                            at("put#1", 0), 0), cell, 1L,
+                    "EXPR.v1.marker");
+            session.read(Endpoint.of(ANCHOR, "Keys#get#1:READ",
+                            at("get#1", 0), 0), cell, 1L, "vh", "Z", null);
+            session.target("vh", flip, true);
+            session.write();
+        }
 
         Composer.Composition composition = compose(iteration, 8);
         assertTrue("the marker is inside an unattested arm",
@@ -773,7 +787,8 @@ public class ComposerTest {
     }
 
     // ------------------------------------------------------------------
-    // 5. Each path carries its own session's arrival.
+    // 5. Each path carries its own session's arrival -- and a read no
+    //    attested arm delivers is refused, never pinned to one.
     // ------------------------------------------------------------------
 
     @Test
@@ -787,10 +802,15 @@ public class ComposerTest {
                 {"s1", "20", "true"}}) {
             Session session = new Session(iteration, each[0],
                     "true".equals(each[2]));
+            // The producer's rows are stated, so its arm is attested and
+            // the read is bound to what it DELIVERED; the arrival is kept
+            // beside the path, one per session, because it is the pairing
+            // that run had and not a reason for it.
+            session.activation(PRODUCER);
             session.marker("false");
-            // No producer path is attested and no arm is published, so the
-            // arrival is all this session states -- and the two sessions
-            // recorded two different arrivals at the one attach.
+            session.expression("EXPR.v1.id", integer("I",
+                    Long.parseLong(each[1])));
+            session.export(producer, "EXPR.v1.id", 1L, each[1]);
             session.attach(consumer, "vh", "I", each[1], producer);
             session.target("true", false, true);
             session.write();
@@ -798,6 +818,15 @@ public class ComposerTest {
 
         Composer.Composition composition = compose(iteration, 4);
         assertEquals(2, composition.disjuncts().size());
+        for (Composer.Disjunct disjunct : composition.disjuncts()) {
+            String own = "s0".equals(disjunct.path().sessionId) ? "10" : "20";
+            assertTrue("this path states the arrival ITS OWN session "
+                            + "recorded: " + disjunct.path().sessionId + " "
+                            + composition.observedArrivals(
+                                    disjunct.path().pathId),
+                    composition.observedArrivals(disjunct.path().pathId)
+                            .toString().contains("vh " + own + ")"));
+        }
         Z3 solver = solver();
         for (Composer.Disjunct disjunct : composition.disjuncts()) {
             List<String> pinned = new ArrayList<String>(
@@ -808,6 +837,29 @@ public class ComposerTest {
                     "sat", solver.ask(composition.query(pinned),
                             Collections.<String>emptyList(), false).status());
         }
+
+        // AND THE OTHER HALF OF THE ONE RULE.  The same two sessions with
+        // no rows for the producer at all: nothing attests what it
+        // delivered, so the read is refused BY NAME and neither path
+        // enters the disjunction.  Binding it to the literal each session
+        // happened to receive is the pin this composer no longer makes --
+        // an arrival is the value, and the question the path asks is
+        // whether the producer could have delivered another one.
+        Path unstated = folder.newFolder("arrivals-unstated").toPath();
+        for (String[] each : new String[][]{{"s0", "10", "false"},
+                {"s1", "20", "true"}}) {
+            Session session = new Session(unstated, each[0],
+                    "true".equals(each[2]));
+            session.marker("false");
+            session.attach(consumer, "vh", "I", each[1], producer);
+            session.target("true", false, true);
+            session.write();
+        }
+        Composer.Composition refused = compose(unstated, 4);
+        assertTrue("no path rests on an arrival: " + refused.disjuncts(),
+                refused.disjuncts().isEmpty());
+        assertTrue("and the refusal is named: " + refused.gaps(),
+                named(refused.gaps(), GapKind.UNATTESTED_ARM));
 
         // R1: ATTESTATION IS THE PRODUCER'S PROPERTY.  The same two paths,
         // where the SEED instrumented the producer and the focused replay
@@ -1035,7 +1087,11 @@ public class ComposerTest {
             // An attach the wire delivered to and the recording cannot
             // pair, and one whose Java type names no scalar.
             session.attach(consumer, "vh", "I", "7", null);
-            session.attach(other, "vh_ref", "Lorg/apache/Foo;", "7", null);
+            // ANSWERED, because that is the only rule left that binds a
+            // handoff read to a literal: the arrival fallback is deleted,
+            // and an attach nothing attests is refused by name before a
+            // sort is ever asked for.
+            session.answered(other, "vh_ref", "Lorg/apache/Foo;", "7", null);
             // A read of ONE associative cell, joined to a write of the
             // WHOLE map at the version it observed.  The location names
             // its key by hash, so which entry the read returned is not
@@ -2307,6 +2363,22 @@ public class ComposerTest {
                     String arrival, Endpoint producer) {
             attaches.add(AttachRow.of(id, ++seq, endpoint, symbol, javaType,
                     arrival, false, null, producer, "corr-" + symbol,
+                    producer == null ? "" : "HANDLE"));
+        }
+
+        /**
+         * An attach an OBLIGATION answered: the mint was planted.
+         *
+         * <p>The one place a handoff read is still bound to a literal, and
+         * the literal is the wave's assignment and not the arrival: what
+         * the replay was told to receive is a fact about the question that
+         * was asked, so the sort the row states has to place it
+         * ({@code Composer.bind}).</p>
+         */
+        void answered(Endpoint endpoint, String symbol, String javaType,
+                      String value, Endpoint producer) {
+            attaches.add(AttachRow.of(id, ++seq, endpoint, symbol, javaType,
+                    value, true, value, producer, "corr-" + symbol,
                     producer == null ? "" : "HANDLE"));
         }
 

@@ -235,7 +235,8 @@ final class FlipQuery {
         }
     }
 
-    private static final class Builder {
+    private static final class Builder
+            implements FlipQueryText.Scope {
         private final Corpus corpus;
         private final Task task;
         private final Corpus.RecordedPath path;
@@ -362,10 +363,49 @@ final class FlipQuery {
                                 + "with a value the chain does not reach",
                         flipped);
             }
+            // A QUERY THAT ASKS NOTHING IS NOT SENT.  `sorts` is this
+            // query's own variable table -- one entry per root, clock,
+            // handoff control and movable read it renamed -- and it is
+            // what z3 is asked to read back ({@code modelSymbols}).  Empty,
+            // the question is "is the complement of this decision
+            // satisfiable" over a formula in which every name is a
+            // definition or a fact the recording pins, so the answer is
+            // entailed by the recording alone and no arm of it is a world
+            // the corpus lacks: an unsat here would publish "no world of
+            // this corpus takes the other arm" about a decision nothing
+            // declared could move, and a sat would hand back a model with
+            // no value in it, which is the seed replay under another name
+            // (the same fact {@code recordedValuation} names after the
+            // solver has run).
+            //
+            // 18 of the 36 wave-0 obligations of hdfs-11741 campaign #4
+            // are this, all of them the receive loop's null test
+            // (`addKeys#u21`), and every one was sent and answered UNSAT.
+            // Their queries carry 8 to 12 declarations, all of them the
+            // session lowering's own: a `container_dag__` define-fun over
+            // a recorded `identity__` constant, with the session's own
+            // identity fact `(not (= identity__... nullRef))` beside it.
+            // So they are not a v_C or v_H question with freedom in it --
+            // there is no variable at all -- and the flip is refused here
+            // instead of being spent on the solver.
+            if (sorts.isEmpty()) {
+                return refuse(GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
+                        ExploreCodec.EXPLORATION,
+                        flipped.siteId() + "#" + flipped.ordinal(),
+                        "this query declares no variable of its own: no "
+                                + "root, no clock, no handoff control and no "
+                                + "movable read reaches the flipped "
+                                + "predicate, so whichever arm it is the "
+                                + "answer is the recording's own facts and "
+                                + "not a world this corpus lacks",
+                        flipped);
+            }
             // One walk, for both read-back maps: the roots and the clocks
             // of one query are projected by one notion of reached.
             Set<String> reached = reachedVariables();
-            return new Built(render(flipped, flipIndex),
+            return new Built(FlipQueryText.render(corpus, task,
+                    path, lowered, this, meaning, sorts, asserted(),
+                    flipped, flipIndex),
                     new ArrayList<String>(sorts.keySet()), "", flipped,
                     new ArrayList<Control>(controls.values()),
                     reached(rootVariables, reached),
@@ -405,8 +445,8 @@ final class FlipQuery {
          * <p>The assertions as they stand, plus the subterms they name --
          * one term reaches its leaves through the bodies of the shared
          * definitions it mentions, and those bodies are spelled in this
-         * query's variables once renamed, exactly as {@link #render} emits
-         * them.  {@link #rootFacts} is not among the texts: a root's own
+         * query's variables once renamed, exactly as {@link FlipQueryText}
+         * emits them.  {@link #rootFacts} is not among the texts: a root's own
          * window is not a reason to keep the root.</p>
          */
         private Set<String> reachedVariables() {
@@ -414,7 +454,8 @@ final class FlipQuery {
             for (String assertion : assertions) {
                 SmtLowering.symbols(assertion, names);
             }
-            for (String line : statedDeclarations(assertions)) {
+            for (String line : FlipQueryText.statedDeclarations(corpus,
+                    lowered, this, assertions)) {
                 SmtLowering.symbols(line, names);
             }
             return names;
@@ -432,7 +473,8 @@ final class FlipQuery {
         }
 
         /** Whether the rendered query already states this name. */
-        private boolean stated(String name, String sessionId) {
+        @Override
+        public boolean stated(String name, String sessionId) {
             if (SmtLowering.preambleNames().contains(name)) return true;
             SmtLowering lowering = corpus.lowering(sessionId);
             return lowering != null && lowering.minted(name);
@@ -873,7 +915,8 @@ final class FlipQuery {
                     name -> stated(name, sessionId), unknown);
         }
 
-        private Map<String, String> renamesOf(String sessionId) {
+        @Override
+        public Map<String, String> renamesOf(String sessionId) {
             Map<String, String> held = renames.get(sessionId);
             if (held == null) {
                 held = new LinkedHashMap<String, String>();
@@ -1049,8 +1092,25 @@ final class FlipQuery {
 
         private Built refuse(GapKind kind, String subject, String detail,
                              DecisionRow flipped) {
-            gaps.add(GapRow.of(path.sessionId, kind, GapClass.BLOCKING,
-                    subject, detail));
+            return refuse(kind, GapClass.BLOCKING, path.sessionId, subject,
+                    detail, flipped);
+        }
+
+        /**
+         * The same refusal, filed where the fact belongs.
+         *
+         * <p>A refusal about the RECORDING -- a flipped predicate naming
+         * something no row declares, a symbol the chain does not reach --
+         * is that session's, and blocking.  A refusal about THE QUESTION
+         * THIS WAVE ASKED is the wave's, and diagnostic: no execution went
+         * wrong, the wave offered a flip that is not an obligation.  Both
+         * end the build the same way, with the refusal in {@code Built}, so
+         * the query is not sent.</p>
+         */
+        private Built refuse(GapKind kind, GapClass cls, String sessionId,
+                             String subject, String detail,
+                             DecisionRow flipped) {
+            gaps.add(GapRow.of(sessionId, kind, cls, subject, detail));
             return new Built("", Collections.<String>emptyList(),
                     kind.name() + ":" + subject, flipped,
                     new ArrayList<Control>(controls.values()), rootVariables,
@@ -1113,99 +1173,5 @@ final class FlipQuery {
             }
         }
 
-        /**
-         * Exactly the declarations these texts reach, in this query's own
-         * variables.
-         *
-         * <p>A lowering is cached per session and answers many questions, so
-         * emitting all of its declarations would state symbols this query
-         * does not conjoin, and a reader cannot tell those from the ones the
-         * query rests on.  Deduplicated by line: two sessions share a minted
-         * name only when the definition is literally the same closed term,
-         * because the digest is over the scoped text.</p>
-         */
-        private Set<String> statedDeclarations(List<String> texts) {
-            Set<String> stated = new LinkedHashSet<String>();
-            for (String sessionId : lowered) {
-                SmtLowering lowering = corpus.lowering(sessionId);
-                if (lowering == null) continue;
-                Map<String, String> rename = renamesOf(sessionId);
-                for (SmtLowering.Declaration declaration
-                        : lowering.reachedBy(texts)) {
-                    // A recorded symbol the query bound is declared by the
-                    // query, under its own variable, once.
-                    if (rename.containsKey(declaration.name)) continue;
-                    stated.add(declaration.body.isEmpty()
-                            ? declaration.render()
-                            : "(define-fun " + declaration.name + " () "
-                            + declaration.sort + " "
-                            + SmtLowering.rename(declaration.body, rename,
-                            name -> stated(name, sessionId),
-                            new LinkedHashSet<String>()) + ")");
-                }
-            }
-            return stated;
-        }
-
-        private String render(DecisionRow flipped, int flipIndex) {
-            StringBuilder text = new StringBuilder();
-            text.append("; task ").append(task.taskId())
-                    .append(" focused ").append(task.focused().render())
-                    .append('\n');
-            text.append("; path ").append(path.pathId).append(" session ")
-                    .append(path.sessionId).append('\n');
-            text.append("; flip ").append(flipped.siteId()).append('#')
-                    .append(flipped.ordinal()).append(" recorded ")
-                    .append(flipped.outcome()).append(" -> ")
-                    .append(!flipped.outcome()).append(" after ")
-                    .append(flipIndex).append(" prefix decisions\n");
-            for (Map.Entry<String, String> entry : meaning.entrySet()) {
-                text.append("; ").append(entry.getKey()).append(" = ")
-                        .append(entry.getValue()).append('\n');
-            }
-            // The lowering's own preamble, then EXACTLY the declarations
-            // this query's texts reach ({@link #statedDeclarations}).
-            List<String> assertions = asserted();
-            Set<String> declarations = statedDeclarations(assertions);
-            // WHAT THIS QUERY REACHES: its assertions, the declarations
-            // they reach, and the sorts of its own variables -- which is
-            // what decides the part of the preamble the query states
-            // (SmtLowering#reachedPreamble, the same rule the composed
-            // query is written by).
-            List<String> reaching = new ArrayList<String>(assertions);
-            reaching.addAll(declarations);
-            reaching.addAll(sorts.values());
-            Set<String> opening = new LinkedHashSet<String>();
-            for (String sessionId : lowered) {
-                SmtLowering lowering = corpus.lowering(sessionId);
-                if (lowering == null) continue;
-                opening.addAll(SmtLowering.reachedPreamble(
-                        lowering.preambleLines(), reaching));
-            }
-            if (opening.isEmpty()) opening.add("(set-logic ALL)");
-            for (String line : opening) text.append(line).append('\n');
-            // The query's OWN variables before the definitions: a renamed
-            // subterm body names them, and a define-fun over a constant
-            // nothing has declared yet is an error that cascades into every
-            // definition above it.
-            for (Map.Entry<String, String> entry : sorts.entrySet()) {
-                text.append("(declare-fun ").append(entry.getKey())
-                        .append(" () ").append(entry.getValue()).append(")\n");
-            }
-            for (String line : declarations) {
-                text.append(line).append('\n');
-            }
-            for (String assertion : assertions) {
-                text.append("(assert ").append(assertion).append(")\n");
-            }
-            // No check-sat here: the body is the formula, and what is
-            // ASKED of it -- the verdict, then the values of the variables
-            // this query declared -- is the one z3 driver's own text
-            // ({@link Z3#modelQuery}), so the published query is the
-            // question that was actually solved and not a second one.
-            // A name SMT-LIB cannot spell bare is quoted, once, on the way
-            // out -- the same routine the composed query is rendered by.
-            return SmtLowering.legalSymbols(text.toString());
-        }
     }
 }

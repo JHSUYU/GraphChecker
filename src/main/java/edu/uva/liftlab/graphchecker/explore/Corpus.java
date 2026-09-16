@@ -555,7 +555,16 @@ public final class Corpus implements Arms.Rows {
         return Collections.unmodifiableMap(declaredSymbols);
     }
 
-    /** Clock cell symbol -> session id -> the instant that session read. */
+    /**
+     * Clock ROOT ID -> session id -> the instant that session read.
+     *
+     * <p>The outer key is the root id a {@code DecisionRow} keys its
+     * readings by ({@code REGION.<region>.in.<input>}), not a solver
+     * symbol: the symbol is the MINT's, one per (root, occurrence), and is
+     * the same in every session that read that root, which is why a
+     * consumer turning these rows into assertions states one per CELL and
+     * not one per (root, session) ({@code Composer#clocks}).</p>
+     */
     public Map<String, Map<String, Long>> clockCells() {
         return Collections.unmodifiableMap(clockCells);
     }

@@ -58,9 +58,12 @@ import java.util.Set;
  *       conjunct.</li>
  *   <li><b>Prefix</b> — the producer's decisions with {@code seq} below the
  *       export's: what that replay had decided by the time it delivered.</li>
- *   <li><b>Attestation (R-I5)</b> — an arm from a run whose producer
- *       occurrence has no decisions is UNATTESTED: it states what was
- *       delivered, and no witness may move a root inside it.</li>
+ *   <li><b>Attestation (R-I5)</b> — an arm is ATTESTED when the arm's
+ *       session STATES the producer occurrence's rows: an activation row
+ *       for it, instrumented, so its decisions are recorded.  An arm from
+ *       a session that states no such row is UNATTESTED: it states what
+ *       was delivered, and no witness may move a root inside it.  See
+ *       {@link #attested}.</li>
  *   <li><b>Nested handoffs</b> — a producer forwards what it was handed, so
  *       an expression may mention another slot's variable; those slots are
  *       closed transitively, to a fixed point.</li>
@@ -471,8 +474,9 @@ public final class Arms {
      * do not state is UNKNOWN, and unknown is answered {@code false} here,
      * so a caller asking "is a before b" never reads absence as order.</p>
      *
-     * <p>An EVENT is a ROW, and the row carries its own {@code seq}; the
-     * caller passes it, because an ENDPOINT is not an event.  An endpoint is
+     * <p>An EVENT is a ROW, and the row carries its own {@code seq}, which
+     * is 0 when the runtime could not number it; the caller passes it,
+     * because an ENDPOINT is not an event.  An endpoint is
      * {@code (occurrence, site, siteIndex, attempt)} and a site the runtime
      * does not stand at carries no site index, so ONE endpoint id names every
      * event of that site in that occurrence -- 11741's
@@ -496,7 +500,17 @@ public final class Arms {
         // first.
         if (left.id().equals(right.id())
                 || sameThread(session, left, right)) {
-            return aSeq >= 0L && bSeq >= 0L && aSeq < bSeq;
+            // AN UNNUMBERED ROW IS NOT ORDERED.  A row the runtime could
+            // not number states seq 0 and never borrows the run's
+            // high-water mark (runtime.RowRuntime.sequence, M-R3), so 0
+            // means "this event has no place in the session's order", not
+            // "it happened first".  Compared with >= 0 it was an ancestor
+            // of every numbered row on its thread -- an ordering nothing
+            // states -- and unknown answered as ordered is how a reorder
+            // gets refused, or admitted, for a reason no recording gives.
+            // Both sides must be numbered; otherwise the answer is the
+            // same "not before" every other unstated ordering gets here.
+            return aSeq > 0L && bSeq > 0L && aSeq < bSeq;
         }
         if (!chainKnown(session, left) || !chainKnown(session, right)) {
             return false;
@@ -603,25 +617,39 @@ public final class Arms {
     }
 
     /**
-     * Whether this session explored that occurrence symbolically.
+     * Whether this session STATES the rows of that occurrence.
      *
-     * <p>An arm is ATTESTED when the recording can say what the producer
-     * would have done, not merely what it did -- and that is a property of
-     * how the replay ran it, not of how many branches it happened to meet.
-     * The activation must be INSTRUMENTED, and the occurrence must have run
-     * symbolically in this session: in the seed, where every instrumented
-     * region is symbolic, or as the focus of the task that drove an
-     * exploration replay.  A symbolic straight-line region with no decision
-     * at all is attested, which "has decisions" got wrong; decisions
-     * present remain a corroboration and never the criterion.</p>
+     * <p>ONE RULE, and it is about the rows and nothing else: the session
+     * has an activation row for the occurrence and that activation is
+     * INSTRUMENTED, so its decisions are recorded.  An instrumented
+     * occurrence with no decision has an EMPTY prefix, which is a stated
+     * pi that is trivially true -- not an absent one.</p>
+     *
+     * <p>The {@code focused() || seed} conjunct that used to stand here is
+     * gone, and it is the conjunct every unattested arm of both frozen
+     * corpora failed on: 616 of hdfs-11741 campaign #4's 668 arms and 2 of
+     * hdfs-17960 campaign #8's 12 state arms, with an activation row
+     * present and {@code instrumented=true} in every one of them.  What it
+     * asked was whether the occurrence was THE FOCUS of that replay, which
+     * is a fact about what the wave wanted explored, not about what the
+     * recording states.  A non-focused occurrence in an instrumented
+     * session RAN CONCRETELY AND WAS RECORDED: its decisions are in the
+     * rows, its prefix is a prefix over decisions whose outcomes are the
+     * ones it took, and the arm it gives is (that prefix, the delivered
+     * expression) guarded by that session's own valuation -- a legitimate
+     * arm, and the only thing that carries the clock-bearing occurrences
+     * of hdfs-11741 into a path at all.</p>
+     *
+     * <p>What is still NOT attested: an occurrence this session has no
+     * activation row for (the session did not run it, so it states
+     * nothing), and one whose activation is not instrumented (it ran
+     * outside the woven classes, so no decision of it was ever
+     * published).</p>
      */
     public boolean attested(String session, OccurrenceAddress occurrence) {
         ActivationRow activation = rows.activationOf(session,
                 occurrence.id());
-        if (activation == null || !activation.instrumented()) return false;
-        if (activation.focused()) return true;
-        String seed = rows.seedSessionId();
-        return seed != null && seed.equals(session);
+        return activation != null && activation.instrumented();
     }
 
     /**
@@ -629,15 +657,14 @@ public final class Arms {
      *
      * <p>Attestation is a property of the PRODUCER's run, not of the
      * consumer's: what the recording can say about that occurrence it says
-     * in whichever session explored it symbolically, and every session of
-     * one corpus replays one workload.  So a consumer whose own replay
-     * focused elsewhere is not thereby left with the literal it happened to
-     * receive -- the corpus does state where that literal came from, in the
-     * session that ran the producer symbolically (the seed, which attests
-     * every instrumented occurrence, or the focused replay whose focus it
-     * was).  Requiring the CONSUMER's session to attest the producer is
-     * what kept nn0's expressions out of every dn1 path but the seed's on
-     * hdfs-11741 campaign #3.</p>
+     * in whichever session's rows state it, and every session of one
+     * corpus replays one workload.  So a consumer whose own replay focused
+     * elsewhere is not thereby left with the literal it happened to
+     * receive -- the corpus does state where that literal came from, in
+     * every session whose rows state that producer.  Requiring the
+     * CONSUMER's session to attest the producer is what kept nn0's
+     * expressions out of every dn1 path but the seed's on hdfs-11741
+     * campaign #3.</p>
      *
      * <p>The SEED's export first, then the corpus's own order: the seed is
      * the recording, so its delivery is the fact a claim about the
