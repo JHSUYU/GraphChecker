@@ -141,7 +141,7 @@ final class WireExport {
             HandoffResult result = attach(owner, declaringClass,
                     fieldName, descriptor, carried.handle());
             if (result.ok()) {
-                ConcolicRegionRuntime.recordVmHandoffEvent(declared, result, owner, declaringClass,
+                HandoffMint.mintDelivered(declared, result, owner, declaringClass,
                         fieldName, descriptor, carried.producerTaskId(),
                         carried.producerOccurrenceId());
             }
@@ -429,7 +429,7 @@ final class WireExport {
             // bug3 the flip replay of the target published zero handoff
             // rows, the fatal read still found the recorded key, and the
             // obligation ended REPLAY_NOT_ADMITTED with no primary case.
-            ConcolicRegionRuntime.mintArrivedCommunicationLeaf(site, carrier, field, descriptor);
+            HandoffMint.mintArrived(site, carrier, field, descriptor);
             return;
         }
         attachDeclaredCommunicationExpression(carrier, ConcolicRegionRuntime.CARRIER_CLASS, field,
