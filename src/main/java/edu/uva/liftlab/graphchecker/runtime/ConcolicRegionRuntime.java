@@ -28,6 +28,15 @@ import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveBoxing;
 import edu.uva.liftlab.graphchecker.plan.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.runtime.RowRuntime;
 import edu.uva.liftlab.graphchecker.runtime.Interactions;
+import edu.uva.liftlab.graphchecker.runtime.FieldAccess.MissingValue;
+
+import static edu.uva.liftlab.graphchecker.runtime.FieldAccess.declaredInstanceField;
+import static edu.uva.liftlab.graphchecker.runtime.FieldAccess.exactFieldSignature;
+import static edu.uva.liftlab.graphchecker.runtime.FieldAccess.freshPrimitiveBox;
+import static edu.uva.liftlab.graphchecker.runtime.FieldAccess.instanceOfName;
+import static edu.uva.liftlab.graphchecker.runtime.FieldAccess.readExactField;
+import static edu.uva.liftlab.graphchecker.runtime.FieldAccess.resolveFieldPathLeafOwner;
+import static edu.uva.liftlab.graphchecker.runtime.ModelValues.isPrimitiveBox;
 
 import edu.uva.liftlab.graphchecker.plan.SiteId;
 import edu.uva.liftlab.graphchecker.runtime.ConcolicTaskPlan.RuntimeTask;
@@ -4270,10 +4279,10 @@ public final class ConcolicRegionRuntime {
         String assigned = focusedRootValue(active, action.symbol, concrete);
         Object planted = concrete;
         if (!assigned.isEmpty()) {
-            Object modeled = coerceModelValue("", assigned,
+            Object modeled = ModelValues.coerce("", assigned,
                     concrete == null ? null : concrete.getClass());
             if (modeled == null
-                    || modeled == UnsupportedReplayValue.INSTANCE) {
+                    || modeled == ModelValues.UnsupportedReplayValue.INSTANCE) {
                 RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind
                                 .UNPRODUCIBLE_ANSWER,
                         edu.uva.liftlab.graphchecker.contract.GapClass
@@ -4330,124 +4339,15 @@ public final class ConcolicRegionRuntime {
         Field field = declaredInstanceField(owner, fieldSignature);
         if (field == null) return false;
         try {
-            Object modeled = coerceModelValue(valueType, value,
+            Object modeled = ModelValues.coerce(valueType, value,
                     field.getType());
-            if (modeled == UnsupportedReplayValue.INSTANCE) return false;
+            if (modeled == ModelValues.UnsupportedReplayValue.INSTANCE) {
+                return false;
+            }
             field.set(owner, modeled);
             return true;
         } catch (Throwable ignored) {
             return false;
-        }
-    }
-
-    static Object coerceModelValue(String valueType, String value,
-                                   Class<?> requestedType) {
-        String type = safe(valueType).toUpperCase();
-        String raw = safe(value).trim();
-        try {
-            // Reference null must be decided before type-specific String
-            // decoding.
-            if ((requestedType == null || !requestedType.isPrimitive())
-                    && ("NULL".equals(type)
-                    || "null".equalsIgnoreCase(raw))) {
-                return null;
-            }
-            if (requestedType == boolean.class
-                    || requestedType == Boolean.class
-                    || "BOOL".equals(type)) {
-                return "true".equalsIgnoreCase(raw) || "1".equals(raw);
-            }
-            if (requestedType == byte.class || requestedType == Byte.class) {
-                return Byte.valueOf(raw);
-            }
-            if (requestedType == short.class || requestedType == Short.class) {
-                return Short.valueOf(raw);
-            }
-            if (requestedType == char.class
-                    || requestedType == Character.class) {
-                return raw.length() == 1 ? raw.charAt(0)
-                        : (char) Integer.parseInt(raw);
-            }
-            if (requestedType == int.class || requestedType == Integer.class) {
-                return Integer.valueOf(raw);
-            }
-            if (requestedType == long.class || requestedType == Long.class
-                    || "INT".equals(type) && requestedType == null) {
-                return Long.valueOf(raw);
-            }
-            if (requestedType == float.class || requestedType == Float.class) {
-                String decimal = SmtModelValueCodec.realToJavaLiteral(raw);
-                return decimal == null ? UnsupportedReplayValue.INSTANCE
-                        : Float.valueOf(decimal);
-            }
-            if (requestedType == double.class || requestedType == Double.class
-                    || "REAL".equals(type) && requestedType == null) {
-                String decimal = SmtModelValueCodec.realToJavaLiteral(raw);
-                return decimal == null ? UnsupportedReplayValue.INSTANCE
-                        : Double.valueOf(decimal);
-            }
-            if (requestedType == String.class || "STRING".equals(type)) {
-                return SmtModelValueCodec.decodeString(raw);
-            }
-        } catch (RuntimeException ignored) {
-            return UnsupportedReplayValue.INSTANCE;
-        }
-        return UnsupportedReplayValue.INSTANCE;
-    }
-
-    private static boolean isPrimitiveBox(Object value) {
-        return value instanceof Boolean || value instanceof Byte
-                || value instanceof Short || value instanceof Character
-                || value instanceof Integer || value instanceof Long
-                || value instanceof Float || value instanceof Double;
-    }
-
-    static Object resolveFieldPathLeafOwner(Object root, List<String> path) {
-        if (root == null || path == null || path.isEmpty()) {
-            return MissingValue.INSTANCE;
-        }
-        Object current = root;
-        for (int index = 0; index + 1 < path.size(); index++) {
-            String field = safe(path.get(index)).trim();
-            if (field.isEmpty()) {
-                return MissingValue.INSTANCE;
-            }
-            current = readPathSegment(current, field);
-            if (current == null || current == MissingValue.INSTANCE) {
-                return current;
-            }
-        }
-        String leaf = safe(path.get(path.size() - 1)).trim();
-        return leaf.isEmpty() ? MissingValue.INSTANCE : current;
-    }
-
-    private static Object readPathSegment(Object receiver, String segment) {
-        if (receiver == null || segment == null || segment.isEmpty()) {
-            return MissingValue.INSTANCE;
-        }
-        Integer index = pathIndex(segment);
-        if (index != null && receiver.getClass().isArray()) {
-            return index >= 0 && index < Array.getLength(receiver)
-                    ? Array.get(receiver, index) : MissingValue.INSTANCE;
-        }
-        if (index != null && receiver instanceof List) {
-            List<?> values = (List<?>) receiver;
-            return index >= 0 && index < values.size()
-                    ? values.get(index) : MissingValue.INSTANCE;
-        }
-        return readField(receiver, segment);
-    }
-
-    private static Integer pathIndex(String segment) {
-        String value = safe(segment).trim();
-        if (value.startsWith("[") && value.endsWith("]")) {
-            value = value.substring(1, value.length() - 1).trim();
-        }
-        if (!value.matches("[0-9]+")) return null;
-        try {
-            return Integer.valueOf(value);
-        } catch (NumberFormatException ignored) {
-            return null;
         }
     }
 
@@ -4561,7 +4461,8 @@ public final class ConcolicRegionRuntime {
      *
      * <p>The primitive mint paths ({@link #materializePrimitiveValue},
      * {@link #materializeStaticPrimitiveField}) take no container test and
-     * need none: every caller gates on {@link #isPrimitiveBox} or on a
+     * need none: every caller gates on {@link ModelValues#isPrimitiveBox}
+     * or on a
      * primitive-typed field, so a container cannot reach them.</p>
      */
     private static boolean declaredContainerCell(Object value) {
@@ -4640,100 +4541,6 @@ public final class ConcolicRegionRuntime {
         return action != null
                 && RuntimeSelectedRegionFinalizer.COMMUNICATION_SITE_PORT
                 .equals(action.sourceKind);
-    }
-
-    private static Object readField(Object receiver, String name) {
-        if (receiver == null || name == null || name.isEmpty()) {
-            return MissingValue.INSTANCE;
-        }
-        Class<?> type = receiver.getClass();
-        while (type != null) {
-            try {
-                Field field = type.getDeclaredField(name);
-                if (Modifier.isStatic(field.getModifiers())) {
-                    return MissingValue.INSTANCE;
-                }
-                if (!field.isAccessible()) {
-                    field.setAccessible(true);
-                }
-                return field.get(receiver);
-            } catch (NoSuchFieldException ignored) {
-                type = type.getSuperclass();
-            } catch (Throwable throwable) {
-                return MissingValue.INSTANCE;
-            }
-        }
-        return MissingValue.INSTANCE;
-    }
-
-    static Object readExactField(
-            Object receiver, String fieldSignature) {
-        Field field = declaredInstanceField(receiver, fieldSignature);
-        if (field == null) return MissingValue.INSTANCE;
-        try {
-            return field.get(receiver);
-        } catch (Throwable ignored) {
-            return MissingValue.INSTANCE;
-        }
-    }
-
-    private static Field declaredInstanceField(
-            Object owner, String fieldSignature) {
-        DeclaredField declared = FieldPathSpec.declaredField(fieldSignature);
-        return declared == null ? null
-                : declaredInstanceField(owner, declared.owner(),
-                declared.name(), javaTypeDescriptor(declared.type()), true);
-    }
-
-    /** Exact live field named by a VM handoff export. */
-    private static Field declaredInstanceField(
-            Object owner, String declaringClass, String fieldName,
-            String descriptor) {
-        return declaredInstanceField(owner, declaringClass, fieldName,
-                descriptor, false);
-    }
-
-    /**
-     * The one non-static {@code declaringClass#fieldName} of {@code owner}
-     * whose type descriptor matches, made accessible.  {@code inherited} also
-     * accepts a field the declaring class inherits - which the field-signature
-     * form resolves and an exact VM export must not.
-     */
-    private static Field declaredInstanceField(
-            Object owner, String declaringClass, String fieldName,
-            String descriptor, boolean inherited) {
-        if (owner == null || safe(declaringClass).isEmpty()
-                || safe(fieldName).isEmpty() || safe(descriptor).isEmpty()) {
-            return null;
-        }
-        Class<?> type = owner.getClass();
-        while (type != null && !declaringClass.equals(type.getName())) {
-            type = type.getSuperclass();
-        }
-        while (type != null) {
-            try {
-                Field field = type.getDeclaredField(fieldName);
-                if (Modifier.isStatic(field.getModifiers())
-                        || !descriptor.equals(javaTypeDescriptor(
-                        field.getType().getTypeName()))) {
-                    return null;
-                }
-                if (!field.isAccessible()) field.setAccessible(true);
-                return field;
-            } catch (NoSuchFieldException absent) {
-                if (!inherited) return null;
-                type = type.getSuperclass();
-            } catch (Throwable inaccessible) {
-                return null;
-            }
-        }
-        return null;
-    }
-
-    private static String exactFieldSignature(Field field) {
-        return "<" + field.getDeclaringClass().getName() + ": "
-                + field.getType().getTypeName() + " " + field.getName()
-                + ">";
     }
 
     static ActiveRegion activeRegion() {
@@ -4854,51 +4661,6 @@ public final class ConcolicRegionRuntime {
     }
 
     @SuppressWarnings("deprecation")
-    private static Object freshPrimitiveBox(Object value) {
-        if (value instanceof Integer) {
-            return new Integer(((Integer) value).intValue());
-        }
-        if (value instanceof Boolean) {
-            return new Boolean(((Boolean) value).booleanValue());
-        }
-        if (value instanceof Long) {
-            return new Long(((Long) value).longValue());
-        }
-        if (value instanceof Byte) {
-            return new Byte(((Byte) value).byteValue());
-        }
-        if (value instanceof Short) {
-            return new Short(((Short) value).shortValue());
-        }
-        if (value instanceof Character) {
-            return new Character(((Character) value).charValue());
-        }
-        if (value instanceof Float) {
-            return new Float(((Float) value).floatValue());
-        }
-        if (value instanceof Double) {
-            return new Double(((Double) value).doubleValue());
-        }
-        if (value instanceof String) {
-            return new String((String) value);
-        }
-        return value;
-    }
-
-    private static boolean instanceOfName(Class<?> type, String expected) {
-        if (type == null || expected == null || expected.isEmpty()) {
-            return expected == null || expected.isEmpty();
-        }
-        if (expected.equals(type.getName())) {
-            return true;
-        }
-        for (Class<?> iface : type.getInterfaces()) {
-            if (instanceOfName(iface, expected)) {
-                return true;
-            }
-        }
-        return instanceOfName(type.getSuperclass(), expected);
-    }
 
     static boolean branchConditionMatches(String expression, boolean outcome,
                                           JsonElement condition) {
@@ -5153,10 +4915,6 @@ public final class ConcolicRegionRuntime {
         }
         return "";
     }
-
-    enum MissingValue { INSTANCE }
-
-    private enum UnsupportedReplayValue { INSTANCE }
 
     static final class AccessorCallContext {
         private final long contextToken;
