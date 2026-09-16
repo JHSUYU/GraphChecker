@@ -966,17 +966,6 @@ public final class Identity {
     }
 
     /**
-     * The endpoint of one work submission, for the row that names the
-     * thread-start edge (R-I7.1).
-     *
-     * @return the endpoint id, or {@code ""}
-     */
-    public static String workSubmitted(String nodeKey) {
-        Endpoint submission = endpoint(nodeKey, "SUBMIT", 0);
-        return submission == null ? "" : submission.id();
-    }
-
-    /**
      * The address of work that ran under no region this plan selected: its
      * role, on its node, at the path the thread stood on.
      *

@@ -1,8 +1,5 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
-import edu.uva.liftlab.graphchecker.smt.JsonFields;
-import edu.uva.liftlab.graphchecker.plan.FieldPathSpec;
-
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
@@ -396,37 +393,37 @@ final class SharedStateCapture {
     /**
      * Schema of the admitted record wrappers this vocabulary produces.
      */
-    static final int RECORD_SCHEMA_VERSION = 2;
+    private static final int RECORD_SCHEMA_VERSION = 2;
 
     /**
      * Envelope kind of one selected location's version store.
      */
-    static final String VERSIONS_ENVELOPE_KIND =
+    private static final String VERSIONS_ENVELOPE_KIND =
             "SHARED_FIELD_VERSIONS";
     /** Node type emitted where the VM serializer bounded one expression. */
     static final String TRUNCATED_EXPRESSION_TYPE =
             "TruncatedExpression";
     /** Authority proving that a truncated node came from the VM serializer. */
-    static final String VM_SERIALIZATION_TRUNCATION_AUTHORITY =
+    private static final String VM_SERIALIZATION_TRUNCATION_AUTHORITY =
             "VM_SERIALIZATION_TRUNCATION_V1";
 
     /** Kind of one admitted version-store record. */
-    static final String VERSIONS_RECORD_KIND =
+    private static final String VERSIONS_RECORD_KIND =
             "VM_SHARED_FIELD_VERSIONS_V1";
     /** Authority stamped on admitted version records. */
-    static final String RECORD_AUTHORITY =
+    private static final String RECORD_AUTHORITY =
             "VM_SHARED_STATE_EVIDENCE_V1";
 
     static final String STAGE_VERSIONS = "VERSIONS";
 
     static final int OK = 0;
 
-    // Declared VM carrier-selection refusals (sharedFieldVersions.hpp).
-    // Their numeric values are mirrored here so Java reports the same reason.
-    static final int SELECT_NO_ACTIVE_CONTEXT = -1;
-    static final int SELECT_FIELD_NOT_FOUND = -3;
-    static final int SELECT_UNSUPPORTED_TARGET = -4;
-    static final int INVOCATION_FAILED = -1001;
+    /**
+     * The one refusal this decoder raises on its own: an envelope it will
+     * not admit.  The VM's carrier-selection statuses are not mirrored here
+     * -- no call in this file can produce one -- and any status this build
+     * does not declare reads as {@link #UNDECLARED_REASON}.
+     */
     static final int MALFORMED_ENVELOPE = -1002;
     /** One expression root was serialized only up to the VM's safety bound. */
     static final int EXPRESSION_SERIALIZATION_TRUNCATED = -1007;
@@ -448,7 +445,7 @@ final class SharedStateCapture {
 
     private static final String REASON_PREFIX = "SHARED_STATE_";
     /** Reason used for any status this build does not declare. */
-    static final String UNDECLARED_REASON =
+    private static final String UNDECLARED_REASON =
             REASON_PREFIX + "UNDECLARED_STATUS";
 
     /** Location kind of one selected map's whole immutable state. */
@@ -488,14 +485,6 @@ final class SharedStateCapture {
         switch (status) {
             case OK:
                 return "";
-            case SELECT_NO_ACTIVE_CONTEXT:
-                return REASON_PREFIX + "NO_ACTIVE_CONTEXT";
-            case SELECT_FIELD_NOT_FOUND:
-                return REASON_PREFIX + "FIELD_NOT_FOUND";
-            case SELECT_UNSUPPORTED_TARGET:
-                return REASON_PREFIX + "UNSUPPORTED_TARGET";
-            case INVOCATION_FAILED:
-                return REASON_PREFIX + "INVOCATION_FAILED";
             case MALFORMED_ENVELOPE:
                 return REASON_PREFIX + "MALFORMED_ENVELOPE";
             case EXPRESSION_SERIALIZATION_TRUNCATED:
@@ -556,8 +545,23 @@ final class SharedStateCapture {
      * Names the location one version-store envelope describes, as the VM's
      */
     static String locationKey(JsonObject envelope) {
-        JsonObject location = object(envelope, "location");
-        if (location.size() == 0) return "";
+        return locationKeyOf(object(envelope, "location"));
+    }
+
+    /**
+     * The same key, for a location node anywhere the VM states one.
+     *
+     * <p>ONE spelling of a location and one admission of it: the write log's
+     * envelopes and the {@code location} member of every read node the
+     * expressions carry are the same statement by the same VM, and the row
+     * publication used to have a second reader of it that admitted any
+     * {@code locationKind} at all and defaulted an unknown one to
+     * {@code INSTANCE}.  A kind this build does not declare, an owner rid of
+     * zero, an absent slot, or a whole-state location at any slot but the
+     * reserved one, names no location -- and the caller refuses.</p>
+     */
+    static String locationKeyOf(JsonObject location) {
+        if (location == null || location.size() == 0) return "";
         String kind = optionalString(location, "locationKind");
         if (!LOCATION_KINDS.contains(kind)) return "";
         long owner = optionalLongInteger(location, "ownerSymRid", 0L);
@@ -567,6 +571,41 @@ final class SharedStateCapture {
             return "";
         }
         return kind + "/" + owner + "#" + slot;
+    }
+
+    /**
+     * The contract location one VM location key names, or {@code null}.
+     *
+     * <p>The kind is the VM's declared one, mapped member for member; there
+     * is no default, because an unrecognised kind published as
+     * {@code INSTANCE} is a location the write log spells differently and
+     * therefore a read that joins nothing.</p>
+     */
+    static edu.uva.liftlab.graphchecker.contract.LocationId locationId(
+            String locationKey) {
+        String key = safe(locationKey);
+        int separator = key.indexOf('/');
+        int slot = key.lastIndexOf('#');
+        if (separator <= 0 || slot <= separator) return null;
+        String kind = key.substring(0, separator);
+        edu.uva.liftlab.graphchecker.contract.LocationKind declared;
+        if ("INSTANCE_FIELD".equals(kind)) {
+            declared = edu.uva.liftlab.graphchecker.contract
+                    .LocationKind.INSTANCE;
+        } else if ("STATIC_FIELD".equals(kind)) {
+            declared = edu.uva.liftlab.graphchecker.contract
+                    .LocationKind.STATIC;
+        } else if ("ARRAY_ELEMENT".equals(kind)) {
+            declared = edu.uva.liftlab.graphchecker.contract
+                    .LocationKind.ARRAY;
+        } else if (LOCATION_KIND_MAP_STATE.equals(kind)) {
+            declared = edu.uva.liftlab.graphchecker.contract
+                    .LocationKind.MAP;
+        } else {
+            return null;
+        }
+        return edu.uva.liftlab.graphchecker.contract.LocationId.of(declared,
+                key.substring(separator + 1, slot), key.substring(slot + 1));
     }
 
     /** The declared kind of one location key, or "". */

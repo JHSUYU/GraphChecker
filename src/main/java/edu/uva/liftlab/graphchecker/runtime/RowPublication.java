@@ -2,15 +2,11 @@ package edu.uva.liftlab.graphchecker.runtime;
 
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
-import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.LocationId;
-import edu.uva.liftlab.graphchecker.contract.LocationKind;
+
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
-import edu.uva.liftlab.graphchecker.contract.ReadRow;
-import edu.uva.liftlab.graphchecker.contract.RootKind;
-import edu.uva.liftlab.graphchecker.plan.InputActionCatalog;
 import edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.ActiveRegion;
 import edu.uva.liftlab.graphchecker.runtime.RowRuntime;
 import java.util.IdentityHashMap;
@@ -25,6 +21,7 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalInteger;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalLongInteger;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.safe;
+import static edu.uva.liftlab.graphchecker.runtime.SharedStateCapture.locationId;
 
 /**
  * Publishes one finished activation as contract rows.
@@ -34,6 +31,14 @@ import static edu.uva.liftlab.graphchecker.causynth.MapFields.safe;
  * the per-kind row set the contract defines.  It reads only what the
  * activation already published, so nothing here changes the execution and
  * no row exists that the single-row result does not also state.</p>
+ *
+ * <p>{@link #publish} is the one entry point anywhere.  Two halves of the
+ * translation live beside it, because they are other notions and not other
+ * doors: {@link RowPlaceholderMint} answers what this activation MINTED,
+ * and {@link LoggedEventSites} answers where and by whom one event the VM
+ * logged happened.  What stays here is the decisions, the write and read
+ * rows, the anchor row, and the readers of the VM's own value spellings
+ * that all three share.</p>
  */
 final class RowPublication {
     private RowPublication() {
@@ -64,7 +69,7 @@ final class RowPublication {
             if ("decisions".equals(kind)) {
                 decisions(active, occurrence);
             } else if ("roots".equals(kind)) {
-                roots(active, occurrence);
+                RowPlaceholderMint.roots(active, occurrence);
             } else if ("state".equals(kind)) {
                 writes(active);
             } else {
@@ -112,484 +117,6 @@ final class RowPublication {
     }
 
     /**
-     * The roots this activation minted, and the placeholders it did not.
-     *
-     * <p>A DECLARED root is a marker, a clock or a configured source: the
-     * case names it and the search may move it.  A region's declared input
-     * is not a root at all -- it is a READ PLACEHOLDER, the symbol standing
-     * for what that read returned -- and publishing it as a root is what
-     * pins it: the composer pins every domain-less root to its recorded
-     * value, and a placeholder that is pinned AND joined to its writer's
-     * expression makes every moved valuation unsatisfiable.</p>
-     *
-     * <p>ONE ROOT PER SYMBOL, and it is the mint that MADE the symbol.  A
-     * declared read whose field already carried a propagated expression
-     * REUSES it -- {@code SymInstance::has_sym_exp} makes the mint a no-op
-     * and both runtime row shapes say {@code reused} -- so it minted no
-     * symbol of its own, and the only name {@link #vmSymbol} can give it is
-     * the first symbol leaf of the expression it read back, which is
-     * ANOTHER mint's symbol.  A root row over that name states one solver
-     * name for two quantities, and its {@code recordedValue} is the OTHER
-     * quantity's reading, which is what the composer pins the symbol to.
-     * </p>
-     */
-    private static void roots(ActiveRegion active,
-                              OccurrenceAddress occurrence) {
-        Map<String, String[]> installed = mintedLocations(active);
-        Set<String> stated = new LinkedHashSet<String>();
-        for (JsonObject row : active.symbolizedRows) {
-            String symbol = vmSymbol(row);
-            if (symbol.isEmpty()) continue;
-            stated.add(optionalString(row, "portId"));
-            // The declaration was reached and it IS symbolic -- its value is
-            // a term over the symbol it reused -- so there is nothing to
-            // refuse and nothing to name: what there is not is a second
-            // root.  On 11741's nn0 updateKeys the three expiry hooks read
-            // back timer.now() + k*keyUpdateInterval + tokenLifetime over
-            // the declared clock cell of that region, and each published a
-            // RootMintRow carrying the CLOCK's symbol, the EXPIRY's value
-            // and its own source id: six BLOCKING "one solver name for 2
-            // roots" refusals out of COMPOSE, and, had the composer got past
-            // them, the clock of every rotation pinned to an instant no
-            // clock read.  The second rotation's HDFS.BLOCK_KEY.SERIAL_NO is
-            // the same row without the collision -- same symbol, same source
-            // id, serial+1 as its reading -- so it silently moved the
-            // serial root's recorded value one rotation on.
-            if (!minted(row)) continue;
-            String sourceId = optionalString(row, "sourceId");
-            // The kind is read off the declaration, once
-            // (see #kindOf): a configured source states no javaType of its
-            // own and carries it on the symbol it minted, which is why a
-            // declared boolean root read INTEGRAL while the composer looked
-            // for a range with two values in it.
-            RootKind kind = kindOf(row);
-            if (sourceId.isEmpty() && kind == RootKind.INTEGRAL) {
-                placeholder(occurrence, row, symbol, installed);
-                continue;
-            }
-            String rootId = sourceId.isEmpty()
-                    ? optionalString(row, "portId") : sourceId;
-            RowRuntime.rootMint(mintOccurrence(row, occurrence),
-                    optionalLongInteger(row, "eventSeq", 0L), rootId, symbol,
-                    kind, literal(optionalString(row, "recordedValue")),
-                    optionalString(row, "domainMin"),
-                    optionalString(row, "domainMax"), true);
-        }
-        refusedDeclarations(active, occurrence, stated);
-    }
-
-    /**
-     * The occurrence a ROOT MINT row is addressed at.
-     *
-     * <p>The activation of the region whose plan OWNS the mint, which the
-     * mint stated when it ran ({@code ConcolicRegionRuntime.ActiveRegion
-     * #mintOccurrence}) because that is where the region stack was live.
-     * The publishing activation is not the answer: regions nest, and a mint
-     * site inside a method two regions both hold runs under whichever
-     * activation happened to be innermost, so the seed and a replay
-     * addressed one mint at two occurrences and the focus row's rootMints
-     * matched neither.</p>
-     *
-     * <p>A row the mint could not address states {@code ""} and is
-     * published where it was published, which is the same rule the
-     * declaring-region walk itself ends on.  A stamp this reader cannot
-     * parse is NAMED: it is a spelling the runtime wrote and nothing else
-     * could, so reading past it would hide a bug in one of the two.</p>
-     */
-    private static OccurrenceAddress mintOccurrence(
-            JsonObject row, OccurrenceAddress publishing) {
-        String stated = optionalString(row, "mintOccurrence");
-        if (stated.isEmpty()) return publishing;
-        OccurrenceAddress owner = OccurrenceAddress.parse(stated);
-        if (owner != null) return owner;
-        RowRuntime.gap(GapKind.DECLARATION_MISSING, GapClass.DIAGNOSTIC,
-                stated, "a mint stated an occurrence this row reader cannot "
-                        + "parse, so it is published at the activation that "
-                        + "held it: " + publishing.render());
-        return publishing;
-    }
-
-    /**
-     * Every declared region input this activation never symbolized.
-     *
-     * <p>A declaration the replay silently does not reach is the one
-     * failure mode that reads downstream as "this branch is concrete":
-     * hdfs-17960's empty phi was exactly that, a declared read that neither
-     * minted nor refused.  The row names the port so the absence is
-     * answerable from the session rather than from a replay trace.</p>
-     */
-    private static void refusedDeclarations(ActiveRegion active,
-                                            OccurrenceAddress occurrence,
-                                            Set<String> stated) {
-        for (ConcolicRegionRuntime.SymbolizeAction action
-                : active.activation.symbolize) {
-            if (!action.declaredSymbolicRoot
-                    || stated.contains(action.symbol)) {
-                continue;
-            }
-            RowRuntime.gap(GapKind.DECLARATION_MISSING, GapClass.DIAGNOSTIC,
-                    action.symbol, "a declared region input was never"
-                            + " symbolized in this activation: site="
-                            + action.siteId + " cell=" + action.cell);
-        }
-    }
-
-    /**
-     * One declared region input, as the read it stands for.
-     *
-     * <p>The symbol is the placeholder the mint installed; the location is
-     * the field it was installed on; the value is what the field held when
-     * it was.  A reader joins it to the write of that location exactly as
-     * it joins any other read.</p>
-     */
-    private static void placeholder(OccurrenceAddress occurrence,
-                                    JsonObject row, String symbol,
-                                    Map<String, String[]> installed) {
-        String signature = optionalString(row, "fieldSignature");
-        // A read placeholder, session-wide, so no activation's write log
-        // offers the mint's own version as a write of that location.
-        RowRuntime.placeholderSymbol(symbol);
-        // The location is the VM's own -- owner rid, slot offset -- so this
-        // read and every write of the same storage spell one location.
-        // Naming the Java field signature instead left the read saying
-        // AtomicInteger#value while the write log said
-        // INSTANCE_FIELD/<rid>#<offset>.
-        // The mint this row is of, found by the symbol when the row carries
-        // the VM's own (an integral mint states its rawSymbol) and by the
-        // name the runtime REQUESTED otherwise: the VM answers a request for
-        // `field_<portId>` with `M_<sort>_field_<portId>`, so a reference
-        // mint -- whose row states no rawSymbol and whose expression leaf is
-        // the identity spelling `P_L'...'` -- is the same mint under the
-        // same request.  One spelling per symbol: the row publishes the VM's
-        // (which is what the version's expression and expressions.json
-        // carry), never the identity leaf.
-        String[] installedAt = installed.get(symbol);
-        String minted = symbol;
-        if (installedAt == null) {
-            String requested = "_field_" + optionalString(row, "symbol");
-            for (Map.Entry<String, String[]> mint : installed.entrySet()) {
-                if (!mint.getKey().endsWith(requested)) continue;
-                installedAt = mint.getValue();
-                minted = mint.getKey();
-                break;
-            }
-        }
-        String locationKey = installedAt == null ? "" : installedAt[0];
-        LocationId location = location(locationKey);
-        // The version this read OBSERVED.  The mint's own version is not a
-        // write -- nobody stored it, and no WriteRow states it (see
-        // #mintStores) -- so the version the read observed is the last
-        // REAL write of the location before it, which the VM's version log
-        // already holds.  That is what makes this row a JOIN to the writer
-        // occurrence: on hdfs-17960 the two deletion occurrences write the
-        // counter and the anchor reads what they left.  When no write
-        // precedes the mint the row states -1 and pins the plain decimal,
-        // which is the never-neither rule and not an invented version.
-        long observed = location == null ? ReadRow.UNKNOWN_VERSION
-                : Long.parseLong(installedAt[2]);
-        if (location == null) {
-            JsonObject read = nestedRead(row.get("expression"), 0);
-            locationKey = read == null ? ""
-                    : locationKey(object(read, "location"));
-            location = location(locationKey);
-            observed = location == null ? ReadRow.UNKNOWN_VERSION
-                    : versionOf(read);
-        }
-        if (location == null) {
-            locationKey = signature;
-            location = fieldLocation(signature);
-        }
-        if (location == null) {
-            RowRuntime.gap(GapKind.DECLARATION_MISSING, GapClass.DIAGNOSTIC,
-                    symbol, "a declared region input states no field to"
-                            + " read: " + optionalString(row, "portId"));
-            return;
-        }
-        String declared = javaDescriptor(optionalString(row, "javaType"));
-        String sort = mintedSort(minted);
-        if (!sort.isEmpty() && sort.charAt(0) != declared.charAt(0)) {
-            // The mint symbolized the OBJECT, not the cell: on hdfs-17960
-            // REGION.9492ec77 declares <Snapshot: int id> and the row came
-            // back with the VM's reference symbol P_L'...Snapshot'_ beside
-            // javaType I, so one row stated an int read and a reference
-            // unknown.  A reader that declares the symbol by the row's type
-            // and resolves it by the table's gets two sorts for one name,
-            // which no lowering can hold; the run states the disagreement
-            // instead of a row that hides it.
-            RowRuntime.gap(GapKind.DECLARATION_MISSING, GapClass.DIAGNOSTIC,
-                    minted, "a declared region input minted a " + sort
-                            + "-sorted symbol for a " + declared + " cell ("
-                            + optionalString(row, "fieldSignature")
-                            + "), so this read states no one sort: "
-                            + optionalString(row, "portId"));
-            return;
-        }
-        String value = optionalString(row, "observedValue");
-        if (value.isEmpty()) value = optionalString(row, "recordedValue");
-        if (value.isEmpty() && declared.charAt(0) == 'L') {
-            // A reference cell records no decimal.  What the run states of
-            // it is the identity the VM spells on the leaf -- the same
-            // spelling FieldAccess.concreteValue carries, so one identity
-            // lowering serves both -- and "N" for null.
-            String identity = symbolLeaf(row.get("expression"), 0);
-            if (identity.startsWith("M_L'") || identity.startsWith("P_L'")
-                    || "N".equals(identity)) {
-                value = identity;
-            }
-        }
-        if (observed < 0L && literal(value).isEmpty()) {
-            RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
-                    symbol, "a declared region input states no value it"
-                            + " read: " + optionalString(row, "portId"));
-            return;
-        }
-        // ONE ROW PER MINT, and a mint's identity in a session is the
-        // version it installed: the VM's version counter hands out one
-        // number per store, so two mints can never share it and one mint
-        // can never have two.  Nothing coarser will do.  The occurrence is
-        // not an identity here -- the anchor region's two FSImageSaver
-        // activations share one OccurrenceAddress (the thread-start frame
-        // carries no loop iteration, P2h), each mints the declared counter
-        // once, and keying on (occurrence, location, read-event ordinal)
-        // called the second activation's mint a duplicate of the first:
-        // its version was then stated by no row at all and every read that
-        // observed it lost its join (17960 corpus 4404a4af: v138 stated,
-        // v149 not, `ADMISSION_GAP: 2 paths reached the anchor and all were
-        // refused: INSTANCE/1#24@149`).  Two ports of one activation are
-        // two mints for the same reason.  A second row for the SAME
-        // mintVersion is the one real duplicate, and it is named.
-        long event = optionalLongInteger(row, "eventSeq", 0L);
-        long mintVersion = installedAt == null ? ReadRow.UNKNOWN_VERSION
-                : Long.parseLong(installedAt[1]);
-        // The key is the mint's own store: (location, version), which is
-        // exactly the key #mintStores and #mintedLocations already suppress
-        // and state it by, so the row, the suppression and the composer's
-        // ReadFrom@(L, v) resolution all name one thing.  Version alone
-        // would do in a real session -- the VM hands out one version per
-        // store from the session counter it shares with read events -- and
-        // the location only refines it, never merges two mints of one
-        // location, which is the case this key exists for.
-        // A mint the VM stated no version for has no store to name, so it
-        // answers to the symbol it installed -- its only other name.  Such
-        // a row is already a stated failure downstream (contract v2.4
-        // invariant 7: a placeholder states the version it mints), so
-        // nothing is hidden by keying it.
-        String mintKey = mintVersion < 0L ? "symbol#" + safe(minted)
-                : locationKey + "#" + mintVersion;
-        if (!RowRuntime.claimEvent("placeholder", mintKey)) {
-            RowRuntime.gap(GapKind.DECLARATION_MISSING, GapClass.DIAGNOSTIC,
-                    symbol, "this session already states the mint "
-                            + mintKey + ", so this row states no second"
-                            + " value for it: "
-                            + optionalString(row, "portId"));
-            return;
-        }
-        // WHERE IN THE RUN this row sits is the VM event that created the
-        // mint: version ids and read event ids are handed out by one monotone
-        // session counter (REPORT-P2EF), so the mint's version IS its event
-        // id.  The runtime's per-activation eventSeq is not: a declared field
-        // input states none at all, so every placeholder of one activation
-        // fell back to "no earlier than the last event seen" and two mints of
-        // one location went out at one seq -- which is one row per event
-        // stating two events (invariant 4 BLOCKING on laneA9: `reads.jsonl
-        // seq=171 field=seq/location INSTANCE 1.24`, mints v138 and v149).
-        // A mint the VM numbered nothing keeps the activation's reading; such
-        // a row is already a stated failure (invariant 7).
-        RowRuntime.read(occurrence,
-                mintVersion < 0L ? event : mintVersion,
-                Endpoint.stateSite(locationKey, "PLACEHOLDER", 0, false),
-                location, observed, minted,
-                declared, literal(value),
-                optionalString(row, "siteIndex"), mintVersion);
-    }
-
-    /**
-     * The sort the VM spelled into one of its symbols, or {@code ""}.
-     *
-     * <p>A VM symbol carries its own sort: {@code M_I_field_...},
-     * {@code M_Z_field_...}, {@code M_L_field_...}, {@code P_L'...'_}.  The
-     * SORT is what has to agree with the cell -- L against any reference
-     * descriptor, I against I -- because a reference symbol does not spell
-     * which class the cell is declared as, and demanding the whole
-     * descriptor refused every reference mint (P2l).  A symbol the runtime
-     * made instead ({@code INSTANCE_FIELD/2#24@v178}) spells no sort and
-     * claims none, so nothing is inferred from its absence.</p>
-     */
-    private static String mintedSort(String symbol) {
-        String name = safe(symbol);
-        if (name.length() < 4 || name.charAt(1) != '_') return "";
-        char sort = name.charAt(2);
-        char after = name.charAt(3);
-        if (after != '_' && after != '\'') return "";
-        return "ZBCSIJFDL".indexOf(sort) < 0 ? "" : String.valueOf(sort);
-    }
-
-    /**
-     * Whether one symbol is a mint of THIS activation's declared inputs.
-     *
-     * <p>A version whose whole value is a bare symbol is not by itself a
-     * mint: the VM writes a named reference's identity the same way
-     * ({@code M_L'org/apache/...FsImage...'}), and a field assigned a
-     * symbolized object carries that object's symbol.  Treating every such
-     * version as a mint suppressed four real writes of hdfs-17960 --
-     * INSTANCE/39#96@226, 35#64@233, 43#96@251, 37#64@263 -- and the reads
-     * that observed them lost their writer, which took the anchor's
-     * admitted paths from 2 to 0.  A mint is a symbol a DECLARED INPUT of
-     * this activation asked for: the VM answers a request for
-     * {@code field_<portId>} with {@code M_<sort>_field_<portId>}, and a row
-     * that knows its own {@code rawSymbol} states it outright.  The key the
-     * suppression and {@code mintVersion} share is still (location,
-     * version); this is only which versions are mints at all.</p>
-     */
-    private static boolean declaredMint(ActiveRegion active, String symbol) {
-        for (JsonObject row : active.symbolizedRows) {
-            if (symbol.equals(optionalString(row, "rawSymbol"))) return true;
-            String requested = optionalString(row, "symbol");
-            if (!requested.isEmpty()
-                    && symbol.endsWith("_field_" + requested)) {
-                return true;
-            }
-        }
-        return RowRuntime.isPlaceholderSymbol(symbol);
-    }
-
-    /**
-     * Every mint store of this activation, keyed {@code location#version}.
-     *
-     * <p>The same scan {@link #mintedLocations} performs, keyed the other
-     * way round: there by the symbol a placeholder row is found by, here by
-     * the store a WriteRow would have been published for.  One rule decides
-     * both -- a version whose whole value is the symbol a declared input
-     * minted is that mint's shadow store, and nobody wrote it.</p>
-     */
-    private static Map<String, String> mintStores(ActiveRegion active) {
-        Map<String, String> stores = new java.util.LinkedHashMap<String,
-                String>();
-        Set<String> minted = mintedLocations(active).keySet();
-        if (minted.isEmpty()) return stores;
-        // EVERY version whose whole value is a mint's symbol, not the first
-        // one per symbol: mintedLocations keeps the first because a
-        // placeholder row states one mint version, and a symbol that
-        // reaches a second store would then have left that store published
-        // as a write (v201 `M_L_field_REGION.692d5ed3...` survived exactly
-        // that way).  A store is a store wherever it stands.
-        for (JsonObject record : active.sharedStateRecords.values()) {
-            String locationKey = optionalString(record, "locationKey");
-            if (location(locationKey) == null) continue;
-            for (JsonElement element
-                    : array(object(record, "envelope"), "versions")) {
-                if (!element.isJsonObject()) continue;
-                JsonObject version = element.getAsJsonObject();
-                long id = optionalLongInteger(version, "fieldVersionId", -1L);
-                JsonElement written = version.get("expression");
-                if (id < 0L || written == null || !written.isJsonObject()) {
-                    continue;
-                }
-                JsonObject node = written.getAsJsonObject();
-                if (!optionalString(node, "_type").contains("Symbol")) {
-                    continue;
-                }
-                String symbol = optionalString(node, "_exp");
-                if (minted.contains(symbol) && declaredMint(active, symbol)) {
-                    stores.put(locationKey + "#" + id, symbol);
-                }
-            }
-        }
-        return stores;
-    }
-
-    /**
-     * Where the VM says each minted symbol lives: symbol -&gt; location key.
-     *
-     * <p>A mint installs a symbol INTO a field the VM versions, so the
-     * write log already names the location and the exact version whose
-     * whole value that symbol is -- hdfs-17960's counter is version 172 of
-     * {@code INSTANCE_FIELD/19#24}, and the anchor's own branch reads that
-     * version.  Only a version whose expression IS the symbol counts (a
-     * later version computed FROM it is a different value), and the first
-     * such version wins.</p>
-     */
-    private static Map<String, String[]> mintedLocations(ActiveRegion active) {
-        Map<String, String[]> bySymbol =
-                new java.util.LinkedHashMap<String, String[]>();
-        for (JsonObject record : active.sharedStateRecords.values()) {
-            String locationKey = optionalString(record, "locationKey");
-            if (location(locationKey) == null) continue;
-            for (JsonElement element
-                    : array(object(record, "envelope"), "versions")) {
-                if (!element.isJsonObject()) continue;
-                JsonObject version = element.getAsJsonObject();
-                long id = optionalLongInteger(version, "fieldVersionId", -1L);
-                JsonElement written = version.get("expression");
-                if (id < 0L || written == null || !written.isJsonObject()) {
-                    continue;
-                }
-                JsonObject node = written.getAsJsonObject();
-                if (!optionalString(node, "_type").contains("Symbol")) {
-                    continue;
-                }
-                String symbol = optionalString(node, "_exp");
-                if (symbol.isEmpty() || !declaredMint(active, symbol)) {
-                    continue;
-                }
-                // Only a write EARLIER than the mint is the one the read
-                // observed; a later store is a value this read never saw.
-                long observed = -1L;
-                for (JsonElement candidate
-                        : array(object(record, "envelope"), "versions")) {
-                    if (!candidate.isJsonObject()) continue;
-                    JsonObject other = candidate.getAsJsonObject();
-                    long otherId = optionalLongInteger(other,
-                            "fieldVersionId", -1L);
-                    JsonElement value = other.get("expression");
-                    boolean symbolLeaf = value != null
-                            && value.isJsonObject()
-                            && optionalString(value.getAsJsonObject(),
-                            "_type").contains("Symbol");
-                    if (!symbolLeaf && otherId >= 0L && otherId < id
-                            && otherId > observed) {
-                        observed = otherId;
-                    }
-                }
-                if (!bySymbol.containsKey(symbol)) {
-                    bySymbol.put(symbol, new String[]{locationKey,
-                            Long.toString(id), Long.toString(observed)});
-                }
-            }
-        }
-        return bySymbol;
-    }
-
-    /** {@code <Class: type field>} as the location it names. */
-    private static LocationId fieldLocation(String fieldSignature) {
-        String signature = safe(fieldSignature);
-        int owner = signature.indexOf(':');
-        int field = signature.lastIndexOf(' ');
-        if (!signature.startsWith("<") || owner <= 1 || field <= owner) {
-            return null;
-        }
-        return LocationId.of(LocationKind.INSTANCE,
-                signature.substring(1, owner),
-                signature.substring(field + 1).replace(">", ""));
-    }
-
-    /** A source type name as the JVM descriptor a row states. */
-    private static String javaDescriptor(String javaType) {
-        String type = safe(javaType);
-        if (type.isEmpty()) return "Ljava/lang/Object;";
-        if (type.length() == 1) return type;
-        if ("boolean".equals(type)) return "Z";
-        if ("byte".equals(type)) return "B";
-        if ("char".equals(type)) return "C";
-        if ("short".equals(type)) return "S";
-        if ("int".equals(type)) return "I";
-        if ("long".equals(type)) return "J";
-        if ("float".equals(type)) return "F";
-        if ("double".equals(type)) return "D";
-        return "L" + type.replace('.', '/') + ";";
-    }
-
-    /**
      * The VM's constant spelling as the literal it stands for.
      *
      * <p>{@code Y_I_119992} is the VM's name for the int constant 119992 --
@@ -606,117 +133,27 @@ final class RowPublication {
     }
 
     /**
-     * The one spelling of a symbol.
+     * The bound every expression walk in this file stops at, and the row
+     * that states it stopped.
      *
-     * <p>A row's symbol and the symbol leaf inside the expressions the
-     * same session publishes have to be the same string: the composer
-     * binds a root by finding its name in a lowered term, and a row that
-     * names {@code REGION.r.in.uuid} while every term says {@code
-     * M_J_field_REGION.r.in.uuid.occ.<hash>_java/lang/Long} binds
-     * nothing.  The VM's name is the one that appears in the terms, so
-     * that is the one the row states.</p>
+     * <p>Two answers used to be one: a walk that found no symbol and a walk
+     * that was cut before it could look both returned {@code ""}, so a root
+     * named from a deep tree read downstream exactly like a root the VM
+     * never named.  The bound stays -- a container's expression on
+     * hdfs-17960 nests one relation per recorded operation and the leaves
+     * these walks look for are near the top -- and a cut says so, once per
+     * walk and subject, in the session's own gap rows.</p>
      */
-    private static String vmSymbol(JsonObject row) {
-        String raw = optionalString(row, "rawSymbol");
-        if (!raw.isEmpty()) return raw;
-        // A configured source mints through the VM's own label and states
-        // no raw symbol of its own; the expression it published names it.
-        String leaf = symbolLeaf(row.get("expression"), 0);
-        return leaf.isEmpty() ? optionalString(row, "symbol") : leaf;
-    }
+    static final int WALK_DEPTH = 8;
 
-    /** The first symbol leaf an expression states, or {@code ""}. */
-    private static String symbolLeaf(JsonElement node, int depth) {
-        if (node == null || node.isJsonNull() || depth > 8) return "";
-        if (node.isJsonArray()) {
-            for (JsonElement element : node.getAsJsonArray()) {
-                String found = symbolLeaf(element, depth + 1);
-                if (!found.isEmpty()) return found;
-            }
-            return "";
-        }
-        if (!node.isJsonObject()) return "";
-        JsonObject object = node.getAsJsonObject();
-        if (optionalString(object, "_type").contains("Symbol")) {
-            return optionalString(object, "_exp");
-        }
-        for (Map.Entry<String, JsonElement> member : object.entrySet()) {
-            String found = symbolLeaf(member.getValue(), depth + 1);
-            if (!found.isEmpty()) return found;
-        }
-        return "";
-    }
-
-    /**
-     * Whether this row MINTED the symbol it names.
-     *
-     * <p>The VM is the authority and both runtime row shapes carry its
-     * answer: a declared read whose field already held a propagated
-     * expression keeps it ({@code SymInstance::has_sym_exp} makes the mint
-     * a no-op) and the row says {@code reused}.  Such a row created no
-     * symbol, so the only name {@link #vmSymbol} can give it is another
-     * mint's -- which is why "did this row mint" and "may this row be a
-     * root" are ONE question, asked here.</p>
-     */
-    static boolean minted(JsonObject row) {
-        return !optionalBool(row, "reused", false);
-    }
-
-    /**
-     * What kind of root one mint row states.
-     *
-     * <p>The case declares which reads are clocks, a marker mints a boolean,
-     * everything else is integral.  The kind decides how the composer may
-     * move it -- a clock is unbounded with a floor, a marker has two values
-     * -- so it is read from the declaration, never guessed from the value or
-     * from the name of the callee that produced it.</p>
-     */
-    private static RootKind kindOf(JsonObject row) {
-        if (optionalBool(row, InputActionCatalog.DECLARED_WALL_CLOCK,
-                false)) {
-            return RootKind.CLOCK;
-        }
-        String javaType = javaTypeOf(row);
-        return "Z".equals(javaType) || "boolean".equals(javaType)
-                ? RootKind.MARKER : RootKind.INTEGRAL;
-    }
-
-    /**
-     * The Java type a mint row states, or the one its expression does.
-     *
-     * <p>A configured source mints through the VM's own label and states
-     * no type of its own; the symbol it minted carries it.  Without this
-     * a boolean configured root -- hdfs-17960's
-     * {@code HDFS.CONFIG.SNAPSHOT_DELETION_ORDERED} -- is published
-     * INTEGRAL, and a composer then looks for a range where there are two
-     * values.</p>
-     */
-    private static String javaTypeOf(JsonObject row) {
-        String stated = optionalString(row, "javaType");
-        return stated.isEmpty() ? symbolType(row.get("expression"), 0)
-                : stated;
-    }
-
-    /** The type of the first symbol leaf an expression states. */
-    private static String symbolType(JsonElement node, int depth) {
-        if (node == null || node.isJsonNull() || depth > 8) return "";
-        if (node.isJsonArray()) {
-            for (JsonElement element : node.getAsJsonArray()) {
-                String found = symbolType(element, depth + 1);
-                if (!found.isEmpty()) return found;
-            }
-            return "";
-        }
-        if (!node.isJsonObject()) return "";
-        JsonObject object = node.getAsJsonObject();
-        if (optionalString(object, "_type").contains("Symbol")) {
-            return optionalString(object, "_java_type");
-        }
-        for (Map.Entry<String, JsonElement> member : object.entrySet()) {
-            String found = symbolType(member.getValue(), depth + 1);
-            if (!found.isEmpty()) return found;
-        }
-        return "";
+    /** States that one walk stopped at {@link #WALK_DEPTH}. */
+    static boolean cut(String walk, int depth) {
+        if (depth <= WALK_DEPTH) return false;
+        RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC, walk,
+                "this expression walk stopped at depth " + WALK_DEPTH
+                        + ", so \"no answer\" here is the walk's bound and"
+                        + " not the expression's silence");
+        return true;
     }
 
     /**
@@ -731,7 +168,7 @@ final class RowPublication {
      * journal, aligned to the event id (FrameJournal).  The row belongs to
      * the activation that PERFORMED the event, which the VM also states, not
      * to this one -- this activation is only the one whose read-out found the
-     * event first (see {@link #performer}).</p>
+     * event first (see {@link LoggedEventSites#performer}).</p>
      */
     private static void writes(ActiveRegion active) {
         // One activation, one population of reads: the same node is reached
@@ -748,16 +185,21 @@ final class RowPublication {
         // published carries `M_L'...'`, so a symbol-set test let five
         // "writes nobody performed" through (v86 the MARKER root's store,
         // v203/v210/v269/v276 the FsImage reference mints).
-        Map<String, String> mints = mintStores(active);
+        Map<String, String> mints = RowPlaceholderMint.mintStores(active);
         // The read log first, and for every location: a read node inside one
         // location's value is a read OF ANOTHER location, and the activation
         // that logged it is what its own log record states.
+        // What the VM's log says about every event of one location.
+        // Session-wide and keyed by event id, which is one monotone counter
+        // for versions and reads alike: a ReadFromExpression node names its
+        // read event id but not the activation that ran it, and the log
+        // record of the same event does.
         for (JsonObject record : active.sharedStateRecords.values()) {
-            indexLoggedEvents(record);
+            LoggedEventSites.index(record);
         }
         for (JsonObject record : active.sharedStateRecords.values()) {
             String locationKey = optionalString(record, "locationKey");
-            LocationId location = location(locationKey);
+            LocationId location = locationId(locationKey);
             if (location == null) continue;
             JsonObject envelope = object(record, "envelope");
             for (JsonElement element : array(envelope, "versions")) {
@@ -775,13 +217,13 @@ final class RowPublication {
                 JsonObject written =
                         expression != null && expression.isJsonObject()
                                 ? expression.getAsJsonObject() : null;
-                OccurrenceAddress performer = performer(version, locationKey,
-                        id, true);
+                OccurrenceAddress performer = LoggedEventSites.performer(
+                        version, locationKey, id, true);
                 if (performer != null) {
                     RowRuntime.write(performer, id,
-                            loggedSite(version, locationKey, id, true),
+                            LoggedEventSites.site(version, locationKey, id, true),
                             location, id, written, "",
-                            loggedFrames(version, locationKey, id, true));
+                            LoggedEventSites.frames(version, locationKey, id, true));
                 }
                 collect(expression, published, seen);
             }
@@ -789,173 +231,6 @@ final class RowPublication {
         for (JsonObject mapping : active.branchMappings) {
             collect(mapping.get("witness"), published, seen);
         }
-    }
-
-    /**
-     * What the VM's log says about every event of one location.
-     *
-     * <p>Session-wide and keyed by event id, which is one monotone counter
-     * for versions and reads alike: a {@code ReadFromExpression} node names
-     * its read event id but not the activation that ran it, and the log
-     * record of the same event does.  Populated from the read-out every
-     * activation already performs -- the VM returns each selected location's
-     * complete version and read log -- so nothing is asked of the engine
-     * twice and no event is looked up before its log is seen.</p>
-     */
-    private static void indexLoggedEvents(JsonObject record) {
-        JsonObject envelope = object(record, "envelope");
-        for (JsonElement element : array(envelope, "versions")) {
-            if (!element.isJsonObject()) continue;
-            index(element.getAsJsonObject(), "fieldVersionId");
-        }
-        for (JsonElement element : array(envelope, "reads")) {
-            if (!element.isJsonObject()) continue;
-            index(element.getAsJsonObject(), "readEventId");
-        }
-    }
-
-    private static void index(JsonObject node, String idKey) {
-        long id = optionalLongInteger(node, idKey, -1L);
-        if (id < 0L) return;
-        LOGGED.putIfAbsent(Long.valueOf(id), new Logged(node));
-    }
-
-    /**
-     * What one logged event states about itself: where, and under which
-     * activation.
-     *
-     * <p>Only these fields, not the log record: a record carries the whole
-     * value expression of its version, and keeping every record of the
-     * session alive to answer "which activation ran event 77" would retain
-     * every expression tree the run ever published.</p>
-     */
-    private static final class Logged {
-        private final long activation;
-        private final String className;
-        private final String method;
-        private final String descriptor;
-        private final int bci;
-
-        private Logged(JsonObject node) {
-            this.activation = optionalLongInteger(node,
-                    "regionEnterEventId", -1L);
-            JsonObject site = object(node, "site");
-            this.className = site == null ? ""
-                    : optionalString(site, "className");
-            this.method = site == null ? ""
-                    : optionalString(site, "methodName");
-            this.descriptor = site == null ? ""
-                    : optionalString(site, "methodDescriptor");
-            this.bci = site == null ? -1
-                    : optionalInteger(site, "bci", -1);
-        }
-
-        private boolean states() {
-            return !className.isEmpty() && !method.isEmpty();
-        }
-    }
-
-    /** Every logged event of this session, by version or read event id. */
-    private static final Map<Long, Logged> LOGGED =
-            new java.util.concurrent.ConcurrentHashMap<Long, Logged>();
-
-    /**
-     * The one spelling of a logged event's site.
-     *
-     * <p>The components are the VM's own ({@code site} on every version,
-     * read record and {@code ReadFromExpression}); the class is put in source
-     * form here, which is the one place a VM name is converted, and the
-     * descriptor travels because two overloads of one name are two methods.
-     * An event the VM states no site for is named as a gap and spelled by
-     * its location, which distinguishes nothing and says so.</p>
-     */
-    private static String loggedSite(JsonObject node, String locationKey,
-                                     long eventId, boolean write) {
-        Logged site = statedSite(node, eventId);
-        if (site == null) {
-            RowRuntime.gap(GapKind.DECLARATION_MISSING, GapClass.DIAGNOSTIC,
-                    locationKey + "#" + eventId,
-                    "the VM states no bytecode site for this "
-                            + (write ? "version" : "read")
-                            + ", so the endpoint's site is its location and"
-                            + " distinguishes no event of it");
-            return Endpoint.stateSite(locationKey, "UNSTATED_SITE", 0, write);
-        }
-        return Endpoint.stateSite(site.className.replace('/', '.'),
-                site.method, site.descriptor, Math.max(0, site.bci), write);
-    }
-
-    /** The site this event states: its own, or its log record's. */
-    private static Logged statedSite(JsonObject node, long eventId) {
-        Logged own = node == null ? null : new Logged(node);
-        if (own != null && own.states()) return own;
-        Logged record = eventId < 0L ? null
-                : LOGGED.get(Long.valueOf(eventId));
-        return record != null && record.states() ? record : null;
-    }
-
-    /**
-     * The occurrence that performed one logged event, or null with a gap.
-     *
-     * <p>The VM names the activation on every record it keeps, and that
-     * activation is what the row is a row OF: a read the deletion region
-     * made is not a read of the occurrence that happened to publish the
-     * location's log first, and a path through the publisher would carry a
-     * read it never performed.  An event whose activation this session has
-     * no occurrence for states so and publishes no row -- attributing it to
-     * the publisher is the thing this replaces.</p>
-     */
-    private static OccurrenceAddress performer(JsonObject node,
-                                               String locationKey,
-                                               long eventId, boolean write) {
-        long activation = loggedActivation(node, eventId);
-        OccurrenceAddress performer = RowRuntime.occurrenceAt(activation);
-        if (performer != null) return performer;
-        RowRuntime.gap(GapKind.LINEAGE_LOST, GapClass.DIAGNOSTIC,
-                locationKey + "#" + eventId,
-                "this " + (write ? "version" : "read") + " states activation "
-                        + activation + ", which is no activation of this"
-                        + " session, so the run cannot say which occurrence"
-                        + " performed it and states no row for it");
-        return null;
-    }
-
-    /** The activation the event states, its own or its log record's. */
-    private static long loggedActivation(JsonObject node, long eventId) {
-        long activation = optionalLongInteger(node, "regionEnterEventId", -1L);
-        if (activation > 0L) return activation;
-        Logged record = eventId < 0L ? null
-                : LOGGED.get(Long.valueOf(eventId));
-        return record == null ? -1L : record.activation;
-    }
-
-    /**
-     * The frames one logged event stood on, or {@code ""} with a gap.
-     *
-     * <p>The event states the activation it ran inside
-     * ({@code regionEnterEventId}) and its own id; the journal of that
-     * activation states the frames its thread stood on at that point of the
-     * session's event clock.  A node that carries no log record of its own
-     * takes the activation from the record of the same event id.</p>
-     */
-    private static String loggedFrames(JsonObject node, String locationKey,
-                                       long eventId, boolean write) {
-        long activation = loggedActivation(node, eventId);
-        String frames = RowRuntime.framesOf(activation, eventId);
-        // "" is placed on no frames -- the store or read is in the region's
-        // own method -- and the bci of the site is then what distinguishes
-        // it.  Only an event the journal could not place is a gap.
-        if (frames != null) return frames;
-        RowRuntime.gap(GapKind.LINEAGE_LOST, GapClass.DIAGNOSTIC,
-                locationKey + "#" + eventId,
-                "this " + (write ? "version" : "read")
-                        + (activation <= 0L
-                        ? " states no region activation, so no frame journal"
-                        + " can place it"
-                        : " ran under activation " + activation
-                        + " with no frame journal entry below its event id")
-                        + "; the endpoint carries the empty site index");
-        return "";
     }
 
     /**
@@ -1002,8 +277,8 @@ final class RowPublication {
     /** A read the write log covers: the location, and the version it saw. */
     private static void readFrom(JsonObject node, Set<String> published) {
         JsonObject where = object(node, "location");
-        String locationKey = locationKey(where);
-        LocationId location = location(locationKey);
+        String locationKey = SharedStateCapture.locationKeyOf(where);
+        LocationId location = locationId(locationKey);
         if (location == null) return;
         long observed = versionOf(node);
         long event = eventOf(node);
@@ -1015,7 +290,15 @@ final class RowPublication {
             // the version of the location, and that is what the row says.
             symbol = locationKey + "@v" + observed;
         }
-        String value = literal(concreteOf(node));
+        // What this read node says the read returned, or "".
+        JsonElement returned = node.get("concreteValue");
+        if (returned == null || returned.isJsonNull()) {
+            returned = object(node, "observedVersion").get("concreteValue");
+        }
+        String value = literal(returned == null || returned.isJsonNull() ? ""
+                : returned.isJsonObject()
+                        ? optionalString(returned.getAsJsonObject(), "_exp")
+                        : returned.getAsString());
         if (observed < 0L && value.isEmpty()) {
             // Neither a version to join nor a value to pin: the row would
             // say nothing a reader could use, and saying so is the point.
@@ -1025,14 +308,14 @@ final class RowPublication {
             return;
         }
         if (!RowRuntime.claimRead(identity)) return;
-        OccurrenceAddress performer = performer(node, locationKey, event,
-                false);
+        OccurrenceAddress performer = LoggedEventSites.performer(
+                node, locationKey, event, false);
         if (performer == null) return;
         RowRuntime.read(performer, event >= 0L ? event : Math.max(0L, observed),
-                loggedSite(node, locationKey, event, false),
+                LoggedEventSites.site(node, locationKey, event, false),
                 location, observed, symbol,
                 optionalString(node, "_java_type"), value,
-                loggedFrames(node, locationKey, event, false));
+                LoggedEventSites.frames(node, locationKey, event, false));
     }
 
     /**
@@ -1051,17 +334,26 @@ final class RowPublication {
                                     Set<String> published) {
         JsonElement value = node.get("concreteValue");
         if (value == null || value.isJsonNull()) return;
-        String ownerClass = optionalString(node, "ownerClass");
-        int offset = optionalInteger(node, "fieldOffset", -1);
         JsonObject read = nestedRead(value, 0);
         String locationKey = read == null ? ""
-                : locationKey(object(read, "location"));
-        LocationId location = location(locationKey);
+                : SharedStateCapture.locationKeyOf(object(read, "location"));
+        LocationId location = locationId(locationKey);
         if (location == null) {
-            locationKey = "INSTANCE_FIELD/" + ownerClass + "#" + offset;
-            location = LocationId.of(LocationKind.INSTANCE,
-                    ownerClass.isEmpty() ? "<unstated>" : ownerClass,
-                    String.valueOf(offset));
+            // The location is the VM's or there is none.  Building it out of
+            // the projection's own ownerClass and fieldOffset -- and the
+            // literal owner "<unstated>" when even the class was absent --
+            // named `INSTANCE/<class>#<offset>` while every write of the
+            // same storage is logged as `INSTANCE_FIELD/<rid>#<slot>`: the
+            // row joined no write version, and its symbol then named a
+            // location nothing else in the corpus spells.  Every projected
+            // read whose nested read node states no admissible location is
+            // this class, whatever its ownerClass says.
+            RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
+                    optionalString(node, "ownerClass") + "#"
+                            + optionalInteger(node, "fieldOffset", -1),
+                    "a projected read states no VM location, so the run"
+                            + " cannot say which storage it read");
+            return;
         }
         long observed = versionOf(node);
         if (observed < 0L && read != null) observed = versionOf(read);
@@ -1086,14 +378,14 @@ final class RowPublication {
                     : "@e" + event);
         }
         if (!RowRuntime.claimRead(identity)) return;
-        OccurrenceAddress performer = performer(node, locationKey, event,
-                false);
+        OccurrenceAddress performer = LoggedEventSites.performer(
+                node, locationKey, event, false);
         if (performer == null) return;
         RowRuntime.read(performer, event >= 0L ? event : Math.max(0L, observed),
-                loggedSite(node, locationKey, event, false),
+                LoggedEventSites.site(node, locationKey, event, false),
                 location, observed, projected,
                 optionalString(node, "_java_type"), stated,
-                loggedFrames(node, locationKey, event, false));
+                LoggedEventSites.frames(node, locationKey, event, false));
     }
 
     /**
@@ -1111,7 +403,7 @@ final class RowPublication {
     }
 
     /** The version a node observed, or {@code -1}. */
-    private static long versionOf(JsonObject node) {
+    static long versionOf(JsonObject node) {
         JsonElement stated = node == null ? null : node.get("observedVersion");
         if (stated == null) return -1L;
         if (stated.isJsonObject()) {
@@ -1131,8 +423,9 @@ final class RowPublication {
     }
 
     /** The read a value node states under the VM's boundary wrappers. */
-    private static JsonObject nestedRead(JsonElement value, int depth) {
-        if (value == null || !value.isJsonObject() || depth > 8) return null;
+    static JsonObject nestedRead(JsonElement value, int depth) {
+        if (cut("nestedRead", depth)) return null;
+        if (value == null || !value.isJsonObject()) return null;
         JsonObject object = value.getAsJsonObject();
         if ("ReadFromExpression".equals(optionalString(object, "_type"))) {
             return object;
@@ -1142,7 +435,8 @@ final class RowPublication {
 
     /** The literal a value node states, under the VM's wrappers. */
     private static String leaf(JsonElement value, int depth) {
-        if (value == null || value.isJsonNull() || depth > 8) return "";
+        if (cut("leaf", depth)) return "";
+        if (value == null || value.isJsonNull()) return "";
         if (value.isJsonPrimitive()) return value.getAsString();
         if (!value.isJsonObject()) return "";
         JsonObject object = value.getAsJsonObject();
@@ -1151,49 +445,6 @@ final class RowPublication {
         String nested = leaf(object.get("expression"), depth + 1);
         if (!nested.isEmpty()) return nested;
         return leaf(object.get("concreteValue"), depth + 1);
-    }
-
-    /** What a read node says the read returned, or {@code ""}. */
-    private static String concreteOf(JsonObject node) {
-        JsonElement value = node.get("concreteValue");
-        if (value == null || value.isJsonNull()) {
-            JsonObject version = object(node, "observedVersion");
-            value = version.get("concreteValue");
-        }
-        if (value == null || value.isJsonNull()) return "";
-        return value.isJsonObject()
-                ? optionalString(value.getAsJsonObject(), "_exp")
-                : value.getAsString();
-    }
-
-    /** {@code KIND/owner#slot}, as the VM states one location. */
-    private static String locationKey(JsonObject location) {
-        if (location == null || location.size() == 0) return "";
-        String kind = optionalString(location, "locationKind");
-        long owner = optionalLongInteger(location, "ownerSymRid", 0L);
-        if (kind.isEmpty() || owner == 0L || !location.has("slot")) {
-            return "";
-        }
-        return kind + "/" + owner + "#"
-                + optionalInteger(location, "slot", 0);
-    }
-
-    /** The contract location one VM location key names. */
-    private static LocationId location(String locationKey) {
-        String key = safe(locationKey);
-        int separator = key.indexOf('/');
-        int slot = key.lastIndexOf('#');
-        if (separator <= 0 || slot <= separator) return null;
-        String kind = key.substring(0, separator);
-        return LocationId.of(kindOfLocation(kind),
-                key.substring(separator + 1, slot), key.substring(slot + 1));
-    }
-
-    private static LocationKind kindOfLocation(String kind) {
-        if (kind.startsWith("STATIC")) return LocationKind.STATIC;
-        if (kind.startsWith("ARRAY")) return LocationKind.ARRAY;
-        if (kind.startsWith("MAP")) return LocationKind.MAP;
-        return LocationKind.INSTANCE;
     }
 
     /**
@@ -1243,5 +494,4 @@ final class RowPublication {
                 reach == null ? 0L : optionalLongInteger(reach, "vmEventId",
                         0L), anchor, condition, observed == fatalArm,
                 reached && observed == fatalArm, reached);
-    }
-}
+    }}

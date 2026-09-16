@@ -227,12 +227,21 @@ public class RowRuntimeTest {
         // which states a chain nobody made -- and another port's delivery
         // takes no producer from this one either.
         assertNull("no handle and no correlation is no pairing",
-                Interactions.producer("XCH.resp.block-key-id", 0L, ""));
+                Interactions.pairing(
+                        "XCH.resp.block-key-id", 0L, "").producer());
         assertNull("another port is another interaction",
-                Interactions.producer("XCH.resp.other", 0L, "hadoop-ipc-7"));
+                Interactions.pairing(
+                        "XCH.resp.other", 0L, "hadoop-ipc-7").producer());
         assertEquals("the handle is the strongest evidence there is",
                 exported,
-                Interactions.producer("XCH.resp.other", 4242L, ""));
+                Interactions.pairing("XCH.resp.other", 4242L, "").producer());
+        // And the pairing states WHICH of the two keys answered, so a row
+        // paired on the message rather than on the staged expression is not
+        // read as the stronger fact.
+        assertEquals("HANDLE",
+                Interactions.pairing("XCH.resp.other", 4242L, "").key());
+        assertEquals("", Interactions.pairing(
+                "XCH.resp.block-key-id", 0L, "").key());
     }
 
     /** Every row kind round-trips through the codec it is written with. */
@@ -375,20 +384,24 @@ public class RowRuntimeTest {
         assertEquals("at the version the write states",
                 writes.get(0).version(), reads.get(1).observedVersion());
         assertEquals("M_I_placeholder", reads.get(1).symbol());
-        // No version from the VM: the row pins the plain decimal it read,
-        // and never states neither.
-        assertEquals(ReadRow.UNKNOWN_VERSION, reads.get(2).observedVersion());
-        assertEquals("2", reads.get(2).concreteValue());
-        assertEquals(LocationId.of(LocationKind.INSTANCE,
-                        "java.util.concurrent.atomic.AtomicInteger", "value"),
-                reads.get(2).location());
+        // A declared input the VM numbered no location for states NO row:
+        // the location used to be built out of the Java field signature --
+        // INSTANCE/<declaring class>#<field name> -- which is a location the
+        // VM never stated and which no write of the same storage spells, so
+        // the composer joined reads on a location nothing wrote.
+        for (ReadRow read : reads) {
+            assertFalse("no row names a location the VM did not state",
+                    LocationId.of(LocationKind.INSTANCE,
+                            "java.util.concurrent.atomic.AtomicInteger",
+                            "value").equals(read.location()));
+        }
         // The mint is not a write -- no WriteRow states its version -- so
         // the row names the VM's location and the LAST REAL WRITE before
         // the mint: the placeholder read is the anchor's JOIN to the
         // occurrence that wrote the cell.
-        assertEquals(LocationKind.INSTANCE, reads.get(3).location().kind());
-        assertEquals(125L, reads.get(3).observedVersion());
-        assertEquals("2", reads.get(3).concreteValue());
+        assertEquals(LocationKind.INSTANCE, reads.get(2).location().kind());
+        assertEquals(125L, reads.get(2).observedVersion());
+        assertEquals("2", reads.get(2).concreteValue());
         ReadRow unwritten = null;
         for (ReadRow read : reads) {
             if ("M_I_unwritten".equals(read.symbol())) unwritten = read;
@@ -403,12 +416,12 @@ public class RowRuntimeTest {
         assertEquals("no write precedes the mint: -1 and the decimal",
                 ReadRow.UNKNOWN_VERSION, unwritten.observedVersion());
         assertEquals("2", unwritten.concreteValue());
-        assertEquals("a reference-sorted mint states no row; a second mint"
-                        + " of one cell (version 127) is a second mint and"
-                        + " states one; the SAME mint reached twice states"
-                        + " one row, whatever occurrence or read event"
-                        + " reached it",
-                6, reads.size());
+        assertEquals("a reference-sorted mint states no row; a mint with no"
+                        + " VM location states no row; a second mint of one"
+                        + " cell (version 127) is a second mint and states"
+                        + " one; the SAME mint reached twice states one row,"
+                        + " whatever occurrence or read event reached it",
+                5, reads.size());
         List<RootMintRow> roots = RowCodec.readAll(dir.roots(),
                 RowCodec::readRootMint);
         // The corpus invariant: a decision whose term is over declared root
@@ -461,6 +474,18 @@ public class RowRuntimeTest {
         assertTrue(targets.get(0).observedFatal());
         List<GapRow> gaps = RowCodec.readAll(dir.gaps(), RowCodec::readGap);
         assertTrue(gaps.get(0).blocking());
+        // And the refusal of the location-less mint is a row of its own, so
+        // "this input read nothing the run can name" is stated rather than
+        // replaced by a fabricated location.
+        boolean unstatedLocation = false;
+        for (GapRow gap : gaps) {
+            if (gap.kind() == GapKind.DECLARATION_MISSING
+                    && gap.detail().contains("states no VM location")) {
+                unstatedLocation = true;
+            }
+        }
+        assertTrue("the location-less declared input is named", 
+                unstatedLocation);
         GapRow unbalanced = gaps.get(gaps.size() - 1);
         assertEquals(GapKind.FRAME_UNBALANCED, unbalanced.kind());
         assertTrue("an over-pop is BLOCKING, not a renumbered anchor",
@@ -682,7 +707,7 @@ public class RowRuntimeTest {
                                     JsonObject row, String symbol,
                                     java.util.Map<String, String[]> installed)
             throws Exception {
-        java.lang.reflect.Method publish = RowPublication.class
+        java.lang.reflect.Method publish = RowPlaceholderMint.class
                 .getDeclaredMethod("placeholder", OccurrenceAddress.class,
                         JsonObject.class, String.class, java.util.Map.class);
         publish.setAccessible(true);
@@ -709,14 +734,14 @@ public class RowRuntimeTest {
     }
 
     private static boolean minted(JsonObject row) throws Exception {
-        java.lang.reflect.Method decision = RowPublication.class
+        java.lang.reflect.Method decision = RowPlaceholderMint.class
                 .getDeclaredMethod("minted", JsonObject.class);
         decision.setAccessible(true);
         return ((Boolean) decision.invoke(null, row)).booleanValue();
     }
 
     private static RootKind kindOf(JsonObject row) throws Exception {
-        java.lang.reflect.Method kind = RowPublication.class
+        java.lang.reflect.Method kind = RowPlaceholderMint.class
                 .getDeclaredMethod("kindOf", JsonObject.class);
         kind.setAccessible(true);
         return (RootKind) kind.invoke(null, row);

@@ -72,7 +72,27 @@ public final class SymbolicMessageEnvelope {
     private static final Base64.Encoder ENCODER =
             Base64.getUrlEncoder().withoutPadding();
     private static final Base64.Decoder DECODER = Base64.getUrlDecoder();
+    /**
+     * How many frames one message may open, on either side.
+     *
+     * <p>Named when it is reached, in both directions: the frame ordinal is
+     * half the pairing key, so a frame the sender or the receiver did not
+     * open leaves {@code frame()} answering the enclosing frame and every
+     * element staged or looked up inside it collides with the parent's.
+     * Dropping it silently made that collision read as a message that
+     * carried different values.</p>
+     */
     private static final int MAX_FRAMES = 64;
+
+    /** States that one side could open no further frame of a message. */
+    private static void frameNotOpened(String side, int opened) {
+        RowRuntime.messageContextRefused(
+                "symbolic message envelope " + side + " frame",
+                "this message already has " + opened + " open frames, the"
+                        + " most one message may state, so the frame was not"
+                        + " opened and the elements inside it take the"
+                        + " enclosing frame's ordinals");
+    }
     /** The message this thread is building. */
     private static final ThreadLocal<Outbound> OUTBOUND = new ThreadLocal<>();
     /** The message this thread is decoding. */
@@ -270,7 +290,10 @@ public final class SymbolicMessageEnvelope {
         }
 
         void push() {
-            if (opened >= MAX_FRAMES) return;
+            if (opened >= MAX_FRAMES) {
+                frameNotOpened("inbound", opened);
+                return;
+            }
             open.addLast(++opened);
         }
 
@@ -302,13 +325,25 @@ public final class SymbolicMessageEnvelope {
             return Entry.MISSING;
         }
 
-        /** Marks every element nothing looked up; each is seen once. */
+        /**
+         * Names every element nothing looked up; each is seen once.
+         *
+         * <p>The sender put a value in this message and no decode on this
+         * side asked for it, so whatever that value fed stands on no
+         * producer: the consumer that would have attached it published no
+         * attach row, and the export it came from is paired to nothing.
+         * Stated per port -- one row however many messages of that port
+         * lose an element -- because the fix is the port's decode.</p>
+         */
         void reportUnattached() {
             for (int index = 0; index < entries.size(); index++) {
                 if (lookedUp[index]) continue;
-                // D2: "a message element nothing decoded" is a GapRow
-                // published by SessionPublisher (M2).
                 lookedUp[index] = true;
+                RowRuntime.messageContextRefused(
+                        entries.get(index).portId,
+                        "the sender staged this port's value in a message"
+                                + " and no decode on this side asked for it,"
+                                + " so the value it fed names no producer");
             }
         }
     }
@@ -321,7 +356,10 @@ public final class SymbolicMessageEnvelope {
         private int opened;
 
         void push() {
-            if (opened >= MAX_FRAMES) return;
+            if (opened >= MAX_FRAMES) {
+                frameNotOpened("outbound", opened);
+                return;
+            }
             open.addLast(++opened);
         }
 
@@ -441,9 +479,5 @@ public final class SymbolicMessageEnvelope {
         public String producerOccurrenceId() {
             return producerOccurrenceId;
         }
-
-        /** Which element of that frame and port the value was set on. */
-        public int ordinal() { return ordinal; }
-
     }
 }

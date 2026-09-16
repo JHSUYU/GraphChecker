@@ -374,13 +374,26 @@ public final class FocusedReplay {
                 if (obligationId.isEmpty()) {
                     obligationId = string(row, "taskId");
                 }
+                // The flip IS the obligation: which decision, which
+                // occurrence of it, and which arm.  A row that states no
+                // ordinal or no outcome used to be read as "occurrence 1,
+                // arm false", so the replay enforced a flip nothing asked
+                // for and published its verdict as though it had run the
+                // obligation.  Every focus row missing either member is
+                // refused here and the shortfall is stated at the close.
+                if (!flip.has("ordinal") || !flip.has("outcome")) {
+                    SHORTFALLS.add("the focus row for obligation "
+                            + obligationId + " states a flip with no "
+                            + (flip.has("ordinal") ? "outcome" : "ordinal")
+                            + ", so this replay enforces no flip for it and"
+                            + " answers it with no verdict");
+                    continue;
+                }
                 OBLIGATIONS.add(Obligation.of(obligationId,
                         string(row, "taskId"), string(row, "pathId"),
                         string(flip, "siteId"),
-                        flip.has("ordinal") ? flip.get("ordinal").getAsInt()
-                                : 1,
-                        flip.has("outcome")
-                                && flip.get("outcome").getAsBoolean(),
+                        flip.get("ordinal").getAsInt(),
+                        flip.get("outcome").getAsBoolean(),
                         strings(row, "rootAssignments"),
                         strings(row, "answers"),
                         list(row, "unproducible")));
@@ -426,11 +439,35 @@ public final class FocusedReplay {
                 }
             }
         } catch (RuntimeException | IOException unreadable) {
-            System.err.println("Causynth could not read the focus row "
-                    + path + ": " + unreadable);
+            // handedAFocusRow is already true, so this session publishes
+            // role FOCUSED with however many obligations it parsed before
+            // the fault.  On stderr that was invisible to every reader of
+            // the corpus; the session states it as its own shortfall.
+            SHORTFALLS.add("the focus row " + path + " could not be read"
+                    + " whole (" + unreadable + "), so this session ran"
+                    + " only the " + OBLIGATIONS.size() + " obligations it"
+                    + " parsed before the fault");
         }
         if (!OBLIGATIONS.isEmpty() && task == null && focusedTask != null) {
             task = focusedTask;
+        }
+    }
+
+    /**
+     * What this replay was asked for and could not read, for the rows that
+     * state it (published by {@code RowRuntime.closeSession}).
+     *
+     * <p>Not filed as a gap here: this runs inside the session open, before
+     * the publisher exists, so a row written now is a row nothing writes.
+     * </p>
+     */
+    private static final List<String> SHORTFALLS = new ArrayList<String>();
+
+    /** Every shortfall this replay's focus row left, in the order found. */
+    static List<String> shortfalls() {
+        load();
+        synchronized (LOCK) {
+            return new ArrayList<String>(SHORTFALLS);
         }
     }
 
@@ -613,6 +650,7 @@ public final class FocusedReplay {
             FLIPPED.clear();
             FOCUSED_TASKS.clear();
             FOCUSED_OCCURRENCES.clear();
+            SHORTFALLS.clear();
         }
     }
 }

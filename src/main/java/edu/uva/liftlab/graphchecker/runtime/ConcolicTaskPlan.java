@@ -410,7 +410,7 @@ final class ConcolicTaskPlan {
                     task.rootContextSelector,
                     task.enclosingRootArgumentSelector,
                     receiver, rootArguments)
-                    || !sourceAdmissionMismatch(task,
+                    || !sourceMismatch(task,
                     registeredReceiverSource,
                     context).isEmpty()) {
                 continue;
@@ -501,7 +501,7 @@ final class ConcolicTaskPlan {
                     receiver, rootArguments)) {
                 continue;
             }
-            if (!sourceAdmissionMismatch(task, registeredReceiverSource,
+            if (!sourceMismatch(task, registeredReceiverSource,
                     context).isEmpty()) continue;
             OccurrenceAddress observed = observedAddresses.of(task,
                     activationSource);
@@ -524,25 +524,6 @@ final class ConcolicTaskPlan {
             return task;
         }
         return null;
-    }
-
-    /**
-     * Why this activation is not the planned node's, or {@code ""}.
-     *
-     * <p>One answer, with nothing deferred behind it.  A unique
-     * planner-authored OUT port used to excuse a missing registration here
-     * and confirm it at close, which made admission provisional: the
-     * activation was let in on the promise of an anchor it had not reached,
-     * and at a loop root the same deferral stood in for the whole address,
-     * so any invocation under the planned request answered any k of that
-     * region.  Admission is the address.  A producer whose receiver this run
-     * never registered is an attribution fact, and it is surfaced as the
-     * named refusal below rather than waved through.</p>
-     */
-    static String sourceAdmissionMismatch(
-            RuntimeTask task, SourceRef registeredReceiverSource,
-            RuntimeTraceContext.View context) {
-        return sourceMismatch(task, registeredReceiverSource, context);
     }
 
     /**
@@ -1679,9 +1660,9 @@ final class ConcolicTaskPlan {
                 return "its anchor's transport site (planned "
                         + plan.rpcSite() + ", ran " + ran.rpcSite() + ")";
             }
-            Endpoint plannedEnd = Interactions.endpoint(
+            Endpoint plannedEnd = InteractionRefusals.endpoint(
                     plan.producerEndpointId());
-            Endpoint ranEnd = Interactions.endpoint(ran.producerEndpointId());
+            Endpoint ranEnd = InteractionRefusals.endpoint(ran.producerEndpointId());
             if (plannedEnd == null || ranEnd == null) {
                 return "its causal anchor (planned "
                         + plan.producerEndpointId()
@@ -1722,7 +1703,7 @@ final class ConcolicTaskPlan {
             }
             String producer = ((CausalContext.Anchor) address.context())
                     .producerEndpointId();
-            String components = Interactions.components(producer);
+            String components = InteractionRefusals.components(producer);
             return " [anchor " + producer + " = "
                     + (components.isEmpty()
                     ? "no message of this run minted it" : components) + "]";

@@ -23,8 +23,6 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalLongInteger;
 final class PathConditionWindow {
     static final PathConditionWindow EMPTY =
             new PathConditionWindow(new JsonArray());
-    private static final String TREE_MODE = "TREE";
-    private static final String WINDOW_MODE = "WINDOW_SCAN";
 
     private final JsonArray tree;
     /** Absolute index of element 0, and the exclusive end of the window. */
@@ -32,19 +30,17 @@ final class PathConditionWindow {
     private final int windowEnd;
     /** Conditions the thread has accumulated, window or not. */
     private final int size;
-    private final boolean windowed;
 
     private PathConditionWindow(JsonArray tree) {
-        this(tree, 0, tree.size(), tree.size(), false);
+        this(tree, 0, tree.size(), tree.size());
     }
 
     private PathConditionWindow(JsonArray tree, int base, int windowEnd,
-                                  int size, boolean windowed) {
+                                  int size) {
         this.tree = tree;
         this.base = base;
         this.windowEnd = windowEnd;
         this.size = size;
-        this.windowed = windowed;
     }
 
     /**
@@ -73,7 +69,7 @@ final class PathConditionWindow {
                 return null;
             }
             return new PathConditionWindow(conditions, start, end,
-                    watermark, true);
+                    watermark);
         } catch (RuntimeException malformed) {
             return null;
         }
@@ -93,21 +89,12 @@ final class PathConditionWindow {
         return tree.get(index - base);
     }
 
-    /** Which reader answered, for the replay's own diagnostics. */
-    String mode() {
-        return windowed ? WINDOW_MODE : TREE_MODE;
-    }
-
     /** One branch hook's exact, VM-owned condition window. */
     static final class Read {
         final PathConditionWindow conditions;
-        final int chars;
-        final String source;
 
-        Read(PathConditionWindow conditions, int chars, String source) {
+        Read(PathConditionWindow conditions) {
             this.conditions = conditions;
-            this.chars = chars;
-            this.source = source;
         }
     }
 
@@ -122,12 +109,10 @@ final class PathConditionWindow {
                          List<Integer> eventConditionIndices)
             throws Exception {
         if (eventConditionIndices != null && eventConditionIndices.isEmpty()) {
-            return new Read(PathConditionWindow.EMPTY, 0,
-                    "CONDITIONLESS_EVENT");
+            return new Read(PathConditionWindow.EMPTY);
         }
         if (!contiguousConditionIndices(eventConditionIndices)) {
-            return new Read(PathConditionWindow.EMPTY, -1,
-                    "EXACT_RANGE_UNAVAILABLE");
+            return new Read(PathConditionWindow.EMPTY);
         }
         int start = eventConditionIndices.get(0);
         int end = eventConditionIndices.get(
@@ -141,8 +126,7 @@ final class PathConditionWindow {
             int start, int end)
             throws Exception {
         if (start < 0 || end <= start) {
-            return new Read(PathConditionWindow.EMPTY, -1,
-                    "EXACT_RANGE_UNAVAILABLE");
+            return new Read(PathConditionWindow.EMPTY);
         }
         String windowed;
         try {
@@ -153,12 +137,9 @@ final class PathConditionWindow {
         PathConditionWindow exact =
                 PathConditionWindow.window(windowed, start, store);
         if (exact == null) {
-            return new Read(PathConditionWindow.EMPTY,
-                    windowed == null ? -1 : windowed.length(),
-                    "EXACT_RANGE_REFUSED");
+            return new Read(PathConditionWindow.EMPTY);
         }
-        return new Read(exact, windowed.length(),
-                "EXACT_EVENT_RANGE");
+        return new Read(exact);
     }
 
     static List<Integer> vmEventConditionIndices(

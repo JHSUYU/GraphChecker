@@ -200,13 +200,8 @@ final class RuntimeTraceContext {
         // The lineage travels with the work, exactly as the request scope
         // does: a pool thread created before the scope existed inherits
         // neither, and both are facts about the work rather than the thread.
-        // The submission itself is an endpoint: the thread that runs this
-        // work inherits the frame from it, and its activation row names it
-        // as startedBy (R-I7.1's thread-start edge).
         String nodeKey = view.source == null ? "" : view.source.key();
-        Object lineage = Lineage.capture(nodeKey,
-                edu.uva.liftlab.graphchecker.runtime.Identity
-                        .workSubmitted(nodeKey));
+        Object lineage = Lineage.capture(nodeKey);
         synchronized (LOCK) {
             ASYNC_SEEDS.put(carrier, new Seed(view.spanId,
                     view.source, view.requestKey, view.requestApi,
@@ -323,14 +318,8 @@ final class RuntimeTraceContext {
     static Object captureScope() {
         View view = CURRENT.get().view();
         String nodeKey = view.source == null ? "" : view.source.key();
-        // Building the work is a submission, exactly as handing a task to
-        // an executor is: the endpoint it mints is what the thread that
-        // runs the work ran BECAUSE OF, and it is the only thing that
-        // tells two calls of one api inside one request apart.
         return new RequestScope(view.source, view.requestKey,
-                view.requestApi, Lineage.capture(nodeKey,
-                        edu.uva.liftlab.graphchecker.runtime.Identity
-                                .workSubmitted(nodeKey)));
+                view.requestApi, Lineage.capture(nodeKey));
     }
 
     /**
@@ -798,6 +787,16 @@ final class RuntimeTraceContext {
     /**
      * One activation's source: its own stamp, else the unique stamp among
      * its frames, else the unregistered source.  Never null.
+     *
+     * <p>The second arm is a refusal when it is not unique: two frames of
+     * one activation that name two components say the run cannot attribute
+     * the activation, and it goes to the unregistered population rather
+     * than to the first of the two.  That was already the answer and it was
+     * silent, so nothing downstream could tell it from an activation nothing
+     * had stamped at all -- and the two are different facts: one is missing
+     * evidence, the other is contradictory evidence about where an
+     * occurrence ran.  The class is every activation whose frames disagree,
+     * on either pass, since this is the one rule both evaluate.</p>
      */
     static SourceRef attributedActivationSource(
             SourceRef stamp, Collection<SourceRef> frameStamps) {
@@ -809,6 +808,15 @@ final class RuntimeTraceContext {
                 if (unique == null) {
                     unique = frame;
                 } else if (!unique.key().equals(frame.key())) {
+                    RowRuntime.gap(edu.uva.liftlab.graphchecker.contract
+                                    .GapKind.LINEAGE_LOST,
+                            edu.uva.liftlab.graphchecker.contract
+                                    .GapClass.DIAGNOSTIC,
+                            unique.key() + " vs " + frame.key(),
+                            "two frames of one activation name two"
+                                    + " components, so the run attributes it"
+                                    + " to no node and counts it in the"
+                                    + " unregistered population");
                     return UNREGISTERED_SOURCE;
                 }
             }
