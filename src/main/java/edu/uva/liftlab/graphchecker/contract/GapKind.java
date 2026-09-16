@@ -27,6 +27,17 @@ public enum GapKind {
     LINEAGE_LOST,
     /** A planned task no activation of this replay answered. */
     TASK_UNANSWERED,
+    /**
+     * One planned task answered at two addresses across the corpus.
+     *
+     * <p>DIAGNOSTIC, and read by EXPLORE: an arm is owed once per planned
+     * OCCURRENCE, so an address that moves between replays of the same plan
+     * row splits one owed fact into two and the arms answered at the first
+     * address settle nothing at the second.  The cause is upstream of any
+     * wave -- what the execution index counted -- so the wave names it and
+     * goes on.</p>
+     */
+    ADDRESS_UNSTABLE,
     /** The solver gave no answer in the time it was given. */
     SOLVER_TIMEOUT,
     /**

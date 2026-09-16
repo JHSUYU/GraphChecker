@@ -132,6 +132,7 @@ public final class ExploreMain {
         Corpus corpus = Corpus.read(iteration, rootDomains);
         StaticScopeMap scope = StaticScopeMap.read(scopeMap);
         List<GapRow> gaps = new ArrayList<GapRow>();
+        gaps.addAll(unstableAddresses(corpus));
         List<OccurrenceAddress> roots = resolve(corpus, declaredAnchor, gaps);
         List<Task> tasks = new ArrayList<Task>();
         Map<String, String> why = new LinkedHashMap<String, String>();
@@ -162,15 +163,17 @@ public final class ExploreMain {
         gaps.addAll(skeleton.gaps);
         slots.write(iteration);
 
-        Frontier frontier = new Frontier(tasks);
+        // An arm is owed once per PLANNED OCCURRENCE across the whole
+        // corpus, and this is the one ledger of that: the arms the sessions
+        // recorded, and the arms the waves answered (Frontier).
+        Frontier frontier = new Frontier(corpus, tasks);
         frontier.consume(RowCodec.readAll(results,
                 ExploreCodec::readResult));
         List<ObligationFactory.Candidate> candidates =
                 new ArrayList<ObligationFactory.Candidate>();
         for (Task task : tasks) {
             candidates.addAll(ObligationFactory.candidates(corpus, task,
-                    flipSites.get(task.taskId()), bounds, frontier::asked,
-                    gaps));
+                    flipSites.get(task.taskId()), bounds, frontier, gaps));
         }
         Frontier.Wave open = skeleton.replaced
                 ? frontier.open(wave,
@@ -193,6 +196,66 @@ public final class ExploreMain {
                 (pretty(manifest) + System.lineSeparator())
                         .getBytes(StandardCharsets.UTF_8));
         return manifest;
+    }
+
+    /**
+     * Every planned task this corpus answered at more than ONE address.
+     *
+     * <p>An arm is owed once per planned occurrence, and the key of that is
+     * the occurrence's address ({@link ClosurePlanner#taskId}).  So an
+     * address that moves between replays of the SAME planned task
+     * ({@link ActivationRow#taskId}) is the one thing that can make the
+     * ledger owe two facts where there is one: the arms answered at the
+     * first address settle nothing at the second, and exploration re-asks
+     * them for ever.  Reported here, once per task, naming the addresses --
+     * the cause is upstream, in what {@code runtime.Identity} counted, and
+     * an exploration wave cannot repair an address it is handed.</p>
+     *
+     * <p>DIAGNOSTIC: a corpus with a moving address still explores, it just
+     * explores more than one occurrence under one plan row, and the manifest
+     * says so.  On the 11741 campaign #2 corpus (84 planned tasks, 81
+     * sessions) there are none.</p>
+     */
+    private static List<GapRow> unstableAddresses(Corpus corpus) {
+        Map<String, Map<String, String>> answeredBy =
+                new LinkedHashMap<String, Map<String, String>>();
+        for (SessionReader session : corpus.sessions()) {
+            for (ActivationRow activation : session.activations()) {
+                if (activation.taskId().isEmpty()) continue;
+                Map<String, String> addresses =
+                        answeredBy.get(activation.taskId());
+                if (addresses == null) {
+                    addresses = new LinkedHashMap<String, String>();
+                    answeredBy.put(activation.taskId(), addresses);
+                }
+                if (!addresses.containsKey(
+                        activation.occurrence().render())) {
+                    addresses.put(activation.occurrence().render(),
+                            session.sessionId());
+                }
+            }
+        }
+        List<GapRow> unstable = new ArrayList<GapRow>();
+        for (Map.Entry<String, Map<String, String>> answered
+                : answeredBy.entrySet()) {
+            if (answered.getValue().size() < 2) continue;
+            List<String> named = new ArrayList<String>();
+            for (Map.Entry<String, String> address
+                    : answered.getValue().entrySet()) {
+                named.add(address.getKey() + " (first in session "
+                        + address.getValue() + ")");
+            }
+            unstable.add(GapRow.of(ExploreCodec.EXPLORATION,
+                    GapKind.ADDRESS_UNSTABLE, GapClass.DIAGNOSTIC,
+                    answered.getKey(),
+                    "this planned task was answered at "
+                            + answered.getValue().size()
+                            + " addresses across " + corpus.sessions().size()
+                            + " sessions, so an arm answered at one of them "
+                            + "is owed again at the others: "
+                            + String.join(" | ", named)));
+        }
+        return unstable;
     }
 
     /**
