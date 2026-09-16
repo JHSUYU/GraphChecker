@@ -219,29 +219,16 @@ public final class Identity {
         }
 
         /**
-         * The bucket an event minted HERE is counted in: the occurrence it
-         * belongs to.
+         * The bucket an event is counted in: the occurrence it belongs to.
          *
          * <p>The innermost region activation open on this thread, by the
-         * serial it was opened with, else the degraded occurrence of this
-         * node under the scope the thread is in.  A serial rather than the
-         * address: an address costs one digest per frame on the path
-         * ({@code ExecutionIndex.of}) and this is read at every frame of the
-         * application scope, which is where hdfs-11741's seed replay spent
-         * its 980 seconds before {@code OccurrenceAddress#id} was memoized.
-         * The key is thread-local bookkeeping and is published nowhere.</p>
+         * serial it was opened with, else the degraded occurrence's own
+         * identity.  A serial rather than the address: an address costs one
+         * digest per frame on the path ({@code ExecutionIndex.of}), which
+         * is where hdfs-11741's seed replay spent its 980 seconds before
+         * {@code OccurrenceAddress#id} was memoized.  The key is
+         * thread-local bookkeeping and is published nowhere.</p>
          */
-        private String bucket(String nodeKey) {
-            for (int index = regions.size() - 1; index >= 0; index--) {
-                Region region = regions.get(index);
-                if (region.occurrence != null) return region.key;
-            }
-            Role kind = Lineage.named() ? Lineage.role() : Role.UNKNOWN;
-            return degraded(nodeOf(nodeKey), "ROLE." + kind.name(),
-                    here(kind));
-        }
-
-        /** The bucket of an occurrence a caller already holds. */
         private String bucket(OccurrenceAddress occurrence) {
             for (int index = regions.size() - 1; index >= 0; index--) {
                 Region region = regions.get(index);
@@ -252,15 +239,51 @@ public final class Identity {
         }
 
         /**
-         * The k of one event of the bucket {@code occurrence} at
+         * The iteration of a FRAME entered at {@code site}: how many times
+         * this level has entered that site.
+         *
+         * <p>Control flow, and nothing else -- IDENTITY-V3 §1's "the
+         * innermost enclosing loop's iteration count at that frame".  The
+         * loop that re-enters a site is often in code outside the
+         * application scope (hdfs-11741's balancer iterations are
+         * {@code TestBalancer.runBalancer}'s own {@code for}), so the count
+         * of entries at this level is the only thing that separates two
+         * turns of it, and it must not be reset by anything that is not
+         * control flow.</p>
+         *
+         * <p>What this replaces: counting a frame entry as an EVENT of the
+         * enclosing occurrence.  A thread's ambient occurrence changes
+         * whenever its scope does -- an IPC client carries the inbound
+         * scope of the last response until it builds the next request
+         * ({@code Client.java:1237}) -- so the two {@code
+         * Balancer.runOneIteration} entries of one workload request landed
+         * in two buckets, both at iteration 0, and the two {@code
+         * balance-block} requests they sent carried ONE producer endpoint
+         * id ({@code d21d5bc6e61357f1}).  Which occurrence a frame ENTRY
+         * belongs to is not part of where that frame sits in the control
+         * structure.</p>
+         */
+        private int nextCall(String site) {
+            Map<String, Integer> calls = top().calls;
+            Integer made = calls.get(site);
+            int iteration = made == null ? 0 : made;
+            calls.put(site, iteration + 1);
+            return iteration;
+        }
+
+        /**
+         * The k of one EVENT of the bucket {@code occurrence} at
          * {@code site}: how many it has already made there AT THIS LEVEL.
          *
-         * <p>THE counter.  A send, a read, a write, a region entry and a
-         * work start are all events of the occurrence that makes them, and
-         * one of them is the k-th at its site or two of them share an
-         * address.  Every caller comes through here so that the number the
-         * recording states and the number a replay computes are the same
-         * number for the same event.</p>
+         * <p>THE event counter.  A send, a read, a write and an attach are
+         * events OF an occurrence, and one of them is the k-th of that
+         * occurrence at its site or two of them share an endpoint id
+         * (RowInvariants invariant 4).  Keyed by the occurrence, because
+         * that is what the count means; taken at this level, because a
+         * count belongs to the calling context it was taken in.  Every
+         * caller comes through here so that the number the recording
+         * states and the number a replay computes are the same number for
+         * the same event.</p>
          */
         private int nextSiteEvent(String occurrence, String site) {
             Map<String, Integer> events = top().events;
@@ -279,12 +302,6 @@ public final class Identity {
                 standing.add(frame(index));
             }
             return ExecutionIndex.of(standing);
-        }
-
-        /** The node an event names, else the node of the start behind it. */
-        private String nodeOf(String nodeKey) {
-            return attributable(nodeKey) || !attributable(startNode)
-                    ? Text.safe(nodeKey) : startNode;
         }
 
         /**
@@ -313,12 +330,15 @@ public final class Identity {
         }
     }
 
-    /** One level of the index: an entered frame and the events under it. */
+    /** One level of the index: an entered frame and what happened under it. */
     private static final class Level {
         /** The frame this level was entered with, or null on the root. */
         private final Frame frame;
         /** The token the frame exit closes this level by, or 0. */
         private final long token;
+        /** How often this level has entered each call site. */
+        private final Map<String, Integer> calls =
+                new HashMap<String, Integer>();
         /** How often each (occurrence, site) has minted an event here. */
         private final Map<String, Integer> events =
                 new HashMap<String, Integer>();
@@ -463,8 +483,12 @@ public final class Identity {
         String site = Text.safe(startSiteId);
         if (site.isEmpty() || carrier == null) return;
         State state = state();
-        int iteration = state.nextSiteEvent(
-                state.bucket(starterNodeKey), site);
+        // The start-site frame is a frame of the work that was started, so
+        // its iteration is control flow like any other: the k-th start at
+        // this site in this level.  Two starts one level makes at one site
+        // are two siblings, whatever the starter's ambient scope did
+        // between them.
+        int iteration = state.nextCall(site);
         sweep();
         STARTS.put(new Carrier(carrier, COLLECTED),
                 new Start(Frame.of(site, iteration),
@@ -552,12 +576,19 @@ public final class Identity {
      * the innermost enclosing loop's iteration count means -- and one rule
      * computes it in the recording and in the replay alike.</p>
      *
+     * <p>No node: a level is a point of the component's control structure
+     * and the node is a property of the OCCURRENCE an event belongs to,
+     * which {@link #occurrence} and {@link #endpointAt} name for
+     * themselves.  Reading it here would also cost a lock
+     * ({@code RuntimeTraceContext.activationSource}) at every application
+     * call.</p>
+     *
      * @return the token that closes exactly the level this opened
      */
-    public static long enterFrame(String nodeKey, String callSiteId) {
+    public static long enterFrame(String callSiteId) {
         State state = state();
         String site = Text.safe(callSiteId);
-        int iteration = state.nextSiteEvent(state.bucket(nodeKey), site);
+        int iteration = state.nextCall(site);
         long token = TOKENS.getAndIncrement();
         state.levels.add(new Level(Frame.of(site, iteration), token));
         state.journal();

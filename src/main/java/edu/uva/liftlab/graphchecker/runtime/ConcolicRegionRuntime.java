@@ -794,15 +794,12 @@ public final class ConcolicRegionRuntime {
      * <p>The replay's half of the one frame rule: the same hook, over the
      * same scope, that the recording weaves
      * ({@code CausynthTraceRecorder.enterMethodFrame}), from the one walk
-     * ({@code CausynthPipeline.instrumentApplicationScope}).  The node is
-     * not read here -- reading it costs a lock and this runs at every
-     * application call -- because an event of a thread that names no node
-     * of its own belongs to the node of the start that created its work.</p>
+     * ({@code CausynthPipeline.instrumentApplicationScope}).</p>
      *
      * @return the token that closes exactly the level this opened
      */
     public static long enterMethodFrame(String callSiteId) {
-        return RowRuntime.enterFrame("", safe(callSiteId));
+        return RowRuntime.enterFrame(safe(callSiteId));
     }
 
     /** Leaves the level {@link #enterMethodFrame} opened. */

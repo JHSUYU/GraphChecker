@@ -443,17 +443,11 @@ public final class CausynthTraceRecorder {
      * region-root-only frame rule could not give it, leaving its site
      * counts run-length ordinals over the process (IDENTITY-V3 §1).</p>
      *
-     * <p>The node is not read here: reading it costs a lock
-     * ({@code RuntimeTraceContext.activationSource}) and this hook runs at
-     * every application call.  An event of a thread that names no node of
-     * its own belongs to the node of the start that created its work, which
-     * {@code Identity} already holds.</p>
-     *
      * @return the token that closes exactly the level this opened
      */
     public static long enterMethodFrame(String callSiteId) {
         return edu.uva.liftlab.graphchecker.runtime.Identity.enterFrame(
-                "", MapFields.safe(callSiteId));
+                MapFields.safe(callSiteId));
     }
 
     /** Leaves the level {@link #enterMethodFrame} opened. */

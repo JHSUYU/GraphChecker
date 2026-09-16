@@ -329,7 +329,7 @@ public class RowRuntimeTest {
         // depth, which such a pop does not move.
         Identity.resetForTests();
         Identity.scopeStart();
-        Identity.enterFrame(NN.key(), "Loader.loadEditRecords()#u4");
+        Identity.enterFrame("Loader.loadEditRecords()#u4");
         Identity.occurrence(NN.key(), "REGION.loader", true);
         long nested = ConcolicRegionRuntime.enterRegionEntry("REGION.apply",
                 "<a.Loader: long applyEditLogOp()>", null);
@@ -734,15 +734,15 @@ public class RowRuntimeTest {
         // PBHelper.convert activations of one refresh then answered one
         // address (G11).
         Identity.resetForTests();
-        Identity.enterFrame(NN.key(), "Server.processRpcRequest()#u3");
-        long inbound = Identity.enterFrame(NN.key(), "Propagation.inbound()#u7");
+        Identity.enterFrame("Server.processRpcRequest()#u3");
+        long inbound = Identity.enterFrame("Propagation.inbound()#u7");
         Identity.scopeStart();
         Identity.exitFrame(inbound);
-        long converting = Identity.enterFrame(NN.key(),
+        long converting = Identity.enterFrame(
                 "PBHelper.convert()#u9");
         assertEquals("PBHelper.convert()#u9@0", Identity.atScope().render());
         Identity.exitFrame(converting);
-        Identity.enterFrame(NN.key(), "PBHelper.convert()#u9");
+        Identity.enterFrame("PBHelper.convert()#u9");
         assertEquals("the k-th call at one site under one occurrence",
                 "PBHelper.convert()#u9@1", Identity.atScope().render());
 
@@ -757,14 +757,14 @@ public class RowRuntimeTest {
         Object ticking = new Object();
         RuntimeTraceContext.registerSource(ticking, NN);
         long request = RuntimeTraceContext.beginRequest(NN, "balance-block");
-        Identity.exitFrame(Identity.enterFrame(NN.key(),
+        Identity.exitFrame(Identity.enterFrame(
                 "Balancer.runOneIteration()#u1"));
         long tick = CausynthTraceRecorder.beginDaemonTick(ticking,
                 "KEY_MANAGER_TICK");
-        Identity.exitFrame(Identity.enterFrame(NN.key(),
+        Identity.exitFrame(Identity.enterFrame(
                 "KeyManager.updateBlockKeys()#u2"));
         CausynthTraceRecorder.endDaemonTick(tick);
-        Identity.enterFrame(NN.key(), "Balancer.runOneIteration()#u1");
+        Identity.enterFrame("Balancer.runOneIteration()#u1");
         assertEquals("Balancer.runOneIteration()#u1@1",
                 Identity.atScope().render());
         RuntimeTraceContext.endRequest(request);
@@ -772,22 +772,22 @@ public class RowRuntimeTest {
         Identity.resetForTests();
         Lineage.resetForTests();
         Identity.scopeStart();
-        Identity.enterFrame(NN.key(), "Caller.run()#u3");
-        Identity.enterFrame(NN.key(), "Caller.step()#u7");
+        Identity.enterFrame("Caller.run()#u3");
+        Identity.enterFrame("Caller.step()#u7");
         ExecutionIndex inner = Identity.atScope();
         assertEquals("Caller.run()#u3@0/Caller.step()#u7@0", inner.render());
 
         // An unrelated call, entered and left, moves nothing.
-        Identity.exitFrame(Identity.enterFrame(NN.key(),
+        Identity.exitFrame(Identity.enterFrame(
                 "Other.helper()#u1"));
         assertEquals(inner, Identity.atScope());
 
         // Re-entering one site under one frame IS the next iteration --
         // the rule that makes a loop body's turns distinct, computed the
         // same way in the recording and in the replay.
-        Identity.exitFrame(Identity.enterFrame(NN.key(),
+        Identity.exitFrame(Identity.enterFrame(
                 "Caller.body()#u9"));
-        Identity.enterFrame(NN.key(), "Caller.body()#u9");
+        Identity.enterFrame("Caller.body()#u9");
         assertEquals("Caller.run()#u3@0/Caller.step()#u7@0"
                 + "/Caller.body()#u9@1", Identity.atScope().render());
 
@@ -796,7 +796,7 @@ public class RowRuntimeTest {
         ExecutionIndex atEntry = Identity.regionEnter();
         assertEquals(3, atEntry.frames().size());
         assertTrue(Identity.siteIndex().isEmpty());
-        Identity.enterFrame(NN.key(), "Region.port()#u2");
+        Identity.enterFrame("Region.port()#u2");
         assertEquals("Region.port()#u2@0", Identity.siteIndex().render());
 
         // The frame journal: a VM-logged event takes the frames the thread
@@ -816,9 +816,9 @@ public class RowRuntimeTest {
         Identity.regionKey(41L);
         // No event between the region entry and this call, so the entry the
         // clock stood at is replaced rather than duplicated.
-        Identity.enterFrame(NN.key(), "Saver.save()#u1");
+        Identity.enterFrame("Saver.save()#u1");
         clock[0] = 44L;
-        long counting = Identity.enterFrame(NN.key(), "Manager.count()#u2");
+        long counting = Identity.enterFrame("Manager.count()#u2");
         clock[0] = 48L;
         // Event 45..48 happened inside count(): the last entry below it is
         // the one the clock read when count() was entered.
@@ -833,7 +833,7 @@ public class RowRuntimeTest {
         // Entered and left with no event in between: the interval holds
         // nothing, so the collapsed entry is the one that stood at 48.
         Identity.exitFrame(counting);
-        Identity.enterFrame(NN.key(), "Manager.count()#u2");
+        Identity.enterFrame("Manager.count()#u2");
         assertEquals("Saver.save()#u1@0/Manager.count()#u2@1",
                 FrameJournal.framesAt(41L, 49L).render());
         // Not this activation's journal, and below the region entry: unplaced
@@ -854,9 +854,9 @@ public class RowRuntimeTest {
                 RowRuntime.occurrenceAt(99L));
         Identity.resetForTests();
         Identity.scopeStart();
-        Identity.enterFrame(NN.key(), "Caller.run()#u3");
-        Identity.enterFrame(NN.key(), "Caller.step()#u7");
-        Identity.enterFrame(NN.key(), "Caller.body()#u9");
+        Identity.enterFrame("Caller.run()#u3");
+        Identity.enterFrame("Caller.step()#u7");
+        Identity.enterFrame("Caller.body()#u9");
 
         // The thread-start handover (P2h): the child's inherited stack
         // GAINS the frame of the start that created it, and two siblings
@@ -865,7 +865,7 @@ public class RowRuntimeTest {
         // nothing else.  No thread id, no address, no session counter.
         Identity.resetForTests();
         Identity.scopeStart();
-        long saving = Identity.enterFrame(NN.key(),
+        long saving = Identity.enterFrame(
                 "FSImage.saveFSImageInAllDirs()#u12");
         String first = startedWorkIndex("FSImage.saveFSImageInAllDirs()#u40");
         String second = startedWorkIndex("FSImage.saveFSImageInAllDirs()#u40");
@@ -881,29 +881,29 @@ public class RowRuntimeTest {
         // stands on a different path, so it is a different occurrence and its
         // starts begin at 0 again -- exactly as a loop iteration count does.
         Identity.exitFrame(saving);
-        Identity.enterFrame(NN.key(), "FSImage.saveFSImageInAllDirs()#u12");
+        Identity.enterFrame("FSImage.saveFSImageInAllDirs()#u12");
         assertEquals("FSImage.saveFSImageInAllDirs()#u12@1"
                 + "/FSImage.saveFSImageInAllDirs()#u40@0"
                 + "/FSImageSaver.run()#u1@0",
                 startedWorkIndex("FSImage.saveFSImageInAllDirs()#u40"));
 
-        // The index has TWO stacks and one balance rule.  A nested region
-        // opened and closed leaves the enclosing occurrence's site counts
-        // alone, so the k-th entry of a site inside a loop keeps counting;
-        // a region popped without a push deletes those counts
-        // (Identity.regionExit), and the next entry at that site restarts
-        // at 0 while the FRAME depth stays right.  That is what renumbered
-        // the 10 applyEditLogOp entries of one loadEditRecords on
-        // hdfs-17960 verification #3 -- 0, then 0..8 -- and refused 13
-        // tasks at that one frame.
+        // The index has TWO stacks and one balance rule.  A frame's
+        // iteration is CONTROL FLOW -- the k-th entry of this site in this
+        // level -- so neither a nested region opened and closed nor a
+        // region popped without a push moves it, and the 10
+        // applyEditLogOp entries of one loadEditRecords are 0..9 whatever
+        // the region stack does (hdfs-17960 verification #3 saw them as 0,
+        // then 0..8, and refused 13 tasks at that one frame).  What an
+        // unbalanced region pop does move is the EVENT counts of the
+        // occurrence it closed, which is why it is still a refusal.
         Identity.resetForTests();
         Identity.scopeStart();
-        Identity.enterFrame(NN.key(), "Loader.loadEditRecords()#u4");
+        Identity.enterFrame("Loader.loadEditRecords()#u4");
         Identity.occurrence(NN.key(), "REGION.loader", true);
         assertEquals("one region open, pushed by the entry", 1,
                 Identity.regionDepth());
         for (int record = 0; record < 3; record++) {
-            long applying = Identity.enterFrame(NN.key(),
+            long applying = Identity.enterFrame(
                     "Loader.applyEditLogOp()#u115");
             // One nested activation, opened and closed as the entry hook
             // pairs them.
@@ -913,7 +913,7 @@ public class RowRuntimeTest {
         }
         assertEquals("the pair left the enclosing region standing", 1,
                 Identity.regionDepth());
-        long applied = Identity.enterFrame(NN.key(),
+        long applied = Identity.enterFrame(
                 "Loader.applyEditLogOp()#u115");
         assertEquals("the k-th entry of one site inside one occurrence",
                 "Loader.loadEditRecords()#u4@0/Loader.applyEditLogOp()#u115@3",
@@ -922,17 +922,19 @@ public class RowRuntimeTest {
                 Identity.innermostRegion().contains("REGION.loader"));
         Identity.exitFrame(applied);
 
-        // One pop too many, and the same site restarts at 0 -- the frame
-        // depth says nothing is wrong.
+        // One pop too many: the frames are unmoved -- neither the depth nor
+        // the iteration of the next entry -- and the region stack alone
+        // states it, which is what FRAME_UNBALANCED is for
+        // (ConcolicRegionRuntime#closeRegionEntry reads regionDepth).
         int frames = Identity.depth();
         Identity.regionExit();
         assertEquals("the frames are untouched by a region pop", frames,
                 Identity.depth());
         assertEquals("but no region is open any more", 0,
                 Identity.regionDepth());
-        Identity.enterFrame(NN.key(), "Loader.applyEditLogOp()#u115");
-        assertEquals("the fifth entry, renumbered as the first",
-                "Loader.loadEditRecords()#u4@0/Loader.applyEditLogOp()#u115@0",
+        Identity.enterFrame("Loader.applyEditLogOp()#u115");
+        assertEquals("the fifth entry, still the fifth",
+                "Loader.loadEditRecords()#u4@0/Loader.applyEditLogOp()#u115@4",
                 Identity.atScope().render());
 
         // A pool thread was created before the work it runs, so it inherits
@@ -948,7 +950,7 @@ public class RowRuntimeTest {
             public void run() {
                 for (Object task : tasks) {
                     Identity.claimStart(task);
-                    long running = Identity.enterFrame(NN.key(),
+                    long running = Identity.enterFrame(
                             "Task.run()#u1");
                     ran.add(Identity.atScope().render());
                     Identity.exitFrame(running);
@@ -956,7 +958,7 @@ public class RowRuntimeTest {
             }
         });
         Identity.scopeStart();
-        Identity.enterFrame(NN.key(), "Pool.submitAll()#u5");
+        Identity.enterFrame("Pool.submitAll()#u5");
         Identity.startWork("Pool.submitAll()#u9", tasks[0], NN.key());
         Identity.startWork("Pool.submitAll()#u9", tasks[1], NN.key());
         worker.start();
@@ -974,8 +976,8 @@ public class RowRuntimeTest {
         // entry of one method has its own depth, and an unbalanced one is
         // visible as a depth that did not come back.
         int depthAtOpen = Identity.depth();
-        long outer = Identity.enterFrame(NN.key(), "Recursive.m()#u1");
-        long innerRecursion = Identity.enterFrame(NN.key(),
+        long outer = Identity.enterFrame("Recursive.m()#u1");
+        long innerRecursion = Identity.enterFrame(
                 "Recursive.m()#u1");
         assertEquals(depthAtOpen + 2, Identity.depth());
         assertEquals("Recursive.m()#u1", Identity.innermostFrame());
@@ -992,7 +994,7 @@ public class RowRuntimeTest {
 
         Identity.resetForTests();
         Identity.scopeStart();
-        Identity.enterFrame(NN.key(), "Caller.run()#u3");
+        Identity.enterFrame("Caller.run()#u3");
 
         // The three causal contexts, and the one that is not an ordinal.
         // A ROOT names the api its k was counted under, because that is
@@ -1022,7 +1024,7 @@ public class RowRuntimeTest {
         Thread child = new Thread(new Runnable() {
             @Override
             public void run() {
-                Identity.enterFrame(NN.key(), "FSImageSaver.run()#u1");
+                Identity.enterFrame("FSImageSaver.run()#u1");
                 onChild.set(Identity.atScope().render());
             }
         });
