@@ -1,7 +1,6 @@
 package edu.uva.liftlab.graphchecker.compose;
 
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
-import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics;
 import edu.uva.liftlab.graphchecker.smt.Z3;
 
 import edu.uva.liftlab.graphchecker.contract.Claim;

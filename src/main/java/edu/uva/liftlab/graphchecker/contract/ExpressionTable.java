@@ -60,10 +60,6 @@ public final class ExpressionTable {
         return expressions;
     }
 
-    public boolean isEmpty() {
-        return expressions.isEmpty();
-    }
-
     public JsonObject toJson() {
         JsonObject json = new JsonObject();
         for (Map.Entry<String, JsonObject> entry : expressions.entrySet()) {

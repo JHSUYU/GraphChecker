@@ -63,13 +63,6 @@ public final class RowInvariants {
         return gaps;
     }
 
-    /** One session's own violations: rules 1 (rows), 2-9. */
-    public static List<GapRow> check(SessionReader session) {
-        List<GapRow> gaps = new ArrayList<GapRow>();
-        check(session, gaps);
-        return gaps;
-    }
-
     private static void check(SessionReader session, List<GapRow> gaps) {
         activated(session, gaps);
         neverNeither(session, gaps);

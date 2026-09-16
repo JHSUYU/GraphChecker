@@ -6,17 +6,12 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 
 import edu.uva.liftlab.graphchecker.plan.SelectorResolution;
-import edu.uva.liftlab.graphchecker.contract.ActivationRow;
-import edu.uva.liftlab.graphchecker.contract.CausalContext;
 import edu.uva.liftlab.graphchecker.contract.Claim;
 import edu.uva.liftlab.graphchecker.contract.ClaimKind;
 import edu.uva.liftlab.graphchecker.contract.CompositionManifest;
-import edu.uva.liftlab.graphchecker.contract.ExecutionIndex;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapRow;
-import edu.uva.liftlab.graphchecker.contract.NodeId;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
-import edu.uva.liftlab.graphchecker.contract.Selector;
 import edu.uva.liftlab.graphchecker.contract.RootDomain;
 import edu.uva.liftlab.graphchecker.contract.RowCodec;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;

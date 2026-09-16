@@ -424,9 +424,12 @@ public final class SmtLowering extends VmLoweringCore {
     /**
      * One expression of this session, lowered, or a named refusal.
      *
-     * <p>The declarations it answers with are the symbols its own text
-     * names, at the sorts this lowering gave them: a caller that puts the
-     * text in a query of its own declares exactly those and no more.</p>
+     * <p>The text and its SORT, and nothing else: a caller that puts the
+     * text in a query of its own asks {@link #declarations()} for the
+     * names it reaches.  {@code Lowered} used to carry its own copy of
+     * them, filled by running {@link #mentions} over the WHOLE declaration
+     * map on every {@code lower()} -- inside {@code ClosurePlanner}'s fixed
+     * point -- and read by nothing.</p>
      */
     public Lowered lower(String expressionRef) {
         JsonObject expression = expressionRef == null ? null
@@ -443,14 +446,7 @@ public final class SmtLowering extends VmLoweringCore {
             return Lowered.refused(refused.isEmpty()
                     ? "ABSENT_EXPRESSION:" + expressionRef : refused.get(0));
         }
-        Map<String, String> named = new LinkedHashMap<String, String>();
-        for (Map.Entry<String, Sort> declaration
-                : declarations().entrySet()) {
-            if (mentions(value.text, declaration.getKey())) {
-                named.put(declaration.getKey(), declaration.getValue().smt);
-            }
-        }
-        return new Lowered(value.text, value.sort.smt, "", named);
+        return new Lowered(value.text, value.sort.smt, "");
     }
 
     /**
@@ -594,19 +590,15 @@ public final class SmtLowering extends VmLoweringCore {
         private final String text;
         private final String sort;
         private final String refusal;
-        private final Map<String, String> declarations;
 
-        private Lowered(String text, String sort, String refusal,
-                        Map<String, String> declarations) {
+        private Lowered(String text, String sort, String refusal) {
             this.text = text;
             this.sort = sort;
             this.refusal = refusal;
-            this.declarations = Collections.unmodifiableMap(declarations);
         }
 
         private static Lowered refused(String reason) {
-            return new Lowered("", "", reason,
-                    new LinkedHashMap<String, String>());
+            return new Lowered("", "", reason);
         }
 
         public boolean ok() {
@@ -629,11 +621,6 @@ public final class SmtLowering extends VmLoweringCore {
          */
         public String sort() {
             return sort;
-        }
-
-        /** Every symbol the text names, with its SMT sort. */
-        public Map<String, String> declarations() {
-            return declarations;
         }
 
         @Override
@@ -2334,11 +2321,6 @@ public final class SmtLowering extends VmLoweringCore {
     private static boolean simpleCharacter(char value) {
         if (Character.isLetterOrDigit(value)) return true;
         return "~!@$%^&*_-+=<>.?/".indexOf(value) >= 0;
-    }
-
-    /** The whole query, at the assertions it holds. */
-    public String render() {
-        return body() + "(check-sat)\n";
     }
 
     // ------------------------------------------------------------------

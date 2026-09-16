@@ -12,12 +12,7 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
 import java.util.ArrayList;
-import java.util.Collection;
-import java.util.Collections;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
-import java.util.function.Consumer;
 
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
@@ -75,12 +70,6 @@ public final class VmTermLowering {
 
         public boolean floating() {
             return this == FLOAT32 || this == FLOAT64;
-        }
-
-        /** The solver's frozen spelling, frozen into its symbol names. */
-        public String replayName() {
-            return this == MAP ? "ASSOCIATIVE"
-                    : this == ARRAY_VALUE ? "INDEXED" : name();
         }
     }
 
@@ -192,9 +181,6 @@ public final class VmTermLowering {
         /** A String whose Java nullness this lowering does not know. */
         JAVA_STRING_NULLNESS_UNKNOWN("JavaStringNullnessUnknown", false),
 
-        /** A term no container cell can carry. */
-        CANNOT_BOX("CannotBox", false),
-
         // Expression dispatch.
         ABSENT_EXPRESSION("ABSENT_EXPRESSION", false),
         MALFORMED_NOT("MalformedNot", false),
@@ -213,11 +199,6 @@ public final class VmTermLowering {
         public String composedSubject(String origin, String detail) {
             return join(composed, composedNamesOrigin ? origin : "", detail);
         }
-
-        public String solverSubject(String origin, String detail) {
-            return join(origin, name(), detail);
-        }
-
         private static String join(String... parts) {
             StringBuilder subject = new StringBuilder();
             for (String part : parts) {
@@ -502,18 +483,5 @@ public final class VmTermLowering {
         public boolean isNullReference() {
             return sort == Sort.REF && "nullRef".equals(text);
         }
-    }
-
-    /** One read-time use: its activation and its candidate writers. */
-    public static final class GuardedReadUse {
-        public final String activation;
-        public final List<String> selectors;
-
-        public GuardedReadUse(String activation, Collection<String> selectors) {
-            this.activation = activation;
-            this.selectors = new ArrayList<>(selectors);
-            Collections.sort(this.selectors);
-        }
-
     }
 }

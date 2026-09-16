@@ -2,7 +2,6 @@ package edu.uva.liftlab.graphchecker.compose;
 
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 
-import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
 import edu.uva.liftlab.graphchecker.compose.VmTermLowering.Sort;
@@ -20,7 +19,6 @@ import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.GapRow;
 import edu.uva.liftlab.graphchecker.contract.Interaction;
-import edu.uva.liftlab.graphchecker.contract.InteractionKind;
 import edu.uva.liftlab.graphchecker.contract.ObligationResult;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.PathEntry;
@@ -2093,11 +2091,6 @@ public final class Composer {
     // Reading a published SMT term.
     // ------------------------------------------------------------------
 
-    /** Whether one symbol occurs in a term as a symbol, not a substring. */
-    private static boolean mentions(String term, String symbol) {
-        return SmtLowering.mentions(term, symbol);
-    }
-
     /** The declared roots one lowered expression mentions. */
     private Set<String> declaredRootsIn(String term) {
         Set<String> found = new LinkedHashSet<String>();
@@ -2105,7 +2098,9 @@ public final class Composer {
                 : corpus.roots().entrySet()) {
             RootMintRow row = corpus.anyRoot(entry.getKey());
             if (row == null || !row.declared()) continue;
-            if (mentions(term, row.symbol())) found.add(row.rootId());
+            if (SmtLowering.mentions(term, row.symbol())) {
+                found.add(row.rootId());
+            }
         }
         return found;
     }
@@ -2118,7 +2113,7 @@ public final class Composer {
             if (row == null || !row.declared()) continue;
             RootDomain domain = domainOf(row);
             if (domain.pinned() && row.kind() != RootKind.MARKER) continue;
-            if (mentions(term, row.symbol())) return true;
+            if (SmtLowering.mentions(term, row.symbol())) return true;
         }
         return false;
     }
