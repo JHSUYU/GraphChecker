@@ -1498,11 +1498,11 @@ public final class ConcolicRegionRuntime {
                         leafFieldSignature)) {
                     continue;
                 }
-                if (value != null && value != MissingValue.INSTANCE
-                        && containerValue(value)) {
+                if (declaredContainerCell(value)) {
                     // A container is symbolic only once a root-derived
                     // value is put into it, which the VM states inside the
-                    // expression it then carries;                     continue;
+                    // expression it then carries.
+                    continue;
                 }
                 MintedLeaf minted = mintExactFieldLeaf(active, action,
                         api, leafOwner, leafFieldSignature, action.symbol,
@@ -4058,8 +4058,7 @@ public final class ConcolicRegionRuntime {
                     exactFieldPath, leafFieldSignature)) {
                 return;
             }
-            if (value != null && value != MissingValue.INSTANCE
-                    && containerValue(value)) {
+            if (declaredContainerCell(value)) {
                 return;
             }
             MintedLeaf minted = mintExactFieldLeaf(active, action, api,
@@ -4396,7 +4395,7 @@ public final class ConcolicRegionRuntime {
                     action.symbol, Collections.<String>emptyList(), "")) {
                 return;
             }
-            if (containerValue(value)) {
+            if (declaredContainerCell(value)) {
                 return;
             }
             api.symbolize(value, manualMintLabel(action.symbol,
@@ -4470,6 +4469,33 @@ public final class ConcolicRegionRuntime {
                 || value instanceof Map<?, ?>
                 || value instanceof Set<?>
                 || value instanceof Collection<?>);
+    }
+
+    /**
+     * Whether a declared cell holds a container the VM already speaks for.
+     *
+     * <p>ONE TEST, taken by every path that would mint a leaf on a declared
+     * cell: the receiver-field hook ({@link #symbolizeField}), the
+     * heap-field hook ({@link #materializeField}) and the argument/local
+     * hook ({@link #symbolize}).  A container is symbolic only once a
+     * root-derived value is put into it, and the VM states that inside the
+     * expression the container then carries, so a fresh leaf minted on it
+     * would replace a propagated expression with a free variable.</p>
+     *
+     * <p>The heap-field hook used to hold this test with an EMPTY body --
+     * its {@code continue} had been absorbed into the comment text -- so a
+     * declared container reached through that hook alone fell through to
+     * {@code mintExactFieldLeaf}.  The three now share one predicate so
+     * the next such divergence cannot be written.</p>
+     *
+     * <p>The primitive mint paths ({@link #materializePrimitiveValue},
+     * {@link #materializeStaticPrimitiveField}) take no container test and
+     * need none: every caller gates on {@link #isPrimitiveBox} or on a
+     * primitive-typed field, so a container cannot reach them.</p>
+     */
+    private static boolean declaredContainerCell(Object value) {
+        return value != null && value != MissingValue.INSTANCE
+                && containerValue(value);
     }
 
     /**
