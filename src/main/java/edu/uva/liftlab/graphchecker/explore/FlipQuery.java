@@ -661,15 +661,18 @@ final class FlipQuery {
                               Set<String> rootsTouched, Set<String> unknown) {
             lowered.add(sessionId);
             Map<String, String> rename = renamesOf(sessionId);
-            Set<String> symbols = SmtLowering.symbols(term,
-                    new LinkedHashSet<String>());
             // THE CLOSURE: the recorded symbols of a term are the ones
             // reachable from it, not the ones visible in it.  A lowered term
             // reaches its leaves through the subterms it names, so a handoff
             // inside a shared define-fun is a symbol of this term -- and
             // binding it is what gives the query an arm, the obligation an
-            // answer, and the replay something to apply.
-            symbols.addAll(reached(term, sessionId));
+            // answer, and the replay something to apply.  One answer, in
+            // SmtLowering, which the closure planner asks too.
+            SmtLowering lowering = corpus.lowering(sessionId);
+            Set<String> symbols = lowering == null
+                    ? SmtLowering.symbols(term, new LinkedHashSet<String>())
+                    : lowering.reachedSymbols(term,
+                            new LinkedHashSet<String>());
             for (String token : symbols) {
                 Corpus.SymbolKind kind = corpus.symbolKind(sessionId, token);
                 if (kind == Corpus.SymbolKind.UNKNOWN) continue;
@@ -696,17 +699,6 @@ final class FlipQuery {
         }
 
         /** The names one text reaches through the subterms it mentions. */
-        private Set<String> reached(String term, String sessionId) {
-            Set<String> names = new LinkedHashSet<String>();
-            SmtLowering lowering = corpus.lowering(sessionId);
-            if (lowering == null) return names;
-            for (SmtLowering.Declaration declaration
-                    : lowering.reachedBy(Collections.singletonList(term))) {
-                if (declaration.body.isEmpty()) names.add(declaration.name);
-            }
-            return names;
-        }
-
         /**
          * The query variable one session's symbol stands for.
          *
