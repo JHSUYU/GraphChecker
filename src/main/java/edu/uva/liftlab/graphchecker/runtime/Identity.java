@@ -56,16 +56,6 @@ public final class Identity {
         private final List<Frame> frames =
                 new ArrayList<Frame>();
         /** Per frame, how often each child call site has been entered. */
-        private final List<Map<String, Integer>> entries =
-                new ArrayList<Map<String, Integer>>();
-        private final Map<String, Integer> roots =
-                new HashMap<String, Integer>();
-
-        /** The counters of the frame a new child is entered under. */
-        private Map<String, Integer> children() {
-            return entries.isEmpty() ? roots
-                    : entries.get(entries.size() - 1);
-        }
         private int scopeBase;
         /** Whether this thread has looked for the start that created it. */
         private boolean claimed;
@@ -86,10 +76,6 @@ public final class Identity {
         private State copy() {
             State child = new State();
             child.frames.addAll(frames);
-            for (Map<String, Integer> frame : entries) {
-                child.entries.add(new HashMap<String, Integer>(frame));
-            }
-            child.roots.putAll(roots);
             child.scopeBase = scopeBase;
             // The start frame of the work THIS thread runs is not the start
             // frame of the work the child will run: the child claims its
@@ -124,11 +110,9 @@ public final class Identity {
             // task started from inside another one nests instead.
             if (startDepth >= 0 && startDepth == frames.size() - 1) {
                 frames.remove(startDepth);
-                if (!entries.isEmpty()) entries.remove(entries.size() - 1);
             }
             startDepth = frames.size();
             frames.add(frame);
-            entries.add(new HashMap<String, Integer>());
         }
 
         /** The frame depth an endpoint inside the innermost region is from. */
@@ -221,6 +205,25 @@ public final class Identity {
                 siteEvents.put(key, events);
             }
             return events;
+        }
+
+        /**
+         * The k of one event of {@code occurrence} at {@code site}: how many
+         * it has already made there.
+         *
+         * <p>THE counter.  A send, a read, a write, a region entry and a
+         * work start are all events of the occurrence that makes them, and
+         * one of them is the k-th at its site or two of them share an
+         * address.  Every caller comes through here so that the number the
+         * recording states and the number a replay computes are the same
+         * number for the same event.</p>
+         */
+        private int nextSiteEvent(OccurrenceAddress occurrence, String site) {
+            Map<String, Integer> events = siteEvents(occurrence);
+            Integer made = events.get(site);
+            int iteration = made == null ? 0 : made;
+            events.put(site, iteration + 1);
+            return iteration;
         }
 
         private ExecutionIndex from(int base) {
@@ -325,24 +328,29 @@ public final class Identity {
     /**
      * Files the frame of one {@code Thread.start} or work submission.
      *
-     * <p>The iteration is the number of starts already made AT THIS SITE
-     * inside the starter's current activation: the count lives in that
-     * frame's own counters and is gone when the frame pops, exactly as a
-     * loop iteration is (IDENTITY-V3 SS1: "two siblings started from one
-     * site in one loop differ by the loop iteration of the start site").
-     * It is a structural count of starts, never a thread id, an address or
-     * a session ordinal.</p>
+     * <p>The iteration is the k-th start AT THIS SITE of the occurrence that
+     * makes it -- the one counter every other event of an occurrence is
+     * counted by ({@link State#nextSiteEvent}) -- so two siblings started
+     * from one site in one loop differ by it and by nothing else
+     * (IDENTITY-V3 SS1: "two siblings started from one site in one loop
+     * differ by the loop iteration of the start site").  It is a structural
+     * count of starts, never a thread id, an address or a session
+     * ordinal.</p>
+     *
+     * <p>What this replaces: the count in the enclosing FRAME's own map.  A
+     * frame's counters die when it pops, so two starts made at one site by
+     * ONE occurrence from two activations of an untraced caller both stood
+     * at iteration 0 and the two threads they started carried one frame --
+     * the same hole the region entry had (G8), in the same place.  An
+     * occurrence does not die between two of its own starts.</p>
      */
     public static void startWork(String startSiteId, Object carrier,
                                  String starterNodeKey) {
         String site = Text.safe(startSiteId);
         if (site.isEmpty() || carrier == null) return;
         State state = state();
-        Map<String, Integer> starts = state.children();
-        String key = STARTED + site;
-        Integer made = starts.get(key);
-        int iteration = made == null ? 0 : made;
-        starts.put(key, iteration + 1);
+        int iteration = state.nextSiteEvent(
+                currentOccurrence(starterNodeKey), site);
         sweep();
         STARTS.put(new Carrier(carrier, COLLECTED),
                 new Start(Frame.of(site, iteration),
@@ -391,8 +399,6 @@ public final class Identity {
         }
     }
 
-    private static final String STARTED = "start\u0000";
-
     /**
      * Enters the index frame of one region activation.
      *
@@ -421,13 +427,9 @@ public final class Identity {
     public static void enterCall(String nodeKey, String callSiteId) {
         State state = state();
         String site = Text.safe(callSiteId);
-        Map<String, Integer> entered =
-                state.siteEvents(currentOccurrence(nodeKey));
-        Integer seen = entered.get(site);
-        int iteration = seen == null ? 0 : seen;
-        entered.put(site, iteration + 1);
+        int iteration = state.nextSiteEvent(
+                currentOccurrence(nodeKey), site);
         state.frames.add(Frame.of(site, iteration));
-        state.entries.add(new HashMap<String, Integer>());
         state.journal();
     }
 
@@ -442,12 +444,6 @@ public final class Identity {
         // apart.
         if (depth - 1 <= state.startDepth) return;
         state.frames.remove(depth - 1);
-        // The frame's own children are gone with it; the counters of the
-        // frame it returns to stay, which is what makes the next turn of a
-        // loop the next iteration.
-        if (!state.entries.isEmpty()) {
-            state.entries.remove(state.entries.size() - 1);
-        }
         state.journal();
     }
 
@@ -644,10 +640,7 @@ public final class Identity {
         State state = state();
         String key = Text.safe(site);
         if (key.isEmpty()) return state.from(state.regionBase());
-        Map<String, Integer> events = state.siteEvents(occurrence);
-        Integer made = events.get(key);
-        int iteration = made == null ? 0 : made;
-        events.put(key, iteration + 1);
+        int iteration = state.nextSiteEvent(occurrence, key);
         List<Frame> frames = new ArrayList<Frame>(
                 state.from(state.regionBase()).frames());
         frames.add(Frame.of(key, iteration));

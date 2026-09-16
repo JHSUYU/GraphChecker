@@ -803,9 +803,11 @@ public class RowRuntimeTest {
         assertEquals("FSImage.saveFSImageInAllDirs()#u12@0"
                 + "/FSImage.saveFSImageInAllDirs()#u40@1"
                 + "/FSImageSaver.run()#u1@0", second);
-        // The count lives in the starter FRAME and is gone with it: the next
-        // activation of the starter starts its starts again at 0, exactly as
-        // a loop iteration count does.
+        // The count is the occurrence's own (Identity.State#nextSiteEvent),
+        // and outside every region the occurrence is the role occurrence at
+        // the path this thread stands on: the next activation of the starter
+        // stands on a different path, so it is a different occurrence and its
+        // starts begin at 0 again -- exactly as a loop iteration count does.
         Identity.exitCall();
         Identity.enterCall(NN.key(), "FSImage.saveFSImageInAllDirs()#u12");
         assertEquals("FSImage.saveFSImageInAllDirs()#u12@1"
