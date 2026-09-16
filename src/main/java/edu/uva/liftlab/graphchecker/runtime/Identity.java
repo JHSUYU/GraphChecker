@@ -520,6 +520,31 @@ public final class Identity {
                 : state.frames.get(state.frames.size() - 1).callSite();
     }
 
+    /**
+     * How many regions this thread has open: the other stack to balance.
+     *
+     * <p>{@link #depth} counts frames and {@link #regionExit} pops regions,
+     * so a region popped without a push leaves the frame count right and
+     * this one wrong -- and it is this stack that decides which occurrence
+     * an event belongs to ({@link #currentOccurrence}) and which bucket
+     * counts its site ({@link State#nextSiteEvent}).  An activation that
+     * closes at a region depth other than the one it opened at must be
+     * refused, exactly as an unbalanced frame is.</p>
+     */
+    public static int regionDepth() {
+        return state().regions.size();
+    }
+
+    /** The innermost open region's occurrence, for a report, or {@code ""}. */
+    public static String innermostRegion() {
+        State state = state();
+        for (int index = state.regions.size() - 1; index >= 0; index--) {
+            OccurrenceAddress occurrence = state.regions.get(index).occurrence;
+            if (occurrence != null) return occurrence.render();
+        }
+        return "";
+    }
+
     /** The whole path this thread is at, for a degraded address. */
     public static ExecutionIndex here() {
         State state = state();
