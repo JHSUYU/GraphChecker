@@ -1061,16 +1061,28 @@ public final class Composer {
             reads.add("(= " + attach.symbol() + " " + paired + ")");
             return;
         }
-        String arrival = smtLiteral(attach.arrival());
-        if (arrival.isEmpty()) {
-            refusals.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
-                    GapClass.DIAGNOSTIC, attach.symbol(),
-                    "this session recorded no arrival at this attach "
-                            + "and no producer arm delivers it"));
-            return;
-        }
-        String read = bind(attach.symbol(), arrival, attach, refusals);
-        if (!read.isEmpty()) reads.add(read);
+        // AND NOTHING ELSE.  There used to be a third rule here -- bind
+        // the read to the literal this session happened to receive -- and
+        // an arrival is not a statement about why the delivery was that
+        // value: it is the value, pinned, on a path whose whole question
+        // is whether the producer could have delivered another one.  A
+        // read no attested arm delivers is refused BY NAME, so the path
+        // leaves the disjunction and the reason is in the ledger, which is
+        // the fail-closed answer; a path that kept the rest of its
+        // conjunction would rest on a pin the rows do not state for it.
+        //
+        // MEASURED unreachable on both frozen corpora before deleting it:
+        // hdfs-17960 campaign #8 states no attach row at all, and all 616
+        // of hdfs-11741 campaign #4's attach rows name a producer endpoint
+        // the seed exported at, so attestedExports is non-empty for every
+        // one of them (0 answered, 0 without a producer).
+        refusals.add(GapRow.of(session, GapKind.UNATTESTED_ARM,
+                GapClass.DIAGNOSTIC, attach.symbol(),
+                "no session of this corpus states the rows of the producer "
+                        + "occurrence this delivery came from, so what was "
+                        + "delivered is stated and why is not: this path "
+                        + "would have to pin the read to the literal it "
+                        + "received"));
     }
 
     /**
