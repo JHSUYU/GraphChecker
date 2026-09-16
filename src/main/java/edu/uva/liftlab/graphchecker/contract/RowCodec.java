@@ -54,6 +54,8 @@ public final class RowCodec {
     private static final String SITE_INDEX = "siteIndex";
     private static final String FORM = "form";
     private static final String ROLE = "role";
+    /** The api a root context's window index was counted under. */
+    private static final String ROOT_API = "api";
     private static final String CALL_SITE = "callSite";
     private static final String ITERATION = "iteration";
     private static final String SEQ = "seq";
@@ -94,6 +96,13 @@ public final class RowCodec {
             case ROOT:
                 CausalContext.Root root = (CausalContext.Root) context;
                 json.addProperty(ROLE, root.role().name());
+                // The api the window index was counted under, and only when
+                // there is one: a root nothing declared an api for (a daemon
+                // tick) states no api, which is also how a row written
+                // before the api was carried reads back unchanged.
+                if (!root.api().isEmpty()) {
+                    json.addProperty(ROOT_API, root.api());
+                }
                 json.addProperty("windowIndex", root.windowIndex());
                 break;
             default:
@@ -113,6 +122,7 @@ public final class RowCodec {
                         string(json, "rpcSite"));
             case ROOT:
                 return CausalContext.of(Role.of(string(json, ROLE)),
+                        optionalString(json, ROOT_API),
                         integer(json, "windowIndex"));
             default:
                 return CausalContext.of(Role.of(string(json, ROLE)));

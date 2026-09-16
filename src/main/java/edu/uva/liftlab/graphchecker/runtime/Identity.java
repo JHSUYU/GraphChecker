@@ -48,17 +48,43 @@ public final class Identity {
                 }
             };
 
+    /** Frame-level tokens: one per entered level, never reused. */
+    private static final java.util.concurrent.atomic.AtomicLong TOKENS =
+            new java.util.concurrent.atomic.AtomicLong(1L);
+
     private Identity() {
     }
 
-    /** One thread's frame stack, its prefix hashes and its loop counters. */
+    /**
+     * One thread's index levels: the thread root and one level per frame.
+     *
+     * <p>A LEVEL is one entered frame and the events minted while it was the
+     * innermost one.  IDENTITY-V3 §1 asks for a PEPID index -- a calling
+     * context plus per-call-site iteration counts -- so a count belongs to
+     * the frame it was taken in and dies with it: the k of an event is the
+     * k-th event at (enclosing occurrence, site) INSIDE its enclosing
+     * frame.  A polling loop's extra calls are frames of their own and
+     * cannot move a sibling's k.</p>
+     *
+     * <p>What this replaces: one counter map per THREAD, keyed by the
+     * occurrence alone.  With frames only at region roots and work starts,
+     * the balancer's {@code main} addressed every event it made outside a
+     * region as ONE degraded occurrence {@code
+     * balancer#epoch0/ROLE.CLIENT/Root:CLIENT#1/idx:} for the whole
+     * process, so its {@code HADOOP_IPC#REQUEST} count was a run-length
+     * ordinal over the process: the recording's {@code balance-block}
+     * request was the 19th such send (@18) and the replay's the 23rd (@22),
+     * because the replay's {@code main} polled {@code
+     * MiniDFSCluster.waitActive} four more times first.  IDENTITY-V3 §1
+     * forbids a run-length ordinal, and the frames of the whole
+     * application scope are what replace it.</p>
+     */
     private static final class State {
-        private final List<Frame> frames =
-                new ArrayList<Frame>();
-        /** Per frame, how often each child call site has been entered. */
-        private int scopeBase;
+        /** The thread root, then one level per open frame, outermost last. */
+        private final List<Level> levels = new ArrayList<Level>();
         /** Whether this thread has looked for the start that created it. */
         private boolean claimed;
+        private int scopeBase;
         /**
          * Where the frame of the start this thread's work runs under sits,
          * or -1 on a thread that runs its own work.
@@ -66,6 +92,8 @@ public final class Identity {
         private int startDepth = -1;
         /** The region activations open on this thread, innermost last. */
         private final List<Region> regions = new ArrayList<Region>();
+        /** How many regions have been opened on this thread. */
+        private int regionsOpened;
         /**
          * The node of the frame that started the work this thread runs, or
          * {@code ""}: the component an occurrence belongs to when its own
@@ -73,9 +101,34 @@ public final class Identity {
          */
         private String startNode = "";
 
+        private State() {
+            levels.add(new Level(null, 0L));
+        }
+
+        /** How many frames are standing. */
+        private int depth() {
+            return levels.size() - 1;
+        }
+
+        /** The frame at depth {@code index}, counted from the thread root. */
+        private Frame frame(int index) {
+            return levels.get(index + 1).frame;
+        }
+
+        /** The level events minted right now are counted in. */
+        private Level top() {
+            return levels.get(levels.size() - 1);
+        }
+
         private State copy() {
             State child = new State();
-            child.frames.addAll(frames);
+            // The frames carry over -- a child thread's index continues its
+            // parent's -- but not the counts: an event of the child is not
+            // an event the frame the parent took its own counts in made.
+            for (int index = 1; index < levels.size(); index++) {
+                child.levels.add(new Level(levels.get(index).frame,
+                        levels.get(index).token));
+            }
             child.scopeBase = scopeBase;
             // The start frame of the work THIS thread runs is not the start
             // frame of the work the child will run: the child claims its
@@ -88,7 +141,7 @@ public final class Identity {
                 // its parent's -- but not the journal: a journal is one
                 // thread's clock readings in order, and a second writer would
                 // interleave two threads' events into one sequence.
-                child.regions.add(new Region(region.base));
+                child.regions.add(new Region(region.base, region.key));
             }
             return child;
         }
@@ -102,17 +155,20 @@ public final class Identity {
          * nothing else (IDENTITY-V3 SS1, scope transfer).  It sits at the
          * boundary between the frames the starter stood on and the frames
          * the work itself pushes, which is where the start happened.</p>
+         *
+         * <p>Its level carries no token: nothing the work returns from
+         * opened it, so no frame exit may close it.</p>
          */
         private void openStart(Frame frame) {
             // A pool thread that finished its last task drops that task's
             // start frame before it takes the next: the work that frame
             // named is over, and the next task was started elsewhere.  A
             // task started from inside another one nests instead.
-            if (startDepth >= 0 && startDepth == frames.size() - 1) {
-                frames.remove(startDepth);
+            if (startDepth >= 0 && startDepth == depth() - 1) {
+                levels.remove(startDepth + 1);
             }
-            startDepth = frames.size();
-            frames.add(frame);
+            startDepth = depth();
+            levels.add(new Level(frame, 0L));
         }
 
         /** The frame depth an endpoint inside the innermost region is from. */
@@ -154,62 +210,50 @@ public final class Identity {
         }
 
         private Frame[] snapshot(int base) {
-            int start = Math.max(0, Math.min(base, frames.size()));
-            Frame[] standing = new Frame[frames.size() - start];
-            for (int index = start; index < frames.size(); index++) {
-                standing[index - start] = frames.get(index);
+            int start = Math.max(0, Math.min(base, depth()));
+            Frame[] standing = new Frame[depth() - start];
+            for (int index = start; index < depth(); index++) {
+                standing[index - start] = frame(index);
             }
             return standing;
         }
 
         /**
-         * How often each occurrence has minted an event at each site.
+         * The bucket an event minted HERE is counted in: the occurrence it
+         * belongs to.
          *
-         * <p>Keyed by the occurrence the endpoint is under, because that is
-         * what the count means: IDENTITY-V3 §1 asks the site-local index to
-         * separate two events of ONE occurrence at ONE site, so the counter
-         * belongs to that occurrence and to nothing else.</p>
-         *
-         * <p>What this replaces: one counter for the innermost open region
-         * and one for the whole thread.  Neither is an occurrence.  On
-         * hdfs-17960 the client thread mints sends for two degraded
-         * occurrences -- {@code client#epoch0/ROLE.CLIENT/Root:CLIENT#1} for
-         * the workload's own requests and {@code
-         * nn0#epoch1/ROLE.CLIENT/Root:CLIENT#1} for the two
-         * {@code restart-namenode} requests -- and a thread-wide counter let
-         * the restart's sends consume the client's k: the recording's
-         * {@code saveNamespace} send was the 22nd send on the thread
-         * (k=21, Anchor:81d0aa0dbdd84d73) and only the 20th of its own
-         * occurrence, so the anchor of everything that message started moved
-         * with a retry the recording happened to make.  One of those two
-         * restart sends was never received (seq 27340 has no
-         * EXCHANGE_RECEIVE), which is a timing fact no replay is held to;
-         * the replay minted k=20 and refused the target.</p>
+         * <p>The innermost region activation open on this thread, by the
+         * serial it was opened with, else the degraded occurrence of this
+         * node under the scope the thread is in.  A serial rather than the
+         * address: an address costs one digest per frame on the path
+         * ({@code ExecutionIndex.of}) and this is read at every frame of the
+         * application scope, which is where hdfs-11741's seed replay spent
+         * its 980 seconds before {@code OccurrenceAddress#id} was memoized.
+         * The key is thread-local bookkeeping and is published nowhere.</p>
          */
-        private final Map<String, Map<String, Integer>> siteEvents =
-                new HashMap<String, Map<String, Integer>>();
-
-        /**
-         * The counters of one occurrence's events, opening them at zero.
-         *
-         * <p>{@code null} is the occurrence this run can name none of -- the
-         * node was unnameable -- and it is one bucket of this thread like
-         * any other, because there is one such occurrence per thread and its
-         * address is refused anyway.</p>
-         */
-        private Map<String, Integer> siteEvents(OccurrenceAddress occurrence) {
-            String key = occurrence == null ? "" : occurrence.id();
-            Map<String, Integer> events = siteEvents.get(key);
-            if (events == null) {
-                events = new HashMap<String, Integer>();
-                siteEvents.put(key, events);
+        private String bucket(String nodeKey) {
+            for (int index = regions.size() - 1; index >= 0; index--) {
+                Region region = regions.get(index);
+                if (region.occurrence != null) return region.key;
             }
-            return events;
+            Role kind = Lineage.named() ? Lineage.role() : Role.UNKNOWN;
+            return degraded(nodeOf(nodeKey), "ROLE." + kind.name(),
+                    here(kind));
+        }
+
+        /** The bucket of an occurrence a caller already holds. */
+        private String bucket(OccurrenceAddress occurrence) {
+            for (int index = regions.size() - 1; index >= 0; index--) {
+                Region region = regions.get(index);
+                if (region.occurrence == occurrence) return region.key;
+            }
+            return degraded(occurrence.node().render(),
+                    occurrence.regionId(), occurrence.context());
         }
 
         /**
-         * The k of one event of {@code occurrence} at {@code site}: how many
-         * it has already made there.
+         * The k of one event of the bucket {@code occurrence} at
+         * {@code site}: how many it has already made there AT THIS LEVEL.
          *
          * <p>THE counter.  A send, a read, a write, a region entry and a
          * work start are all events of the occurrence that makes them, and
@@ -218,19 +262,70 @@ public final class Identity {
          * recording states and the number a replay computes are the same
          * number for the same event.</p>
          */
-        private int nextSiteEvent(OccurrenceAddress occurrence, String site) {
-            Map<String, Integer> events = siteEvents(occurrence);
-            Integer made = events.get(site);
+        private int nextSiteEvent(String occurrence, String site) {
+            Map<String, Integer> events = top().events;
+            String key = occurrence + '\n' + site;
+            Integer made = events.get(key);
             int iteration = made == null ? 0 : made;
-            events.put(site, iteration + 1);
+            events.put(key, iteration + 1);
             return iteration;
         }
 
         private ExecutionIndex from(int base) {
-            int start = Math.max(0, Math.min(base, frames.size()));
-            return start >= frames.size() ? ExecutionIndex.empty()
-                    : ExecutionIndex.of(new ArrayList<Frame>(
-                            frames.subList(start, frames.size())));
+            int start = Math.max(0, Math.min(base, depth()));
+            if (start >= depth()) return ExecutionIndex.empty();
+            List<Frame> standing = new ArrayList<Frame>(depth() - start);
+            for (int index = start; index < depth(); index++) {
+                standing.add(frame(index));
+            }
+            return ExecutionIndex.of(standing);
+        }
+
+        /** The node an event names, else the node of the start behind it. */
+        private String nodeOf(String nodeKey) {
+            return attributable(nodeKey) || !attributable(startNode)
+                    ? Text.safe(nodeKey) : startNode;
+        }
+
+        /**
+         * The bucket of one degraded occurrence: what its id is made of,
+         * minus the index its level already fixes.
+         *
+         * <p>(node, role, causal context) is the whole of a degraded
+         * occurrence's identity at a given level, so two events of it at
+         * one site count in one bucket and two events of DIFFERENT
+         * occurrences never do: a daemon tick opened inside a request has
+         * its own context ({@code Root:KEY_MANAGER_TICK#k}) and its events
+         * are not a continuation of the request's counts.</p>
+         *
+         * <p>What this replaces: the innermost scope frame's TOKEN.  A token
+         * changes whenever the scope is entered and left, which on
+         * hdfs-11741's balancer {@code main} is constantly -- every request
+         * it sends pushes and pops one -- so the count of the enclosing
+         * level restarted mid-run and two {@code Balancer.runOneIteration}
+         * calls of one workload request both stood at iteration 0, sharing
+         * an occurrence id and a producer endpoint.  The context does not
+         * move while the occurrence does not.</p>
+         */
+        private static String degraded(String node, String regionId,
+                                       CausalContext context) {
+            return "d" + node + '\n' + regionId + '\n' + context.render();
+        }
+    }
+
+    /** One level of the index: an entered frame and the events under it. */
+    private static final class Level {
+        /** The frame this level was entered with, or null on the root. */
+        private final Frame frame;
+        /** The token the frame exit closes this level by, or 0. */
+        private final long token;
+        /** How often each (occurrence, site) has minted an event here. */
+        private final Map<String, Integer> events =
+                new HashMap<String, Integer>();
+
+        private Level(Frame frame, long token) {
+            this.frame = frame;
+            this.token = token;
         }
     }
 
@@ -308,7 +403,7 @@ public final class Identity {
      * message send, a read or write endpoint, another work start, whatever
      * comes first.  Every one of them reaches this method before it answers
      * anything ({@link #currentOccurrence}, {@link #occurrence}, {@link
-     * #endpointAt}, {@link #enterCall}, {@link #startWork}), so the frame is
+     * #endpointAt}, {@link #enterFrame}, {@link #startWork}), so the frame is
      * standing before the first address that would otherwise be computed
      * without it.  The claim is lazy for exactly that reason: the start is
      * filed after this thread's state was inherited (at construction) and
@@ -355,12 +450,13 @@ public final class Identity {
      * count of starts, never a thread id, an address or a session
      * ordinal.</p>
      *
-     * <p>What this replaces: the count in the enclosing FRAME's own map.  A
-     * frame's counters die when it pops, so two starts made at one site by
-     * ONE occurrence from two activations of an untraced caller both stood
-     * at iteration 0 and the two threads they started carried one frame --
-     * the same hole the region entry had (G8), in the same place.  An
-     * occurrence does not die between two of its own starts.</p>
+     * <p>The count is taken in the level the start was made in: two starts
+     * made at one site by one occurrence from two activations of a CALLER
+     * are two levels, because every method of the application scope enters
+     * one (G11).  A caller outside that scope has no level of its own, and
+     * two starts it makes at one site stand at one iteration -- which is a
+     * shared endpoint id and a named refusal at the mint, never a
+     * renumbering here.</p>
      */
     public static void startWork(String startSiteId, Object carrier,
                                  String starterNodeKey) {
@@ -368,7 +464,7 @@ public final class Identity {
         if (site.isEmpty() || carrier == null) return;
         State state = state();
         int iteration = state.nextSiteEvent(
-                currentOccurrence(starterNodeKey), site);
+                state.bucket(starterNodeKey), site);
         sweep();
         STARTS.put(new Carrier(carrier, COLLECTED),
                 new Start(Frame.of(site, iteration),
@@ -434,58 +530,94 @@ public final class Identity {
     }
 
     /**
-     * Enters the index frame of one region activation.
+     * Enters the index frame of ONE application-scope method activation.
+     *
+     * <p>THE frame rule, and there is no second one: every method of the
+     * application scope opens a level at its entry and closes it at every
+     * exit, in BOTH passes, from the one weave walk
+     * ({@code CausynthPipeline.instrumentApplicationScope}).  The calling
+     * context of an event is then the frames of the application methods it
+     * is inside, which is what IDENTITY-V3 §1 asks a LocalExecutionIndex to
+     * be (Execution Indexing / PEPID) and what the region-root-only frame
+     * rule could not give: a thread outside every region had an EMPTY
+     * calling context, so its site counts were run-length ordinals over the
+     * process.</p>
      *
      * <p>The frame's iteration is the k-th entry of THIS site inside the
-     * occurrence that ENCLOSES it: the region entry is an event of the
-     * enclosing occurrence, counted by the one counter every other event of
-     * an occurrence is counted by ({@link #eventSiteIndex}).  A loop body
-     * re-entering the same region root is that root at iteration 1, 2, 3 --
-     * which is what the innermost enclosing loop's iteration count means --
-     * and one rule computes it in the recording and in the replay alike,
-     * because both weave this entry (CausynthTraceRecorder.enterMethod,
-     * ConcolicRegionRuntime.enterRegionEntry) and the recording weaves no
-     * loop-backedge hook.</p>
+     * occurrence that ENCLOSES it, counted in the level of the enclosing
+     * frame: a method entry is an event of the enclosing occurrence,
+     * counted by the one counter every other event of an occurrence is
+     * counted by ({@link State#nextSiteEvent}).  A loop body re-entering
+     * the same call site is that site at iteration 1, 2, 3 -- which is what
+     * the innermost enclosing loop's iteration count means -- and one rule
+     * computes it in the recording and in the replay alike.</p>
      *
-     * <p>What this replaces: the k-th entry of the site under the enclosing
-     * FRAME.  A frame's own counters die when it pops, so two activations
-     * whose distinct enclosing invocations are in UNTRACED code both stood
-     * at iteration 0 and their whole addresses collided -- on hdfs-11741,
-     * 10 of the 62 region-plan rows shared an occurrence id with another
-     * row (dn1's and dn0's SASL {@code retrieveDataEncryptionKey}, and the
-     * three {@code BlockKeyProto convert} activations of each of nn0 and
-     * the balancer, entered twice under one anchor) and PLAN refused the
-     * artifact at RuntimePlanArtifact.read.  An occurrence does not die
-     * between two of its own events, so its count separates them.</p>
+     * @return the token that closes exactly the level this opened
      */
-    public static void enterCall(String nodeKey, String callSiteId) {
+    public static long enterFrame(String nodeKey, String callSiteId) {
         State state = state();
         String site = Text.safe(callSiteId);
-        int iteration = state.nextSiteEvent(
-                currentOccurrence(nodeKey), site);
-        state.frames.add(Frame.of(site, iteration));
+        int iteration = state.nextSiteEvent(state.bucket(nodeKey), site);
+        long token = TOKENS.getAndIncrement();
+        state.levels.add(new Level(Frame.of(site, iteration), token));
         state.journal();
+        return token;
     }
 
-    /** Leaves the innermost call site. */
-    public static void exitCall() {
+    /**
+     * Leaves the level {@code token} opened, and every level opened inside
+     * it that a non-local exit left behind.
+     *
+     * <p>The token is a local of the woven frame, so recursion holds a
+     * different one at every depth and the exit closes the entry that token
+     * owns rather than whatever the runtime finds innermost.  A level the
+     * token does not name -- the start frame of the work this thread runs,
+     * which no call of that work pushed -- is never closed here.</p>
+     */
+    public static void exitFrame(long token) {
+        if (token <= 0L) return;
         State state = state();
-        int depth = state.frames.size();
-        if (depth == 0) return;
-        // The frame of the start this thread's work runs under was pushed by
-        // no call of that work, so no return of it may pop it: an unbalanced
-        // exit would otherwise take the one frame that tells two siblings
-        // apart.
-        if (depth - 1 <= state.startDepth) return;
-        state.frames.remove(depth - 1);
-        state.journal();
+        for (int index = state.levels.size() - 1; index >= 1; index--) {
+            if (state.levels.get(index).token != token) continue;
+            while (state.levels.size() > index) {
+                state.levels.remove(state.levels.size() - 1);
+            }
+            if (state.startDepth >= state.depth()) {
+                // The start frame was inside the level that just closed, so
+                // the work it named is over with it.
+                state.startDepth = -1;
+            }
+            // The scope root is the deepest level the scope start and this
+            // point still SHARE.  A scope is opened inside a call that
+            // returns -- CausynthMessagePropagation.inbound opens the scope
+            // of a served message and hands control back to the handler --
+            // and an index measured from a level that has gone is empty:
+            // on hdfs-11741 the four PBHelper.convert activations of one
+            // refresh answered one address, which is the collision the
+            // index exists to prevent.
+            if (state.scopeBase > state.depth()) {
+                state.scopeBase = state.depth();
+            }
+            state.journal();
+            return;
+        }
     }
 
-
-    /** Opens a scope: the execution index of what runs inside starts here. */
+    /**
+     * Opens a scope: the execution index of what runs inside starts here.
+     *
+     * <p>Never above the start frame this thread's work already claimed: the
+     * start site and its iteration are what tell two siblings apart
+     * (IDENTITY-V3 §1, scope transfer), and a scope base above them drops
+     * them from every address the work publishes.  hdfs-11741's
+     * {@code KeyManager$BlockKeyUpdater} claimed its start frame at its
+     * entry and {@code beginTick} then based the tick's scope above it.</p>
+     */
     public static void scopeStart() {
         State state = state();
-        state.scopeBase = state.frames.size();
+        state.scopeBase = state.startDepth >= 0
+                ? Math.min(state.startDepth, state.depth())
+                : state.depth();
     }
 
     /** The index from the scope root to here: an occurrence's own index. */
@@ -502,7 +634,8 @@ public final class Identity {
     public static ExecutionIndex regionEnter() {
         State state = state();
         ExecutionIndex index = state.from(state.scopeBase);
-        state.regions.add(new Region(state.frames.size()));
+        state.regions.add(new Region(state.depth(),
+                "r" + (++state.regionsOpened)));
         return index;
     }
 
@@ -522,18 +655,21 @@ public final class Identity {
                 state.snapshot(region.base));
     }
 
-    /** Closes the innermost open region. */
+    /**
+     * Closes the innermost open region.
+     *
+     * <p>No counter cleanup: a region's serial is never reused, so the
+     * counts of an activation that closed can be reached by nothing, and
+     * the level they live in drops them when the frame that opened it
+     * exits.  What this replaces: deleting the closing occurrence's bucket
+     * from a thread-wide map, which had to run at exactly the right region
+     * depth or it renumbered the enclosing occurrence's events
+     * (ConcolicRegionRuntime#popActiveRegion).</p>
+     */
     public static void regionExit() {
         State state = state();
         if (state.regions.isEmpty()) return;
-        Region closed = state.regions.remove(state.regions.size() - 1);
-        // An occurrence's site counts start at zero when it opens and are
-        // gone when it closes, as they were when they lived on the Region
-        // itself: two activations of one region are two occurrences, and
-        // their ids differ by the index of the path to each entry.
-        if (closed.occurrence != null) {
-            state.siteEvents.remove(closed.occurrence.id());
-        }
+        state.regions.remove(state.regions.size() - 1);
     }
 
     /** The site-local index of one event inside the region. */
@@ -544,14 +680,14 @@ public final class Identity {
 
     /** How many index frames this thread stands on. */
     public static int depth() {
-        return state().frames.size();
+        return state().depth();
     }
 
     /** The innermost frame's call site, for a report, or {@code ""}. */
     public static String innermostFrame() {
         State state = state();
-        return state.frames.isEmpty() ? ""
-                : state.frames.get(state.frames.size() - 1).callSite();
+        return state.depth() == 0 ? ""
+                : state.frame(state.depth() - 1).callSite();
     }
 
     /**
@@ -685,10 +821,11 @@ public final class Identity {
      * states as "invariant 4 site index missing ... 2 events of this site in
      * one occurrence share one endpoint id" and says is the identity's to
      * fix with no ordinal and no counter of the session's.  The count is
-     * the occurrence's own ({@link State#siteEvents}), keyed by the
-     * occurrence this endpoint is under: it starts at zero for that
-     * occurrence and is therefore the same number in the recording and in a
-     * replay of that occurrence, whatever else the thread it ran on did.
+     * the occurrence's own ({@link State#nextSiteEvent}), keyed by the
+     * occurrence this endpoint is under and taken in the level the event
+     * was minted in: it starts at zero for that occurrence in that calling
+     * context and is therefore the same number in the recording and in a
+     * replay of it, whatever else the thread it ran on did.
      * It is also what separates the five {@code record-ordered-deletes}
      * messages one client occurrence sends at one transport site, whose
      * consumers would otherwise share one causal context and one
@@ -699,7 +836,7 @@ public final class Identity {
         State state = state();
         String key = Text.safe(site);
         if (key.isEmpty()) return state.from(state.regionBase());
-        int iteration = state.nextSiteEvent(occurrence, key);
+        int iteration = state.nextSiteEvent(state.bucket(occurrence), key);
         List<Frame> frames = new ArrayList<Frame>(
                 state.from(state.regionBase()).frames());
         frames.add(Frame.of(key, iteration));
@@ -757,16 +894,34 @@ public final class Identity {
                 "ROLE." + kind.name(), here(kind), here());
     }
 
-    /** The context the running thread is in, by the one rule. */
+    /**
+     * The context the running thread is in, by the one rule.
+     *
+     * <p>{@code role} is what the thread degrades to when nothing can be
+     * attributed at all ({@link CausalContext.Lost}).  A ROOT context takes
+     * its role, its api and its k from the root hop itself -- the innermost
+     * one, so a daemon tick opened inside a request descends from the tick
+     * -- because those three are one fact: {@code Lineage.push} counts the
+     * k per (node, role, api).</p>
+     */
     private static CausalContext here(Role role) {
-        return context(Lineage.anchor(), Lineage.rpcSite(), role,
-                Lineage.rootWindowIndex());
+        return context(Lineage.anchor(), Lineage.rpcSite(),
+                Lineage.rootRole(), Lineage.rootApi(),
+                Lineage.rootWindowIndex(), role);
     }
 
     /** The context an occurrence entered under, from its scope frame. */
     public static CausalContext context(String anchorEndpointId,
                                         String rpcSite, Role role,
-                                        int windowIndex) {
+                                        String api, int windowIndex) {
+        return context(anchorEndpointId, rpcSite, role, api, windowIndex,
+                role);
+    }
+
+    private static CausalContext context(String anchorEndpointId,
+                                         String rpcSite, Role role,
+                                         String api, int windowIndex,
+                                         Role unattributed) {
         if (!Text.safe(anchorEndpointId).isEmpty()) {
             return CausalContext.of(anchorEndpointId, Text.safe(rpcSite));
         }
@@ -780,9 +935,10 @@ public final class Identity {
         // carried two contexts.
         if (role != null && !Role.UNKNOWN.equals(role)
                 && windowIndex > 0) {
-            return CausalContext.of(role, windowIndex);
+            return CausalContext.of(role, api, windowIndex);
         }
-        return CausalContext.of(role == null ? Role.UNKNOWN : role);
+        return CausalContext.of(unattributed == null
+                ? Role.UNKNOWN : unattributed);
     }
 
     /**
@@ -809,12 +965,15 @@ public final class Identity {
     /** One open region activation: where its endpoints are indexed from. */
     private static final class Region {
         private final int base;
+        /** The bucket the events of this activation are counted in. */
+        private final String key;
         private FrameJournal journal;
         /** The occurrence this activation is, for the endpoints inside it. */
         private OccurrenceAddress occurrence;
 
-        private Region(int base) {
+        private Region(int base, String key) {
             this.base = base;
+            this.key = key;
         }
     }
 

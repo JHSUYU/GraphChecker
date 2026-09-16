@@ -76,11 +76,11 @@ public class ExploreTest {
             "hdfs-case/dn0#epoch0/region/REGION.target#1";
     /** The NameNode's key rotation: a daemon tick, nobody's request. */
     private static final OccurrenceAddress PRODUCER = occurrence("hdfs-case/nn0",
-            "REGION.rotate", CausalContext.of(Role.of("KEY_MANAGER_TICK"), 1),
+            "REGION.rotate", CausalContext.of(Role.of("KEY_MANAGER_TICK"), "", 1),
             "o.a.h.h.s.b.BlockManager#run#8");
     /** The data node's fatal read: its own DataXceiver op. */
     private static final OccurrenceAddress TARGET = occurrence("hdfs-case/dn0",
-            "REGION.target", CausalContext.of(Role.of("DATA_XCEIVER"), 1),
+            "REGION.target", CausalContext.of(Role.of("DATA_XCEIVER"), "", 1),
             "o.a.h.h.s.d.DataXceiver#run#12");
     /** addKeys on the same node: started by the rotation's own delivery. */
     private static final OccurrenceAddress WRITER = occurrence("hdfs-case/dn0",
@@ -647,7 +647,7 @@ public class ExploreTest {
         // another session" means nothing for a state slot.
         Path arms = tree.newFolder("closure-state-arms").toPath();
         OccurrenceAddress otherWriter = occurrence("hdfs-case/dn0",
-                "REGION.deletekeys", CausalContext.of(Role.CLIENT, 4),
+                "REGION.deletekeys", CausalContext.of(Role.CLIENT, "", 4),
                 "o.a.h.h.s.d.BPServiceActor#offerService#77");
         Endpoint reader = at(target, Endpoint.stateSite(
                 "BlockTokenSecretManager", "get", 3, false),
@@ -692,7 +692,7 @@ public class ExploreTest {
         // The epoch has to be re-cut with it instrumented (SS8 case 2).
         Path unseen = tree.newFolder("closure-unretained").toPath();
         OccurrenceAddress lightweight = occurrence("hdfs-case/dn0",
-                "REGION.notretained", CausalContext.of(Role.of("DATA_XCEIVER"), 2),
+                "REGION.notretained", CausalContext.of(Role.of("DATA_XCEIVER"), "", 2),
                 "o.a.h.h.s.d.DataXceiver#run#44");
         Session partial = new Session(unseen, "s-seed");
         partial.activation(target, false);
@@ -781,7 +781,7 @@ public class ExploreTest {
         // "seedSessionId is required"; the closure now refuses it by name.
         Path unrun = tree.newFolder("closure-unrun").toPath();
         OccurrenceAddress ghost = occurrence("hdfs-case/dn0",
-                "REGION.unrun", CausalContext.of(Role.of("DATA_XCEIVER"), 7),
+                "REGION.unrun", CausalContext.of(Role.of("DATA_XCEIVER"), "", 7),
                 "o.a.h.h.s.d.DataXceiver#run#88");
         Session partialRun = new Session(unrun, "s-seed");
         partialRun.activation(target, false);
@@ -858,10 +858,10 @@ public class ExploreTest {
         // recording's to say.
         Path aside = tree.newFolder("closure-static-writer").toPath();
         OccurrenceAddress deferring = occurrence("hdfs-case/dn0",
-                "REGION.deferring", CausalContext.of(Role.CLIENT, 1),
+                "REGION.deferring", CausalContext.of(Role.CLIENT, "", 1),
                 "o.a.h.h.s.n.SnapshotManager#deleteSnapshot#7");
         OccurrenceAddress undeclared = occurrence("hdfs-case/dn0",
-                "REGION.undeclared", CausalContext.of(Role.CLIENT, 2),
+                "REGION.undeclared", CausalContext.of(Role.CLIENT, "", 2),
                 "o.a.h.h.s.n.SnapshotManager#renameSnapshot#7");
         LocationId counter = LocationId.allocated(at(writer,
                         Endpoint.allocationSite("SnapshotManager", "<init>",
@@ -1301,7 +1301,7 @@ public class ExploreTest {
      */
     private static String exportedId() {
         return at(occurrence("hdfs-case/nn0", "REGION.rotate",
-                        CausalContext.of(Role.of("KEY_MANAGER_TICK"), 1),
+                        CausalContext.of(Role.of("KEY_MANAGER_TICK"), "", 1),
                         "o.a.h.h.s.b.BlockManager#run#8"),
                 "XCH.resp.block-key-id", "PBHelper#convert#9").id();
     }

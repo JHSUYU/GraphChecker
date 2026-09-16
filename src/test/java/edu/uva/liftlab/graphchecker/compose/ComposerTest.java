@@ -75,10 +75,10 @@ public class ComposerTest {
             CausalContext.of("producer-endpoint", "case/client/read-block"),
             frame("DataXceiver#run#12", 0));
     private static final OccurrenceAddress PRODUCER = occurrence("case/nn0",
-            "REGION.nn", CausalContext.of(Role.of("IPC_HANDLER"), 1),
+            "REGION.nn", CausalContext.of(Role.of("IPC_HANDLER"), "", 1),
             frame("Server#call#40", 0));
     private static final OccurrenceAddress UPSTREAM = occurrence("case/nn1",
-            "REGION.up", CausalContext.of(Role.of("KEY_MANAGER_TICK"), 1),
+            "REGION.up", CausalContext.of(Role.of("KEY_MANAGER_TICK"), "", 1),
             frame("KeyManager#tick#8", 0));
     private static final String ANCHOR_SITE = "BlockManager#get#8:READ";
     private static final String MARKER = "marker_m";
@@ -253,19 +253,19 @@ public class ComposerTest {
         // failure.  Two anchor activations per session, so six paths.
         Path three = folder.newFolder("marker-three").toPath();
         OccurrenceAddress saver = occurrence("case/nn0", "REGION.saver",
-                CausalContext.of(Role.of("IPC_HANDLER"), 1),
+                CausalContext.of(Role.of("IPC_HANDLER"), "", 1),
                 frame("Saver#serializeSnapshotSection#8", 0));
         OccurrenceAddress creating = occurrence("case/nn0",
-                "REGION.create", CausalContext.of(Role.CLIENT, 1),
+                "REGION.create", CausalContext.of(Role.CLIENT, "", 1),
                 frame("Manager#createSnapshot#27", 0));
         OccurrenceAddress deleting = occurrence("case/nn0",
-                "REGION.delete", CausalContext.of(Role.CLIENT, 2),
+                "REGION.delete", CausalContext.of(Role.CLIENT, "", 2),
                 frame("Manager#deleteSnapshot#31", 0));
         // The anchor region's other activation: same region, same context,
         // one execution-index frame apart (17960's saveFSImageInAllDirs#u36
         // @0 and @1, the two storage directories' FSImageSaver threads).
         OccurrenceAddress sibling = occurrence("case/nn0", "REGION.saver",
-                CausalContext.of(Role.of("IPC_HANDLER"), 1),
+                CausalContext.of(Role.of("IPC_HANDLER"), "", 1),
                 frame("Saver#serializeSnapshotSection#8", 1));
         // The counter, owned by its ALLOCATION and not by a session rid,
         // so nothing about alternatives is withheld for the owner's
@@ -1080,7 +1080,7 @@ public class ComposerTest {
                         at("call#1", 0), 0).id(), "case/client/read"),
                 frame("Reader#run#4", 0));
         OccurrenceAddress concurrent = occurrence("case/dn0",
-                "REGION.heartbeat", CausalContext.of(Role.of("HEARTBEAT_TICK"), 1),
+                "REGION.heartbeat", CausalContext.of(Role.of("HEARTBEAT_TICK"), "", 1),
                 frame("Heartbeat#run#9", 0));
         // IDENTITY-V3 sec 5: the map is named by the endpoint that
         // ALLOCATED it, which is the same name in every replay.
@@ -1178,13 +1178,13 @@ public class ComposerTest {
             throws Exception {
         Path iteration = folder.newFolder("pairing").toPath();
         OccurrenceAddress reader = occurrence("case/dn0", "REGION.read",
-                CausalContext.of(Role.of("DATA_XCEIVER"), 1),
+                CausalContext.of(Role.of("DATA_XCEIVER"), "", 1),
                 frame("Reader#run#4", 0));
         OccurrenceAddress first = occurrence("case/dn0", "REGION.first",
-                CausalContext.of(Role.of("IPC_HANDLER"), 1),
+                CausalContext.of(Role.of("IPC_HANDLER"), "", 1),
                 frame("Handler#run#2", 0));
         OccurrenceAddress second = occurrence("case/dn0", "REGION.second",
-                CausalContext.of(Role.of("HEARTBEAT_TICK"), 1),
+                CausalContext.of(Role.of("HEARTBEAT_TICK"), "", 1),
                 frame("Heartbeat#run#9", 0));
         LocationId keys = LocationId.allocated(Endpoint.of(first,
                 "KeyManager#<init>#1:NEW", at("alloc#1", 0), 0),
@@ -1593,13 +1593,13 @@ public class ComposerTest {
             throws Exception {
         Path iteration = folder.newFolder("threads").toPath();
         OccurrenceAddress earlier = occurrence("case/dn0", "REGION.earlier",
-                CausalContext.of(Role.of("BP_SERVICE_ACTOR"), 1),
+                CausalContext.of(Role.of("BP_SERVICE_ACTOR"), "", 1),
                 frame("Actor#run#1", 0));
         OccurrenceAddress later = occurrence("case/dn0", "REGION.later",
-                CausalContext.of(Role.of("BP_SERVICE_ACTOR"), 2),
+                CausalContext.of(Role.of("BP_SERVICE_ACTOR"), "", 2),
                 frame("Actor#run#1", 1));
         OccurrenceAddress started = occurrence("case/dn0", "REGION.started",
-                CausalContext.of(Role.EXECUTOR_TASK, 1),
+                CausalContext.of(Role.EXECUTOR_TASK, "", 1),
                 frame("Task#run#1", 0));
         LocationId keys = LocationId.of(LocationKind.MAP, "Manager", "keys");
 

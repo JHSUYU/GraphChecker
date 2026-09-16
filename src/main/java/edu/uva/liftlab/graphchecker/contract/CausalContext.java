@@ -9,9 +9,10 @@ import java.util.Objects;
  * producer's {@link Endpoint} id (which recursively carries the producer's own
  * context) together with the RPC static site.  {@link Root} -- a workload
  * action or a daemon tick with no incoming message, numbered by the k-th such
- * root of its role inside the recording window.  {@link Lost} -- the scope
- * could not be attributed: degraded, and still an identity rather than a
- * guess.</p>
+ * root of its role AND api inside the recording window, both of which it
+ * carries because the k is counted per (node, role, api).  {@link Lost} --
+ * the scope could not be attributed: degraded, and still an identity rather
+ * than a guess.</p>
  *
  * <p>Sealed by construction: the constructor is private, so the three nested
  * forms are the only ones there are and a reader may switch on {@link #form()}
@@ -24,6 +25,9 @@ public abstract class CausalContext {
         ROOT,
         LOST
     }
+
+    /** The one separator between a root's role and the api it counts. */
+    private static final char API_MARKER = '/';
 
     private static final String ANCHOR_PREFIX = "Anchor:";
     private static final String ROOT_PREFIX = "Root:";
@@ -38,9 +42,24 @@ public abstract class CausalContext {
                 Fields.text(rpcSite, "rpcSite"));
     }
 
-    /** The w-th root of that role inside the recording window. */
-    public static Root of(Role role, int windowIndex) {
+    /**
+     * The w-th root of that role and api inside the recording window.
+     *
+     * <p>The api is what the w was counted under
+     * ({@code Lineage.push} counts per (node, role, api)), so it is part of
+     * the context: without it dn1's {@code refresh-block-keys} request and
+     * its {@code offer-service} tick both rendered {@code Root:CLIENT#1}
+     * and one occurrence answered for two.  {@code ""} is a root whose api
+     * nothing declared -- a daemon tick -- and renders without the
+     * segment, which is also what reads back an address written before the
+     * api was carried.</p>
+     */
+    public static Root of(Role role, String api, int windowIndex) {
+        // The api may carry '/' (it names the caller and the api) and the
+        // window index is rendered last, so the render parses back whole.
+        String declared = Fields.optional(api);
         return new Root(Fields.required(role, "role"),
+                declared == null ? "" : declared,
                 Fields.ordinal(windowIndex, "windowIndex"));
     }
 
@@ -66,8 +85,13 @@ public abstract class CausalContext {
             if (marker <= 0 || marker + 1 >= body.length()) {
                 throw malformed(rendered);
             }
+            // A role is spelled over [A-Z0-9_] alone, so the first '/' of
+            // the head is the api separator and the api may carry its own.
+            String head = body.substring(0, marker);
+            int api = head.indexOf(API_MARKER);
             try {
-                return of(Role.of(body.substring(0, marker)),
+                return of(Role.of(api < 0 ? head : head.substring(0, api)),
+                        api < 0 ? "" : head.substring(api + 1),
                         Integer.parseInt(body.substring(marker + 1)));
             } catch (NumberFormatException notAnOrdinal) {
                 throw malformed(rendered);
@@ -147,10 +171,12 @@ public abstract class CausalContext {
     /** A workload action or a daemon tick started this occurrence. */
     public static final class Root extends CausalContext {
         private final Role role;
+        private final String api;
         private final int windowIndex;
 
-        private Root(Role role, int windowIndex) {
+        private Root(Role role, String api, int windowIndex) {
             this.role = role;
+            this.api = api;
             this.windowIndex = windowIndex;
         }
 
@@ -158,7 +184,12 @@ public abstract class CausalContext {
             return role;
         }
 
-        /** The k-th root of this role inside the recording window. */
+        /** The api this root's window index was counted under, or "". */
+        public String api() {
+            return api;
+        }
+
+        /** The k-th root of this role and api in the recording window. */
         public int windowIndex() {
             return windowIndex;
         }
@@ -170,7 +201,9 @@ public abstract class CausalContext {
 
         @Override
         public String render() {
-            return ROOT_PREFIX + role.name() + "#" + windowIndex;
+            return ROOT_PREFIX + role.name()
+                    + (api.isEmpty() ? "" : API_MARKER + api)
+                    + "#" + windowIndex;
         }
 
         @Override
@@ -179,12 +212,12 @@ public abstract class CausalContext {
             if (!(value instanceof Root)) return false;
             Root other = (Root) value;
             return windowIndex == other.windowIndex
-                    && role.equals(other.role);
+                    && role.equals(other.role) && api.equals(other.api);
         }
 
         @Override
         public int hashCode() {
-            return Objects.hash(role, windowIndex);
+            return Objects.hash(role, api, windowIndex);
         }
     }
 

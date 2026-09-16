@@ -191,11 +191,12 @@ public final class CausynthTraceRecorder {
         String region = MapFields.safe(openedRegionId);
         calls.push(new ActiveCall(id, parentSiteId, method,
                 context.spanId, parent == null, !region.isEmpty()));
-        // The frame of a region activation, and no other: the replay pushes
-        // exactly this one (ConcolicRegionRuntime.enterRegionFrame), and a
-        // frame one pass pushes and the other does not moves every address
-        // below it.  The frame is standing before the address is read, as
-        // it is in the replay.
+        // No frame here.  The level of THIS activation was opened by the
+        // frame hook at this same entry (#enterMethodFrame), which every
+        // method of the application scope carries in both passes (G11), and
+        // it is standing before this row reads the address.  A second push
+        // at one entry would add a frame the replay does not have and move
+        // every address below it.
         String address = "";
         if (!region.isEmpty()) {
             // No claim here.  A started work claims its start frame at its
@@ -205,10 +206,7 @@ public final class CausynthTraceRecorder {
             // earlier than any region entry inside the work, and reached on
             // a pool thread whose task enters no region at all.  A second
             // claim point for one notion is a second identity.
-            // One reading of the node for the frame and for the address, as
-            // the replay takes one (ConcolicRegionRuntime.enterRegionEntry).
             String node = RuntimeTraceContext.activationSource(receiver).key();
-            pushMethodFrame(node, method);
             // Opened, as a replay opens it: the endpoints of the events
             // inside this activation are indexed from here and name this
             // occurrence (Identity.currentOccurrence), which is how the
@@ -434,24 +432,43 @@ public final class CausynthTraceRecorder {
     }
 
     /**
-     * Pushes the execution-index frame of one REGION activation.
+     * Enters the execution-index level of ONE application-scope method.
      *
-     * <p>Its iteration counts the k-th entry of this region root inside the
-     * occurrence that encloses it, which is how two activations of one
-     * region under one enclosing occurrence are told apart (IDENTITY-V3:
-     * loop iteration, not an ordinal).  Two activations that this index
-     * cannot separate are refused as sharing an address, never
-     * renumbered.</p>
+     * <p>The recording's half of the one frame rule: every method of the
+     * application scope opens a level at its entry and closes it at every
+     * exit, in this pass and in the replay alike, woven by the one walk
+     * ({@code CausynthPipeline.instrumentApplicationScope}).  The calling
+     * context of every event is then the application methods it is inside,
+     * so a thread outside every region has one -- which is what the
+     * region-root-only frame rule could not give it, leaving its site
+     * counts run-length ordinals over the process (IDENTITY-V3 §1).</p>
+     *
+     * <p>The node is not read here: reading it costs a lock
+     * ({@code RuntimeTraceContext.activationSource}) and this hook runs at
+     * every application call.  An event of a thread that names no node of
+     * its own belongs to the node of the start that created its work, which
+     * {@code Identity} already holds.</p>
+     *
+     * @return the token that closes exactly the level this opened
      */
-    private static void pushMethodFrame(String nodeKey, String method) {
-        edu.uva.liftlab.graphchecker.runtime.Identity.enterCall(
-                nodeKey, MapFields.safe(method));
+    public static long enterMethodFrame(String callSiteId) {
+        return edu.uva.liftlab.graphchecker.runtime.Identity.enterFrame(
+                "", MapFields.safe(callSiteId));
     }
 
-    /** Leaves the region {@link #pushMethodFrame} opened. */
-    private static void popMethodFrame() {
+    /** Leaves the level {@link #enterMethodFrame} opened. */
+    public static void exitMethodFrame(long token) {
+        edu.uva.liftlab.graphchecker.runtime.Identity.exitFrame(token);
+    }
+
+    /** The exceptional edge of {@link #enterMethodFrame}. */
+    public static void throwMethodFrame(long token, Throwable thrown) {
+        edu.uva.liftlab.graphchecker.runtime.Identity.exitFrame(token);
+    }
+
+    /** Leaves the region one rich activation opened. */
+    private static void popRegion() {
         edu.uva.liftlab.graphchecker.runtime.Identity.regionExit();
-        edu.uva.liftlab.graphchecker.runtime.Identity.exitCall();
     }
 
     public static void endCall(long invocationId, Object returnValue,
@@ -519,7 +536,7 @@ public final class CausynthTraceRecorder {
         emitExecutionEvent(event);
         removeCall(resolvedCallId);
         if (call != null && call.regionFrame) {
-            popMethodFrame();
+            popRegion();
         }
         if (call != null && call.rootContext) {
             RuntimeTraceContext.exitRoot(call.spanId);
@@ -550,7 +567,7 @@ public final class CausynthTraceRecorder {
         }
         removeCall(resolvedCallId);
         if (call != null && call.regionFrame) {
-            popMethodFrame();
+            popRegion();
         }
         if (call != null && call.rootContext) {
             RuntimeTraceContext.exitRoot(call.spanId);
@@ -568,7 +585,7 @@ public final class CausynthTraceRecorder {
             closeCallSites(call.callId, callSiteExit);
             removeCall(call.callId);
             if (call.regionFrame) {
-                popMethodFrame();
+                popRegion();
             }
             if (call.rootContext) {
                 RuntimeTraceContext.exitRoot(call.spanId);

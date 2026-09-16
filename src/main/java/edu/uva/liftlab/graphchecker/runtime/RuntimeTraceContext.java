@@ -389,7 +389,12 @@ final class RuntimeTraceContext {
         SourceRef source = sourceFor(owner);
         if (source == null) source = state.view().source;
         edu.uva.liftlab.graphchecker.runtime.Identity.scopeStart();
-        return Lineage.push(source == null ? "" : source.key(),
+        // A ROOT hop, whatever this thread already stands in: a tick is
+        // started by no message and serves none, so it descends from
+        // nothing (Lineage#pushRoot).  A nested hop made
+        // KeyManager$BlockKeyUpdater's tick render the balance-block
+        // request's own Root:CLIENT#1.
+        return Lineage.pushRoot(source == null ? "" : source.key(),
                 Role.of(roleName), "");
     }
 

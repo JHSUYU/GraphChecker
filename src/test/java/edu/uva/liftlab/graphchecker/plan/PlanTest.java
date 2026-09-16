@@ -87,7 +87,7 @@ public class PlanTest {
 
     private static OccurrenceAddress tick(NodeId node) {
         return OccurrenceAddress.of(node, REGION,
-                CausalContext.of(Role.of("BP_SERVICE_ACTOR"), 1),
+                CausalContext.of(Role.of("BP_SERVICE_ACTOR"), "", 1),
                 ExecutionIndex.of(Collections.singletonList(
                         Frame.of(CHECKSUM, 0))));
     }
