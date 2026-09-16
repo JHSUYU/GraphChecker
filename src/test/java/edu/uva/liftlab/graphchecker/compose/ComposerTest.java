@@ -16,6 +16,7 @@ import edu.uva.liftlab.graphchecker.contract.ExportRow;
 import edu.uva.liftlab.graphchecker.contract.ExecutionIndex;
 import edu.uva.liftlab.graphchecker.contract.ExpressionTable;
 import edu.uva.liftlab.graphchecker.contract.Frame;
+import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.LocationId;
 import edu.uva.liftlab.graphchecker.contract.LocationKind;
@@ -616,7 +617,7 @@ public class ComposerTest {
                                 Collections.<String, String>emptyMap(),
                                 Collections.<String>emptyList()))));
         RowCodec.writeJsonl(worker.resolve(ObligationDir.RESULT),
-                Collections.singletonList(ExploreCodec.writeResult(
+                Collections.singletonList(RowCodec.writeObligationResult(
                         ObligationResult.of("ob-" + sessionId,
                                 Verdict.ADMITTED, sessionId,
                                 "the focused prefix reproduced"))));
@@ -864,6 +865,49 @@ public class ComposerTest {
                         + GapKind.DECLARATION_MISSING.name() + ":"));
         assertTrue("with check-sat after it and nothing else",
                 candidate.endsWith("(check-sat)\n"));
+
+        // R4b: A VERDICT IS THE SESSION'S OWN ROW.  A replay that refused
+        // the obligation it ran collected no arm the seed lacks, so its
+        // path is not a disjunct -- and where the WAVE's aggregate copy
+        // states a different verdict than the session's own, the corpus
+        // states one verdict twice and differently and the composition
+        // refuses by name.  The campaign shell stamped ADMITTED onto the
+        // aggregate after every replay that merely finished, so hdfs-11741
+        // campaign #3 composed all eleven focused paths, six of whose own
+        // sessions said NOT_ADMITTED.
+        Path refused = folder.newFolder("verdicts").toPath();
+        Session recording = new Session(refused, "s0", false);
+        recording.marker("false");
+        recording.target("true", false, true);
+        recording.write();
+        Session flip = new Session(refused, "s1", true);
+        flip.marker("false");
+        flip.refused("wrong decision at nn#u1: took true, the obligation "
+                + "flips it to false");
+        flip.target("true", false, true);
+        flip.write();
+        // The wave's own copy of that verdict, as the aggregate holds it.
+        Path worker = refused.resolve("obligations-0000").resolve("OBL.s1");
+        Files.createDirectories(worker);
+        RowCodec.writeAll(worker.resolve(ObligationDir.RESULT),
+                Collections.singletonList(ObligationResult.of("OBL.s1",
+                        Verdict.ADMITTED, "s1", "the shell said so")),
+                RowCodec::writeObligationResult);
+
+        Composer.Composition verdicts = compose(refused, 4);
+        assertEquals("only the recording is a path", 1,
+                verdicts.disjuncts().size());
+        assertEquals("s0", verdicts.disjuncts().get(0).path().sessionId);
+        assertTrue("the refusal is named",
+                named(verdicts.gaps(), GapKind.ADMISSION_GAP));
+        boolean twice = false;
+        for (GapRow gap : verdicts.gaps()) {
+            twice |= gap.cls() == GapClass.BLOCKING
+                    && gap.kind() == GapKind.UNSTATED_VALUE
+                    && "OBL.s1".equals(gap.subject());
+        }
+        assertTrue("and so is the disagreement with the wave's own file",
+                twice);
     }
 
     // ------------------------------------------------------------------
@@ -2161,8 +2205,20 @@ public class ComposerTest {
             this.iteration = iteration;
             this.id = id;
             this.explored = explored;
+            this.settled = ObligationResult.of("OBL." + id,
+                    Verdict.ADMITTED, id, "the fixture's replay took the "
+                            + "arm the obligation asked for");
             activation(ANCHOR);
             this.seq = 0L;
+        }
+
+        /** What this replay states it settled; ignored for a SEED. */
+        private ObligationResult settled;
+
+        /** The same session, whose replay refused its own obligation. */
+        void refused(String detail) {
+            settled = ObligationResult.of("OBL." + id,
+                    Verdict.NOT_ADMITTED, id, detail);
         }
 
         /**
@@ -2314,6 +2370,13 @@ public class ComposerTest {
                             : SessionManifest.Role.SEED,
                     explored ? Collections.singletonList("OBL." + id)
                             : Collections.<String>emptyList()));
+            // And the VERDICT, which the replay owns: a focused session
+            // that states none settled nothing, and the composition asks
+            // the session's own row rather than the wave's copy of it.
+            RowCodec.writeAll(dir.obligations(), explored
+                            ? Collections.singletonList(settled)
+                            : Collections.<ObligationResult>emptyList(),
+                    RowCodec::writeObligationResult);
         }
     }
 

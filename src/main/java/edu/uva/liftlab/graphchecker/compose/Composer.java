@@ -21,6 +21,7 @@ import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.GapRow;
 import edu.uva.liftlab.graphchecker.contract.Interaction;
 import edu.uva.liftlab.graphchecker.contract.InteractionKind;
+import edu.uva.liftlab.graphchecker.contract.ObligationResult;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.PathEntry;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
@@ -30,6 +31,7 @@ import edu.uva.liftlab.graphchecker.contract.RootMintRow;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;
 import edu.uva.liftlab.graphchecker.smt.JsonFields;
 import edu.uva.liftlab.graphchecker.contract.TargetRow;
+import edu.uva.liftlab.graphchecker.contract.Verdict;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
 
 import java.math.BigInteger;
@@ -399,6 +401,32 @@ public final class Composer {
                             + "whole: " + session.incomplete());
         }
 
+        // A VERDICT IS THE SESSION'S OWN ROW, and the wave's aggregate copy
+        // of it is checked against that row rather than believed.  The
+        // campaign shell stamped ADMITTED onto the aggregate after every
+        // replay that merely finished, so on hdfs-11741 campaign #3 six of
+        // eleven obligations were aggregated ADMITTED while their own
+        // sessions said NOT_ADMITTED, and the composition took all eleven
+        // as paths.  A corpus that states one verdict twice and differently
+        // says nothing about that obligation at all.
+        for (edu.uva.liftlab.graphchecker.contract.SessionReader session
+                : corpus.sessions()) {
+            for (ObligationResult settled : session.obligations()) {
+                ObligationResult wave =
+                        corpus.waveVerdict(settled.obligationId());
+                if (wave == null || wave.verdict() == settled.verdict()) {
+                    continue;
+                }
+                gap(GapKind.UNSTATED_VALUE, GapClass.BLOCKING,
+                        settled.obligationId(), "the replay that ran this "
+                                + "obligation states " + settled.verdict()
+                                + " in session " + session.sessionId()
+                                + " and the wave's own file states "
+                                + wave.verdict() + ", so what it settled is "
+                                + "stated twice and differently");
+            }
+        }
+
         // Which recording a claim is about has to have one answer, and the
         // sessions STATE it (manifest.json, role: SEED | FOCUSED).  It used
         // to be inferred -- "the session that focused nothing" -- and the
@@ -570,7 +598,53 @@ public final class Composer {
                                 + "and published no path at the occurrence");
                 continue;
             }
+            if (!settled(target.sessionId())) continue;
             admitted.add(path);
+        }
+        return admitted;
+    }
+
+    /**
+     * Whether this session's OWN rows admit the obligation it ran.
+     *
+     * <p>The session's manifest names the obligations it was handed and its
+     * {@code obligations.jsonl} states what each of them settled; the
+     * replay owns that verdict, because whether the focused prefix
+     * reproduced and the flipped decision was taken is a fact of the run.
+     * A replay that refused its obligation collected no arm the seed lacks,
+     * so its path is not a disjunct of this composition: it is the
+     * recording again, under a valuation the wave asked for and the run did
+     * not take.</p>
+     *
+     * <p>A SEED session is asked nothing and admits itself.  An obligation
+     * the manifest names and the rows do not settle is BLOCKING: the
+     * session ran it and cannot say what happened, which is not the same as
+     * a refusal.</p>
+     */
+    private boolean settled(String session) {
+        SessionReader reader = corpus.session(session);
+        if (reader == null || reader.seed()) return true;
+        Set<String> stated = new LinkedHashSet<String>();
+        boolean admitted = true;
+        for (ObligationResult result : reader.obligations()) {
+            stated.add(result.obligationId());
+            if (result.verdict() == Verdict.ADMITTED) continue;
+            admitted = false;
+            gap(GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC, session,
+                    "this replay states " + result.verdict() + " for the "
+                            + "obligation it ran (" + result.obligationId()
+                            + "): " + result.detail());
+        }
+        List<String> asked = reader.manifest() == null
+                ? Collections.<String>emptyList()
+                : reader.manifest().obligationIds();
+        for (String obligation : asked) {
+            if (stated.contains(obligation)) continue;
+            admitted = false;
+            gap(GapKind.UNSTATED_VALUE, GapClass.BLOCKING, obligation,
+                    "session " + session + " states it ran this obligation "
+                            + "and publishes no verdict for it, so what it "
+                            + "settled is not in this corpus");
         }
         return admitted;
     }

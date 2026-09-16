@@ -28,6 +28,19 @@ public final class SessionDir {
     public static final String ROOTS = "roots.jsonl";
     public static final String TARGETS = "targets.jsonl";
     public static final String GAPS = "gaps.jsonl";
+    /**
+     * What each obligation this replay ran SETTLED -- the verdict.
+     *
+     * <p>Here with the other kinds because it is one: the replay owns
+     * whether the focused prefix reproduced and the flipped decision was
+     * taken, and the session is the evidence.  It used to be named in
+     * {@code runtime.SessionPublisher} alone, so a reader of the corpus had
+     * no spelling for it and the composition read the WAVE's aggregate copy
+     * instead -- which the campaign shell overwrote with ADMITTED after
+     * every replay that merely finished (hdfs-11741 campaign #3: 6 of 11).
+     * A SEED session states none, and none is not a verdict.</p>
+     */
+    public static final String OBLIGATIONS = "obligations.jsonl";
     public static final String EXPRESSIONS = "expressions.json";
     /** The role this session STATES it ran as ({@link SessionManifest}). */
     public static final String MANIFEST = "manifest.json";
@@ -117,6 +130,10 @@ public final class SessionDir {
 
     public Path gaps() {
         return dir.resolve(GAPS);
+    }
+
+    public Path obligations() {
+        return dir.resolve(OBLIGATIONS);
     }
 
     public Path expressions() {

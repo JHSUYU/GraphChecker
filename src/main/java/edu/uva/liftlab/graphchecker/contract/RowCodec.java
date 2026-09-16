@@ -380,6 +380,31 @@ public final class RowCodec {
                 string(json, "detail"));
     }
 
+    /**
+     * What one obligation SETTLED, as the one row shape for it.
+     *
+     * <p>One pair, because the row had three hand-written spellings -- the
+     * session's ({@code runtime.SessionPublisher}), the worker's ({@code
+     * runtime.RowRuntime}) and the reader's ({@code
+     * explore.ExploreCodec}) -- and a row written twice by hand is a row
+     * whose two writers can disagree about a field.</p>
+     */
+    public static JsonObject writeObligationResult(ObligationResult row) {
+        JsonObject json = row(row.sessionId());
+        json.addProperty("schemaVersion", 1);
+        json.addProperty("kind", "OBLIGATION_RESULT");
+        json.addProperty("obligationId", row.obligationId());
+        json.addProperty("verdict", row.verdict().name());
+        json.addProperty("detail", row.detail());
+        return json;
+    }
+
+    public static ObligationResult readObligationResult(JsonObject json) {
+        return ObligationResult.of(string(json, "obligationId"),
+                Verdict.valueOf(string(json, "verdict")),
+                string(json, SESSION_ID), string(json, "detail"));
+    }
+
     // ---- files ---------------------------------------------------------
 
     /** Writes one kind's file: one object per line, nothing else in it. */

@@ -826,14 +826,8 @@ public final class RowRuntime {
         if (worker.isEmpty()) return;
         StringBuilder rows = new StringBuilder();
         for (ObligationResult result : results) {
-            JsonObject row = new JsonObject();
-            row.addProperty("schemaVersion", 1);
-            row.addProperty("kind", "OBLIGATION_RESULT");
-            row.addProperty("obligationId", result.obligationId());
-            row.addProperty("verdict", result.verdict().name());
-            row.addProperty("sessionId", result.sessionId());
-            row.addProperty("detail", result.detail());
-            rows.append(RowCodec.toLine(row)).append('\n');
+            rows.append(RowCodec.toLine(
+                    RowCodec.writeObligationResult(result))).append('\n');
         }
         try {
             java.nio.file.Files.write(

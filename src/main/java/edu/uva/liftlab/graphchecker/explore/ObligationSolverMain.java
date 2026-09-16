@@ -134,7 +134,7 @@ public final class ObligationSolverMain {
                                       Map<String, String> clockDeltas,
                                       Map<String, String> rootMints,
                                       List<GapRow> gaps) throws IOException {
-        JsonObject row = ExploreCodec.writeResult(result);
+        JsonObject row = RowCodec.writeObligationResult(result);
         row.addProperty("schemaVersion", 1);
         row.addProperty("kind", "OBLIGATION_RESULT");
         RowCodec.writeJsonl(out.resolve(ObligationDir.RESULT),

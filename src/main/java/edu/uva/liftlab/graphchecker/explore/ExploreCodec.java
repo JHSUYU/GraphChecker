@@ -6,11 +6,9 @@ import com.google.gson.JsonObject;
 
 import edu.uva.liftlab.graphchecker.contract.InteractionKind;
 import edu.uva.liftlab.graphchecker.contract.Obligation;
-import edu.uva.liftlab.graphchecker.contract.ObligationResult;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.RowCodec;
 import edu.uva.liftlab.graphchecker.contract.Task;
-import edu.uva.liftlab.graphchecker.contract.Verdict;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -95,21 +93,6 @@ public final class ExploreCodec {
                 list(array(json, "unproducible")));
     }
 
-    public static JsonObject writeResult(ObligationResult result) {
-        JsonObject json = new JsonObject();
-        json.addProperty("obligationId", result.obligationId());
-        json.addProperty("verdict", result.verdict().name());
-        json.addProperty("sessionId", result.sessionId());
-        json.addProperty("detail", result.detail());
-        return json;
-    }
-
-    public static ObligationResult readResult(JsonObject json) {
-        return ObligationResult.of(optionalString(json, "obligationId"),
-                Verdict.valueOf(optionalString(json, "verdict")),
-                optionalString(json, "sessionId"),
-                optionalString(json, "detail"));
-    }
 
     /** One slot of the epoch's skeleton. */
     public static JsonObject writeSlot(SlotTable.Slot slot) {

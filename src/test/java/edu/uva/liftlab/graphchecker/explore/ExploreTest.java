@@ -1620,7 +1620,7 @@ public class ExploreTest {
                 proposal.obligationId(), worker, Paths.get("z3"), 10_000L);
         List<ObligationResult> rows = RowCodec.readAll(
                 worker.resolve("obligation_result.jsonl"),
-                ExploreCodec::readResult);
+                RowCodec::readObligationResult);
         assertEquals(1, rows.size());
         List<Obligation> solved = RowCodec.readAll(
                 worker.resolve("obligation.jsonl"),
@@ -1634,7 +1634,7 @@ public class ExploreTest {
     private static void record(Path results, ObligationResult result)
             throws IOException {
         Files.write(results, (RowCodec.toLine(
-                        ExploreCodec.writeResult(result))
+                        RowCodec.writeObligationResult(result))
                         + System.lineSeparator()).getBytes("UTF-8"),
                 StandardOpenOption.CREATE, StandardOpenOption.APPEND);
     }

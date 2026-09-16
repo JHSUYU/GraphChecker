@@ -11,6 +11,7 @@ import edu.uva.liftlab.graphchecker.contract.ExportRow;
 import edu.uva.liftlab.graphchecker.contract.Interaction;
 import edu.uva.liftlab.graphchecker.contract.LocationId;
 import edu.uva.liftlab.graphchecker.contract.ObligationDir;
+import edu.uva.liftlab.graphchecker.contract.ObligationResult;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
 import edu.uva.liftlab.graphchecker.contract.RowCodec;
@@ -204,8 +205,32 @@ public final class Corpus implements Arms.Rows {
                 }
                 bySession.putAll(assigned);
             }
+            for (ObligationResult result : RowCodec.readAll(worker.result(),
+                    RowCodec::readObligationResult)) {
+                waveVerdicts.put(result.obligationId(), result);
+            }
         }
     }
+
+    /**
+     * What the WAVE's own file says one obligation settled, or null.
+     *
+     * <p>Kept only to be checked against the SESSION's row, which is the
+     * verdict: the replay owns whether the focused prefix reproduced.  The
+     * campaign shell used to stamp {@code verdict: "ADMITTED"} onto this
+     * copy after every replay that merely finished, so on hdfs-11741
+     * campaign #3 six of eleven obligations were aggregated ADMITTED while
+     * their own sessions said NOT_ADMITTED -- and the composition took all
+     * eleven as paths.  A corpus that states one verdict twice and
+     * differently is refused by name.</p>
+     */
+    public ObligationResult waveVerdict(String obligationId) {
+        return waveVerdicts.get(obligationId == null ? "" : obligationId);
+    }
+
+    /** Obligation id -> the verdict the wave's own file states. */
+    private final Map<String, ObligationResult> waveVerdicts =
+            new LinkedHashMap<String, ObligationResult>();
 
     /**
      * The directory the sessions were read from.
