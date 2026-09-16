@@ -236,7 +236,9 @@ public final class Identity {
                 Region region = regions.get(index);
                 if (region.occurrence != null) return region.key;
             }
-            return degraded(nodeOf(nodeKey));
+            Role kind = Lineage.named() ? Lineage.role() : Role.UNKNOWN;
+            return degraded(nodeOf(nodeKey), "ROLE." + kind.name(),
+                    here(kind));
         }
 
         /** The bucket of an occurrence a caller already holds. */
@@ -245,7 +247,8 @@ public final class Identity {
                 Region region = regions.get(index);
                 if (region.occurrence == occurrence) return region.key;
             }
-            return degraded(occurrence.node().render());
+            return degraded(occurrence.node().render(),
+                    occurrence.regionId(), occurrence.context());
         }
 
         /**
@@ -285,17 +288,28 @@ public final class Identity {
         }
 
         /**
-         * The bucket of the degraded occurrence of {@code node} here.
+         * The bucket of one degraded occurrence: what its id is made of,
+         * minus the index its level already fixes.
          *
-         * <p>The scope the thread stands in is part of it: a daemon tick
-         * opened inside a request is a different occurrence from the request
-         * it was opened inside, and the events it makes at one site are not
-         * a continuation of that request's count.  {@link
-         * Lineage#scopeToken} is the innermost scope frame's token, which is
-         * exactly what changes when the scope does.</p>
+         * <p>(node, role, causal context) is the whole of a degraded
+         * occurrence's identity at a given level, so two events of it at
+         * one site count in one bucket and two events of DIFFERENT
+         * occurrences never do: a daemon tick opened inside a request has
+         * its own context ({@code Root:KEY_MANAGER_TICK#k}) and its events
+         * are not a continuation of the request's counts.</p>
+         *
+         * <p>What this replaces: the innermost scope frame's TOKEN.  A token
+         * changes whenever the scope is entered and left, which on
+         * hdfs-11741's balancer {@code main} is constantly -- every request
+         * it sends pushes and pops one -- so the count of the enclosing
+         * level restarted mid-run and two {@code Balancer.runOneIteration}
+         * calls of one workload request both stood at iteration 0, sharing
+         * an occurrence id and a producer endpoint.  The context does not
+         * move while the occurrence does not.</p>
          */
-        private static String degraded(String node) {
-            return "d" + Lineage.scopeToken() + '\n' + node;
+        private static String degraded(String node, String regionId,
+                                       CausalContext context) {
+            return "d" + node + '\n' + regionId + '\n' + context.render();
         }
     }
 
@@ -572,6 +586,17 @@ public final class Identity {
                 // The start frame was inside the level that just closed, so
                 // the work it named is over with it.
                 state.startDepth = -1;
+            }
+            // The scope root is the deepest level the scope start and this
+            // point still SHARE.  A scope is opened inside a call that
+            // returns -- CausynthMessagePropagation.inbound opens the scope
+            // of a served message and hands control back to the handler --
+            // and an index measured from a level that has gone is empty:
+            // on hdfs-11741 the four PBHelper.convert activations of one
+            // refresh answered one address, which is the collision the
+            // index exists to prevent.
+            if (state.scopeBase > state.depth()) {
+                state.scopeBase = state.depth();
             }
             state.journal();
             return;

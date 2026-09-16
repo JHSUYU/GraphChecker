@@ -725,7 +725,52 @@ public class RowRuntimeTest {
      * is not an identity.</p>
      */
     private void executionIndexIsStableUnderUnrelatedCalls() {
+        // A scope opened inside a call that RETURNS is rooted at the
+        // deepest level the scope start and the point still share.  The
+        // scope of a served message is opened by
+        // CausynthMessagePropagation.inbound, which hands control back to
+        // the handler, so an index measured from the level that opened it
+        // is empty once that level is gone -- and the four
+        // PBHelper.convert activations of one refresh then answered one
+        // address (G11).
         Identity.resetForTests();
+        Identity.enterFrame(NN.key(), "Server.processRpcRequest()#u3");
+        long inbound = Identity.enterFrame(NN.key(), "Propagation.inbound()#u7");
+        Identity.scopeStart();
+        Identity.exitFrame(inbound);
+        long converting = Identity.enterFrame(NN.key(),
+                "PBHelper.convert()#u9");
+        assertEquals("PBHelper.convert()#u9@0", Identity.atScope().render());
+        Identity.exitFrame(converting);
+        Identity.enterFrame(NN.key(), "PBHelper.convert()#u9");
+        assertEquals("the k-th call at one site under one occurrence",
+                "PBHelper.convert()#u9@1", Identity.atScope().render());
+
+        // The bucket those counts live in is the enclosing occurrence's
+        // CONTEXT, not the innermost scope frame's token: a tick opened and
+        // closed inside a request is its own occurrence, and the request's
+        // own counts continue afterwards.  Keyed by the token, the
+        // balancer's two Balancer.runOneIteration calls of one request both
+        // stood at iteration 0 and shared a producer endpoint.
+        Identity.resetForTests();
+        Lineage.resetForTests();
+        Object ticking = new Object();
+        RuntimeTraceContext.registerSource(ticking, NN);
+        long request = RuntimeTraceContext.beginRequest(NN, "balance-block");
+        Identity.exitFrame(Identity.enterFrame(NN.key(),
+                "Balancer.runOneIteration()#u1"));
+        long tick = CausynthTraceRecorder.beginDaemonTick(ticking,
+                "KEY_MANAGER_TICK");
+        Identity.exitFrame(Identity.enterFrame(NN.key(),
+                "KeyManager.updateBlockKeys()#u2"));
+        CausynthTraceRecorder.endDaemonTick(tick);
+        Identity.enterFrame(NN.key(), "Balancer.runOneIteration()#u1");
+        assertEquals("Balancer.runOneIteration()#u1@1",
+                Identity.atScope().render());
+        RuntimeTraceContext.endRequest(request);
+
+        Identity.resetForTests();
+        Lineage.resetForTests();
         Identity.scopeStart();
         Identity.enterFrame(NN.key(), "Caller.run()#u3");
         Identity.enterFrame(NN.key(), "Caller.step()#u7");

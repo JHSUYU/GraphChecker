@@ -1899,21 +1899,10 @@ public final class CausynthPipeline {
                     for (Value carried : startedWork(stmt.getInvokeExpr())) {
                         Value carrier = objectArg(body, carried, before);
                         if (carrier instanceof NullConstant) continue;
-                        // Paused where there is symbolic observation to
-                        // pause: the recording pass has none, and the hook
-                        // is the same one.
-                        boolean observed =
-                                refs.ref(Hook.PAUSE_OBSERVATION) != null;
-                        if (observed) {
-                            emit(before, refs.ref(Hook.PAUSE_OBSERVATION));
-                        }
-                        emit(before, refs.ref(Hook.START_WORK),
+                        refs.bracket(before, Hook.START_WORK,
                                 StringConstant.v(SiteId.of(
                                         method.getSignature(), unitIndex)),
                                 carrier);
-                        if (observed) {
-                            emit(before, refs.ref(Hook.RESUME_OBSERVATION));
-                        }
                         started++;
                     }
                     if (started == 0) continue;
@@ -1978,7 +1967,6 @@ public final class CausynthPipeline {
                                     List<Unit> originalUnits, Unit entry,
                                     HookCatalog refs) {
         if (entry == null) return false;
-        boolean observed = refs.ref(Hook.PAUSE_OBSERVATION) != null;
         Local token = newTraceLocal(body, LongType.v(),
                 "$causynthFrameToken");
         List<Unit> opening = new ArrayList<>();
@@ -1986,10 +1974,8 @@ public final class CausynthPipeline {
         // so there is nothing for a `= 0L` ahead of it to make safe: it was
         // the false comfort that let the trap open at it
         // (#instrumentRegionEntry, the woven-trap rule).
-        if (observed) emit(opening, refs.ref(Hook.PAUSE_OBSERVATION));
-        emit(opening, token, refs.ref(Hook.ENTER_METHOD_FRAME),
+        refs.bracket(opening, token, Hook.ENTER_METHOD_FRAME,
                 StringConstant.v(method.getSignature()));
-        if (observed) emit(opening, refs.ref(Hook.RESUME_OBSERVATION));
         insertBeforeOrAppendNoRedirect(body, entry, opening);
         for (int index = instrumentableFrom(originalUnits, null);
                 index >= 0 && index < originalUnits.size(); index++) {
@@ -1999,9 +1985,7 @@ public final class CausynthPipeline {
                 continue;
             }
             List<Unit> closing = new ArrayList<>();
-            if (observed) emit(closing, refs.ref(Hook.PAUSE_OBSERVATION));
-            emit(closing, refs.ref(Hook.EXIT_METHOD_FRAME), token);
-            if (observed) emit(closing, refs.ref(Hook.RESUME_OBSERVATION));
+            refs.bracket(closing, Hook.EXIT_METHOD_FRAME, token);
             insertBeforeSequence(body, unit, closing);
         }
         // The handler reads the token, so the trap opens after the store:
@@ -2034,13 +2018,7 @@ public final class CausynthPipeline {
         if (receiver instanceof NullConstant) return false;
         if (entry == null) return false;
         List<Unit> claim = new ArrayList<>();
-        // Paused where there is symbolic observation to pause, exactly as
-        // the start hook above is: the recording pass has none and the hook
-        // is the same one.
-        boolean observed = refs.ref(Hook.PAUSE_OBSERVATION) != null;
-        if (observed) emit(claim, refs.ref(Hook.PAUSE_OBSERVATION));
-        emit(claim, refs.ref(Hook.CLAIM_START), receiver);
-        if (observed) emit(claim, refs.ref(Hook.RESUME_OBSERVATION));
+        refs.bracket(claim, Hook.CLAIM_START, receiver);
         insertBeforeOrAppendNoRedirect(body, entry, claim);
         return true;
     }
@@ -3900,20 +3878,32 @@ public final class CausynthPipeline {
             return refs.get(hook);
         }
 
-        /** Appends {@code hook(args)} with observation paused across it. */
+        /**
+         * Appends {@code hook(args)} with observation paused across it.
+         *
+         * <p>Paused where there is symbolic observation to pause: the
+         * recording pass registers no such hook, and this is the one place
+         * that decides it rather than every caller asking
+         * {@code ref(PAUSE_OBSERVATION) != null} for itself -- which is what
+         * the work-start walk did and what the frame trio's throw handler
+         * did not, so the recording's weave of it raised a
+         * NullPointerException inside Soot's invoke builder.</p>
+         */
         private void bracket(Collection<Unit> units, Hook hook,
                              Value... args) {
-            emit(units, ref(Hook.PAUSE_OBSERVATION));
+            boolean observed = ref(Hook.PAUSE_OBSERVATION) != null;
+            if (observed) emit(units, ref(Hook.PAUSE_OBSERVATION));
             emit(units, ref(hook), args);
-            emit(units, ref(Hook.RESUME_OBSERVATION));
+            if (observed) emit(units, ref(Hook.RESUME_OBSERVATION));
         }
 
         /** Appends {@code target = hook(args)}, observation paused. */
         private void bracket(Collection<Unit> units, Value target, Hook hook,
                              Value... args) {
-            emit(units, ref(Hook.PAUSE_OBSERVATION));
+            boolean observed = ref(Hook.PAUSE_OBSERVATION) != null;
+            if (observed) emit(units, ref(Hook.PAUSE_OBSERVATION));
             emit(units, target, ref(hook), args);
-            emit(units, ref(Hook.RESUME_OBSERVATION));
+            if (observed) emit(units, ref(Hook.RESUME_OBSERVATION));
         }
 
         private static HookCatalog trace() {

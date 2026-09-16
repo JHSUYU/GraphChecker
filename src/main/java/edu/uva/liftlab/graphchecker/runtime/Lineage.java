@@ -338,18 +338,6 @@ public final class Lineage {
         return root == null ? "" : root.api;
     }
 
-    /**
-     * The token of the innermost scope frame, or 0.
-     *
-     * <p>What changes when the scope does, and nothing else: the
-     * execution index counts the events of a degraded occurrence per scope
-     * ({@code Identity.State#degraded}), and a tick opened inside a request
-     * is not a continuation of that request's counts.</p>
-     */
-    public static long scopeToken() {
-        List<Frame> stack = STACK.get();
-        return stack.isEmpty() ? 0L : stack.get(stack.size() - 1).token;
-    }
 
     /** Opens the recording window: k counts from here, in every replay. */
     public static void openWindow() {
