@@ -2767,11 +2767,6 @@ final class SeedBackwardStaticAnalyzer {
                 if (canonicalDefs(method, fact).contains(toText)) {
                     edge.put("definitionSite", true);
                 }
-                if (fact.unit instanceof DefinitionStmt
-                        && ((DefinitionStmt) fact.unit).getRightOp()
-                        instanceof soot.jimple.LengthExpr) {
-                    edge.put("arrayLengthOperation", true);
-                }
                 if (fact.invoke != null) {
                     edge.put("invoke", fact.invoke);
                 }

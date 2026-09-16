@@ -175,11 +175,29 @@ public final class RuntimeWorkflowDiscovery {
                 + k + " selects none of them");
     }
 
-    /** The {@code k} of a declaration, or 1 for an already resolved id. */
-    private static int declaredK(String declared) {
+    /**
+     * The {@code k} of a declaration, or 1 for an already resolved id.
+     *
+     * <p>Those are the only two readings.  Text that is neither a selector
+     * nor an address is a declaration nothing can resolve, and answering
+     * {@code k = 1} for it silently selected the FIRST observed target
+     * occurrence of a campaign whose declaration this build cannot read.</p>
+     */
+    private static int declaredK(String declared) throws IOException {
         try {
             return Math.max(1, OccurrenceAddress.parseSelector(declared).k());
         } catch (RuntimeException notASelector) {
+            try {
+                OccurrenceAddress.parse(declared);
+            } catch (RuntimeException notAnAddress) {
+                throw new IOException(
+                        "DECLARED_TARGET_OCCURRENCE_UNREADABLE: " + declared
+                                + " is neither an occurrence selector ("
+                                + notASelector.getMessage() + ") nor a "
+                                + "resolved occurrence address ("
+                                + notAnAddress.getMessage() + ")");
+            }
+            // A resolved address names one occurrence, so its k is 1.
             return 1;
         }
     }
@@ -192,14 +210,26 @@ public final class RuntimeWorkflowDiscovery {
         String value = declared == null ? "" : declared.trim();
         if (value.isEmpty()) return false;
         if (value.equals(occurrenceId)) return true;
+        // Two different failures, and neither is "this occurrence does not
+        // match": a plan row whose own occurrence id this build cannot read
+        // is a corrupt plan, and a declaration it cannot read is a campaign
+        // whose target nothing can resolve.  Both used to answer `false`,
+        // which reads as "not the target" and left the refusal to
+        // declaredTarget's count -- naming the wrong thing.
         final OccurrenceAddress address;
-        final Selector selector;
         try {
             address = OccurrenceAddress.parse(occurrenceId);
-            selector = OccurrenceAddress.parseSelector(value);
         } catch (RuntimeException unreadable) {
-            // Neither a resolved id nor a selector this build can read.
-            return false;
+            throw new IllegalStateException("PLANNED_OCCURRENCE_UNREADABLE: "
+                    + occurrenceId, unreadable);
+        }
+        final Selector selector;
+        try {
+            selector = OccurrenceAddress.parseSelector(value);
+        } catch (RuntimeException notASelector) {
+            throw new IllegalStateException(
+                    "DECLARED_TARGET_OCCURRENCE_UNREADABLE: " + value,
+                    notASelector);
         }
         // The same rule SelectorResolution resolves by, minus the k: this
         // asks whether an occurrence is one of the declaration's candidates,

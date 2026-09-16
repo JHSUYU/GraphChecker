@@ -44,7 +44,6 @@ import soot.ValueBox;
 import soot.VoidType;
 import soot.PrimType;
 import soot.jimple.AssignStmt;
-import soot.jimple.ArrayRef;
 import soot.jimple.CastExpr;
 import soot.jimple.Constant;
 import soot.jimple.DefinitionStmt;
@@ -351,7 +350,6 @@ public final class CausynthPipeline {
     private void instrumentRuntimeState(StaticProgram result) {
         HookCatalog refs = HookCatalog.trace();
         SootMethodRef recordFieldRef = refs.ref(Hook.RECORD_FIELD);
-        SootMethodRef recordArrayRef = refs.ref(Hook.RECORD_ARRAY_ELEMENT);
         // Which of the traced methods opens a region, read from the same
         // skeleton file the concolic pass reads its roots from: the
         // recording's execution index then has a frame exactly where the
@@ -368,8 +366,6 @@ public final class CausynthPipeline {
                             regionRoots.getOrDefault(method.getSignature(),
                                     ""));
                     instrumentFieldTrace(body, method, recordFieldRef,
-                            units, lowerBound);
-                    instrumentReferenceArrayTrace(body, method, recordArrayRef,
                             units, lowerBound);
                 });
         // The same hooks, over the same scope, as the replay weaves: the
@@ -563,16 +559,44 @@ public final class CausynthPipeline {
          * Freezes original unit indices for every body the campaign may
          * rewrite, before the first rewrite moves one.
          */
+        /**
+         * Numbers the original units of every body this campaign weaves.
+         *
+         * <p>The numbering IS the site vocabulary: `static_scope_map`'s
+         * guard ids, the plan's `unitIndex` and the replay's decision sites
+         * are all original-unit indices of these bodies, so a body whose
+         * tagging fails is a body whose sites no replay can decide at --
+         * the `#u63`/`#u61` defect class, where 17960's target guard was
+         * published for one numbering and woven at another.  It used to be
+         * swallowed with "unresolvable bodies are dropped by every later
+         * pass too", which is true of a body with no active body and false
+         * of one whose tagging threw: that one is still woven.</p>
+         */
         private void tagSelectedBodies() {
             Set<String> tagged = new LinkedHashSet<>(methods);
             tagged.addAll(loopBoundMethods);
             for (String signature : tagged) {
+                Body body;
                 try {
-                    Body body = CausynthStaticFacts.activeBody(
+                    body = CausynthStaticFacts.activeBody(
                             CausynthStaticFacts.method(signature));
-                    if (body != null) tagOriginalUnits(snapshotUnits(body));
-                } catch (RuntimeException ignored) {
-                    // Unresolvable bodies are dropped by every later pass too.
+                } catch (RuntimeException unresolvable) {
+                    // No body to number: every later pass skips it too, and
+                    // it is named rather than counted silently.
+                    LOG.warn("ORIGINAL_UNIT_TAGGING_SKIPPED: {} has no "
+                            + "active body to number", signature);
+                    continue;
+                }
+                if (body == null) continue;
+                try {
+                    tagOriginalUnits(snapshotUnits(body));
+                } catch (RuntimeException failed) {
+                    throw new IllegalStateException(
+                            "ORIGINAL_UNIT_TAGGING_FAILED: " + signature
+                                    + " is woven by this campaign and its "
+                                    + "original units could not be numbered,"
+                                    + " so no site of it names the same unit"
+                                    + " the plan does", failed);
                 }
             }
         }
@@ -3555,52 +3579,6 @@ public final class CausynthPipeline {
         }
     }
 
-    /** Records only reference-array aaload/aastore identities. */
-    private void instrumentReferenceArrayTrace(
-            Body body, SootMethod method, SootMethodRef recordArrayRef,
-            List<Unit> units, Unit lowerBound) {
-        boolean instrumentationSafe = lowerBound == null;
-        for (int unitIndex = 0; unitIndex < units.size(); unitIndex++) {
-            Unit unit = units.get(unitIndex);
-            instrumentationSafe |= unit == lowerBound;
-            if (!instrumentationSafe) continue;
-            if (!(unit instanceof AssignStmt)) continue;
-            AssignStmt assign = (AssignStmt) unit;
-            Value left = assign.getLeftOp();
-            Value right = assign.getRightOp();
-            if (left instanceof ArrayRef
-                    && referenceArrayElement((ArrayRef) left)) {
-                insertArrayTrace(body, unit, recordArrayRef, "ARRAY_WRITE",
-                        method.getSignature(), unitIndex, (ArrayRef) left,
-                        right);
-            }
-            if (right instanceof ArrayRef
-                    && referenceArrayElement((ArrayRef) right)) {
-                insertArrayTrace(body, unit, recordArrayRef, "ARRAY_READ",
-                        method.getSignature(), unitIndex, (ArrayRef) right,
-                        left);
-            }
-        }
-    }
-
-    private static boolean referenceArrayElement(ArrayRef array) {
-        Type element = array == null ? null : array.getType();
-        return element instanceof RefType || element instanceof ArrayType;
-    }
-
-    private static void insertArrayTrace(
-            Body body, Unit unit, SootMethodRef recordArrayRef, String kind,
-            String method, int unitIndex, ArrayRef array, Value element) {
-        List<Unit> suffix = new ArrayList<>();
-        Value arrayObject = objectArg(body, array.getBase(), suffix);
-        Value index = immediateValue(body, array.getIndex(), suffix);
-        Value elementObject = objectArg(body, element, suffix);
-        emit(suffix, recordArrayRef, StringConstant.v(kind),
-                StringConstant.v(method), IntConstant.v(unitIndex),
-                arrayObject, index, elementObject);
-        insertAfterSequence(body, unit, suffix);
-    }
-
     private void insertFieldTrace(
             Body body, Unit unit, SootMethodRef recordFieldRef,
             String kind, String method, int unitIndex,
@@ -3813,7 +3791,6 @@ public final class CausynthPipeline {
         EXIT_ACTIVE_METHOD,
         THROW_ACTIVE_METHOD,
         RECORD_FIELD,
-        RECORD_ARRAY_ELEMENT,
         ENTER_LOOP_ROOT_INVOCATION_FRAME,
         EXIT_LOOP_ROOT_INVOCATION_FRAME,
         THROW_LOOP_ROOT_INVOCATION_FRAME,
@@ -3960,10 +3937,7 @@ public final class CausynthPipeline {
                             RefType.v("java.lang.Throwable"))
                     .add(Hook.RECORD_FIELD, recorder, "recordField",
                             VoidType.v(), string, string, IntType.v(), string,
-                            object, object, object, string)
-                    .add(Hook.RECORD_ARRAY_ELEMENT, recorder,
-                            "recordArrayElement", VoidType.v(), string, string,
-                            IntType.v(), object, IntType.v(), object);
+                            object, object, object, string);
         }
 
         private static HookCatalog concolic() {

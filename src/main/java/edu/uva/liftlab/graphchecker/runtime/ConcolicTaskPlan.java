@@ -2,7 +2,6 @@ package edu.uva.liftlab.graphchecker.runtime;
 
 import edu.uva.liftlab.graphchecker.plan.ConcolicScheduler;
 
-import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
@@ -1198,8 +1197,6 @@ final class ConcolicTaskPlan {
                 configuredSourcePhasesById = new LinkedHashMap<>();
         /** Every protocol input this occurrence attaches from the VM. */
         final Set<String> attachPortIds = new LinkedHashSet<>();
-        /** Frozen runtime bindings used to resolve exact Map producers. */
-        final JsonArray edgeBindings;
         /**
          * Activations that ran as candidates for this address and were not the
          * addressed occurrence, and every distinct reason they were not.
@@ -1273,7 +1270,6 @@ final class ConcolicTaskPlan {
             this.replayGroupId = optionalString(task.json(),
                     "replayGroupId");
             this.topologyEpoch = optionalString(task.json(), "topologyEpoch");
-            this.edgeBindings = task.edgeBindings();
             // The plan row decoded this catalog once; phase ids are already
             // one strict ordered ledger by then, so this is an index, not a
             // second admission.

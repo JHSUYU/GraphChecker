@@ -92,7 +92,8 @@ public final class StaticProgram {
     // Indexes, each built once
     // ------------------------------------------------------------------
 
-    private Map<String, List<Map<String, Object>>> refinedEdgesByRegion;
+    private Map<String, List<Map<String, Object>>> graphEdgesByRegion;
+    private Map<String, List<String>> skeletonRegionIdsByMethod;
     private Map<String, List<Map<String, Object>>> cellIncoming;
     private Map<String, List<Map<String, Object>>> cellOutgoing;
     private String incomingRegion;
@@ -104,18 +105,56 @@ public final class StaticProgram {
     private Object regionStamp;
     private int regionCount = -1;
 
-    /** Refined-graph rows indexed by every region that claims them. */
+    /**
+     * Graph rows indexed by every region that claims them.
+     *
+     * <p>Scoping is the one thing the static graph decides, and it decides
+     * it statically: the region an edge belongs to is read off the selected
+     * skeletons' own {@code methods} sets by {@link
+     * #skeletonRegionsHolding}, not off a {@code regionIds} annotation a
+     * recording carried onto the row.  The two answers are the same fact --
+     * the annotation was that same lookup, computed in the runtime pass and
+     * shipped on a runtime artifact -- so this is where the fact is
+     * computed, once, from the artifact that states it.</p>
+     */
     Map<String, List<Map<String, Object>>> edgesByRegion() {
-        if (refinedEdgesByRegion == null) {
-            refinedEdgesByRegion = new LinkedHashMap<>();
+        if (graphEdgesByRegion == null) {
+            graphEdgesByRegion = new LinkedHashMap<>();
             for (Map<String, Object> edge : refinedGraph) {
-                for (String regionId : strings(edge.get("regionIds"))) {
-                    refinedEdgesByRegion.computeIfAbsent(regionId,
+                for (String regionId
+                        : skeletonRegionsHolding(text(edge.get("method")))) {
+                    graphEdgesByRegion.computeIfAbsent(regionId,
                             ignored -> new ArrayList<>()).add(edge);
                 }
             }
         }
-        return refinedEdgesByRegion;
+        return graphEdgesByRegion;
+    }
+
+    /**
+     * The selected skeletons whose method set holds {@code method}.
+     *
+     * <p>Not {@link #regionsHolding}: that one answers over {@link #regions},
+     * which during a finalization is the list being built and is empty when
+     * the graph is first indexed.  The skeletons are the frozen static
+     * regions and are complete before the first port exists.</p>
+     */
+    List<String> skeletonRegionsHolding(String method) {
+        if (skeletonRegionIdsByMethod == null) {
+            skeletonRegionIdsByMethod = new LinkedHashMap<>();
+            for (RegionRow skeleton : skeletons.values()) {
+                for (String held : skeleton.methods) {
+                    skeletonRegionIdsByMethod.computeIfAbsent(held,
+                            ignored -> new ArrayList<>())
+                            .add(skeleton.regionId);
+                }
+            }
+        }
+        if (method.isEmpty()) {
+            return Collections.emptyList();
+        }
+        return skeletonRegionIdsByMethod.getOrDefault(method,
+                Collections.<String>emptyList());
     }
 
     /** The minted activations of one region, in minting order. */
@@ -144,7 +183,7 @@ public final class StaticProgram {
         return activationsById;
     }
 
-    /** The refined rows one region claims, in first-seen order. */
+    /** The graph rows one region claims, in first-seen order. */
     List<Map<String, Object>> regionGraph(String regionId) {
         return edgesByRegion().getOrDefault(regionId,
                 Collections.<Map<String, Object>>emptyList());

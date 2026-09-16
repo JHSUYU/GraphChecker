@@ -10,7 +10,6 @@ import com.google.gson.ToNumberPolicy;
 import edu.uva.liftlab.graphchecker.causynth.MapFields;
 import edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts;
 import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
-import edu.uva.liftlab.graphchecker.causynth.StaticDataflowEdgeSchema;
 import edu.uva.liftlab.graphchecker.causynth.StaticProgram;
 import edu.uva.liftlab.graphchecker.plan.AutomaticRegionEdge;
 import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics;
@@ -28,7 +27,6 @@ import edu.uva.liftlab.graphchecker.plan.RuntimePlanArtifact;
 import edu.uva.liftlab.graphchecker.plan.StaticSymbolicSourceDeclaration;
 import edu.uva.liftlab.graphchecker.plan.SiteId;
 
-import java.io.File;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -992,12 +990,6 @@ final class RuntimeRegionPlanner {
                 || "FAILURE_TARGET_ENTRY".equals(authority);
     }
 
-    /** Builds the refined-flow index once from already parsed rows. */
-    static RefinedFlowIndex buildFlowIndex(
-            List<Map<String, Object>> rows, File source) {
-        return RefinedFlowIndex.build(rows, source);
-    }
-
     /** The campaign policy the planned rows themselves declare. */
     static LoopBoundPolicy declaredLoopBounds(
             List<Map<String, Object>> regions) {
@@ -1036,7 +1028,6 @@ final class RuntimeRegionPlanner {
      * exact JSONL value domain the file readers would produce. */
     static Result plan(List<Map<String, Object>> regions,
                        List<Map<String, Object>> regionEdges,
-                       RefinedFlowIndex refinedFlow,
                        String regionSource, String regionEdgeSource,
                        Collection<Map<String, Object>> runtimeSeeds,
                        List<MethodEvent> methods,
@@ -1058,11 +1049,6 @@ final class RuntimeRegionPlanner {
                 new LinkedHashMap<>();
         for (StaticProgram.RegionRow region : StaticProgram.regionRows(
                 regions, "SYMBOLIC_REGION", regionSource)) {
-            if (!"RUNTIME_REFINED_DATAFLOW".equals(region.graphKind)) {
-                throw new IllegalArgumentException(
-                        "region was not planned from the refined graph: "
-                                + regionSource);
-            }
             declareCutPortCells(region);
             regionById.put(region.regionId, region);
         }
@@ -1183,27 +1169,6 @@ final class RuntimeRegionPlanner {
                 occurrenceMethods.add(root.method);
             }
             boolean occurrenceTarget = target;
-            long targetBoundaryUpperSeq = occurrenceTarget
-                    ? targetBoundaryUpperSeq(occurrenceBranches, seed) : -1L;
-            ReturnSlice targetSlice = occurrenceTarget
-                    ? refinedFlow.targetReachSlice(regionId, occurrenceId,
-                    occurrenceMethods, region.symbolicInputs,
-                    region.branchPolicies, root.method, targetBoundaryUpperSeq)
-                    : null;
-            if (targetSlice != null) {
-                occurrenceSymbolize = filterByText(occurrenceSymbolize,
-                        "symbol", targetSlice.inputPorts);
-                occurrenceBranches = filterByText(occurrenceBranches,
-                        "siteId", targetSlice.branchSites);
-                addMaterializationMethods(targetSlice.methods,
-                        occurrenceSymbolize, occurrenceMethods);
-                occurrenceMethods = new LinkedHashSet<>(targetSlice.methods);
-            }
-            List<String> targetPathBlockers =
-                    occurrenceTarget && targetSlice != null
-                            ? targetPathBlockers(
-                            occurrenceBranches, seed)
-                            : Collections.emptyList();
             Map<String, Object> goal = new LinkedHashMap<>();
             goal.put("goalId", (occurrenceTarget ? "GOAL.TARGET_REACH."
                     : "GOAL.REGION_PATH.")
@@ -1213,15 +1178,20 @@ final class RuntimeRegionPlanner {
                     : "REGION_PATH_CLOSURE");
             goal.put("runtimeDefinitionMethods",
                     new ArrayList<>(occurrenceMethods));
-            goal.put("admission", object("state", occurrenceTarget
-                            && !targetPathBlockers.isEmpty()
-                            ? "BLOCKED" : "READY",
-                    "mode", "RUNTIME_FAILURE_CLOSURE", "blockers",
-                    occurrenceTarget ? targetPathBlockers
-                            : Collections.emptyList()));
+            // A planned occurrence is ready: which of its reads and
+            // branches the failure needs is EXPLORE's frontier, not a cut
+            // this stage may take, so there is no state here but READY and
+            // no blocker for this stage to raise.
+            goal.put("admission", object("state", "READY",
+                    "mode", "RUNTIME_FAILURE_CLOSURE",
+                    "blockers", Collections.emptyList()));
             goal.put("symbolize", occurrenceSymbolize);
             goal.put("branches", occurrenceBranches);
-            goal.put("edgeBindings", new ArrayList<>());
+            // What PLAN asks of this occurrence's edge evidence, and the
+            // whole of it: per export port, which execution sources its
+            // bound consumers sit on.  Filled by #appendPortSummary below.
+            goal.put(ExecutionTask.EXPORT_CONSUMERS,
+                    new LinkedHashMap<String, Object>());
 
             Map<String, Object> plan = new LinkedHashMap<>();
             plan.put("schemaVersion", 3);
@@ -1452,44 +1422,58 @@ final class RuntimeRegionPlanner {
         return evidence;
     }
 
-    /** Publishes one edge validation and binds it to both endpoint goals.
+    /** Summarizes one validated edge onto both endpoint goals.
      *
-     * <p>The binding selects linked-replay membership. Runtime VM evidence
-     * supplies the propagated expression.</p> */
+     * <p>The edge selects linked-replay membership; runtime VM evidence
+     * supplies the propagated expression.  So what a plan row needs of it
+     * is the ports it named -- not the row.  The rows used to be published
+     * whole, once per selection, into a catalog the plan artifact carried
+     * and every task row restated: 6,708 rows and 13,416 selections on
+     * hdfs-17960, 27.3 MB of a 32 MB region plan and 54.5 MB of a 57.8 MB
+     * task plan, for two set tests in {@code plan/ExecutionTask}.</p> */
     private static void recordEdgeEvidence(
             Result result,
             Map<String, Map<String, Object>> goalByOccurrence,
             Map<String, Object> evidence, String fromOccurrence,
             String toOccurrence) {
-        result.edgeValidations.add(evidence);
         Map<String, Object> producerGoal =
                 goalByOccurrence.get(fromOccurrence);
         if (producerGoal != null) {
-            appendGoalBinding(producerGoal, evidence);
+            appendPortSummary(producerGoal, evidence, toOccurrence);
         }
         Map<String, Object> consumerGoal =
                 goalByOccurrence.get(toOccurrence);
         if (consumerGoal != null && consumerGoal != producerGoal) {
-            appendGoalBinding(consumerGoal, evidence);
+            appendPortSummary(consumerGoal, evidence, "");
         }
     }
 
-    private static void appendGoalBinding(
-            Map<String, Object> goal, Map<String, Object> binding) {
-        List<Map<String, Object>> bindings = rows(goal.get("edgeBindings"));
-        String edgeId = stringValue(binding.get("edgeId"));
-        for (Map<String, Object> prior : bindings) {
-            if (!edgeId.isEmpty()
-                    && edgeId.equals(stringValue(prior.get("edgeId")))
-                    && stringValue(binding.get("fromOccurrenceId")).equals(
-                    stringValue(prior.get("fromOccurrenceId")))
-                    && stringValue(binding.get("toOccurrenceId")).equals(
-                    stringValue(prior.get("toOccurrenceId")))) {
-                return;
-            }
+    /**
+     * Adds one edge's ports to a goal's summary.
+     *
+     * <p>{@code exportConsumer} is the consumer occurrence when this goal is
+     * the edge's PRODUCER, and empty otherwise: a protocol delivery's
+     * consumer is reduced to its execution source, which is the one thing
+     * {@code ExecutionTask.requireOneSourcePerExportPort} asks of it.</p>
+     */
+    @SuppressWarnings("unchecked")
+    private static void appendPortSummary(
+            Map<String, Object> goal, Map<String, Object> edge,
+            String exportConsumer) {
+        String outputPort = stringValue(edge.get("fromOutputPort"));
+        if (exportConsumer.isEmpty() || outputPort.isEmpty()
+                || !AutomaticRegionEdge.RUNTIME_PROTOCOL_EDGE_KIND.equals(
+                        stringValue(edge.get("kind")))) {
+            return;
         }
-        bindings.add(binding);
-        goal.put("edgeBindings", bindings);
+        Map<String, Object> consumers = (Map<String, Object>)
+                goal.get(ExecutionTask.EXPORT_CONSUMERS);
+        List<String> sources = (List<String>) consumers.computeIfAbsent(
+                outputPort, ignored -> new ArrayList<String>());
+        String source = ExecutionTask.sourceKeyOf(exportConsumer);
+        if (!source.isEmpty() && !sources.contains(source)) {
+            sources.add(source);
+        }
     }
 
     /** Structural copy with the value domain of the JSONL round trip:
@@ -1558,169 +1542,6 @@ final class RuntimeRegionPlanner {
                 toJsonTreeFast(port).getAsJsonObject());
     }
 
-    /** Adds one statically admitted method to the selected dependency scope. */
-    private static void addIfAllowed(Collection<String> methods,
-                                     Set<String> allowed, String method) {
-        if (!method.isEmpty() && allowed.contains(method)
-                && !CausynthStaticFacts.constructor(method)
-                && !methods.contains(method)) {
-            methods.add(method);
-        }
-    }
-
-    private static List<Map<String, Object>> filterByText(
-            List<Map<String, Object>> rows, String field,
-            Set<String> accepted) {
-        List<Map<String, Object>> result = new ArrayList<>();
-        for (Map<String, Object> candidate : rows) {
-            if (accepted.contains(stringValue(candidate.get(field)))) {
-                result.add(candidate);
-            }
-        }
-        return result;
-    }
-
-    private static List<String> targetPathBlockers(
-            List<Map<String, Object>> branches, Map<String, Object> seed) {
-        Set<String> result = new LinkedHashSet<>();
-        List<Map<String, Object>> eligible = eligibleTargetSites(branches);
-        Set<String> guardedTargets = guardedTargetCells(eligible);
-        if (eligible.isEmpty() || guardedTargets.size() > 1) {
-            result.add("UNSUPPORTED_AMBIGUOUS_TARGET_PATH:"
-                    + guardedTargetLabel(eligible, guardedTargets));
-            return new ArrayList<>(result);
-        }
-        try {
-            // The cutoff is not used here, but a target whose failure
-            // boundary is ambiguous still blocks: the value is discarded and
-            // the refusal is the finding.
-            selectedTargetCutoff(eligible, seed);
-        } catch (IllegalArgumentException ambiguous) {
-            result.add("UNSUPPORTED_AMBIGUOUS_TARGET_PATH:"
-                    + safe(ambiguous.getMessage()));
-        }
-        return new ArrayList<>(result);
-    }
-
-    private static List<Map<String, Object>> eligibleTargetSites(
-            List<Map<String, Object>> branches) {
-        List<Map<String, Object>> eligible = new ArrayList<>();
-        for (Map<String, Object> branch : branches) {
-            if (eligibleTargetSite(branch)) eligible.add(branch);
-        }
-        return eligible;
-    }
-
-    /** Every throw the eligible failure guards of this occurrence control. */
-    private static Set<String> guardedTargetCells(
-            List<Map<String, Object>> eligible) {
-        Set<String> cells = new LinkedHashSet<>();
-        for (Map<String, Object> branch : eligible) {
-            cells.addAll(strings(branch.get(
-                    RuntimeSelectedRegionFinalizer.FAILURE_TARGET_CELLS)));
-        }
-        return cells;
-    }
-
-    private static String guardedTargetLabel(
-            List<Map<String, Object>> eligible, Set<String> guardedTargets) {
-        return guardedTargets.size() > 1
-                ? guardedTargets.size() + "_GUARDED_FAILURE_TARGETS"
-                : eligible.size() + "_ELIGIBLE_FAILURE_TARGETS";
-    }
-
-    /** The observed event that decided this occurrence's target.
-     *
-     * <p>A conjunct the seed never recorded a fatal prefix for is a conjunct,
-     * not a rival target, and is skipped; a target whose recording names no
-     * such event at all still fails closed, which is what {@code TARGET-1}
-     * requires of missing target evidence.</p> */
-    private static long selectedTargetCutoff(
-            List<Map<String, Object>> eligible, Map<String, Object> seed) {
-        long cutoff = -1L;
-        IllegalArgumentException refusal = null;
-        for (Map<String, Object> branch : eligible) {
-            try {
-                cutoff = Math.max(cutoff, exactTargetCutoff(branch, seed));
-            } catch (IllegalArgumentException ambiguous) {
-                if (refusal == null) refusal = ambiguous;
-            }
-        }
-        if (cutoff >= 0L) return cutoff;
-        throw refusal == null ? new IllegalArgumentException(
-                "TARGET_EVENT_UNOBSERVED") : refusal;
-    }
-
-    /** Returns the exact observed failure boundary used to cut target inputs.
-     */
-    private static long targetBoundaryUpperSeq(
-            List<Map<String, Object>> branches, Map<String, Object> seed) {
-        List<Map<String, Object>> eligible = eligibleTargetSites(branches);
-        if (eligible.isEmpty()
-                || guardedTargetCells(eligible).size() > 1) {
-            return -1L;
-        }
-        try {
-            return selectedTargetCutoff(eligible, seed);
-        } catch (IllegalArgumentException ambiguous) {
-            return -1L;
-        }
-    }
-
-    private static long exactTargetCutoff(
-            Map<String, Object> branch, Map<String, Object> seed) {
-        String site = stringValue(branch.get("siteId"));
-        List<Map<String, Object>> contexts = rows(
-                seed.get("fatalPrefixContexts"));
-        if (!contexts.isEmpty()) {
-            List<Map<String, Object>> matching = new ArrayList<>();
-            for (Map<String, Object> context : contexts) {
-                if (site.equals(stringValue(context.get("siteId")))) {
-                    matching.add(context);
-                }
-            }
-            if (matching.size() > 1) {
-                throw new IllegalArgumentException(
-                        "MULTIPLE_FATAL_PREFIX_CONTEXTS");
-            }
-            if (matching.isEmpty()) {
-                throw new IllegalArgumentException(
-                        "FATAL_PREFIX_SITE_MISMATCH");
-            }
-            Map<String, Object> context = matching.get(0);
-            if (!"EXACT_FATAL_BRANCH_OCCURRENCE_PREFIX_V1".equals(
-                    stringValue(context.get("authority")))) {
-                throw new IllegalArgumentException(
-                        "FATAL_PREFIX_AUTHORITY_MISSING");
-            }
-            int ordinal = number(context.get("occurrence"), -1);
-            long eventSeq = longNumber(context.get("eventSeq"), -1L);
-            if (ordinal < 1 || eventSeq < 0L) {
-                throw new IllegalArgumentException(
-                        "FATAL_PREFIX_OCCURRENCE_INVALID");
-            }
-            int selectedOrdinal = number(branch.get(
-                    "selectedOccurrence"), -1);
-            long selectedEventSeq = longNumber(branch.get(
-                    "selectedRuntimeEventSeq"), -1L);
-            if (selectedOrdinal > 0 && selectedOrdinal != ordinal
-                    || selectedEventSeq >= 0L
-                    && selectedEventSeq != eventSeq) {
-                throw new IllegalArgumentException(
-                        "FATAL_PREFIX_BRANCH_MISMATCH");
-            }
-            return eventSeq;
-        }
-        int ordinal = number(branch.get("selectedOccurrence"), -1);
-        long eventSeq = longNumber(branch.get(
-                "selectedRuntimeEventSeq"), -1L);
-        if (ordinal < 1 || eventSeq < 0L) {
-            throw new IllegalArgumentException(
-                    "FATAL_PREFIX_BOUNDARY_MISSING");
-        }
-        return eventSeq;
-    }
-
     /** Whether this activation plans a target-reach closure. */
     private static boolean observedFailureTargetActivation(
             List<Map<String, Object>> branches) {
@@ -1731,12 +1552,6 @@ final class RuntimeRegionPlanner {
             if (Boolean.TRUE.equals(branch.get("observed"))) return true;
         }
         return !declared;
-    }
-
-    private static boolean eligibleTargetSite(Map<String, Object> branch) {
-        return Boolean.TRUE.equals(branch.get("failureTarget"))
-                && Boolean.TRUE.equals(branch.get("observed"))
-                && !stringValue(branch.get("siteId")).isEmpty();
     }
 
     /** True when this row is bound to the occurrence, comparing occurrence
@@ -2107,19 +1922,6 @@ final class RuntimeRegionPlanner {
                 && "ZBCSIJFD".indexOf(descriptor.charAt(component)) >= 0;
     }
 
-    private static void addMaterializationMethods(
-            Set<String> methods, List<Map<String, Object>> actions,
-            Set<String> allowedMethods) {
-        for (Map<String, Object> action : actions) {
-            addIfAllowed(methods, allowedMethods,
-                    stringValue(action.get("rootMethod")));
-            addIfAllowed(methods, allowedMethods,
-                    stringValue(action.get("accessorCallerMethod")));
-            addIfAllowed(methods, allowedMethods,
-                    stringValue(action.get("accessorImplementationMethod")));
-        }
-    }
-
     private static void addFieldAccessIdentity(
             Map<String, Object> action, Map<String, Object> port,
             List<String> path) {
@@ -2394,484 +2196,6 @@ final class RuntimeRegionPlanner {
     static final String RETAINED_LOOPS_FIELD =
             edu.uva.liftlab.graphchecker.plan.LoopBoundPolicy.PLAN_FIELD;
 
-    static final class RefinedFlowIndex {
-        private final Map<String, Map<String, List<FlowEdge>>>
-                incomingByRegion =
-                new LinkedHashMap<>();
-        /** region\nmethod\nsite -> cells guarded by that exact branch. */
-        private final Map<String, Set<String>> guardedCellsBySite =
-                new LinkedHashMap<>();
-
-        private void addEdge(FlowEdge edge) {
-            for (String region : edge.regions) {
-                incomingByRegion.computeIfAbsent(region,
-                        ignored -> new LinkedHashMap<>())
-                        .computeIfAbsent(edge.toCell,
-                                ignored -> new ArrayList<>()).add(edge);
-            }
-            if ("GUARD".equals(edge.transferKind)
-                    && !edge.method.isEmpty() && !edge.siteId.isEmpty()) {
-                for (String region : edge.regions) {
-                    guardedCellsBySite.computeIfAbsent(region + "\n"
-                            + edge.method + "\n" + edge.siteId,
-                            ignored -> new LinkedHashSet<>())
-                            .add(edge.toCell);
-                }
-            }
-        }
-
-        /** Indexes the rows the graph refiner produced.  The refiner stamps
-         * the refined schema on every row it emits, so this stage indexes
-         * that output rather than re-checking the stamp row by row. */
-        private static RefinedFlowIndex build(
-                List<Map<String, Object>> rows, File graph) {
-            RefinedFlowIndex result = new RefinedFlowIndex();
-            int count = 0;
-            for (Map<String, Object> row : rows == null
-                    ? Collections.<Map<String, Object>>emptyList() : rows) {
-                count++;
-                FlowEdge edge = FlowEdge.decode(row);
-                if (edge != null) {
-                    result.addEdge(edge);
-                }
-            }
-            if (count == 0) {
-                throw new IllegalArgumentException(
-                        "refined graph is empty: " + graph);
-            }
-            return result;
-        }
-
-        /** Builds one failure-sliced local path frontier. Runtime fixes the
-         * activation and the concrete heap access sites; static value/control
-         * flow may then prove an alternate callee relevant even when the
-         * baseline did not execute it. */
-        private ReturnSlice dependencySlice(
-                String regionId, String occurrenceId,
-                String sinkCell,
-                Set<String> allowedMethods,
-                List<Map<String, Object>> inputs,
-                List<Map<String, Object>> branchPolicies,
-                Set<String> seedMethods,
-                long boundaryUpperSeq) {
-            ReturnSlice result = backwardSlice(regionId, occurrenceId,
-                    sinkCell, allowedMethods, inputs,
-                    boundaryUpperSeq);
-            for (String method : seedMethods) {
-                if (!method.isEmpty() && allowedMethods.contains(method)) {
-                    result.methods.add(method);
-                }
-            }
-
-            boolean changed;
-            do {
-                changed = false;
-                Set<String> selectedMethods = new LinkedHashSet<>(
-                        result.methods);
-                Set<String> controlled = result.cells;
-                for (Map<String, Object> branch : branchPolicies) {
-                    String method = stringValue(branch.get("method"));
-                    String site = stringValue(branch.get("siteId"));
-                    List<String> operands = strings(
-                            branch.get("operandCells"));
-                    String policy = stringValue(branch.get("policy"));
-                    if ((!selectedMethods.contains(method)
-                            && !allowedMethods.contains(method))
-                            || !"EXPLORE".equals(policy)
-                            && !"PATH_ASSUMPTION".equals(policy)
-                            || Boolean.TRUE.equals(
-                            branch.get("loopControlGuard"))
-                            || site.isEmpty()
-                            || !controlsSelectedCell(regionId, method, site,
-                            controlled, result.methods)) {
-                        continue;
-                    }
-                    ReturnSlice guardSlice = new ReturnSlice();
-                    for (String operand : operands) {
-                        guardSlice.merge(backwardSlice(regionId,
-                                occurrenceId,
-                                operand, allowedMethods, inputs,
-                                boundaryUpperSeq));
-                    }
-                    // A path assumption is retained only when its operand
-                    // reaches a declared runtime fault input.
-                    if ("PATH_ASSUMPTION".equals(policy)
-                            && !reachesExplicitSymbolicFault(
-                            guardSlice.inputPorts, inputs,
-                            occurrenceId)) {
-                        continue;
-                    }
-                    if (!result.branchSites.add(site)) continue;
-                    // A retained guard executes in its helper method even if
-                    // all value-flow predecessors terminate at an input
-                    // boundary.
-                    result.methods.add(method);
-                    int before = controlled.size();
-                    result.merge(guardSlice);
-                    controlled = result.cells;
-                    changed |= controlled.size() != before;
-                }
-            } while (changed);
-            return result;
-        }
-
-        private static boolean reachesExplicitSymbolicFault(
-                Set<String> ports, List<Map<String, Object>> inputs,
-                String occurrenceId) {
-            if (ports.isEmpty()) return false;
-            for (Map<String, Object> input : inputs) {
-                if (boundTo(input, occurrenceId)
-                        && ports.contains(stringValue(input.get("portId")))
-                        && RuntimeSelectedRegionFinalizer
-                        .EXPLICIT_SYMBOLIC_FAULT.equals(
-                        stringValue(input.get("sourceKind")))) {
-                    return true;
-                }
-            }
-            return false;
-        }
-
-        /** Uses the exact exception guard as a sink instead of inheriting the
-         * whole execution-context region. */
-        private ReturnSlice targetReachSlice(
-                String regionId, String occurrenceId,
-                Set<String> allowedMethods,
-                List<Map<String, Object>> inputs,
-                List<Map<String, Object>> branchPolicies,
-                String rootMethod, long boundaryUpperSeq) {
-            ReturnSlice result = new ReturnSlice();
-            boolean targetFound = false;
-            for (Map<String, Object> branch : branchPolicies) {
-                if (!Boolean.TRUE.equals(branch.get("failureTarget"))
-                        || Boolean.TRUE.equals(
-                        branch.get("loopControlGuard"))) {
-                    continue;
-                }
-                String site = stringValue(branch.get("siteId"));
-                String method = stringValue(branch.get("method"));
-                if (site.isEmpty() || method.isEmpty()
-                        || !allowedMethods.contains(method)) {
-                    continue;
-                }
-                targetFound = true;
-                ReturnSlice siteSlice = new ReturnSlice();
-                siteSlice.branchSites.add(site);
-                siteSlice.methods.add(method);
-                for (String operand : strings(branch.get("operandCells"))) {
-                    siteSlice.merge(dependencySlice(regionId, occurrenceId,
-                            operand, allowedMethods, inputs,
-                            branchPolicies, Collections.<String>emptySet(),
-                            boundaryUpperSeq));
-                }
-                result.merge(siteSlice);
-            }
-            if (!targetFound) return null;
-            addIfAllowed(result.methods, allowedMethods, rootMethod);
-            return result;
-        }
-
-        private boolean controlsSelectedCell(String regionId, String method,
-                                             String site,
-                                             Set<String> selectedCells,
-                                             Set<String> selectedMethods) {
-            // Index form of: exists GUARD edge at (regionId, method, site)
-            // whose guarded cell is currently selected.
-            Set<String> guarded = guardedCellsBySite.get(regionId + "\n"
-                    + method + "\n" + site);
-            if (guarded == null) return false;
-            // A control dependency can guard the call that creates a selected
-            // helper activation rather than one of the helper's internal value
-            // cells.
-            for (String selectedMethod : selectedMethods) {
-                if (guarded.contains(selectedMethod + ".activation")) {
-                    return true;
-                }
-            }
-            if (guarded.size() <= selectedCells.size()) {
-                for (String cell : guarded) {
-                    if (selectedCells.contains(cell)) return true;
-                }
-                return false;
-            }
-            for (String cell : selectedCells) {
-                if (guarded.contains(cell)) return true;
-            }
-            return false;
-        }
-
-        /** Input boundary maps depend only on the (immutable) region input
-         * list and the bound occurrence; they were previously rebuilt on
-         * every backward slice, which dominated planning time. */
-        private final Map<List<Map<String, Object>>, Map<String, Boundaries>>
-                boundariesByInputs = new java.util.IdentityHashMap<>();
-
-        private static final class Boundaries {
-            private final Map<String, List<Map<String, Object>>> direct =
-                    new LinkedHashMap<>();
-            private final Map<String, List<Map<String, Object>>> heap =
-                    new LinkedHashMap<>();
-        }
-
-        /** Synchronized: plans are finalized on a pool sharing this index. */
-        private synchronized Boundaries boundaries(
-                List<Map<String, Object>> inputs, String occurrenceId) {
-            Map<String, Boundaries> byOccurrence = boundariesByInputs
-                    .computeIfAbsent(inputs,
-                            ignored -> new LinkedHashMap<>());
-            Boundaries cached = byOccurrence.get(occurrenceId);
-            if (cached != null) return cached;
-            Boundaries result = new Boundaries();
-            for (Map<String, Object> input : inputs) {
-                String port = stringValue(input.get("portId"));
-                if (!boundToInput(input, occurrenceId)
-                        || port.isEmpty()) {
-                    continue;
-                }
-                registerBoundary(result.direct, stringValue(input.get("cell")),
-                        input);
-                List<String> declarations = strings(
-                        input.get("fieldPathDeclarations"));
-                if (!declarations.isEmpty()) {
-                    registerBoundary(result.heap,
-                            stringValue(input.get("siteId")) + "\n"
-                                    + declarations.get(
-                                    declarations.size() - 1), input);
-                }
-            }
-            byOccurrence.put(occurrenceId, result);
-            return result;
-        }
-
-        private ReturnSlice backwardSlice(
-                String regionId, String occurrenceId,
-                String sinkCell,
-                Set<String> allowedMethods,
-                List<Map<String, Object>> inputs,
-                long boundaryUpperSeq) {
-            ReturnSlice result = new ReturnSlice();
-            if (sinkCell.isEmpty()) return result;
-            result.cells.add(sinkCell);
-
-            Boundaries bounds = boundaries(inputs, occurrenceId);
-            Map<String, List<Map<String, Object>>> directInputs =
-                    bounds.direct;
-            Map<String, List<Map<String, Object>>> heapInputs =
-                    bounds.heap;
-
-            SliceNode sink = new SliceNode(sinkCell);
-            Map<SliceNode, SliceStep> towardSink = new LinkedHashMap<>();
-            Set<SliceNode> visited = new LinkedHashSet<>();
-            Deque<SliceNode> queue = new ArrayDeque<>();
-            Map<String, List<FlowEdge>> regionIncoming =
-                    incomingByRegion.getOrDefault(regionId,
-                            Collections.<String, List<FlowEdge>>emptyMap());
-            visited.add(sink);
-            queue.add(sink);
-            while (!queue.isEmpty()) {
-                SliceNode current = queue.removeFirst();
-                List<Map<String, Object>> direct = selectBoundaries(
-                        directInputs.get(current.cell), boundaryUpperSeq);
-                if (!direct.isEmpty()) {
-                    for (Map<String, Object> input : direct) {
-                        result.inputPorts.add(stringValue(input.get("portId")));
-                    }
-                    addSlicePath(result, current, sink, towardSink, null);
-                    continue;
-                }
-
-                for (FlowEdge edge : regionIncoming.getOrDefault(current.cell,
-                        Collections.<FlowEdge>emptyList())) {
-                    if (edge.method.isEmpty()
-                            || !allowedMethods.contains(edge.method)) {
-                        continue;
-                    }
-                    if ("HEAP_READ".equals(edge.transferKind)) {
-                        String key = edge.siteId + "\n" + edge.fromCell;
-                        List<Map<String, Object>> selectedInputs =
-                                selectBoundaries(heapInputs.get(key),
-                                        boundaryUpperSeq);
-                        for (Map<String, Object> input : selectedInputs) {
-                            result.inputPorts.add(stringValue(
-                                    input.get("portId")));
-                            addSlicePath(result, current, sink,
-                                    towardSink, edge);
-                        }
-                        continue;
-                    }
-                    if ("HEAP_WRITE".equals(edge.transferKind)
-                            || !returnValueTransfer(edge.transferKind)) {
-                        continue;
-                    }
-                    SliceNode predecessor = new SliceNode(edge.fromCell);
-                    enqueueSlice(predecessor, current, edge, visited, queue,
-                            towardSink);
-                }
-            }
-            return result;
-        }
-
-        private static void enqueueSlice(
-                SliceNode predecessor, SliceNode current, FlowEdge edge,
-                Set<SliceNode> visited, Deque<SliceNode> queue,
-                Map<SliceNode, SliceStep> towardSink) {
-            if (!visited.add(predecessor)) return;
-            towardSink.put(predecessor, new SliceStep(edge, current));
-            queue.addLast(predecessor);
-        }
-
-        private static void addSlicePath(
-                ReturnSlice result, SliceNode start, SliceNode sink,
-                Map<SliceNode, SliceStep> towardSink, FlowEdge first) {
-            if (first != null) result.add(first);
-            SliceNode cursor = start;
-            while (!cursor.equals(sink)) {
-                SliceStep step = towardSink.get(cursor);
-                if (step == null) return;
-                result.add(step.edge);
-                cursor = step.towardSink;
-            }
-        }
-
-        private static void registerBoundary(
-                Map<String, List<Map<String, Object>>> boundaries,
-                String key, Map<String, Object> input) {
-            if (key.isEmpty()) return;
-            boundaries.computeIfAbsent(key,
-                    ignored -> new ArrayList<>()).add(input);
-        }
-
-        /** A configured boundary array may contribute several independently
-         * replayable scalar occurrences at one static read site. */
-        private static List<Map<String, Object>> selectBoundaries(
-                List<Map<String, Object>> candidates, long upperSeq) {
-            if (candidates == null || candidates.isEmpty()) {
-                return Collections.emptyList();
-            }
-            List<Map<String, Object>> boundedCandidates = new ArrayList<>();
-            boolean allConcreteResidual = true;
-            for (Map<String, Object> candidate : candidates) {
-                boolean concreteResidual =
-                        "CONCRETE_UNPROJECTED_BOUNDARY_ACCESS".equals(
-                                stringValue(candidate.get("symbolicDemand")));
-                allConcreteResidual &= concreteResidual;
-                if (upperSeq >= 0L && concreteResidual
-                        && longNumber(candidate.get("eventSeq"), -1L)
-                        > upperSeq) {
-                    continue;
-                }
-                boundedCandidates.add(candidate);
-            }
-            // A boundary access the slice left concrete demands nothing, so
-            // a candidate set made only of those selects no boundary at all.
-            if (boundedCandidates.isEmpty() || allConcreteResidual) {
-                return Collections.emptyList();
-            }
-            return boundedCandidates;
-        }
-
-        /** Whether one edge carries a value forward into a return site. */
-        private static boolean returnValueTransfer(String transferKind) {
-            return "VALUE_PASS".equals(transferKind)
-                    || StaticDataflowEdgeSchema.VALUE_TRANSFER
-                            .equals(transferKind)
-                    || "DYNAMIC_DISPATCH".equals(transferKind);
-        }
-
-    }
-
-    private static final class FlowEdge {
-        private final String id;
-        private final String fromCell;
-        private final String toCell;
-        private final String method;
-        private final String siteId;
-        private final String transferKind;
-        private final Set<String> regions;
-
-        private FlowEdge(String id, String fromCell, String toCell,
-                         String method,
-                         String siteId, String transferKind,
-                         Set<String> regions) {
-            this.id = id;
-            this.fromCell = fromCell;
-            this.toCell = toCell;
-            this.method = method;
-            this.siteId = siteId;
-            this.transferKind = transferKind;
-            this.regions = regions;
-        }
-
-        private static FlowEdge decode(Map<String, Object> row) {
-            String from = stringValue(row.get("fromCell"));
-            String to = stringValue(row.get("toCell"));
-            String transfer = stringValue(row.get("transferKind"));
-            if (from.isEmpty() || to.isEmpty()) {
-                return null;
-            }
-            return new FlowEdge(stringValue(row.get("id")), from, to,
-                    stringValue(row.get("method")),
-                    stringValue(row.get("siteId")), transfer,
-                    new LinkedHashSet<>(strings(row.get("regionIds"))));
-        }
-    }
-
-    private static final class ReturnSlice {
-        private final Set<String> inputPorts = new LinkedHashSet<>();
-        private final Set<String> methods = new LinkedHashSet<>();
-        private final Set<String> branchSites = new LinkedHashSet<>();
-        private final Set<String> edges = new LinkedHashSet<>();
-        private final Set<String> cells = new LinkedHashSet<>();
-
-        private void add(FlowEdge edge) {
-            String identity = edge.id.isEmpty()
-                    ? edge.fromCell + "\n" + edge.toCell + "\n"
-                    + edge.transferKind : edge.id;
-            if (!edges.add(identity)) return;
-            methods.add(edge.method);
-            cells.add(edge.fromCell);
-            cells.add(edge.toCell);
-        }
-
-        private void merge(ReturnSlice other) {
-            inputPorts.addAll(other.inputPorts);
-            methods.addAll(other.methods);
-            branchSites.addAll(other.branchSites);
-            edges.addAll(other.edges);
-            cells.addAll(other.cells);
-        }
-    }
-
-    private static final class SliceNode {
-        private final String cell;
-
-        private SliceNode(String cell) {
-            this.cell = safe(cell);
-        }
-
-        @Override
-        public boolean equals(Object value) {
-            if (this == value) return true;
-            if (!(value instanceof SliceNode)) return false;
-            SliceNode other = (SliceNode) value;
-            return cell.equals(other.cell);
-        }
-
-        @Override
-        public int hashCode() {
-            return cell.hashCode();
-        }
-    }
-
-    private static final class SliceStep {
-        private final FlowEdge edge;
-        private final SliceNode towardSink;
-
-        private SliceStep(FlowEdge edge, SliceNode towardSink) {
-            this.edge = edge;
-            this.towardSink = towardSink;
-        }
-    }
-
     /**
      * The recorded call one activation seed names.
      *
@@ -2990,7 +2314,6 @@ final class RuntimeRegionPlanner {
 
     static final class Result {
         final List<Map<String, Object>> regionPlans = new ArrayList<>();
-        final List<Map<String, Object>> edgeValidations = new ArrayList<>();
         final List<Map<String, Object>> regionCatalog = new ArrayList<>();
         /** Gaps the region finalizer raised while building these ports. */
         final List<Map<String, Object>> planGaps = new ArrayList<>();
@@ -3004,10 +2327,6 @@ final class RuntimeRegionPlanner {
             for (Map<String, Object> plan : regionPlans) {
                 plans.add(toJsonTreeFast(plan).getAsJsonObject());
             }
-            List<JsonObject> edges = new ArrayList<>();
-            for (Map<String, Object> edge : edgeValidations) {
-                edges.add(toJsonTreeFast(edge).getAsJsonObject());
-            }
             List<JsonObject> regions = new ArrayList<>();
             for (Map<String, Object> region : regionCatalog) {
                 regions.add(toJsonTreeFast(region).getAsJsonObject());
@@ -3016,7 +2335,7 @@ final class RuntimeRegionPlanner {
             for (Map<String, Object> gap : planGaps) {
                 gaps.add(toJsonTreeFast(gap).getAsJsonObject());
             }
-            return RuntimePlanArtifact.encode(plans, edges, regions, gaps);
+            return RuntimePlanArtifact.encode(plans, regions, gaps);
         }
 
     }
@@ -3037,7 +2356,6 @@ final class RuntimeRegionPlanner {
         final long parentSiteId;
         final long laneId;
         final long spanId;
-        final long parentSpanId;
         final long remoteParentSpanId;
         /** Owner of this frame. Not final: a frame is stamped when it is
          * entered, and a node builds its service objects before it declares
@@ -3070,21 +2388,19 @@ final class RuntimeRegionPlanner {
         MethodEvent(long seq, String test, String threadName,
                     long tid, String method, int objectId, String receiverType,
                     long callId, long parentCallId, long parentSiteId,
-                    long laneId, long spanId,
-                    long parentSpanId, long remoteParentSpanId,
+                    long laneId, long spanId, long remoteParentSpanId,
                     SourceRef source, boolean receiverAttributed,
                     String requestKey, String requestApi) {
             this(seq, test, threadName, tid, method, objectId, receiverType,
                     callId, parentCallId, parentSiteId, laneId, spanId,
-                    parentSpanId, remoteParentSpanId, source,
+                    remoteParentSpanId, source,
                     receiverAttributed, requestKey, requestApi, "");
         }
 
         MethodEvent(long seq, String test, String threadName,
                     long tid, String method, int objectId, String receiverType,
                     long callId, long parentCallId, long parentSiteId,
-                    long laneId, long spanId,
-                    long parentSpanId, long remoteParentSpanId,
+                    long laneId, long spanId, long remoteParentSpanId,
                     SourceRef source, boolean receiverAttributed,
                     String requestKey, String requestApi,
                     String occurrenceAddress) {
@@ -3101,7 +2417,6 @@ final class RuntimeRegionPlanner {
             this.parentSiteId = parentSiteId;
             this.laneId = laneId;
             this.spanId = spanId;
-            this.parentSpanId = parentSpanId;
             this.remoteParentSpanId = remoteParentSpanId;
             this.source = source;
             this.sourceKey = sourceOf(source).key();
@@ -3154,7 +2469,6 @@ final class RuntimeRegionPlanner {
         final String declaredCallee;
         final long laneId;
         final long spanId;
-        final long parentSpanId;
         final long remoteParentSpanId;
         final SourceRef source;
         final String requestKey;
@@ -3178,8 +2492,7 @@ final class RuntimeRegionPlanner {
                       String correlationId, String attemptId, String half,
                       String threadName, long tid, String method, long callId,
                       long invocationId, String declaredCallee,
-                      long laneId, long spanId,
-                      long parentSpanId, long remoteParentSpanId,
+                      long laneId, long spanId, long remoteParentSpanId,
                       SourceRef source, String requestKey, String requestApi,
                       String producerEndpointId, String producerEndpoint) {
             this.seq = seq;
@@ -3196,7 +2509,6 @@ final class RuntimeRegionPlanner {
             this.declaredCallee = safe(declaredCallee);
             this.laneId = laneId;
             this.spanId = spanId;
-            this.parentSpanId = parentSpanId;
             this.remoteParentSpanId = remoteParentSpanId;
             this.source = source;
             this.requestKey = safe(requestKey);
@@ -3291,33 +2603,6 @@ final class RuntimeRegionPlanner {
             this.receiverObjectId = receiverObjectId;
             this.valueObjectId = valueObjectId;
             this.primitiveValue = safe(primitiveValue);
-        }
-    }
-
-    /** Exact identity observation for one reference-array element access. */
-    static final class ArrayAccessEvent {
-        final long seq;
-        final String kind;
-        final String method;
-        final long callId;
-        final int unitIndex;
-        final String siteId;
-        final int arrayObjectId;
-        final int index;
-        final int elementObjectId;
-        ArrayAccessEvent(long seq, String kind, String method, long callId,
-                         int unitIndex, String siteId, int arrayObjectId,
-                         int index, int elementObjectId) {
-            this.seq = seq;
-            this.kind = safe(kind);
-            this.method = safe(method);
-            this.callId = callId;
-            this.unitIndex = unitIndex;
-            this.siteId = unitIndex >= 0 && !this.method.isEmpty()
-                    ? SiteId.of(this.method, unitIndex) : safe(siteId);
-            this.arrayObjectId = arrayObjectId;
-            this.index = index;
-            this.elementObjectId = elementObjectId;
         }
     }
 

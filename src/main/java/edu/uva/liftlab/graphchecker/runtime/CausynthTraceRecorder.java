@@ -145,7 +145,8 @@ public final class CausynthTraceRecorder {
                         "refined_dataflow_edges.jsonl.gz")
                         : new File(configuredRefined.trim());
                 aggregateStateTrace(directory, graph, candidateSkeletons,
-                        refinedGraph, test, planOutputDirectory);
+                        refinedGraph, test, planOutputDirectory,
+                        new File(requiredArg(params, "recording-gaps")));
             }
         } catch (Throwable throwable) {
             System.err.println("Failed to aggregate Causynth runtime trace: "
@@ -217,7 +218,7 @@ public final class CausynthTraceRecorder {
                 new RuntimeRegionPlanner.MethodEvent(id, testName,
                         threadName, tid, method, objectId,
                         runtimeType(receiver), id, parentCallId, parentSiteId,
-                        context.laneId, context.spanId, context.parentSpanId,
+                        context.laneId, context.spanId,
                         context.remoteParentSpanId, context.source,
                         receiverAttributed,
                         context.requestKey, context.requestApi, address);
@@ -356,7 +357,7 @@ public final class CausynthTraceRecorder {
                 new RuntimeRegionPlanner.MethodEvent(id, testName,
                         threadName, thread.getId(), method, 0, "", id,
                         parentCallId, 0L, context.laneId, context.spanId,
-                        context.parentSpanId, context.remoteParentSpanId,
+                        context.remoteParentSpanId,
                         context.source, receiverAttributed,
                         context.requestKey, context.requestApi);
         if (!contextOnlyConcolicReplay) {
@@ -592,11 +593,6 @@ public final class CausynthTraceRecorder {
     }
 
     /** Removes an exceptionally exiting lite activation without trace output. */
-    public static void throwActiveMethodLite() {
-        throwActiveMethodLite(null);
-    }
-
-    /** Throwable-shaped overload used by the existing catch-all instrumenter. */
     public static void throwActiveMethodLite(Throwable ignored) {
         exitActiveMethodLite("CALL_SITE_THROW");
     }
@@ -623,30 +619,6 @@ public final class CausynthTraceRecorder {
                         receiverObjectId, valueObjectId, primitiveValue);
         synchronized (LOCK) {
             writeFieldTraceLine(event);
-        }
-    }
-
-    /** Records one exact aaload/aastore of a reference-array element. */
-    public static void recordArrayElement(String kind, String method,
-                                          int unitIndex, Object array,
-                                          int index, Object element) {
-        if (method == null || !("ARRAY_READ".equals(kind)
-                || "ARRAY_WRITE".equals(kind))) {
-            return;
-        }
-        initialize();
-        if (contextOnlyConcolicReplay) {
-            return;
-        }
-        long id = EVENT_COUNTER.incrementAndGet();
-        ActiveCall activeCall = ACTIVE_CALLS.get().peek();
-        RuntimeRegionPlanner.ArrayAccessEvent event =
-                new RuntimeRegionPlanner.ArrayAccessEvent(id, kind, method,
-                        activeCall == null ? 0L : activeCall.callId,
-                        unitIndex, SiteId.render(method, unitIndex),
-                        identity(array), index, identity(element));
-        synchronized (LOCK) {
-            writeArrayTraceLine(event);
         }
     }
 
@@ -833,7 +805,7 @@ public final class CausynthTraceRecorder {
                         site == null ? 0L : site.invocationId,
                         site == null ? "" : site.declaredCallee,
                         context.laneId, context.spanId,
-                        context.parentSpanId, context.remoteParentSpanId,
+                        context.remoteParentSpanId,
                         context.source, context.requestKey,
                         context.requestApi,
                         producer == null ? "" : producer.id(),
@@ -1313,9 +1285,12 @@ public final class CausynthTraceRecorder {
 
     private static void aggregateStateTrace(
             File directory, File candidateGraph, File selectedSkeletons,
-            File refinedGraph, String test, File planOutputDirectory)
+            File refinedGraph, String test, File planOutputDirectory,
+            File recordingGaps)
             throws IOException {
         synchronized (LOCK) {
+            List<Map<String, Object>> earlierPassGaps =
+                    readRecordingGaps(recordingGaps);
             clearInMemoryTrace();
             requireClosedTrace(new File(directory,
                     "streaming_trace_manifest.json"));
@@ -1349,12 +1324,9 @@ public final class CausynthTraceRecorder {
                             trace.fields,
                             refinedGraph.toPath());
             // The refined rows returned by the builder are normalized to the
-            // exact JSONL round-trip domain, so the flow index and the
-            // finalizer see precisely what re-reading the artifact would
-            // produce, without parsing the multi-hundred-MB file twice more.
-            RuntimeRegionPlanner.RefinedFlowIndex refinedFlowIndex =
-                    RuntimeRegionPlanner.buildFlowIndex(refinement.rows,
-                            refinedGraph);
+            // exact JSONL round-trip domain, so the finalizer sees precisely
+            // what re-reading the artifact would produce, without parsing
+            // the multi-hundred-MB file twice more.
             RuntimeSelectedRegionFinalizer.Result closure =
                     RuntimeSelectedRegionFinalizer.finalizeRegions(
                     refinement.rows, skeletons,
@@ -1374,7 +1346,10 @@ public final class CausynthTraceRecorder {
             List<Map<String, Object>> planGaps =
                     new ArrayList<>(closure.gaps);
             planGaps.addAll(trace.lineageGaps);
-            writeRuntimeRegionPlans(planOutputDirectory, refinedFlowIndex,
+            // And the earlier recording pass's, which had no plan of its
+            // own to carry them: one workload, one gap list.
+            planGaps.addAll(earlierPassGaps);
+            writeRuntimeRegionPlans(planOutputDirectory,
                     closure.regions, closure.regionEdges, trace,
                     activationGraph.runtimeInstances, planGaps);
         }
@@ -1477,7 +1452,76 @@ public final class CausynthTraceRecorder {
             }
             writeSelectedSkeletons(candidateSkeletons, skeletons,
                     graph.runtimeInstances);
+            writeRecordingGaps(outputDirectory, trace.lineageGaps);
         }
+    }
+
+    /**
+     * The name a recording pass publishes its own stated gaps under.
+     *
+     * <p>A pass with no plan artifact still states its refusals: the
+     * REGION_SKELETON aggregation writes what it parsed here and the
+     * REGION_STATE aggregation -- the pass that publishes the plan -- files
+     * them with its own.  Before this channel existed, a gap pass 1 stated
+     * lived only in a trace file nothing read again.</p>
+     */
+    static final String RECORDING_GAPS_FILE = "recording_gaps.jsonl";
+
+    private static void writeRecordingGaps(
+            File directory, List<Map<String, Object>> gaps)
+            throws IOException {
+        StringBuilder text = new StringBuilder();
+        for (Map<String, Object> gap : gaps) {
+            text.append(objectWithoutNulls(
+                    "schemaVersion", gap.get("schemaVersion"),
+                    "kind", gap.get("kind"),
+                    "cls", gap.get("cls"),
+                    "subject", gap.get("subject"),
+                    "detail", gap.get("detail")));
+            text.append('\n');
+        }
+        writeFile(new File(directory, RECORDING_GAPS_FILE), text.toString());
+    }
+
+    /**
+     * The earlier recording pass's gap rows, in the plan-gap shape {@code
+     * parseTraceLine} builds, refusing rather than defaulting: the file is
+     * an artifact the earlier pass wrote, so its absence is a broken
+     * pipeline and not an empty gap list.
+     */
+    private static List<Map<String, Object>> readRecordingGaps(File file)
+            throws IOException {
+        if (file == null || String.valueOf(file).trim().isEmpty()) {
+            throw new IOException("--recording-gaps is required: the plan "
+                    + "states the gaps of every recording pass");
+        }
+        if (!file.isFile()) {
+            throw new IOException("no recording gap artifact at " + file
+                    + "; the earlier recording pass must publish "
+                    + RECORDING_GAPS_FILE + " before the plan is written");
+        }
+        List<Map<String, Object>> gaps = new ArrayList<>();
+        ConcurrentHashMap<String, String> pool = new ConcurrentHashMap<>();
+        try (BufferedReader reader = Files.newBufferedReader(file.toPath(),
+                StandardCharsets.UTF_8)) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                if (line.trim().isEmpty()) continue;
+                FlatJsonRow row = FlatJsonRow.parse(line, pool);
+                if (row == null) {
+                    throw new IOException("Malformed recording gap row in "
+                            + file + ": " + line);
+                }
+                Map<String, Object> gap = new LinkedHashMap<>();
+                gap.put("schemaVersion", row.intValue("schemaVersion", 1));
+                gap.put("kind", row.stringValue("kind"));
+                gap.put("cls", row.stringValue("cls"));
+                gap.put("subject", row.stringValue("subject"));
+                gap.put("detail", row.stringValue("detail"));
+                gaps.add(gap);
+            }
+        }
+        return gaps;
     }
 
     /**
@@ -1836,11 +1880,6 @@ public final class CausynthTraceRecorder {
 
     /** Number of worker threads used by offline trace aggregation parsing. */
     private static int aggregationThreads() {
-        int configured = Integer.getInteger(
-                "causynth.aggregate.threads", 0);
-        if (configured > 0) {
-            return Math.min(configured, 32);
-        }
         return Math.max(1, Math.min(8,
                 Runtime.getRuntime().availableProcessors() - 2));
     }
@@ -1921,6 +1960,9 @@ public final class CausynthTraceRecorder {
             trace.execution.addAll(part.execution);
             trace.protocol.addAll(part.protocol);
             trace.sources.addAll(part.sources);
+            // Every list the parse fills: a gap the recording stated and
+            // this merge dropped is a refusal nobody hears about.
+            trace.lineageGaps.addAll(part.lineageGaps);
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
             throw new IOException("trace parse interrupted", interrupted);
@@ -1977,7 +2019,6 @@ public final class CausynthTraceRecorder {
                     row.longValue("parentSiteId", 0L),
                     row.longValue("laneId", 0L),
                     row.longValue("spanId", 0L),
-                    row.longValue("parentSpanId", 0L),
                     row.longValue("remoteParentSpanId", 0L),
                     sourceRef(row),
                     row.longValue("receiverAttributed", 0L) != 0L,
@@ -2015,7 +2056,6 @@ public final class CausynthTraceRecorder {
                     row.stringValue("declaredCallee"),
                     row.longValue("laneId", 0L),
                     row.longValue("spanId", 0L),
-                    row.longValue("parentSpanId", 0L),
                     row.longValue("remoteParentSpanId", 0L),
                     sourceRef(row), row.stringValue("requestKey"),
                     row.stringValue("requestApi"),
@@ -2029,9 +2069,6 @@ public final class CausynthTraceRecorder {
             gap.put("subject", row.stringValue("subject"));
             gap.put("detail", row.stringValue("detail"));
             trace.lineageGaps.add(gap);
-        } else if (PROTOCOL_NOTE_EVENT.equals(eventKind)) {
-            // Recognised, and deliberately not a protocol event.
-            return;
         } else if ("SOURCE_REGISTER".equals(eventKind)
                 || "SOURCE_ALIAS".equals(eventKind)
                 || "SOURCE_RESTART".equals(eventKind)) {
@@ -2090,7 +2127,6 @@ public final class CausynthTraceRecorder {
                 "parentSiteId", event.parentSiteId,
                 "laneId", event.laneId,
                 "spanId", event.spanId,
-                "parentSpanId", event.parentSpanId,
                 "remoteParentSpanId", event.remoteParentSpanId,
                 "sourceKind", sourceKind(event.source),
                 "sourceRole", sourceRole(event.source),
@@ -2127,29 +2163,18 @@ public final class CausynthTraceRecorder {
                 "primitiveValue", event.primitiveValue);
     }
 
-    private static void writeArrayTraceLine(
-            RuntimeRegionPlanner.ArrayAccessEvent event) {
-        if (!recordingEnabled) return;
-        writeTraceRow(
-                "schemaVersion", 3,
-                "event", event.kind,
-                "seq", event.seq,
-                "method", event.method,
-                "callId", event.callId,
-                "siteId", event.siteId,
-                "unitIndex", event.unitIndex,
-                "arrayObjectId", event.arrayObjectId,
-                "arrayIndex", event.index,
-                "elementObjectId", event.elementObjectId);
-    }
-
-    /** The row kind one recorded protocol leg is written under. */
-    static final String PROTOCOL_NOTE_EVENT = "EXCHANGE_NOTE";
-
+    /**
+     * The row kind one recorded protocol leg is written under.  A leg is a
+     * SEND or a RECEIVE and nothing else -- {@link #recordExchange} refuses
+     * every other direction by name before an event exists -- so a third
+     * spelling here would be a row kind no parse branch reads.
+     */
     static String protocolEventKind(String direction) {
         if ("SEND".equals(direction)) return "EXCHANGE_SEND";
         if ("RECEIVE".equals(direction)) return "EXCHANGE_RECEIVE";
-        return PROTOCOL_NOTE_EVENT;
+        throw new IllegalStateException("EXCHANGE_DIRECTION_UNSTATED: "
+                + "a protocol leg states SEND or RECEIVE, not "
+                + direction);
     }
 
     private static void writeProtocolTraceLine(
@@ -2159,11 +2184,6 @@ public final class CausynthTraceRecorder {
         writeTraceRow(
                 "schemaVersion", 3,
                 "event", kind,
-                // The stated direction of a non-boundary row, kept as the
-                // application named it: a handoff gap and a lifecycle note
-                // are two different notes and must not merge into one kind.
-                "noteKind", PROTOCOL_NOTE_EVENT.equals(kind)
-                        ? event.direction : null,
                 "seq", event.seq,
                 "transport", event.transport,
                 "correlationId", event.correlationId,
@@ -2177,7 +2197,6 @@ public final class CausynthTraceRecorder {
                 "declaredCallee", event.declaredCallee,
                 "laneId", event.laneId,
                 "spanId", event.spanId,
-                "parentSpanId", event.parentSpanId,
                 "remoteParentSpanId", event.remoteParentSpanId,
                 "sourceKind", sourceKind(event.source),
                 "sourceRole", sourceRole(event.source),
@@ -2294,13 +2313,13 @@ public final class CausynthTraceRecorder {
 
     /** Binds frozen static regions to concrete same-thread invocations. */
     private static void writeRuntimeRegionPlans(
-            File directory, RuntimeRegionPlanner.RefinedFlowIndex flowIndex,
+            File directory,
             List<Map<String, Object>> regions,
             List<Map<String, Object>> regionEdges, TraceData trace,
             Collection<Map<String, Object>> runtimeSeeds,
             Collection<Map<String, Object>> planGaps) throws IOException {
         writeFile(new File(directory, "concolic_region_plan.jsonl"),
-                RuntimeRegionPlanner.plan(regions, regionEdges, flowIndex,
+                RuntimeRegionPlanner.plan(regions, regionEdges,
                         "runtime region closure",
                         "runtime region edge closure",
                         runtimeSeeds, trace.methods, trace.execution,

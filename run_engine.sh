@@ -581,7 +581,6 @@ do_analyze() {
     edu.uva.liftlab.graphchecker.GraphCheckerMain \
     "${input_flag}" "${project_classes_dir}" \
     -x "${project_classpath}" \
-    -C "${config_file}" \
     -o "${analysis_classes_dir}"
 }
 
@@ -689,6 +688,9 @@ do_regions() {
     --output-dir "${skeleton_pass}" \
     --test "${trace_test}"
   require_file "runtime-selected region skeletons" "${selected_skeletons}"
+  # The gaps pass 1 stated; the state pass files them with its own, so an
+  # absent artifact is a plan with a silently short gap list.
+  require_file "pass-1 recording gaps" "${skeleton_pass}/recording_gaps.jsonl"
 
   # Preserve pass-1 evidence and leave the configured trace directory clean
   # for the state pass.
@@ -726,6 +728,7 @@ do_workload() {
       --candidate-graph "${candidate_graph}" \
       --region-skeletons "${selected_skeletons}" \
       --refined-graph "${refined_graph}" \
+      --recording-gaps "${trace_dir}/skeleton-pass/recording_gaps.jsonl" \
       --test "${trace_test}"
   )
 }

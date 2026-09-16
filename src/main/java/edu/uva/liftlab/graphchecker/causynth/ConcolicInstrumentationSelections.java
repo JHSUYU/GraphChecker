@@ -809,14 +809,6 @@ public final class ConcolicInstrumentationSelections {
     }
 
 
-    private static int totalSize(Map<?, ? extends Collection<?>> byKey) {
-        int total = 0;
-        for (Collection<?> values : byKey.values()) {
-            total += values.size();
-        }
-        return total;
-    }
-
     private static <K, V> void mergeSets(Map<K, Set<V>> into,
                                          Map<K, Set<V>> from) {
         for (Map.Entry<K, Set<V>> entry : from.entrySet()) {
