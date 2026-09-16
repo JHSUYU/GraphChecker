@@ -919,12 +919,19 @@ public final class Composer {
      * <ol>
      *   <li>an obligation answered the mint: that value;</li>
      *   <li>otherwise, where the recording states which producer endpoint
-     *       delivered it, that producer's arm is attested, and its
-     *       expression mentions a root the case may move: the arm's
-     *       expression.  The consumer's literal is a CONSEQUENCE of that
-     *       root's recorded value, and pinning it would pin the root on
-     *       every such path (R-READ);</li>
-     *   <li>otherwise the arrival this session recorded.</li>
+     *       delivered it and that producer's arm is ATTESTED: the arm's
+     *       expression.  The consumer's literal is a CONSEQUENCE of what
+     *       the producer's own run decided, and pinning it would pin that
+     *       run on every such path (R-READ).  No further condition -- the
+     *       delivered expression need not mention a movable root, because
+     *       the freedom in a handoff is which world the producer was in
+     *       (P2);</li>
+     *   <li>otherwise the arrival this session recorded.  MEASURED
+     *       UNREACHABLE on both frozen corpora: hdfs-17960 campaign #8
+     *       states no attach row at all, and every one of hdfs-11741
+     *       campaign #4's 616 attach rows names a producer endpoint the
+     *       seed exported at, so {@code attestedExports} is non-empty for
+     *       all of them.</li>
      * </ol>
      */
     private List<String> handoffReads(String session,
@@ -1873,10 +1880,12 @@ public final class Composer {
             // were ASKED is what a claim's polarity is about, and a clock
             // nothing names is a clock no claim can be made about.  One
             // row per CELL, with the counts: on hdfs-11741 it is all 13
-            // cells, because the occurrences that read a clock reach the
-            // anchor's composition only through arms whose producer ran
-            // concretely, and an unattested arm states what it delivered
-            // and no path condition.
+            // cells, and the reason is pi_p and not attestation -- the
+            // occurrences that read a clock are the WRITERS the anchor's
+            // state joins reach (dn1 REGION.ba3902cd, 10 to 13 decisions
+            // in every session), and pi_p carried the anchor occurrence's
+            // own decisions alone, so no clock-bearing conjunct was ever
+            // in any path.
             gap(GapKind.DECLARATION_MISSING, GapClass.DIAGNOSTIC,
                     cell.getKey(), cell.getValue().size()
                             + " sessions' decisions read this clock and no "
@@ -2131,20 +2140,6 @@ public final class Composer {
         }
         return found;
     }
-
-    /** Whether any root the case may move occurs in this term. */
-    private boolean movableRoot(String term) {
-        for (Map.Entry<String, List<RootMintRow>> entry
-                : corpus.roots().entrySet()) {
-            RootMintRow row = corpus.anyRoot(entry.getKey());
-            if (row == null || !row.declared()) continue;
-            RootDomain domain = domainOf(row);
-            if (domain.pinned() && row.kind() != RootKind.MARKER) continue;
-            if (SmtLowering.mentions(term, row.symbol())) return true;
-        }
-        return false;
-    }
-
 
     /**
      * Whether a published term names something nothing declares.
