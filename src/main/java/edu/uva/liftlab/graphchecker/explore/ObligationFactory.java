@@ -9,6 +9,7 @@ import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.GapRow;
 import edu.uva.liftlab.graphchecker.contract.Obligation;
 import edu.uva.liftlab.graphchecker.contract.ObligationResult;
+import edu.uva.liftlab.graphchecker.contract.RootMintRow;
 import edu.uva.liftlab.graphchecker.contract.Task;
 import edu.uva.liftlab.graphchecker.contract.Verdict;
 
@@ -116,18 +117,37 @@ public final class ObligationFactory {
          * adds it to the instant it reads for itself.</p>
          */
         public final Map<String, String> clockDeltas;
+        /**
+         * root id -> the OCCURRENCE the recording mints that root at,
+         * rendered, for every root this model assigns.
+         *
+         * <p>THE FOCUSED SET is the flipped path's occurrence, its factor
+         * members and these: a replay plants an assignment AT THE MINT
+         * ({@code ConcolicRegionRuntime#focusedRootValue}, which asks only
+         * on a focused occurrence), so a mint that runs unfocused reads the
+         * recording's value under an obligation asking for another one.
+         * 31 of the 80 focus rows the 11741 campaign #2 wrote assign {@code
+         * HDFS.BLOCK_KEY.SERIAL_NO} while their focused set is entirely on
+         * {@code hdfs-11741/balancer#epoch0} or a DataNode, and the mint is
+         * nn0's {@code REGION.aaa1cfd7} ({@code updateKeys}): every one of
+         * them ran the recorded 182907, and the composer refusing "the mint
+         * states 182907 and the obligation assigns 182910" was the second
+         * statement of that, not the first.</p>
+         */
+        public final Map<String, String> rootMints;
         public final List<GapRow> gaps;
 
         private Outcome(String obligationId, String taskId,
                         Obligation obligation, ObligationResult result,
                         String smt2, Map<String, String> clockDeltas,
-                        List<GapRow> gaps) {
+                        Map<String, String> rootMints, List<GapRow> gaps) {
             this.obligationId = obligationId;
             this.taskId = taskId;
             this.obligation = obligation;
             this.result = result;
             this.smt2 = smt2;
             this.clockDeltas = Collections.unmodifiableMap(clockDeltas);
+            this.rootMints = Collections.unmodifiableMap(rootMints);
             this.gaps = Collections.unmodifiableList(gaps);
         }
 
@@ -142,6 +162,10 @@ public final class ObligationFactory {
 
     /** No clock was moved, which is every outcome but a satisfied one. */
     private static final Map<String, String> NO_SKEW =
+            Collections.<String, String>emptyMap();
+
+    /** Nothing is planted, which is every outcome but a satisfied one. */
+    private static final Map<String, String> NO_MINTS =
             Collections.<String, String>emptyMap();
 
     /** {@code model - recorded} as a decimal, or "" if either is not one. */
@@ -311,7 +335,7 @@ public final class ObligationFactory {
             return new Outcome(id, candidate.task.taskId(), null,
                     ObligationResult.of(id, Verdict.NOT_ADMITTED, "",
                             "the query was refused: " + built.refusal),
-                    "", NO_SKEW, gaps);
+                    "", NO_SKEW, NO_MINTS, gaps);
         }
         long budget = timeoutMillis <= 0 ? Z3.DEFAULT_TIMEOUT_MILLIS
                 : timeoutMillis;
@@ -328,7 +352,7 @@ public final class ObligationFactory {
             return new Outcome(id, candidate.task.taskId(), null,
                     ObligationResult.of(id, Verdict.NOT_ADMITTED, "",
                             "SOLVER_TIMEOUT after " + budget + "ms"),
-                    query, NO_SKEW, gaps);
+                    query, NO_SKEW, NO_MINTS, gaps);
         }
         // An answer that is neither sat nor unsat is not a verdict about the
         // corpus: an "(error ...)" says z3 could not READ the query and an
@@ -345,7 +369,7 @@ public final class ObligationFactory {
                                     : " " + answer.reason())
                                     + (solver.errors().isEmpty() ? ""
                                     : " " + solver.errors())),
-                    query, NO_SKEW, gaps);
+                    query, NO_SKEW, NO_MINTS, gaps);
         }
         if (!answer.sat()) {
             return new Outcome(id, candidate.task.taskId(), null,
@@ -353,7 +377,7 @@ public final class ObligationFactory {
                             "no world of this corpus takes the other arm at "
                                     + decision.siteId() + "#"
                                     + decision.ordinal()),
-                    query, NO_SKEW, gaps);
+                    query, NO_SKEW, NO_MINTS, gaps);
         }
         Map<String, String> roots = new LinkedHashMap<String, String>();
         for (Map.Entry<String, String> variable
@@ -405,14 +429,57 @@ public final class ObligationFactory {
                     GapKind.ADMISSION_GAP, GapClass.BLOCKING, id, recorded));
             return new Outcome(id, candidate.task.taskId(), null,
                     ObligationResult.of(id, Verdict.NOT_ADMITTED, "",
-                            recorded), query, NO_SKEW, gaps);
+                            recorded), query, NO_SKEW, NO_MINTS, gaps);
+        }
+        // THE FOCUSED SET.  A replay plants an assignment at the MINT of
+        // the root and nowhere else, so the obligation states WHERE every
+        // root it assigns is minted and the focus row lists those
+        // occurrences beside the flipped path's own.  The RECORDING is what
+        // states where: it is the one run of the whole workload the case's
+        // declarations and every planned address are written about, and
+        // exploration already resolves the anchor against it alone
+        // ({@link ExploreMain}).  The window a root may move in is the
+        // flipped path's own business ({@link FlipQuery}) and stays there --
+        // that is a counterfactual about one execution, while an address is
+        // a fact about the workload's shape.
+        //
+        // A root the recording minted nowhere names no occurrence any
+        // replay could be focused on, so the obligation is refused by name
+        // here rather than spending a replay that would read the
+        // recording's value and owe an ASSIGNMENT_UNPLANTED for it.
+        Map<String, String> mints = new LinkedHashMap<String, String>();
+        Set<String> assigned = new LinkedHashSet<String>(roots.keySet());
+        assigned.addAll(clockDeltas.keySet());
+        List<String> unmintable = new ArrayList<String>();
+        for (String rootId : assigned) {
+            RootMintRow mint = corpus.rootOf(corpus.seedSessionId(), rootId);
+            if (mint == null) {
+                unmintable.add(rootId);
+                gaps.add(GapRow.of(candidate.path.sessionId,
+                        GapKind.ASSIGNMENT_UNMINTABLE, GapClass.DIAGNOSTIC,
+                        id, rootId));
+                continue;
+            }
+            mints.put(rootId, mint.occurrence().render());
+        }
+        if (!unmintable.isEmpty()) {
+            return new Outcome(id, candidate.task.taskId(), null,
+                    ObligationResult.of(id, Verdict.NOT_ADMITTED, "",
+                            "ASSIGNMENT_UNMINTABLE: the model assigns "
+                                    + String.join(", ", unmintable)
+                                    + ", which the recording "
+                                    + corpus.seedSessionId()
+                                    + " mints nowhere, so no occurrence of a "
+                                    + "replay can be focused to plant it"),
+                    query, NO_SKEW, NO_MINTS, gaps);
         }
         return new Outcome(id, candidate.task.taskId(), solved,
                 ObligationResult.of(id, Verdict.SAT_MODEL_READY, "",
                         "the flip at " + decision.siteId() + "#"
                                 + decision.ordinal() + " is reachable under "
                                 + roots.size() + " root value(s) and "
-                                + answers.size() + " answered handoff(s)"),
-                query, clockDeltas, gaps);
+                                + answers.size() + " answered handoff(s), "
+                                + "planted at " + mints.size() + " mint(s)"),
+                query, clockDeltas, mints, gaps);
     }
 }

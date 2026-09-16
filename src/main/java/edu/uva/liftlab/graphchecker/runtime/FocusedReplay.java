@@ -48,17 +48,36 @@ public final class FocusedReplay {
     /** The occurrences those tasks turned out to be. */
     private static final Set<String> FOCUSED_OCCURRENCES =
             new LinkedHashSet<String>();
+    /**
+     * The occurrence the recording mints each root this wave assigns at,
+     * rendered, as the focus row's {@code rootMints} states them.
+     *
+     * <p>Focused for the same reason the flipped occurrence is: an
+     * assignment is planted at the MINT and nowhere else
+     * ({@code ConcolicRegionRuntime#focusedRootValue} asks only on a
+     * focused occurrence), so a mint that runs unfocused reads the
+     * recording's value under an obligation that asked for another one --
+     * the {@code ASSIGNMENT_UNPLANTED} 31 of 11741 wave 0/1's obligations
+     * met, their whole focused set being on the balancer while {@code
+     * HDFS.BLOCK_KEY.SERIAL_NO} is minted in nn0's {@code
+     * REGION.aaa1cfd7}.  A focused replay is one run of the whole workload,
+     * so both are focused in the same run.</p>
+     */
+    private static final Set<String> ROOT_MINTS =
+            new LinkedHashSet<String>();
 
     private FocusedReplay() {
     }
 
     /**
-     * Whether this occurrence is the one that runs symbolic.
+     * Whether this occurrence is one of the ones that run symbolic.
      *
-     * <p>The focused occurrence, or one member of the state-connected
-     * factor it is explored with -- writers and readers of one location on
-     * one node, which cannot be explored apart without inventing a write
-     * nobody made.</p>
+     * <p>THE FOCUSED SET, and the one implementation of it: the focused
+     * occurrence, one member of the state-connected factor it is explored
+     * with -- writers and readers of one location on one node, which cannot
+     * be explored apart without inventing a write nobody made -- or the
+     * MINT of a root the obligation assigns ({@link #ROOT_MINTS}), because
+     * a value is planted where the run mints it.</p>
      */
     public static boolean focused(OccurrenceAddress occurrence) {
         load();
@@ -67,7 +86,8 @@ public final class FocusedReplay {
         // the session whose activations are unfocused as the seed.
         if (occurrence == null) return false;
         synchronized (LOCK) {
-            if (FOCUSED_OCCURRENCES.contains(occurrence.render())) {
+            if (FOCUSED_OCCURRENCES.contains(occurrence.render())
+                    || ROOT_MINTS.contains(occurrence.render())) {
                 return true;
             }
         }
@@ -293,8 +313,10 @@ public final class FocusedReplay {
      * pathId}, {@code focused} (the occurrence, rendered), {@code flip} =
      * {siteId, ordinal, outcome}, {@code rootAssignments}, {@code
      * clockDeltas} (root id to the skew to add to this replay's own
-     * reading), {@code answers} (attach endpoint id to value) and {@code
-     * unproducible}.  That row IS
+     * reading), {@code rootMints} (root id to the occurrence the recording
+     * mints it at, which this replay focuses so that the assignment is
+     * planted there), {@code answers} (attach endpoint id to value) and
+     * {@code unproducible}.  That row IS
      * the focused task: the replay applies the assignments at the mints of
      * the focused occurrence, the answers at its attaches, and enforces the
      * flip at the named decision.</p>
@@ -331,6 +353,15 @@ public final class FocusedReplay {
                         strings(row, "answers"),
                         list(row, "unproducible")));
                 CLOCK_DELTAS.putAll(strings(row, "clockDeltas"));
+                // The mint of every assigned root is focused too, by
+                // ADDRESS: the row states where the recording minted it,
+                // and the assignment is planted there.
+                for (Map.Entry<String, String> mint
+                        : strings(row, "rootMints").entrySet()) {
+                    OccurrenceAddress at =
+                            OccurrenceAddress.parse(mint.getValue());
+                    if (at != null) ROOT_MINTS.add(at.render());
+                }
                 FOCUSED_TASKS.add(string(row, "taskId"));
                 // The row states which occurrence it focuses, so the Task
                 // this replay reports against is the recording's, not a stub
@@ -518,6 +549,7 @@ public final class FocusedReplay {
             handedAFocusRow = false;
             focusedTask = null;
             PLANTED.clear();
+            ROOT_MINTS.clear();
             task = null;
             OBLIGATIONS.clear();
             CLOCK_DELTAS.clear();

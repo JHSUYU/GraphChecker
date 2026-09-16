@@ -332,6 +332,17 @@ public class ExploreTest {
         Session seed = new Session(iteration, "s-seed");
         seed.activation(target, false);
         seed.activation(producer, false);
+        // The recording mints the producer's own root: every instrumented
+        // region of the seed runs symbolically ({@code Arms#attested}), so
+        // the rotation that put a serial on the wire minted it.  That row
+        // is also where any replay would PLANT a value of it -- the mint's
+        // occurrence, which the focused set of an obligation assigning this
+        // root has to hold.  Declared, because a serial a rotation moved is
+        // the case's whole hypothesis (11741 declares SERIAL_NO +0..+3):
+        // undeclared it is pinned to this reading, and then no arm a
+        // rotation delivered under another reading is available at all.
+        seed.root(producer, "CASE.SERIAL", "M_SERIAL", RootKind.INTEGRAL,
+                "119992", null, null, true);
         seed.constant("e.119992", "119992");
         seed.export(exported, "e.119992", 11L, "119992");
         seed.attach(attached, "M_HOFF_KEY", "119992", exported);
@@ -366,7 +377,15 @@ public class ExploreTest {
         Path out = tree.newFolder("family-out").toPath();
         Path results = out.resolve("obligation_results.jsonl");
         Path wave0 = out.resolve("obligations-0000");
-        plan(iteration, TARGET_SELECTOR, null, results, wave0, 0);
+        // The case's own declaration, in the spelling a case writes: three
+        // rotations' worth of serial, relative to what the recording read.
+        Path serialDomain = iteration.resolve("root-domains.jsonl");
+        Files.write(serialDomain, Collections.singletonList(
+                "{\"sourceId\":\"CASE.SERIAL\","
+                        + "\"declaredDomainMin\":\"+0\","
+                        + "\"declaredDomainMax\":\"+3\"}"),
+                java.nio.charset.StandardCharsets.UTF_8);
+        plan(iteration, TARGET_SELECTOR, serialDomain, results, wave0, 0);
         List<Obligation> proposed = obligations(wave0);
         // The producer ran symbolically in the rotated session, so it is a
         // task of its own -- the NN rotation is explored as a worker, not as
@@ -382,11 +401,24 @@ public class ExploreTest {
                 sites.contains("After#u9"));
         Obligation consumerFlip = named(proposed, "Lookup#u8");
         assertNotNull("the consumer's own flip is proposed", consumerFlip);
-        Worker worker = solve(iteration, wave0, consumerFlip, out, "w0");
+        Worker worker = solve(iteration, serialDomain, wave0, consumerFlip,
+                out, "w0");
         assertEquals(Verdict.SAT_MODEL_READY, worker.verdict);
         assertTrue("the control is producible",
                 worker.obligation.unproducible().isEmpty());
         assertEquals("119995", worker.obligation.answers().get(attached.id()));
+        // And the value that answer rests on is planted where the RECORDING
+        // mints it, which is the NameNode's rotation and not the consumer
+        // occurrence this obligation flips: the focused set holds both, so
+        // one replay of the whole workload runs the rotation that mints the
+        // serial and the consumer whose guard is flipped.
+        JsonObject answered = RowCodec.readJsonl(worker.directory
+                .resolve(ObligationDir.FOCUSED_TASK)).get(0);
+        assertEquals("119995",
+                worker.obligation.rootAssignments().get("CASE.SERIAL"));
+        assertEquals(producer.render(), answered.getAsJsonObject("rootMints")
+                .get("CASE.SERIAL").getAsString());
+        assertEquals(target.render(), answered.get("focused").getAsString());
 
         // The negative control: a flip that needs a value no producer of this
         // corpus delivers is UNSAT, not answered out of the family.
@@ -501,6 +533,84 @@ public class ExploreTest {
         String value = moved.obligation.rootAssignments().get("CASE.SERIAL");
         assertTrue("free inside [11, 12], and nowhere else: " + value,
                 "11".equals(value) || "12".equals(value));
+
+        // A root the flip depends on is not always minted where the flip
+        // is.  11741's SERIAL_NO is the NameNode's, read by the balancer,
+        // so the FOCUSED SET holds the MINT's occurrence too: an assignment
+        // is planted where the run mints it and nowhere else, and a mint
+        // running unfocused reads the recording's value under an obligation
+        // asking for another one.
+        Path elsewhere = tree.newFolder("minted-elsewhere").toPath();
+        Session across = new Session(elsewhere, "s-seed");
+        across.activation(target, false);
+        across.activation(PRODUCER, false);
+        across.root(PRODUCER, "CASE.SERIAL", "M_SERIAL", RootKind.INTEGRAL,
+                "7", null, null, true);
+        across.decision(target, "Arrival#u8", 1, false, "(> M_SERIAL 10)");
+        across.flush();
+        scopeMap(elsewhere, targetSite("REGION.target", "Throw#u30",
+                "Arrival#u8"));
+        Path elsewhereOut = tree.newFolder("elsewhere-out").toPath();
+        Path elsewhereWave = elsewhereOut.resolve("obligations-0000");
+        Path elsewhereDomains = elsewhere.resolve("root-domains.jsonl");
+        Files.copy(domains, elsewhereDomains);
+        plan(elsewhere, TARGET_SELECTOR, elsewhereDomains,
+                elsewhereOut.resolve("results.jsonl"), elsewhereWave, 0);
+        Worker planted = solve(elsewhere, elsewhereDomains, elsewhereWave,
+                named(obligations(elsewhereWave), "Arrival#u8"),
+                elsewhereOut, "w0");
+        assertEquals(Verdict.SAT_MODEL_READY, planted.verdict);
+        JsonObject plantedRow = RowCodec.readJsonl(planted.directory
+                .resolve(ObligationDir.FOCUSED_TASK)).get(0);
+        assertEquals("the focus row states where the assignment is planted",
+                PRODUCER.render(), plantedRow.getAsJsonObject("rootMints")
+                        .get("CASE.SERIAL").getAsString());
+        assertEquals("which is not the occurrence the flip is about",
+                TARGET.render(), plantedRow.get("focused").getAsString());
+        assertFalse("nor a member of its state-connected factor",
+                plantedRow.getAsJsonArray("factor").toString()
+                        .contains(PRODUCER.render()));
+
+        // And a root the RECORDING minted nowhere names no occurrence any
+        // replay could be focused on, so the obligation is refused by name
+        // rather than run on the recording's own value.
+        Path unminted = tree.newFolder("unminted").toPath();
+        Session recording = new Session(unminted, "s-seed");
+        recording.activation(target, false);
+        recording.flush();
+        Session replayed = new Session(unminted, "s-flip");
+        replayed.activation(target, true);
+        replayed.root(target, "CASE.SERIAL", "M_SERIAL", RootKind.INTEGRAL,
+                "7", null, null, true);
+        replayed.decision(target, "Arrival#u8", 1, false, "(> M_SERIAL 10)");
+        replayed.flush();
+        scopeMap(unminted, targetSite("REGION.target", "Throw#u30",
+                "Arrival#u8"));
+        Path unmintedOut = tree.newFolder("unminted-out").toPath();
+        Path unmintedWave = unmintedOut.resolve("obligations-0000");
+        Path unmintedDomains = unminted.resolve("root-domains.jsonl");
+        Files.copy(domains, unmintedDomains);
+        plan(unminted, TARGET_SELECTOR, unmintedDomains,
+                unmintedOut.resolve("results.jsonl"), unmintedWave, 0);
+        Obligation orphan = named(obligations(unmintedWave), "Arrival#u8");
+        assertNotNull("the flip is proposed before anyone knows the model",
+                orphan);
+        Worker unmintable = solve(unminted, unmintedDomains, unmintedWave,
+                orphan, unmintedOut, "w0");
+        assertEquals(Verdict.NOT_ADMITTED, unmintable.verdict);
+        assertTrue("and no focus row is written for it",
+                RowCodec.readJsonl(unmintable.directory
+                        .resolve(ObligationDir.FOCUSED_TASK)).isEmpty());
+        boolean unmintableNamed = false;
+        for (GapRow gap : RowCodec.readAll(unmintable.directory
+                .resolve("gaps.jsonl"), RowCodec::readGap)) {
+            unmintableNamed |= gap.kind() == GapKind.ASSIGNMENT_UNMINTABLE
+                    && gap.cls() == GapClass.DIAGNOSTIC
+                    && gap.subject().equals(orphan.obligationId())
+                    && gap.detail().equals("CASE.SERIAL");
+        }
+        assertTrue("the obligation is named, and so is the root",
+                unmintableNamed);
 
         // A clock has no domain either, and is not pinned for it: it is free
         // with a floor.  What the focus row states for one is the SKEW the
