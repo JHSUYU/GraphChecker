@@ -113,5 +113,18 @@ public enum GapKind {
      * gap row that made the whole corpus unreadable with a JSON exception
      * instead of a named refusal.</p>
      */
-    SESSION_INCOMPLETE
+    SESSION_INCOMPLETE,
+    /**
+     * A root the obligation assigns that no mint of the replay planted.
+     *
+     * <p>BLOCKING for the session that met it, and stated by the REPLAY: the
+     * run read the recording's value where the wave asked for another one,
+     * so it did not run what was asked.  11741 session
+     * 869a1f0e285913ad-6f59cb84 is the case -- {@code
+     * HDFS.BLOCK_KEY.SERIAL_NO} was minted through the field path, which
+     * never asked for the wave's value -- and the composer meeting it as
+     * "the mint states 182907 and the obligation assigns 182910" was the
+     * second statement of the same fact, not the first.</p>
+     */
+    ASSIGNMENT_UNPLANTED
 }

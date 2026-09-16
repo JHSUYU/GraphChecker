@@ -1503,13 +1503,14 @@ public final class ConcolicRegionRuntime {
                     // value is put into it, which the VM states inside the
                     // expression it then carries;                     continue;
                 }
-                JsonElement expression = mintExactFieldLeaf(active, action,
+                MintedLeaf minted = mintExactFieldLeaf(active, action,
                         api, leafOwner, leafFieldSignature, action.symbol,
                         value);
-                if (expression == null) continue;
+                if (minted == null) continue;
                 active.recordManualSymbolization(action, action.symbol,
-                        action.fieldPath, leafFieldSignature, expression,
-                        true, false, recordedScalar(value));
+                        action.fieldPath, leafFieldSignature,
+                        minted.expression, true, false,
+                        minted.recordedValue);
             } catch (Throwable throwable) {
             }
         }
@@ -2267,6 +2268,12 @@ public final class ConcolicRegionRuntime {
         if (value.isEmpty()) return false;
         if (!active.mintIsPlaceable(owner)) return false;
         if (writeModeledField(owner, fieldSignature, descriptor, value)) {
+            // Filed where the value was WRITTEN: a mint that asked and could
+            // not place the write kept the recording's value, and the
+            // session says so with ASSIGNMENT_UNPLANTED rather than letting
+            // the composer be the first to notice.
+            edu.uva.liftlab.graphchecker.runtime.FocusedReplay.planted(
+                    sourceId);
             return true;
         }
         RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind
@@ -3980,20 +3987,21 @@ public final class ConcolicRegionRuntime {
                     && containerValue(value)) {
                 return;
             }
-            JsonElement expression = mintExactFieldLeaf(active, action, api,
+            MintedLeaf minted = mintExactFieldLeaf(active, action, api,
                     owner, leafFieldSignature, symbol, value);
-            if (expression == null) return;
+            if (minted == null) return;
             active.recordManualSymbolization(action, symbol, exactFieldPath,
-                    leafFieldSignature, expression, true, false,
-                    recordedScalar(value));
+                    leafFieldSignature, minted.expression, true, false,
+                    minted.recordedValue);
         } catch (Throwable throwable) {
         }
     }
 
     /**
-     * Mints the scalar leaf of one exact field read and returns the
-     * expression the VM carries afterwards, or {@code null} when the leaf
-     * has no resolvable declaration (filed as unresolved).
+     * Mints the scalar leaf of one exact field read: the expression the VM
+     * carries afterwards and what the row may state as recorded, or {@code
+     * null} when the leaf has no resolvable declaration (filed as
+     * unresolved).
      *
      * <p>One rule, one implementation.  The receiver-field hook
      * ({@link #symbolizeField}) and the heap-field hook
@@ -4005,8 +4013,17 @@ public final class ConcolicRegionRuntime {
      * {@code <AtomicInteger: int value>} region input stayed concrete: the
      * accessor materialization is a {@code HEAP_OBJECT_FIELD} action, so
      * it arrived at the hook that refused.</p>
+     *
+     * <p>And the wave's value reaches a field mint HERE, through the same
+     * one decision every other mint asks ({@link #focusedRootValue}).  It
+     * did not: a declared INTEGRAL cell minted through this path published
+     * the value the recording read, whatever the obligation assigned, and
+     * the composer met the contradiction instead of the plant -- on 11741
+     * session {@code 869a1f0e285913ad-6f59cb84} the mint of {@code
+     * HDFS.BLOCK_KEY.SERIAL_NO} states 182907 under an obligation assigning
+     * 182910, which is one BLOCKING refusal per such root.</p>
      */
-    private static JsonElement mintExactFieldLeaf(
+    private static MintedLeaf mintExactFieldLeaf(
             ActiveRegion active, SymbolizeAction action,
             ConcolicVmBroker api, Object owner, String leafFieldSignature,
             String symbol, Object value) throws Exception {
@@ -4014,13 +4031,53 @@ public final class ConcolicRegionRuntime {
         if (field == null) {
             return null;
         }
+        String descriptor = javaTypeDescriptor(field.type());
+        String recorded = fieldMintRecordedValue(active, action, owner,
+                leafFieldSignature, descriptor, value);
+        // The plant wrote into the cell this mint stands on, so the leaf the
+        // VM is handed is what the region will now read, not what it held.
+        Object held = recorded.isEmpty()
+                ? readExactField(owner, leafFieldSignature) : value;
+        if (held == MissingValue.INSTANCE) held = value;
         api.symbolizeExactField(owner, leafFieldSignature,
                 manualMintLabel(symbol, active.activation.occurrenceId,
                         JavaPrimitiveSmtSemantics.primitive(
                                 field.type())));
         ensurePathRecordingStarted(active);
-        return engineExpression(api.fieldExpression(owner, field.owner(),
-                field.name(), javaTypeDescriptor(field.type()), value));
+        return new MintedLeaf(engineExpression(api.fieldExpression(owner,
+                field.owner(), field.name(), descriptor, held)), recorded);
+    }
+
+    /** One field leaf's mint: what the VM carries, and what the row may say. */
+    private static final class MintedLeaf {
+        private final JsonElement expression;
+        private final String recordedValue;
+
+        private MintedLeaf(JsonElement expression, String recordedValue) {
+            this.expression = expression;
+            this.recordedValue = recordedValue;
+        }
+    }
+
+    /**
+     * Plants the wave's value at one field mint and states what that mint
+     * may publish as recorded: {@code ""} when it planted.
+     *
+     * <p>ONE PLACE DECIDES A MINT'S VALUE, and every mint path asks it: the
+     * manual primitive ({@link #materializePrimitiveValue}), the configured
+     * source ({@link #symbolizeConfiguredSourceField}), the clock (a skew,
+     * inside {@link #focusedRootValue}) and now the manual field.  A path
+     * that minted a declared root without asking left the replay running the
+     * recording's value under an obligation that asked for another one --
+     * and publishing that value as {@code recordedValue} is how a
+     * counterfactual becomes the recording.</p>
+     */
+    static String fieldMintRecordedValue(
+            ActiveRegion active, SymbolizeAction action, Object owner,
+            String leafFieldSignature, String descriptor, Object value) {
+        return applyFocusedRootAssignment(active, action.symbol, owner,
+                leafFieldSignature, descriptor)
+                ? "" : recordedScalar(value);
     }
 
     private static void symbolizeFieldPath(ActiveRegion active,
@@ -4097,6 +4154,10 @@ public final class ConcolicRegionRuntime {
                     // value back, and publishing that as "recorded" is how a
                     // counterfactual becomes the recording.
                     assigned.isEmpty() ? recordedScalar(concrete) : "");
+            if (!assigned.isEmpty()) {
+                edu.uva.liftlab.graphchecker.runtime.FocusedReplay.planted(
+                        action.symbol);
+            }
             return fresh;
         } catch (Throwable throwable) {
             return concrete;

@@ -400,6 +400,53 @@ public final class FocusedReplay {
         return ids;
     }
 
+    /**
+     * Records that one mint of this replay planted the wave's value.
+     *
+     * <p>Filed where the value was actually WRITTEN, not where it was
+     * decided: {@link #rootAssignment} is asked at every mint of the focused
+     * occurrence and a mint that asked and could not place the write kept the
+     * recording's value, which is a different fact.</p>
+     */
+    public static void planted(String rootId) {
+        load();
+        String id = Text.safe(rootId);
+        if (id.isEmpty()) return;
+        synchronized (LOCK) {
+            PLANTED.add(id);
+        }
+    }
+
+    /**
+     * Every root the obligation assigns that no mint of this replay planted.
+     *
+     * <p>BLOCKING for this session, and stated by the REPLAY: a replay that
+     * ran the recording's value under an obligation that asked for another
+     * one did not run what was asked, and the composer meeting that as "the
+     * mint states X and the obligation assigns Y" is the second statement of
+     * it, not the first.  11741 session 869a1f0e285913ad-6f59cb84 is the
+     * case: SERIAL_NO was minted through the field path, which never asked
+     * for the wave's value at all.</p>
+     */
+    public static Map<String, String> unplantedAssignments() {
+        load();
+        Map<String, String> unplanted = new LinkedHashMap<String, String>();
+        synchronized (LOCK) {
+            for (Obligation obligation : OBLIGATIONS) {
+                if (obligation.rootAssignments() == null) continue;
+                for (Map.Entry<String, String> assigned
+                        : obligation.rootAssignments().entrySet()) {
+                    String id = Text.safe(assigned.getKey());
+                    if (id.isEmpty() || PLANTED.contains(id)) continue;
+                    unplanted.put(id, assigned.getValue());
+                }
+            }
+        }
+        return unplanted;
+    }
+
+    /** The roots a mint of this replay wrote the wave's value into. */
+    private static final Set<String> PLANTED = new LinkedHashSet<String>();
 
     /** Where the focus row is, or null when this replay was handed none. */
     private static Path focusRow() {
@@ -470,6 +517,7 @@ public final class FocusedReplay {
             loaded = false;
             handedAFocusRow = false;
             focusedTask = null;
+            PLANTED.clear();
             task = null;
             OBLIGATIONS.clear();
             CLOCK_DELTAS.clear();

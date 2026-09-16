@@ -797,6 +797,20 @@ public final class RowRuntime {
     public static void closeSession() {
         SessionPublisher session = publisher;
         if (session == null) return;
+        // What the replay RAN the obligation's roots at, stated by the
+        // replay.  A root the obligation assigns that no mint planted means
+        // this run read the recording's value where the wave asked for
+        // another one, so it did not run what was asked -- and the composer
+        // meeting that as "the mint states X and the obligation assigns Y"
+        // is the second statement of it, not the first.
+        for (Map.Entry<String, String> unplanted
+                : FocusedReplay.unplantedAssignments().entrySet()) {
+            gap(GapKind.ASSIGNMENT_UNPLANTED, GapClass.BLOCKING,
+                    unplanted.getKey(),
+                    "the obligation assigns this root \"" + unplanted
+                            .getValue() + "\" and no mint of this replay"
+                            + " planted it");
+        }
         List<ObligationResult> results =
                 FocusedReplay.results(sessionId());
         for (ObligationResult result : results) {
