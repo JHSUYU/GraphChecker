@@ -222,7 +222,7 @@ public class ContractTest {
         clocks.put("clock_dn0", 1757700000000L);
 
         ActivationRow activation = ActivationRow.of("s-17897-1", anchor,
-                "task-1", true, true, "DataXceiver-7#41", export);
+                "task-1", true, true, "DataXceiver-7#41");
         // The session's own event order: export, attach, write, decision,
         // read, anchor -- the numbers a producer's condition is cut at.
         DecisionRow decision = DecisionRow.of("s-17897-1", 12L, anchor,
@@ -257,16 +257,18 @@ public class ContractTest {
         // starter, and says the region was never instrumented -- so a reader
         // that finds no decisions for it knows why.
         ActivationRow ambient = ActivationRow.of("s-17897-1", producer, "",
-                false, false, "KeyManager-1#13", null);
+                false, false, "KeyManager-1#13");
         ActivationRow ambientBack = RowCodec.readActivation(
                 reline(RowCodec.writeActivation(ambient)));
         assertEquals(ambient, ambientBack);
         assertFalse(ambientBack.instrumented());
-        assertNull(ambientBack.startedBy());
         assertEquals("KeyManager-1#13", ambientBack.threadKey());
-        assertEquals(export.id(), RowCodec.readActivation(
-                reline(RowCodec.writeActivation(activation)))
-                .startedBy().id());
+        // An activation row states the thread it ran on and nothing about
+        // what started that thread: the thread-creation edge had no
+        // producer and is gone, so the row schema states none either.
+        assertFalse("no activation row carries a thread starter",
+                reline(RowCodec.writeActivation(activation))
+                        .has("startedBy"));
         assertEquals(decision, RowCodec.readDecision(
                 reline(RowCodec.writeDecision(decision))));
         assertEquals(exported, RowCodec.readExport(
@@ -520,7 +522,7 @@ public class ContractTest {
                 "INSTANCE_FIELD/2#24" + RowInvariants.PLACEHOLDER + "0:READ",
                 site, 0);
         rows.activations.add(ActivationRow.of("s-gate", rows.anchor, "t", false,
-                true, "DataXceiver-7#41", null));
+                true, "DataXceiver-7#41"));
         // A marker the session minted true, and a term that is true at it.
         rows.roots.add(RootMintRow.of("s-gate", 2L, rows.anchor,
                 "CASE.MARKER", "M_Z_marker", RootKind.MARKER, "true", null,

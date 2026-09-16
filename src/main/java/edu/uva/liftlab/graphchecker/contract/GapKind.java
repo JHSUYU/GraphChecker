@@ -141,5 +141,25 @@ public enum GapKind {
      * that reached a mint and could not place the write: this one never
      * gets that far, and the wave spends nothing on it.</p>
      */
-    ASSIGNMENT_UNMINTABLE
+    ASSIGNMENT_UNMINTABLE,
+    /**
+     * One composed path whose own conjunction is unsatisfiable before any
+     * root is considered.
+     *
+     * <p>BLOCKING, and raised at DECIDE.  A path is a question -- "is there
+     * a world of this corpus in which this path reaches the fatal arm?" --
+     * and a question that is unsat with every root free is not a question
+     * about the roots at all: it is a contradiction the composition built.
+     * The one that shipped for two rounds was pi_p carrying the anchor
+     * decision's RECORDED polarity while phi_p asserted its complement, so
+     * every path whose session did not observe the fatal arm was refuted by
+     * construction -- all 7 paths of hdfs-11741 campaign #4 and 17960's own
+     * third path, with z3's core naming only {@code path_fatal__*} and
+     * {@code fatal_target} and no valuation assertion at all.  A claim
+     * whose polarity rests on such a refutation states "the recording
+     * decides the arm" about a formula no root could have satisfied, which
+     * is why this is BLOCKING and why {@code polarityDecides} is withheld
+     * beside it.</p>
+     */
+    PATH_SELF_CONTRADICTORY
 }

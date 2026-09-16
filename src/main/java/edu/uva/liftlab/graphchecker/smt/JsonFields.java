@@ -9,7 +9,21 @@ import com.google.gson.JsonObject;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
-/** Forgiving accessors for optional fields inside an already admitted row. */
+/**
+ * Accessors for OPTIONAL fields inside an already admitted row.
+ *
+ * <p>Optional means "the row may state it or state nothing": an absent
+ * member and an explicit null are a stated absence, and the caller's
+ * fallback is what the contract says such a row means.  A member that IS
+ * there but does not hold the kind of value the field is -- an object where
+ * a string belongs, a string where a number belongs, a number too wide for
+ * its field -- is neither of those.  The ROWS ARE THE AUTHORITY: such a
+ * member is a row-invariant violation, so it is refused by name here and
+ * never read as the fallback, which is how a malformed recording used to
+ * reach the composer as a default it never wrote.  A refusal raised while a
+ * session is being read lands as {@code SESSION_INCOMPLETE} (BLOCKING) with
+ * the file and the reason ({@code contract.SessionReader.read}).</p>
+ */
 public final class JsonFields {
     /**
      * The one writer every artifact row is serialized through.
@@ -27,6 +41,23 @@ public final class JsonFields {
             .disableHtmlEscaping().serializeNulls().create();
 
     private JsonFields() {
+    }
+
+    /**
+     * The one refusal every accessor here raises.
+     *
+     * <p>Named with the field, the value as written and what the field is,
+     * because the reader that catches it can only say as much about the row
+     * as this message does.</p>
+     */
+    private static IllegalArgumentException malformed(
+            String field, JsonElement value, String expected,
+            RuntimeException cause) {
+        return new IllegalArgumentException("row field " + field
+                + " states " + value + ", which is not " + expected
+                + ": a member a row states is the authority, so a value of"
+                + " the wrong kind is a row-invariant violation and never"
+                + " the field's absent value", cause);
     }
 
     /**
@@ -60,43 +91,43 @@ public final class JsonFields {
 
     public static String optionalString(JsonObject object, String field) {
         JsonElement value = object == null ? null : object.get(field);
+        if (value == null || value.isJsonNull()) return "";
         try {
-            return value == null || value.isJsonNull()
-                    ? "" : value.getAsString();
-        } catch (RuntimeException malformed) {
-            return "";
+            return value.getAsString();
+        } catch (RuntimeException notAString) {
+            throw malformed(field, value, "a string", notAString);
         }
     }
 
     public static boolean optionalBool(JsonObject object, String field,
                                        boolean fallback) {
         JsonElement value = object == null ? null : object.get(field);
+        if (value == null || value.isJsonNull()) return fallback;
         try {
-            return value == null || value.isJsonNull()
-                    ? fallback : value.getAsBoolean();
-        } catch (RuntimeException malformed) {
-            return fallback;
+            return value.getAsBoolean();
+        } catch (RuntimeException notABoolean) {
+            throw malformed(field, value, "a boolean", notABoolean);
         }
     }
 
     public static int optionalInteger(JsonObject object, String field, int fallback) {
         JsonElement value = object == null ? null : object.get(field);
+        if (value == null || value.isJsonNull()) return fallback;
         try {
-            return value == null || value.isJsonNull()
-                    ? fallback : value.getAsInt();
-        } catch (RuntimeException malformed) {
-            return fallback;
+            return value.getAsInt();
+        } catch (RuntimeException notAnInteger) {
+            throw malformed(field, value, "an int", notAnInteger);
         }
     }
 
     public static long optionalLongInteger(JsonObject object, String field,
                                            long fallback) {
         JsonElement value = object == null ? null : object.get(field);
+        if (value == null || value.isJsonNull()) return fallback;
         try {
-            return value == null || value.isJsonNull()
-                    ? fallback : value.getAsLong();
-        } catch (RuntimeException malformed) {
-            return fallback;
+            return value.getAsLong();
+        } catch (RuntimeException notALong) {
+            throw malformed(field, value, "a long", notALong);
         }
     }
 
@@ -138,13 +169,16 @@ public final class JsonFields {
     public static int exactInteger(JsonObject object, String field,
                             int fallback) {
         JsonElement value = object == null ? null : object.get(field);
-        try {
-            return value == null || !value.isJsonPrimitive()
-                    || !value.getAsJsonPrimitive().isNumber()
-                    ? fallback : new java.math.BigDecimal(
-                    value.getAsString()).intValueExact();
-        } catch (RuntimeException malformed) {
+        if (value == null || !value.isJsonPrimitive()
+                || !value.getAsJsonPrimitive().isNumber()) {
             return fallback;
+        }
+        try {
+            return new java.math.BigDecimal(value.getAsString())
+                    .intValueExact();
+        } catch (RuntimeException notExactlyAnInteger) {
+            throw malformed(field, value,
+                    "an int the field holds exactly", notExactlyAnInteger);
         }
     }
 

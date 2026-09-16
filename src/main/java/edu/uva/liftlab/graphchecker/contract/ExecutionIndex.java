@@ -78,6 +78,7 @@ public final class ExecutionIndex {
         return frames.size();
     }
 
+    /** Whether this index names no frame at all. */
     public boolean isEmpty() {
         return frames.isEmpty();
     }

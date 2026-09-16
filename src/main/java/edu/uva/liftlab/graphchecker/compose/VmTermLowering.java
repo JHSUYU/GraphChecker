@@ -12,12 +12,7 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
 import java.util.ArrayList;
-import java.util.Collection;
-import java.util.Collections;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
-import java.util.function.Consumer;
 
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
@@ -75,12 +70,6 @@ public final class VmTermLowering {
 
         public boolean floating() {
             return this == FLOAT32 || this == FLOAT64;
-        }
-
-        /** The solver's frozen spelling, frozen into its symbol names. */
-        public String replayName() {
-            return this == MAP ? "ASSOCIATIVE"
-                    : this == ARRAY_VALUE ? "INDEXED" : name();
         }
     }
 
@@ -147,7 +136,6 @@ public final class VmTermLowering {
         Sort castSort(String descriptor);
 
         /** The integer this element exactly renders, or a named gap. */
-        RenderedInteger renderedInteger(JsonElement element, String origin);
 
         /** States {@link #javaIntRange} for one parsed integer. */
         void assertJavaIntRange(Term integer);
@@ -192,9 +180,6 @@ public final class VmTermLowering {
         /** A String whose Java nullness this lowering does not know. */
         JAVA_STRING_NULLNESS_UNKNOWN("JavaStringNullnessUnknown", false),
 
-        /** A term no container cell can carry. */
-        CANNOT_BOX("CannotBox", false),
-
         // Expression dispatch.
         ABSENT_EXPRESSION("ABSENT_EXPRESSION", false),
         MALFORMED_NOT("MalformedNot", false),
@@ -213,11 +198,6 @@ public final class VmTermLowering {
         public String composedSubject(String origin, String detail) {
             return join(composed, composedNamesOrigin ? origin : "", detail);
         }
-
-        public String solverSubject(String origin, String detail) {
-            return join(origin, name(), detail);
-        }
-
         private static String join(String... parts) {
             StringBuilder subject = new StringBuilder();
             for (String part : parts) {
@@ -317,9 +297,8 @@ public final class VmTermLowering {
                     + " (str.++ \"-\" (str.from_int (- i)))"
                     + " (str.from_int i)))";
 
-    /** The declarations every lowered query opens with.  The two callers
-     *  froze nullRef on either side of the Value datatype; inert to SMT. */
-    public static List<String> preamble(boolean nullRefBeforeValueDatatype) {
+    /** The declarations every lowered query opens with. */
+    public static List<String> preamble() {
         List<String> lines = new ArrayList<>();
         // Both lowerers spell Java integral arithmetic as two's-complement
         // wrapping, so either query is dense in nested Int
@@ -332,32 +311,27 @@ public final class VmTermLowering {
         // rather than in one caller.
         lines.add("(set-option :smt.arith.solver 2)");
         lines.add("(declare-sort Ref 0)");
-        if (nullRefBeforeValueDatatype) {
-            lines.add("(declare-const nullRef Ref)");
-        }
-        lines.add(ContainerSmtCodec.valueDatatypeDeclaration());
-        if (!nullRefBeforeValueDatatype) {
-            lines.add("(declare-const nullRef Ref)");
-        }
-        lines.addAll(ContainerSmtCodec.preamble());
+        lines.add(ContainerStateModel.valueDatatypeDeclaration());
+        lines.add("(declare-const nullRef Ref)");
+        lines.addAll(ContainerStateModel.preamble());
         return lines;
     }
 
 
-    /** The integer an element exactly renders, or the gap that stopped it. */
-    public static final class RenderedInteger {
-        public final Term integer;
-        public final String gap;
-
-        public RenderedInteger(Term integer, String gap) {
-            this.integer = integer;
-            this.gap = gap == null ? "" : gap;
-        }
-    }
-
-    /** Integer.parseInt inverts Integer.toString only on an element that is
-     *  that rendering and nothing else, in decimal, and in Java's int range
-     *  - which is then stated as the parse's definedness. */
+    /**
+     * {@code Integer.parseInt} -- a REFUSAL, by name, once.
+     *
+     * <p>A parse is the inverse of a rendering only on an element that is
+     * that rendering and nothing else, in decimal, and in Java's int
+     * range.  Nothing in this lowering shows that an argument is one: the
+     * one {@code Policy} there is answered every such question with the gap
+     * {@code ROUNDTRIP_NOT_PROVED_NO_SPLIT_EVIDENCE}, so the round-trip
+     * half of this routine -- {@code RenderedInteger}, {@code
+     * Policy.renderedInteger}, the {@code ROUNDTRIP_SOURCE_NOT_INT} branch
+     * and the int-range assertion -- was an interface no implementation
+     * ever came back through.  The arity and radix gaps stay ahead of it,
+     * because they name a different thing about the call.</p>
+     */
     public static Term parseIntTerm(Policy policy, JsonObject expression,
                              String origin) {
         String name = "java/lang/Integer.parseInt";
@@ -372,18 +346,8 @@ public final class VmTermLowering {
                         Sort.INT);
             }
         }
-        RenderedInteger rendered = policy.renderedInteger(params.get(0),
-                origin);
-        if (!rendered.gap.isEmpty()) {
-            return codecGap(policy, name, rendered.gap, origin, Sort.INT);
-        }
-        Term integer = rendered.integer;
-        if (integer == null || integer.sort != Sort.INT) {
-            return codecGap(policy, name, "ROUNDTRIP_SOURCE_NOT_INT", origin,
-                    Sort.INT);
-        }
-        policy.assertJavaIntRange(integer);
-        return integer;
+        return codecGap(policy, name,
+                "ROUNDTRIP_NOT_PROVED_NO_SPLIT_EVIDENCE", origin, Sort.INT);
     }
 
     /** The conjunction of these predicates, with the trivial ones and the
@@ -502,18 +466,5 @@ public final class VmTermLowering {
         public boolean isNullReference() {
             return sort == Sort.REF && "nullRef".equals(text);
         }
-    }
-
-    /** One read-time use: its activation and its candidate writers. */
-    public static final class GuardedReadUse {
-        public final String activation;
-        public final List<String> selectors;
-
-        public GuardedReadUse(String activation, Collection<String> selectors) {
-            this.activation = activation;
-            this.selectors = new ArrayList<>(selectors);
-            Collections.sort(this.selectors);
-        }
-
     }
 }

@@ -292,8 +292,8 @@ public class ComposerTest {
             boolean flip = "true".equals(each[4]);
             Session session = new Session(three, each[0], flip);
             session.occurrence = saver;
-            session.activation(saver, "thread#saver", null, flip);
-            session.activation(creating, "thread#create", null, false);
+            session.activation(saver, "thread#saver", flip);
+            session.activation(creating, "thread#create", false);
             session.marker(each[1]);
             // createSnapshot: 0 + 1, then that version + 1.
             session.expression("EXPR.000000000000c050", binary("+",
@@ -310,7 +310,7 @@ public class ComposerTest {
             if (flip) {
                 // deleteSnapshot ran the un-ordered arm -- the branch this
                 // case's marker gates -- and decremented twice.
-                session.activation(deleting, "thread#delete", null, false);
+                session.activation(deleting, "thread#delete", false);
                 session.decision(deleting, "delete#u27", false, MARKER);
                 session.expression("EXPR.000000000000c125", binary("-",
                         read("INSTANCE_FIELD", owner, "value", 77L, "I"),
@@ -469,7 +469,7 @@ public class ComposerTest {
             Session session = new Session(guarded, each[0],
                     "true".equals(each[2]));
             session.activation(PRODUCER, "thread#" + PRODUCER.regionId(),
-                    null, "true".equals(each[2]), true);
+                    "true".equals(each[2]), true);
             session.marker(each[1]);
             session.expression("EXPR.v1.plain", integer("I", 7L));
             session.decision(PRODUCER, "nn#u1", "(or " + MARKER + " (not "
@@ -1736,15 +1736,20 @@ public class ComposerTest {
                 composition.body().contains(MARKER));
         assertTrue("the arm it did not take is the negation",
                 composition.body().contains("(not " + MARKER + ")"));
-        // The shift, quantifier-free: no indexed_insert application is
-        // left, the elements are a store chain, and the index carries the
-        // operation's own definedness -- List.add(i, v) requires
-        // 0 <= i <= size and throws otherwise, so an out-of-range index is
-        // an execution that threw and not a path that reached the anchor.
-        assertFalse("no list mutation lowers to a quantified relation "
-                        + "any more: " + composition.body(),
-                composition.body().contains("(indexed_insert ")
-                        || composition.body().contains("(indexed_remove "));
+        // The shift, quantifier-free: the elements are a store chain, and
+        // the index carries the operation's own definedness -- List.add(i,
+        // v) requires 0 <= i <= size and throws otherwise, so an
+        // out-of-range index is an execution that threw and not a path
+        // that reached the anchor.  The rule is now structural rather than
+        // a property of this query: the quantified whole-state relations
+        // are not APPLIED and are no longer DECLARED either, so no query
+        // can name them and none carries the (exists ...) that made
+        // 17960's moved valuation come back "(incomplete quantifiers)".
+        assertFalse("no list mutation lowers to a quantified relation, and "
+                        + "the preamble declares none: " + composition.body(),
+                composition.body().contains("indexed_insert")
+                        || composition.body().contains("indexed_remove")
+                        || composition.body().contains("indexed_contains"));
         assertTrue("each insertion carries the operation's own "
                         + "definedness, at the size the recording stated: "
                         + composition.body(),
@@ -1908,7 +1913,7 @@ public class ComposerTest {
     }
 
     // ------------------------------------------------------------------
-    // 14. One thread is one order, and a thread's starter is before it.
+    // 14. One thread is one order, and nothing else orders an activation.
     // ------------------------------------------------------------------
 
     @Test
@@ -1928,13 +1933,11 @@ public class ComposerTest {
 
         Session session = new Session(iteration, "s0", false);
         session.occurrence = earlier;
-        // Two activations of one thread, and a third on a thread the first
-        // of them started.
-        session.activation(earlier, "thread#actor", null, false);
-        session.activation(later, "thread#actor", null, false);
-        Endpoint starter = Endpoint.of(earlier, "Thread#start#2:NEW",
-                at("start#1", 0), 0);
-        session.activation(started, "thread#task", starter, false);
+        // Two activations of one thread, and a third on a thread of its
+        // own that no message and no thread key places.
+        session.activation(earlier, "thread#actor", false);
+        session.activation(later, "thread#actor", false);
+        session.activation(started, "thread#task", false);
         session.marker("false");
         session.expression("EXPR.v1.k", constant("false"));
         Endpoint first = Endpoint.of(earlier, "Actor#put#3:WRITE",
@@ -1958,10 +1961,19 @@ public class ComposerTest {
                 rule.ancestor(second, secondAt, first, firstAt, "s0"));
         assertFalse("so two activations of one thread never interleave",
                 rule.concurrent(earlier, later, "s0"));
-        assertFalse("what started a thread is before everything on it",
+        // A third occurrence on a thread of its own: the message chain does
+        // not reach it and no recording states a thread-creation edge
+        // (contract.ActivationRow), so nothing orders it and the rows say
+        // CONCURRENT.  The thread-start edge used to be read off
+        // ActivationRow.startedBy, which every producer passed as null --
+        // so this was already the answer for every real corpus, stated by
+        // a walk that could not fire.
+        assertTrue("an occurrence nothing places is concurrent with all",
                 rule.concurrent(earlier, started, "s0"));
-        assertTrue("and the direction says which way",
-                rule.ancestor(first, firstAt, third, thirdAt, "s0"));
+        assertFalse("and no ordering is invented for it either way",
+                rule.ancestor(first, firstAt, third, thirdAt, "s0")
+                        || rule.ancestor(third, thirdAt, first, firstAt,
+                        "s0"));
         // Attestation: instrumented and symbolic in this session -- the seed
         // -- with no decision anywhere in it.
         assertTrue("a symbolic straight-line region is attested",
@@ -2229,20 +2241,19 @@ public class ComposerTest {
          * true of a thread and not of this fixture.</p>
          */
         void activation(OccurrenceAddress at) {
-            activation(at, "thread#" + at.regionId(), null, explored);
+            activation(at, "thread#" + at.regionId(), explored);
         }
 
         void activation(OccurrenceAddress at, String threadKey,
-                        Endpoint startedBy, boolean focused) {
-            activation(at, threadKey, startedBy, focused, true);
+                        boolean focused) {
+            activation(at, threadKey, focused, true);
         }
 
         void activation(OccurrenceAddress at, String threadKey,
-                        Endpoint startedBy, boolean focused,
-                        boolean instrumented) {
+                        boolean focused, boolean instrumented) {
             activations.add(ActivationRow.of(id, at,
                     explored ? "task-flip" : "task-seed", focused,
-                    instrumented, threadKey, startedBy));
+                    instrumented, threadKey));
         }
 
         void marker(String recorded) {
@@ -2392,7 +2403,7 @@ public class ComposerTest {
         Session session = new Session(iteration, id, explored);
         // A producer the replay did not instrument is one that ran
         // concretely: it states its delivery and attests nothing.
-        session.activation(PRODUCER, "thread#" + PRODUCER.regionId(), null,
+        session.activation(PRODUCER, "thread#" + PRODUCER.regionId(),
                 explored, attestProducer);
         session.marker(marker);
         session.expression(ref, symbol(MARKER, "Z"));

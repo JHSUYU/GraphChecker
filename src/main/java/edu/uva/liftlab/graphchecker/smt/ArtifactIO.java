@@ -1,8 +1,6 @@
 package edu.uva.liftlab.graphchecker.smt;
 
-import edu.uva.liftlab.graphchecker.smt.JsonFields;
 
-import com.google.gson.Gson;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
@@ -21,10 +19,8 @@ import java.nio.file.StandardCopyOption;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
-import java.util.Map;
 import java.util.zip.GZIPInputStream;
 
 /**

@@ -1,7 +1,6 @@
 package edu.uva.liftlab.graphchecker.compose;
 
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
-import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics;
 import edu.uva.liftlab.graphchecker.smt.Z3;
 
 import edu.uva.liftlab.graphchecker.contract.Claim;
@@ -182,6 +181,17 @@ public final class ClaimPolicy {
         }
         Outcome recorded = outcomes.isEmpty() ? null : outcomes.get(0);
 
+        // A PATH IS A QUESTION, NOT A CONTRADICTION.  Asked of each
+        // disjunct on its own, with every root FREE: unsat here says
+        // nothing about the roots, because there was no world of the
+        // formula to put them in.  The one that shipped for two rounds was
+        // pi_p carrying the anchor decision's recorded polarity beside
+        // phi_p's complement of it (Composer, rule P1), and it is exactly
+        // the shape no other check could see: every valuation came back
+        // unsat, the claim read that as "the recording decides the arm",
+        // and z3's core named only path_fatal__* and fatal_target.
+        selfContradictory(composition, solver, gaps);
+
         // A valuation the solver did not decide is NAMED, and it blocks.
         // Neither a witness nor a refutation is closed over it, and the
         // manifest used to carry it as a bare `state=unknown` with nothing
@@ -228,8 +238,18 @@ public final class ClaimPolicy {
                             + "took the healthy arm"));
         }
 
+        // POLARITY DECIDES ONLY WHEN A VALUATION IS WHY.  "The run as it
+        // happened does not reach the fatal arm" is a statement about the
+        // recorded ROOTS, so the refutation has to rest on them: an unsat
+        // whose core names no valuation assertion refuted the path's own
+        // conjunction and would have refuted it under every valuation
+        // there is.  11741 campaign #4 reported polarityDecides=true off a
+        // core of path_fatal__0..6 + fatal_target, which is a statement
+        // about the composition and not about the recording; 17960's
+        // core names valuation__M_Z_field_SRC_... and still decides.
         boolean polarityDecides = recorded != null
-                && recorded.answer().unsat();
+                && recorded.answer().unsat()
+                && namesAValuation(recorded.answer().core());
 
         // 1. A declared root moved inside its domain.
         //
@@ -354,6 +374,77 @@ public final class ClaimPolicy {
                 recorded == null ? 0 : recorded.valuation().ordinal(),
                 Collections.<String, String>emptyMap(), polarityDecides,
                 gaps), outcomes);
+    }
+
+    /**
+     * The label every valuation pin carries ({@code Composer}'s spelling).
+     */
+    private static final String VALUATION_LABEL = "valuation__";
+
+    /** Whether one unsat core rests on a valuation pin at all. */
+    private static boolean namesAValuation(List<String> core) {
+        if (core == null) return false;
+        for (String label : core) {
+            if (label != null && label.startsWith(VALUATION_LABEL)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Every path whose OWN conjunction is unsatisfiable, named.
+     *
+     * <p>One solver run per disjunct, with its selector forced and no
+     * valuation assertion at all.  BLOCKING, because a composition that
+     * refutes its own paths answers every question about every root the
+     * same way and states nothing: the claim it publishes is about the
+     * formula it built.</p>
+     */
+    private static void selfContradictory(Composer.Composition composition,
+                                          Z3 solver, List<GapRow> gaps) {
+        int inert = 0;
+        for (Composer.Disjunct disjunct : composition.disjuncts()) {
+            List<String> forced = new ArrayList<String>();
+            forced.add("(assert (! " + disjunct.selector()
+                    + " :named path_alone__"
+                    + ArtifactIO.digest(disjunct.path().pathId, 10) + "))");
+            Z3.Answer answer = solver.ask(composition.query(forced),
+                    Collections.<String>emptyList(), false);
+            if (!answer.unsat()) continue;
+            inert++;
+            // DIAGNOSTIC per path, because one such path is a statement
+            // about THAT path: no world of this corpus reaches the fatal
+            // arm along it, which may be a fact about the corpus and not a
+            // defect -- 17960's third path is fatalObserved=false and its
+            // container joins refute the fatal read whatever the marker
+            // is, while the claim is found on the other two.  What is NOT
+            // allowed is a claim whose POLARITY rests on such a
+            // refutation, and that is asked separately (#namesAValuation).
+            gaps.add(GapRow.of(disjunct.path().sessionId,
+                    GapKind.PATH_SELF_CONTRADICTORY, GapClass.DIAGNOSTIC,
+                    disjunct.path().pathId,
+                    "this path's own conjunction is unsatisfiable with "
+                            + "every root free, so no valuation of any root "
+                            + "could have satisfied it and it contributes "
+                            + "nothing to the disjunction; z3 closed on "
+                            + answer.core()));
+        }
+        if (inert > 0 && inert == composition.disjuncts().size()) {
+            // EVERY path inert: the disjunction is false in every world of
+            // the corpus, so the composition answers every question about
+            // every root the same way and states nothing at all.  That is
+            // the shape that shipped for two rounds on hdfs-11741 and the
+            // one no other check could see.
+            gaps.add(GapRow.of(Composer.COMPOSITION,
+                    GapKind.PATH_SELF_CONTRADICTORY, GapClass.BLOCKING,
+                    composition.anchor().render(),
+                    "all " + inert + " composed paths are unsatisfiable "
+                            + "with every root free, so this composition is "
+                            + "false in every world of the corpus and its "
+                            + "verdicts are about the formula it built, not "
+                            + "about the recording"));
+        }
     }
 
     /**

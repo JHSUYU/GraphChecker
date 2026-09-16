@@ -342,10 +342,10 @@ public final class Arms {
      * class owns exactly one cell, so there the class names the storage.
      *
      * <p>The other spelling the runtime writes is a CLASS on a heap
-     * location -- {@code RowPublication.fieldLocation:540} and
-     * {@code fieldAccess:1031}, for a declared-field read whose VM
-     * location key is absent -- and a class aliases every instance of it
-     * at once.  Such a read keeps the delivery its own run gave it and is
+     * location -- {@code runtime.SharedStateCapture} /
+     * {@code runtime.RowPlaceholderMint}, for a declared-field read whose
+     * VM location key is absent -- and a class aliases every instance of
+     * it at once.  Such a read keeps the delivery its own run gave it and is
      * offered no alternative writers: choosing among "writers" that may be
      * writes to a different object is how a witness is invented rather
      * than found.
@@ -451,11 +451,11 @@ public final class Arms {
                         .producerEndpointId());
                 continue;
             }
-            // A context the chain cannot name may still be placed by the
-            // thread that started it.
-            Endpoint starter = startedBy(session, at);
-            if (starter == null) return false;
-            at = starter.occurrence();
+            // A context the chain cannot name places nothing.  The
+            // thread-creation edge would place it, and no recording
+            // states one (contract.ActivationRow), so this is where the
+            // walk ends.
+            return false;
         }
         return false;
     }
@@ -519,14 +519,6 @@ public final class Arms {
                 ? "" : activation.threadKey();
     }
 
-    /** The endpoint that started the thread this occurrence ran on. */
-    private Endpoint startedBy(String session,
-                               OccurrenceAddress occurrence) {
-        ActivationRow activation = rows.activationOf(session,
-                occurrence.id());
-        return activation == null ? null : activation.startedBy();
-    }
-
     /** Whether {@code older} starts the request {@code younger} runs in. */
     private boolean ancestor(String session, OccurrenceAddress older,
                              OccurrenceAddress younger) {
@@ -539,12 +531,11 @@ public final class Arms {
                         at.context()).producerEndpointId());
             }
             if (parent == null) {
-                // The thread this one runs on was started by somebody, and
-                // everything that somebody had already done is before it.
-                Endpoint starter = startedBy(session, at);
-                if (starter == null) return false;
-                if (starter.occurrence().id().equals(older.id())) return true;
-                parent = starter.occurrence();
+                // Nothing in the rows places this occurrence: the message
+                // chain does not reach it and no recording states a
+                // thread-creation edge (contract.ActivationRow), so no
+                // ordering is established and the answer is "not before".
+                return false;
             } else if (parent.id().equals(older.id())) {
                 return true;
             }

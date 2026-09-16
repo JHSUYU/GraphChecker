@@ -20,9 +20,11 @@ import edu.uva.liftlab.graphchecker.contract.LocationKind;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.Deque;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -424,9 +426,12 @@ public final class SmtLowering extends VmLoweringCore {
     /**
      * One expression of this session, lowered, or a named refusal.
      *
-     * <p>The declarations it answers with are the symbols its own text
-     * names, at the sorts this lowering gave them: a caller that puts the
-     * text in a query of its own declares exactly those and no more.</p>
+     * <p>The text and its SORT, and nothing else: a caller that puts the
+     * text in a query of its own asks {@link #declarations()} for the
+     * names it reaches.  {@code Lowered} used to carry its own copy of
+     * them, filled by running {@link #mentions} over the WHOLE declaration
+     * map on every {@code lower()} -- inside {@code ClosurePlanner}'s fixed
+     * point -- and read by nothing.</p>
      */
     public Lowered lower(String expressionRef) {
         JsonObject expression = expressionRef == null ? null
@@ -443,14 +448,7 @@ public final class SmtLowering extends VmLoweringCore {
             return Lowered.refused(refused.isEmpty()
                     ? "ABSENT_EXPRESSION:" + expressionRef : refused.get(0));
         }
-        Map<String, String> named = new LinkedHashMap<String, String>();
-        for (Map.Entry<String, Sort> declaration
-                : declarations().entrySet()) {
-            if (mentions(value.text, declaration.getKey())) {
-                named.put(declaration.getKey(), declaration.getValue().smt);
-            }
-        }
-        return new Lowered(value.text, value.sort.smt, "", named);
+        return new Lowered(value.text, value.sort.smt, "");
     }
 
     /**
@@ -594,19 +592,15 @@ public final class SmtLowering extends VmLoweringCore {
         private final String text;
         private final String sort;
         private final String refusal;
-        private final Map<String, String> declarations;
 
-        private Lowered(String text, String sort, String refusal,
-                        Map<String, String> declarations) {
+        private Lowered(String text, String sort, String refusal) {
             this.text = text;
             this.sort = sort;
             this.refusal = refusal;
-            this.declarations = Collections.unmodifiableMap(declarations);
         }
 
         private static Lowered refused(String reason) {
-            return new Lowered("", "", reason,
-                    new LinkedHashMap<String, String>());
+            return new Lowered("", "", reason);
         }
 
         public boolean ok() {
@@ -629,11 +623,6 @@ public final class SmtLowering extends VmLoweringCore {
          */
         public String sort() {
             return sort;
-        }
-
-        /** Every symbol the text names, with its SMT sort. */
-        public Map<String, String> declarations() {
-            return declarations;
         }
 
         @Override
@@ -818,13 +807,6 @@ public final class SmtLowering extends VmLoweringCore {
     }
 
     @Override
-    public VmTermLowering.RenderedInteger renderedInteger(
-            JsonElement element, String origin) {
-        return new VmTermLowering.RenderedInteger(null,
-                "ROUNDTRIP_NOT_PROVED_NO_SPLIT_EVIDENCE");
-    }
-
-    @Override
     public void assertJavaIntRange(Term integer) {
         if (integer == null || integer.sort != Sort.INT) return;
         assertJavaIntegralDomain(integer.text, Sort.INT, "I", integer.text);
@@ -921,7 +903,7 @@ public final class SmtLowering extends VmLoweringCore {
      */
     private Term nullLeaf(Sort expected) {
         if (expected == Sort.VALUE) {
-            return Term.of(ContainerSmtCodec.NULL_CELL, Sort.VALUE);
+            return Term.of(ContainerStateModel.NULL_CELL, Sort.VALUE);
         }
         if (expected != null && expected.containerState()) {
             return unstated("NullComparedToContainerState:" + expected,
@@ -1360,7 +1342,7 @@ public final class SmtLowering extends VmLoweringCore {
             @Override
             public ContainerSmtCodec.Term unbox(
                     ContainerSmtCodec.Term value, String javaType) {
-                return name(ContainerSmtCodec.unboxValue(value, javaType,
+                return name(ContainerStateModel.unboxValue(value, javaType,
                         VmTermLowering.unboxedCellSort(
                                 JavaSmtSorts.sortOfJava(javaType)), this));
             }
@@ -1378,7 +1360,7 @@ public final class SmtLowering extends VmLoweringCore {
     }
 
     private static String boxed(Term value, String javaType) {
-        String integral = ContainerSmtCodec.boxIntegral(value.text, javaType);
+        String integral = ContainerStateModel.boxIntegral(value.text, javaType);
         if (!integral.isEmpty()) return integral;
         switch (value.sort) {
             case BOOL: return "(VBool " + value.text + ")";
@@ -1637,7 +1619,7 @@ public final class SmtLowering extends VmLoweringCore {
     public static Set<String> preambleNames() {
         if (PREAMBLE_NAMES.isEmpty()) {
             List<String> lines = new ArrayList<String>(
-                    VmTermLowering.preamble(false));
+                    VmTermLowering.preamble());
             lines.add(VmTermLowering.JAVA_INT_TO_STRING);
             lines.add(JavaPrimitiveSmtSemantics.INT_WRAP_DEFINITION);
             lines.add(JavaPrimitiveSmtSemantics.LONG_WRAP_DEFINITION);
@@ -2214,12 +2196,77 @@ public final class SmtLowering extends VmLoweringCore {
                 && first != '#';
     }
 
+    /**
+     * The preamble lines one query NEEDS: every line but a {@code
+     * define-fun} nothing in it reaches.
+     *
+     * <p>A preamble is fixed and a query is not.  Stating the whole
+     * container model in every query put the associative model -- five
+     * array fields, {@code assoc_put}'s five stores and {@code
+     * assoc_remove}'s two lambdas -- into 17960's queries, which name no
+     * associative term at all, and the indexed model into 11741's, which
+     * name no indexed term at all.  Those are not neutral: a lambda and a
+     * datatype the query never applies still put the goal in a fragment
+     * z3 decides differently, and a reader of a published query cannot
+     * tell a definition the formula rests on from one it does not.</p>
+     *
+     * <p>Only a {@code define-fun} is dropped.  A sort, a datatype and a
+     * {@code declare-fun} are what the query's own SORTS are written in,
+     * so dropping one would change what its declarations mean; a
+     * definition is reached or it is inert.  Reachability is transitive
+     * through definition bodies -- {@code assoc_put} names {@code
+     * assoc_has} -- and it is the same notion {@link #reachedBy} applies
+     * to declarations, over the same tokenizer ({@link #names}).</p>
+     */
+    public static List<String> reachedPreamble(List<String> preamble,
+                                               Iterable<String> texts) {
+        Map<String, String> definition = new LinkedHashMap<String, String>();
+        for (String line : preamble) {
+            if (line == null || !line.startsWith("(define-fun")) continue;
+            for (String name : declaredIn(line)) definition.put(name, line);
+        }
+        Set<String> reached = new LinkedHashSet<String>();
+        Deque<String> pending = new ArrayDeque<String>();
+        if (texts != null) {
+            for (String text : texts) {
+                for (String token : names(text)) {
+                    if (definition.containsKey(token)
+                            && reached.add(token)) {
+                        pending.push(token);
+                    }
+                }
+            }
+        }
+        while (!pending.isEmpty()) {
+            for (String token : names(definition.get(pending.pop()))) {
+                if (definition.containsKey(token) && reached.add(token)) {
+                    pending.push(token);
+                }
+            }
+        }
+        List<String> lines = new ArrayList<String>();
+        for (String line : preamble) {
+            if (line == null) continue;
+            if (!line.startsWith("(define-fun")) {
+                lines.add(line);
+                continue;
+            }
+            for (String name : declaredIn(line)) {
+                if (reached.contains(name)) {
+                    lines.add(line);
+                    break;
+                }
+            }
+        }
+        return lines;
+    }
+
     /** The preamble alone: the sorts and functions, no declaration. */
     public List<String> preambleLines() {
         List<String> lines = new ArrayList<String>();
         lines.add("(set-logic ALL)");
         lines.add("(set-option :produce-models true)");
-        for (String line : VmTermLowering.preamble(false)) lines.add(line);
+        for (String line : VmTermLowering.preamble()) lines.add(line);
         if (usesJavaIntString) {
             lines.add(VmTermLowering.JAVA_INT_TO_STRING);
         }
@@ -2228,24 +2275,18 @@ public final class SmtLowering extends VmLoweringCore {
         return lines;
     }
 
-    private void appendPreamble(StringBuilder query) {
+    private void appendPreamble(StringBuilder query,
+                                Iterable<String> texts) {
         query.append("; GraphChecker composed query").append('\n');
         // Before the logic and before every assertion: z3 accepts :named
         // annotations without it, but (get-unsat-core) then errors, and a
         // core naming the conjuncts is the whole point of naming them.
         query.append("(set-option :produce-unsat-cores true)").append('\n');
-        query.append("(set-logic ALL)").append('\n');
-        query.append("(set-option :produce-models true)").append('\n');
-        for (String line : VmTermLowering.preamble(false)) {
+        // ONE preamble, and the query states the part of it the query
+        // reaches: #preambleLines is the list, #reachedPreamble the rule.
+        for (String line : reachedPreamble(preambleLines(), texts)) {
             query.append(line).append('\n');
         }
-        if (usesJavaIntString) {
-            query.append(VmTermLowering.JAVA_INT_TO_STRING).append('\n');
-        }
-        query.append(JavaPrimitiveSmtSemantics.INT_WRAP_DEFINITION)
-                .append('\n');
-        query.append(JavaPrimitiveSmtSemantics.LONG_WRAP_DEFINITION)
-                .append('\n');
     }
 
     /** The query body: preamble, declarations, assertions; no check-sat. */
@@ -2275,8 +2316,6 @@ public final class SmtLowering extends VmLoweringCore {
      * appends the one valuation it is asking about.</p>
      */
     public String body(Iterable<String> alsoAsked) {
-        StringBuilder query = new StringBuilder();
-        appendPreamble(query);
         List<String> texts = new ArrayList<String>();
         for (Stated held : assertions) texts.add(held.formula);
         if (alsoAsked != null) {
@@ -2284,7 +2323,18 @@ public final class SmtLowering extends VmLoweringCore {
                 if (text != null && !text.isEmpty()) texts.add(text);
             }
         }
-        for (Declaration declaration : reachedBy(texts)) {
+        // The declarations first, because the PREAMBLE this query needs is
+        // decided by everything the query holds -- a container definition
+        // is named by a declaration's body far more often than by an
+        // assertion (a read of a map lowers to one container_dag__ name).
+        List<Declaration> declared = reachedBy(texts);
+        List<String> reaching = new ArrayList<String>(texts);
+        for (Declaration declaration : declared) {
+            reaching.add(declaration.render());
+        }
+        StringBuilder query = new StringBuilder();
+        appendPreamble(query, reaching);
+        for (Declaration declaration : declared) {
             query.append(declaration.render()).append('\n');
         }
         for (Stated held : assertions) {
@@ -2334,11 +2384,6 @@ public final class SmtLowering extends VmLoweringCore {
     private static boolean simpleCharacter(char value) {
         if (Character.isLetterOrDigit(value)) return true;
         return "~!@$%^&*_-+=<>.?/".indexOf(value) >= 0;
-    }
-
-    /** The whole query, at the assertions it holds. */
-    public String render() {
-        return body() + "(check-sat)\n";
     }
 
     // ------------------------------------------------------------------

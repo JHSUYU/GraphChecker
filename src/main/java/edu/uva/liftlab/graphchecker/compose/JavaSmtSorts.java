@@ -4,7 +4,6 @@ import edu.uva.liftlab.graphchecker.smt.JavaContainerTypes;
 
 import edu.uva.liftlab.graphchecker.compose.VmTermLowering.Sort;
 
-import static edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank;
 
 /**
  * The Java type vocabulary the SMT lowering names, in one place.

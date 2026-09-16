@@ -857,11 +857,11 @@ public abstract class VmLoweringCore implements VmTermLowering.Policy {
     /** Unboxes one container cell by the element's declared Java type. */
     public final Term fromValue(Term value, String javaType, String origin) {
         if (value == null || value.sort != Sort.VALUE) return value;
-        String kind = ContainerSmtCodec.unboxableCellKind(javaType);
+        String kind = ContainerStateModel.unboxableCellKind(javaType);
         if (kind.isEmpty()) return value;
         String defined = and(Arrays.asList(value.precondition,
                 "((_ is " + kind + ") " + value.text + ")"));
-        String integral = ContainerSmtCodec.unboxIntegral(value.text,
+        String integral = ContainerStateModel.unboxIntegral(value.text,
                 javaType);
         if (!integral.isEmpty()) {
             return definedResult(integral, Sort.INT,

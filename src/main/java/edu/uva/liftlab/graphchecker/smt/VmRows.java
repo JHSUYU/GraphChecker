@@ -93,7 +93,21 @@ public final class VmRows {
                 new IdentityHashMap<JsonElement, Boolean>());
         pending.push(expression);
         int steps = 0;
-        while (!pending.isEmpty() && steps++ < MAX_DEPTH * MAX_DEPTH) {
+        while (!pending.isEmpty()) {
+            // THE BUDGET IS A REFUSAL, NOT AN ANSWER.  "false" here means
+            // "the recording published this expression whole", and a walk
+            // that ran out of steps has established no such thing: it has
+            // only stopped looking.  Reading it as false let the lowering
+            // put a free constant where a cut chain was -- the same
+            // fail-open the truncation marker exists to close.
+            if (steps++ >= MAX_DEPTH * MAX_DEPTH) {
+                throw new IllegalStateException("this expression could not"
+                        + " be walked for the serializer's truncation"
+                        + " marker within " + (MAX_DEPTH * MAX_DEPTH)
+                        + " nodes, so whether the recording published it"
+                        + " whole is unstated: a composition may not lower"
+                        + " a value it cannot tell is complete");
+            }
             JsonElement current = pending.pop();
             if (current == null || current.isJsonNull()) continue;
             if (!current.isJsonPrimitive() && !visited.add(current)) continue;

@@ -1,15 +1,12 @@
 package edu.uva.liftlab.graphchecker.smt;
 
-import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
-import java.util.List;
 import java.util.function.Predicate;
 import java.util.regex.Pattern;
 
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.array;
-import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalBool;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 
@@ -178,7 +175,6 @@ public final class VmExpressionIr {
         return raw != null
                 && CANONICAL_MAP_STATE_REFERENCE.matcher(raw).matches();
     }
-
 
 
     public static boolean isJavaParseInt(String name) {

@@ -5,7 +5,6 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 
 import edu.uva.liftlab.graphchecker.contract.ActivationRow;
-import edu.uva.liftlab.graphchecker.contract.CausalContext;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.GapRow;
@@ -33,8 +32,8 @@ import java.util.Set;
  * EXPLORE, one wave: plan the closure, propose the flips still open.
  *
  * <pre>
- *   --sessions &lt;dir&gt;           the corpus (the campaign's own layout), or
- *   --iteration &lt;dir&gt;          its parent, which holds sessions/
+ *   --sessions &lt;dir&gt;           the corpus (the campaign's own layout);
+ *                              its parent is the iteration
  *   --target-occurrence &lt;sel&gt;  the case's declared anchor, a v1 selector,
  *                              and the ONE root of the closure
  *   --results &lt;file&gt;           every ObligationResult the waves before this
@@ -66,17 +65,19 @@ public final class ExploreMain {
 
     public static void main(String[] argv) throws Exception {
         Map<String, String> options = options(argv);
+        // ONE SPELLING PER OPTION.  --sessions names <iteration>/sessions,
+        // so the iteration is its parent; --iteration and --out were
+        // alternate spellings of --sessions and --output-dir, passed by
+        // nothing (run_engine.sh passes --sessions and --output-dir), and
+        // an option with two spellings is an option every reader has to
+        // check both of.
         Path sessions = path(options, "sessions");
-        Path iteration = path(options, "iteration");
-        if (iteration == null && sessions != null) {
-            iteration = sessions.getParent();
+        if (sessions == null) {
+            throw new IllegalArgumentException("Missing --sessions");
         }
-        if (iteration == null) {
-            throw new IllegalArgumentException(
-                    "Missing --sessions (or --iteration)");
-        }
+        Path iteration = sessions.getParent() == null
+                ? sessions : sessions.getParent();
         Path out = path(options, "output-dir");
-        if (out == null) out = path(options, "out");
         if (out == null) {
             throw new IllegalArgumentException("Missing --output-dir");
         }
@@ -505,6 +506,16 @@ public final class ExploreMain {
                 ? null : Paths.get(value);
     }
 
+    /**
+     * One numeric option, or its absent value -- never the default for a
+     * bound that WAS passed.
+     *
+     * <p>A wave planned under {@code --max-tasks 12o} is not the wave
+     * {@code --max-tasks 128} plans, and it is not the wave the default
+     * plans either: reading a mistyped bound as the default proposes a
+     * different obligation set and states nothing about the difference.
+     * A value that is there and is not a number is refused by name.</p>
+     */
     static long number(Map<String, String> options, String name,
                        long fallback) {
         String value = options.get(name);
@@ -512,7 +523,10 @@ public final class ExploreMain {
         try {
             return Long.parseLong(value.trim());
         } catch (NumberFormatException notANumber) {
-            return fallback;
+            throw new IllegalArgumentException("--" + name + " was passed as"
+                    + " \"" + value + "\", which is not a number: a"
+                    + " mistyped bound is refused, never read as the default"
+                    + " " + fallback, notANumber);
         }
     }
 }

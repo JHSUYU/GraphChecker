@@ -12,7 +12,6 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.IdentityHashMap;
@@ -22,6 +21,10 @@ import java.util.Map;
 
 import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics.IntegralWidth;
 
+import static edu.uva.liftlab.graphchecker.compose.ContainerStateModel.NULL_CELL;
+import static edu.uva.liftlab.graphchecker.compose.ContainerStateModel.emptiesState;
+import static edu.uva.liftlab.graphchecker.compose.ContainerStateModel.unboxValue;
+import static edu.uva.liftlab.graphchecker.compose.ContainerStateModel.valueKind;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.array;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 
@@ -44,9 +47,8 @@ public final class ContainerSmtCodec {
      * remove takes one away, a positional write changes nothing - so it can
      * be read off the chain as arithmetic.  Lowering it as
      * {@code (indexed_size <state>)} instead forces every state in that
-     * chain to be built, and {@code indexed_insert}/{@code indexed_remove}
-     * build their element arrays with a lambda.  A traversal count compared
-     * against a counter needs none of those arrays.</p>
+     * chain to be built.  A traversal count compared against a counter
+     * needs none of those arrays.</p>
      */
     /**
      * One element of an indexed container, observed without its array.
@@ -66,195 +68,6 @@ public final class ContainerSmtCodec {
             "__SCALAR_INDEXED_SIZE";
 
     private ContainerSmtCodec() {
-    }
-
-    /**
-     * Both operations denote the exact empty container.  They state different
-     * provenance, which the caller keeps; the lowering is the same.
-     */
-    static boolean emptiesState(String operation) {
-        return "CLEAR".equals(operation) || "SNAPSHOT_BASE".equals(operation);
-    }
-
-    /**
-     * The cell that holds Java null: one spelling for every caller.
-     *
-     * <p>It is the value an absent element denotes, the value a refused
-     * read leaves behind, and what a {@code null} leaf lowers to where the
-     * relation it stands in is written over cells rather than over
-     * references.</p>
-     */
-    public static final String NULL_CELL = "(VRef nullRef)";
-
-    /** One tagged transport value shared by path solving and composition. */
-    public static String valueDatatypeDeclaration() {
-        return "(declare-datatypes () ((Value"
-                + " (VByte (valueByte Int))"
-                + " (VChar (valueChar Int))"
-                + " (VShort (valueShort Int))"
-                + " (VInt (valueInt Int))"
-                + " (VLong (valueLong Int))"
-                + " (VFloat (valueFloat (_ FloatingPoint 8 24)))"
-                + " (VDouble (valueDouble (_ FloatingPoint 11 53)))"
-                + " (VBool (valueBool Bool))"
-                + " (VRef (valueRef Ref))"
-                + " (VString (valueString String)))))";
-    }
-
-    public static String boxIntegral(String value, String javaType) {
-        String constructor = integralValuePart(javaType, true);
-        return constructor.isEmpty() ? "" : "(" + constructor + " "
-                + value + ")";
-    }
-
-    public static String unboxIntegral(String value, String javaType) {
-        String accessor = integralValuePart(javaType, false);
-        return accessor.isEmpty() ? "" : "(" + accessor + " "
-                + value + ")";
-    }
-
-    /**
-     * The tag a boxed container cell of {@code javaType} may be unboxed by,
-     * or {@code ""} when it must stay boxed.
-     *
-     * <p>A cell whose declared type names a primitive sort is an ordinary
-     * Java value once unboxed, so arithmetic and ordering on it are exact.
-     * Two cases deliberately answer {@code ""}: a type that names no sort at
-     * all, and a reference cell.  {@code (VRef nullRef)} is also the value a
-     * refused read leaves behind, so unboxing a reference cell would turn a
-     * visible refusal into a formula built on a term that means nothing.</p>
-     */
-    public static String unboxableCellKind(String javaType) {
-        String kind = valueKind(javaType);
-        return "VRef".equals(kind) ? "" : kind;
-    }
-
-    public static String valueKind(String javaType) {
-        String integral = integralValuePart(javaType, true);
-        if (!integral.isEmpty()) return integral;
-        String descriptor = JavaPrimitiveBoxing
-                .primitiveDescriptor(javaType);
-        if (descriptor.isEmpty()) {
-            descriptor = JavaPrimitiveSmtSemantics
-                    .javaTypeDescriptor(javaType);
-        }
-        if ("Z".equals(descriptor)) return "VBool";
-        if ("F".equals(descriptor)) return "VFloat";
-        if ("D".equals(descriptor)) return "VDouble";
-        if ("Ljava/lang/String;".equals(descriptor)) return "VString";
-        if ("L".equals(javaType) || descriptor.startsWith("L")
-                || descriptor.startsWith("[")) {
-            return "VRef";
-        }
-        return "";
-    }
-
-    private static String integralValuePart(
-            String javaType, boolean constructor) {
-        String descriptor = JavaPrimitiveBoxing
-                .primitiveDescriptor(javaType);
-        if (descriptor.isEmpty()) {
-            descriptor = JavaPrimitiveSmtSemantics
-                    .javaTypeDescriptor(javaType);
-        }
-        String name = "B".equals(descriptor) ? "Byte"
-                : "C".equals(descriptor) ? "Char"
-                : "S".equals(descriptor) ? "Short"
-                : "I".equals(descriptor) ? "Int"
-                : "J".equals(descriptor) ? "Long" : "";
-        return name.isEmpty() ? ""
-                : (constructor ? "V" : "value") + name;
-    }
-
-    public static List<String> preamble() {
-        return Collections.unmodifiableList(Arrays.asList(
-                "(declare-datatypes () ((IndexedState"
-                        + " (mkIndexedState"
-                        + " (indexed_size Int)"
-                        + " (indexed_elements (Array Int Value))))))",
-                "(declare-datatypes () ((AssocState"
-                        + " (mkAssocState"
-                        + " (assoc_size Int)"
-                        + " (assoc_present (Array Value Bool))"
-                        + " (assoc_values (Array Value Value))"
-                        + " (assoc_order (Array Int Value))"
-                        + " (assoc_position (Array Value Int))))))",
-                "(declare-fun indexed_state_of (Ref) IndexedState)",
-                "(declare-fun assoc_state_of (Ref) AssocState)",
-                "(define-fun indexed_read ((s IndexedState) (i Int)) Value"
-                        + " (select (indexed_elements s) i))",
-                "(define-fun indexed_write ((s IndexedState) (i Int)"
-                        + " (v Value)) IndexedState"
-                        + " (mkIndexedState (indexed_size s)"
-                        + " (store (indexed_elements s) i v)))",
-                "(define-fun indexed_append ((s IndexedState) (v Value))"
-                        + " IndexedState (mkIndexedState"
-                        + " (+ (indexed_size s) 1)"
-                        + " (store (indexed_elements s)"
-                        + " (indexed_size s) v)))",
-                "(define-fun indexed_insert ((s IndexedState) (i Int)"
-                        + " (v Value)) IndexedState (mkIndexedState"
-                        + " (+ (indexed_size s) 1)"
-                        + " (lambda ((q Int)) (ite (< q i)"
-                        + " (select (indexed_elements s) q)"
-                        + " (ite (= q i) v"
-                        + " (select (indexed_elements s) (- q 1)))))))",
-                "(define-fun indexed_remove ((s IndexedState) (i Int))"
-                        + " IndexedState (mkIndexedState"
-                        + " (- (indexed_size s) 1)"
-                        + " (lambda ((q Int)) (ite (< q i)"
-                        + " (select (indexed_elements s) q)"
-                        + " (select (indexed_elements s) (+ q 1))))))",
-                "(define-fun indexed_contains ((s IndexedState) (v Value))"
-                        + " Bool (exists ((i Int))"
-                        + " (and (<= 0 i) (< i (indexed_size s))"
-                        + " (= (indexed_read s i) v))))",
-                "(define-fun assoc_has ((s AssocState) (k Value)) Bool"
-                        + " (select (assoc_present s) k))",
-                "(define-fun assoc_read ((s AssocState) (k Value)) Value"
-                        + " (select (assoc_values s) k))",
-                "(define-fun assoc_key_at ((s AssocState) (i Int)) Value"
-                        + " (select (assoc_order s) i))",
-                "(define-fun assoc_value_at ((s AssocState) (i Int)) Value"
-                        + " (assoc_read s (assoc_key_at s i)))",
-                "(define-fun assoc_put ((s AssocState) (k Value)"
-                        + " (v Value)) AssocState"
-                        + " (mkAssocState"
-                        + " (ite (assoc_has s k) (assoc_size s)"
-                        + " (+ (assoc_size s) 1))"
-                        + " (store (assoc_present s) k true)"
-                        + " (store (assoc_values s) k v)"
-                        + " (ite (assoc_has s k) (assoc_order s)"
-                        + " (store (assoc_order s) (assoc_size s) k))"
-                        + " (ite (assoc_has s k) (assoc_position s)"
-                        + " (store (assoc_position s) k"
-                        + " (assoc_size s)))))"
-                ,
-                associativeRemoveDefinition()
-        ));
-    }
-
-    private static String associativeRemoveDefinition() {
-        return "(define-fun assoc_remove ((s AssocState) (k Value))"
-                + " AssocState"
-                + " (ite (assoc_has s k)"
-                + " (let ((p (select (assoc_position s) k)))"
-                + " (mkAssocState"
-                + " (- (assoc_size s) 1)"
-                + " (store (assoc_present s) k false)"
-                + " (assoc_values s)"
-                + " (lambda ((q Int))"
-                + " (ite (and (<= p q)"
-                + " (< q (- (assoc_size s) 1)))"
-                + " (select (assoc_order s) (+ q 1))"
-                + " (select (assoc_order s) q)))"
-                + " (lambda ((q Value))"
-                + " (ite (= q k) (- 1)"
-                + " (ite (and (assoc_has s q)"
-                + " (> (select (assoc_position s) q) p))"
-                + " (- (select (assoc_position s) q) 1)"
-                + " (select (assoc_position s) q))))))"
-                + " s))";
     }
 
     /**
@@ -928,18 +741,14 @@ public final class ContainerSmtCodec {
             }
             if ("WRITE".equals(operation) && arguments.size() == 2) {
                 Term index = host.operand(arguments.get(0), Sort.INT);
-                Term value = namedPerMutation(arguments.get(1))
-                        ? host.element(arguments.get(1), expression)
-                        : host.box(arguments.get(1));
+                Term value = host.box(arguments.get(1));
                 return index == null || value == null ? null
                         : new Term("(indexed_write " + receiver.text + " "
                         + index.text + " " + value.text + ")",
                         Sort.INDEXED);
             }
             if ("APPEND".equals(operation) && arguments.size() == 1) {
-                Term value = namedPerMutation(arguments.get(0))
-                        ? host.element(arguments.get(0), expression)
-                        : host.box(arguments.get(0));
+                Term value = host.box(arguments.get(0));
                 return value == null ? null
                         : new Term("(indexed_append " + receiver.text + " "
                         + value.text + ")", Sort.INDEXED,
@@ -947,9 +756,7 @@ public final class ContainerSmtCodec {
             }
             if ("INSERT".equals(operation) && arguments.size() == 2) {
                 Term index = host.operand(arguments.get(0), Sort.INT);
-                Term value = namedPerMutation(arguments.get(1))
-                        ? host.element(arguments.get(1), expression)
-                        : host.box(arguments.get(1));
+                Term value = host.box(arguments.get(1));
                 if (index == null || value == null) return null;
                 return shift(receiver, index, value, host);
             }
@@ -958,12 +765,15 @@ public final class ContainerSmtCodec {
                 if (index == null) return null;
                 return shift(receiver, index, null, host);
             }
-            if ("CONTAINS".equals(operation) && arguments.size() == 1) {
-                Term value = host.box(arguments.get(0));
-                return value == null ? null
-                        : new Term("(indexed_contains " + receiver.text + " "
-                        + value.text + ")", Sort.BOOL);
-            }
+            // CONTAINS over an indexed container is REFUSED, by name.
+            // There was one way to say it -- "(exists ((i Int)) ... (=
+            // (indexed_read s i) v))" -- and a quantifier over an element
+            // array is outside the fragment z3 decides: 17960's moved
+            // valuation sat for 141 s and came back "(incomplete
+            // quantifiers)", which states what the lowering wrote and
+            // nothing about the recording.  A membership question the
+            // mutation chain answers is answered by the chain walk above;
+            // one it does not is a gap the composition names.
             if ("IS_EMPTY".equals(operation) && arguments.size() == 0) {
                 return new Term("(= (indexed_size " + receiver.text + ") 0)",
                         Sort.BOOL);
@@ -1019,9 +829,7 @@ public final class ContainerSmtCodec {
                     || "VALUE_VIEW".equals(operation)) return receiver;
             if ("PUT".equals(operation) && arguments.size() == 2) {
                 Term key = host.box(arguments.get(0));
-                Term value = namedPerMutation(arguments.get(1))
-                        ? host.element(arguments.get(1), expression)
-                        : host.box(arguments.get(1));
+                Term value = host.box(arguments.get(1));
                 return key == null || value == null ? null
                         : new Term("(assoc_put " + receiver.text + " "
                         + key.text + " " + value.text + ")",
@@ -1781,8 +1589,8 @@ public final class ContainerSmtCodec {
     /**
      * One indexed element, as an ite over the mutations above its state.
      *
-     * <p>This is exactly what the preamble's indexed_append / indexed_insert
-     * / indexed_remove / indexed_write say about position {@code index},
+     * <p>This is exactly what the preamble's indexed_append and
+     * indexed_write say about position {@code index},
      * said without constructing the arrays they build.  Only the state at
      * the bottom of the chain is ever named.</p>
      */
@@ -1815,7 +1623,7 @@ public final class ContainerSmtCodec {
         Term result;
         if ("APPEND".equals(operation) && arguments.size() == 1) {
             Term size = indexedSize(receiverIr, host);
-            Term appended = memo.element(arguments.get(0), object, host);
+            Term appended = memo.box(arguments.get(0), host);
             Term previous = indexedRead(receiverIr, index, host, memo);
             if (size == null || appended == null || previous == null) {
                 return null;
@@ -1825,7 +1633,7 @@ public final class ContainerSmtCodec {
                     Sort.VALUE);
         } else if ("WRITE".equals(operation) && arguments.size() == 2) {
             Term at = host.operand(arguments.get(0), Sort.INT);
-            Term written = memo.element(arguments.get(1), object, host);
+            Term written = memo.box(arguments.get(1), host);
             Term previous = indexedRead(receiverIr, index, host, memo);
             if (at == null || written == null || previous == null) {
                 return null;
@@ -1834,7 +1642,7 @@ public final class ContainerSmtCodec {
                     + written.text + " " + previous.text + ")", Sort.VALUE);
         } else if ("INSERT".equals(operation) && arguments.size() == 2) {
             Term at = host.operand(arguments.get(0), Sort.INT);
-            Term inserted = memo.element(arguments.get(1), object, host);
+            Term inserted = memo.box(arguments.get(1), host);
             Term below = indexedRead(receiverIr, index, host, memo);
             Term above = indexedRead(receiverIr, shifted(index, "-"), host,
                     memo);
@@ -1963,7 +1771,7 @@ public final class ContainerSmtCodec {
     /**
      * One list insertion or removal, shifted WITHOUT a quantifier.
      *
-     * <p>{@code indexed_insert}/{@code indexed_remove} state the shift as a
+     * <p>A whole-state insert or remove would state the shift as a
      * {@code lambda} over every index, which puts the query in a fragment
      * z3 answers {@code (incomplete quantifiers)}: 17960's moved valuation
      * came back undecided after 141 s while the same query with the two
@@ -2198,37 +2006,6 @@ public final class ContainerSmtCodec {
      * sort it holds.  The caller resolves the Java type to {@code cellSort}
      * because the two encoders answer that question differently.
      */
-    public static Term unboxValue(Term value, String javaType, Sort cellSort,
-                           Host host) {
-        if (value == null || value.sort != Sort.VALUE) return value;
-        String kind = valueKind(javaType);
-        if (!kind.isEmpty()) {
-            host.require("((_ is " + kind + ") " + value.text + ")");
-        }
-        String integralValue = unboxIntegral(value.text, javaType);
-        if (!integralValue.isEmpty()) {
-            return new Term(integralValue, Sort.INT,
-                    JavaPrimitiveSmtSemantics.widthOfJavaType(javaType));
-        }
-        if (cellSort == Sort.BOOL) {
-            return new Term("(valueBool " + value.text + ")", Sort.BOOL);
-        }
-        if (cellSort == Sort.REF) {
-            return new Term("(valueRef " + value.text + ")", Sort.REF);
-        }
-        if (cellSort == Sort.FLOAT32) {
-            return new Term("(valueFloat " + value.text + ")", Sort.FLOAT32);
-        }
-        if (cellSort == Sort.FLOAT64) {
-            return new Term("(valueDouble " + value.text + ")",
-                    Sort.FLOAT64);
-        }
-        if (cellSort == Sort.STRING) {
-            return new Term("(valueString " + value.text + ")", Sort.STRING);
-        }
-        return value;
-    }
-
     public interface Host {
         Term state(JsonElement identity, Sort shape);
 
@@ -2253,20 +2030,6 @@ public final class ContainerSmtCodec {
         }
 
         Term box(JsonElement expression);
-
-        /**
-         * Boxes the element one mutation stores -- the value of an
-         * {@code APPEND}, {@code INSERT}, {@code WRITE} or {@code PUT}.
-         *
-         * <p>Same as {@link #box} for every expression that names itself.
-         * A host that can give an otherwise unnamed element an identity
-         * scoped to the mutation that stored it (a VM reference the
-         * session left unshadowed) overrides this; {@code mutation} is the
-         * relation node whose element it is.</p>
-         */
-        default Term element(JsonElement expression, JsonObject mutation) {
-            return box(expression);
-        }
 
         Term unbox(Term value, String javaType);
 
@@ -2351,14 +2114,6 @@ public final class ContainerSmtCodec {
      * {@link #term}: host side effects such as required assertions and symbol
      * collection therefore happen in their original constraint context.</p>
      */
-    /** Whether this stored element is a reference the VM left unnamed, so
-     *  that only the mutation that stored it can name it. */
-    static boolean namedPerMutation(JsonElement expression) {
-        return expression != null && expression.isJsonObject()
-                && VmExpressionIr.isUntrackedReferencePlaceholder(
-                optionalString(expression.getAsJsonObject(), "_exp"));
-    }
-
     private static final class ProjectionMemo {
         private final IdentityHashMap<JsonElement, Map<String, Term>> has =
                 new IdentityHashMap<>();
@@ -2408,26 +2163,6 @@ public final class ContainerSmtCodec {
             if (held != null) return held;
             Term result = host.box(expression);
             if (result != null) boxed.put(expression, result);
-            return result;
-        }
-
-        /** Memo of one mutation's stored element, keyed by the mutation:
-         *  an interned element node is shared by every mutation that stores
-         *  it, and the host may name it per mutation. */
-        private final IdentityHashMap<JsonObject, Term> elements =
-                new IdentityHashMap<>();
-
-        private Term element(JsonElement expression, JsonObject mutation,
-                             Host host) {
-            // An element that names itself is boxed once per expression, as
-            // before: lowering it again per mutation would re-mint whatever
-            // its lowering declares.  Only an unnamed reference is named per
-            // mutation.
-            if (!namedPerMutation(expression)) return box(expression, host);
-            Term held = elements.get(mutation);
-            if (held != null) return held;
-            Term result = host.element(expression, mutation);
-            if (result != null) elements.put(mutation, result);
             return result;
         }
 

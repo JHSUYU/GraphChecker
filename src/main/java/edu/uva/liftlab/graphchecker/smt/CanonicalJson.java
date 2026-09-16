@@ -1,14 +1,10 @@
 package edu.uva.liftlab.graphchecker.smt;
 
-import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
-import com.google.gson.JsonNull;
-import com.google.gson.JsonObject;
 import com.google.gson.JsonPrimitive;
 
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.IdentityHashMap;
 import java.util.List;
 
 /** Deterministic JSON rendering used by immutable protocol identities. */
