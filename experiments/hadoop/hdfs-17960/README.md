@@ -1,115 +1,73 @@
-# HDFS-17960 campaign
+# HDFS-17960
 
-This experiment detects the snapshot-count mismatch fixed by
-[Hadoop PR #8672](https://github.com/apache/hadoop/pull/8672).
-The workload creates the duplicate snapshot-deletion edit records through the
-normal ordered-deletion path, restarts the NameNode, and then checkpoints the
-namespace. The vulnerable implementation decrements `numSnapshots` even when
-replay finds that the corresponding snapshot was already removed.
+## The bug
 
-The workload follows the upstream reproduction: it records the deletion edits
-with ordered deletion enabled, then restarts the NameNode with ordered deletion
-disabled. The restarted NameNode caches that configuration value in
-`SnapshotManager.snapshotDeletionOrdered`, and the production symbolic-source
-hook publishes that boolean. Replay removes the snapshot *once*: the second
-deletion record finds no such snapshot, and because ordered deletion is now
-off and the image is not yet loaded, `DirectorySnapshottableFeature.removeSnapshot`
-takes its tolerance path and returns without removing anything instead of
-throwing. `SnapshotManager.deleteSnapshot` decrements `numSnapshots`
-unconditionally after that call, so the counter is decremented twice for one
-removal and ends up different from the actual snapshot list. `saveNamespace` then
-reaches the annotated snapshot-count check in
-`FSImageFormatPBSnapshot.Saver.serializeSnapshotSection`. The concolic summary
-keeps the configuration value symbolic, and Z3 validates the `false` valuation
-through the replay mutations to that target.
+[Hadoop PR #8672](https://github.com/apache/hadoop/pull/8672). `SnapshotManager.deleteSnapshot`
+decrements `numSnapshots` unconditionally after calling
+`DirectorySnapshottableFeature.removeSnapshot`, and that call does not always remove
+a snapshot. The workload records duplicate snapshot-deletion edits with ordered deletion
+enabled, restarts the NameNode with ordered deletion disabled, then checkpoints. On the
+restarted NameNode the second deletion record finds no such snapshot; with ordered deletion
+off and the image not yet loaded, `removeSnapshot` takes its tolerance path and returns
+without removing anything, while the counter is decremented all the same. Counter and
+snapshot list then disagree and `saveNamespace` reaches the annotated snapshot-count check
+in `FSImageFormatPBSnapshot.Saver.serializeSnapshotSection`. The recording takes the healthy
+arm, so the fatal predicate is concrete on the recorded path: the witness has to come from a
+flipped decision, which is what makes this case the worked example for the whole design.
 
-```text
-ordered deletes -> duplicate edit records -> NameNode restart
-                                            |
-                                            +-> symbolic ordered=false
-                                                -> second removal tolerated,
-                                                   counter still decremented
-                                                -> count/list mismatch
-                                                -> annotated check
+## What this case declares
+
+| Declaration | Where | What it says |
+| --- | --- | --- |
+| the failure | `@CausynthExceptionTarget` on the constructed exception in the Hadoop checkout; `target.yaml` | `exception_target_id: hdfs-17960-snapshot-count-mismatch` |
+| the occurrence | `declared_target_occurrence` in `workflow.properties` | `hdfs-17960/nn0#epoch1/region/REGION.f0132fca-8c1f-3f7c-93e7-dc41bfc20f40#1` |
+| roots | none in `symbolic-inputs.jsonl` | the one root is `HDFS.CONFIG.SNAPSHOT_DELETION_ORDERED`, minted by a `CausynthSymbolicSource.symbolize` hook in the checkout's own `SnapshotManager`, on the `dfs.namenode.snapshot.deletion.ordered` value the restarted NameNode caches. A hook site owns its field (`CONFIGURED_SYMBOLIC_SOURCE_FIELD_OWNED`), so the field is not listed here |
+| region input | `symbolic-inputs.jsonl`, one row | at `FSImageFormatPBSnapshot$Saver.serializeSnapshotSection`, the cell `<SnapshotManager: int getNumSnapshots()>.return` — the read whose value the fatal predicate compares |
+| root domains | no `root-domains.jsonl` | a `MARKER` root is free over both of its values without a domain row; every other value stands at its recording |
+| wire mappings | none (`causynth_communication_mappings` unset) | the divergence is local to one node, so the seed session has no exports and no attaches |
+| loop bounds | `loop-bounds.jsonl`: 31 rows, every one `loopBodyBound: 16`; `causynth_loop_default_bound=8` | the retained fsimage scan and edit-log replay loops. The default of 8 does not reach the duplicate deletion, which is why every retained site is declared at 16 |
+
+## Build and run
+
+Hadoop checkout `/opt/hadoop-hdfs-17960-jdk8`, branch `gc/hdfs-17960-snapshot-replay-jdk8`,
+compiled with Java 8. From this directory:
+
+```bash
+./run.sh build        # installs the current GraphChecker API, builds the tree,
+                      # runs the concrete workload test, refuses unless it alone passes
+./run.sh validate     # required workflow fields
+./run.sh campaign     # the whole campaign
 ```
 
-No communication mapping is configured because the symbolic value and the
-state divergence are local to the NameNode; request epochs and edit-log replay
-remain represented by tracing. The production hook makes the ordered-deletion
-configuration an explicit Boolean root, and it is the only root this case
-varies: `symbolic-inputs.jsonl` names no root at all, which admits no
-automatic candidate while leaving the hook's own field -- the one authority
-an allowlist does not govern -- exactly where it is. Everything else stands
-at its recorded value.
+Use a fresh `CAUSYNTH_OUTPUT_DIR` per campaign; the epoch's answer lands under
+`schedule/final`. The in-tree acceptance harness runs the same campaign and then probes and
+reports it (`experiments/hadoop/accept/README.md`):
 
-The target's `AtomicInteger.value` read receives a bounded GuardedRead over
-the retained counter expressions from the custom JDK: its arms are the two
-`getAndDecrement` writers, and which arm the witness takes is what the
-configuration root decides. Its consumer anchor and write-candidate selectors
-carry the chosen expression and its local path condition directly into the
-exception predicate.
+```bash
+export CAUSYNTH_CUSTOM_JDK_HOME=/absolute/path/to/j2sdk-image
+CASES=hdfs-17960 bash experiments/hadoop/accept/accept.sh
+```
 
-That read is the case's second declaration, and it needs to be one:
-`symbolic-inputs.jsonl` names
-`<SnapshotManager: int getNumSnapshots()>.return` at
-`FSImageFormatPBSnapshot$Saver.serializeSnapshotSection`, and PLAN resolves
-that name onto the accessor-return port of the `AtomicInteger` leaf over
-Soot's exact-copy edges. The read is then a READ placeholder: the runtime
-mints one symbol and states one `ReadRow` at the VM's own location, and the
-counter's two `getAndDecrement` writers are observed at the write sites the
-refined graph names, so the decrements publish versions the anchor's read
-joins to.
+## What the harness expects
 
-Nothing else in this workload is symbolic. Re-running the PLAN stage over
-the recorded corpus, 130 proposed inputs decide as 4 declared counter reads
-(`tracked: true`, `mintEligible: true`, `declaredSymbolicRoot`), 2
-hook-owned marker rows (`CONFIGURED_SYMBOLIC_SOURCE_FIELD_OWNED`, concrete:
-the hook mints at its own site) and 126 `UNDECLARED_SYMBOLIC_INPUT`
-refusals -- 24 `SYMBOLIC` input actions become 4, and no region-entry symbol
-is minted for the snapshot list or for `Snapshot#id`.
+`report.py` passes this case only on `claim` `SAT_CANDIDATE`, `finalStatus` `FINAL_READY`,
+empty `blockers` and no open BLOCKING gap, `polarityDecides` true, `valuationOrdinal` >= 1,
+non-empty `movedRoots`, and `findingKind` `MARKER_FLIPPED` moving
+`HDFS.CONFIG.SNAPSHOT_DELETION_ORDERED` to `false`.
 
-`loop-bounds.jsonl` contains every exact loop site retained by the final
-selected closure for this checkout, each with a bound of 16. In the baseline
-trace the first deletion reaches replay iteration 8 and the duplicate deletion
-reaches iteration 9, so the default bound of 8 cannot retain the complete state
-transition.
+## Status
 
-A successful fresh campaign publishes all observed region paths and
-consumer-anchor families on one immutable global-wave snapshot. `FINAL_READY`
-is a verdict about the emitted candidate formula, not about the witness being
-tied to the root: unobserved sibling paths are coverage telemetry only while
-the SOLVE stage reports no degeneracy. When it does -- and on this case
-`BooleanReachConditionExtractor` still reports
-`DEGENERATE_UNCONSTRAINED_ROOT_SPACE`, with both valuations SAT -- the sibling
-cases are what the witness is escaping through, so `FINAL_READY` licenses no
-claim about the root and the gap has to be closed first. Claiming closed UNSAT
-additionally requires complete propagation, GuardedRead, path, and topology
-coverage. The explicit source observations
-give overlapping views of the physical configuration event one Boolean
-identity. Z3 should report
-`false` as SAT and `true` as UNSAT.
+Passes end to end under the current design. The committed artifacts of that run are under
+`artifacts/` beside this file: `result.json` states `MARKER_FLIPPED` at `valuationOrdinal` 1
+with `movedRoots {HDFS.CONFIG.SNAPSHOT_DELETION_ORDERED: false}`, `polarityDecides true`,
+`finalStatus FINAL_READY` and `gapCount` 0 (247 diagnostic rows). `valuations` records
+ordinal 0 (`= true`, the run as it happened) `unsat` and ordinal 1 (`= false`) `sat`.
 
-Edit-log operation dispatch is retained as an exact table-switch observation,
-including the concrete case key and successor index. The two duplicate deletion
-occurrences therefore remain distinct decisions in the path evidence instead
-of collapsing to the same taken/not-taken bit.
-
-For the SAT valuation, the selected replay case executes both duplicate
-deletions. The two `AtomicInteger.getAndDecrement` versions carry the count
-from 2 to 1 and then from 1 to 0. The target `getNumSnapshots()` GuardedRead has
-an arm for version 2 and anchors that expression, while the snapshot-list
-enumeration remains 1. The final predicate is therefore `1 != 0`, which reaches
-the annotated `IllegalStateException`. The explored `true` sibling case is
-closed, but it does not contain the required second counter version and is not
-a valid causal witness for this target.
-
-Hadoop checkout: `/opt/hadoop-hdfs-17960-jdk8`, branch
-`gc/hdfs-17960-snapshot-replay-jdk8`, based on commit `6dd24f5815f25431e6eab58e7f16894d1446b708`
-and compiled with Java 8. Run `./run.sh build`, `./run.sh validate`, and then
-`./run.sh campaign` from this directory. Use a fresh
-`CAUSYNTH_OUTPUT_DIR` for each campaign; final SMT and replay evidence are
-written below `schedule/final`.
-
-The campaign writes `candidate.smt2`, its composition manifest, path closures,
-topology deltas, final result, and structured Z3 result below its fresh output
-directory. A plain `z3 schedule/final/candidate.smt2` returns `sat`.
+Running plain `z3 candidate.smt2` on the published file answers **unsat**, and that is not a
+verdict about the case: the composer pins its own recorded valuation into the file it
+publishes — `artifacts/candidate.smt2` ends with `(assert (! (= M_Z_field_SRC…SnapshotManager
+true) :named valuation__…))` under the comment `; valuation 0: the run as it happened` — so a
+plain run answers about that one valuation. `experiments/hadoop/accept/probe.sh` is what asks
+the published formula unpinned, at the accepted assignment and at the other polarity — a
+question about the whole formula rather than about the slice the campaign solved. It is
+reported, never gated on.
