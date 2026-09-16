@@ -30,6 +30,7 @@ import edu.uva.liftlab.graphchecker.contract.RootKind;
 import edu.uva.liftlab.graphchecker.contract.RootMintRow;
 import edu.uva.liftlab.graphchecker.contract.RowCodec;
 import edu.uva.liftlab.graphchecker.contract.SessionDir;
+import edu.uva.liftlab.graphchecker.contract.SessionManifest;
 import edu.uva.liftlab.graphchecker.contract.Role;
 import edu.uva.liftlab.graphchecker.contract.TargetRow;
 import edu.uva.liftlab.graphchecker.contract.Task;
@@ -1703,6 +1704,19 @@ public class ExploreTest {
             RowCodec.writeAll(dir.targets(), targets, RowCodec::writeTarget);
             RowCodec.writeExpressions(dir.expressions(),
                     ExpressionTable.of(expressions));
+            // The fixture STATES the role, as a campaign's own session
+            // manifest does.
+            boolean focused = false;
+            for (ActivationRow activation : activations) {
+                if (activation.focused()) focused = true;
+            }
+            RowCodec.writeManifest(dir.manifest(),
+                    SessionManifest.of(sessionId,
+                            focused ? SessionManifest.Role.FOCUSED
+                                    : SessionManifest.Role.SEED,
+                            focused ? Collections.singletonList(
+                                    "OBL." + sessionId)
+                                    : Collections.<String>emptyList()));
         }
     }
 }

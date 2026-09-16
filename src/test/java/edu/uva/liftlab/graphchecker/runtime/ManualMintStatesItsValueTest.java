@@ -148,7 +148,52 @@ public class ManualMintStatesItsValueTest {
                 focusedRootValue(focused, "CASE.SERIAL", Long.valueOf(7L)));
         assertEquals("nothing was asked of this root", "",
                 focusedRootValue(focused, "CASE.OTHER", Long.valueOf(7L)));
+
+        // A FIELD mint asks the same one decision.  It did not: a declared
+        // INTEGRAL cell minted through symbolizeField/materializeField
+        // published what the recording read, whatever the obligation
+        // assigned, and 11741 session 869a1f0e285913ad-6f59cb84 states
+        // SERIAL_NO = 182907 under an obligation assigning 182910.
+        KeyManager keys = new KeyManager();
+        keys.serialNo = 182907;
+        // A model rewrites the recorded execution, so it is written only at
+        // a mint this run can place at the node and epoch the plan names --
+        // the same rule the configured source's assignment goes through.
+        RuntimeTraceContext.registerSource(keys,
+                new SourceRef("CLUSTER_NODE", "NAMENODE", "hdfs-17899/nn0",
+                        0L));
+        assertEquals("the wave's value is unplanted until a mint plants it",
+                Collections.singletonMap("CASE.SERIAL", "12"),
+                FocusedReplay.unplantedAssignments());
+        assertEquals("a field mint that planted states no recordedValue", "",
+                ConcolicRegionRuntime.fieldMintRecordedValue(focused,
+                        new ConcolicRegionRuntime.SymbolizeAction(
+                                action("CASE.SERIAL")),
+                        keys, SERIAL_FIELD, "I", Integer.valueOf(182907)));
+        assertEquals("and the region reads the wave's value back",
+                12, keys.serialNo);
+        assertTrue("so the replay owes no ASSIGNMENT_UNPLANTED refusal",
+                FocusedReplay.unplantedAssignments().isEmpty());
+
+        // A root the wave said nothing about keeps its reading, and states
+        // it: the recording is what every delta is relative to.
+        keys.serialNo = 182907;
+        assertEquals("a mint that planted nothing states what it read",
+                "182907", ConcolicRegionRuntime.fieldMintRecordedValue(
+                        focused, new ConcolicRegionRuntime.SymbolizeAction(
+                                action("CASE.OTHER")),
+                        keys, SERIAL_FIELD, "I", Integer.valueOf(182907)));
+        assertEquals("and reads its own value back", 182907, keys.serialNo);
     }
+
+    /** One declared INTEGRAL cell, as 11741's SERIAL_NO is minted. */
+    private static final class KeyManager {
+        private int serialNo;
+    }
+
+    private static final String SERIAL_FIELD =
+            "<edu.uva.liftlab.graphchecker.runtime.ManualMintStatesItsValue"
+                    + "Test$KeyManager: int serialNo>";
 
     /** The rendered v3 address the focus row names and the region carries. */
     private static final String PLANNED_ADDRESS =

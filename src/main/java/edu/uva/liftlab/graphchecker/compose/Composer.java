@@ -387,18 +387,34 @@ public final class Composer {
                             + collision.getValue());
         }
 
-        // Which recording a claim is about has to have one answer.  Two
-        // sessions that focused nothing are two recordings, and
+        // A session this stage could not read whole states less than it
+        // ran, and a short kind reads downstream as "this run had none": the
+        // paths composed over it would be missing decisions nobody can see
+        // are missing.  IMPORT names it too; the claim refuses on it.
+        for (edu.uva.liftlab.graphchecker.contract.SessionReader session
+                : corpus.sessions()) {
+            if (session.incomplete().isEmpty()) continue;
+            gap(GapKind.SESSION_INCOMPLETE, GapClass.BLOCKING,
+                    session.sessionId(), "this session could not be read "
+                            + "whole: " + session.incomplete());
+        }
+
+        // Which recording a claim is about has to have one answer, and the
+        // sessions STATE it (manifest.json, role: SEED | FOCUSED).  It used
+        // to be inferred -- "the session that focused nothing" -- and the
+        // 11741 campaign #2 corpus has nine of those: the seed, seven
+        // replays the kill cut before their focused occurrence activated,
+        // and one NOT_ADMITTED focused replay whose occurrence never ran.
         // RECORDED_FAILURE_EXPLAINED and MESSAGE_PAIRING_FLIPPED would each
-        // pick whichever came first.
-        List<String> seeds = corpus.unfocusedSessionIds();
+        // have picked whichever came first.
+        List<String> seeds = corpus.seedSessionIds();
         if (seeds.size() != 1 && !corpus.sessions().isEmpty()) {
             gap(GapKind.UNSTATED_VALUE, GapClass.BLOCKING, seeds.toString(),
                     seeds.isEmpty()
-                            ? "every session of this corpus focused an "
-                            + "occurrence, so none of them is the recording"
-                            : "more than one session of this corpus focused "
-                            + "nothing, so which one is the recording has "
+                            ? "no session of this corpus states role SEED, "
+                            + "so none of them is the recording"
+                            : seeds.size() + " sessions of this corpus state "
+                            + "role SEED, so which one is the recording has "
                             + "no answer");
         }
 

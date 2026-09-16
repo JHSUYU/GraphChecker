@@ -1,10 +1,13 @@
 package edu.uva.liftlab.graphchecker.contract;
 
+import com.google.gson.JsonObject;
+
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.function.Function;
 
 /**
  * One replay session's rows, one file per kind, read once.
@@ -31,6 +34,8 @@ public final class SessionReader {
     private final List<TargetRow> targets;
     private final List<GapRow> gaps;
     private final ExpressionTable expressions;
+    private final SessionManifest manifest;
+    private final String incomplete;
 
     private SessionReader(SessionDir directory,
                           List<ActivationRow> activations,
@@ -38,7 +43,10 @@ public final class SessionReader {
                           List<ExportRow> exports, List<AttachRow> attaches,
                           List<WriteRow> writes, List<ReadRow> reads,
                           List<RootMintRow> roots, List<TargetRow> targets,
-                          List<GapRow> gaps, ExpressionTable expressions) {
+                          List<GapRow> gaps, ExpressionTable expressions,
+                          SessionManifest manifest, String incomplete) {
+        this.manifest = manifest;
+        this.incomplete = incomplete;
         this.directory = directory;
         this.activations = Collections.unmodifiableList(activations);
         this.decisions = Collections.unmodifiableList(decisions);
@@ -58,19 +66,75 @@ public final class SessionReader {
         return read(SessionDir.of(iteration, sessionId));
     }
 
-    /** Reads one session directory. */
+    /**
+     * Reads one session directory, naming what it could not read.
+     *
+     * <p>A file the codec refuses -- a row the kill truncated, a manifest
+     * that states no role -- is not an exception thrown at whatever stage
+     * happened to open the corpus first.  It is recorded on the session, and
+     * IMPORT names it {@code SESSION_INCOMPLETE} (BLOCKING) with the file
+     * and the reason.  The kinds it COULD read are still here, because
+     * naming which file is short is the whole point; nothing downstream may
+     * read a short kind as "this session had none", which is why the
+     * statement is BLOCKING and not a diagnostic.</p>
+     */
     public static SessionReader read(SessionDir dir) throws IOException {
-        return new SessionReader(dir,
-                RowCodec.readAll(dir.activations(), RowCodec::readActivation),
-                RowCodec.readAll(dir.decisions(), RowCodec::readDecision),
-                RowCodec.readAll(dir.exports(), RowCodec::readExport),
-                RowCodec.readAll(dir.attaches(), RowCodec::readAttach),
-                RowCodec.readAll(dir.writes(), RowCodec::readWrite),
-                RowCodec.readAll(dir.reads(), RowCodec::readRead),
-                RowCodec.readAll(dir.roots(), RowCodec::readRootMint),
-                RowCodec.readAll(dir.targets(), RowCodec::readTarget),
-                RowCodec.readAll(dir.gaps(), RowCodec::readGap),
-                RowCodec.readExpressions(dir.expressions()));
+        Partial partial = new Partial();
+        List<ActivationRow> activations = partial.rows(dir.activations(),
+                RowCodec::readActivation);
+        List<DecisionRow> decisions = partial.rows(dir.decisions(),
+                RowCodec::readDecision);
+        List<ExportRow> exports = partial.rows(dir.exports(),
+                RowCodec::readExport);
+        List<AttachRow> attaches = partial.rows(dir.attaches(),
+                RowCodec::readAttach);
+        List<WriteRow> writes = partial.rows(dir.writes(),
+                RowCodec::readWrite);
+        List<ReadRow> reads = partial.rows(dir.reads(), RowCodec::readRead);
+        List<RootMintRow> roots = partial.rows(dir.roots(),
+                RowCodec::readRootMint);
+        List<TargetRow> targets = partial.rows(dir.targets(),
+                RowCodec::readTarget);
+        List<GapRow> gaps = partial.rows(dir.gaps(), RowCodec::readGap);
+        ExpressionTable expressions;
+        try {
+            expressions = RowCodec.readExpressions(dir.expressions());
+        } catch (RuntimeException unreadable) {
+            partial.note(dir.expressions(), unreadable);
+            expressions = ExpressionTable.empty();
+        }
+        SessionManifest manifest;
+        try {
+            manifest = RowCodec.readManifest(dir.manifest());
+        } catch (RuntimeException unstated) {
+            partial.note(dir.manifest(), unstated);
+            manifest = null;
+        }
+        return new SessionReader(dir, activations, decisions, exports,
+                attaches, writes, reads, roots, targets, gaps, expressions,
+                manifest, partial.reason);
+    }
+
+    /** One session's read, and the first file of it that would not read. */
+    private static final class Partial {
+        private String reason = "";
+
+        private <T> List<T> rows(Path file, Function<JsonObject, T> reader)
+                throws IOException {
+            try {
+                return RowCodec.readAll(file, reader);
+            } catch (RuntimeException unreadable) {
+                note(file, unreadable);
+                return new ArrayList<T>();
+            }
+        }
+
+        private void note(Path file, RuntimeException unreadable) {
+            if (!reason.isEmpty()) return;
+            Path name = file.getFileName();
+            reason = (name == null ? file.toString() : name.toString())
+                    + " could not be read: " + unreadable.getMessage();
+        }
     }
 
     /** Every session of one iteration, in the layout's own order. */
@@ -124,40 +188,50 @@ public final class SessionReader {
     }
 
     /**
-     * Whether this session explored a focused occurrence.
+     * The role this session STATES, or null when it states none.
      *
-     * <p>The seed replay runs everything concretely and focuses nothing; an
-     * exploration replay focuses exactly the occurrence its task names.  So
-     * "was this the recording, or a counterfactual" is a fact of the rows
-     * and needs no naming convention on the session id.</p>
+     * <p>Read, never inferred.  "The seed is the session whose activations
+     * focused nothing" was the rule, and it has no answer for a corpus whose
+     * focused replays were cut before their occurrence activated: on 11741
+     * campaign #2 nine of eighty-one sessions focused nothing and COMPOSE
+     * refused the lot.</p>
      */
-    public boolean explored() {
-        return focused() != null;
+    public SessionManifest manifest() {
+        return manifest;
     }
 
-    /** The occurrence this session's task focused, or null. */
-    public OccurrenceAddress focused() {
-        for (ActivationRow activation : activations) {
-            if (activation.focused()) return activation.occurrence();
-        }
-        return null;
+    /** Whether this session states it is the recording. */
+    public boolean seed() {
+        return manifest != null && manifest.seed();
     }
 
-    /** The same rule, over sessions a caller already read. */
+    /** Why this session could not be read whole, or {@code ""}. */
+    public String incomplete() {
+        return incomplete;
+    }
+
+    /**
+     * The session that states it is the recording, or null when that has no
+     * single answer.
+     *
+     * <p>Exactly one SEED: with none, no declaration has a recording it was
+     * written about, and with two, nothing says which.  Both are refusals
+     * the caller names -- naming a counterfactual as the recording is how a
+     * claim comes to be about the wrong execution.</p>
+     */
     public static String seedSessionId(List<SessionReader> sessions) {
-        List<String> unfocused = unfocusedSessionIds(sessions);
-        return unfocused.size() == 1 ? unfocused.get(0) : null;
+        List<String> stated = seedSessionIds(sessions);
+        return stated.size() == 1 ? stated.get(0) : null;
     }
 
-    /** Every session that focused nothing: what the gap names. */
-    public static List<String> unfocusedSessionIds(
-            List<SessionReader> sessions) {
-        List<String> unfocused = new ArrayList<String>();
-        if (sessions == null) return unfocused;
+    /** Every session that states SEED: what such a refusal names. */
+    public static List<String> seedSessionIds(List<SessionReader> sessions) {
+        List<String> stated = new ArrayList<String>();
+        if (sessions == null) return stated;
         for (SessionReader session : sessions) {
-            if (!session.explored()) unfocused.add(session.sessionId());
+            if (session.seed()) stated.add(session.sessionId());
         }
-        return unfocused;
+        return stated;
     }
 
     @Override
