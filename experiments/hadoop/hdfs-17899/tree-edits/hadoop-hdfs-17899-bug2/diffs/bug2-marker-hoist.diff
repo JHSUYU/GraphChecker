@@ -1,0 +1,21 @@
+Proposed, NOT applied.  Record only; no git operation in /opt/hadoop-*.
+Identical hunk applies to hdfs-17899-bug1 and -bug3 (same file, same lines).
+
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/ipc/Client.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/ipc/Client.java
+@@ -1237,10 +1237,14 @@
+       CausynthMessagePropagation.Outbound causynth =
+           CausynthMessagePropagation.outbound(
+               CausynthMessagePropagation.IPC, correlationId,
+               Integer.toString(call.retry), "REQUEST", Client.this);
+-      if (causynth.active()
+-          && Debug.makeSymbolicBoolean("hadoopIpcRequestFails")) {
++      // Minted on every path through this method, not only when the
++      // outbound context happens to be active: the declared fault marker is
++      // this region's one symbolic input, and a replay that reaches the
++      // send with no active context materialized none at all.
++      boolean hadoopIpcRequestFails =
++          Debug.makeSymbolicBoolean("hadoopIpcRequestFails");
++      if (causynth.active() && hadoopIpcRequestFails) {
+         throw new IOException("symbolic Hadoop IPC transport failure");
+       }

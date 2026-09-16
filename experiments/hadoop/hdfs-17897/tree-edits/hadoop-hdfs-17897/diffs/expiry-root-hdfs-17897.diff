@@ -1,0 +1,42 @@
+--- /tmp/BTSM.hdfs-17897.orig	2026-09-14 09:01:57.964676328 -0500
++++ /opt/hadoop-hdfs-17897/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/security/token/block/BlockTokenSecretManager.java	2026-09-14 09:01:57.964676328 -0500
+@@ -192,9 +192,17 @@
+     setSerialNo(serialNo + 1);
+     currentKey = new BlockKey(serialNo, timer.now() + 2
+         * keyUpdateInterval + tokenLifetime, generateSecret());
++    CausynthSymbolicSource.symbolize(
++        "HDFS.BLOCK_KEY.EXPIRY_DATE.INITIAL_CURRENT",
++        currentKey, "<org.apache.hadoop.security.token.delegation."
++            + "DelegationKey: long expiryDate>");
+     setSerialNo(serialNo + 1);
+     nextKey = new BlockKey(serialNo, timer.now() + 3
+         * keyUpdateInterval + tokenLifetime, generateSecret());
++    CausynthSymbolicSource.symbolize(
++        "HDFS.BLOCK_KEY.EXPIRY_DATE.INITIAL_NEXT",
++        nextKey, "<org.apache.hadoop.security.token.delegation."
++            + "DelegationKey: long expiryDate>");
+     allKeys.put(currentKey.getKeyId(), currentKey);
+     allKeys.put(nextKey.getKeyId(), nextKey);
+   }
+@@ -271,12 +279,19 @@
+     LOG.info("Updating block keys");
+     removeExpiredKeys();
+     // set final expiry date of retiring currentKey
+-    allKeys.put(currentKey.getKeyId(), new BlockKey(currentKey.getKeyId(),
++    BlockKey retiringKey = new BlockKey(currentKey.getKeyId(),
+         timer.now() + keyUpdateInterval + tokenLifetime,
+-        currentKey.getKey()));
++        currentKey.getKey());
++    CausynthSymbolicSource.symbolize("HDFS.BLOCK_KEY.EXPIRY_DATE.RETIRED",
++        retiringKey, "<org.apache.hadoop.security.token.delegation."
++            + "DelegationKey: long expiryDate>");
++    allKeys.put(retiringKey.getKeyId(), retiringKey);
+     // update the estimated expiry date of new currentKey
+     currentKey = new BlockKey(nextKey.getKeyId(), timer.now()
+         + 2 * keyUpdateInterval + tokenLifetime, nextKey.getKey());
++    CausynthSymbolicSource.symbolize("HDFS.BLOCK_KEY.EXPIRY_DATE.CURRENT",
++        currentKey, "<org.apache.hadoop.security.token.delegation."
++            + "DelegationKey: long expiryDate>");
+     allKeys.put(currentKey.getKeyId(), currentKey);
+     // generate a new nextKey
+     setSerialNo(serialNo + 1);

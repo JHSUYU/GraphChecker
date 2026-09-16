@@ -1,0 +1,826 @@
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/ipc/CausynthMessagePropagation.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/ipc/CausynthMessagePropagation.java
+index 3c1fb2fcae..7515673690 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/ipc/CausynthMessagePropagation.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/ipc/CausynthMessagePropagation.java
+@@ -35,12 +35,27 @@ public final class CausynthMessagePropagation {
+   private CausynthMessagePropagation() {
+   }
+ 
++  /**
++   * The request scope of the calling thread, as a value the work it is
++   * creating can carry to whatever thread later sends it.
++   */
++  public static Object captureScope() {
++    return CausynthTraceRecorder.captureScope();
++  }
++
+   public static Outbound outbound(String transport, String correlationId,
+       String attemptId, String half, Object localOwner) {
++    return outbound(transport, correlationId, attemptId, half, localOwner,
++        null);
++  }
++
++  /** The same leg, for work carrying the scope it was created in. */
++  public static Outbound outbound(String transport, String correlationId,
++      String attemptId, String half, Object localOwner, Object scope) {
+     String trace = CausynthTraceRecorder.outboundExchange(transport,
+-        correlationId, attemptId, half, localOwner);
++        correlationId, attemptId, half, localOwner, scope);
+     String symbolic = SymbolicMessageEnvelope.takeOutbound();
+-    return trace.isEmpty() ? Outbound.EMPTY
++    return trace.isEmpty() && symbolic.isEmpty() ? Outbound.EMPTY
+         : new Outbound(correlationId, attemptId, trace, symbolic);
+   }
+ 
+@@ -63,12 +78,16 @@ private static Inbound inbound(String trace, String symbolic,
+     if (!preserveSymbolic) {
+       SymbolicMessageEnvelope.clearInbound();
+     }
+-    if (trace == null || trace.isEmpty()) {
++    boolean hasTrace = trace != null && !trace.isEmpty();
++    boolean hasSymbolic = symbolic != null && !symbolic.isEmpty();
++    if (!hasTrace && !hasSymbolic) {
+       return Inbound.EMPTY;
+     }
+-    long token = CausynthTraceRecorder.inboundExchange(trace, transport,
+-        correlationId, attemptId, half, localOwner);
+-    if (symbolic != null && !symbolic.isEmpty()) {
++    long token = hasTrace
++        ? CausynthTraceRecorder.inboundExchange(trace, transport,
++            correlationId, attemptId, half, localOwner)
++        : 0L;
++    if (hasSymbolic) {
+       SymbolicMessageEnvelope.installInbound(symbolic);
+     }
+     Inbound scope = new Inbound(token, correlationId, attemptId, half);
+@@ -99,7 +118,9 @@ private static void endInbound(boolean clearSymbolic) {
+     if (clearSymbolic) {
+       SymbolicMessageEnvelope.clearInbound();
+     }
+-    CausynthTraceRecorder.endInboundExchange(scope.token);
++    if (scope.token > 0L) {
++      CausynthTraceRecorder.endInboundExchange(scope.token);
++    }
+   }
+ 
+   /** Starts one multi-message SASL exchange on the client thread. */
+@@ -149,6 +170,38 @@ public static void clearLocalOwner() {
+     endInbound();
+   }
+ 
++  /**
++   * Enters the scope a queued unit of work carried from where it was made.
++   * // causynth-d3-lineage
++   */
++  public static long enterCarriedScope(Object scope, String role,
++      String api) {
++    return CausynthTraceRecorder.enterCarriedScope(scope, role, api);
++  }
++
++  /** Leaves the scope {@link #enterCarriedScope} entered. */
++  public static void exitCarriedScope(long token) {
++    CausynthTraceRecorder.exitCarriedScope(token);
++  }
++
++  /** Opens one daemon tick as a lineage root of its own. */
++  public static long beginTick(Object owner, String role) {
++    return CausynthTraceRecorder.beginDaemonTick(owner, role);
++  }
++
++  /** Closes the tick {@link #beginTick} opened. */
++  public static void endTick(long token) {
++    CausynthTraceRecorder.endDaemonTick(token);
++  }
++
++  /**
++   * Removes the local owner and KEEPS the message scope open, for a
++   * handshake whose request outlives it.
++   */
++  public static void clearLocalOwnerKeepingScope() {
++    LOCAL_OWNER.remove();
++  }
++
+   public static void startRecording() {
+     CausynthTraceRecorder.startRecording();
+   }
+@@ -188,7 +241,7 @@ private Outbound(String correlationId, String attemptId, String trace,
+     }
+ 
+     public boolean active() {
+-      return !trace.isEmpty();
++      return !trace.isEmpty() || !symbolic.isEmpty();
+     }
+   }
+ 
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/ipc/Client.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/ipc/Client.java
+index b1a873e8c1..c335188d5a 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/ipc/Client.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/ipc/Client.java
+@@ -338,6 +338,10 @@ static class Call {
+     private AlignmentContext alignmentContext;
+     private String causynthTrace = "";
+     private String causynthSymbolic = "";
++    /** The request scope this call was created in, captured on the thread
++     * that created it and carried with it to the send. */
++    private final Object causynthScope =
++        CausynthMessagePropagation.captureScope();
+ 
+     private Call(RPC.RpcKind rpcKind, Writable param) {
+       this.rpcKind = rpcKind;
+@@ -1236,7 +1240,8 @@ public void sendRpcRequest(final Call call)
+       CausynthMessagePropagation.Outbound causynth =
+           CausynthMessagePropagation.outbound(
+               CausynthMessagePropagation.IPC, correlationId,
+-              Integer.toString(call.retry), "REQUEST", Client.this);
++              Integer.toString(call.retry), "REQUEST", Client.this,
++              call.causynthScope);
+       RpcRequestHeaderProto.Builder header = ProtoUtil.makeRpcRequestHeader(
+           call.rpcKind, OperationProto.RPC_FINAL_PACKET, call.id, call.retry,
+           clientId, call.alignmentContext).toBuilder();
+@@ -1636,7 +1641,7 @@ private Writable getRpcResponse(final Call call, final Connection connection)
+   }
+ 
+   private void installCausynthResponse(Call call) {
+-    if (call.causynthTrace.isEmpty()) {
++    if (call.causynthTrace.isEmpty() && call.causynthSymbolic.isEmpty()) {
+       return;
+     }
+     CausynthMessagePropagation.inbound(call.causynthTrace,
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/ipc/Server.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/ipc/Server.java
+index 5d65d83daa..f34c7033d0 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/ipc/Server.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/ipc/Server.java
+@@ -1017,6 +1017,11 @@ public static class Call implements Schedulable,
+     // store last seen states for multiple namespaces.
+     private ByteString federatedNamespaceState;
+ 
++    /** The scope this call was built in, carried to the handler
++     * that runs it: the pool never inherits it. // causynth-d3-lineage */
++    final Object causynthScope =
++        CausynthMessagePropagation.captureScope();
++
+     Call() {
+       this(RpcConstants.INVALID_CALL_ID, RpcConstants.INVALID_RETRY_COUNT,
+         RPC.RpcKind.RPC_BUILTIN, RpcConstants.DUMMY_CLIENT_ID);
+@@ -1311,6 +1316,8 @@ public Void run() throws Exception {
+       this.setStartHandleTimestampNanos(startNanos);
+       Writable value = null;
+       ResponseParams responseParams = new ResponseParams();
++      long causynthCall = CausynthMessagePropagation
++          .enterCarriedScope(causynthScope, "IPC_HANDLER", null);
+       CausynthMessagePropagation.Inbound causynth =
+           CausynthMessagePropagation.inbound(causynthTrace,
+               causynthSymbolic, CausynthMessagePropagation.IPC,
+@@ -1342,6 +1349,7 @@ public Void run() throws Exception {
+         }
+       } finally {
+         CausynthMessagePropagation.endInbound(causynth);
++        CausynthMessagePropagation.exitCarriedScope(causynthCall);
+       }
+       return null;
+     }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/security/token/block/BlockTokenSecretManager.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/security/token/block/BlockTokenSecretManager.java
+index 8c9b8cc584..7d182d26d7 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/security/token/block/BlockTokenSecretManager.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/security/token/block/BlockTokenSecretManager.java
+@@ -32,6 +32,7 @@
+ import java.util.Map;
+ 
+ import org.apache.commons.lang3.ArrayUtils;
++import org.apache.hadoop.ipc.CausynthSymbolicSource;
+ import org.apache.hadoop.ipc.Server;
+ import org.slf4j.Logger;
+ import org.slf4j.LoggerFactory;
+@@ -191,9 +192,17 @@ private synchronized void generateKeys() {
+     setSerialNo(serialNo + 1);
+     currentKey = new BlockKey(serialNo, timer.now() + 2
+         * keyUpdateInterval + tokenLifetime, generateSecret());
++    CausynthSymbolicSource.symbolize(
++        "HDFS.BLOCK_KEY.EXPIRY_DATE.INITIAL_CURRENT",
++        currentKey, "<org.apache.hadoop.security.token.delegation."
++            + "DelegationKey: long expiryDate>");
+     setSerialNo(serialNo + 1);
+     nextKey = new BlockKey(serialNo, timer.now() + 3
+         * keyUpdateInterval + tokenLifetime, generateSecret());
++    CausynthSymbolicSource.symbolize(
++        "HDFS.BLOCK_KEY.EXPIRY_DATE.INITIAL_NEXT",
++        nextKey, "<org.apache.hadoop.security.token.delegation."
++            + "DelegationKey: long expiryDate>");
+     allKeys.put(currentKey.getKeyId(), currentKey);
+     allKeys.put(nextKey.getKeyId(), nextKey);
+   }
+@@ -270,17 +279,30 @@ synchronized boolean updateKeys() throws IOException {
+     LOG.info("Updating block keys");
+     removeExpiredKeys();
+     // set final expiry date of retiring currentKey
+-    allKeys.put(currentKey.getKeyId(), new BlockKey(currentKey.getKeyId(),
++    BlockKey retiringKey = new BlockKey(currentKey.getKeyId(),
+         timer.now() + keyUpdateInterval + tokenLifetime,
+-        currentKey.getKey()));
++        currentKey.getKey());
++    CausynthSymbolicSource.symbolize("HDFS.BLOCK_KEY.EXPIRY_DATE.RETIRED",
++        retiringKey, "<org.apache.hadoop.security.token.delegation."
++            + "DelegationKey: long expiryDate>");
++    allKeys.put(retiringKey.getKeyId(), retiringKey);
+     // update the estimated expiry date of new currentKey
+     currentKey = new BlockKey(nextKey.getKeyId(), timer.now()
+         + 2 * keyUpdateInterval + tokenLifetime, nextKey.getKey());
++    CausynthSymbolicSource.symbolize("HDFS.BLOCK_KEY.EXPIRY_DATE.CURRENT",
++        currentKey, "<org.apache.hadoop.security.token.delegation."
++            + "DelegationKey: long expiryDate>");
+     allKeys.put(currentKey.getKeyId(), currentKey);
+     // generate a new nextKey
+     setSerialNo(serialNo + 1);
++    CausynthSymbolicSource.symbolize("HDFS.BLOCK_KEY.SERIAL_NO", this,
++        "<org.apache.hadoop.hdfs.security.token.block."
++            + "BlockTokenSecretManager: int serialNo>");
+     nextKey = new BlockKey(serialNo, timer.now() + 3
+         * keyUpdateInterval + tokenLifetime, generateSecret());
++    CausynthSymbolicSource.symbolize("HDFS.BLOCK_KEY.EXPIRY_DATE", nextKey,
++        "<org.apache.hadoop.security.token.delegation."
++            + "DelegationKey: long expiryDate>");
+     allKeys.put(nextKey.getKeyId(), nextKey);
+     return true;
+   }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/balancer/KeyManager.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/balancer/KeyManager.java
+index 014bb4fe43..21022f9e2e 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/balancer/KeyManager.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/balancer/KeyManager.java
+@@ -26,6 +26,7 @@
+ import org.apache.hadoop.fs.StorageType;
+ import org.apache.hadoop.hdfs.DFSConfigKeys;
+ import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
++import org.apache.hadoop.ipc.CausynthMessagePropagation;
+ import org.apache.hadoop.hdfs.protocol.datatransfer.sasl.DataEncryptionKeyFactory;
+ import org.apache.hadoop.hdfs.security.token.block.BlockTokenIdentifier;
+ import org.apache.hadoop.hdfs.security.token.block.BlockTokenSecretManager;
+@@ -163,10 +164,15 @@ class BlockKeyUpdater implements Runnable, Closeable {
+     public void run() {
+       try {
+         while (shouldRun) {
++          // One key-updater turn is one lineage root. // causynth-d3-lineage
++          long causynthTick = CausynthMessagePropagation.beginTick(
++              blockTokenSecretManager, "KEY_MANAGER_TICK");
+           try {
+             updateBlockKeys();
+           } catch (IOException e) {
+             LOG.error("Failed to set keys", e);
++          } finally {
++            CausynthMessagePropagation.endTick(causynthTick);
+           }
+           Thread.sleep(sleepInterval);
+         }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/blockmanagement/HeartbeatManager.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/blockmanagement/HeartbeatManager.java
+index 43ded22dbc..8480a419d8 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/blockmanagement/HeartbeatManager.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/blockmanagement/HeartbeatManager.java
+@@ -38,6 +38,7 @@
+ import org.slf4j.LoggerFactory;
+ 
+ import org.apache.hadoop.classification.VisibleForTesting;
++import org.apache.hadoop.ipc.CausynthMessagePropagation;
+ 
+ /**
+  * Manage the heartbeats received from datanodes.
+@@ -543,6 +544,11 @@ private class Monitor implements Runnable {
+     public void run() {
+       while(namesystem.isRunning()) {
+         restartHeartbeatStopWatch();
++        // One rotation tick is one lineage root: the key update
++        // this loop performs belongs to no request. // causynth-d3-lineage
++        long causynthTick = CausynthMessagePropagation.beginTick(
++            blockManager.getBlockTokenSecretManager(),
++            "HEARTBEAT_TICK");
+         try {
+           final long now = Time.monotonicNow();
+           if (lastHeartbeatCheck + heartbeatRecheckInterval < now) {
+@@ -559,6 +565,8 @@ public void run() {
+           }
+         } catch (Exception e) {
+           LOG.error("Exception while checking heartbeat", e);
++        } finally {
++          CausynthMessagePropagation.endTick(causynthTick);
+         }
+         try {
+           Thread.sleep(5000);  // 5 seconds
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/BPServiceActor.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/BPServiceActor.java
+index 9af3c39b33..c90f7b2ab9 100755
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/BPServiceActor.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/BPServiceActor.java
+@@ -70,6 +70,7 @@
+ import org.apache.hadoop.hdfs.server.protocol.StorageReport;
+ import org.apache.hadoop.hdfs.server.protocol.VolumeFailureSummary;
+ import org.apache.hadoop.io.IOUtils;
++import org.apache.hadoop.ipc.CausynthMessagePropagation;
+ import org.apache.hadoop.ipc.RemoteException;
+ import org.apache.hadoop.net.NetUtils;
+ import org.apache.hadoop.util.Preconditions;
+@@ -684,6 +685,27 @@ private void offerService() throws Exception {
+     // Now loop for a long time....
+     //
+     while (shouldRun()) {
++      // A response scope an earlier turn's last RPC left open on this
++      // thread ends before this turn opens its own, so the turn's scopes
++      // nest: the IPC client ends it before every request it builds.
++      // causynth-d3-lineage
++      CausynthMessagePropagation.endInbound();
++      // One offer-service turn is one lineage root: nothing
++      // requested it. // causynth-d3-lineage
++      long causynthTick = CausynthMessagePropagation.beginTick(
++          dn.getDatanodeId(), "BP_SERVICE_ACTOR");
++      // The turn runs on a thread started inside DataNode initialisation,
++      // before the workload registered this node, so it carries no node of
++      // its own: the tick names the hop but every activation on the thread
++      // -- the registration this heartbeat converts included -- is still
++      // addressed to no node, and two DataNodes of one JVM collide.  The
++      // turn is this node's own action; opened here, inside the tick, so
++      // the tick stays the outermost hop and keeps its window index.
++      // causynth-d3-lineage
++      Object causynthSource = dn.getCausynthSourceAnchor();
++      long causynthTurn = causynthSource == null ? 0L
++          : CausynthMessagePropagation.beginRequest(causynthSource,
++              "offer-service");
+       try {
+         DataNodeFaultInjector.get().startOfferService();
+         final long startTime = scheduler.monotonicNow();
+@@ -807,6 +829,11 @@ private void offerService() throws Exception {
+         sleepAfterException();
+       } finally {
+         DataNodeFaultInjector.get().endOfferService();
++        if (causynthTurn != 0L) {
++          CausynthMessagePropagation.endRequest(causynthTurn,
++              "offer-service");
++        }
++        CausynthMessagePropagation.endTick(causynthTick);
+       }
+       processQueueMessages();
+     } // while (shouldRun())
+@@ -1073,6 +1100,16 @@ public void run() {
+       // second loop to avoid a pointless wait on the above latch in every
+       // iteration of the main loop.
+       while (shouldRun()) {
++        CausynthMessagePropagation.endInbound();
++        // One lifeline turn is one lineage root on this DataNode, exactly
++        // as an offer-service turn is, and this thread was started in the
++        // same place with the same missing node. // causynth-d3-lineage
++        long causynthTick = CausynthMessagePropagation.beginTick(
++            dn.getDatanodeId(), "BP_LIFELINE_SENDER");
++        Object causynthSource = dn.getCausynthSourceAnchor();
++        long causynthTurn = causynthSource == null ? 0L
++            : CausynthMessagePropagation.beginRequest(causynthSource,
++                "lifeline");
+         try {
+           if (lifelineNamenode == null) {
+             lifelineNamenode = dn.connectToLifelineNN(lifelineNnAddr);
+@@ -1084,6 +1121,11 @@ public void run() {
+         } catch (IOException e) {
+           LOG.warn("IOException in LifelineSender for " + BPServiceActor.this,
+               e);
++        } finally {
++          if (causynthTurn != 0L) {
++            CausynthMessagePropagation.endRequest(causynthTurn, "lifeline");
++          }
++          CausynthMessagePropagation.endTick(causynthTick);
+         }
+       }
+ 
+@@ -1421,6 +1463,35 @@ public void work() {
+       }
+     }
+ 
++    /**
++     * The scope of the thread enqueueing this command, carried with it.
++     *
++     * <p>This thread is started in the {@link BPServiceActor} constructor,
++     * which runs inside DataNode initialisation, so it carries no node of
++     * its own either: without this, every command it runs -- a {@code
++     * KeyUpdateCommand}'s {@code addKeys} included -- is addressed to no
++     * node and two DataNodes of one JVM collide.  The offer-service turn
++     * that received the command from the NameNode is the scope the command
++     * ran because of. // causynth-d3-lineage</p>
++     */
++    private Runnable carryingScope(final Runnable action) {
++      final Object scope = CausynthMessagePropagation.captureScope();
++      return () -> {
++        // The scopes of one command nest inside each other only if the
++        // response scope an earlier command's RPC left open on this thread
++        // is ended first, and again before this one is left.
++        CausynthMessagePropagation.endInbound();
++        long causynthCommand = CausynthMessagePropagation.enterCarriedScope(
++            scope, "DN_COMMAND_PROCESSOR", "process-command");
++        try {
++          action.run();
++        } finally {
++          CausynthMessagePropagation.endInbound();
++          CausynthMessagePropagation.exitCarriedScope(causynthCommand);
++        }
++      };
++    }
++
+     /**
+      * Process commands in queue one by one, and wait until queue not empty.
+      */
+@@ -1487,7 +1558,8 @@ void enqueue(DatanodeCommand cmd) throws InterruptedException {
+       if (cmd == null) {
+         return;
+       }
+-      queue.put(() -> processCommand(new DatanodeCommand[]{cmd}));
++      queue.put(carryingScope(
++          () -> processCommand(new DatanodeCommand[]{cmd})));
+       dn.getMetrics().incrActorCmdQueueLength(1);
+     }
+ 
+@@ -1501,7 +1573,7 @@ void enqueueFirst(DatanodeCommand cmd) throws InterruptedException {
+         return;
+       }
+       ((LinkedBlockingDeque<Runnable>) queue).putFirst(
+-          () -> processCommand(new DatanodeCommand[]{cmd}));
++          carryingScope(() -> processCommand(new DatanodeCommand[]{cmd})));
+ 
+       LOG.info("Enqueue command: {} to the head of queue", cmd);
+       dn.getMetrics().incrActorCmdQueueLength(1);
+@@ -1511,14 +1583,14 @@ void enqueue(List<DatanodeCommand> cmds) throws InterruptedException {
+       if (cmds == null) {
+         return;
+       }
+-      queue.put(() -> processCommand(
+-          cmds.toArray(new DatanodeCommand[cmds.size()])));
++      queue.put(carryingScope(() -> processCommand(
++          cmds.toArray(new DatanodeCommand[cmds.size()]))));
+       dn.getMetrics().incrActorCmdQueueLength(1);
+     }
+ 
+     void enqueue(DatanodeCommand[] cmds) throws InterruptedException {
+       if (cmds.length != 0) {
+-        queue.put(() -> processCommand(cmds));
++        queue.put(carryingScope(() -> processCommand(cmds)));
+         dn.getMetrics().incrActorCmdQueueLength(1);
+       }
+     }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/DataNode.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/DataNode.java
+index 7ee9a4b172..29ff5353c9 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/DataNode.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/DataNode.java
+@@ -425,6 +425,17 @@ public static InetSocketAddress createSocketAddr(String target) {
+ 
+   private String hostName;
+   private DatanodeID id;
++  /**
++   * The anchor this DataNode's own node is registered under, or null.
++   *
++   * <p>The block-pool threads are created inside DataNode initialisation,
++   * before the workload registers anything, so no scope of this node ever
++   * reaches them and every activation that runs on them is addressed to no
++   * node at all -- two DataNodes of one JVM collide.  Once the workload
++   * hands the anchor over, each of their turns is this node's own action.
++   * // causynth-d3-lineage</p>
++   */
++  private volatile Object causynthSourceAnchor;
+   
+   final private String fileDescriptorPassingDisabledReason;
+   boolean isBlockTokenEnabled;
+@@ -3996,6 +4007,23 @@ public boolean isDatanodeFullyStarted(boolean checkConnectionToActiveNamenode) {
+   public DatanodeID getDatanodeId() {
+     return id;
+   }
++
++  /**
++   * Hands this DataNode the anchor its node was registered under, for the
++   * block-pool threads that were started before that registration to open
++   * their turns on. // causynth-d3-lineage
++   *
++   * @param anchor the object the workload passed to
++   *               {@code CausynthMessagePropagation.registerSource}
++   */
++  public void setCausynthSourceAnchor(Object anchor) {
++    this.causynthSourceAnchor = anchor;
++  }
++
++  /** The anchor {@link #setCausynthSourceAnchor} handed over, or null. */
++  public Object getCausynthSourceAnchor() {
++    return causynthSourceAnchor;
++  }
+   
+   @VisibleForTesting
+   public void clearAllBlockSecretKeys() {
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/DataXceiver.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/DataXceiver.java
+index 6e65861d75..957e345964 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/DataXceiver.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/DataXceiver.java
+@@ -298,7 +298,21 @@ public void run() {
+           firstOp = op;
+           incrReadWriteOpMetrics(op);
+         }
+-        processOp(op);
++        // One op is one hop, and the message scope a SASL
++        // handshake opened ends with the op rather than with the
++        // handshake. // causynth-d3-lineage
++        long causynthOp = CausynthMessagePropagation.beginTick(
++            datanode.getDatanodeId(), "DATA_XCEIVER");
++        try {
++          processOp(op);
++        } finally {
++          CausynthMessagePropagation.endTick(causynthOp);
++          try {
++            CausynthMessagePropagation.endInbound();
++          } catch (RuntimeException scopeAlreadyEnded) {
++            // Ending twice is not a workload error.
++          }
++        }
+         ++opsProcessed;
+       } while ((peer != null) &&
+           (!peer.isClosed() && dnConf.socketKeepaliveTimeout > 0));
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/balancer/TestBalancer.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/balancer/TestBalancer.java
+index 970e452c40..d16d312d9c 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/balancer/TestBalancer.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/balancer/TestBalancer.java
+@@ -180,6 +180,43 @@ public void shutdown() throws Exception {
+   ClientProtocol client;
+   Runnable beforeBalancer = () -> { };
+ 
++  /**
++   * Set by workloads that are replayed on a slow, interpreter-only JVM.
++   *
++   * <p>{@link #initConf} pins the NameNode's dead-node window at
++   * {@code 2 * 500 + 10 * 1000 * 1 = 11s}, which assumes a DataNode's single
++   * {@code BPServiceActor} thread comes back within 11s.  Under an
++   * interpreted replay that thread can still be inside its first block report
++   * well past that, so the NameNode prunes both DataNodes mid-write and
++   * {@code addBlock} starts answering "There are 0 datanode(s) running".  The
++   * DataNode then re-registers, its block report lease is rejected as
++   * invalid, and the cycle repeats until the client's retry budget is gone.
++   *
++   * <p>When set, the dead-node window is widened to the production default
++   * and each cluster is given time to finish its first block report before
++   * anything writes to it.  Defaults to {@code false}, so every other
++   * TestBalancer case keeps exactly the timings it has today.</p>
++   */
++  static boolean tolerateSlowDatanodes = false;
++
++  /** Dead-node window becomes 2*300000 + 10000 = 610s when tolerating. */
++  private static final int SLOW_HEARTBEAT_RECHECK_INTERVAL_MS = 300000;
++  /** Cap on the pre-write wait for the first block report when tolerating. */
++  private static final int SLOW_FIRST_BLOCK_REPORT_TIMEOUT_MS = 120000;
++
++  /**
++   * Waits for every DataNode of {@code cluster} to have delivered its first
++   * block report, so a following write does not spend its retry budget
++   * waiting on registration and block-report churn.  A no-op unless
++   * {@link #tolerateSlowDatanodes} is set.
++   */
++  private static void awaitFirstBlockReport(MiniDFSCluster cluster)
++      throws IOException, InterruptedException, TimeoutException {
++    if (tolerateSlowDatanodes) {
++      cluster.waitFirstBRCompleted(0, SLOW_FIRST_BLOCK_REPORT_TIMEOUT_MS);
++    }
++  }
++
+   MiniDFSCluster getCluster() {
+     return cluster;
+   }
+@@ -203,7 +240,8 @@ static void initConf(Configuration conf) {
+     conf.setLong(DFSConfigKeys.DFS_BLOCK_SIZE_KEY, DEFAULT_BLOCK_SIZE);
+     conf.setInt(DFSConfigKeys.DFS_BYTES_PER_CHECKSUM_KEY, DEFAULT_BLOCK_SIZE);
+     conf.setLong(DFSConfigKeys.DFS_HEARTBEAT_INTERVAL_KEY, 1L);
+-    conf.setInt(DFSConfigKeys.DFS_NAMENODE_HEARTBEAT_RECHECK_INTERVAL_KEY, 500);
++    conf.setInt(DFSConfigKeys.DFS_NAMENODE_HEARTBEAT_RECHECK_INTERVAL_KEY,
++        tolerateSlowDatanodes ? SLOW_HEARTBEAT_RECHECK_INTERVAL_MS : 500);
+     conf.setLong(DFSConfigKeys.DFS_NAMENODE_REDUNDANCY_INTERVAL_SECONDS_KEY,
+         1L);
+     SimulatedFSDataset.setFactory(conf);
+@@ -315,6 +353,7 @@ private ExtendedBlock[] generateBlocks(Configuration conf, long size,
+     cluster = new MiniDFSCluster.Builder(conf).numDataNodes(numNodes).build();
+     try {
+       cluster.waitActive();
++      awaitFirstBlockReport(cluster);
+       client = NameNodeProxies.createProxy(conf, cluster.getFileSystem(0).getUri(),
+           ClientProtocol.class).getProxy();
+ 
+@@ -410,6 +449,7 @@ private void testUnevenDistribution(Configuration conf,
+                                               .simulatedCapacities(capacities)
+                                               .build();
+     cluster.waitActive();
++    awaitFirstBlockReport(cluster);
+     client = NameNodeProxies.createProxy(conf, cluster.getFileSystem(0).getUri(),
+         ClientProtocol.class).getProxy();
+ 
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/balancer/TestCausynthExpiredBalancerKey.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/balancer/TestCausynthExpiredBalancerKey.java
+index 55209fb876..5d56a9a74d 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/balancer/TestCausynthExpiredBalancerKey.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/balancer/TestCausynthExpiredBalancerKey.java
+@@ -17,11 +17,18 @@
+  */
+ package org.apache.hadoop.hdfs.server.balancer;
+ 
++import java.lang.reflect.Field;
++import java.util.Arrays;
++import java.util.Map;
++import java.util.Set;
++import java.util.TreeSet;
+ import org.apache.hadoop.conf.Configuration;
+ import org.apache.hadoop.hdfs.DFSConfigKeys;
+ import org.apache.hadoop.hdfs.HdfsConfiguration;
+ import org.apache.hadoop.hdfs.MiniDFSCluster;
+ import org.apache.hadoop.hdfs.NameNodeProxies;
++import org.apache.hadoop.hdfs.client.HdfsClientConfigKeys;
++import org.apache.hadoop.hdfs.security.token.block.BlockKey;
+ import org.apache.hadoop.hdfs.security.token.block.BlockTokenSecretManager;
+ import org.apache.hadoop.hdfs.server.datanode.DataNode;
+ import org.apache.hadoop.hdfs.server.namenode.NameNodeRpcServer;
+@@ -30,19 +37,47 @@
+ import org.apache.hadoop.ipc.RPC;
+ import org.junit.jupiter.api.Test;
+ 
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
+ /** HDFS-11741's non-refreshing encryption-key cache, using current tracing. */
+ public class TestCausynthExpiredBalancerKey {
++  /** Block-key serial number pinned by {@link #pinBlockKeys}. */
++  private static final int SERIAL_NO = Integer.MAX_VALUE / 11741;
++
+   @Test
+   public void testEncryptedBalancerAfterKeyRotations() throws Exception {
+     Configuration conf = new HdfsConfiguration();
+     conf.setBoolean(DFSConfigKeys.DFS_ENCRYPT_DATA_TRANSFER_KEY, true);
+     conf.setBoolean(DFSConfigKeys.DFS_BLOCK_ACCESS_TOKEN_ENABLE_KEY, true);
++    conf.setInt(HdfsClientConfigKeys.BlockWrite.LOCATEFOLLOWINGBLOCK_RETRIES_KEY, 30);
++    conf.setInt(HdfsClientConfigKeys.BlockWrite.LOCATEFOLLOWINGBLOCK_MAX_DELAY_MS_KEY, 2000);
++    // This case is replayed on an interpreter-only JVM under load, where a
++    // DataNode can miss TestBalancer's 11s dead-node window while it is still
++    // completing its first block report.  The NameNode then prunes it and the
++    // setup write fails with "There are 0 datanode(s) running".  Widen the
++    // dead-node and stale-node windows and let each cluster finish its first
++    // block report before anything writes to it.  None of this touches the
++    // recorded window, which opens later inside KeyManager.testWait.
++    conf.setInt(DFSConfigKeys.DFS_NAMENODE_STALE_DATANODE_INTERVAL_KEY, 300000);
++    TestBalancer.tolerateSlowDatanodes = true;
+     TestBalancer workload = new TestBalancer();
+     CausynthMessagePropagation.registerSource(workload, "EXTERNAL_APP",
+         "BALANCER", "hdfs-11741/balancer", 0);
+     long[] request = {0L};
+-    workload.beforeBalancer = () -> request[0] =
+-        CausynthMessagePropagation.beginRequest(workload, "balance-block");
++    workload.beforeBalancer = () -> {
++      // testUnevenDistribution restarts the cluster right before this hook and
++      // runBalancer creates the KeyManager right after it, so this is where
++      // the live NameNode's keys become session-stable before the Balancer
++      // takes its constructor snapshot of them.
++      try {
++        pinBlockKeys(workload.getCluster());
++      } catch (Exception e) {
++        throw new IllegalStateException("pinning block keys failed", e);
++      }
++      request[0] = CausynthMessagePropagation.beginRequest(
++          workload, "balance-block");
++    };
+     KeyManager.testWait = keyManager -> {
+       KeyManager.testWait = ignored -> { };
+       CausynthMessagePropagation.registerSourceAlias(keyManager, workload);
+@@ -62,16 +97,47 @@ public void testEncryptedBalancerAfterKeyRotations() throws Exception {
+         CausynthMessagePropagation.registerSourceAlias(
+             node.getBlockPoolTokenSecretManager().get(blockPoolId),
+             node.getDatanodeId());
++        // This node's block-pool threads -- the offer-service loop and the
++        // command processor that runs a KeyUpdateCommand's addKeys -- were
++        // started inside DataNode initialisation, before this
++        // registration, so they carry no node and every heartbeat
++        // activation of either DataNode was addressed
++        // workload/unregistered#epoch0: dn0's and dn1's collided.  Hand
++        // the node the anchor just registered; from its next turn on each
++        // of those threads runs as this node. // causynth-d3-lineage
++        node.setCausynthSourceAnchor(node.getDatanodeId());
+       }
+       NamenodeProtocol rpc = NameNodeProxies.createProxy(conf,
+           cluster.getFileSystem().getUri(), NamenodeProtocol.class).getProxy();
+       CausynthMessagePropagation.startRecording();
++      // Refresh once inside the recorded interval. The Balancer cache below
++      // then reads the NameNode-delivered key expression instead of the
++      // constructor's pre-recording concrete snapshot.
++      keyManager.updateBlockKeys();
+       // Cache G before the NameNode publishes later versions. The seed keeps
+       // G valid; symbolic expiry and the production removal loop determine
+       // whether a DataNode still has it when the Balancer uses its cache.
+       keyManager.newDataEncryptionKey();
+-      master.updateKeys(Long.MAX_VALUE);
+-      master.updateKeys(Long.MAX_VALUE);
++      { // causynth-d3-rotation-scope
++        long causynthRotation = org.apache.hadoop.ipc.CausynthMessagePropagation.beginTick(
++            master, "KEY_MANAGER_TICK");
++        try {
++          master.updateKeys(Long.MAX_VALUE);
++        } finally {
++          org.apache.hadoop.ipc.CausynthMessagePropagation.endTick(
++              causynthRotation);
++        }
++      }
++      { // causynth-d3-rotation-scope
++        long causynthRotation = org.apache.hadoop.ipc.CausynthMessagePropagation.beginTick(
++            master, "KEY_MANAGER_TICK");
++        try {
++          master.updateKeys(Long.MAX_VALUE);
++        } finally {
++          org.apache.hadoop.ipc.CausynthMessagePropagation.endTick(
++              causynthRotation);
++        }
++      }
+       try {
+         for (DataNode node : cluster.getDataNodes()) {
+           BlockTokenSecretManager manager = node.getBlockPoolTokenSecretManager()
+@@ -92,10 +158,96 @@ public void testEncryptedBalancerAfterKeyRotations() throws Exception {
+     try {
+       workload.testBalancer1Internal(conf, 1000L);
+     } finally {
++      TestBalancer.tolerateSlowDatanodes = false;
+       KeyManager.testWait = ignored -> { };
+       if (request[0] != 0L) {
+         CausynthMessagePropagation.endRequest(request[0], "balance-block");
+       }
+     }
+   }
++
++  /**
++   * Makes every block-key id the recorded window sees identical across
++   * GraphChecker replay sessions.  The NameNode manager seeds serialNo from
++   * SecureRandom once per JVM and each replay task is its own JVM.
++   * setSerialNo only moves the counter, so the two constructor-time keys keep
++   * their random ids; two rotations retire them: the first mints
++   * SERIAL_NO + 1 as nextKey, the second makes it currentKey (the key the
++   * Balancer's recorded newDataEncryptionKey is minted from) and mints
++   * SERIAL_NO + 2.  DataNodes and the Balancer mint nothing themselves (they
++   * only addKeys what the NameNode exports), so delivering the master's export
++   * in-process here is the same state the recorded RPC refresh delivers later;
++   * it stays out of the trace because nothing is recorded yet.  The recorded
++   * window's own two rotations in testWait are unchanged.
++   */
++  private static void pinBlockKeys(MiniDFSCluster cluster) throws Exception {
++    BlockTokenSecretManager master = cluster.getNamesystem()
++        .getBlockManager().getBlockTokenSecretManager();
++    master.setSerialNo(SERIAL_NO);
++    { // causynth-d3-rotation-scope
++      long causynthRotation = org.apache.hadoop.ipc.CausynthMessagePropagation.beginTick(
++          master, "KEY_MANAGER_TICK");
++      try {
++        master.updateKeys(Long.MAX_VALUE);
++      } finally {
++        org.apache.hadoop.ipc.CausynthMessagePropagation.endTick(
++            causynthRotation);
++      }
++    }
++    { // causynth-d3-rotation-scope
++      long causynthRotation = org.apache.hadoop.ipc.CausynthMessagePropagation.beginTick(
++          master, "KEY_MANAGER_TICK");
++      try {
++        master.updateKeys(Long.MAX_VALUE);
++      } finally {
++        org.apache.hadoop.ipc.CausynthMessagePropagation.endTick(
++            causynthRotation);
++      }
++    }
++    assertEquals(SERIAL_NO + 1, master.getCurrentKey().getKeyId());
++    // The two retired constructor-time keys still sit in every allKeys map
++    // (they expire long after the run) and would reach the target as a
++    // second, unpinned key family.  Drop them everywhere before recording, so
++    // every manager starts the recorded window holding exactly the pinned
++    // pair; managers created later (a Balancer/SPS KeyManager) copy the
++    // pruned NameNode export and never see them.
++    Set<Integer> pinned =
++        new TreeSet<>(Arrays.asList(SERIAL_NO + 1, SERIAL_NO + 2));
++    retainKeys(master, pinned);
++    assertEquals(pinned, keyIds(master));
++    String blockPoolId = cluster.getNamesystem().getBlockPoolId();
++    for (DataNode node : cluster.getDataNodes()) {
++      BlockTokenSecretManager manager =
++          node.getBlockPoolTokenSecretManager().get(blockPoolId);
++      manager.addKeys(master.exportKeys());
++      retainKeys(manager, pinned);
++      assertEquals(pinned, keyIds(manager),
++          "DataNode " + node.getDatanodeId() + " holds unpinned keys");
++      assertEquals(SERIAL_NO + 1, manager.getCurrentKey().getKeyId());
++      assertTrue(manager.hasKey(SERIAL_NO + 1) && manager.hasKey(SERIAL_NO + 2));
++    }
++  }
++
++  /** The private allKeys map; BlockTokenSecretManager has no test accessor. */
++  @SuppressWarnings("unchecked")
++  private static Map<Integer, BlockKey> allKeys(
++      BlockTokenSecretManager manager) throws ReflectiveOperationException {
++    Field field = BlockTokenSecretManager.class.getDeclaredField("allKeys");
++    field.setAccessible(true);
++    return (Map<Integer, BlockKey>) field.get(manager);
++  }
++
++  private static void retainKeys(BlockTokenSecretManager manager,
++      Set<Integer> keyIds) throws ReflectiveOperationException {
++    synchronized (manager) {
++      allKeys(manager).keySet().retainAll(keyIds);
++    }
++  }
++
++  private static Set<Integer> keyIds(BlockTokenSecretManager manager)
++      throws ReflectiveOperationException {
++    synchronized (manager) {
++      return new TreeSet<>(allKeys(manager).keySet());
++    }
++  }
+ }

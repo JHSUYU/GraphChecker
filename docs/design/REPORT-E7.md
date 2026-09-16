@@ -1,0 +1,5 @@
+# REPORT-E7 — any decision with a symbolic term is a flip candidate (2026-09-15 09:40)
+
+Tip 094f78379 on refactor/d3-explore2 (on staging 76e9e12cf), merge pending the lane. 52 @Test → 52.
+- FlipQuery.flippable :135 = one line: a candidate unless the decision published no predicate (concrete branch); the ROOT/HANDOFF/clock pre-filter deleted; producibility is the solver's verdict (`FlipQuery.Builder.unbound` → UNPRODUCIBLE_ANSWER). ClosurePlanner.symbolicDecision :412 calls it (one rule); ExploreMain why=SYMBOLIC_DECISION :62/:145. E6's WINDOW_START exemption and test clause removed.
+- Validation: P2l seed → tasks 9 (all CLOSURE_MEMBER — REGION.9492ec77 is in the closure by rows since P2c), obligations 2 → 20; P2f' 3-session → candidates 6 → 45 but proposed 0 because `replaced=true` (4 cross-session TOPOLOGY_DIVERGENCE BLOCKING: STATE re-pairing under the flips → E8). u61 `2 == S` obligation 76dd671eec82d5b9: solved UNSAT offline ("no world of this corpus takes the other arm"; eligible writers of INSTANCE 2.24: 1), 0-byte focused_task → no replay.

@@ -1,0 +1,1929 @@
+commit 275283a72965597b9a626de0c573769166fd5ffa
+Author: ZhenyuLi <ZhenyuLi@node0.adhoc-debug.silentfailure-pg0.wisc.cloudlab.us>
+Date:   Sat Sep 5 15:29:27 2026 -0500
+
+    Add the HDFS-11741 expired Balancer key workload
+
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/ipc/CausynthMessagePropagation.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/ipc/CausynthMessagePropagation.java
+index 8f77a30e4f..3c1fb2fcae 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/ipc/CausynthMessagePropagation.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/ipc/CausynthMessagePropagation.java
+@@ -163,6 +163,7 @@ public static void registerSourceAlias(Object alias, Object anchor) {
+   }
+ 
+   public static long beginRequest(Object source, String api) {
++    endInbound();
+     return CausynthTraceRecorder.beginSourceRequest(source, api);
+   }
+ 
+diff --git a/hadoop-hdfs-project/hadoop-hdfs-client/src/main/java/org/apache/hadoop/hdfs/FileChecksumHelper.java b/hadoop-hdfs-project/hadoop-hdfs-client/src/main/java/org/apache/hadoop/hdfs/FileChecksumHelper.java
+index 21bc885358..f5c69af8f5 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs-client/src/main/java/org/apache/hadoop/hdfs/FileChecksumHelper.java
++++ b/hadoop-hdfs-project/hadoop-hdfs-client/src/main/java/org/apache/hadoop/hdfs/FileChecksumHelper.java
+@@ -666,6 +666,17 @@ private boolean checksumBlockGroup(
+             bgIdx--; // repeat at bgIdx-th block
+             setRefetchBlocks(true);
+           }
++        } catch (InvalidEncryptionKeyException iee) {
++          if (bgIdx > getLastRetriedIndex()) {
++            LOG.debug("Got invalid encryption key error in response to "
++                    + "OP_BLOCK_GROUP_CHECKSUM for file {} for block {} from "
++                    + "datanode {}. Will retry the block once.",
++                getSrc(), block, datanodes[j]);
++            setLastRetriedIndex(bgIdx);
++            done = true; // actually it's not done; but we'll retry
++            bgIdx--; // repeat at bgIdx-th block
++            getClient().clearDataEncryptionKey();
++          }
+         } catch (IOException ie) {
+           LOG.warn("src={}" + ", datanodes[{}]={}",
+               getSrc(), j, datanodes[j], ie);
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/security/token/block/BlockTokenSecretManager.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/security/token/block/BlockTokenSecretManager.java
+index 11e69875e2..8c9b8cc584 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/security/token/block/BlockTokenSecretManager.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/security/token/block/BlockTokenSecretManager.java
+@@ -561,7 +561,7 @@ public byte[] retrieveDataEncryptionKey(int keyId, byte[] nonce)
+     synchronized (this) {
+       key = allKeys.get(keyId);
+       if (key == null) {
+-        throw new @CausynthExceptionTarget("hdfs-17897")
++        throw new @CausynthExceptionTarget("hdfs-11741")
+             InvalidEncryptionKeyException("Can't re-compute encryption key"
+             + " for nonce, since the required block key (keyID=" + keyId
+             + ") doesn't exist. Current key: " + currentKey.getKeyId());
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/balancer/KeyManager.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/balancer/KeyManager.java
+index 5644ef7d7d..014bb4fe43 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/balancer/KeyManager.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/balancer/KeyManager.java
+@@ -35,7 +35,6 @@
+ import org.apache.hadoop.security.token.Token;
+ import org.apache.hadoop.util.Daemon;
+ import org.apache.hadoop.util.StringUtils;
+-import org.apache.hadoop.util.Timer;
+ import org.slf4j.Logger;
+ import org.slf4j.LoggerFactory;
+ 
+@@ -46,6 +45,13 @@
+ public class KeyManager implements Closeable, DataEncryptionKeyFactory {
+   private static final Logger LOG = LoggerFactory.getLogger(KeyManager.class);
+ 
++  @FunctionalInterface
++  interface TestHook {
++    void run(KeyManager keyManager) throws IOException;
++  }
++
++  static TestHook testWait = ignored -> { };
++
+   private final NamenodeProtocol namenode;
+ 
+   private final boolean isBlockTokenEnabled;
+@@ -55,17 +61,11 @@ public class KeyManager implements Closeable, DataEncryptionKeyFactory {
+   private final BlockTokenSecretManager blockTokenSecretManager;
+   private final BlockKeyUpdater blockKeyUpdater;
+   private DataEncryptionKey encryptionKey;
+-  /**
+-   * Timer object for querying the current time. Separated out for
+-   * unit testing.
+-   */
+-  private Timer timer;
+ 
+   public KeyManager(String blockpoolID, NamenodeProtocol namenode,
+       boolean encryptDataTransfer, Configuration conf) throws IOException {
+     this.namenode = namenode;
+     this.encryptDataTransfer = encryptDataTransfer;
+-    this.timer = new Timer();
+ 
+     final ExportedBlockKeys keys = namenode.getBlockKeys();
+     this.isBlockTokenEnabled = keys.isBlockTokenEnabled();
+@@ -88,6 +88,7 @@ public KeyManager(String blockpoolID, NamenodeProtocol namenode,
+       // sync block keys with NN more frequently than NN updates its block keys
+       this.blockKeyUpdater = new BlockKeyUpdater(updateInterval / 4);
+       this.shouldRun = true;
++      testWait.run(this);
+     } else {
+       this.blockTokenSecretManager = null;
+       this.blockKeyUpdater = null;
+@@ -100,6 +101,10 @@ public void startBlockKeyUpdater() {
+     }
+   }
+ 
++  void updateBlockKeys() throws IOException {
++    blockTokenSecretManager.addKeys(namenode.getBlockKeys());
++  }
++
+   /** Get an access token for a block. */
+   public Token<BlockTokenIdentifier> getAccessToken(ExtendedBlock eb,
+       StorageType[] storageTypes, String[] storageIds) throws IOException {
+@@ -118,34 +123,16 @@ public Token<BlockTokenIdentifier> getAccessToken(ExtendedBlock eb,
+ 
+   @Override
+   public DataEncryptionKey newDataEncryptionKey() {
+-    if (encryptDataTransfer) {
+-      synchronized (this) {
+-        if (encryptionKey == null ||
+-            encryptionKey.expiryDate < timer.now()) {
+-          // Encryption Key (EK) is generated from Block Key (BK).
+-          // Check if EK is expired, and generate a new one using the current BK
+-          // if so, otherwise continue to use the previously generated EK.
+-          //
+-          // It's important to make sure that when EK is not expired, the BK
+-          // used to generate the EK is not expired and removed, because
+-          // the same BK will be used to re-generate the EK
+-          // by BlockTokenSecretManager.
+-          //
+-          // The current implementation ensures that when an EK is not expired
+-          // (within tokenLifetime), the BK that's used to generate it
+-          // still has at least "keyUpdateInterval" of life time before
+-          // the BK gets expired and removed.
+-          // See BlockTokenSecretManager for details.
+-          LOG.debug("Generating new data encryption key because current key "
+-              + (encryptionKey == null ?
+-              "is null." : "expired on " + encryptionKey.expiryDate));
+-          encryptionKey = blockTokenSecretManager.generateDataEncryptionKey();
+-        }
+-        return encryptionKey;
+-      }
+-    } else {
++    if (!encryptDataTransfer) {
+       return null;
+     }
++    synchronized (this) {
++      // HDFS-11741: the original cache never checks the key expiry.
++      if (encryptionKey == null) {
++        encryptionKey = blockTokenSecretManager.generateDataEncryptionKey();
++      }
++      return encryptionKey;
++    }
+   }
+ 
+   @Override
+@@ -177,7 +164,7 @@ public void run() {
+       try {
+         while (shouldRun) {
+           try {
+-            blockTokenSecretManager.addKeys(namenode.getBlockKeys());
++            updateBlockKeys();
+           } catch (IOException e) {
+             LOG.error("Failed to set keys", e);
+           }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestCausynthStripedChecksum.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestCausynthStripedChecksum.java
+deleted file mode 100644
+index 9af7472881..0000000000
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestCausynthStripedChecksum.java
++++ /dev/null
+@@ -1,145 +0,0 @@
+-/**
+- * Licensed to the Apache Software Foundation (ASF) under one
+- * or more contributor license agreements.  See the NOTICE file
+- * distributed with this work for additional information
+- * regarding copyright ownership.  The ASF licenses this file
+- * to you under the Apache License, Version 2.0 (the
+- * "License"); you may not use this file except in compliance
+- * with the License.  You may obtain a copy of the License at
+- *
+- *     http://www.apache.org/licenses/LICENSE-2.0
+- *
+- * Unless required by applicable law or agreed to in writing, software
+- * distributed under the License is distributed on an "AS IS" BASIS,
+- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+- * See the License for the specific language governing permissions and
+- * limitations under the License.
+- */
+-package org.apache.hadoop.hdfs;
+-
+-import org.apache.hadoop.conf.Configuration;
+-import org.apache.hadoop.fs.FSDataOutputStream;
+-import org.apache.hadoop.fs.Path;
+-import org.apache.hadoop.hdfs.protocol.ErasureCodingPolicy;
+-import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
+-import org.apache.hadoop.hdfs.protocol.SystemErasureCodingPolicies;
+-import org.apache.hadoop.hdfs.security.token.block.BlockTokenSecretManager;
+-import org.apache.hadoop.hdfs.security.token.block.ExportedBlockKeys;
+-import org.apache.hadoop.hdfs.server.datanode.DataNode;
+-import org.apache.hadoop.hdfs.server.namenode.NameNodeRpcServer;
+-import org.apache.hadoop.hdfs.server.protocol.NamenodeProtocol;
+-import org.apache.hadoop.ipc.CausynthMessagePropagation;
+-import org.apache.hadoop.ipc.RPC;
+-import org.junit.jupiter.api.Test;
+-
+-/** Causal workload for the stale-key striped-checksum failure in HDFS-17897. */
+-public class TestCausynthStripedChecksum {
+-  @Test
+-  public void testStaleEncryptionKeyFailsStripedChecksum() throws Exception {
+-    Configuration conf = new HdfsConfiguration();
+-    conf.setBoolean(DFSConfigKeys.DFS_ENCRYPT_DATA_TRANSFER_KEY, true);
+-    conf.setBoolean(DFSConfigKeys.DFS_BLOCK_ACCESS_TOKEN_ENABLE_KEY, true);
+-    conf.setInt(DFSConfigKeys.DFS_HEARTBEAT_INTERVAL_KEY, 3600);
+-    try (MiniDFSCluster cluster = new MiniDFSCluster.Builder(conf)
+-        .numDataNodes(3).build();
+-         DistributedFileSystem fs = cluster.getFileSystem()) {
+-      cluster.waitActive();
+-      DFSClient client = DFSClientAdapter.getDFSClient(fs);
+-
+-      ErasureCodingPolicy policy = SystemErasureCodingPolicies.getByID(
+-          SystemErasureCodingPolicies.XOR_2_1_POLICY_ID);
+-      fs.enableErasureCodingPolicy(policy.getName());
+-      Path directory = new Path("/hdfs-17897");
+-      Path file = new Path(directory, "file");
+-      fs.mkdirs(directory);
+-      fs.setErasureCodingPolicy(directory, policy.getName());
+-
+-      try (FSDataOutputStream out = fs.create(file)) {
+-        out.write(new byte[1024]);
+-      }
+-      registerSources(cluster, client, file);
+-      BlockTokenSecretManager master = cluster.getNamesystem()
+-          .getBlockManager().getBlockTokenSecretManager();
+-      CausynthMessagePropagation.registerSourceAlias(master,
+-          ((NameNodeRpcServer) cluster.getNameNodeRpc()).getClientRpcServer());
+-      CausynthMessagePropagation.startRecording();
+-      client.clearDataEncryptionKey();
+-      long cacheRequest = CausynthMessagePropagation.beginRequest(
+-          client, "cache-encryption-key");
+-      try {
+-        client.newDataEncryptionKey();
+-      } finally {
+-        CausynthMessagePropagation.endRequest(
+-            cacheRequest, "cache-encryption-key");
+-      }
+-
+-      master.updateKeys(Long.MAX_VALUE);
+-      master.updateKeys(Long.MAX_VALUE);
+-      refreshDataNodes(cluster, conf, fs);
+-
+-      long checksumRequest = CausynthMessagePropagation.beginRequest(
+-          client, "striped-file-checksum");
+-      try {
+-        fs.getFileChecksum(file);
+-      } finally {
+-        CausynthMessagePropagation.endRequest(
+-            checksumRequest, "striped-file-checksum");
+-      }
+-    }
+-  }
+-
+-  private static void refreshDataNodes(MiniDFSCluster cluster,
+-      Configuration conf, DistributedFileSystem fs) throws Exception {
+-    NamenodeProtocol namenode = NameNodeProxies.createProxy(
+-        conf, fs.getUri(), NamenodeProtocol.class).getProxy();
+-    try {
+-      String blockPoolId = cluster.getNamesystem().getBlockPoolId();
+-      for (DataNode node : cluster.getDataNodes()) {
+-        BlockTokenSecretManager manager =
+-            node.getBlockPoolTokenSecretManager().get(blockPoolId);
+-        CausynthMessagePropagation.registerSourceAlias(
+-            manager, node.getDatanodeId());
+-        long request = CausynthMessagePropagation.beginRequest(
+-            node.getDatanodeId(), "refresh-block-keys");
+-        try {
+-          ExportedBlockKeys fresh = namenode.getBlockKeys();
+-          manager.addKeys(fresh);
+-        } finally {
+-          CausynthMessagePropagation.endRequest(request, "refresh-block-keys");
+-        }
+-      }
+-    } finally {
+-      RPC.stopProxy(namenode);
+-    }
+-  }
+-
+-  private static void registerSources(MiniDFSCluster cluster,
+-      DFSClient client, Path file) throws Exception {
+-    NameNodeRpcServer namenode = (NameNodeRpcServer) cluster.getNameNodeRpc();
+-    CausynthMessagePropagation.registerSource(
+-        client, "EXTERNAL_APP", "DFS_CLIENT", "hdfs-17897/client", 0);
+-    CausynthMessagePropagation.registerSource(
+-        namenode.getClientRpcServer(), "CLUSTER_NODE", "NAMENODE",
+-        "hdfs-17897/nn0", 0);
+-    DatanodeInfo[] locations = client.getLocatedBlocks(
+-        file.toString(), 0).get(0).getLocations();
+-    int nextIndex = locations.length;
+-    for (DataNode node : cluster.getDataNodes()) {
+-      int index = -1;
+-      for (int locationIndex = 0; locationIndex < locations.length;
+-           locationIndex++) {
+-        if (node.getDatanodeUuid().equals(
+-            locations[locationIndex].getDatanodeUuid())) {
+-          index = locationIndex;
+-          break;
+-        }
+-      }
+-      if (index < 0) {
+-        index = nextIndex++;
+-      }
+-      CausynthMessagePropagation.registerSource(
+-          node.getDatanodeId(), "CLUSTER_NODE", "DATANODE",
+-          "hdfs-17897/dn" + index, 0);
+-    }
+-  }
+-}
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/balancer/TestBalancer.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/balancer/TestBalancer.java
+index 00eb7747ba..970e452c40 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/balancer/TestBalancer.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/balancer/TestBalancer.java
+@@ -178,6 +178,11 @@ public void shutdown() throws Exception {
+   }
+ 
+   ClientProtocol client;
++  Runnable beforeBalancer = () -> { };
++
++  MiniDFSCluster getCluster() {
++    return cluster;
++  }
+ 
+   static final long TIMEOUT = 40000L; //msec
+   static final double CAPACITY_ALLOWED_VARIANCE = 0.005;  // 0.5%
+@@ -412,6 +417,7 @@ private void testUnevenDistribution(Configuration conf,
+       cluster.injectBlocks(i, Arrays.asList(blocksDN[i]), null);
+ 
+     final long totalCapacity = sum(capacities);
++    beforeBalancer.run();
+     runBalancer(conf, totalUsedSpace, totalCapacity);
+     cluster.shutdown();
+   }
+@@ -1191,10 +1197,14 @@ public void testBalancer1() throws Exception {
+   }
+ 
+   void testBalancer1Internal(Configuration conf) throws Exception {
++    testBalancer1Internal(conf, CAPACITY);
++  }
++
++  void testBalancer1Internal(Configuration conf, long capacity) throws Exception {
+     initConf(conf);
+     testUnevenDistribution(conf,
+-        new long[]{50 * CAPACITY / 100, 10 * CAPACITY / 100},
+-        new long[]{CAPACITY, CAPACITY},
++        new long[]{50 * capacity / 100, 10 * capacity / 100},
++        new long[]{capacity, capacity},
+         new String[]{RACK0, RACK1});
+   }
+ 
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/balancer/TestCausynthExpiredBalancerKey.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/balancer/TestCausynthExpiredBalancerKey.java
+new file mode 100644
+index 0000000000..55209fb876
+--- /dev/null
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/balancer/TestCausynthExpiredBalancerKey.java
+@@ -0,0 +1,101 @@
++/**
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements.  See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership.  The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License.  You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++package org.apache.hadoop.hdfs.server.balancer;
++
++import org.apache.hadoop.conf.Configuration;
++import org.apache.hadoop.hdfs.DFSConfigKeys;
++import org.apache.hadoop.hdfs.HdfsConfiguration;
++import org.apache.hadoop.hdfs.MiniDFSCluster;
++import org.apache.hadoop.hdfs.NameNodeProxies;
++import org.apache.hadoop.hdfs.security.token.block.BlockTokenSecretManager;
++import org.apache.hadoop.hdfs.server.datanode.DataNode;
++import org.apache.hadoop.hdfs.server.namenode.NameNodeRpcServer;
++import org.apache.hadoop.hdfs.server.protocol.NamenodeProtocol;
++import org.apache.hadoop.ipc.CausynthMessagePropagation;
++import org.apache.hadoop.ipc.RPC;
++import org.junit.jupiter.api.Test;
++
++/** HDFS-11741's non-refreshing encryption-key cache, using current tracing. */
++public class TestCausynthExpiredBalancerKey {
++  @Test
++  public void testEncryptedBalancerAfterKeyRotations() throws Exception {
++    Configuration conf = new HdfsConfiguration();
++    conf.setBoolean(DFSConfigKeys.DFS_ENCRYPT_DATA_TRANSFER_KEY, true);
++    conf.setBoolean(DFSConfigKeys.DFS_BLOCK_ACCESS_TOKEN_ENABLE_KEY, true);
++    TestBalancer workload = new TestBalancer();
++    CausynthMessagePropagation.registerSource(workload, "EXTERNAL_APP",
++        "BALANCER", "hdfs-11741/balancer", 0);
++    long[] request = {0L};
++    workload.beforeBalancer = () -> request[0] =
++        CausynthMessagePropagation.beginRequest(workload, "balance-block");
++    KeyManager.testWait = keyManager -> {
++      KeyManager.testWait = ignored -> { };
++      CausynthMessagePropagation.registerSourceAlias(keyManager, workload);
++      MiniDFSCluster cluster = workload.getCluster();
++      NameNodeRpcServer namenode = (NameNodeRpcServer) cluster.getNameNodeRpc();
++      CausynthMessagePropagation.registerSource(namenode.getClientRpcServer(),
++          "CLUSTER_NODE", "NAMENODE", "hdfs-11741/nn0", 0);
++      BlockTokenSecretManager master = cluster.getNamesystem()
++          .getBlockManager().getBlockTokenSecretManager();
++      CausynthMessagePropagation.registerSourceAlias(master,
++          namenode.getClientRpcServer());
++      String blockPoolId = cluster.getNamesystem().getBlockPoolId();
++      int index = 0;
++      for (DataNode node : cluster.getDataNodes()) {
++        CausynthMessagePropagation.registerSource(node.getDatanodeId(),
++            "CLUSTER_NODE", "DATANODE", "hdfs-11741/dn" + index++, 0);
++        CausynthMessagePropagation.registerSourceAlias(
++            node.getBlockPoolTokenSecretManager().get(blockPoolId),
++            node.getDatanodeId());
++      }
++      NamenodeProtocol rpc = NameNodeProxies.createProxy(conf,
++          cluster.getFileSystem().getUri(), NamenodeProtocol.class).getProxy();
++      CausynthMessagePropagation.startRecording();
++      // Cache G before the NameNode publishes later versions. The seed keeps
++      // G valid; symbolic expiry and the production removal loop determine
++      // whether a DataNode still has it when the Balancer uses its cache.
++      keyManager.newDataEncryptionKey();
++      master.updateKeys(Long.MAX_VALUE);
++      master.updateKeys(Long.MAX_VALUE);
++      try {
++        for (DataNode node : cluster.getDataNodes()) {
++          BlockTokenSecretManager manager = node.getBlockPoolTokenSecretManager()
++              .get(blockPoolId);
++          long refresh = CausynthMessagePropagation.beginRequest(
++              node.getDatanodeId(), "refresh-block-keys");
++          try {
++            manager.addKeys(rpc.getBlockKeys());
++          } finally {
++            CausynthMessagePropagation.endRequest(refresh, "refresh-block-keys");
++          }
++        }
++      } finally {
++        RPC.stopProxy(rpc);
++      }
++      keyManager.updateBlockKeys();
++    };
++    try {
++      workload.testBalancer1Internal(conf, 1000L);
++    } finally {
++      KeyManager.testWait = ignored -> { };
++      if (request[0] != 0L) {
++        CausynthMessagePropagation.endRequest(request[0], "balance-block");
++      }
++    }
++  }
++}
+
+commit 82f511d6c70468b290aeeb14f1e80a5050d80eda
+Author: ZhenyuLi <ZhenyuLi@node0.adhoc-debug.silentfailure-pg0.wisc.cloudlab.us>
+Date:   Fri Sep 4 07:41:18 2026 -0500
+
+    Add GraphChecker workload for HDFS-17897
+    
+    Propagate tracing and symbolic context through Hadoop IPC and HDFS SASL, expose the real block-key lifecycle, and add a MiniDFSCluster striped-checksum workload that reaches the production stale-key failure.
+
+diff --git a/hadoop-common-project/hadoop-annotations/pom.xml b/hadoop-common-project/hadoop-annotations/pom.xml
+index 893bf0310e..26be319221 100644
+--- a/hadoop-common-project/hadoop-annotations/pom.xml
++++ b/hadoop-common-project/hadoop-annotations/pom.xml
+@@ -47,12 +47,9 @@
+         <configuration combine.self="override">
+           <source>${javac.version}</source>
+           <target>${javac.version}</target>
+-          <compilerArgs>
+-            <arg>--add-modules</arg>
+-            <arg>jdk.javadoc</arg>
+-            <arg>--add-exports</arg>
+-            <arg>jdk.javadoc/jdk.javadoc.internal.tool=ALL-UNNAMED</arg>
+-          </compilerArgs>
++          <excludes>
++            <exclude>org/apache/hadoop/classification/tools/**</exclude>
++          </excludes>
+         </configuration>
+       </plugin>
+     </plugins>
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/io/WritableComparator.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/io/WritableComparator.java
+index e0a2edf116..8dfe1e19fb 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/io/WritableComparator.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/io/WritableComparator.java
+@@ -20,7 +20,6 @@
+ 
+ import java.io.DataInput;
+ import java.io.IOException;
+-import java.util.Arrays;
+ import java.util.concurrent.ConcurrentHashMap;
+ 
+ import org.apache.hadoop.classification.InterfaceAudience;
+@@ -230,7 +229,14 @@ public int compare(Object a, Object b) {
+    */
+   public static int compareBytes(byte[] b1, int s1, int l1,
+                                  byte[] b2, int s2, int l2) {
+-    return Arrays.compareUnsigned(b1, s1, s1 + l1, b2, s2, s2 + l2);
++    int end = Math.min(l1, l2);
++    for (int i = 0; i < end; i++) {
++      int diff = (b1[s1 + i] & 0xff) - (b2[s2 + i] & 0xff);
++      if (diff != 0) {
++        return diff;
++      }
++    }
++    return l1 - l2;
+   }
+ 
+   /**
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/ipc/CausynthMessagePropagation.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/ipc/CausynthMessagePropagation.java
+index bbe69f11ac..8f77a30e4f 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/ipc/CausynthMessagePropagation.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/ipc/CausynthMessagePropagation.java
+@@ -117,17 +117,17 @@ public static void endSasl() {
+ 
+   /** Emits the next message of the current SASL exchange. */
+   public static Outbound outboundSasl() {
++    String pending = PENDING_SASL.get();
++    if (pending != null) {
++      return outbound(SASL, pending, "1", "REQUEST", LOCAL_OWNER.get());
++    }
+     Inbound current = CURRENT.get();
+     if (current != null && "REQUEST".equals(current.half)) {
+       return outbound(SASL, current.correlationId, current.attemptId,
+           "RESPONSE", LOCAL_OWNER.get());
+     }
+     endInbound();
+-    String correlationId = PENDING_SASL.get();
+-    if (correlationId == null) {
+-      return Outbound.EMPTY;
+-    }
+-    return outbound(SASL, correlationId, "1", "REQUEST", LOCAL_OWNER.get());
++    return Outbound.EMPTY;
+   }
+ 
+   /** Installs one message without discarding values carried earlier in the
+@@ -149,6 +149,10 @@ public static void clearLocalOwner() {
+     endInbound();
+   }
+ 
++  public static void startRecording() {
++    CausynthTraceRecorder.startRecording();
++  }
++
+   public static void registerSource(Object anchor, String kind, String role,
+       String sourceId, long epoch) {
+     CausynthTraceRecorder.registerSource(anchor, kind, role, sourceId, epoch);
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/ipc/Server.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/ipc/Server.java
+index aa55fb4a0f..5d65d83daa 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/ipc/Server.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/ipc/Server.java
+@@ -2962,7 +2962,8 @@ private void processRpcRequest(RpcRequestHeaderProto header,
+       // Reject requests for RPC kinds with no registered protocols on this
+       // server instance. This prevents deserialization of untrusted payloads
+       // for unsupported kinds. See HADOOP-19864.
+-      if (Server.this instanceof RPC.Server server) {
++      if (Server.this instanceof RPC.Server) {
++        RPC.Server server = (RPC.Server) Server.this;
+         final RPC.RpcKind kind = ProtoUtil.convert(header.getRpcKind());
+         if (!server.hasRegisteredProtocols(kind)) {
+           final String err = "No protocols registered on this server for RpcKind "
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/util/DataChecksum.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/util/DataChecksum.java
+index d964ea4bde..d69cdeb3e8 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/util/DataChecksum.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/util/DataChecksum.java
+@@ -24,7 +24,6 @@
+ import java.nio.ByteBuffer;
+ import java.util.function.ToIntFunction;
+ import java.util.zip.CRC32;
+-import java.util.zip.CRC32C;
+ import java.util.zip.Checksum;
+ 
+ import org.apache.hadoop.classification.InterfaceAudience;
+@@ -87,7 +86,7 @@ public static Checksum newCrc32() {
+   }
+ 
+   static Checksum newCrc32C() {
+-    return new CRC32C();
++    return new PureJavaCrc32C();
+   }
+ 
+   /**
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/util/PureJavaCrc32C.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/util/PureJavaCrc32C.java
+index 5dccfe0c42..e8bb7a0123 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/util/PureJavaCrc32C.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/util/PureJavaCrc32C.java
+@@ -20,58 +20,47 @@
+  */
+ package org.apache.hadoop.util;
+ 
+-import java.nio.ByteBuffer;
+ import java.util.zip.Checksum;
+-import java.util.zip.CRC32C;
+ 
+ import org.apache.hadoop.classification.InterfaceAudience;
+ import org.apache.hadoop.classification.InterfaceStability;
+ 
+ /**
+- * The legacy PureJavaCrc32C implemented in HADOOP-7443 is
+- * much slower than JDK native implementation in modern JDKs,
+- * HADOOP-19839 rewrites it to delegate to JDK native CRC32C.
+- *
+- * @see java.util.zip.CRC32C
++ * A pure-java implementation of CRC32-C.
+  */
+ @InterfaceAudience.Public
+ @InterfaceStability.Stable
+ public class PureJavaCrc32C implements Checksum {
+-  // Create a delegate instance because CRC32C is a final class
+-  private final CRC32C delegate;
++  private int crc;
+ 
+   public PureJavaCrc32C() {
+-    delegate = new CRC32C();
++    reset();
+   }
+ 
+   @Override
+   public void update(int b) {
+-    delegate.update(b);
++    crc = (crc >>> 8) ^ T[(crc ^ b) & 0xff];
+   }
+ 
+-  @Override
+   public void update(byte[] b) {
+-    delegate.update(b);
++    update(b, 0, b.length);
+   }
+ 
+   @Override
+   public void update(byte[] b, int off, int len) {
+-    delegate.update(b, off, len);
+-  }
+-
+-  @Override
+-  public void update(ByteBuffer buffer) {
+-    delegate.update(buffer);
++    for (int end = off + len; off < end; off++) {
++      update(b[off]);
++    }
+   }
+ 
+   @Override
+   public long getValue() {
+-    return delegate.getValue();
++    return (~crc) & 0xffffffffL;
+   }
+ 
+   @Override
+   public void reset() {
+-    delegate.reset();
++    crc = 0xffffffff;
+   }
+ 
+   /**
+diff --git a/hadoop-hdfs-project/hadoop-hdfs-client/src/main/java/org/apache/hadoop/hdfs/FileChecksumHelper.java b/hadoop-hdfs-project/hadoop-hdfs-client/src/main/java/org/apache/hadoop/hdfs/FileChecksumHelper.java
+index f5c69af8f5..21bc885358 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs-client/src/main/java/org/apache/hadoop/hdfs/FileChecksumHelper.java
++++ b/hadoop-hdfs-project/hadoop-hdfs-client/src/main/java/org/apache/hadoop/hdfs/FileChecksumHelper.java
+@@ -666,17 +666,6 @@ private boolean checksumBlockGroup(
+             bgIdx--; // repeat at bgIdx-th block
+             setRefetchBlocks(true);
+           }
+-        } catch (InvalidEncryptionKeyException iee) {
+-          if (bgIdx > getLastRetriedIndex()) {
+-            LOG.debug("Got invalid encryption key error in response to "
+-                    + "OP_BLOCK_GROUP_CHECKSUM for file {} for block {} from "
+-                    + "datanode {}. Will retry the block once.",
+-                getSrc(), block, datanodes[j]);
+-            setLastRetriedIndex(bgIdx);
+-            done = true; // actually it's not done; but we'll retry
+-            bgIdx--; // repeat at bgIdx-th block
+-            getClient().clearDataEncryptionKey();
+-          }
+         } catch (IOException ie) {
+           LOG.warn("src={}" + ", datanodes[{}]={}",
+               getSrc(), j, datanodes[j], ie);
+diff --git a/hadoop-hdfs-project/hadoop-hdfs-client/src/main/java/org/apache/hadoop/hdfs/protocol/datatransfer/sasl/SaslDataTransferClient.java b/hadoop-hdfs-project/hadoop-hdfs-client/src/main/java/org/apache/hadoop/hdfs/protocol/datatransfer/sasl/SaslDataTransferClient.java
+index 7abc9f37b9..e37062ec3d 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs-client/src/main/java/org/apache/hadoop/hdfs/protocol/datatransfer/sasl/SaslDataTransferClient.java
++++ b/hadoop-hdfs-project/hadoop-hdfs-client/src/main/java/org/apache/hadoop/hdfs/protocol/datatransfer/sasl/SaslDataTransferClient.java
+@@ -201,15 +201,10 @@ public IOStreamPair socketSend(
+       Token<BlockTokenIdentifier> accessToken, DatanodeID datanodeId,
+       SecretKey secretKey)
+       throws IOException {
+-    CausynthMessagePropagation.beginSasl();
+-    try {
+-      IOStreamPair ios = checkTrustAndSend(socket.getInetAddress(),
+-          underlyingOut, underlyingIn, encryptionKeyFactory, accessToken,
+-          datanodeId, secretKey);
+-      return ios != null ? ios : new IOStreamPair(underlyingIn, underlyingOut);
+-    } finally {
+-      CausynthMessagePropagation.endSasl();
+-    }
++    IOStreamPair ios = checkTrustAndSend(socket.getInetAddress(),
++        underlyingOut, underlyingIn, encryptionKeyFactory, accessToken,
++        datanodeId, secretKey);
++    return ios != null ? ios : new IOStreamPair(underlyingIn, underlyingOut);
+   }
+ 
+   /**
+@@ -267,41 +262,46 @@ private IOStreamPair send(InetAddress addr, OutputStream underlyingOut,
+       Token<BlockTokenIdentifier> accessToken, DatanodeID datanodeId,
+       SecretKey secretKey)
+       throws IOException {
+-    if (encryptionKey != null) {
+-      LOG.debug("SASL client doing encrypted handshake for addr = {}, "
+-          + "datanodeId = {}", addr, datanodeId);
+-      return getEncryptedStreams(addr, underlyingOut, underlyingIn,
+-          encryptionKey, accessToken, secretKey);
+-    } else if (!UserGroupInformation.isSecurityEnabled()) {
+-      LOG.debug("SASL client skipping handshake in unsecured configuration for "
+-          + "addr = {}, datanodeId = {}", addr, datanodeId);
+-      return null;
+-    } else if (SecurityUtil.isPrivilegedPort(datanodeId.getXferPort())) {
+-      LOG.debug(
+-          "SASL client skipping handshake in secured configuration with "
+-              + "privileged port for addr = {}, datanodeId = {}",
+-          addr, datanodeId);
+-      return null;
+-    } else if (fallbackToSimpleAuth != null && fallbackToSimpleAuth.get()) {
+-      LOG.debug(
+-          "SASL client skipping handshake in secured configuration with "
+-              + "unsecured cluster for addr = {}, datanodeId = {}",
+-          addr, datanodeId);
+-      return null;
+-    } else if (saslPropsResolver != null) {
+-      LOG.debug(
+-          "SASL client doing general handshake for addr = {}, datanodeId = {}",
+-          addr, datanodeId);
+-      return getSaslStreams(addr, underlyingOut, underlyingIn,
+-          accessToken, secretKey);
+-    } else {
+-      // It's a secured cluster using non-privileged ports, but no SASL.  The
+-      // only way this can happen is if the DataNode has
+-      // ignore.secure.ports.for.testing configured so this is a rare edge case.
+-      LOG.debug("SASL client skipping handshake in secured configuration with "
+-              + "no SASL protection configured for addr = {}, datanodeId = {}",
+-          addr, datanodeId);
+-      return null;
++    CausynthMessagePropagation.beginSasl();
++    try {
++      if (encryptionKey != null) {
++        LOG.debug("SASL client doing encrypted handshake for addr = {}, "
++            + "datanodeId = {}", addr, datanodeId);
++        return getEncryptedStreams(addr, underlyingOut, underlyingIn,
++            encryptionKey, accessToken, secretKey);
++      } else if (!UserGroupInformation.isSecurityEnabled()) {
++        LOG.debug("SASL client skipping handshake in unsecured configuration for "
++            + "addr = {}, datanodeId = {}", addr, datanodeId);
++        return null;
++      } else if (SecurityUtil.isPrivilegedPort(datanodeId.getXferPort())) {
++        LOG.debug(
++            "SASL client skipping handshake in secured configuration with "
++                + "privileged port for addr = {}, datanodeId = {}",
++            addr, datanodeId);
++        return null;
++      } else if (fallbackToSimpleAuth != null && fallbackToSimpleAuth.get()) {
++        LOG.debug(
++            "SASL client skipping handshake in secured configuration with "
++                + "unsecured cluster for addr = {}, datanodeId = {}",
++            addr, datanodeId);
++        return null;
++      } else if (saslPropsResolver != null) {
++        LOG.debug(
++            "SASL client doing general handshake for addr = {}, datanodeId = {}",
++            addr, datanodeId);
++        return getSaslStreams(addr, underlyingOut, underlyingIn,
++            accessToken, secretKey);
++      } else {
++        // It's a secured cluster using non-privileged ports, but no SASL.  The
++        // only way this can happen is if the DataNode has
++        // ignore.secure.ports.for.testing configured so this is a rare edge case.
++        LOG.debug("SASL client skipping handshake in secured configuration with "
++                + "no SASL protection configured for addr = {}, datanodeId = {}",
++            addr, datanodeId);
++        return null;
++      }
++    } finally {
++      CausynthMessagePropagation.endSasl();
+     }
+   }
+ 
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/datatransfer/sasl/SaslDataTransferServer.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/datatransfer/sasl/SaslDataTransferServer.java
+index 0e401a7e2a..949f99af89 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/datatransfer/sasl/SaslDataTransferServer.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/datatransfer/sasl/SaslDataTransferServer.java
+@@ -58,7 +58,6 @@
+ import org.apache.hadoop.hdfs.security.token.block.BlockTokenIdentifier;
+ import org.apache.hadoop.hdfs.security.token.block.InvalidBlockTokenException;
+ import org.apache.hadoop.hdfs.server.datanode.DNConf;
+-import org.apache.hadoop.ipc.CausynthMessagePropagation;
+ import org.apache.hadoop.security.CustomizedCallbackHandler;
+ import org.apache.hadoop.security.SaslPropertiesResolver;
+ import org.apache.hadoop.security.SecurityUtil;
+@@ -122,12 +121,7 @@ public IOStreamPair receive(Peer peer, OutputStream underlyingOut,
+       LOG.debug(
+         "SASL server doing encrypted handshake for peer = {}, datanodeId = {}",
+         peer, datanodeId);
+-      CausynthMessagePropagation.setLocalOwner(datanodeId);
+-      try {
+-        return getEncryptedStreams(peer, underlyingOut, underlyingIn);
+-      } finally {
+-        CausynthMessagePropagation.clearLocalOwner();
+-      }
++      return getEncryptedStreams(peer, underlyingOut, underlyingIn);
+     } else if (!UserGroupInformation.isSecurityEnabled()) {
+       LOG.debug(
+         "SASL server skipping handshake in unsecured configuration for "
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocolPB/PBHelper.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocolPB/PBHelper.java
+index a0a9cc9a28..b7cee87662 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocolPB/PBHelper.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocolPB/PBHelper.java
+@@ -241,35 +241,25 @@ public static BlocksWithLocations convert(BlocksWithLocationsProto blocks) {
+   }
+ 
+   public static BlockKeyProto convert(BlockKey key) {
+-    return convert(key, key.getKeyId());
+-  }
+-
+-  private static BlockKeyProto convert(BlockKey key, int keyId) {
+     byte[] encodedKey = key.getEncodedKey();
+     ByteString keyBytes = PBHelperClient.getByteString(encodedKey == null ?
+         DFSUtilClient.EMPTY_BYTES : encodedKey);
+-    return BlockKeyProto.newBuilder().setKeyId(keyId)
++    return BlockKeyProto.newBuilder().setKeyId(key.getKeyId())
+         .setKeyBytes(keyBytes).setExpiryDate(key.getExpiryDate()).build();
+   }
+ 
+   public static BlockKey convert(BlockKeyProto k) {
+-    return convert(k, k.getKeyId());
+-  }
+-
+-  private static BlockKey convert(BlockKeyProto k, int keyId) {
+-    return new BlockKey(keyId, k.getExpiryDate(), k.getKeyBytes()
++    return new BlockKey(k.getKeyId(), k.getExpiryDate(), k.getKeyBytes()
+         .toByteArray());
+   }
+ 
+   public static ExportedBlockKeysProto convert(ExportedBlockKeys keys) {
+-    BlockKey current = keys.getCurrentKey();
+-    int currentKeyId = current.getKeyId();
+     ExportedBlockKeysProto.Builder builder = ExportedBlockKeysProto
+         .newBuilder();
+     builder.setIsBlockTokenEnabled(keys.isBlockTokenEnabled())
+         .setKeyUpdateInterval(keys.getKeyUpdateInterval())
+         .setTokenLifeTime(keys.getTokenLifetime())
+-        .setCurrentKey(convert(current, currentKeyId));
++        .setCurrentKey(convert(keys.getCurrentKey()));
+     for (BlockKey k : keys.getAllKeys()) {
+       builder.addAllKeys(convert(k));
+     }
+@@ -277,11 +267,9 @@ public static ExportedBlockKeysProto convert(ExportedBlockKeys keys) {
+   }
+ 
+   public static ExportedBlockKeys convert(ExportedBlockKeysProto keys) {
+-    BlockKeyProto current = keys.getCurrentKey();
+-    int currentKeyId = current.getKeyId();
+     return new ExportedBlockKeys(keys.getIsBlockTokenEnabled(),
+         keys.getKeyUpdateInterval(), keys.getTokenLifeTime(),
+-        convert(current, currentKeyId), convertBlockKeys(keys.getAllKeysList()));
++        convert(keys.getCurrentKey()), convertBlockKeys(keys.getAllKeysList()));
+   }
+ 
+   public static CheckpointSignatureProto convert(CheckpointSignature s) {
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/security/token/block/BlockTokenSecretManager.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/security/token/block/BlockTokenSecretManager.java
+index d2c3fe6eae..11e69875e2 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/security/token/block/BlockTokenSecretManager.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/security/token/block/BlockTokenSecretManager.java
+@@ -18,6 +18,7 @@
+ 
+ package org.apache.hadoop.hdfs.security.token.block;
+ 
++import edu.uva.liftlab.graphchecker.annotation.CausynthExceptionTarget;
+ import java.io.ByteArrayInputStream;
+ import java.io.DataInputStream;
+ import java.io.IOException;
+@@ -204,7 +205,11 @@ public synchronized ExportedBlockKeys exportKeys() {
+     }
+     LOG.debug("Exporting access keys");
+     return new ExportedBlockKeys(true, keyUpdateInterval, tokenLifetime,
+-        currentKey, allKeys.values().toArray(new BlockKey[0]));
++        currentKey, exportAllKeys());
++  }
++
++  private BlockKey[] exportAllKeys() {
++    return allKeys.values().toArray(new BlockKey[0]);
+   }
+ 
+   private synchronized void removeExpiredKeys() {
+@@ -556,7 +561,8 @@ public byte[] retrieveDataEncryptionKey(int keyId, byte[] nonce)
+     synchronized (this) {
+       key = allKeys.get(keyId);
+       if (key == null) {
+-        throw new InvalidEncryptionKeyException("Can't re-compute encryption key"
++        throw new @CausynthExceptionTarget("hdfs-17897")
++            InvalidEncryptionKeyException("Can't re-compute encryption key"
+             + " for nonce, since the required block key (keyID=" + keyId
+             + ") doesn't exist. Current key: " + currentKey.getKeyId());
+       }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/DataXceiver.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/DataXceiver.java
+index a29fab9734..6e65861d75 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/DataXceiver.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/DataXceiver.java
+@@ -61,6 +61,7 @@
+ import org.apache.hadoop.hdfs.server.protocol.DatanodeRegistration;
+ import org.apache.hadoop.hdfs.shortcircuit.ShortCircuitShm.SlotId;
+ import org.apache.hadoop.io.IOUtils;
++import org.apache.hadoop.ipc.CausynthMessagePropagation;
+ import org.apache.hadoop.net.NetUtils;
+ import org.apache.hadoop.net.unix.DomainSocket;
+ import org.apache.hadoop.security.token.SecretManager.InvalidToken;
+@@ -225,6 +226,7 @@ public void run() {
+     Op op = null;
+     Op firstOp = null;
+ 
++    CausynthMessagePropagation.setLocalOwner(datanode.getDatanodeId());
+     try {
+       synchronized(this) {
+         xceiver = Thread.currentThread();
+@@ -333,6 +335,7 @@ public void run() {
+         LOG.error(s, t);
+       }
+     } finally {
++      CausynthMessagePropagation.clearLocalOwner();
+       collectThreadLocalStates();
+       LOG.debug("{}:Number of active connections is: {}",
+           datanode.getDisplayName(), datanode.getXceiverCount());
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/diskbalancer/planner/NodePlan.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/diskbalancer/planner/NodePlan.java
+index 127456bd7e..9495d29730 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/diskbalancer/planner/NodePlan.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/diskbalancer/planner/NodePlan.java
+@@ -32,6 +32,7 @@
+ import java.util.LinkedList;
+ import java.util.List;
+ import java.util.Map;
++import java.util.stream.Collectors;
+ 
+ import static org.apache.hadoop.hdfs.DFSConfigKeys.SUPPORTED_PACKAGES_CONFIG_NAME;
+ 
+@@ -194,7 +195,8 @@ private static void checkNodes(JsonNode node) throws IOException {
+         Map.Entry<String, JsonNode> entry = fieldsIterator.next();
+         if ("@class".equals(entry.getKey())) {
+           String textValue = entry.getValue().asText();
+-          if (textValue != null && !textValue.isBlank() && !stepClassIsAllowed(textValue)) {
++          if (textValue != null && !textValue.trim().isEmpty()
++              && !stepClassIsAllowed(textValue)) {
+             throw new IOException("Invalid @class value in NodePlan JSON: " + textValue);
+           }
+         }
+@@ -249,6 +251,6 @@ private static Collection<String> getAllowedPackages() {
+         .stream()
+         .map(String::trim)
+         .filter(s -> !s.isEmpty())
+-        .toList();
++        .collect(Collectors.toList());
+   }
+ }
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestCausynthStripedChecksum.java b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestCausynthStripedChecksum.java
+new file mode 100644
+index 0000000000..9af7472881
+--- /dev/null
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/TestCausynthStripedChecksum.java
+@@ -0,0 +1,145 @@
++/**
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements.  See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership.  The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License.  You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++package org.apache.hadoop.hdfs;
++
++import org.apache.hadoop.conf.Configuration;
++import org.apache.hadoop.fs.FSDataOutputStream;
++import org.apache.hadoop.fs.Path;
++import org.apache.hadoop.hdfs.protocol.ErasureCodingPolicy;
++import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
++import org.apache.hadoop.hdfs.protocol.SystemErasureCodingPolicies;
++import org.apache.hadoop.hdfs.security.token.block.BlockTokenSecretManager;
++import org.apache.hadoop.hdfs.security.token.block.ExportedBlockKeys;
++import org.apache.hadoop.hdfs.server.datanode.DataNode;
++import org.apache.hadoop.hdfs.server.namenode.NameNodeRpcServer;
++import org.apache.hadoop.hdfs.server.protocol.NamenodeProtocol;
++import org.apache.hadoop.ipc.CausynthMessagePropagation;
++import org.apache.hadoop.ipc.RPC;
++import org.junit.jupiter.api.Test;
++
++/** Causal workload for the stale-key striped-checksum failure in HDFS-17897. */
++public class TestCausynthStripedChecksum {
++  @Test
++  public void testStaleEncryptionKeyFailsStripedChecksum() throws Exception {
++    Configuration conf = new HdfsConfiguration();
++    conf.setBoolean(DFSConfigKeys.DFS_ENCRYPT_DATA_TRANSFER_KEY, true);
++    conf.setBoolean(DFSConfigKeys.DFS_BLOCK_ACCESS_TOKEN_ENABLE_KEY, true);
++    conf.setInt(DFSConfigKeys.DFS_HEARTBEAT_INTERVAL_KEY, 3600);
++    try (MiniDFSCluster cluster = new MiniDFSCluster.Builder(conf)
++        .numDataNodes(3).build();
++         DistributedFileSystem fs = cluster.getFileSystem()) {
++      cluster.waitActive();
++      DFSClient client = DFSClientAdapter.getDFSClient(fs);
++
++      ErasureCodingPolicy policy = SystemErasureCodingPolicies.getByID(
++          SystemErasureCodingPolicies.XOR_2_1_POLICY_ID);
++      fs.enableErasureCodingPolicy(policy.getName());
++      Path directory = new Path("/hdfs-17897");
++      Path file = new Path(directory, "file");
++      fs.mkdirs(directory);
++      fs.setErasureCodingPolicy(directory, policy.getName());
++
++      try (FSDataOutputStream out = fs.create(file)) {
++        out.write(new byte[1024]);
++      }
++      registerSources(cluster, client, file);
++      BlockTokenSecretManager master = cluster.getNamesystem()
++          .getBlockManager().getBlockTokenSecretManager();
++      CausynthMessagePropagation.registerSourceAlias(master,
++          ((NameNodeRpcServer) cluster.getNameNodeRpc()).getClientRpcServer());
++      CausynthMessagePropagation.startRecording();
++      client.clearDataEncryptionKey();
++      long cacheRequest = CausynthMessagePropagation.beginRequest(
++          client, "cache-encryption-key");
++      try {
++        client.newDataEncryptionKey();
++      } finally {
++        CausynthMessagePropagation.endRequest(
++            cacheRequest, "cache-encryption-key");
++      }
++
++      master.updateKeys(Long.MAX_VALUE);
++      master.updateKeys(Long.MAX_VALUE);
++      refreshDataNodes(cluster, conf, fs);
++
++      long checksumRequest = CausynthMessagePropagation.beginRequest(
++          client, "striped-file-checksum");
++      try {
++        fs.getFileChecksum(file);
++      } finally {
++        CausynthMessagePropagation.endRequest(
++            checksumRequest, "striped-file-checksum");
++      }
++    }
++  }
++
++  private static void refreshDataNodes(MiniDFSCluster cluster,
++      Configuration conf, DistributedFileSystem fs) throws Exception {
++    NamenodeProtocol namenode = NameNodeProxies.createProxy(
++        conf, fs.getUri(), NamenodeProtocol.class).getProxy();
++    try {
++      String blockPoolId = cluster.getNamesystem().getBlockPoolId();
++      for (DataNode node : cluster.getDataNodes()) {
++        BlockTokenSecretManager manager =
++            node.getBlockPoolTokenSecretManager().get(blockPoolId);
++        CausynthMessagePropagation.registerSourceAlias(
++            manager, node.getDatanodeId());
++        long request = CausynthMessagePropagation.beginRequest(
++            node.getDatanodeId(), "refresh-block-keys");
++        try {
++          ExportedBlockKeys fresh = namenode.getBlockKeys();
++          manager.addKeys(fresh);
++        } finally {
++          CausynthMessagePropagation.endRequest(request, "refresh-block-keys");
++        }
++      }
++    } finally {
++      RPC.stopProxy(namenode);
++    }
++  }
++
++  private static void registerSources(MiniDFSCluster cluster,
++      DFSClient client, Path file) throws Exception {
++    NameNodeRpcServer namenode = (NameNodeRpcServer) cluster.getNameNodeRpc();
++    CausynthMessagePropagation.registerSource(
++        client, "EXTERNAL_APP", "DFS_CLIENT", "hdfs-17897/client", 0);
++    CausynthMessagePropagation.registerSource(
++        namenode.getClientRpcServer(), "CLUSTER_NODE", "NAMENODE",
++        "hdfs-17897/nn0", 0);
++    DatanodeInfo[] locations = client.getLocatedBlocks(
++        file.toString(), 0).get(0).getLocations();
++    int nextIndex = locations.length;
++    for (DataNode node : cluster.getDataNodes()) {
++      int index = -1;
++      for (int locationIndex = 0; locationIndex < locations.length;
++           locationIndex++) {
++        if (node.getDatanodeUuid().equals(
++            locations[locationIndex].getDatanodeUuid())) {
++          index = locationIndex;
++          break;
++        }
++      }
++      if (index < 0) {
++        index = nextIndex++;
++      }
++      CausynthMessagePropagation.registerSource(
++          node.getDatanodeId(), "CLUSTER_NODE", "DATANODE",
++          "hdfs-17897/dn" + index, 0);
++    }
++  }
++}
+diff --git a/pom.xml b/pom.xml
+index 98f8ae0cc9..3abfcc5220 100644
+--- a/pom.xml
++++ b/pom.xml
+@@ -549,7 +549,8 @@ xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/x
+           <artifactId>maven-compiler-plugin</artifactId>
+           <version>${maven-compiler-plugin.version}</version>
+           <configuration>
+-            <release>${javac.version}</release>
++            <source>${javac.version}</source>
++            <target>${javac.version}</target>
+           </configuration>
+         </plugin>
+       </plugins>
+
+commit bc5861d666e9bfc17c047c1b7cd895431b486f31
+Author: ZhenyuLi <ZhenyuLi@node0.adhoc-debug.silentfailure-pg0.wisc.cloudlab.us>
+Date:   Thu Sep 3 00:46:14 2026 -0500
+
+    Model multi-frame SASL as one causal exchange
+
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/ipc/CausynthMessagePropagation.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/ipc/CausynthMessagePropagation.java
+index 5a0162ec01..bbe69f11ac 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/ipc/CausynthMessagePropagation.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/ipc/CausynthMessagePropagation.java
+@@ -52,8 +52,17 @@ public static String rpcCorrelation(byte[] clientId, int callId) {
+   public static Inbound inbound(String trace, String symbolic,
+       String transport, String correlationId, String attemptId, String half,
+       Object localOwner) {
+-    endInbound();
+-    SymbolicMessageEnvelope.clearInbound();
++    return inbound(trace, symbolic, transport, correlationId, attemptId,
++        half, localOwner, false);
++  }
++
++  private static Inbound inbound(String trace, String symbolic,
++      String transport, String correlationId, String attemptId, String half,
++      Object localOwner, boolean preserveSymbolic) {
++    endInbound(!preserveSymbolic);
++    if (!preserveSymbolic) {
++      SymbolicMessageEnvelope.clearInbound();
++    }
+     if (trace == null || trace.isEmpty()) {
+       return Inbound.EMPTY;
+     }
+@@ -78,16 +87,35 @@ public static void endInbound(Inbound scope) {
+   }
+ 
+   public static void endInbound() {
++    endInbound(true);
++  }
++
++  private static void endInbound(boolean clearSymbolic) {
+     Inbound scope = CURRENT.get();
+     if (scope == null) {
+       return;
+     }
+     CURRENT.remove();
+-    SymbolicMessageEnvelope.clearInbound();
++    if (clearSymbolic) {
++      SymbolicMessageEnvelope.clearInbound();
++    }
+     CausynthTraceRecorder.endInboundExchange(scope.token);
+   }
+ 
+-  /** Emits the next alternating SASL request or response message. */
++  /** Starts one multi-message SASL exchange on the client thread. */
++  public static void beginSasl() {
++    if (PENDING_SASL.get() != null) {
++      throw new IllegalStateException("nested SASL exchange");
++    }
++    PENDING_SASL.set("hdfs-sasl-" + UUID.randomUUID());
++  }
++
++  public static void endSasl() {
++    PENDING_SASL.remove();
++    endInbound();
++  }
++
++  /** Emits the next message of the current SASL exchange. */
+   public static Outbound outboundSasl() {
+     Inbound current = CURRENT.get();
+     if (current != null && "REQUEST".equals(current.half)) {
+@@ -95,21 +123,21 @@ public static Outbound outboundSasl() {
+           "RESPONSE", LOCAL_OWNER.get());
+     }
+     endInbound();
+-    String correlationId = "hdfs-sasl-" + UUID.randomUUID();
+-    PENDING_SASL.set(correlationId);
++    String correlationId = PENDING_SASL.get();
++    if (correlationId == null) {
++      return Outbound.EMPTY;
++    }
+     return outbound(SASL, correlationId, "1", "REQUEST", LOCAL_OWNER.get());
+   }
+ 
+-  /** Installs one received SASL message and infers its alternating half. */
++  /** Installs one message without discarding values carried earlier in the
++   * same multi-message SASL exchange. */
+   public static Inbound inboundSasl(String trace, String symbolic,
+       String correlationId, String attemptId) {
+     boolean response = correlationId != null
+         && correlationId.equals(PENDING_SASL.get());
+-    if (response) {
+-      PENDING_SASL.remove();
+-    }
+     return inbound(trace, symbolic, SASL, correlationId, attemptId,
+-        response ? "RESPONSE" : "REQUEST", LOCAL_OWNER.get());
++        response ? "RESPONSE" : "REQUEST", LOCAL_OWNER.get(), true);
+   }
+ 
+   public static void setLocalOwner(Object owner) {
+diff --git a/hadoop-hdfs-project/hadoop-hdfs-client/src/main/java/org/apache/hadoop/hdfs/protocol/datatransfer/sasl/SaslDataTransferClient.java b/hadoop-hdfs-project/hadoop-hdfs-client/src/main/java/org/apache/hadoop/hdfs/protocol/datatransfer/sasl/SaslDataTransferClient.java
+index 973e61de2c..7abc9f37b9 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs-client/src/main/java/org/apache/hadoop/hdfs/protocol/datatransfer/sasl/SaslDataTransferClient.java
++++ b/hadoop-hdfs-project/hadoop-hdfs-client/src/main/java/org/apache/hadoop/hdfs/protocol/datatransfer/sasl/SaslDataTransferClient.java
+@@ -57,6 +57,7 @@
+ import org.apache.hadoop.hdfs.protocol.datatransfer.TrustedChannelResolver;
+ import org.apache.hadoop.hdfs.security.token.block.BlockTokenIdentifier;
+ import org.apache.hadoop.hdfs.security.token.block.DataEncryptionKey;
++import org.apache.hadoop.ipc.CausynthMessagePropagation;
+ import org.apache.hadoop.security.SaslPropertiesResolver;
+ import org.apache.hadoop.security.SecurityUtil;
+ import org.apache.hadoop.security.UserGroupInformation;
+@@ -200,10 +201,15 @@ public IOStreamPair socketSend(
+       Token<BlockTokenIdentifier> accessToken, DatanodeID datanodeId,
+       SecretKey secretKey)
+       throws IOException {
+-    IOStreamPair ios = checkTrustAndSend(socket.getInetAddress(), underlyingOut,
+-        underlyingIn, encryptionKeyFactory, accessToken, datanodeId,
+-        secretKey);
+-    return ios != null ? ios : new IOStreamPair(underlyingIn, underlyingOut);
++    CausynthMessagePropagation.beginSasl();
++    try {
++      IOStreamPair ios = checkTrustAndSend(socket.getInetAddress(),
++          underlyingOut, underlyingIn, encryptionKeyFactory, accessToken,
++          datanodeId, secretKey);
++      return ios != null ? ios : new IOStreamPair(underlyingIn, underlyingOut);
++    } finally {
++      CausynthMessagePropagation.endSasl();
++    }
+   }
+ 
+   /**
+
+commit 8d1fd87fc171b0d611cf80ce1d113428a5c73145
+Author: ZhenyuLi <ZhenyuLi@node0.adhoc-debug.silentfailure-pg0.wisc.cloudlab.us>
+Date:   Thu Sep 3 00:10:25 2026 -0500
+
+    Expose current block key as one wire scalar
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocolPB/PBHelper.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocolPB/PBHelper.java
+index b7cee87662..a0a9cc9a28 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocolPB/PBHelper.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocolPB/PBHelper.java
+@@ -241,25 +241,35 @@ public static BlocksWithLocations convert(BlocksWithLocationsProto blocks) {
+   }
+ 
+   public static BlockKeyProto convert(BlockKey key) {
++    return convert(key, key.getKeyId());
++  }
++
++  private static BlockKeyProto convert(BlockKey key, int keyId) {
+     byte[] encodedKey = key.getEncodedKey();
+     ByteString keyBytes = PBHelperClient.getByteString(encodedKey == null ?
+         DFSUtilClient.EMPTY_BYTES : encodedKey);
+-    return BlockKeyProto.newBuilder().setKeyId(key.getKeyId())
++    return BlockKeyProto.newBuilder().setKeyId(keyId)
+         .setKeyBytes(keyBytes).setExpiryDate(key.getExpiryDate()).build();
+   }
+ 
+   public static BlockKey convert(BlockKeyProto k) {
+-    return new BlockKey(k.getKeyId(), k.getExpiryDate(), k.getKeyBytes()
++    return convert(k, k.getKeyId());
++  }
++
++  private static BlockKey convert(BlockKeyProto k, int keyId) {
++    return new BlockKey(keyId, k.getExpiryDate(), k.getKeyBytes()
+         .toByteArray());
+   }
+ 
+   public static ExportedBlockKeysProto convert(ExportedBlockKeys keys) {
++    BlockKey current = keys.getCurrentKey();
++    int currentKeyId = current.getKeyId();
+     ExportedBlockKeysProto.Builder builder = ExportedBlockKeysProto
+         .newBuilder();
+     builder.setIsBlockTokenEnabled(keys.isBlockTokenEnabled())
+         .setKeyUpdateInterval(keys.getKeyUpdateInterval())
+         .setTokenLifeTime(keys.getTokenLifetime())
+-        .setCurrentKey(convert(keys.getCurrentKey()));
++        .setCurrentKey(convert(current, currentKeyId));
+     for (BlockKey k : keys.getAllKeys()) {
+       builder.addAllKeys(convert(k));
+     }
+@@ -267,9 +277,11 @@ public static ExportedBlockKeysProto convert(ExportedBlockKeys keys) {
+   }
+ 
+   public static ExportedBlockKeys convert(ExportedBlockKeysProto keys) {
++    BlockKeyProto current = keys.getCurrentKey();
++    int currentKeyId = current.getKeyId();
+     return new ExportedBlockKeys(keys.getIsBlockTokenEnabled(),
+         keys.getKeyUpdateInterval(), keys.getTokenLifeTime(),
+-        convert(keys.getCurrentKey()), convertBlockKeys(keys.getAllKeysList()));
++        convert(current, currentKeyId), convertBlockKeys(keys.getAllKeysList()));
+   }
+ 
+   public static CheckpointSignatureProto convert(CheckpointSignature s) {
+
+commit 824a7fafaa253f9ad8be5b4334755d90f7be32ef
+Author: ZhenyuLi <ZhenyuLi@node0.adhoc-debug.silentfailure-pg0.wisc.cloudlab.us>
+Date:   Wed Sep 2 23:24:15 2026 -0500
+
+    Expose SASL key id as a scalar wire endpoint
+
+diff --git a/hadoop-hdfs-project/hadoop-hdfs-client/src/main/java/org/apache/hadoop/hdfs/protocol/datatransfer/sasl/SaslDataTransferClient.java b/hadoop-hdfs-project/hadoop-hdfs-client/src/main/java/org/apache/hadoop/hdfs/protocol/datatransfer/sasl/SaslDataTransferClient.java
+index dd1da77af1..973e61de2c 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs-client/src/main/java/org/apache/hadoop/hdfs/protocol/datatransfer/sasl/SaslDataTransferClient.java
++++ b/hadoop-hdfs-project/hadoop-hdfs-client/src/main/java/org/apache/hadoop/hdfs/protocol/datatransfer/sasl/SaslDataTransferClient.java
+@@ -344,7 +344,8 @@ private IOStreamPair getEncryptedStreams(InetAddress addr,
+    */
+   private static String getUserNameFromEncryptionKey(
+       DataEncryptionKey encryptionKey) {
+-    return encryptionKey.keyId + NAME_DELIMITER +
++    String keyId = Integer.toString(encryptionKey.keyId);
++    return keyId + NAME_DELIMITER +
+         encryptionKey.blockPoolId + NAME_DELIMITER +
+         new String(Base64.encodeBase64(encryptionKey.nonce, false),
+             StandardCharsets.UTF_8);
+
+commit ed2afa2c4934a0214bb9a348875c2b12df7814d1
+Author: ZhenyuLi <ZhenyuLi@node0.adhoc-debug.silentfailure-pg0.wisc.cloudlab.us>
+Date:   Wed Sep 2 23:20:40 2026 -0500
+
+    Add strict message-carried IPC and SASL propagation
+
+diff --git a/hadoop-common-project/hadoop-common/pom.xml b/hadoop-common-project/hadoop-common/pom.xml
+index 793fca4186..55f18cc446 100644
+--- a/hadoop-common-project/hadoop-common/pom.xml
++++ b/hadoop-common-project/hadoop-common/pom.xml
+@@ -38,6 +38,12 @@
+   </properties>
+ 
+   <dependencies>
++    <dependency>
++      <groupId>org.example</groupId>
++      <artifactId>GraphChecker</artifactId>
++      <version>1.0-SNAPSHOT</version>
++      <scope>provided</scope>
++    </dependency>
+     <dependency>
+       <groupId>org.apache.hadoop.thirdparty</groupId>
+       <artifactId>hadoop-shaded-protobuf_3_25</artifactId>
+@@ -1245,4 +1251,3 @@
+     </profile>
+   </profiles>
+ </project>
+-
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/ipc/CausynthMessagePropagation.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/ipc/CausynthMessagePropagation.java
+new file mode 100644
+index 0000000000..5a0162ec01
+--- /dev/null
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/ipc/CausynthMessagePropagation.java
+@@ -0,0 +1,177 @@
++/**
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements.  See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership.  The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License.  You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++package org.apache.hadoop.ipc;
++
++import java.util.UUID;
++
++import edu.uva.liftlab.graphchecker.runtime.CausynthTraceRecorder;
++import edu.uva.liftlab.graphchecker.runtime.SymbolicMessageEnvelope;
++import org.apache.hadoop.util.StringUtils;
++
++/** Strict message-carried GraphChecker context for Hadoop IPC and SASL. */
++public final class CausynthMessagePropagation {
++  public static final String IPC = "HADOOP_IPC";
++  public static final String SASL = "HDFS_SASL";
++
++  private static final ThreadLocal<Inbound> CURRENT = new ThreadLocal<>();
++  private static final ThreadLocal<String> PENDING_SASL = new ThreadLocal<>();
++  private static final ThreadLocal<Object> LOCAL_OWNER = new ThreadLocal<>();
++
++  private CausynthMessagePropagation() {
++  }
++
++  public static Outbound outbound(String transport, String correlationId,
++      String attemptId, String half, Object localOwner) {
++    String trace = CausynthTraceRecorder.outboundExchange(transport,
++        correlationId, attemptId, half, localOwner);
++    String symbolic = SymbolicMessageEnvelope.takeOutbound();
++    return trace.isEmpty() ? Outbound.EMPTY
++        : new Outbound(correlationId, attemptId, trace, symbolic);
++  }
++
++  public static String rpcCorrelation(byte[] clientId, int callId) {
++    return "hadoop-ipc-" + StringUtils.byteToHexString(clientId)
++        + "-" + callId;
++  }
++
++  public static Inbound inbound(String trace, String symbolic,
++      String transport, String correlationId, String attemptId, String half,
++      Object localOwner) {
++    endInbound();
++    SymbolicMessageEnvelope.clearInbound();
++    if (trace == null || trace.isEmpty()) {
++      return Inbound.EMPTY;
++    }
++    long token = CausynthTraceRecorder.inboundExchange(trace, transport,
++        correlationId, attemptId, half, localOwner);
++    if (symbolic != null && !symbolic.isEmpty()) {
++      SymbolicMessageEnvelope.installInbound(symbolic);
++    }
++    Inbound scope = new Inbound(token, correlationId, attemptId, half);
++    CURRENT.set(scope);
++    return scope;
++  }
++
++  public static void endInbound(Inbound scope) {
++    if (scope == null || scope == Inbound.EMPTY) {
++      return;
++    }
++    if (CURRENT.get() != scope) {
++      throw new IllegalStateException("inbound message scope mismatch");
++    }
++    endInbound();
++  }
++
++  public static void endInbound() {
++    Inbound scope = CURRENT.get();
++    if (scope == null) {
++      return;
++    }
++    CURRENT.remove();
++    SymbolicMessageEnvelope.clearInbound();
++    CausynthTraceRecorder.endInboundExchange(scope.token);
++  }
++
++  /** Emits the next alternating SASL request or response message. */
++  public static Outbound outboundSasl() {
++    Inbound current = CURRENT.get();
++    if (current != null && "REQUEST".equals(current.half)) {
++      return outbound(SASL, current.correlationId, current.attemptId,
++          "RESPONSE", LOCAL_OWNER.get());
++    }
++    endInbound();
++    String correlationId = "hdfs-sasl-" + UUID.randomUUID();
++    PENDING_SASL.set(correlationId);
++    return outbound(SASL, correlationId, "1", "REQUEST", LOCAL_OWNER.get());
++  }
++
++  /** Installs one received SASL message and infers its alternating half. */
++  public static Inbound inboundSasl(String trace, String symbolic,
++      String correlationId, String attemptId) {
++    boolean response = correlationId != null
++        && correlationId.equals(PENDING_SASL.get());
++    if (response) {
++      PENDING_SASL.remove();
++    }
++    return inbound(trace, symbolic, SASL, correlationId, attemptId,
++        response ? "RESPONSE" : "REQUEST", LOCAL_OWNER.get());
++  }
++
++  public static void setLocalOwner(Object owner) {
++    LOCAL_OWNER.set(owner);
++  }
++
++  public static void clearLocalOwner() {
++    LOCAL_OWNER.remove();
++    endInbound();
++  }
++
++  public static void registerSource(Object anchor, String kind, String role,
++      String sourceId, long epoch) {
++    CausynthTraceRecorder.registerSource(anchor, kind, role, sourceId, epoch);
++  }
++
++  public static void registerSourceAlias(Object alias, Object anchor) {
++    CausynthTraceRecorder.registerSourceAlias(alias, anchor);
++  }
++
++  public static long beginRequest(Object source, String api) {
++    return CausynthTraceRecorder.beginSourceRequest(source, api);
++  }
++
++  public static void endRequest(long request, String api) {
++    endInbound();
++    CausynthTraceRecorder.endSourceRequest(request, api);
++  }
++
++  public static final class Outbound {
++    private static final Outbound EMPTY = new Outbound("", "", "", "");
++    public final String correlationId;
++    public final String attemptId;
++    public final String trace;
++    public final String symbolic;
++
++    private Outbound(String correlationId, String attemptId, String trace,
++        String symbolic) {
++      this.correlationId = correlationId;
++      this.attemptId = attemptId;
++      this.trace = trace;
++      this.symbolic = symbolic == null ? "" : symbolic;
++    }
++
++    public boolean active() {
++      return !trace.isEmpty();
++    }
++  }
++
++  public static final class Inbound {
++    private static final Inbound EMPTY = new Inbound(0L, "", "", "");
++    private final long token;
++    private final String correlationId;
++    private final String attemptId;
++    private final String half;
++
++    private Inbound(long token, String correlationId, String attemptId,
++        String half) {
++      this.token = token;
++      this.correlationId = correlationId;
++      this.attemptId = attemptId;
++      this.half = half;
++    }
++  }
++}
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/ipc/Client.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/ipc/Client.java
+index b036caedfa..b1a873e8c1 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/ipc/Client.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/ipc/Client.java
+@@ -336,6 +336,8 @@ static class Call {
+     final RPC.RpcKind rpcKind;      // Rpc EngineKind
+     private final Object externalHandler;
+     private AlignmentContext alignmentContext;
++    private String causynthTrace = "";
++    private String causynthSymbolic = "";
+ 
+     private Call(RPC.RpcKind rpcKind, Writable param) {
+       this.rpcKind = rpcKind;
+@@ -403,6 +405,13 @@ public synchronized void setRpcResponse(Writable rpcResponse) {
+       rpcResponseFuture.complete(rpcResponse);
+       callComplete();
+     }
++
++    private void setCausynthResponse(RpcResponseHeaderProto header) {
++      causynthTrace = header.hasCausynthTrace()
++          ? header.getCausynthTrace() : "";
++      causynthSymbolic = header.hasCausynthSymbolic()
++          ? header.getCausynthSymbolic() : "";
++    }
+   }
+ 
+   /** Thread that reads responses and notifies callers.  Each connection owns a
+@@ -1221,12 +1230,25 @@ public void sendRpcRequest(final Call call)
+       // 2) RpcRequest
+       //
+       // Items '1' and '2' are prepared here. 
+-      RpcRequestHeaderProto header = ProtoUtil.makeRpcRequestHeader(
++      CausynthMessagePropagation.endInbound();
++      String correlationId = CausynthMessagePropagation.rpcCorrelation(
++          clientId, call.id);
++      CausynthMessagePropagation.Outbound causynth =
++          CausynthMessagePropagation.outbound(
++              CausynthMessagePropagation.IPC, correlationId,
++              Integer.toString(call.retry), "REQUEST", Client.this);
++      RpcRequestHeaderProto.Builder header = ProtoUtil.makeRpcRequestHeader(
+           call.rpcKind, OperationProto.RPC_FINAL_PACKET, call.id, call.retry,
+-          clientId, call.alignmentContext);
++          clientId, call.alignmentContext).toBuilder();
++      if (causynth.active()) {
++        header.setCausynthTrace(causynth.trace);
++        if (!causynth.symbolic.isEmpty()) {
++          header.setCausynthSymbolic(causynth.symbolic);
++        }
++      }
+ 
+       final ResponseBuffer buf = new ResponseBuffer();
+-      header.writeDelimitedTo(buf);
++      header.build().writeDelimitedTo(buf);
+       RpcWritable.wrap(call.rpcRequest).writeTo(buf);
+       // Wait for the message to be sent. We offer with timeout to
+       // prevent a race condition between checking the shouldCloseConnection
+@@ -1262,6 +1284,7 @@ private void receiveRpcResponse() {
+         if (status == RpcStatusProto.SUCCESS) {
+           Writable value = packet.newInstance(valueClass, conf);
+           final Call call = calls.remove(callId);
++          call.setCausynthResponse(header);
+           if (call.alignmentContext != null) {
+             call.alignmentContext.receiveResponseState(header);
+           }
+@@ -1285,6 +1308,7 @@ private void receiveRpcResponse() {
+           RemoteException re = new RemoteException(exceptionClassName, errorMsg, erCode);
+           if (status == RpcStatusProto.ERROR) {
+             final Call call = calls.remove(callId);
++            call.setCausynthResponse(header);
+             call.setException(re);
+           } else if (status == RpcStatusProto.FATAL) {
+             // Close the connection
+@@ -1595,11 +1619,14 @@ int getAsyncCallCount() {
+   private Writable getRpcResponse(final Call call, final Connection connection)
+       throws IOException {
+     try {
+-      return call.rpcResponseFuture.get();
++      Writable response = call.rpcResponseFuture.get();
++      installCausynthResponse(call);
++      return response;
+     } catch (InterruptedException ie) {
+       Thread.currentThread().interrupt();
+       throw new InterruptedIOException("Call interrupted");
+     } catch (ExecutionException e) {
++      installCausynthResponse(call);
+       Throwable cause = e.getCause();
+       if (cause instanceof IOException) {
+         throw warpIOException((IOException) cause, connection);
+@@ -1608,6 +1635,16 @@ private Writable getRpcResponse(final Call call, final Connection connection)
+     }
+   }
+ 
++  private void installCausynthResponse(Call call) {
++    if (call.causynthTrace.isEmpty()) {
++      return;
++    }
++    CausynthMessagePropagation.inbound(call.causynthTrace,
++        call.causynthSymbolic, CausynthMessagePropagation.IPC,
++        CausynthMessagePropagation.rpcCorrelation(clientId, call.id),
++        Integer.toString(call.retry), "RESPONSE", this);
++  }
++
+   private IOException warpIOException(IOException ioe, Connection connection) {
+     if (ioe instanceof RemoteException ||
+         ioe instanceof SaslException) {
+diff --git a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/ipc/Server.java b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/ipc/Server.java
+index b6979be041..aa55fb4a0f 100644
+--- a/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/ipc/Server.java
++++ b/hadoop-common-project/hadoop-common/src/main/java/org/apache/hadoop/ipc/Server.java
+@@ -1228,6 +1228,8 @@ private class RpcCall extends Call {
+     final Connection connection;  // connection to client
+     final Writable rpcRequest;    // Serialized Rpc request from client
+     ByteBuffer rpcResponse;       // the response for this call
++    String causynthTrace = "";
++    String causynthSymbolic = "";
+ 
+     private ResponseParams responseParams; // the response params
+     private Writable rv;                   // the byte response
+@@ -1238,6 +1240,8 @@ private class RpcCall extends Call {
+       this.rpcRequest = call.rpcRequest;
+       this.rv = call.rv;
+       this.responseParams = call.responseParams;
++      this.causynthTrace = call.causynthTrace;
++      this.causynthSymbolic = call.causynthSymbolic;
+     }
+ 
+     RpcCall(Connection connection, int id) {
+@@ -1307,28 +1311,37 @@ public Void run() throws Exception {
+       this.setStartHandleTimestampNanos(startNanos);
+       Writable value = null;
+       ResponseParams responseParams = new ResponseParams();
++      CausynthMessagePropagation.Inbound causynth =
++          CausynthMessagePropagation.inbound(causynthTrace,
++              causynthSymbolic, CausynthMessagePropagation.IPC,
++              CausynthMessagePropagation.rpcCorrelation(clientId, callId),
++              Integer.toString(retryCount), "REQUEST", Server.this);
+ 
+       try {
+-        value = call(
+-            rpcKind, connection.protocolName, rpcRequest, getTimestampNanos());
+-      } catch (Throwable e) {
+-        populateResponseParamsOnError(e, responseParams);
+-      }
+-      if (!isResponseDeferred()) {
+-        long deltaNanos = Time.monotonicNowNanos() - startNanos;
+-        ProcessingDetails details = getProcessingDetails();
+-
+-        details.set(Timing.PROCESSING, deltaNanos, TimeUnit.NANOSECONDS);
+-        deltaNanos -= details.get(Timing.LOCKWAIT, TimeUnit.NANOSECONDS);
+-        deltaNanos -= details.get(Timing.LOCKSHARED, TimeUnit.NANOSECONDS);
+-        deltaNanos -= details.get(Timing.LOCKEXCLUSIVE, TimeUnit.NANOSECONDS);
+-        details.set(Timing.LOCKFREE, deltaNanos, TimeUnit.NANOSECONDS);
+-
+-        setResponseFields(value, responseParams);
+-        sendResponse();
+-        details.setReturnStatus(responseParams.returnStatus);
+-      } else {
+-        LOG.debug("Deferring response for callId: {}", this.callId);
++        try {
++          value = call(rpcKind, connection.protocolName, rpcRequest,
++              getTimestampNanos());
++        } catch (Throwable e) {
++          populateResponseParamsOnError(e, responseParams);
++        }
++        if (!isResponseDeferred()) {
++          long deltaNanos = Time.monotonicNowNanos() - startNanos;
++          ProcessingDetails details = getProcessingDetails();
++
++          details.set(Timing.PROCESSING, deltaNanos, TimeUnit.NANOSECONDS);
++          deltaNanos -= details.get(Timing.LOCKWAIT, TimeUnit.NANOSECONDS);
++          deltaNanos -= details.get(Timing.LOCKSHARED, TimeUnit.NANOSECONDS);
++          deltaNanos -= details.get(Timing.LOCKEXCLUSIVE, TimeUnit.NANOSECONDS);
++          details.set(Timing.LOCKFREE, deltaNanos, TimeUnit.NANOSECONDS);
++
++          setResponseFields(value, responseParams);
++          sendResponse();
++          details.setReturnStatus(responseParams.returnStatus);
++        } else {
++          LOG.debug("Deferring response for callId: {}", this.callId);
++        }
++      } finally {
++        CausynthMessagePropagation.endInbound(causynth);
+       }
+       return null;
+     }
+@@ -3022,6 +3035,10 @@ private void processRpcRequest(RpcRequestHeaderProto header,
+             header.getRetryCount(), rpcRequest,
+             ProtoUtil.convert(header.getRpcKind()),
+             header.getClientId().toByteArray(), span, callerContext, authHeader);
++        call.causynthTrace = header.hasCausynthTrace()
++            ? header.getCausynthTrace() : "";
++        call.causynthSymbolic = header.hasCausynthSymbolic()
++            ? header.getCausynthSymbolic() : "";
+ 
+         // Save the priority level assignment by the scheduler
+         call.setPriorityLevel(callQueue.getPriorityLevel(call));
+@@ -3619,6 +3636,17 @@ private void setupResponse(
+     headerBuilder.setRetryCount(call.retryCount);
+     headerBuilder.setStatus(status);
+     headerBuilder.setServerIpcVersionNum(CURRENT_VERSION);
++    CausynthMessagePropagation.Outbound causynth =
++        CausynthMessagePropagation.outbound(CausynthMessagePropagation.IPC,
++            CausynthMessagePropagation.rpcCorrelation(call.clientId,
++                call.callId), Integer.toString(call.retryCount),
++            "RESPONSE", this);
++    if (causynth.active()) {
++      headerBuilder.setCausynthTrace(causynth.trace);
++      if (!causynth.symbolic.isEmpty()) {
++        headerBuilder.setCausynthSymbolic(causynth.symbolic);
++      }
++    }
+     if (alignmentContext != null) {
+       alignmentContext.updateResponseState(headerBuilder);
+     }
+diff --git a/hadoop-common-project/hadoop-common/src/main/proto/RpcHeader.proto b/hadoop-common-project/hadoop-common/src/main/proto/RpcHeader.proto
+index 5207fed941..475fb4fbba 100644
+--- a/hadoop-common-project/hadoop-common/src/main/proto/RpcHeader.proto
++++ b/hadoop-common-project/hadoop-common/src/main/proto/RpcHeader.proto
+@@ -97,6 +97,8 @@ message RpcRequestHeaderProto { // the header for the RpcRequest
+   optional bytes routerFederatedState = 9;
+   // Authorization header for passing opaque credentials or tokens
+   optional bytes authorizationHeader = 10;
++  optional string causynthTrace = 11;
++  optional string causynthSymbolic = 12;
+ }
+ 
+ 
+@@ -167,6 +169,8 @@ message RpcResponseHeaderProto {
+   // The client should not interpret these bytes, but only
+   // forward them to the router using RpcRequestHeaderProto.routerFederatedState.
+   optional bytes routerFederatedState = 10;
++  optional string causynthTrace = 11;
++  optional string causynthSymbolic = 12;
+ }
+ 
+ message RpcSaslProto {
+diff --git a/hadoop-hdfs-project/hadoop-hdfs-client/src/main/java/org/apache/hadoop/hdfs/protocol/datatransfer/sasl/DataTransferSaslUtil.java b/hadoop-hdfs-project/hadoop-hdfs-client/src/main/java/org/apache/hadoop/hdfs/protocol/datatransfer/sasl/DataTransferSaslUtil.java
+index 97607699cc..cfbaf687dd 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs-client/src/main/java/org/apache/hadoop/hdfs/protocol/datatransfer/sasl/DataTransferSaslUtil.java
++++ b/hadoop-hdfs-project/hadoop-hdfs-client/src/main/java/org/apache/hadoop/hdfs/protocol/datatransfer/sasl/DataTransferSaslUtil.java
+@@ -51,6 +51,7 @@
+ import org.apache.hadoop.hdfs.protocol.datatransfer.InvalidEncryptionKeyException;
+ import org.apache.hadoop.hdfs.protocol.proto.DataTransferProtos.DataTransferEncryptorMessageProto;
+ import org.apache.hadoop.hdfs.protocol.proto.DataTransferProtos.DataTransferEncryptorMessageProto.DataTransferEncryptorStatus;
++import org.apache.hadoop.ipc.CausynthMessagePropagation;
+ import org.apache.hadoop.hdfs.protocol.proto.DataTransferProtos.HandshakeSecretProto;
+ import org.apache.hadoop.hdfs.protocol.proto.HdfsProtos.CipherOptionProto;
+ import org.apache.hadoop.hdfs.protocolPB.PBHelperClient;
+@@ -215,6 +216,11 @@ private static <T> T readSaslMessage(InputStream in,
+       Function<DataTransferEncryptorMessageProto, ? extends T> handler) throws IOException {
+     DataTransferEncryptorMessageProto proto =
+         DataTransferEncryptorMessageProto.parseFrom(vintPrefixed(in));
++    CausynthMessagePropagation.inboundSasl(
++        proto.hasCausynthTrace() ? proto.getCausynthTrace() : "",
++        proto.hasCausynthSymbolic() ? proto.getCausynthSymbolic() : "",
++        proto.hasCausynthCorrelation() ? proto.getCausynthCorrelation() : "",
++        proto.hasCausynthAttempt() ? proto.getCausynthAttempt() : "");
+     switch (proto.getStatus()) {
+     case ERROR_UNKNOWN_KEY:
+       throw new InvalidEncryptionKeyException(proto.getMessage());
+@@ -371,9 +377,7 @@ public static void sendSaslMessageAndNegotiatedCipherOption(
+       builder.addCipherOption(PBHelperClient.convert(option));
+     }
+ 
+-    DataTransferEncryptorMessageProto proto = builder.build();
+-    proto.writeDelimitedTo(out);
+-    out.flush();
++    writeSaslMessage(out, builder);
+   }
+ 
+   /**
+@@ -458,9 +462,7 @@ public static void sendSaslMessageAndNegotiationCipherOptions(
+       builder.addAllCipherOption(PBHelperClient.convertCipherOptions(options));
+     }
+ 
+-    DataTransferEncryptorMessageProto proto = builder.build();
+-    proto.writeDelimitedTo(out);
+-    out.flush();
++    writeSaslMessage(out, builder);
+   }
+ 
+   /**
+@@ -583,8 +585,22 @@ public static void sendSaslMessage(OutputStream out,
+       builder.setAccessTokenError(true);
+     }
+ 
+-    DataTransferEncryptorMessageProto proto = builder.build();
+-    proto.writeDelimitedTo(out);
++    writeSaslMessage(out, builder);
++  }
++
++  private static void writeSaslMessage(OutputStream out,
++      DataTransferEncryptorMessageProto.Builder builder) throws IOException {
++    CausynthMessagePropagation.Outbound causynth =
++        CausynthMessagePropagation.outboundSasl();
++    if (causynth.active()) {
++      builder.setCausynthCorrelation(causynth.correlationId)
++          .setCausynthAttempt(causynth.attemptId)
++          .setCausynthTrace(causynth.trace);
++      if (!causynth.symbolic.isEmpty()) {
++        builder.setCausynthSymbolic(causynth.symbolic);
++      }
++    }
++    builder.build().writeDelimitedTo(out);
+     out.flush();
+   }
+ 
+diff --git a/hadoop-hdfs-project/hadoop-hdfs-client/src/main/proto/datatransfer.proto b/hadoop-hdfs-project/hadoop-hdfs-client/src/main/proto/datatransfer.proto
+index 5356cd6961..3d35302858 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs-client/src/main/proto/datatransfer.proto
++++ b/hadoop-hdfs-project/hadoop-hdfs-client/src/main/proto/datatransfer.proto
+@@ -45,6 +45,10 @@ message DataTransferEncryptorMessageProto {
+   repeated CipherOptionProto cipherOption = 4;
+   optional HandshakeSecretProto handshakeSecret = 5;
+   optional bool accessTokenError = 6;
++  optional string causynthCorrelation = 7;
++  optional string causynthAttempt = 8;
++  optional string causynthTrace = 9;
++  optional string causynthSymbolic = 10;
+ }
+ 
+ message HandshakeSecretProto {
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/pom.xml b/hadoop-hdfs-project/hadoop-hdfs/pom.xml
+index 5af0630a34..668218f4b4 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/pom.xml
++++ b/hadoop-hdfs-project/hadoop-hdfs/pom.xml
+@@ -35,6 +35,12 @@ https://maven.apache.org/xsd/maven-4.0.0.xsd">
+   </properties>
+ 
+   <dependencies>
++    <dependency>
++      <groupId>org.example</groupId>
++      <artifactId>GraphChecker</artifactId>
++      <version>1.0-SNAPSHOT</version>
++      <scope>provided</scope>
++    </dependency>
+     <dependency>
+       <groupId>org.apache.hadoop</groupId>
+       <artifactId>hadoop-auth</artifactId>
+diff --git a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/datatransfer/sasl/SaslDataTransferServer.java b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/datatransfer/sasl/SaslDataTransferServer.java
+index 949f99af89..0e401a7e2a 100644
+--- a/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/datatransfer/sasl/SaslDataTransferServer.java
++++ b/hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/protocol/datatransfer/sasl/SaslDataTransferServer.java
+@@ -58,6 +58,7 @@
+ import org.apache.hadoop.hdfs.security.token.block.BlockTokenIdentifier;
+ import org.apache.hadoop.hdfs.security.token.block.InvalidBlockTokenException;
+ import org.apache.hadoop.hdfs.server.datanode.DNConf;
++import org.apache.hadoop.ipc.CausynthMessagePropagation;
+ import org.apache.hadoop.security.CustomizedCallbackHandler;
+ import org.apache.hadoop.security.SaslPropertiesResolver;
+ import org.apache.hadoop.security.SecurityUtil;
+@@ -121,7 +122,12 @@ public IOStreamPair receive(Peer peer, OutputStream underlyingOut,
+       LOG.debug(
+         "SASL server doing encrypted handshake for peer = {}, datanodeId = {}",
+         peer, datanodeId);
+-      return getEncryptedStreams(peer, underlyingOut, underlyingIn);
++      CausynthMessagePropagation.setLocalOwner(datanodeId);
++      try {
++        return getEncryptedStreams(peer, underlyingOut, underlyingIn);
++      } finally {
++        CausynthMessagePropagation.clearLocalOwner();
++      }
+     } else if (!UserGroupInformation.isSecurityEnabled()) {
+       LOG.debug(
+         "SASL server skipping handshake in unsecured configuration for "

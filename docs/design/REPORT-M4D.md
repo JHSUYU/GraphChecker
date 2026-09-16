@@ -1,0 +1,14 @@
+# REPORT-M4D — composer: null leaf, element projection, solver error (2026-09-14)
+
+Branch refactor/d3-compose2 tip ca1bdd0ad (parent 9e14ceb12). 6 files +350/−26; 52 @Test → 52.
+
+Baseline correction: §3.2 of HANDOVER-D3 (paths=2, gaps=1556, z3 bit-vector error) was measured with a stale jar (3967a4e7e, pre-M4b/M4c). At 9e14ceb12 the same corpus gives `paths=0 families=0 roots=1 valuations=1 solverRuns=0 claim=NO_SUPPORTED_WITNESS BLOCKED gaps=25`.
+
+1. Null leaf — SmtLowering.symbolTerm:634 / nullLeaf:681: the SYMBOL-leaf path now reads `_exp="N"` (VmExpressionIr.SYMBOLIC_NULL); 17897 φ lowers to `(not (= container_dag__… nullRef))`. ContainerSmtCodec.NULL_CELL:87 is the one spelling of `(VRef nullRef)`; a container STATE holding null is refused by name.
+2. Element projection — SmtLowering.element:782 from guardedReadTerm:736,742: a cell read joined to a whole-container version lowers to `indexed_read(state, slot)` unboxed by the read's Java type (slot = the LocationId's own slot); hash-keyed (MAP) cells refused `UNSTATED_VALUE:ContainerElement:<loc>@<ver>:MAP!=INT`. Codec operands keep the Java width (:989) — AmbiguousJavaIntegralShift 14 → 0. BinarySortConflict ARRAY_VALUE!=INT 0.
+3. Solver errors — Solver.errors:115/errorsOf:268, ClaimPolicy.decide:121: any z3 `(error …)` on any ask = BLOCKING gap (rides on DECLARATION_MISSING; no new GapKind — contract untouched), claim NO_SUPPORTED_WITNESS, polarityDecides=false. Solver.ask:149 asks `(get-value …)` only when sat (was appended to every ask → "model is not available" on every unsat). SmtLowering:842 names the cascade `ContainerRelation:FIELD:<ownerClass>@<offset>`.
+
+Corpus results (m4d-corpus-1fc6abdb): after = `paths=0 … BLOCKED gaps=25`, z3 on candidate.smt2 has 0 `(error` lines. Remaining refusals: `UNSTATED_FIELD_PROJECTION:…Snapshot@32:L` ×20 (+20 cascade), `BinarySortConflict:!=:INT!=BOOL` ×2 (stale corpus: marker recorded as INTEGRAL, fixed by cfbf740f5 at re-record). 17897 probe corpus: paths=1 families=2 roots=46 z3 unsat, polarityDecides=true, 0 BLOCKING.
+
+BLOCKED (not composer): (1) expressions.json has 80 `FieldAccessExpression{ownerClass=…snapshot/Snapshot, fieldOffset=32, _java_type=L}` nodes WITHOUT concreteOwner/concreteValue/observedVersion (reference-typed field reads); the anchor's 18 versioned ReadRows join to write expressions containing them → refused at ContainerSmtCodec.field:401 → ADMISSION_GAP → paths=0. Needs the VM/runtime to state the read reference's recorded identity (or P3 Memory Indexing). (2) φ still "" (P2b). 
+Planner queue: one spelling for expression refs (`EXPR.<16hex>` vs `EXPR.v1.<x>` — statedTerm loops on the latter); a proper GapKind for solver errors (contract batch); a BLOCKED compose should emit a fail-closed candidate.smt2 (currently a plain `z3` prints `sat` on a 0-path file).

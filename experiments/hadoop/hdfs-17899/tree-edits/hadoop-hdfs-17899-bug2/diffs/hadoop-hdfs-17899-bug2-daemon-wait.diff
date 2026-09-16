@@ -1,0 +1,36 @@
+--- a/hadoop-hdfs-17899-bug2/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/sps/TestExternalStoragePolicySatisfier.java
++++ b/hadoop-hdfs-17899-bug2/hadoop-hdfs-project/hadoop-hdfs/src/test/java/org/apache/hadoop/hdfs/server/sps/TestExternalStoragePolicySatisfier.java
+@@ -68,6 +68,7 @@
+ import org.apache.hadoop.fs.permission.FsPermission;
+ import org.apache.hadoop.hdfs.DFSConfigKeys;
+ import org.apache.hadoop.hdfs.DFSTestUtil;
++import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
+ import org.apache.hadoop.hdfs.DistributedFileSystem;
+ import org.apache.hadoop.hdfs.HdfsConfiguration;
+ import org.apache.hadoop.hdfs.MiniDFSCluster;
+@@ -1112,6 +1113,25 @@
+       pinBlockKeys(hdfsCluster);
+       nnc = DFSTestUtil.getNameNodeConnector(config,
+           HdfsServerConstants.MOVER_ID_PATH, 1, true);
++      // getNameNodeConnector starts the KeyManager's BlockKeyUpdater
++      // daemon, whose run() performs one updateBlockKeys() before it
++      // sleeps.  The recorded run happened to finish that turn before
++      // startRecording() below; under the concolic VM it does not, and the
++      // daemon's addKeys then lands inside the recorded window and takes
++      // the occurrence this test means for main's own updateBlockKeys.
++      // Wait for the daemon's first turn explicitly, on state it already
++      // publishes: an access token can only be issued once addKeys has
++      // installed the block keys.
++      final ExtendedBlock firstBlock =
++          DFSTestUtil.getFirstBlock(dfs, new Path(FILE));
++      GenericTestUtils.waitFor(() -> {
++        try {
++          return nnc.getKeyManager().getAccessToken(firstBlock,
++              new StorageType[]{StorageType.DISK}, new String[]{""}) != null;
++        } catch (Exception keysNotInstalledYet) {
++          return false;
++        }
++      }, 100, 15000);
+       DataNode target = hdfsCluster.getDataNodes().get(0);
+       registerCausynthSources(target);
+ 

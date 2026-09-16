@@ -1,0 +1,29 @@
+- [Goal end state 2026-09-16](goal-end-state-2026-09-16.md) — owner: STOPPED 2026-09-16 16:45 CDT; everything merged into the one remote `main`; README §9 + docs/HANDOVER.md are the entry points; first job for a new agent = live acceptance on 17960/11741
+- [Case prep: pin nondeterminism](case-prep-determinism.md) — before recording a case, pin daemons/timers/retries; structural identity tolerates timing, not extra iterations
+- [Change first, then verify](change-first-then-verify.md) — owner: batch the changes, one thorough verification on the merged tree; no per-mandate recordings
+- [Cleanup round 2 rulings](cleanup2-rulings.md) — Q1–Q11 verdicts: envelope/second flip/refined graph deleted, G3-file items deferred to R2, wire ABI change batched with the next hadoop rebuild
+- [HDFS-11741 notes](case-11741-notes.md) — expiry vs two clocks on two nodes; two flips (NN rot-2 + DN refresh); Balancer mints the DEK locally; SERIAL_NO cannot open the anchor; verify-first list
+- [Reuse passed runs](reuse-passed-runs.md) — owner: validate offline on existing corpora; record only on runtime changes; one full campaign for acceptance; move handover clutter out of the repo and flatten the d3 package after 17960
+- [Fix the flow, not the bug](fix-the-flow-not-the-bug.md) — owner: every fix must be traced through rows → explore → compose → claim and stated for the whole class; add the invariant to the IMPORT gate
+- [Takeover mandate 2026-09-14](takeover-mandate-2026-09-14.md) — owner: Fable planner + opus-impl (xhigh) subagents; design fixed; finish details; six cases → correct causal .smt; read first with HANDOVER-D3
+- [GraphChecker CORE DESIGN PRINCIPLE](graphchecker-core-design-principle.md) — owner's fixed design: in-JVM symbolic propagation + anchors → merge path conditions; NEVER stitch values offline via the graph; read first
+- [Subagent rules of engagement](subagent-rules-of-engagement.md) — every mandate: design frame, file ownership, definition of done, forbidden list, evidence reporting, planner review before merge
+- [Judge against the reference design](planner-judge-against-reference-design.md) — owner: hold the reference design; discard non-derivable components; stop patching at the second symptom; consolidate duplicates first
+- [Agent model split](agent-model-split.md) — main agent = Fable 5.1 planner only; code read/write via Opus 5 subagents
+- [GraphChecker refactor goal](graphchecker-refactor-goal.md) — flatten static→dynamic handoff; experiments smt2 + Z3 verdict are the oracle
+- [GraphChecker verification runbook](graphchecker-verification-runbook.md) — campaign env (CAUSYNTH_CUSTOM_JDK_HOME from worktrees), exit codes, 17960 regression on main 3d9355745
+- [GraphChecker external callers](graphchecker-external-callers.md) — runtime APIs called from /opt/hadoop-hdfs-* workloads; grep them before deleting
+- [Verify against main before claiming a gap](verify-against-main-before-claiming-gap.md) — attach/wire mechanisms exist on main + /opt/hadoop; symptoms after refactor = regression first
+- [Campaign concurrency ruling](serial-campaigns-only.md) — max TWO lanes since 2026-09-12 20:00 (was serial); re-probe z3 offline; no rebuild while lanes run
+- [Handoff-family phase 2](handoff-family-phase2.md) — owner idea assessed: per-node exploration joined at the VM handoff occurrence; rules + data; do after six cases + trace identity
+- [Workload assertions may be adjusted](workload-assertions-may-be-adjusted.md) — owner permission: small edits to TestCausynth* assertions when they block a replay path from reaching the fatal read
+- [Test count cap](test-count-cap.md) — owner: keep the suite at a few dozen @Test methods, never over 100; new behaviour folds into existing tests
+- [Lineage identity idea](lineage-identity-idea.md) — owner: match replays by request lineage (parent occurrence → thread → rpc), k local to the parent; identity v2 after six cases
+- [No VALIDATE stage](no-validate-stage.md) — owner: no materializing/confirmation replay; the composed .smt + z3 verdict is the deliverable
+- [Delete first, no compat](delete-first-no-compat.md) — owner: superseded mechanisms deleted outright and first; no adapters/stubs
+- [Hadoop tracing edits allowed](hadoop-tracing-edits-allowed.md) — owner: small Hadoop source edits for tracing/scope are permitted (diffs kept; build/no-git rules apply)
+- [Identity v3: execution index](identity-v3-execution-index.md) — owner: occurrence id = epoch+component+region+causal anchor+PEPID-style execution index; spec d-design/IDENTITY-V3.md
+- [Lineage must be complete](lineage-must-be-complete.md) — owner: lineage = tracing; fix every scope loss via Soot hooks or HDFS edits; gate = 0 Lost on the six cases
+- [Root selection policy](root-selection-policy.md) — owner: planner picks the manual roots; chosen set per case recorded
+- [Shrink after 17960](shrink-after-17960.md) — owner: once 17960 runs end to end, delete code first (REPORT-SHRINK.md has the reachability evidence), then the other five cases
+- [HANDOVER-D3](../../../../../../opt/graphchecker-handover/HANDOVER-D3.md) — 2026-09-15 stop snapshot: /opt/graphchecker-handover/HANDOVER-D3.md is the single entry point for whoever resumes (state, design rules, ordered TODO, commands); durable doc copies in /opt/graphchecker-handover/d3-handover/
