@@ -1740,7 +1740,7 @@ public class ComposerTest {
                 SmtLowering.symbols(guard, new LinkedHashSet<String>())
                         .contains(SERIAL));
         Set<String> reached = lowering.reachedSymbols(guard,
-                new LinkedHashSet<String>());
+                new LinkedHashSet<String>(), new LinkedHashSet<String>());
         assertTrue("and the recorded symbol behind it is: " + reached,
                 reached.contains(SERIAL));
         for (String name : reached) {
