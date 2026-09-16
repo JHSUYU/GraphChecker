@@ -591,6 +591,20 @@ public final class ConcolicRegionRuntime {
             // addressable by the id every version and read the VM logs from
             // inside it carries, so a logged event can be given the frames
             // it stood on (FrameJournal).
+            //
+            // This journal is never evicted, and this class cannot be the
+            // one that evicts it: the activation's rows are written by the
+            // publication pool (#closeOccurrence ->
+            // submitCompletedResultPublication), which returns before they
+            // are, and an ENCLOSING activation may publish a read performed
+            // inside this one under this regionEnterEventId -- so neither
+            // #closeOccurrence nor #popActiveRegion is a point at which the
+            // journal is provably dead.  The only barrier that is,
+            // awaitSelectedResultPublications, is workload-wide, i.e. it
+            // comes at the moment the process ends anyway.  A bounded leak
+            // (7,266 journals on 11741, 266 on 17960), not a correctness
+            // defect; the owner of the eviction is whoever owns the
+            // publication's completion, not the region hook.
             edu.uva.liftlab.graphchecker.runtime.RowRuntime.journalRegion(
                     active.vmRegionEnterEventId, active.d3Address);
             // A delivery can establish the causal request immediately before
