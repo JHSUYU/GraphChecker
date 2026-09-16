@@ -936,6 +936,41 @@ public class ComposerTest {
         assertTrue("and the alarm says why",
                 named(decision.claim().gaps(),
                         GapKind.FORMULA_SAT_AT_RECORDED_VALUATION));
+
+        // R2: A CLOCK IS PART OF THE WITNESS.  phi holds only where the
+        // clock sits past an instant this run did not read, and pinning the
+        // cell to what it DID read refutes it -- so the clock is necessary,
+        // the mechanism is CLOCK_SKEW, and the claim has to say WHERE the
+        // cell had to sit.  A clock has a floor and no window, so no
+        // valuation pins one and no valuation can report one: the model is
+        // the only statement of it, and CLOCK_SKEW was published with
+        // movedRoots {} -- 11741 campaign #3's own claim -- about the one
+        // finding whose whole content is that something moved.
+        Path skew = folder.newFolder("clock-skew").toPath();
+        Session skewed = new Session(skew, "s0", false);
+        skewed.clock("700");
+        // The predicate names the cell so the formula declares it, which is
+        // what makes the cell a cell of this composition at all.
+        skewed.decision(ANCHOR, "anchor#u1", "(or (> " + CLOCK + " 1000) "
+                + "(not (> " + CLOCK + " 1000)))", CLOCK_ROOT, 700L);
+        skewed.target("(> " + CLOCK + " 1000)", false, true);
+        skewed.write();
+
+        Composer.Composition clocked = compose(skew, 4);
+        assertEquals("the cell is the name the formula names",
+                Collections.singletonList(CLOCK), clocked.clockCells());
+        ClaimPolicy.Decision skewing = ClaimPolicy.decide(clocked,
+                solver());
+        assertEquals("the arm is reachable with the clock free", "sat",
+                skewing.outcomes().get(0).answer().status());
+        assertEquals("no declared root moved, and the clock is necessary",
+                ClaimKind.CLOCK_SKEW, skewing.claim().kind());
+        String at = skewing.claim().movedRoots().get(CLOCK);
+        assertNotNull("the witness states where the cell had to sit: "
+                + skewing.claim().movedRoots(), at);
+        assertTrue("past the instant its session read, which is what the "
+                        + "skew IS: " + at,
+                Long.parseLong(at.trim()) > 1000L);
     }
 
     // ------------------------------------------------------------------
