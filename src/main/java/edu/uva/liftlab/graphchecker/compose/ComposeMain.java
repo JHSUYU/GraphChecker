@@ -406,6 +406,27 @@ public final class ComposeMain {
                             : outcome.selected().path().sessionId);
             answer.addProperty("fatalObserved", outcome.selected() != null
                     && outcome.selected().fatalObserved());
+            // WHICH DELIVERY this model rested on, per family.  A family is
+            // a case split, so a sat model names one arm of each family the
+            // selected path opened; without this the manifest says a slot
+            // had thirteen alternatives and not which one the witness used,
+            // which is what the harness and the README narrate the causal
+            // chain from.
+            JsonArray arms = new JsonArray();
+            for (Map.Entry<String, ComposedFamilies.ArmChoice> taken
+                    : outcome.selectedArms().entrySet()) {
+                ComposedFamilies.ArmChoice arm = taken.getValue();
+                JsonObject row = new JsonObject();
+                row.addProperty("selector", taken.getKey());
+                row.addProperty("family", arm.family());
+                row.addProperty("interactionId", arm.slotId());
+                row.addProperty("sessionId", arm.sessionId());
+                row.addProperty("producerPathId", arm.producerPathId());
+                row.addProperty("expressionRef", arm.expressionRef());
+                row.addProperty("attested", arm.attested());
+                arms.add(row);
+            }
+            answer.add("selectedArms", arms);
             JsonArray core = new JsonArray();
             for (String name : outcome.answer().core()) core.add(name);
             answer.add("unsatCore", core);

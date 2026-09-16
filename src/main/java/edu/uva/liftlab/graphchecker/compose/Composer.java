@@ -6,7 +6,6 @@ import com.google.gson.JsonObject;
 
 import edu.uva.liftlab.graphchecker.compose.VmTermLowering.Sort;
 import edu.uva.liftlab.graphchecker.compose.VmTermLowering.Term;
-import edu.uva.liftlab.graphchecker.contract.Arm;
 import edu.uva.liftlab.graphchecker.smt.Arms;
 import edu.uva.liftlab.graphchecker.contract.AttachRow;
 import edu.uva.liftlab.graphchecker.contract.DecisionRow;
@@ -168,6 +167,7 @@ public final class Composer {
         private final Map<String, Set<String>> unattestedRoots;
         private final Map<String, List<String>> observedReads;
         private final Map<String, List<String>> observedArrivals;
+        private final Map<String, ComposedFamilies.ArmChoice> armChoices;
         private final String seedSessionId;
 
         private Composition(OccurrenceAddress anchor, String body,
@@ -179,6 +179,7 @@ public final class Composer {
                             Map<String, Set<String>> unattestedRoots,
                             Map<String, List<String>> observedReads,
                             Map<String, List<String>> observedArrivals,
+                            Map<String, ComposedFamilies.ArmChoice> armChoices,
                             String seedSessionId) {
             this.anchor = anchor;
             this.body = body;
@@ -197,6 +198,7 @@ public final class Composer {
                     Collections.unmodifiableMap(observedReads);
             this.observedArrivals =
                     Collections.unmodifiableMap(observedArrivals);
+            this.armChoices = Collections.unmodifiableMap(armChoices);
             this.seedSessionId = seedSessionId;
         }
 
@@ -289,6 +291,25 @@ public final class Composer {
 
         public String seedSessionId() {
             return seedSessionId;
+        }
+
+        /**
+         * Every family ARM selector, for reading which delivery a model
+         * rested on.
+         *
+         * <p>A family is a case split (one selector per arm), so a sat
+         * model answers WHICH arm it took -- and a claim that names a
+         * mechanism over a slot has to be able to say which delivery of
+         * that slot the witness used, not merely that the slot had
+         * alternatives.</p>
+         */
+        public List<String> armSelectors() {
+            return new ArrayList<String>(armChoices.keySet());
+        }
+
+        /** The delivery one arm selector stands for, or null. */
+        public ComposedFamilies.ArmChoice arm(String selector) {
+            return armChoices.get(selector);
         }
 
         /** Every selector, for reading which disjunct a model selected. */
@@ -566,7 +587,8 @@ public final class Composer {
                 new ArrayList<Family>(families.values()),
                 new ArrayList<RootDomain>(roots.values()), valuations,
                 gaps, clockCells, clockReadings, unattestedRoots,
-                observedReads, observedArrivals, seed());
+                observedReads, observedArrivals,
+                composedFamilies.armChoices(), seed());
     }
 
     // ------------------------------------------------------------------

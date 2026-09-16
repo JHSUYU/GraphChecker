@@ -70,12 +70,27 @@ public final class ClaimPolicy {
         private final Composer.Valuation valuation;
         private final Z3.Answer answer;
         private final Composer.Disjunct selected;
+        private final Map<String, ComposedFamilies.ArmChoice> arms;
 
         Outcome(Composer.Valuation valuation, Z3.Answer answer,
-                Composer.Disjunct selected) {
+                Composer.Disjunct selected,
+                Map<String, ComposedFamilies.ArmChoice> arms) {
             this.valuation = valuation;
             this.answer = answer;
             this.selected = selected;
+            this.arms = Collections.unmodifiableMap(arms);
+        }
+
+        /**
+         * Arm selector -> the delivery this model rested on.
+         *
+         * <p>Only where the model set the selector: a family is a case
+         * split with exactly-one over its arms, so a sat model names one
+         * arm per family it reached and nothing for the families the
+         * selected path did not open.</p>
+         */
+        public Map<String, ComposedFamilies.ArmChoice> selectedArms() {
+            return arms;
         }
 
         public Composer.Valuation valuation() {
@@ -169,6 +184,11 @@ public final class ClaimPolicy {
         // CLOCK/... .
         List<String> selectors = composition.selectors();
         List<String> asked = new ArrayList<String>(selectors);
+        // AND EVERY FAMILY ARM SELECTOR.  A witness over a slot has to say
+        // which delivery it rested on; the manifest publishes it per
+        // family, and a claim that cannot name the arm names a mechanism
+        // whose evidence is an anonymous disjunct.
+        asked.addAll(composition.armSelectors());
         for (String cell : composition.clockCells()) {
             asked.add(SmtLowering.legalSymbols(cell));
         }
@@ -177,7 +197,8 @@ public final class ClaimPolicy {
                     composition.query(valuation.assertions()),
                     asked, valuation.ordinal() == 0);
             outcomes.add(new Outcome(valuation, answer,
-                    selectedOf(composition, answer)));
+                    selectedOf(composition, answer),
+                    armsOf(composition, answer)));
         }
         Outcome recorded = outcomes.isEmpty() ? null : outcomes.get(0);
 
@@ -595,6 +616,21 @@ public final class ClaimPolicy {
     }
 
     /** Which disjunct a sat model selected, or null when it named none. */
+    /** Which arm of each family this model set the selector of. */
+    private static Map<String, ComposedFamilies.ArmChoice> armsOf(
+            Composer.Composition composition, Z3.Answer answer) {
+        Map<String, ComposedFamilies.ArmChoice> taken =
+                new LinkedHashMap<String, ComposedFamilies.ArmChoice>();
+        if (!answer.sat()) return taken;
+        for (Map.Entry<String, String> value : answer.values().entrySet()) {
+            if (!"true".equals(value.getValue())) continue;
+            ComposedFamilies.ArmChoice arm =
+                    composition.arm(value.getKey());
+            if (arm != null) taken.put(value.getKey(), arm);
+        }
+        return taken;
+    }
+
     private static Composer.Disjunct selectedOf(
             Composer.Composition composition, Z3.Answer answer) {
         if (!answer.sat()) return null;

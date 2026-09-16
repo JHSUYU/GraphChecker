@@ -88,6 +88,77 @@ final class ComposedFamilies {
         this.gaps = gaps;
     }
 
+    /**
+     * WHICH DELIVERY a family's selector stands for.
+     *
+     * <p>The manifest's answer to "which arm did the witness take": a
+     * selector the model set is one slot's one delivery, and without this
+     * the claim names a mechanism whose evidence is thirteen anonymous
+     * disjuncts.</p>
+     */
+    public static final class ArmChoice {
+        private final String family;
+        private final String slotId;
+        private final String sessionId;
+        private final String producerPathId;
+        private final String expressionRef;
+        private final boolean attested;
+
+        private ArmChoice(String family, String slotId, String sessionId,
+                          String producerPathId, String expressionRef,
+                          boolean attested) {
+            this.family = family;
+            this.slotId = slotId;
+            this.sessionId = sessionId;
+            this.producerPathId = producerPathId;
+            this.expressionRef = expressionRef;
+            this.attested = attested;
+        }
+
+        static ArmChoice of(String family, String slotId, Arms.Arm arm) {
+            return new ArmChoice(family, slotId, arm.sessionId(),
+                    arm.producerPathId(), arm.expressionRef(),
+                    arm.attested());
+        }
+
+        /** The named assertion this arm is one case of. */
+        public String family() {
+            return family;
+        }
+
+        /** The interaction the family is about. */
+        public String slotId() {
+            return slotId;
+        }
+
+        /** The run that delivered it. */
+        public String sessionId() {
+            return sessionId;
+        }
+
+        /** The producer path, or "" when no path condition attests it. */
+        public String producerPathId() {
+            return producerPathId;
+        }
+
+        public String expressionRef() {
+            return expressionRef;
+        }
+
+        public boolean attested() {
+            return attested;
+        }
+    }
+
+    /** Arm selector -> the delivery it stands for. */
+    private final Map<String, ArmChoice> armChoices =
+            new LinkedHashMap<String, ArmChoice>();
+
+    /** Every arm selector this composition declared, in the order made. */
+    Map<String, ArmChoice> armChoices() {
+        return Collections.unmodifiableMap(armChoices);
+    }
+
     /** The declared roots one lowered expression mentions. */
     private Set<String> declaredRootsIn(String term) {
         Set<String> found = new LinkedHashSet<String>();
@@ -170,7 +241,7 @@ final class ComposedFamilies {
             for (Arms.Arm arm : armsBySlot.get(slotId)) rows.add(row(arm));
             families.put(slotId, Family.of(slotId, rows));
             caseSplit("handoff_family", slotId, ordinal, selector,
-                    family.getValue(), stated);
+                    family.getValue(), armsBySlot.get(slotId), stated);
         }
     }
 
@@ -188,7 +259,7 @@ final class ComposedFamilies {
      */
     private void caseSplit(String label, String key, int ordinal,
                            String selector, List<String> armTexts,
-                           List<String> stated) {
+                           List<Arms.Arm> armRows, List<String> stated) {
         String name = label + "__" + ordinal + "__"
                 + ArtifactIO.digest(key, 12);
         List<String> selectors = new ArrayList<String>();
@@ -198,6 +269,7 @@ final class ComposedFamilies {
             lowering.declare(arm, VmTermLowering.Sort.BOOL);
             selectors.add(arm);
             cases.add("(=> " + arm + " " + armTexts.get(index) + ")");
+            armChoices.put(arm, ArmChoice.of(name, key, armRows.get(index)));
         }
         cases.add(0, Arms.exactlyOne(selectors));
         String formula = VmTermLowering.and(cases);
@@ -410,6 +482,7 @@ final class ComposedFamilies {
             List<String> symbols = new ArrayList<String>();
             for (ReadRow read : reads) symbols.add(read.symbol());
             List<String> armTerms = new ArrayList<String>();
+            List<Arms.Arm> armRows = new ArrayList<Arms.Arm>();
             for (Arms.Arm arm : arms.stateArms(reads.get(0).endpoint(),
                     session, entry.getKey(),
                     reads.get(0).observedVersion())) {
@@ -417,6 +490,7 @@ final class ComposedFamilies {
                 String text = render(arm, symbols);
                 if (text.isEmpty()) continue;
                 armTerms.add(text);
+                armRows.add(arm);
                 reached.add(arm.slotId());
                 families.put(arm.slotId(), Family.of(arm.slotId(),
                         Collections.singletonList(row(arm))));
@@ -426,7 +500,7 @@ final class ComposedFamilies {
             if (armTerms.size() < 2) continue;
             chosen.addAll(symbols);
             caseSplit("state_family", entry.getKey(), ordinal, selector,
-                    armTerms, stated);
+                    armTerms, armRows, stated);
         }
         return chosen;
     }
