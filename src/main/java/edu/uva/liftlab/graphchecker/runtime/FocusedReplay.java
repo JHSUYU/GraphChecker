@@ -289,12 +289,78 @@ public final class FocusedReplay {
     }
 
     /**
+     * The prefix this replay was abandoned on, as the gap that named it.
+     *
+     * <p>An abandoned occurrence publishes NO rows -- that is what
+     * abandoning one means -- so the session it leaves behind is missing
+     * every decision, read, write and mint that occurrence made.  The one
+     * account of the replay therefore has to hold it: a verdict read off
+     * {@link #FLIPPED} alone says "the focused prefix reproduced" over a
+     * session whose prefix is not in it.</p>
+     */
+    private static String unmatchedPrefix = "";
+
+    /** The reason a prefix abandonment opens its gap detail with. */
+    private static final String PREFIX_UNMATCHED = "REPLAY_PREFIX_UNMATCHED";
+
+    /**
+     * Notes one unanswered-task gap, and keeps the prefix ones.
+     *
+     * <p>Every such gap opens with its reason
+     * ({@code ConcolicResultPublisher#taskUnanswered}), and the reason is
+     * the field: what this reads is the word the row states, not a shape it
+     * guessed.  Anything but a prefix abandonment is a fact about a task
+     * and not about this replay's obligations, and is ignored here.</p>
+     */
+    static void noteUnansweredTask(String detail) {
+        String stated = Text.safe(detail);
+        if (!stated.startsWith(PREFIX_UNMATCHED)) return;
+        load();
+        synchronized (LOCK) {
+            if (unmatchedPrefix.isEmpty()) unmatchedPrefix = stated;
+        }
+    }
+
+    /** The roots this session PUBLISHED a mint row for. */
+    private static final Set<String> MINTED = new LinkedHashSet<String>();
+
+    /**
+     * Notes one root mint ROW this session published.
+     *
+     * <p>Told apart from {@link #planted} on purpose: that one says the
+     * wave's value reached the field, this one says the SESSION states the
+     * mint.  A replay can do the first and not the second -- the mint's
+     * occurrence is abandoned after the plant -- and it is the second the
+     * corpus is read on.</p>
+     */
+    static void mintPublished(String rootId) {
+        String id = Text.safe(rootId);
+        if (id.isEmpty()) return;
+        load();
+        synchronized (LOCK) {
+            MINTED.add(id);
+        }
+    }
+
+    /**
      * What this replay settled, one row per obligation.
      *
      * <p>Topology divergence is not decided here.  A flip that discovers a
      * topology this epoch does not have is EXPLORE's finding (rule E8),
      * read off the rows the replay published, and the runtime states no
      * second opinion about it.</p>
+     *
+     * <p>FAIL-CLOSED, ONE RULE.  ADMITTED means "the focused prefix
+     * reproduced and the flip took the other arm", and that is a claim
+     * about the SESSION -- the rows a later stage reads.  So the flip alone
+     * does not admit: a replay whose focused prefix was abandoned, or whose
+     * session states no mint row for a root the wave assigned, states
+     * NOT_ADMITTED naming the gap, because the evidence for the sentence is
+     * not in the corpus.  The 39bedd768 HDFS-17960 session {@code
+     * 793875fb482a10a4-4b39d011} is both at once: a 0-byte {@code
+     * roots.jsonl}, its flip occurrence's 42 rows gone with the
+     * REPLAY_PREFIX_UNMATCHED gap that abandoned them, and {@code
+     * obligation_result.jsonl} reading ADMITTED.</p>
      */
     public static List<ObligationResult> results(String sessionId) {
         load();
@@ -307,11 +373,19 @@ public final class FocusedReplay {
                     results.add(ObligationResult.of(id, Verdict.NOT_ADMITTED,
                             sessionId, REFUSALS.get(id)));
                 } else if (FLIPPED.contains(id)) {
-                    results.add(ObligationResult.of(id, Verdict.ADMITTED,
-                            sessionId, "the focused prefix reproduced and "
-                            + Text.safe(obligation.siteId()) + "#"
-                            + obligation.ordinal() + " took "
-                            + obligation.flippedOutcome()));
+                    // The one place an ADMITTED is stated, and the only
+                    // thing this gate does is refuse one: every other
+                    // verdict below keeps the words it already had.
+                    String unstated = unstated(obligation);
+                    results.add(unstated.isEmpty()
+                            ? ObligationResult.of(id, Verdict.ADMITTED,
+                                    sessionId,
+                                    "the focused prefix reproduced and "
+                                    + Text.safe(obligation.siteId()) + "#"
+                                    + obligation.ordinal() + " took "
+                                    + obligation.flippedOutcome())
+                            : ObligationResult.of(id, Verdict.NOT_ADMITTED,
+                                    sessionId, unstated));
                 } else if (Text.safe(FOCUS.get(id)).isEmpty()) {
                     // The row states no occurrence for the flip, so the
                     // flip is addressed at nothing and no decision of this
@@ -333,6 +407,40 @@ public final class FocusedReplay {
             }
         }
         return results;
+    }
+
+    /**
+     * Why this replay's session cannot carry an admission, or {@code ""}.
+     *
+     * <p>Two ways, and both are "the rows are not there to be read".  A
+     * prefix this replay was abandoned on took the abandoned occurrence's
+     * whole row set with it.  A root the wave assigned whose mint row the
+     * session does not state leaves the valuation the replay ran unstated
+     * in the corpus -- over BOTH spellings of what a wave asks of a root,
+     * an absolute assignment and a clock's skew, for the reason {@link
+     * #unplantedAssignments} gives.</p>
+     *
+     * <p>Called under {@link #LOCK}.</p>
+     */
+    private static String unstated(Obligation obligation) {
+        if (!unmatchedPrefix.isEmpty()) return unmatchedPrefix;
+        List<String> missing = new ArrayList<String>();
+        if (obligation.rootAssignments() != null) {
+            for (String rootId : obligation.rootAssignments().keySet()) {
+                String id = Text.safe(rootId);
+                if (!id.isEmpty() && !MINTED.contains(id)) missing.add(id);
+            }
+        }
+        for (String rootId : CLOCK_DELTAS.keySet()) {
+            String id = Text.safe(rootId);
+            if (!id.isEmpty() && !MINTED.contains(id) && !missing.contains(id)) {
+                missing.add(id);
+            }
+        }
+        if (missing.isEmpty()) return "";
+        return "this replay published no root mint row for " + missing
+                + ", so its session states nothing about the value it ran"
+                + " the root(s) the obligation moves at";
     }
 
     /** Where the campaign names this replay's execution task plan. */
@@ -641,6 +749,8 @@ public final class FocusedReplay {
             handedAFocusRow = false;
             focusedTask = null;
             PLANTED.clear();
+            MINTED.clear();
+            unmatchedPrefix = "";
             ROOT_MINTS.clear();
             task = null;
             OBLIGATIONS.clear();
