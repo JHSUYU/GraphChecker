@@ -474,8 +474,9 @@ public final class Arms {
      * do not state is UNKNOWN, and unknown is answered {@code false} here,
      * so a caller asking "is a before b" never reads absence as order.</p>
      *
-     * <p>An EVENT is a ROW, and the row carries its own {@code seq}; the
-     * caller passes it, because an ENDPOINT is not an event.  An endpoint is
+     * <p>An EVENT is a ROW, and the row carries its own {@code seq}, which
+     * is 0 when the runtime could not number it; the caller passes it,
+     * because an ENDPOINT is not an event.  An endpoint is
      * {@code (occurrence, site, siteIndex, attempt)} and a site the runtime
      * does not stand at carries no site index, so ONE endpoint id names every
      * event of that site in that occurrence -- 11741's
@@ -499,7 +500,17 @@ public final class Arms {
         // first.
         if (left.id().equals(right.id())
                 || sameThread(session, left, right)) {
-            return aSeq >= 0L && bSeq >= 0L && aSeq < bSeq;
+            // AN UNNUMBERED ROW IS NOT ORDERED.  A row the runtime could
+            // not number states seq 0 and never borrows the run's
+            // high-water mark (runtime.RowRuntime.sequence, M-R3), so 0
+            // means "this event has no place in the session's order", not
+            // "it happened first".  Compared with >= 0 it was an ancestor
+            // of every numbered row on its thread -- an ordering nothing
+            // states -- and unknown answered as ordered is how a reorder
+            // gets refused, or admitted, for a reason no recording gives.
+            // Both sides must be numbered; otherwise the answer is the
+            // same "not before" every other unstated ordering gets here.
+            return aSeq > 0L && bSeq > 0L && aSeq < bSeq;
         }
         if (!chainKnown(session, left) || !chainKnown(session, right)) {
             return false;

@@ -2378,7 +2378,8 @@ public class ComposerTest {
         void answered(Endpoint endpoint, String symbol, String javaType,
                       String value, Endpoint producer) {
             attaches.add(AttachRow.of(id, ++seq, endpoint, symbol, javaType,
-                    value, true, value, producer, "corr-" + symbol));
+                    value, true, value, producer, "corr-" + symbol,
+                    producer == null ? "" : "HANDLE"));
         }
 
         /** @return the session event this write was sequenced at. */
