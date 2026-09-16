@@ -10,7 +10,6 @@ import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
 import edu.uva.liftlab.graphchecker.contract.RootKind;
 import edu.uva.liftlab.graphchecker.plan.InputActionCatalog;
-import edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.ActiveRegion;
 import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Set;
@@ -117,7 +116,7 @@ final class RowPlaceholderMint {
         // hdfs-17960's empty phi was exactly that, a declared read that
         // neither minted nor refused.  The row names the port so the absence
         // is answerable from the session rather than from a replay trace.
-        for (ConcolicRegionRuntime.SymbolizeAction action
+        for (SymbolizeAction action
                 : active.activation.symbolize) {
             if (!action.declaredSymbolicRoot
                     || stated.contains(action.symbol)) {
@@ -134,7 +133,7 @@ final class RowPlaceholderMint {
      * The occurrence a ROOT MINT row is addressed at.
      *
      * <p>The activation of the region whose plan OWNS the mint, which the
-     * mint stated when it ran ({@code ConcolicRegionRuntime.ActiveRegion
+     * mint stated when it ran ({@code ActiveRegion
      * #mintOccurrence}) because that is where the region stack was live.
      * The publishing activation is not the answer: regions nest, and a mint
      * site inside a method two regions both hold runs under whichever

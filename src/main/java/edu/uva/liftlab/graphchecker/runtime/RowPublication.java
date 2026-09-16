@@ -7,7 +7,6 @@ import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.LocationId;
 
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
-import edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.ActiveRegion;
 import edu.uva.liftlab.graphchecker.runtime.RowRuntime;
 import java.util.IdentityHashMap;
 import java.util.LinkedHashSet;

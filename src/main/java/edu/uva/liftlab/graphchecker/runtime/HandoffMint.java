@@ -11,7 +11,6 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.plan.CommunicationHandoffSpec;
-import edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.ActiveRegion;
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 
 import java.lang.reflect.Field;

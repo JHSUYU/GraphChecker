@@ -142,8 +142,8 @@ public class BranchDecisionRecordingTest {
     /** The transcript one concrete decision at u4 leaves in a fresh region. */
     private String publishes(Object decision) throws Exception {
         long token = 900000L + opened.size() + 1;
-        ConcolicRegionRuntime.ActiveRegion active =
-                new ConcolicRegionRuntime.ActiveRegion(token,
+        ActiveRegion active =
+                new ActiveRegion(token,
                         new ConcolicTaskPlan.RuntimeTask(task()), null,
                         Thread.currentThread());
         ConcolicRegionRuntime.ACTIVE.put(token, active);
@@ -180,7 +180,7 @@ public class BranchDecisionRecordingTest {
                 JsonParser.parseString(plan).getAsJsonObject());
     }
 
-    private String transcript(ConcolicRegionRuntime.ActiveRegion active,
+    private String transcript(ActiveRegion active,
                               Object returned) throws Exception {
         JsonArray rows = new JsonArray();
         for (JsonObject row : active.branchMappings) rows.add(row);

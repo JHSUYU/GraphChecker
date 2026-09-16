@@ -17,8 +17,6 @@ import edu.uva.liftlab.graphchecker.plan.ConfiguredSourcePhaseContract;
 import edu.uva.liftlab.graphchecker.plan.FieldPathSpec;
 import edu.uva.liftlab.graphchecker.plan.FieldPathSpec.DeclaredField;
 import edu.uva.liftlab.graphchecker.plan.SiteId;
-import edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.ActiveRegion;
-import edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.SymbolizeAction;
 import edu.uva.liftlab.graphchecker.runtime.ConcolicTaskPlan.RuntimeTask;
 import edu.uva.liftlab.graphchecker.runtime.FieldAccess.MissingValue;
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;

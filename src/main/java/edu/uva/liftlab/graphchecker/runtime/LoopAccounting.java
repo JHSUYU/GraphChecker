@@ -5,7 +5,6 @@ import static edu.uva.liftlab.graphchecker.runtime.ConcolicTaskPlan.configuratio
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicVmBroker.engine;
 
 import edu.uva.liftlab.graphchecker.plan.LoopBoundPolicy;
-import edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.ActiveRegion;
 import edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.RootHookGroup;
 import edu.uva.liftlab.graphchecker.runtime.ConcolicTaskPlan.RuntimeTask;
 

@@ -40,7 +40,6 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalInteger;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalLongInteger;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 import edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.RootHookGroup;
-import edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.SymbolizeAction;
 
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.ROOT_ARGUMENT_PREDICATE_KIND;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.enclosingLoopRootAdmits;

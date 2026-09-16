@@ -172,7 +172,7 @@ public class ManualMintStatesItsValueTest {
                         + "arm is what admits it",
                 edu.uva.liftlab.graphchecker.contract.Verdict.ADMITTED,
                 FocusedReplay.results("s-flip").get(0).verdict());
-        ConcolicRegionRuntime.ActiveRegion focused = manualRegion();
+        ActiveRegion focused = manualRegion();
         focused.d3Address = edu.uva.liftlab.graphchecker.contract
                 .OccurrenceAddress.parse(PLANNED_ADDRESS);
         assertEquals("the skew moves this replay's own reading",
@@ -190,12 +190,12 @@ public class ManualMintStatesItsValueTest {
         // minted in nn0's rotation while the flip is the balancer's.  A
         // focused replay is one run of the whole workload, so both run
         // symbolic in it.
-        ConcolicRegionRuntime.ActiveRegion minting = manualRegion();
+        ActiveRegion minting = manualRegion();
         minting.d3Address = edu.uva.liftlab.graphchecker.contract
                 .OccurrenceAddress.parse(MINT_ADDRESS);
         assertEquals("the value is planted at the mint the row names", "12",
                 focusedRootValue(minting, "CASE.SERIAL", Long.valueOf(7L)));
-        ConcolicRegionRuntime.ActiveRegion alongside = manualRegion();
+        ActiveRegion alongside = manualRegion();
         alongside.d3Address = edu.uva.liftlab.graphchecker.contract
                 .OccurrenceAddress.parse(ALONGSIDE_ADDRESS);
         assertEquals("and nowhere else: a region that merely runs alongside "
@@ -232,7 +232,7 @@ public class ManualMintStatesItsValueTest {
                 FocusedReplay.unplantedAssignments());
         assertEquals("a field mint that planted states no recordedValue", "",
                 RootMint.fieldMintRecordedValue(focused,
-                        new ConcolicRegionRuntime.SymbolizeAction(
+                        new SymbolizeAction(
                                 action("CASE.SERIAL")),
                         keys, SERIAL_FIELD, "I", Integer.valueOf(182907)));
         assertEquals("and the region reads the wave's value back",
@@ -247,7 +247,7 @@ public class ManualMintStatesItsValueTest {
         keys.serialNo = 182907;
         assertEquals("a mint that planted nothing states what it read",
                 "182907", RootMint.fieldMintRecordedValue(
-                        focused, new ConcolicRegionRuntime.SymbolizeAction(
+                        focused, new SymbolizeAction(
                                 action("CASE.OTHER")),
                         keys, SERIAL_FIELD, "I", Integer.valueOf(182907)));
         assertEquals("and reads its own value back", 182907, keys.serialNo);
@@ -300,11 +300,11 @@ public class ManualMintStatesItsValueTest {
 
     /** The one decision every mint takes about the wave's value. */
     private static String focusedRootValue(
-            ConcolicRegionRuntime.ActiveRegion active, String rootId,
+            ActiveRegion active, String rootId,
             Object observed) throws Exception {
         Method value = RootMint.class.getDeclaredMethod(
                 "focusedRootValue",
-                ConcolicRegionRuntime.ActiveRegion.class, String.class,
+                ActiveRegion.class, String.class,
                 Object.class);
         value.setAccessible(true);
         return (String) value.invoke(null, active, rootId, observed);
@@ -322,7 +322,7 @@ public class ManualMintStatesItsValueTest {
     @Test
     public void aModelIsAppliedOnlyAtAMintThisRunCanPlace() throws Exception {
         openSession();
-        ConcolicRegionRuntime.ActiveRegion active =
+        ActiveRegion active =
                 phaseRegion(NODE + "#epoch1", PLANNED);
         Object manager = new Object();
         // Epoch 0 is registered and nothing restarted yet, so the registry
@@ -340,7 +340,7 @@ public class ManualMintStatesItsValueTest {
                 new SourceRef("CLUSTER_NODE", "NAMENODE", NODE, 1L));
         assertTrue("the epoch-1 mint is placeable",
                 placeable(active, manager));
-        ConcolicRegionRuntime.ActiveRegion orphan =
+        ActiveRegion orphan =
                 phaseRegion(NODE + "#epoch1", PLANNED);
         assertFalse("nothing places this mint, so nothing rewrites it",
                 placeable(orphan, new Object()));
@@ -349,7 +349,7 @@ public class ManualMintStatesItsValueTest {
         assertTrue(detail, detail.contains("attributes this mint to no node"));
         assertTrue(detail, detail.contains("recorded value stands"));
 
-        ConcolicRegionRuntime.ActiveRegion epochless =
+        ActiveRegion epochless =
                 phaseRegion("workload/unregistered",
                         "workload/unregistered/region/" + REGION + "#1");
         assertTrue("nothing to place, nothing to refuse",
@@ -424,22 +424,22 @@ public class ManualMintStatesItsValueTest {
     /** The published row, as the runtime writes it for one manual mint. */
     private JsonObject manualRow(JsonObject encoded, String recordedValue)
             throws Exception {
-        ConcolicRegionRuntime.ActiveRegion active = manualRegion();
+        ActiveRegion active = manualRegion();
         JsonObject expression = new JsonObject();
         expression.addProperty("_type", "SymbolExpression");
         expression.addProperty("_java_type", "J");
         expression.addProperty("_exp",
                 "M_J_field_REGION.aaa1cfd7.in.f30dbb22_java/lang/Long");
 
-        Method record = ConcolicRegionRuntime.ActiveRegion.class
+        Method record = ActiveRegion.class
                 .getDeclaredMethod("recordManualSymbolization",
-                        ConcolicRegionRuntime.SymbolizeAction.class,
+                        SymbolizeAction.class,
                         String.class, List.class, String.class,
                         com.google.gson.JsonElement.class, boolean.class,
                         boolean.class, String.class);
         record.setAccessible(true);
         record.invoke(active,
-                new ConcolicRegionRuntime.SymbolizeAction(encoded),
+                new SymbolizeAction(encoded),
                 "PORT.now", Collections.emptyList(),
                 "<org.apache.hadoop.security.token.delegation.DelegationKey:"
                         + " long expiryDate>", expression, true, false,
@@ -453,8 +453,8 @@ public class ManualMintStatesItsValueTest {
     /** Whether an activation that minted (or reused) the root owes it. */
     @SuppressWarnings("unchecked")
     private static List<JsonObject> symbolizedRows(
-            ConcolicRegionRuntime.ActiveRegion active) throws Exception {
-        Field rows = ConcolicRegionRuntime.ActiveRegion.class
+            ActiveRegion active) throws Exception {
+        Field rows = ActiveRegion.class
                 .getDeclaredField("symbolizedRows");
         rows.setAccessible(true);
         return (List<JsonObject>) rows.get(active);
@@ -483,25 +483,25 @@ public class ManualMintStatesItsValueTest {
         return encoded;
     }
 
-    private ConcolicRegionRuntime.ActiveRegion manualRegion() throws Exception {
+    private ActiveRegion manualRegion() throws Exception {
         return open(task(MANUAL_REGION, MANUAL_SOURCE,
                 MANUAL_SOURCE + "/region/" + MANUAL_REGION + "#1"));
     }
 
-    private ConcolicRegionRuntime.ActiveRegion phaseRegion(String sourceKey,
+    private ActiveRegion phaseRegion(String sourceKey,
                                                            String occurrence)
             throws Exception {
         this.occurrenceId = occurrence;
         return open(phaseTask(sourceKey, occurrence));
     }
 
-    private ConcolicRegionRuntime.ActiveRegion open(JsonObject encoded)
+    private ActiveRegion open(JsonObject encoded)
             throws Exception {
         ConcolicTaskPlan.RuntimeTask runtime =
                 new ConcolicTaskPlan.RuntimeTask(ExecutionTask.decode(encoded));
         long token = 970001L + opened.size();
-        ConcolicRegionRuntime.ActiveRegion active =
-                new ConcolicRegionRuntime.ActiveRegion(token, runtime, null,
+        ActiveRegion active =
+                new ActiveRegion(token, runtime, null,
                         Thread.currentThread());
         ConcolicRegionRuntime.ACTIVE.put(token, active);
         opened.add(token);
@@ -510,7 +510,7 @@ public class ManualMintStatesItsValueTest {
 
     /** Whether this run can place this mint where the plan addresses it. */
     private static boolean placeable(
-            ConcolicRegionRuntime.ActiveRegion active, Object mintOwner)
+            ActiveRegion active, Object mintOwner)
             throws Exception {
         Method method = active.getClass().getDeclaredMethod(
                 "mintIsPlaceable", Object.class);

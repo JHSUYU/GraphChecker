@@ -1,0 +1,413 @@
+package edu.uva.liftlab.graphchecker.runtime;
+
+import static edu.uva.liftlab.graphchecker.causynth.MapFields.safe;
+
+import com.google.gson.JsonElement;
+
+import com.google.gson.JsonObject;
+
+import edu.uva.liftlab.graphchecker.smt.CanonicalJson;
+
+import edu.uva.liftlab.graphchecker.plan.FieldPathSpec;
+import edu.uva.liftlab.graphchecker.plan.FieldPathSpec.DeclaredField;
+import edu.uva.liftlab.graphchecker.plan.InputActionCatalog;
+import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveBoxing;
+
+import static edu.uva.liftlab.graphchecker.runtime.FieldAccess.instanceOfName;
+
+import static edu.uva.liftlab.graphchecker.runtime.FieldAccess.resolveFieldPathLeafOwner;
+
+import edu.uva.liftlab.graphchecker.plan.SiteId;
+
+import java.util.ArrayList;
+
+import java.util.Collections;
+
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
+
+import java.util.Map;
+import java.util.Set;
+
+import static edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics.javaTypeDescriptor;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.array;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalBool;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalInteger;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalLongInteger;
+
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
+
+final class SymbolizeAction {
+    final String symbol;
+    /** Canonical identity of the exact frozen task action row. */
+    final String actionDigest;
+    final String cell;
+    final String location;
+    final int index;
+    final int replayOccurrence;
+    final List<List<String>> fieldPaths;
+    final String bindingMode;
+    final String method;
+    final String local;
+    final String accessField;
+    final String accessOwnerClass;
+    final String accessFieldSignature;
+    final Set<String> accessSites = new LinkedHashSet<>();
+    final String accessorCallerMethod;
+    final int accessorCallUnitIndex;
+    final String accessorDeclaredCallee;
+    final String accessorImplementationMethod;
+    /** How the finalizer classified the port that minted this action. */
+    final String sourceKind;
+    /** Whether the case declared this read to be a wall clock. */
+    final boolean clock;
+    /** The static site the plan observed this read at, or "". */
+    final String siteId;
+    /** The recorded event this read was observed at, or -1. */
+    final long eventSeq;
+    /** What this read returned in the recording, or "" when unobserved. */
+    final String recordedPrimitiveValue;
+    /** The selection file named this input by hand: mint, do not reuse. */
+    final boolean declaredSymbolicRoot;
+    final String rootKind;
+    final List<String> fieldPath;
+    final String javaType;
+    final String symbolicName;
+    final Set<Integer> definitionUnitIndices =
+            new LinkedHashSet<>();
+    final Map<String, String> leafFieldSignaturesByPath =
+            new LinkedHashMap<>();
+
+    SymbolizeAction(JsonObject json) {
+        this.symbol = optionalString(json, "symbol");
+        this.actionDigest = CanonicalJson.sha256(json);
+        this.cell = optionalString(json, "cell");
+        this.location = optionalString(json, "location");
+        this.index = optionalInteger(json, "index", -1);
+        this.replayOccurrence = optionalInteger(json,
+                "replayOccurrence", -1);
+        this.bindingMode = optionalString(json, "bindingMode");
+        this.javaType = optionalString(json, "javaType");
+        JsonObject definition = json;
+        this.method = optionalString(definition, "method");
+        this.local = optionalString(definition, "local");
+        int unitIndex = optionalInteger(definition, "unitIndex", -1);
+        if (unitIndex >= 0) definitionUnitIndices.add(unitIndex);
+        for (JsonElement element : array(json, "definitionSites")) {
+            if (element.isJsonObject()) {
+                int definitionIndex = optionalInteger(element.getAsJsonObject(),
+                        "unitIndex", -1);
+                if (definitionIndex >= 0) {
+                    definitionUnitIndices.add(definitionIndex);
+                }
+            }
+        }
+        this.fieldPath = new ArrayList<>(
+                FieldPathSpec.stringArray(json, "fieldPath"));
+        this.accessField = this.fieldPath.isEmpty() ? ""
+                : this.fieldPath.get(0);
+        this.accessFieldSignature = optionalString(json,
+                "accessFieldSignature");
+        DeclaredField accessDeclaration = FieldPathSpec.declaredField(
+                this.accessFieldSignature);
+        this.accessOwnerClass = accessDeclaration == null ? ""
+                : accessDeclaration.owner();
+        this.accessSites.addAll(
+                FieldPathSpec.stringArray(json, "accessSites"));
+        this.accessorCallerMethod = optionalString(json,
+                "accessorCallerMethod");
+        this.accessorCallUnitIndex = optionalInteger(json,
+                "accessorCallUnitIndex", -1);
+        this.accessorDeclaredCallee = optionalString(json,
+                "accessorDeclaredCallee");
+        this.accessorImplementationMethod = optionalString(json,
+                "accessorImplementationMethod");
+        this.sourceKind = optionalString(json, "sourceKind");
+        this.clock = optionalBool(json,
+                InputActionCatalog.DECLARED_WALL_CLOCK, false);
+        this.siteId = optionalString(json, "siteId");
+        this.eventSeq = optionalLongInteger(json, "eventSeq", -1L);
+        this.recordedPrimitiveValue = optionalBool(json, "observed", false)
+                ? optionalString(json, "primitiveValue") : "";
+        this.declaredSymbolicRoot = optionalBool(json,
+                InputActionCatalog.DECLARED_SYMBOLIC_ROOT, false);
+        this.rootKind = optionalString(json, "rootKind");
+        String explicitLeafSignature = firstNonBlank(
+                optionalString(json, "leafFieldSignature"),
+                this.accessFieldSignature);
+        this.fieldPaths = new ArrayList<>(
+                FieldPathSpec.paths(json, "fieldPaths"));
+        if (this.fieldPaths.isEmpty() && !this.fieldPath.isEmpty()) {
+            this.fieldPaths.add(new ArrayList<>(this.fieldPath));
+        }
+        // A port materialized through several hops carries one declared
+        // field per hop.
+        List<String> pathDeclarations = FieldPathSpec.stringArray(json,
+                "fieldPathDeclarations");
+        if (pathDeclarations.size() == this.fieldPath.size()) {
+            for (int hop = 0; hop < pathDeclarations.size(); hop++) {
+                String signature = pathDeclarations.get(hop);
+                DeclaredField declared = FieldPathSpec.declaredField(
+                        signature);
+                if (declared == null || !declared.name().equals(
+                        this.fieldPath.get(hop))) {
+                    continue;
+                }
+                leafFieldSignaturesByPath.putIfAbsent(FieldPathSpec.join(
+                        this.fieldPath.subList(0, hop + 1)), signature);
+            }
+        }
+        if (!this.fieldPath.isEmpty()
+                && FieldPathSpec.declaredField(
+                explicitLeafSignature) != null) {
+            leafFieldSignaturesByPath.put(FieldPathSpec.join(
+                    this.fieldPath), explicitLeafSignature);
+        }
+        this.symbolicName = optionalString(json, "symbolicName");
+    }
+
+    boolean declaresArrayInput(List<String> actualPath) {
+        String pathSignature = leafFieldSignaturesByPath.get(
+                FieldPathSpec.join(actualPath));
+        DeclaredField declared = FieldPathSpec.declaredField(
+                pathSignature);
+        if (declared != null
+                && javaTypeDescriptor(declared.type()).startsWith("[")) {
+            return true;
+        }
+        for (String signature : new String[]{accessFieldSignature,
+                cell}) {
+            declared = FieldPathSpec.declaredField(signature);
+            if (declared != null
+                    && javaTypeDescriptor(declared.type()).startsWith("[")
+                    && (actualPath == null || actualPath.isEmpty()
+                    || declared.name().equals(actualPath.get(
+                    actualPath.size() - 1)))) {
+                return true;
+            }
+        }
+        return javaTypeDescriptor(javaType).startsWith("[");
+    }
+
+    boolean matchesLocal(String actualMethod,
+                                 int actualUnitIndex,
+                                 String actualLocal) {
+        return "LOCAL_DEFINITION".equals(bindingMode)
+                && method.equals(safe(actualMethod))
+                && (definitionUnitIndices.isEmpty()
+                || definitionUnitIndices.contains(actualUnitIndex))
+                && local.equals(safe(actualLocal));
+    }
+
+    boolean matchesMethodArgument(String actualMethod,
+                                          int actualIndex) {
+        return "METHOD_ARGUMENT".equals(bindingMode)
+                && method.equals(safe(actualMethod))
+                && index == actualIndex;
+    }
+
+    boolean acceptsOccurrence(int actualOccurrence) {
+        return replayOccurrence < 1
+                || replayOccurrence == actualOccurrence;
+    }
+
+    boolean acceptsDirectFieldOccurrence(int actualOccurrence) {
+        boolean accessorConstrained = !accessorCallerMethod.isEmpty()
+                || accessorCallUnitIndex >= 0
+                || !accessorDeclaredCallee.isEmpty()
+                || !accessorImplementationMethod.isEmpty();
+        return accessorConstrained || acceptsOccurrence(actualOccurrence);
+    }
+
+    boolean repeatedPrimitiveAccessor() {
+        return "LOCAL_DEFINITION".equals(bindingMode)
+                && "CALL_RETURN".equals(location)
+                && JavaPrimitiveBoxing.unboxReturn(cell);
+    }
+
+    /**
+     * Whether this root is a wall-clock read whose recorded answer is
+     * known.
+     *
+     * <p>The case's {@code symbolic-inputs.jsonl} row declares it
+     * ({@link InputActionCatalog#DECLARED_WALL_CLOCK}); nothing here
+     * matches a callee signature against a list of clock names.  A root
+     * the case declares a clock is exactly the root the composer moves by
+     * an offset from what the recording read.</p>
+     */
+    boolean declaresWallClockRead() {
+        return clock && !recordedPrimitiveValue.isEmpty();
+    }
+
+    boolean matchesStaticField(String actualMethod,
+                                       int actualUnitIndex,
+                                       String signature,
+                                       String actualField) {
+        if (!("FIELD_ACCESS".equals(bindingMode)
+                || "HEAP_OBJECT_FIELD".equals(location))) {
+            return false;
+        }
+        String exactSignature = safe(signature);
+        DeclaredField declaration = FieldPathSpec.declaredField(
+                exactSignature);
+        if (declaration == null
+                || !declaration.name().equals(safe(actualField))
+                || !accessField.equals(safe(actualField))) {
+            return false;
+        }
+        if (!accessOwnerClass.isEmpty()
+                && !accessOwnerClass.equals(declaration.owner())) {
+            return false;
+        }
+        if (!accessFieldSignature.isEmpty()
+                && !accessFieldSignature.equals(exactSignature)) {
+            return false;
+        }
+        if (accessSites.isEmpty()) {
+            return false;
+        }
+        return accessSites.contains(SiteId.render(actualMethod,
+                actualUnitIndex))
+                && (cell.contains(exactSignature)
+                || accessFieldSignature.equals(exactSignature));
+    }
+
+    /**
+     * Reconstructs the activation's logical path for an exact getstatic
+     * materialization.
+     */
+    List<String> exactStaticFieldPath(
+            String signature, String actualField) {
+        String exactSignature = safe(signature);
+        DeclaredField declaration = FieldPathSpec.declaredField(
+                exactSignature);
+        if (declaration == null
+                || !declaration.name().equals(safe(actualField))
+                || fieldPath.size() != 1
+                || !fieldPath.get(0).equals(actualField)
+                || !accessField.equals(actualField)
+                || !accessFieldSignature.isEmpty()
+                && !accessFieldSignature.equals(exactSignature)
+                || !accessOwnerClass.isEmpty()
+                && !accessOwnerClass.equals(declaration.owner())
+                || !javaType.isEmpty()
+                && !javaTypeDescriptor(javaType).equals(
+                javaTypeDescriptor(declaration.type()))) {
+            return null;
+        }
+        return Collections.singletonList(actualField);
+    }
+
+    boolean matchesField(String actualMethod,
+                                 int actualUnitIndex, Object owner,
+                                 String signature, String actualField) {
+        if (!("FIELD_ACCESS".equals(bindingMode)
+                || "HEAP_OBJECT_FIELD".equals(location))) {
+            return false;
+        }
+        boolean accessorConstrained = !accessorCallerMethod.isEmpty()
+                || accessorCallUnitIndex >= 0
+                || !accessorDeclaredCallee.isEmpty()
+                || !accessorImplementationMethod.isEmpty();
+        String accessorSiteId = accessorCallerMethod.isEmpty()
+                || accessorCallUnitIndex < 0 ? ""
+                : SiteId.render(accessorCallerMethod,
+                        accessorCallUnitIndex);
+        boolean accessSiteConstrained = !accessSites.isEmpty();
+        // Accessor actions name their caller's invoke site in accessSites,
+        // while this hook runs at the implementation's field read.
+        if (accessSiteConstrained) {
+            String constrainedSite = accessorConstrained
+                    ? accessorSiteId
+                    : SiteId.render(actualMethod, actualUnitIndex);
+            if (constrainedSite.isEmpty()
+                    || !accessSites.contains(constrainedSite)) {
+                return false;
+            }
+        }
+        Boolean lightweightContext = ConcolicRegionRuntime
+                .lightweightAccessorContextMatches(
+                accessorCallerMethod, accessorCallUnitIndex,
+                accessorSiteId, accessorDeclaredCallee, owner);
+        boolean accessorContextMatches = lightweightContext != null
+                ? lightweightContext
+                : CausynthTraceRecorder.currentCallParentSiteMatches(
+                accessorCallerMethod, accessorCallUnitIndex,
+                accessorSiteId, accessorDeclaredCallee);
+        int actualAccessorOccurrence =
+                ConcolicRegionRuntime.lightweightAccessorContextOccurrence();
+        if (accessorConstrained
+                && (!accessorImplementationMethod.equals(
+                safe(actualMethod))
+                || !accessorContextMatches)) {
+            return false;
+        }
+        if (accessorConstrained
+                && !acceptsOccurrence(
+                actualAccessorOccurrence)) {
+            return false;
+        }
+        if (!accessField.equals(safe(actualField))) {
+            return false;
+        }
+        if (!accessOwnerClass.isEmpty()
+                && !instanceOfName(owner.getClass(), accessOwnerClass)) {
+            return false;
+        }
+        if (accessSiteConstrained
+                && (accessOwnerClass.isEmpty()
+                || accessFieldSignature.isEmpty()
+                || !accessFieldSignature.equals(safe(signature)))) {
+            return false;
+        }
+        // A path rooted at a method return/local may not carry a
+        // statically known access owner.
+        return !accessOwnerClass.isEmpty()
+                || !safe(signature).isEmpty()
+                && cell.contains(safe(signature));
+    }
+
+    Object leafOwner(Object accessOwner) {
+        return resolveFieldPathLeafOwner(accessOwner, fieldPath);
+    }
+
+    /**
+     * Returns the exact declaration of the scalar/array leaf that will
+     * actually be symbolized.
+     */
+    String exactLeafFieldSignature() {
+        return exactLeafFieldSignature(fieldPath);
+    }
+
+    String exactLeafFieldSignature(List<String> actualPath) {
+        String actualLeaf = actualPath == null || actualPath.isEmpty()
+                ? "" : actualPath.get(actualPath.size() - 1);
+        String explicit = leafFieldSignaturesByPath.get(
+                FieldPathSpec.join(actualPath));
+        DeclaredField declaration = FieldPathSpec.declaredField(
+                explicit);
+        if (declaration != null
+                && declaration.name().equals(actualLeaf)) {
+            return explicit;
+        }
+        if (actualPath == null || actualPath.size() != 1) {
+            return "";
+        }
+        String selected = "";
+        for (String candidate : new String[]{accessFieldSignature,
+                cell}) {
+            declaration = FieldPathSpec.declaredField(candidate);
+            if (declaration == null
+                    || !declaration.name().equals(actualLeaf)) {
+                continue;
+            }
+            if (!selected.isEmpty() && !selected.equals(candidate)) {
+                return "";
+            }
+            selected = candidate;
+        }
+        return selected;
+    }
+}

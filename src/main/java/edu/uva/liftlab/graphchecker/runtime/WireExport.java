@@ -10,7 +10,6 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalLongInteger;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.plan.CommunicationHandoffSpec;
-import edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.ActiveRegion;
 
 import java.lang.reflect.Field;
 

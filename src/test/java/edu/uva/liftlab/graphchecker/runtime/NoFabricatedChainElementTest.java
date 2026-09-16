@@ -80,15 +80,15 @@ public class NoFabricatedChainElementTest {
         assertFalse("an undeclared target cannot have been reached",
                 ConcolicResultPublisher.targetReachedByActivation(
                         region(false)));
-        ConcolicRegionRuntime.ActiveRegion declared = region(true);
+        ActiveRegion declared = region(true);
         recordReach(declared);
         assertTrue(ConcolicResultPublisher.targetReachedByActivation(declared));
     }
 
     /** The declared target occurrence, decided at its required outcome. */
-    private static void recordReach(ConcolicRegionRuntime.ActiveRegion active)
+    private static void recordReach(ActiveRegion active)
             throws Exception {
-        Field field = ConcolicRegionRuntime.ActiveRegion.class
+        Field field = ActiveRegion.class
                 .getDeclaredField("targetReach");
         field.setAccessible(true);
         field.set(active, new JsonParser().parse(
@@ -134,16 +134,16 @@ public class NoFabricatedChainElementTest {
         return ExecutionTask.decode(encoded);
     }
 
-    private ConcolicRegionRuntime.ActiveRegion region(boolean target,
+    private ActiveRegion region(boolean target,
             JsonObject... actions) throws Exception {
         return open(task(target, actions));
     }
 
-    private ConcolicRegionRuntime.ActiveRegion open(ExecutionTask encoded)
+    private ActiveRegion open(ExecutionTask encoded)
             throws Exception {
         long token = 910000L + opened.size() + 1;
-        ConcolicRegionRuntime.ActiveRegion active =
-                new ConcolicRegionRuntime.ActiveRegion(token,
+        ActiveRegion active =
+                new ActiveRegion(token,
                         new ConcolicTaskPlan.RuntimeTask(encoded), null,
                         Thread.currentThread());
         ConcolicRegionRuntime.ACTIVE.put(token, active);
