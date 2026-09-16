@@ -187,9 +187,19 @@ public final class ClaimPolicy {
 
         // The alarm: the run as it happened reaches the fatal arm on a path
         // whose own recording took the healthy one.
+        //
+        // Unless the CLOCKS are what reach it.  The alarm asks "what does
+        // this witness add?", and a valuation cannot pin a clock -- a clock
+        // has a floor and no window, so it is free in every valuation
+        // including ordinal 0 -- which makes the alarm's premise true of
+        // every clock witness there could be.  What answers the question
+        // for a clock is the clock pin, asked once, in #clockNecessary; on
+        // a corpus with no clock cell it is false without a solver run, so
+        // nothing else changes.
         if (recorded != null && recorded.answer().sat()
                 && recorded.selected() != null
-                && !recorded.selected().fatalObserved()) {
+                && !recorded.selected().fatalObserved()
+                && !clockNecessary(composition, solver, recorded)) {
             gaps.add(GapRow.of(recorded.selected().path().sessionId,
                     GapKind.FORMULA_SAT_AT_RECORDED_VALUATION,
                     GapClass.BLOCKING,
@@ -224,12 +234,17 @@ public final class ClaimPolicy {
                                 + "so it is not a supported witness"));
                 continue;
             }
+            // This valuation MOVED a declared root, which is
+            // MARKER_FLIPPED's own evidence, so #mechanism answers with
+            // that or with the narrower slot it also replaced -- never
+            // with NO_SUPPORTED_WITNESS.
+            ClaimKind moved = mechanism(composition, solver, outcome,
+                    outcomes);
             if (!polarityDecides) {
-                undecidedPolarity(gaps, recorded, ClaimKind.MARKER_FLIPPED);
+                undecidedPolarity(gaps, recorded, moved);
                 break;
             }
-            return new Decision(Claim.of(pairing(composition, solver,
-                    outcome, ClaimKind.MARKER_FLIPPED),
+            return new Decision(Claim.of(moved,
                     outcome.valuation().ordinal(),
                     outcome.valuation().moved(), true, gaps),
                     outcomes);
@@ -242,13 +257,30 @@ public final class ClaimPolicy {
                 continue;
             }
             if (!outcome.valuation().moved().isEmpty()) continue;
-            if (!clockNecessary(composition, solver, outcome)) continue;
-            if (!polarityDecides) {
-                undecidedPolarity(gaps, recorded, ClaimKind.CLOCK_SKEW);
+            // The witness that moves nothing: its mechanism is the clocks
+            // it needs or the slot it replaces.  RECORDED_FAILURE_EXPLAINED
+            // is not this branch's -- the recording's own failure is asked
+            // below, with the polarity of the flips.
+            ClaimKind still = mechanism(composition, solver, outcome,
+                    outcomes);
+            if (still != ClaimKind.CLOCK_SKEW
+                    && still != ClaimKind.STATE_PAIRING_FLIPPED
+                    && still != ClaimKind.MESSAGE_PAIRING_FLIPPED) {
+                continue;
+            }
+            // CLOCK_SKEW carries its OWN polarity and this is the rule that
+            // says so (class doc: "pinning every cell to what its session
+            // read makes it unsat").  Asking `recorded.answer().unsat()`
+            // of it asks a different question -- whether the fatal arm is
+            // reached at the recorded ROOTS with the clocks already free --
+            // and whenever a clock is what does the work the answer is
+            // "sat", so the claim could never be published: it never has
+            // been, in 52+ manifests.
+            if (still != ClaimKind.CLOCK_SKEW && !polarityDecides) {
+                undecidedPolarity(gaps, recorded, still);
                 break;
             }
-            return new Decision(Claim.of(pairing(composition, solver,
-                    outcome, ClaimKind.CLOCK_SKEW),
+            return new Decision(Claim.of(still,
                     outcome.valuation().ordinal(),
                     Collections.<String, String>emptyMap(), true,
                     gaps), outcomes);
@@ -262,19 +294,40 @@ public final class ClaimPolicy {
             String session = recorded.selected().path().sessionId;
             boolean seed = session.equals(composition.seedSessionId());
             if (seed && flipsRefuted(outcomes)) {
-                ClaimKind kind = pairing(composition, solver, recorded,
-                        ClaimKind.RECORDED_FAILURE_EXPLAINED);
+                ClaimKind kind = mechanism(composition, solver, recorded,
+                        outcomes);
                 return new Decision(Claim.of(kind, 0,
                         Collections.<String, String>emptyMap(),
-                        kind != ClaimKind.RECORDED_FAILURE_EXPLAINED, gaps),
-                        outcomes);
+                        kind != ClaimKind.RECORDED_FAILURE_EXPLAINED
+                                && kind != ClaimKind.NO_SUPPORTED_WITNESS,
+                        gaps), outcomes);
             }
             if (!seed && attestedArms(composition, recorded)
                     && seedDisjunctUnsat(composition, solver)) {
-                return new Decision(Claim.of(pairing(composition, solver,
-                        recorded, ClaimKind.MESSAGE_PAIRING_FLIPPED), 0,
-                        Collections.<String, String>emptyMap(), true, gaps),
+                // A path of an EXPLORED session reaches the fatal arm at
+                // the recorded roots while the seed's own disjunct does
+                // not.  WHICH mechanism differs is not stated by that
+                // fact: it is the pin tests inside #mechanism, and where
+                // neither fires nothing has been established -- the claim
+                // this branch used to publish named a wire pairing over a
+                // composition with no wire family at all.
+                ClaimKind kind = mechanism(composition, solver, recorded,
                         outcomes);
+                if (kind != ClaimKind.NO_SUPPORTED_WITNESS) {
+                    return new Decision(Claim.of(kind, 0,
+                            Collections.<String, String>emptyMap(), true,
+                            gaps), outcomes);
+                }
+                gaps.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
+                        GapClass.DIAGNOSTIC, recorded.selected()
+                                .path().pathId,
+                        "this path of an explored session reaches the "
+                                + "fatal arm at the recorded roots and the "
+                                + "seed's own disjunct does not, and no "
+                                + "state slot, no wire slot, no moved root "
+                                + "and no clock of this composition is "
+                                + "what makes the difference: there is no "
+                                + "mechanism to name"));
             }
         }
 
@@ -312,26 +365,44 @@ public final class ClaimPolicy {
     }
 
     /**
-     * Whether this witness rests on a pairing the run did not take.
+     * THE MECHANISM this witness's own EVIDENCE names.
      *
-     * <p>One mechanism, two kinds by the edge it is about.  Pin what the
-     * selected path's own run received -- the versions its reads observed,
-     * or the values its attaches arrived at -- and ask again at the same
-     * valuation.  Still satisfiable means the witness works with the
-     * pairing the recording had, and whatever kind it already was, it stays.
-     * UNSAT means the witness needs a DIFFERENT eligible attested writer, or
-     * a different producer: the pairing is the mechanism, and the kind says
-     * which edge.</p>
+     * <p>A findingKind names a mechanism, so a claim may name one only
+     * where the evidence for that mechanism is in this composition.  One
+     * routine asks, in the order of how narrow the claim is, and there is
+     * no parameter a caller can hand it to name a mechanism the witness
+     * does not show:</p>
      *
-     * <p>The STATE edge is asked first because it is the narrower claim: a
-     * witness that needs both is about the interleaving it needs, and the
-     * wire pairing it also happens to use is not what makes it a
-     * witness.</p>
+     * <ul>
+     *   <li>STATE_PAIRING_FLIPPED -- pin the versions the selected path's
+     *       reads OBSERVED and the query is unsat: the witness needs a
+     *       different eligible attested writer, a REPLACED STATE SLOT.</li>
+     *   <li>MESSAGE_PAIRING_FLIPPED -- the same for the values its attaches
+     *       ARRIVED at: a REPLACED WIRE SLOT.  Asked second because a
+     *       witness that needs both is about the interleaving, and the wire
+     *       pairing it also happens to use is not what makes it one.</li>
+     *   <li>MARKER_FLIPPED -- the valuation MOVED a declared root inside
+     *       the domain the case declared.</li>
+     *   <li>CLOCK_SKEW -- nothing moved and the clocks are NECESSARY:
+     *       pinning every clock cell to the instant its session read makes
+     *       the query unsat.</li>
+     *   <li>RECORDED_FAILURE_EXPLAINED -- the SEED path reached the fatal
+     *       arm at the recorded valuation and every valuation that moved a
+     *       root is decided and unsat.  Not a mechanism the checker found:
+     *       the recording is the evidence.</li>
+     *   <li>NO_SUPPORTED_WITNESS -- none of them.  Refused by name, and
+     *       never a default: the branch this replaced handed
+     *       MESSAGE_PAIRING_FLIPPED to a non-seed fatal-observed path whose
+     *       composition had families=0 and no wire row at all, which is
+     *       verification #6's wrong claim.</li>
+     * </ul>
      */
-    private static ClaimKind pairing(Composer.Composition composition,
-                                     Z3 solver, Outcome outcome,
-                                     ClaimKind otherwise) {
-        if (outcome == null || outcome.selected() == null) return otherwise;
+    private static ClaimKind mechanism(Composer.Composition composition,
+                                       Z3 solver, Outcome outcome,
+                                       List<Outcome> outcomes) {
+        if (outcome == null || outcome.selected() == null) {
+            return ClaimKind.NO_SUPPORTED_WITNESS;
+        }
         String pathId = outcome.selected().path().pathId;
         if (unsatWith(composition, solver, outcome,
                 composition.observedReads(pathId))) {
@@ -341,7 +412,20 @@ public final class ClaimPolicy {
                 composition.observedArrivals(pathId))) {
             return ClaimKind.MESSAGE_PAIRING_FLIPPED;
         }
-        return otherwise;
+        if (!outcome.valuation().moved().isEmpty()) {
+            return ClaimKind.MARKER_FLIPPED;
+        }
+        if (clockNecessary(composition, solver, outcome)) {
+            return ClaimKind.CLOCK_SKEW;
+        }
+        if (outcome.valuation().ordinal() == 0
+                && outcome.selected().fatalObserved()
+                && outcome.selected().path().sessionId.equals(
+                        composition.seedSessionId())
+                && flipsRefuted(outcomes)) {
+            return ClaimKind.RECORDED_FAILURE_EXPLAINED;
+        }
+        return ClaimKind.NO_SUPPORTED_WITNESS;
     }
 
     /** This valuation, this disjunct, and what the run actually paired. */

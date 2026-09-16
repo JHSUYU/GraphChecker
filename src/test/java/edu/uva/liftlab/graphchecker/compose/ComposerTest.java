@@ -93,6 +93,8 @@ public class ComposerTest {
     private static final String MARKER_ROOT = "ROOT.MARKER";
     private static final String SERIAL = "serial_s";
     private static final String SERIAL_ROOT = "ROOT.SERIAL";
+    private static final String CLOCK = "clock_now";
+    private static final String CLOCK_ROOT = "ROOT.NOW";
     /**
      * A declared region input, as the runtime publishes it: a READ
      * placeholder, so the row states its value and nothing mints it.
@@ -1368,6 +1370,21 @@ public class ComposerTest {
                 ClaimKind.STATE_PAIRING_FLIPPED, decision.claim().kind());
         assertTrue("with the polarity the recording decides",
                 decision.claim().polarityDecides());
+        // A findingKind names a mechanism, and the claim may name one only
+        // where the EVIDENCE for it is in this composition: the state slot
+        // this witness replaces is there to be pinned, and there is no wire
+        // slot at all -- no attach, no arrival.  A branch whose `otherwise`
+        // was MESSAGE_PAIRING_FLIPPED published exactly that mechanism over
+        // a composition with families=0 and no wire row, which is
+        // verification #6's wrong claim; the rule is now one routine
+        // (ClaimPolicy#mechanism) with no such parameter.
+        String witness = decision.outcomes().get(1).selected()
+                .path().pathId;
+        assertFalse("the replaced state slot is this kind's evidence",
+                composition.observedReads(witness).isEmpty());
+        assertTrue("and a wire pairing is a mechanism this composition "
+                        + "could not name: there is no arrival to replace",
+                composition.observedArrivals(witness).isEmpty());
     }
 
     // ------------------------------------------------------------------
@@ -1388,6 +1405,15 @@ public class ComposerTest {
         // PREDICATE both times and the outcome says which arm ran.
         session.decision(ANCHOR, "anchor#u1", true, MARKER);
         session.decision(ANCHOR, "anchor#u2", false, MARKER);
+        // A clock the anchor's own predicate reads, with the instant this
+        // run read it.  The decision keys its reading by the clock's ROOT
+        // ID and the formula names the SYMBOL the session minted: asked
+        // whether the lowering declared the root id, the answer was no for
+        // every cell of every corpus, so the composition had no clock cell
+        // at all and CLOCK_SKEW could not be asked about in 52+ manifests.
+        session.clock("700");
+        session.decision(ANCHOR, "anchor#u9", "(> " + CLOCK + " 300)",
+                CLOCK_ROOT, 700L);
         // Two leaves the same path is made of, published by reference.
         // The array a store wrote WHOLE at version 1, and a read of ONE
         // cell of it at that version: the read is of the element, so the
@@ -1633,6 +1659,21 @@ public class ComposerTest {
                         + "enumerated",
                 composition.valuations().get(1).moved()
                         .containsKey(SERIAL_ROOT));
+        assertFalse("and a CLOCK is not a root a valuation moves at all: it "
+                        + "has a floor and no window",
+                composition.valuations().get(1).moved()
+                        .containsKey(CLOCK_ROOT));
+        // The CELL of a clock is the name the FORMULA names -- the symbol
+        // the session minted -- and not the root id the decision keyed its
+        // reading by.  Keyed by the root id, no cell was ever declared, so
+        // #clockNecessary answered "no clocks" without a solver run and
+        // CLOCK_SKEW was unreachable.
+        assertEquals("one clock cell, named as the formula names it",
+                Collections.singletonList(CLOCK), composition.clockCells());
+        assertEquals("at the instant this session read", Long.valueOf(700L),
+                composition.clockReadings().get(CLOCK));
+        assertTrue("with the floor that makes a value a time at all",
+                composition.body().contains("(>= " + CLOCK + " 0)"));
         assertTrue("it is pinned to what the recording read, by a named "
                         + "conjunct an unsat core can read",
                 composition.body().contains("(= " + SERIAL + " 41)")
@@ -2077,6 +2118,27 @@ public class ComposerTest {
         void marker(String recorded) {
             roots.add(RootMintRow.of(id, ++seq, PRODUCER, MARKER_ROOT, MARKER,
                     RootKind.MARKER, recorded, null, null, true));
+        }
+
+        /**
+         * A declared CLOCK: no window, only the instant it read.
+         *
+         * <p>A clock cell is not a root a valuation moves -- it has a floor
+         * and no domain -- and what names it in a composed query is the
+         * SYMBOL the session minted, which is what a decision's reading has
+         * to be joined to ({@code Composer.clocks}).</p>
+         */
+        void clock(String recorded) {
+            roots.add(RootMintRow.of(id, ++seq, ANCHOR, CLOCK_ROOT, CLOCK,
+                    RootKind.CLOCK, recorded, null, null, true));
+        }
+
+        /** One decision, and the clock cells its predicate read. */
+        void decision(OccurrenceAddress at, String site, String term,
+                      String clockRoot, long reading) {
+            decisions.add(DecisionRow.of(id, ++seq, at, site,
+                    decisions.size() + 1, true, term,
+                    Collections.singletonMap(clockRoot, reading)));
         }
 
         /** A declared counter, with the window the CASE states around it. */
