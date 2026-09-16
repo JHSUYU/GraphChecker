@@ -121,6 +121,17 @@ final class RowPublication {
      * pins it: the composer pins every domain-less root to its recorded
      * value, and a placeholder that is pinned AND joined to its writer's
      * expression makes every moved valuation unsatisfiable.</p>
+     *
+     * <p>ONE ROOT PER SYMBOL, and it is the mint that MADE the symbol.  A
+     * declared read whose field already carried a propagated expression
+     * REUSES it -- {@code SymInstance::has_sym_exp} makes the mint a no-op
+     * and both runtime row shapes say {@code reused} -- so it minted no
+     * symbol of its own, and the only name {@link #vmSymbol} can give it is
+     * the first symbol leaf of the expression it read back, which is
+     * ANOTHER mint's symbol.  A root row over that name states one solver
+     * name for two quantities, and its {@code recordedValue} is the OTHER
+     * quantity's reading, which is what the composer pins the symbol to.
+     * </p>
      */
     private static void roots(ActiveRegion active,
                               OccurrenceAddress occurrence) {
@@ -130,6 +141,21 @@ final class RowPublication {
             String symbol = vmSymbol(row);
             if (symbol.isEmpty()) continue;
             stated.add(optionalString(row, "portId"));
+            // The declaration was reached and it IS symbolic -- its value is
+            // a term over the symbol it reused -- so there is nothing to
+            // refuse and nothing to name: what there is not is a second
+            // root.  On 11741's nn0 updateKeys the three expiry hooks read
+            // back timer.now() + k*keyUpdateInterval + tokenLifetime over
+            // the declared clock cell of that region, and each published a
+            // RootMintRow carrying the CLOCK's symbol, the EXPIRY's value
+            // and its own source id: six BLOCKING "one solver name for 2
+            // roots" refusals out of COMPOSE, and, had the composer got past
+            // them, the clock of every rotation pinned to an instant no
+            // clock read.  The second rotation's HDFS.BLOCK_KEY.SERIAL_NO is
+            // the same row without the collision -- same symbol, same source
+            // id, serial+1 as its reading -- so it silently moved the
+            // serial root's recorded value one rotation on.
+            if (!minted(row)) continue;
             String sourceId = optionalString(row, "sourceId");
             // The kind is read off the declaration, once
             // (see #kindOf): a configured source states no javaType of its
@@ -588,6 +614,21 @@ final class RowPublication {
             if (!found.isEmpty()) return found;
         }
         return "";
+    }
+
+    /**
+     * Whether this row MINTED the symbol it names.
+     *
+     * <p>The VM is the authority and both runtime row shapes carry its
+     * answer: a declared read whose field already held a propagated
+     * expression keeps it ({@code SymInstance::has_sym_exp} makes the mint
+     * a no-op) and the row says {@code reused}.  Such a row created no
+     * symbol, so the only name {@link #vmSymbol} can give it is another
+     * mint's -- which is why "did this row mint" and "may this row be a
+     * root" are ONE question, asked here.</p>
+     */
+    static boolean minted(JsonObject row) {
+        return !optionalBool(row, "reused", false);
     }
 
     /**

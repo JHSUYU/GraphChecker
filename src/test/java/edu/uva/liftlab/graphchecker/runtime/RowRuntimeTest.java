@@ -443,6 +443,19 @@ public class RowRuntimeTest {
         // range of two.
         assertEquals(RootKind.MARKER, kindOf(booleanConfiguredSourceRow()));
         assertEquals(RootKind.INTEGRAL, kindOf(placeholderRow("d", null)));
+        // ONE ROOT PER SYMBOL, and it is the mint that MADE the symbol.  A
+        // declared read whose field already carried a propagated expression
+        // minted nothing and says so, so the only name vmSymbol can give it
+        // is the first leaf of what it read back -- another mint's symbol.
+        // 11741's three expiry hooks in nn0 updateKeys read back
+        // timer.now() + k*keyUpdateInterval + tokenLifetime over that
+        // region's declared clock cell and each published a root row
+        // carrying the CLOCK's symbol with the EXPIRY's value: six BLOCKING
+        // "one solver name for 2 roots" refusals out of COMPOSE.
+        assertTrue("a mint that made its symbol is a root",
+                minted(booleanConfiguredSourceRow()));
+        assertFalse("a read that reused one is not",
+                minted(reusedConfiguredSourceRow()));
         List<TargetRow> targets = RowCodec.readAll(dir.targets(),
                 RowCodec::readTarget);
         assertTrue(targets.get(0).observedFatal());
@@ -674,6 +687,32 @@ public class RowRuntimeTest {
                         JsonObject.class, String.class, java.util.Map.class);
         publish.setAccessible(true);
         publish.invoke(null, occurrence, row, symbol, installed);
+    }
+
+    /** The same declaration, met where the field was already symbolic. */
+    private static JsonObject reusedConfiguredSourceRow() {
+        JsonObject clock = new JsonObject();
+        clock.addProperty("_type", "SymbolExpression");
+        clock.addProperty("_java_type", "J");
+        clock.addProperty("_exp",
+                "M_J_field_REGION.aaa1cfd7.in.fa630d59.occ.23886999_java/lang/Long");
+        JsonObject sum = new JsonObject();
+        sum.addProperty("_type", "BinaryExpression");
+        sum.addProperty("_exp", "+");
+        sum.add("_left", clock);
+        JsonObject row = new JsonObject();
+        row.addProperty("sourceId", "HDFS.BLOCK_KEY.EXPIRY_DATE.RETIRED");
+        row.addProperty("recordedValue", "1789616343508");
+        row.add("expression", sum);
+        row.addProperty("reused", true);
+        return row;
+    }
+
+    private static boolean minted(JsonObject row) throws Exception {
+        java.lang.reflect.Method decision = RowPublication.class
+                .getDeclaredMethod("minted", JsonObject.class);
+        decision.setAccessible(true);
+        return ((Boolean) decision.invoke(null, row)).booleanValue();
     }
 
     private static RootKind kindOf(JsonObject row) throws Exception {
