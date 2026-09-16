@@ -245,15 +245,14 @@ final class ConcolicResultPublisher {
             final RawSharedStateReadOut rawSharedState) {
         // The VM context and its raw read-out are complete.  Do not keep the
         // task's admission slot hostage while the daemon performs the much
-        // larger row decode: a later loop-body turn may be the exact next
-        // source phase this bounded address reserved.  Reserve the retained
-        // loop evidence before reopening admission, so that next turn sees
-        // phase n+1 and cannot claim the same semantic anchor.  Publication
-        // remains fail-closed: an enqueue/decode failure terminates the task
-        // instead of rolling this reservation back underneath a later
-        // activation that may already depend on it.
-        active.activation.reserveCompletedOccurrence(
-                active.configuredSourcePhaseOrdinals);
+        // larger row decode.  Reserve the retained loop evidence before
+        // reopening admission, so a later body turn cannot claim the same
+        // semantic anchor.  Publication remains fail-closed: an
+        // enqueue/decode failure terminates the task instead of rolling this
+        // reservation back underneath a later activation that may already
+        // depend on it.  Nothing is reserved for a configured source: it is
+        // ONE symbol, so a later turn's read of it is the same variable and
+        // there is no ordinal to carry across turns.
         active.activation.reserveCompletedEvidence(
                 targetReachedByActivation(active));
         configuration().releaseCandidate(active.activation);

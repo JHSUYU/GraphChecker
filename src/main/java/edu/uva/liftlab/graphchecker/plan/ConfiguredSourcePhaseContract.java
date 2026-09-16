@@ -10,10 +10,8 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
-import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
@@ -24,9 +22,11 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.trimmed;
 /**
  * Static hook sites and their exact dynamic executions for configured sources.
  * A region occurrence may execute one source hook many times: the static
- * declaration names the hook site, the occurrence row names one execution of
- * it, and keeping the two separate prevents a long-lived service-loop task
- * from being treated as if it published one timeless source version.
+ * declaration names the hook site and the occurrence row names one execution
+ * of it, as evidence of where the recording observed it.  A declared source
+ * is ONE symbol either way -- {@link #phaseId} is the site's and nothing
+ * else's -- so how many executions a row set holds bounds nothing a replay
+ * may read.
  *
  * <p>One codec: a row is built, validated and carried as the {@link JsonObject}
  * the plan wire holds; no producer hands this contract another shape.
@@ -53,7 +53,7 @@ public final class ConfiguredSourcePhaseContract {
             "schemaVersion", "kind", "authority", "phase", "sourceId",
             "fieldSignature", "declarationMethod", "declarationUnitIndex",
             "siteId", "phaseId", "phaseKind", "sourceOccurrenceId",
-            "baselineOrdinal", "eventSeq", "ownerCallId", "invocationId",
+            "eventSeq", "ownerCallId", "invocationId",
             "runtimeDeclaredCallee", "enclosingCallIds");
 
     private ConfiguredSourcePhaseContract() {
@@ -105,11 +105,12 @@ public final class ConfiguredSourcePhaseContract {
     /**
      * Decodes an ordered runtime phase catalog.
      *
-     * @param completeOccurrence whether every execution of each exact site
-     *     must be present; region-plan rows pass {@code true}.
+     * <p>The catalog states WHERE the declared hook sites are and which
+     * executions of them the recording observed.  It is not sized and not a
+     * budget: a declared source is ONE symbol, so a replay that reads it
+     * more often than the recording did reads the same variable.</p>
      */
-    public static List<Occurrence> occurrencesOf(
-            JsonElement encoded, boolean completeOccurrence) {
+    public static List<Occurrence> occurrencesOf(JsonElement encoded) {
         if (encoded == null || encoded.isJsonNull()) {
             return Collections.emptyList();
         }
@@ -125,45 +126,31 @@ public final class ConfiguredSourcePhaseContract {
             }
             result.add(validateOccurrence(element.getAsJsonObject()));
         }
-        validateOccurrenceSequence(result, completeOccurrence);
+        validateOccurrenceSequence(result);
         return Collections.unmodifiableList(result);
     }
 
-    private static void validateOccurrenceSequence(
-            List<Occurrence> phases, boolean completeOccurrence) {
-        Set<String> phaseIds = new LinkedHashSet<>();
+    private static void validateOccurrenceSequence(List<Occurrence> phases) {
         Set<Long> eventSeqs = new LinkedHashSet<>();
         Set<Long> invocationIds = new LinkedHashSet<>();
-        Map<String, Integer> previousOrdinals = new LinkedHashMap<>();
         long previousSeq = -1L;
         for (Occurrence phase : phases) {
-            // The phase id is the variable and repeats across the
-            // executions of its site; what must be unique is the execution.
-            if (!phaseIds.add(phase.phaseId() + "\n"
-                    + phase.baselineOrdinal())
-                    || !eventSeqs.add(phase.runtimeEventSeq())
+            // The phase id is the VARIABLE and repeats across the executions
+            // of its site; what must be unique is the execution, and the VM
+            // event counter is what says so.
+            if (!eventSeqs.add(phase.runtimeEventSeq())
                     || !invocationIds.add(phase.runtimeInvocationId())
                     || phase.runtimeEventSeq() <= previousSeq) {
                 throw new IllegalArgumentException(PLAN_FIELD
                         + " must have unique identities in event order");
             }
             previousSeq = phase.runtimeEventSeq();
-            String site = phase.phase().name() + "\n" + phase.sourceId()
-                    + "\n" + phase.siteId();
-            Integer prior = previousOrdinals.put(site,
-                    phase.baselineOrdinal());
-            if (prior != null && phase.baselineOrdinal() <= prior
-                    || completeOccurrence && phase.baselineOrdinal()
-                    != (prior == null ? 1 : prior + 1)) {
-                throw new IllegalArgumentException(PLAN_FIELD
-                        + " has a duplicate, reordered or missing site ordinal");
-            }
         }
     }
 
     public static JsonObject occurrence(
             Declaration declaration, String occurrenceId,
-            int baselineOrdinal, long runtimeEventSeq,
+            long runtimeEventSeq,
             long ownerCallId, long runtimeInvocationId,
             String declaredCallee, Collection<Long> enclosingCallIds) {
         if (declaration == null) {
@@ -185,7 +172,6 @@ public final class ConfiguredSourcePhaseContract {
                 declaration.siteId(), declaration.phase()));
         row.addProperty("phaseKind", declaration.phase().name());
         row.addProperty("sourceOccurrenceId", occurrence);
-        row.addProperty("baselineOrdinal", baselineOrdinal);
         row.addProperty("eventSeq", runtimeEventSeq);
         row.addProperty("ownerCallId", ownerCallId);
         row.addProperty("invocationId", runtimeInvocationId);
@@ -311,13 +297,12 @@ public final class ConfiguredSourcePhaseContract {
         }
         String sourceOccurrenceId = required(
                 text(row, "sourceOccurrenceId"), "sourceOccurrenceId");
-        int baselineOrdinal = exactInt(row, "baselineOrdinal");
         long eventSeq = exactLong(row, "eventSeq");
         long invocationId = exactLong(row, "invocationId");
         String declaredCallee = required(
                 text(row, "runtimeDeclaredCallee"), "runtimeDeclaredCallee");
         String phaseId = required(text(row, "phaseId"), "phaseId");
-        if (baselineOrdinal <= 0 || eventSeq <= 0L || invocationId <= 0L
+        if (eventSeq <= 0L || invocationId <= 0L
                 || !phaseId.equals(phaseId(declared.sourceId(),
                 declared.siteId(), declared.phase()))) {
             throw new IllegalArgumentException(
@@ -344,8 +329,7 @@ public final class ConfiguredSourcePhaseContract {
                     PLAN_FIELD + " ancestry does not begin at ownerCallId");
         }
         return new Occurrence(declared, phaseId, sourceOccurrenceId,
-                baselineOrdinal, eventSeq, invocationId, declaredCallee,
-                ancestry);
+                eventSeq, invocationId, declaredCallee, ancestry);
     }
 
     /** An exact integral member, or -1 when absent or another shape. */
@@ -417,21 +401,19 @@ public final class ConfiguredSourcePhaseContract {
         private final Declaration declared;
         private final String phaseId;
         private final String sourceOccurrenceId;
-        private final int baselineOrdinal;
         private final long runtimeEventSeq;
         private final long runtimeInvocationId;
         private final String runtimeDeclaredCallee;
         private final List<Long> enclosingCallIds;
 
         private Occurrence(Declaration declared, String phaseId,
-                           String sourceOccurrenceId, int baselineOrdinal,
+                           String sourceOccurrenceId,
                            long runtimeEventSeq, long runtimeInvocationId,
                            String runtimeDeclaredCallee,
                            List<Long> enclosingCallIds) {
             this.declared = declared;
             this.phaseId = phaseId;
             this.sourceOccurrenceId = sourceOccurrenceId;
-            this.baselineOrdinal = baselineOrdinal;
             this.runtimeEventSeq = runtimeEventSeq;
             this.runtimeInvocationId = runtimeInvocationId;
             this.runtimeDeclaredCallee = runtimeDeclaredCallee;
@@ -456,8 +438,6 @@ public final class ConfiguredSourcePhaseContract {
         public int declarationUnitIndex() {
             return declared.declarationUnitIndex();
         }
-
-        public int baselineOrdinal() { return baselineOrdinal; }
 
         public long runtimeEventSeq() { return runtimeEventSeq; }
 

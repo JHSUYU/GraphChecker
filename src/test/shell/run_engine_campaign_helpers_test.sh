@@ -259,7 +259,8 @@ $(<"${emit_root}/emit.log")"
 jq -e '.gapCount == 1
   and (.gaps[0].stage == "PLAN")
   and (.gaps[0].code == "BOUND_INSUFFICIENT")
-  and (.gaps[0].class == "BLOCKING")' \
+  and (.gaps[0].class == "BLOCKING")
+  and (.gaps[0].classReason == "the row states its own class")' \
   "${campaign_final}/gaps.json" >/dev/null \
   || fail "the plan gap was not published as blocking: \
 $(jq -c '.gaps' "${campaign_final}/gaps.json")"

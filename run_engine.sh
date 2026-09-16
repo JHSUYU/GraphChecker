@@ -2371,6 +2371,14 @@ campaign_json_file() {
 # composed ports and the flip wave are gone with the questions they asked, and
 # so is the second registry that classed PLAN rows by code.  A row that states
 # no class is BLOCKING.
+#
+# This function and the `accepted` conjunction it feeds are the ONE reader of
+# a gap's class in the campaign: every other stage states classes and reads
+# none but its own.  classReason says which of the two rules answered, and it
+# used to answer "no stated class: blocking by default" for every row that
+# stated BLOCKING -- all three OCCURRENCE_ADDRESS_SHARED rows of the reviewed
+# hdfs-17960 run, whose producer had stated the class the reader then
+# disowned.
 campaign_write_gaps() {
   local composition=$1 iteration_dir=$2 output=$3
   local scratch status=0
@@ -2422,9 +2430,9 @@ campaign_write_gaps() {
              subject: (.subject // ""), detail: (.detail // ""),
              class: (if (.cls // "BLOCKING") == "DIAGNOSTIC"
                      then "DIAGNOSTIC" else "BLOCKING" end),
-             classReason: (if (.cls // "") == "DIAGNOSTIC"
-                           then "the row states its own class"
-                           else "no stated class: blocking by default"
+             classReason: (if (.cls // "") == ""
+                           then "no stated class: blocking by default"
+                           else "the row states its own class"
                            end)}))
       as $composerGapRows |
     ($refusalRows + $composerGapRows) as $composeRows |
@@ -2436,9 +2444,9 @@ campaign_write_gaps() {
              subject: (.subject // .siteId // ""), detail: (.detail // ""),
              class: (if (.cls // "BLOCKING") == "DIAGNOSTIC"
                      then "DIAGNOSTIC" else "BLOCKING" end),
-             classReason: (if (.cls // "") == "DIAGNOSTIC"
-                           then "the row states its own class"
-                           else "no stated class: blocking by default"
+             classReason: (if (.cls // "") == ""
+                           then "no stated class: blocking by default"
+                           else "the row states its own class"
                            end)}))
       as $declaredRows |
     (($sessionRows + $composeRows + $declaredRows)

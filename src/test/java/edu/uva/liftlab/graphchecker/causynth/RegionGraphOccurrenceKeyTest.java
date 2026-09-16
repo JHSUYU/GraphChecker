@@ -70,9 +70,19 @@ public class RegionGraphOccurrenceKeyTest {
      * absent id is still absent, so the callers' early returns stand.  A
      * per-activation id, and anything that does not spell an address at all,
      * is refused rather than merged onto the address it resembles.
+     *
+     * <p>And an address two activations landed on STATES ITS CLASS, which is
+     * whether the kept closure holds its region: inside it a task addresses
+     * the occurrence and the ambiguity withholds, outside it no plan row, no
+     * task and no session row names the occurrence and the row is telemetry.
+     * All three rows of the reviewed hdfs-17960 run were the second case --
+     * {@code FSDirectory$InitQuotaTask} ForkJoin siblings, whose regions the
+     * closure drops -- and they were published with no class at all, which
+     * the campaign reads as blocking.</p>
      */
     @Test
-    public void aPlannedAddressKeysAsItselfAndAnythingElseIsRefused() {
+    public void aPlannedAddressKeysAsItselfAndAnythingElseIsRefused()
+            throws Exception {
         assertEquals(PLANNED,
                 RuntimeSelectedRegionFinalizer.occurrenceKey(PLANNED));
         assertEquals("", RuntimeSelectedRegionFinalizer.occurrenceKey(null));
@@ -84,6 +94,37 @@ public class RegionGraphOccurrenceKeyTest {
                 "hdfs-17960/nn0#epoch1/region/REGION.1#0"}) {
             refuses(unreadable);
         }
+        assertEquals("BLOCKING", sharedAddressClass("REGION.kept"));
+        assertEquals("DIAGNOSTIC", sharedAddressClass("REGION.dropped"));
+    }
+
+    /** The class the finalizer states for one shared address. */
+    private static String sharedAddressClass(String regionId)
+            throws Exception {
+        StaticProgram program = new StaticProgram();
+        Map<String, Object> kept = new LinkedHashMap<String, Object>();
+        kept.put("regionId", "REGION.kept");
+        program.regions.add(kept);
+        Map<String, Object> shared = new LinkedHashMap<String, Object>();
+        shared.put("occurrenceId", PLANNED);
+        shared.put("regionId", regionId);
+        shared.put(RuntimeSelectedRegionFinalizer.SHARED_ADDRESS_ROOT_CALLS,
+                Arrays.asList(26744L, 26745L));
+        Method rule = RuntimeSelectedRegionFinalizer.class
+                .getDeclaredMethod("stateSharedAddressClasses",
+                        StaticProgram.class, List.class);
+        rule.setAccessible(true);
+        rule.invoke(null, program,
+                Collections.singletonList(shared));
+        assertEquals(1, program.planGaps.size());
+        Map<String, Object> row = program.planGaps.get(0);
+        assertEquals("OCCURRENCE_ADDRESS_SHARED", row.get("kind"));
+        // The detail says WHICH rule answered, so a reader is not left to
+        // infer the class from the code.
+        assertTrue(String.valueOf(row.get("detail")),
+                String.valueOf(row.get("detail"))
+                        .contains(row.get("cls") + ": " + regionId));
+        return String.valueOf(row.get("cls"));
     }
 
     private static void refuses(String occurrenceId) {

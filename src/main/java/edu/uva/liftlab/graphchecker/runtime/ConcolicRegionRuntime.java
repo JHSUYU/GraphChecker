@@ -1506,39 +1506,34 @@ public final class ConcolicRegionRuntime {
     }
 
     /**
-     * The VM name of one fresh mint.
+     * One read of one declared mint site.
      *
-     * <p>The phase label is the stable semantic name of the mint SITE, which
-     * the evidence contract keys its rows by.  Entries past the first append
-     * their entry number, so every occurrence is its own VM root while a site
-     * entered once keeps exactly the name it always had.</p>
-     */
-    /**
-     * One entry of one declared mint site.
+     * <p>A declared configured source is ONE symbol.  The frozen catalog
+     * says only WHERE its hook sites are; every read of a declared site --
+     * in this occurrence, in another occurrence, in another session -- binds
+     * to that site's one symbol, and neither the occurrence nor which read
+     * of it this was is part of the symbol's identity.</p>
      *
-     * <p>Wave 3 selects nothing.  The frozen catalog says only WHERE a mint
-     * site is; every entry of that site is its own symbolic variable, and the
-     * ordinal is the per-(activation, site) entry count starting at 1.</p>
+     * <p>They used to be.  The catalog was SIZED by the executions the
+     * recording happened to make, a read past that size was refused
+     * {@code DECLARATION_MISSING ... occurrence 2 exceeds the frozen phase
+     * catalog size 1}, and the VM label of read n&gt;1 carried the entry
+     * number -- so one declared marker became several unconstrained
+     * variables, a flip moved one of them, and the reads that took the
+     * others kept the recorded value.</p>
      */
     private static final class SourceSiteEntry {
         private final ConfiguredSourcePhaseContract.Occurrence phase;
         private final String siteId;
-        private final int ordinal;
         private SourceSiteEntry(
                 ConfiguredSourcePhaseContract.Occurrence phase,
-                String siteId, int ordinal) {
+                String siteId) {
             this.phase = phase;
             this.siteId = safe(siteId);
-            this.ordinal = ordinal;
         }
 
         private String phaseId() {
             return phase == null ? "" : phase.phaseId();
-        }
-
-        /** Identity of this entry inside one activation. */
-        private String key() {
-            return siteId + "#" + ordinal;
         }
     }
 
@@ -1603,21 +1598,18 @@ public final class ConcolicRegionRuntime {
             boolean assigned = !reused && applyFocusedRootAssignment(
                     active, safe(sourceId), owner, safe(fieldSignature),
                     descriptor);
-            String symbol = "";
+            // ONE SYMBOL PER DECLARED SOURCE.  The label is derived from
+            // the declared site and from nothing this read is: the same leaf
+            // is asked for at every read of it, so the composer meets one
+            // variable and a solver that flips it flips it everywhere.  The
+            // row below still states one mint per READ -- that is the
+            // evidence of where it was observed -- and the reads join to the
+            // one symbol.
+            String symbol = ConfiguredSourcePhaseContract
+                    .engineLabelForPhase(entry.phaseId(), safe(sourceId));
             if (!reused) {
-                // The phase is the stable semantic source site.  Exact
-                // activation identity is recorded separately in the evidence
-                // row; changing the VM label per occurrence only duplicates
-                // equivalent symbolic roots and complicates composition.
-                String sourceOccurrence = active.occurrenceId();
-                symbol = "sym__" + safe(sourceId) + "__"
-                        + safe(sourceOccurrence) + "__"
-                        + entry.ordinal;
-                String label = ConfiguredSourcePhaseContract
-                        .engineLabelForPhase(entry.phaseId(), safe(sourceId));
                 api.symbolizeExactField(owner, exactFieldSignature(field),
-                        entry.ordinal <= 1 ? label
-                                : label + "__" + entry.ordinal);
+                        symbol);
             }
             // The mint is a symbolic write, so the VM has started this
             // field's version log by itself; the declaration that used to be
@@ -5275,9 +5267,6 @@ public final class ConcolicRegionRuntime {
          */
         private final Set<String> reachedConfiguredSourceSites =
                 new LinkedHashSet<>();
-        /** Phase entries used by this activation; committed on publication. */
-        final Map<String, Integer> configuredSourcePhaseOrdinals =
-                new LinkedHashMap<>();
         final List<JsonObject> branchMappings = new ArrayList<>();
         /**
          * Case-local references into the VM's own handoff ledger: the
@@ -5587,12 +5576,13 @@ public final class ConcolicRegionRuntime {
         }
 
         /**
-         * Counts one entry of one declared mint site.
+         * The declared mint site one hook execution stands at, or null.
          *
-         * <p>The catalog is a list of mint SITES, not a selection: any entry
-         * of a known site mints, and the ordinal is the entry count.  A hook
-         * that fires at a site the catalog does not name is still a gap -
-         * that is a plan/instrumentation disagreement, not a free
+         * <p>The catalog is a list of mint SITES, not a selection and not a
+         * budget: any read at a known site binds to that site's symbol,
+         * however many reads there are and whichever occurrence makes them.
+         * A hook that fires at a site the catalog does not name is still a
+         * gap - that is a plan/instrumentation disagreement, not a free
          * occurrence.</p>
          */
         private synchronized SourceSiteEntry observeConfiguredSourceEntry(
@@ -5628,23 +5618,13 @@ public final class ConcolicRegionRuntime {
                                 + " catalog, so nothing declares this mint");
                 return null;
             }
-            String ordinalKey = "PUBLISH\n" + safe(sourceId) + "\n" + site;
-            int localOrdinal = configuredSourcePhaseOrdinals.merge(
-                    ordinalKey, 1, Integer::sum);
-            int ordinal = activation.configuredSourcePhaseOrdinal(
-                    ordinalKey, localOrdinal);
-            boolean cataloged = ordinal <= declaration.size();
-            ConfiguredSourcePhaseContract.Occurrence matched = cataloged
-                    ? declaration.get(ordinal - 1)
-                    : declaration.get(declaration.size() - 1);
-            if (!cataloged) {
-                refuseMint(edu.uva.liftlab.graphchecker.contract.GapKind
-                                .DECLARATION_MISSING, matched,
-                        "PUBLISH " + site + " occurrence " + ordinal
-                                + " exceeds the frozen phase catalog size "
-                                + declaration.size());
-                return null;
-            }
+            // Every row of this list is one execution of ONE site, so they
+            // agree on everything the mint reads off a declaration - the
+            // phase id the symbol is derived from, the field and the callee.
+            // Which execution the recording made is evidence on the row, not
+            // a limit on the reads a replay may make.
+            ConfiguredSourcePhaseContract.Occurrence matched =
+                    declaration.get(0);
             if (!matched.fieldSignature().equals(
                     safe(runtimeFieldSignature))
                     || !matched.runtimeDeclaredCallee().equals(
@@ -5657,7 +5637,7 @@ public final class ConcolicRegionRuntime {
             }
             reachedConfiguredSourceSites.add(matched.siteId());
             if (!site.isEmpty()) reachedConfiguredSourceSites.add(site);
-            return new SourceSiteEntry(matched, site, ordinal);
+            return new SourceSiteEntry(matched, site);
         }
 
         /** Publishes one mint row for one entry of a declared site. */
@@ -5679,7 +5659,6 @@ public final class ConcolicRegionRuntime {
             row.addProperty("sourcePhaseId", entry.phaseId());
             row.addProperty("occurrenceId", occurrenceId());
             row.addProperty("siteId", entry.siteId);
-            row.addProperty("ordinal", entry.ordinal);
             row.addProperty("fieldSignature", safe(fieldSignature));
             row.addProperty("symbol", safe(symbol));
             row.add("expression", expression == null
