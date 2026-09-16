@@ -168,10 +168,57 @@ public class ManualMintStatesItsValueTest {
                         .contains(address(PLANNED_ADDRESS).id()));
         FocusedReplay.observeDecision(address(PLANNED_ADDRESS),
                 "Arrival#u8", 1, true);
+
+        // AND THE SESSION HAS TO CARRY THE EVIDENCE.  "The focused prefix
+        // reproduced" is a claim about the rows a later stage reads, so the
+        // flip alone does not admit: a root the wave moves whose mint row
+        // this session never published leaves the valuation the replay ran
+        // stated nowhere.  hdfs-17960 on 39bedd768 published exactly that
+        // -- session 793875fb482a10a4-4b39d011, a 0-byte roots.jsonl, a
+        // REPLAY_PREFIX_UNMATCHED gap, and obligation_result.jsonl reading
+        // ADMITTED -- and the composer would have read it as a disjunct.
+        assertEquals("a flip whose roots the session states no mint for is "
+                        + "not admitted: "
+                        + FocusedReplay.results("s-flip").get(0).detail(),
+                edu.uva.liftlab.graphchecker.contract.Verdict.NOT_ADMITTED,
+                FocusedReplay.results("s-flip").get(0).verdict());
+        assertTrue("and the refusal names the roots whose rows are missing,"
+                        + " the clock's skew among them: "
+                        + FocusedReplay.results("s-flip").get(0).detail(),
+                FocusedReplay.results("s-flip").get(0).detail()
+                        .contains("CASE.NOW"));
+        publishedMint("CASE.SERIAL");
+        publishedMint("CASE.ORDERED");
+        assertEquals("one root still unstated is still not admitted",
+                edu.uva.liftlab.graphchecker.contract.Verdict.NOT_ADMITTED,
+                FocusedReplay.results("s-flip").get(0).verdict());
+        publishedMint("CASE.NOW");
         assertEquals("the obligation's own occurrence taking the flipped "
-                        + "arm is what admits it",
+                        + "arm, over a session that states every mint it "
+                        + "moved, is what admits it",
                 edu.uva.liftlab.graphchecker.contract.Verdict.ADMITTED,
                 FocusedReplay.results("s-flip").get(0).verdict());
+
+        // A prefix this replay was abandoned on takes the abandoned
+        // occurrence's whole row set with it, so it un-admits the same way.
+        FocusedReplay.noteUnansweredTask("ROOT_NEVER_EXECUTED: another "
+                + "task of this replay, which settles nothing here");
+        assertEquals("an unanswered task that is not a prefix abandonment "
+                        + "settles nothing",
+                edu.uva.liftlab.graphchecker.contract.Verdict.ADMITTED,
+                FocusedReplay.results("s-flip").get(0).verdict());
+        FocusedReplay.noteUnansweredTask("REPLAY_PREFIX_UNMATCHED: the "
+                + "focused occurrence did not take the decision its "
+                + "obligation flips: ");
+        assertEquals("a replay whose prefix was abandoned publishes no "
+                        + "admission over the rows that went with it",
+                edu.uva.liftlab.graphchecker.contract.Verdict.NOT_ADMITTED,
+                FocusedReplay.results("s-flip").get(0).verdict());
+        assertTrue("and the gap is the reason it states: "
+                        + FocusedReplay.results("s-flip").get(0).detail(),
+                FocusedReplay.results("s-flip").get(0).detail()
+                        .startsWith("REPLAY_PREFIX_UNMATCHED"));
+        unmatchedPrefixCleared();
         ActiveRegion focused = manualRegion();
         focused.d3Address = edu.uva.liftlab.graphchecker.contract
                 .OccurrenceAddress.parse(PLANNED_ADDRESS);
@@ -328,6 +375,19 @@ public class ManualMintStatesItsValueTest {
     /** And one the wave named nowhere, which merely runs alongside. */
     private static final String ALONGSIDE_ADDRESS =
             "hdfs/dn0#epoch0/region/REGION.094a8e3d/ctx:Root:CLIENT#1/idx:";
+
+    /** The session states one root mint row, as RowRuntime publishes one. */
+    private static void publishedMint(String rootId) {
+        FocusedReplay.mintPublished(rootId);
+    }
+
+    /** Puts the one account back the way the rest of this test found it. */
+    private static void unmatchedPrefixCleared() throws Exception {
+        Field prefix = FocusedReplay.class
+                .getDeclaredField("unmatchedPrefix");
+        prefix.setAccessible(true);
+        prefix.set(null, "");
+    }
 
     /** One rendered address, as the contract parses one. */
     private static edu.uva.liftlab.graphchecker.contract.OccurrenceAddress

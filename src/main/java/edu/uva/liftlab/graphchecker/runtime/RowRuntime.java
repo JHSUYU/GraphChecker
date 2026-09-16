@@ -462,6 +462,11 @@ public final class RowRuntime {
                 Text.safe(domainMin).isEmpty() ? null : Text.safe(domainMin),
                 Text.safe(domainMax).isEmpty() ? null : Text.safe(domainMax),
                 declared));
+        // The verdict is the session's own row (X17 R4b), so the one
+        // account of this replay is told that the mint is IN the session --
+        // a different fact from the plant, which happens earlier and
+        // survives an occurrence whose rows are then discarded.
+        FocusedReplay.mintPublished(rootId);
     }
 
     /** The anchor, with phi stated in the FATAL polarity as published. */

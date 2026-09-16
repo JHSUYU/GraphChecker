@@ -76,6 +76,11 @@ final class ConcolicResultPublisher {
      * {@code gaps.jsonl} sees why without a second file.</p>
      */
     static void taskUnanswered(RuntimeTask task, String detail) {
+        // A prefix this replay was abandoned on is not only a row.  The
+        // abandoned occurrence publishes nothing, so the session loses its
+        // whole row set, and the one account of what this replay settled
+        // has to know that before it calls a prefix reproduced.
+        FocusedReplay.noteUnansweredTask(detail);
         // The task, else the region it plans, else this session: a row that
         // named nothing would refuse inside Fields.text, out of the hook
         // that filed it.  taskId is the plan's own optionalString, so it

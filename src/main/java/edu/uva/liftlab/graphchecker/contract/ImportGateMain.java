@@ -69,9 +69,10 @@ public final class ImportGateMain {
     public static JsonObject gate(Path iteration, Path out,
                                   String topologyEpoch) throws IOException {
         List<SessionReader> sessions = SessionReader.readAll(iteration);
+        List<ObligationDir> workers = ObligationDir.workersIn(iteration);
         List<GapRow> gaps = new ArrayList<GapRow>(
-                RowInvariants.check(sessions));
-        gaps.addAll(flips(iteration, sessions));
+                RowInvariants.check(sessions, asks(workers)));
+        gaps.addAll(flips(workers, sessions));
         List<String> lines = new ArrayList<String>();
         int blocking = 0;
         String first = "";
@@ -119,6 +120,33 @@ public final class ImportGateMain {
     }
 
     /**
+     * The ASK each FOCUSED session of this epoch ran under, by session id.
+     *
+     * <p>The focus row, because it is the one row that states BOTH halves of
+     * a wave's valuation: {@code rootAssignments}, the absolute values
+     * planted at the mints, and {@code clockDeltas}, the skew a clock's mint
+     * adds to its own reading.  {@link RowInvariants} judges every term at
+     * it: a focused replay's mints state what they OBSERVED before the plant
+     * -- the recording's value -- so the rows and the ask together are what
+     * says what that replay actually ran.</p>
+     *
+     * <p>Joined by the worker's own result row, like {@link #flips}, and one
+     * worker drives one replay with one focus row.</p>
+     */
+    private static Map<String, JsonObject> asks(List<ObligationDir> workers)
+            throws IOException {
+        Map<String, JsonObject> asks = new LinkedHashMap<String, JsonObject>();
+        for (ObligationDir worker : workers) {
+            for (JsonObject row : RowCodec.readJsonl(worker.focusedTask())) {
+                if (!asks.containsKey(worker.sessionId())) {
+                    asks.put(worker.sessionId(), row);
+                }
+            }
+        }
+        return asks;
+    }
+
+    /**
      * Invariant 10, over every obligation worker this epoch has finished.
      *
      * <p>The link from a focus row to the session its replay published is the
@@ -126,7 +154,7 @@ public final class ImportGateMain {
      * cut from, and {@code obligation_result.jsonl} names the session the
      * replay wrote.  Nothing is inferred from a directory name.</p>
      */
-    private static List<GapRow> flips(Path iteration,
+    private static List<GapRow> flips(List<ObligationDir> workers,
                                       List<SessionReader> sessions)
             throws IOException {
         List<GapRow> gaps = new ArrayList<GapRow>();
@@ -135,7 +163,7 @@ public final class ImportGateMain {
         for (SessionReader session : sessions) {
             byId.put(session.sessionId(), session);
         }
-        for (ObligationDir worker : ObligationDir.workersIn(iteration)) {
+        for (ObligationDir worker : workers) {
             gaps.addAll(flip(worker, byId));
         }
         return gaps;

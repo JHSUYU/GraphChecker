@@ -51,28 +51,57 @@ public final class RowInvariants {
     private RowInvariants() {
     }
 
-    /** Every violation one epoch's sessions state, in rule order. */
+    /**
+     * Every violation one epoch's sessions state, in rule order, where the
+     * epoch states no ask for any of them.
+     *
+     * <p>Right for a set of SEED recordings and fail-closed for anything
+     * else: a session that states role FOCUSED ran at a valuation this set
+     * does not carry, so {@link #executed} refuses it by name instead of
+     * reading its mints as the values it ran.</p>
+     */
     public static List<GapRow> check(List<SessionReader> sessions) {
+        return check(sessions, Collections.<String, JsonObject>emptyMap());
+    }
+
+    /**
+     * Every violation one epoch's sessions state, in rule order.
+     *
+     * @param sessions the epoch's sessions
+     * @param asks     session id to the FOCUS ROW the wave drove that session
+     *                 with -- {@code rootAssignments} and {@code clockDeltas}
+     *                 -- which is what a FOCUSED session RAN under.  A SEED
+     *                 needs none: it read its roots and its mints state them.
+     */
+    public static List<GapRow> check(List<SessionReader> sessions,
+                                     Map<String, JsonObject> asks) {
         List<GapRow> gaps = new ArrayList<GapRow>();
         if (sessions == null || sessions.isEmpty()) return gaps;
         sessionSet(sessions, gaps);
         for (SessionReader session : sessions) {
             complete(session, gaps);
-            check(session, gaps);
+            check(session, asks == null ? null
+                    : asks.get(session.sessionId()), gaps);
         }
         return gaps;
     }
 
-    private static void check(SessionReader session, List<GapRow> gaps) {
+    private static void check(SessionReader session, JsonObject ask,
+                              List<GapRow> gaps) {
         activated(session, gaps);
         neverNeither(session, gaps);
         references(session, gaps);
         onePerEvent(session, gaps);
         sorts(session, gaps);
-        decisions(session, gaps);
+        // ONE VALUATION, read once: every rule that judges a term judges it
+        // at the values this session RAN the roots at, and two rules that
+        // resolved a symbol differently would be two answers to "what did
+        // this replay run under".
+        Map<String, String> executed = executed(session, ask, gaps);
+        decisions(session, executed, gaps);
         versions(session, gaps);
         roots(session, gaps);
-        targets(session, gaps);
+        targets(session, executed, gaps);
     }
 
     // ---- 1. the session set -------------------------------------------
@@ -470,43 +499,133 @@ public final class RowInvariants {
      * P2f, and CONTRACT-SPEC SS2's own words: {@code outcome} says whether the
      * published term HELD, so the conjunct is {@code outcome ? term : (not
      * term)} and the runtime never pre-applies the polarity.  Where a term
-     * rests on nothing but DECLARED roots and VM literals, the recording
-     * states its own truth value, and the row must agree with it.
+     * rests on nothing but DECLARED roots and VM literals, the session states
+     * its own truth value, and the row must agree with it.
      *
      * <p>That is the whole of the first laneA2 defect: a term {@code marker !=
      * false} with {@code outcome=false} beside a RootMintRow recording {@code
      * true}.  Every flip cut from it asked for the value the seed already
      * had.  A term whose leaves this cannot reach is not judged.</p>
+     *
+     * <p>AT THE VALUATION THE SESSION RAN UNDER, which is {@link #executed}'s
+     * one notion and NOT {@code recordedValue} on its own: a mint states
+     * what it OBSERVED, and in a focused replay what it observed is the
+     * recording's value, read before the wave's assignment is planted.  On
+     * the 39bedd768 HDFS-17960 wave 0 the focused session
+     * {@code cb67875d1d896d4d-73ab772f} ran {@code
+     * HDFS.CONFIG.SNAPSHOT_DELETION_ORDERED=false} (its obligation's {@code
+     * rootAssignments}, and its {@code obligation_query.smt2} asserts it),
+     * minted {@code recordedValue="true"}, and this rule refused three of its
+     * decisions -- 79, 140 and 145 -- for stating the arm they actually took.
+     * All three verify at {@code false}.</p>
      */
-    private static void decisions(SessionReader session, List<GapRow> gaps) {
-        Map<String, String> declared = declaredRoots(session);
-        if (declared.isEmpty()) return;
+    private static void decisions(SessionReader session,
+                                  Map<String, String> executed,
+                                  List<GapRow> gaps) {
+        if (executed == null || executed.isEmpty()) return;
         for (DecisionRow row : session.decisions()) {
             if (row.term() == null || row.term().trim().isEmpty()) continue;
-            Boolean held = truth(session, row.term(), declared);
+            Boolean held = truth(session, row.term(), executed);
             if (held == null || held.booleanValue() == row.outcome()) continue;
             gaps.add(violation(session, GapKind.UNSTATED_VALUE,
                     GapClass.BLOCKING, "decisions", row.seq(), "outcome",
                     row.siteId() + "#" + row.ordinal(),
                     "invariant 6 (CONTRACT-SPEC SS2: outcome says whether the "
                             + "published term HELD; the conjunct is "
-                            + "outcome ? term : (not term)): at this "
-                            + "session's own recorded root values the term is "
+                            + "outcome ? term : (not term)): at the root "
+                            + "values this session RAN under the term is "
                             + held + " and the row says " + row.outcome()));
         }
     }
 
-    /** rootId-free: the declared roots of a session, by SYMBOL. */
-    private static Map<String, String> declaredRoots(SessionReader session) {
+    /**
+     * rootId-free: what this session RAN each declared root at, by SYMBOL --
+     * or null when it states no such valuation at all.
+     *
+     * <p>ONE NOTION, and it is a fact about an EXECUTION, not about a row.
+     * A SEED read its roots, so its mints state them.  A FOCUSED replay was
+     * HANDED them: the wave plants the value at the mint, and the mint
+     * states what it OBSERVED there -- the recording's own value, read
+     * before the plant, because after the plant the two quantities are no
+     * longer distinguishable off the heap (RootMint#focusedRootValue).  So
+     * for a FOCUSED session the valuation it ran is the ASK, its focus row's
+     * {@code rootAssignments} and {@code clockDeltas}, per kind:</p>
+     *
+     * <ul>
+     *   <li>MARKER and INTEGRAL: the assignment is the value, absolute.</li>
+     *   <li>CLOCK: the wave states a SKEW, never an instant -- every
+     *       execution reads a clock fresh -- so the value is the mint's own
+     *       reading plus the delta, exactly as the mint computed it.</li>
+     *   <li>any root the wave assigned nothing: the mint READ it, so its
+     *       {@code recordedValue} is what ran.</li>
+     * </ul>
+     *
+     * <p>A FOCUSED session whose ask no obligation worker of this epoch
+     * states is REFUSED by name here.  Reading its mints instead would judge
+     * a counterfactual at the recording's valuation, which is the defect
+     * this method exists to remove, and the gate would report it as a row
+     * violation of a session whose rows are fine.</p>
+     */
+    private static Map<String, String> executed(SessionReader session,
+                                                JsonObject ask,
+                                                List<GapRow> gaps) {
+        SessionManifest manifest = session.manifest();
+        boolean focused = manifest != null && !manifest.seed();
+        if (focused && ask == null) {
+            gaps.add(GapRow.of(session.sessionId(), GapKind.UNSTATED_VALUE,
+                    GapClass.BLOCKING, "epoch/valuation",
+                    "invariant 6 (CONTRACT-SPEC SS3: a focused replay runs "
+                            + "at the root values its obligation assigns): "
+                            + "this session states role FOCUSED "
+                            + manifest.obligationIds() + " and no obligation "
+                            + "worker of this epoch states the focus row it "
+                            + "ran, so the valuation it executed at is "
+                            + "unstated and no term of it can be judged"));
+            return null;
+        }
+        Map<String, String> assigned = focused
+                ? strings(ask, "rootAssignments") : null;
+        Map<String, String> skews = focused
+                ? strings(ask, "clockDeltas") : null;
         Map<String, String> bySymbol = new LinkedHashMap<String, String>();
         for (RootMintRow row : session.roots()) {
-            if (row.declared()) bySymbol.put(row.symbol(), row.recordedValue());
+            if (!row.declared()) continue;
+            bySymbol.put(row.symbol(), ran(row, assigned, skews));
         }
         return bySymbol;
     }
 
     /**
-     * The truth value a term has at the recording's own root values, or null.
+     * What one mint's root RAN at: the wave's ask where it states one, and
+     * the mint's own reading where it does not.
+     *
+     * <p>{@code ""} where the ask cannot be stated as a value -- an unstated
+     * reading under a skew -- because {@code ""} is the spelling every leaf
+     * this class cannot reach already has, and a rule that guessed one here
+     * would report violations it cannot substantiate.</p>
+     */
+    private static String ran(RootMintRow row, Map<String, String> assigned,
+                              Map<String, String> skews) {
+        String recorded = row.recordedValue() == null ? ""
+                : row.recordedValue().trim();
+        if (assigned == null) return recorded;
+        if (row.kind() == RootKind.CLOCK) {
+            String delta = skews == null ? null : skews.get(row.rootId());
+            if (delta == null || delta.trim().isEmpty()) return recorded;
+            Object read = literal(recorded);
+            Object skew = literal(delta.trim());
+            if (!(read instanceof Long) || !(skew instanceof Long)) return "";
+            return Long.toString(((Long) read).longValue()
+                    + ((Long) skew).longValue());
+        }
+        String planted = assigned.get(row.rootId());
+        if (planted == null || planted.trim().isEmpty()) return recorded;
+        return planted.trim();
+    }
+
+    /**
+     * The truth value a term has at the valuation the session ran under, or
+     * null.
      *
      * <p>Null is the answer whenever the term reaches a leaf this cannot
      * state -- a read, a container, a cast, a shift over an unstated value.
@@ -742,8 +861,11 @@ public final class RowInvariants {
      * polarity that is false in the run that took it is the polarity stated
      * backwards.
      */
-    private static void targets(SessionReader session, List<GapRow> gaps) {
-        Map<String, String> declared = declaredRoots(session);
+    private static void targets(SessionReader session,
+                                Map<String, String> executed,
+                                List<GapRow> gaps) {
+        Map<String, String> declared = executed == null
+                ? Collections.<String, String>emptyMap() : executed;
         for (TargetRow row : session.targets()) {
             boolean empty = row.phiTerm() == null
                     || row.phiTerm().trim().isEmpty();
@@ -770,8 +892,8 @@ public final class RowInvariants {
                     row.anchorSiteId(),
                     "invariant 9 (CONTRACT-SPEC SS2: phiTerm is published in "
                             + "the FATAL polarity): the run observed the "
-                            + "fatal arm and this term is FALSE at the "
-                            + "session's own recorded root values"));
+                            + "fatal arm and this term is FALSE at the root "
+                            + "values this session RAN under"));
         }
     }
 
@@ -847,5 +969,18 @@ public final class RowInvariants {
         if (node == null || !node.has(member)) return null;
         JsonElement value = node.get(member);
         return value.isJsonObject() ? value.getAsJsonObject() : null;
+    }
+
+    /** One string-to-string member of a row, or an empty map. */
+    private static Map<String, String> strings(JsonObject node,
+                                               String member) {
+        Map<String, String> read = new LinkedHashMap<String, String>();
+        JsonObject stated = object(node, member);
+        if (stated == null) return read;
+        for (Map.Entry<String, JsonElement> entry : stated.entrySet()) {
+            if (!entry.getValue().isJsonPrimitive()) continue;
+            read.put(entry.getKey(), entry.getValue().getAsString());
+        }
+        return read;
     }
 }
