@@ -28,6 +28,20 @@ import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveBoxing;
 import edu.uva.liftlab.graphchecker.plan.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.runtime.RowRuntime;
 import edu.uva.liftlab.graphchecker.runtime.Interactions;
+import edu.uva.liftlab.graphchecker.runtime.FieldAccess.MissingValue;
+import edu.uva.liftlab.graphchecker.runtime.BranchObservation.BranchDecision;
+import edu.uva.liftlab.graphchecker.runtime.BranchObservation.PreparedBranch;
+import edu.uva.liftlab.graphchecker.runtime.LoopAccounting.LoopBackedgeBudget;
+import edu.uva.liftlab.graphchecker.runtime.LoopAccounting.LoopBoundCut;
+import edu.uva.liftlab.graphchecker.runtime.LoopAccounting.ReplayLoopResourceCut;
+
+import static edu.uva.liftlab.graphchecker.runtime.FieldAccess.declaredInstanceField;
+import static edu.uva.liftlab.graphchecker.runtime.FieldAccess.exactFieldSignature;
+import static edu.uva.liftlab.graphchecker.runtime.FieldAccess.freshPrimitiveBox;
+import static edu.uva.liftlab.graphchecker.runtime.FieldAccess.instanceOfName;
+import static edu.uva.liftlab.graphchecker.runtime.FieldAccess.readExactField;
+import static edu.uva.liftlab.graphchecker.runtime.FieldAccess.resolveFieldPathLeafOwner;
+import static edu.uva.liftlab.graphchecker.runtime.ModelValues.isPrimitiveBox;
 
 import edu.uva.liftlab.graphchecker.plan.SiteId;
 import edu.uva.liftlab.graphchecker.runtime.ConcolicTaskPlan.RuntimeTask;
@@ -93,7 +107,8 @@ public final class ConcolicRegionRuntime {
     static final String ROOT_ARGUMENT_PREDICATE_KIND =
             "EXACT_RUNTIME_TYPE";
     static final Gson GSON = new GsonBuilder().disableHtmlEscaping().create();
-    private static final AtomicLong TOKEN_COUNTER = new AtomicLong();
+    /** Shared with {@link LoopAccounting}, which mints a loop-root entry. */
+    static final AtomicLong TOKEN_COUNTER = new AtomicLong();
     private static final AtomicLong ACCESSOR_CONTEXT_TOKEN_COUNTER =
             new AtomicLong();
     static final String HALT_AFTER_SELECTED_RESULT_PROPERTY =
@@ -127,19 +142,8 @@ public final class ConcolicRegionRuntime {
             return new ArrayDeque<>();
                 }
             };
-    /** Enclosing method calls that own LOOP_BODY_ROOT iteration frames. */
-    private static final ThreadLocal<Deque<LoopRootInvocationContext>>
-            LOOP_ROOT_INVOCATIONS =
-            new ThreadLocal<Deque<LoopRootInvocationContext>>() {
-                @Override
-                protected Deque<LoopRootInvocationContext> initialValue() {
-                    return new ArrayDeque<>();
-                }
-            };
     static final ThreadLocal<AccessorCallContext>
             CURRENT_ACCESSOR_CALL_CONTEXT = new ThreadLocal<>();
-    private static final Pattern BRANCH_OPERATOR = Pattern.compile(
-            "(?:^|\\s)(==|!=|<=|>=|<|>)(?:\\s|$)");
     /** Session this JVM opened for its workload, or zero when it opened none. */
     static volatile long workloadSessionId;
     /**
@@ -243,127 +247,8 @@ public final class ConcolicRegionRuntime {
      * The innermost activation, or null while observation is muted: a hook
      * reached from GraphChecker's own bookkeeping accounts for nothing.
      */
-    private static ActiveRegion observingActiveRegion() {
+    static ActiveRegion observingActiveRegion() {
         return OBSERVATION_PAUSE_DEPTH.get() > 0 ? null : activeRegion();
-    }
-
-    /**
-     * Accounts for one attempted traversal of an instrumented normal CFG
-     * backedge.
-     */
-    public static void checkLoopBackedge(
-            String backedgeId, int instrumentedMaxTraversals) {
-        ActiveRegion active = observingActiveRegion();
-        if (active == null) return;
-
-        ConcolicVmBroker api = engine();
-        boolean paused = false;
-        LoopBoundCut cut = null;
-        try {
-            api.pausePathCondition();
-            paused = true;
-            String edge = safe(backedgeId);
-            int runtimeMax = instrumentedMaxTraversals;
-            if (edge.isEmpty() || !active.activation.loopBound
-                    .acceptsInstrumentedBound(runtimeMax)) {
-                cut = active.loopBoundCut(edge, runtimeMax,
-                        "INSTRUMENTATION_POLICY_MISMATCH");
-            } else {
-                long attempted = active.loopBackedges.recordTraversal(edge);
-                if (attempted >= runtimeMax) {
-                    cut = active.loopBoundCut(edge, runtimeMax,
-                            "MAX_LOOP_BODY_ITERATIONS_REACHED");
-                }
-            }
-        } catch (Throwable failure) {
-            cut = active.loopBoundCut(safe(backedgeId),
-                    instrumentedMaxTraversals,
-                    "BOUND_HOOK_FAILURE:" + rootCause(failure));
-        } finally {
-            if (resumeLoopAccounting(active, api, paused) && cut == null) {
-                cut = active.loopBoundCut(safe(backedgeId),
-                        instrumentedMaxTraversals,
-                        "BOUND_HOOK_RESUME_FAILURE");
-            }
-        }
-        endAtCut(active, cut);
-    }
-
-    /**
-     * Charges one loop body to the replay resource cap without consulting the
-     * unroll bound.
-     */
-    public static void checkReplayLoopBody(
-            String loopId, int instrumentedMaxTraversals) {
-        ActiveRegion active = observingActiveRegion();
-        if (active == null) return;
-
-        ConcolicVmBroker api = engine();
-        boolean paused = false;
-        ReplayLoopResourceCut cut = null;
-        try {
-            api.pausePathCondition();
-            paused = true;
-            String loop = safe(loopId);
-            if (loop.isEmpty() || instrumentedMaxTraversals
-                    != active.activation.loopBound.maxBackedgeTraversals()) {
-                // The class was instrumented under a different policy, so its
-                // loop identities cannot be trusted to account for anything.
-                cut = new ReplayLoopResourceCut(loop, 0, 0L);
-                active.replayResourceCut = true;
-            } else {
-                cut = active.chargeLoopBody(loop);
-            }
-        } catch (Throwable failure) {
-        } finally {
-            resumeLoopAccounting(active, api, paused);
-        }
-        endAtCut(active, cut);
-    }
-
-    /** Opens one dynamic invocation of a fixed-count loop. */
-    public static void openLoopInvocation(String loopId) {
-        ActiveRegion active = observingActiveRegion();
-        if (active == null) return;
-        beginBookkeeping();
-        try {
-            active.openLoopInvocation(safe(loopId));
-        } finally {
-            endBookkeeping();
-        }
-    }
-
-    /** Closes the open dynamic invocation of a fixed-count loop. */
-    public static void closeLoopInvocation(String loopId) {
-        ActiveRegion active = observingActiveRegion();
-        if (active == null) return;
-        beginBookkeeping();
-        try {
-            active.closeLoopInvocation(safe(loopId));
-        } finally {
-            endBookkeeping();
-        }
-    }
-
-    /**
-     * Restores the path condition a loop-accounting hook paused.  True when
-     * the resume was lost, leaving the workload's own observation muted.
-     */
-    private static boolean resumeLoopAccounting(
-            ActiveRegion active, ConcolicVmBroker api, boolean paused) {
-        if (!paused) return false;
-        try {
-            api.resumePathCondition();
-            return false;
-        } catch (Throwable failure) {
-            return true;
-        }
-    }
-
-    /** Publishes the bounded prefix and detaches symbolic observation. */
-    private static void endAtCut(ActiveRegion active, Error cut) {
-        if (cut == null) return;
-        finish(active.token, "CUT", "", null);
     }
 
     /**
@@ -384,6 +269,26 @@ public final class ConcolicRegionRuntime {
         // What the frame was for -- telling two reads of one accessor site
         // inside one occurrence apart -- is Identity.eventSiteIndex's job,
         // which counts per occurrence and per site in both passes alike.
+        //
+        // The context itself is NOT redundant with the recorder's
+        // CausynthTraceRecorder.currentCallParentSiteMatches, and deleting
+        // it would leave every accessor-constrained action unmatchable in
+        // this pass.  That answer needs two recorder frames, and the
+        // concolic weave pushes neither: an ActiveCall (pushed by
+        // Hook.ENTER_METHOD -> CausynthTraceRecorder.enterMethod) and,
+        // under it, the ActiveCallSite its parentSiteId names (pushed by
+        // Hook.BEGIN_CALL -> beginCall).  Both hooks live in
+        // HookCatalog.trace() only -- HookCatalog.concolic() binds neither
+        // -- so in a replay ACTIVE_CALLS is empty and
+        // currentCallParentSiteMatches returns false at its first test.
+        // It could not answer even if the frames were woven: the hook this
+        // context brackets is MATERIALIZE_FIELD, emitted BEFORE the
+        // selected invoke in the CALLER's frame with the implementation
+        // method's name (CausynthPipeline.instrumentConcolicAccessor-
+        // CallContexts), so the accessor has not been entered yet, and on
+        // hdfs-17960 six of the accessor-constrained actions name
+        // <java.util.concurrent.atomic.AtomicInteger: int get()>, a JDK
+        // body Soot's application scope cannot instrument at all.
         try {
             ActiveRegion active = activeRegion();
             String caller = safe(callerMethod);
@@ -668,15 +573,6 @@ public final class ConcolicRegionRuntime {
                             ranOn == null ? safe(admitted.sourceKey)
                                     : ranOn.key(),
                             admitted.regionId, admitted.taskId);
-            LoopRootInvocationContext enclosingInvocation =
-                    enclosingLoopRoot(admitted);
-            if (enclosingInvocation != null) {
-                active.enclosingInvocationEvent = enclosingInvocation.token;
-                active.enclosingInvocationThread =
-                        enclosingInvocation.threadName;
-                active.enclosingInvocationOrdinal =
-                        enclosingInvocation.ordinalOf(admitted.taskId);
-            }
             ACTIVE.put(active.token, active);
             pushActiveRegion(active);
             javaRegionPushed = true;
@@ -695,6 +591,20 @@ public final class ConcolicRegionRuntime {
             // addressable by the id every version and read the VM logs from
             // inside it carries, so a logged event can be given the frames
             // it stood on (FrameJournal).
+            //
+            // This journal is never evicted, and this class cannot be the
+            // one that evicts it: the activation's rows are written by the
+            // publication pool (#closeOccurrence ->
+            // submitCompletedResultPublication), which returns before they
+            // are, and an ENCLOSING activation may publish a read performed
+            // inside this one under this regionEnterEventId -- so neither
+            // #closeOccurrence nor #popActiveRegion is a point at which the
+            // journal is provably dead.  The only barrier that is,
+            // awaitSelectedResultPublications, is workload-wide, i.e. it
+            // comes at the moment the process ends anyway.  A bounded leak
+            // (7,266 journals on 11741, 266 on 17960), not a correctness
+            // defect; the owner of the eviction is whoever owns the
+            // publication's completion, not the region hook.
             edu.uva.liftlab.graphchecker.runtime.RowRuntime.journalRegion(
                     active.vmRegionEnterEventId, active.d3Address);
             // A delivery can establish the causal request immediately before
@@ -750,7 +660,7 @@ public final class ConcolicRegionRuntime {
         if (active.prepared) return;
         active.prepared = true;
         RuntimeTask task = active.activation;
-        symbolizeReceiverFields(active, task, engine());
+        RootMint.symbolizeReceiverFields(active, task, engine());
     }
     /**
      * Files the execution-index frame of one work start.
@@ -1021,258 +931,67 @@ public final class ConcolicRegionRuntime {
     }
 
     /**
+     * Accounts for one attempted traversal of an instrumented normal CFG
+     * backedge.
+     */
+    public static void checkLoopBackedge(
+            String backedgeId, int instrumentedMaxTraversals) {
+        LoopAccounting.checkBackedge(backedgeId, instrumentedMaxTraversals);
+    }
+
+    /**
+     * Charges one loop body to the replay resource cap without consulting
+     * the unroll bound.
+     */
+    public static void checkReplayLoopBody(
+            String loopId, int instrumentedMaxTraversals) {
+        LoopAccounting.checkReplayBody(loopId, instrumentedMaxTraversals);
+    }
+
+    /** Opens one dynamic invocation of a fixed-count loop. */
+    public static void openLoopInvocation(String loopId) {
+        LoopAccounting.openInvocation(loopId);
+    }
+
+    /** Closes the open dynamic invocation of a fixed-count loop. */
+    public static void closeLoopInvocation(String loopId) {
+        LoopAccounting.closeInvocation(loopId);
+    }
+
+    /**
      * Opens the lightweight enclosing call that addresses LOOP_BODY_ROOT
-     * iterations. The outer invocation is counted once; individual body
-     * entries only consult this context and never advance that address.
+     * iterations.
      */
     public static long enterLoopRootInvocationFrame(
             String instrumentationSelector, String rootMethod,
             Object receiver, Object[] rootArguments) {
-        ConcolicTaskPlan config = configuration();
-        RootHookGroup group = config.loopRootHookGroup(
-                instrumentationSelector, rootMethod);
-        Deque<LoopRootInvocationContext> contexts =
-                LOOP_ROOT_INVOCATIONS.get();
-        for (LoopRootInvocationContext existing : contexts) {
-            if (existing.claimsSiblingHook(group.key)) return 0L;
-        }
-        // The entry event of this enclosing invocation, minted before the
-        // plan is asked, because it is what the plan binds a loop task to:
-        // the bodies of one occurrence are the bodies of ONE enclosing
-        // activation, and a second one is a second k.
-        long token = TOKEN_COUNTER.incrementAndGet();
-        // No index frame: this hook is woven by the campaign and by nothing
-        // else, so a frame pushed here is a frame the recording never stands
-        // on.  The frame of this entry is the one its REGION hook pushes --
-        // the campaign's at a campaign root, the skeleton weave's at any
-        // other skeleton root -- which is exactly where the recording pushes
-        // one.
-        Map<String, Integer> admittedTasks = config.addressLoopRootInvocation(
-                group.key, rootMethod, receiver, rootArguments, token);
-        contexts.push(new LoopRootInvocationContext(token, group.key,
-                Math.max(0, group.hookCount - 1), admittedTasks));
-        return token;
+        return LoopAccounting.enterLoopRoot(instrumentationSelector,
+                rootMethod, receiver, rootArguments);
     }
 
     /** Closes one enclosing LOOP_BODY_ROOT method call. */
     public static void exitLoopRootInvocationFrame(long token) {
-        if (token == 0L) return;
-        try {
-            Deque<LoopRootInvocationContext> contexts =
-                    LOOP_ROOT_INVOCATIONS.get();
-            LoopRootInvocationContext context = contexts.peek();
-            if (context == null || context.token != token) return;
-            contexts.pop();
-            if (contexts.isEmpty()) LOOP_ROOT_INVOCATIONS.remove();
-        } catch (Throwable ignored) {
-            // Runtime bookkeeping must not alter a workload terminal.
-        }
+        LoopAccounting.exitLoopRoot(token);
     }
 
     /** Exceptional counterpart of {@link #exitLoopRootInvocationFrame}. */
     public static void throwLoopRootInvocationFrame(
             long token, Throwable throwable) {
-        exitLoopRootInvocationFrame(token);
-    }
-
-    /** Whether the nearest matching outer call owns this loop task. */
-    static boolean enclosingLoopRootAdmits(RuntimeTask task) {
-        return enclosingLoopRoot(task) != null;
+        LoopAccounting.exitLoopRoot(token);
     }
 
     /**
-     * The enclosing invocation on this thread that owns {@code task}, or
-     * {@code null}.
+     * Whether the nearest matching outer call owns this loop task.
      *
-     * <p>One loop task's bodies belong to exactly one of these -- the
-     * invocation it was admitted for -- and the row it publishes names
-     * which, so "two enclosing invocations, one occurrence" is a statement
-     * the corpus can contradict rather than an inference from thread
-     * names.</p>
+     * <p>Stays here: {@code ConcolicTaskPlan} static-imports this name.</p>
      */
-    static LoopRootInvocationContext enclosingLoopRoot(RuntimeTask task) {
-        if (task == null || !task.loopBodyRoot) return null;
-        for (LoopRootInvocationContext context
-                : LOOP_ROOT_INVOCATIONS.get()) {
-            if (!context.groupKey.equals(task.loopRootHookGroupKey())) {
-                continue;
-            }
-            return context.ordinalByTaskId.containsKey(task.taskId)
-                    ? context : null;
-        }
-        return null;
+    static boolean enclosingLoopRootAdmits(RuntimeTask task) {
+        return LoopAccounting.enclosingLoopRoot(task) != null;
     }
 
     /** Null-safe equality for either string naming one root hook. */
     static boolean sameHookIdentity(String left, String right) {
         return left == null ? right == null : left.equals(right);
-    }
-
-    /**
-     * Called once per Java argument immediately after
-     * {@link #enterRegionFrame}.
-     */
-    public static void symbolizeArgument(long token, int argumentIndex,
-                                         Object value, String primitiveValue) {
-        ActiveRegion active = ownerRegion(token);
-        if (active == null) {
-            return;
-        }
-        for (SymbolizeAction action : active.activation.symbolize) {
-            if (!("ARGUMENT".equals(action.location)
-                    || "ARGUMENT_FIELD_PATH".equals(action.location))
-                    || action.index != argumentIndex) {
-                continue;
-            }
-            if (value == null) {
-                if ("ARGUMENT".equals(action.location)
-                        && action.declaresArrayInput(
-                        Collections.<String>emptyList())) {
-                    symbolize(active, action, null, engine());
-                }
-                continue;
-            }
-            if ("ARGUMENT_FIELD_PATH".equals(action.location)) {
-                if (action.fieldPaths.isEmpty()) {
-                    continue;
-                }
-                for (List<String> path : action.fieldPaths) {
-                    symbolizeFieldPath(active, action, value, path, engine());
-                }
-            } else {
-                symbolize(active, action, value, engine());
-            }
-        }
-    }
-
-    /** Symbolizes one scheduler-selected helper-method argument in-region. */
-    public static void symbolizeMethodArgument(String method,
-                                               int argumentIndex,
-                                               Object value,
-                                               String primitiveValue) {
-        ActiveRegion active = activeRegion();
-        if (active == null) return;
-        int occurrence = active.materializationOccurrences
-                .observedMethodArgument(method, argumentIndex);
-        for (SymbolizeAction action : active.activation.symbolize) {
-            if (!action.matchesMethodArgument(method, argumentIndex)
-                    || !action.acceptsOccurrence(occurrence)
-                    || !active.materialized.add(action.symbol)) {
-                continue;
-            }
-            if (value == null && !action.declaresArrayInput(
-                    Collections.<String>emptyList())) {
-                continue;
-            }
-            symbolize(active, action, value, engine());
-        }
-    }
-
-    /**
-     * Mints the declared root argument before ordinary Java control flow
-     * consumes it.  Soot writes the returned value back to the parameter
-     * local (including an unbox for primitive parameters).  No branch
-     * outcome is overridden here: a primitive live-in becomes a symbol and
-     * everything else is passed through as the program left it.
-     */
-    public static Object materializeArgument(long token, int argumentIndex,
-                                             Object boxedOrReference,
-                                             String primitiveValue) {
-        ActiveRegion active = ownerRegion(token);
-        if (active == null) return boxedOrReference;
-        for (SymbolizeAction action : active.activation.symbolize) {
-            if (action.index != argumentIndex
-                    || !("ARGUMENT".equals(action.location)
-                    || "ARGUMENT_FIELD_PATH".equals(action.location))) {
-                continue;
-            }
-            if (boxedOrReference != null
-                    && isPrimitiveBox(boxedOrReference)) {
-                return materializePrimitiveValue(active, action,
-                        boxedOrReference, null);
-            }
-        }
-        return boxedOrReference;
-    }
-
-    /** Mints a declared live-in at an exact in-region helper parameter. */
-    public static Object materializeMethodArgument(String method,
-                                                   int argumentIndex,
-                                                   Object boxedOrReference,
-                                                   String primitiveValue) {
-        ActiveRegion active = activeRegion();
-        if (active == null) return boxedOrReference;
-        int occurrence = active.materializationOccurrences.methodArgument(
-                method, argumentIndex);
-        for (SymbolizeAction action : active.activation.symbolize) {
-            if (!action.matchesMethodArgument(method, argumentIndex)
-                    || !action.acceptsOccurrence(occurrence)) {
-                continue;
-            }
-            if (boxedOrReference != null
-                    && isPrimitiveBox(boxedOrReference)) {
-                return materializePrimitiveValue(active, action,
-                        boxedOrReference, null);
-            }
-            return boxedOrReference;
-        }
-        return boxedOrReference;
-    }
-
-    /** Materializes a reference-valued live-in at its defining Jimple local. */
-    public static Object materializeReference(String method, int unitIndex,
-                                              String local, Object value) {
-        ActiveRegion active = activeRegion();
-        if (active == null) {
-            return value;
-        }
-        int occurrence = active.nextLocalMaterializationOccurrence(
-                method, unitIndex, local);
-        for (SymbolizeAction action : active.activation.symbolize) {
-            if (!action.matchesLocal(method, unitIndex, local)
-                    || !action.acceptsOccurrence(occurrence)) {
-                continue;
-            }
-            if (!active.materialized.add(action.symbol)) {
-                continue;
-            }
-            if (isPrimitiveBox(value)) {
-                return materializePrimitiveValue(active, action, value, null);
-            }
-            if (value != null || action.declaresArrayInput(
-                    Collections.<String>emptyList())) {
-                symbolize(active, action, value, engine());
-            }
-            return value;
-        }
-        return value;
-    }
-
-    /**
-     * Materializes a primitive live-in and returns a fresh boxed value.  Soot
-     * immediately unboxes this result back into the original local, allowing
-     * the VM's symbolic field expression to flow into the actual branch.
-     */
-    public static Object materializePrimitive(String method, int unitIndex,
-                                              String local,
-                                              Object boxedValue) {
-        ActiveRegion active = activeRegion();
-        if (active == null || boxedValue == null) {
-            return boxedValue;
-        }
-        int occurrence = active.nextLocalMaterializationOccurrence(
-                method, unitIndex, local);
-        for (SymbolizeAction action : active.activation.symbolize) {
-            if (!action.matchesLocal(method, unitIndex, local)
-                    || !action.acceptsOccurrence(occurrence)
-                    || !action.repeatedPrimitiveAccessor()
-                    && !active.materialized.add(action.symbol)) {
-                continue;
-            }
-            return materializePrimitiveValue(active, action, boxedValue,
-                    null);
-        }
-        return boxedValue;
     }
 
     /**
@@ -1309,41 +1028,6 @@ public final class ConcolicRegionRuntime {
         }
         return candidates;
     }
-
-    /**
-     * The name one unanswered fault-control question answers to.
-     *
-     * <p>{@link #materializeSymbolicBoolean} must hand the workload a
-     * {@code boolean}: the marker stands at a call site the program is about
-     * to branch on, so there is no third value to return and no point at
-     * which the replay can stop.  What it must not do is let the
-     * {@code false} it returns pass for an answer.</p>
-     *
-     * <p>There are two answers, and a firing is unanswered only when it has
-     * neither.  A flip replay answers from its model assignment.  A seed
-     * replay has no model by construction -- it reproduces the recording --
-     * and answers from the recording's own polarity, which the plan states as
-     * the action's {@code primitiveValue} gated on {@code observed}.  Reading
-     * "no model" alone as "unanswered" refused every seed summary that
-     * touches a declared marker and took the DEPENDENCY worklist with it
-     * ({@code NO_OBSERVED_PATH_SEED}); the recorded value is what
-     * distinguishes an answer from the default that used to stand here.</p>
-     *
-     * <p>With neither, the question the search exists to decide has no
-     * answer, and pinning the marker to the polarity the search wants to flip
-     * would be a fabricated chain element -- so the value stays concrete and
-     * the activation is flagged, which refuses the summary at import.</p>
-     *
-     * <p>A marker this plan does not control at all is a different thing: no
-     * question was put to the replay, the recording ran the same hook to the
-     * same {@code false}, and there is nothing to refuse.  Those firings are
-     * named on the diagnostic stream instead, so a corpus can still be
-     * grepped for them.</p>
-     */
-    static final String FAULT_IDLE_UNANSWERED = "FAULT_IDLE_UNANSWERED";
-
-    /** One fault firing answered from the recording rather than a model. */
-    static final String RECORDED_FAULT_ANSWER = "RECORDED_FAULT_ANSWER";
 
     /**
      * The polarity the recording gave one fault marker, or null.
@@ -1410,112 +1094,9 @@ public final class ConcolicRegionRuntime {
                     "NO_RECORDED_VALUE");
             return false;
         }
-        active.noteRecordedFaultAnswer(name, occurrence, recorded);
         return recorded;
     }
 
-    /**
-     * Materializes the primitive value consumed by one exact {@code getstatic}
-     * site.
-     */
-    public static Object materializeStaticPrimitiveField(
-            String method, int unitIndex, String fieldSignature,
-            String fieldName, Object boxedValue) {
-        ActiveRegion active = activeRegion();
-        if (active == null || boxedValue == null) {
-            return boxedValue;
-        }
-        SymbolizeAction selected = null;
-        for (SymbolizeAction action : active.activation.symbolize) {
-            if (!action.matchesStaticField(method, unitIndex,
-                    fieldSignature, fieldName)) {
-                continue;
-            }
-            if (selected != null && selected != action) {
-                return boxedValue;
-            }
-            selected = action;
-        }
-        if (selected == null
-                || !active.materialized.add(selected.symbol)) {
-            return boxedValue;
-        }
-        List<String> logicalPath = selected.exactStaticFieldPath(
-                fieldSignature, fieldName);
-        if (logicalPath == null) {
-            return boxedValue;
-        }
-        return materializePrimitiveValue(active, selected, boxedValue,
-                logicalPath);
-    }
-
-
-    public static void materializeField(String method, int unitIndex,
-                                        Object owner, String fieldSignature,
-                                        String fieldName) {
-        ActiveRegion active = activeRegion();
-        if (active == null || owner == null) return;
-        int occurrence = active.materializationOccurrences.field(
-                method, unitIndex);
-        List<SymbolizeAction> claimed = active.activation.symbolize;
-        for (SymbolizeAction action : claimed) {
-            if (!action.matchesField(method, unitIndex, owner, fieldSignature,
-                    fieldName, null)
-                    || !action.acceptsDirectFieldOccurrence(occurrence)) {
-                continue;
-            }
-            Object leafOwner = action.leafOwner(owner);
-            if (leafOwner == null || leafOwner == MissingValue.INSTANCE) {
-                continue;
-            }
-            if (!active.materialized.add(action.symbol)) continue;
-            try {
-                ConcolicVmBroker api = engine();
-                Field exactField = declaredInstanceField(leafOwner,
-                        action.exactLeafFieldSignature());
-                if (exactField == null) {
-                    continue;
-                }
-                String leafFieldSignature = exactFieldSignature(exactField);
-                Object value = exactField.get(leafOwner);
-                JsonElement carried;
-                try {
-                    carried = containerValue(value)
-                            ? engineExpression(api.expression(value))
-                            : engineExpression(api.fieldExpression(leafOwner,
-                            exactField.getDeclaringClass().getName(),
-                            exactField.getName(), javaTypeDescriptor(
-                            exactField.getType().getTypeName()), value));
-                } catch (PropagatedExpressionImportFailure unreadable) {
-                    continue;
-                } catch (Throwable unsymbolized) {
-                    carried = null;
-                }
-                // Ask before replay writes or fresh minting. A boundary that
-                // already reached this field is the input authority.
-                if (retainPropagatedInput(active, action, value, carried,
-                        action.symbol, action.fieldPath,
-                        leafFieldSignature)) {
-                    continue;
-                }
-                if (value != null && value != MissingValue.INSTANCE
-                        && containerValue(value)) {
-                    // A container is symbolic only once a root-derived
-                    // value is put into it, which the VM states inside the
-                    // expression it then carries;                     continue;
-                }
-                MintedLeaf minted = mintExactFieldLeaf(active, action,
-                        api, leafOwner, leafFieldSignature, action.symbol,
-                        value);
-                if (minted == null) continue;
-                active.recordManualSymbolization(action, action.symbol,
-                        action.fieldPath, leafFieldSignature,
-                        minted.expression, true, false,
-                        minted.recordedValue);
-            } catch (Throwable throwable) {
-            }
-        }
-    }
 
     /**
      * Tracks a declared region input's cell from this write onwards.
@@ -1551,7 +1132,97 @@ public final class ConcolicRegionRuntime {
             engine().observeExactPrimitiveField(receiver, fieldSignature);
             ensurePathRecordingStarted(active);
         } catch (Throwable failure) {
+            // This call is what STARTS the location's version log, so a
+            // loss here is not one row: every later read of the same cell
+            // joins to no writer at all, which is the hdfs-17960 shape
+            // this hook exists to close.
+            RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind.UNSTATED_VALUE,
+                    edu.uva.liftlab.graphchecker.contract.GapClass.DIAGNOSTIC,
+                    firstNonBlank(safe(siteId), safe(fieldSignature)),
+                    "this write site could not start the VM's version log"
+                            + " for " + safe(fieldSignature) + ", so every"
+                            + " later read of that location joins to no"
+                            + " writer: " + rootCause(failure));
         }
+    }
+
+    /**
+     * Called once per Java argument immediately after
+     * {@link #enterRegionFrame}.
+     */
+    public static void symbolizeArgument(long token, int argumentIndex,
+                                         Object value, String primitiveValue) {
+        RootMint.symbolizeArgument(token, argumentIndex, value,
+                primitiveValue);
+    }
+
+    /** Symbolizes one scheduler-selected helper-method argument in-region. */
+    public static void symbolizeMethodArgument(String method,
+                                               int argumentIndex,
+                                               Object value,
+                                               String primitiveValue) {
+        RootMint.symbolizeMethodArgument(method, argumentIndex, value,
+                primitiveValue);
+    }
+
+    /** Mints the declared root argument before Java control flow consumes it. */
+    public static Object materializeArgument(long token, int argumentIndex,
+                                             Object boxedOrReference,
+                                             String primitiveValue) {
+        return RootMint.materializeArgument(token, argumentIndex,
+                boxedOrReference, primitiveValue);
+    }
+
+    /** Mints a declared live-in at an exact in-region helper parameter. */
+    public static Object materializeMethodArgument(String method,
+                                                   int argumentIndex,
+                                                   Object boxedOrReference,
+                                                   String primitiveValue) {
+        return RootMint.materializeMethodArgument(method, argumentIndex,
+                boxedOrReference, primitiveValue);
+    }
+
+    /** Materializes a reference-valued live-in at its defining Jimple local. */
+    public static Object materializeReference(String method, int unitIndex,
+                                              String local, Object value) {
+        return RootMint.materializeReference(method, unitIndex, local, value);
+    }
+
+    /** Materializes a primitive live-in and returns a fresh boxed value. */
+    public static Object materializePrimitive(String method, int unitIndex,
+                                              String local,
+                                              Object boxedValue) {
+        return RootMint.materializePrimitive(method, unitIndex, local,
+                boxedValue);
+    }
+
+    /** Materializes the value one exact {@code getstatic} site consumes. */
+    public static Object materializeStaticPrimitiveField(
+            String method, int unitIndex, String fieldSignature,
+            String fieldName, Object boxedValue) {
+        return RootMint.materializeStaticPrimitiveField(method, unitIndex,
+                fieldSignature, fieldName, boxedValue);
+    }
+
+    /** Materializes a declared heap field on its real owner. */
+    public static void materializeField(String method, int unitIndex,
+                                        Object owner, String fieldSignature,
+                                        String fieldName) {
+        RootMint.materializeField(method, unitIndex, owner, fieldSignature,
+                fieldName);
+    }
+
+    /**
+     * Mints one symbol for one entry of a declared mint site.
+     *
+     * <p>Called from outside this repository: the workload checkouts invoke
+     * it directly from {@code org.apache.hadoop.ipc.CausynthSymbolicSource},
+     * and it is the only symbolic root of HDFS-17960
+     * (src/test/resources/external-callers.txt).</p>
+     */
+    public static boolean symbolizeConfiguredSourceField(
+            String sourceId, Object owner, String fieldSignature) {
+        return RootMint.configuredSource(sourceId, owner, fieldSignature);
     }
 
     /** Records a stable logical source a live occurrence just entered. */
@@ -1563,150 +1234,6 @@ public final class ConcolicRegionRuntime {
         }
     }
 
-    /**
-     * One read of one declared mint site.
-     *
-     * <p>A declared configured source is ONE symbol.  The frozen catalog
-     * says only WHERE its hook sites are; every read of a declared site --
-     * in this occurrence, in another occurrence, in another session -- binds
-     * to that site's one symbol, and neither the occurrence nor which read
-     * of it this was is part of the symbol's identity.</p>
-     *
-     * <p>They used to be.  The catalog was SIZED by the executions the
-     * recording happened to make, a read past that size was refused
-     * {@code DECLARATION_MISSING ... occurrence 2 exceeds the frozen phase
-     * catalog size 1}, and the VM label of read n&gt;1 carried the entry
-     * number -- so one declared marker became several unconstrained
-     * variables, a flip moved one of them, and the reads that took the
-     * others kept the recorded value.</p>
-     */
-    private static final class SourceSiteEntry {
-        private final ConfiguredSourcePhaseContract.Occurrence phase;
-        private final String siteId;
-        private SourceSiteEntry(
-                ConfiguredSourcePhaseContract.Occurrence phase,
-                String siteId) {
-            this.phase = phase;
-            this.siteId = safe(siteId);
-        }
-
-        private String phaseId() {
-            return phase == null ? "" : phase.phaseId();
-        }
-    }
-
-    /**
-     * Mints one symbol for one entry of a declared mint site.
-     *
-     * <p>Every occurrence of a declared field is its own symbolic variable.
-     * The VM is the authority on the value: a field that already carries a
-     * propagated expression keeps it - {@code SymInstance::has_sym_exp} makes
-     * the mint a no-op - and the published row says {@code reused}.  Manual
-     * input is only WHICH FIELDS, never which occurrence of one.</p>
-     *
-     * <p>Called from outside this repository: the workload checkouts invoke it
-     * directly from {@code org.apache.hadoop.ipc.CausynthSymbolicSource}, and
-     * it is the only symbolic root of HDFS-17960.</p>
-     */
-    public static boolean symbolizeConfiguredSourceField(
-            String sourceId, Object owner, String fieldSignature) {
-        ActiveRegion active = activeRegion();
-        // Nothing to mint on is not a gap: the site simply was not carrying a
-        // declared owner on this entry.
-        if (active == null || owner == null) return false;
-        SourceSiteEntry entry = active.observeConfiguredSourceEntry(
-                safe(sourceId), safe(fieldSignature));
-        if (entry == null) return false;
-        beginBookkeeping();
-        try {
-            Field field = declaredInstanceField(owner, safe(fieldSignature));
-            if (field == null || !field.getType().isPrimitive()) {
-                return false;
-            }
-            ConcolicVmBroker api = engine();
-            String declaringClass = field.getDeclaringClass().getName();
-            String descriptor = javaTypeDescriptor(
-                    field.getType().getTypeName());
-            // The authority question, asked before anything is written: did
-            // this value arrive carrying an expression of its own?  A VM that
-            // has no answer for an unsymbolized field is answering "no", so
-            // the read-out never decides the mint by throwing.
-            JsonElement carried;
-            try {
-                carried = engineExpression(api.fieldExpression(owner,
-                        declaringClass, field.getName(), descriptor,
-                        field.get(owner)));
-            } catch (PropagatedExpressionImportFailure unreadable) {
-                return false;
-            } catch (Throwable unsymbolized) {
-                carried = null;
-            }
-            // A hook site is a declared primitive root by construction: the
-            // entry above refuses anything else.  So it asks the strict
-            // question, the same one a declared plan action asks in
-            // carriesInputAuthority.  The loose rule would answer "already
-            // propagated" for any field a shared-state carrier has wrapped in
-            // a ReadFrom -- which every field the hook stands on eventually
-            // is -- and the mint would never fire, leaving the declared
-            // source concrete.  Only a tree that actually names a VM symbol
-            // root inside those wrappers is an expression of its own.
-            boolean reused = configuredSourceCarriesAuthority(carried);
-            // The application's Map re-key reads the assigned value back
-            // through this same path, so the wave's value is written first.
-            boolean assigned = !reused && applyFocusedRootAssignment(
-                    active, safe(sourceId), owner, safe(fieldSignature),
-                    descriptor);
-            // ONE SYMBOL PER DECLARED SOURCE.  The label is derived from
-            // the declared site and from nothing this read is: the same leaf
-            // is asked for at every read of it, so the composer meets one
-            // variable and a solver that flips it flips it everywhere.  The
-            // row below still states one mint per READ -- that is the
-            // evidence of where it was observed -- and the reads join to the
-            // one symbol.
-            String symbol = ConfiguredSourcePhaseContract
-                    .engineLabelForPhase(entry.phaseId(), safe(sourceId));
-            if (!reused) {
-                api.symbolizeExactField(owner, exactFieldSignature(field),
-                        symbol);
-            }
-            // The mint is a symbolic write, so the VM has started this
-            // field's version log by itself; the declaration that used to be
-            // filed here bought nothing that the write did not already do.
-            ensurePathRecordingStarted(active);
-            Object value = field.get(owner);
-            JsonElement expression = engineExpression(api.fieldExpression(
-                    owner, declaringClass, field.getName(), descriptor,
-                    value));
-            active.recordConfiguredSourceMint(entry, safe(sourceId),
-                    safe(fieldSignature), symbol, expression, reused,
-                    assigned ? null : recordedScalar(value));
-            return true;
-        } catch (Throwable failure) {
-            return false;
-        } finally {
-            endBookkeeping();
-        }
-    }
-
-
-    /**
-     * The outermost shape of what the VM handed back for a minted field, for
-     * the unresolved-input line.  A mint that reads back as anything but one
-     * VM symbol means the VM kept an expression the field already carried,
-     * and the line should say what that was rather than only that the
-     * evidence contract refused it.
-     */
-    static String describeReadBack(JsonElement expression) {
-        if (expression == null || !expression.isJsonObject()) {
-            return expression == null ? "no expression"
-                    : expression.toString();
-        }
-        JsonObject node = expression.getAsJsonObject();
-        String type = optionalString(node, "_type");
-        String raw = optionalString(node, "_exp");
-        return type.isEmpty() ? "untyped expression"
-                : raw.isEmpty() ? type : type + " " + raw;
-    }
 
     /**
      * The name one unreadable propagated producer expression answers to.
@@ -1784,127 +1311,55 @@ public final class ConcolicRegionRuntime {
         return store.importEnvelope(envelope);
     }
 
-    /** Result of one VM symbolic-expression export or attach. */
-    private static final class HandoffResult {
-        private final String stage;
-        private final int status;
-        private final long handle;
-        /** The VM ledger events of a successful call, or {@code null}. */
-        private final JsonObject record;
-
-        private HandoffResult(String stage, int status, long handle,
-                              JsonObject record) {
-            this.stage = stage;
-            this.status = status;
-            this.handle = handle;
-            this.record = record;
-        }
-
-        public boolean ok() {
-            return status == ConcolicVmBroker.OK;
-        }
-
-        /** Named reason for a failure; empty for a successful call. */
-        public String reason() {
-            return ConcolicVmBroker.describe(status);
-        }
-
-        private long handle() {
-            return handle;
-        }
-
-        /**
-         * The VM ledger event of this exact attach.
-         *
-         * <p>README {@code RPC-1}: the second endpoint of the {@code
-         * VALUE_HANDOFF} edge.</p>
-         */
-        @Override
-        public String toString() {
-            return "HandoffResult[" + stage + " status=" + status
-                    + (ok() ? "" : " " + reason())
-                    + " handle=" + handle + "]";
-        }
+    /**
+     * Opens the frame around one message instance being serialized.
+     *
+     * <p>A declared port is one pair of bytecode sites, and a protocol
+     * sends many unrelated values of that shape through it.  The frame is
+     * the thing whose single construction builds one instance of the value
+     * the port belongs to.</p>
+     */
+    public static void pushOutboundMessageFrame() {
+        WireExport.pushOutboundFrame();
     }
 
-    private static HandoffResult exportSymbolicLeaf(
-            Object owner, String declaringClass, String fieldName,
-            String descriptor) {
-        HandoffResult result;
-        beginBookkeeping();
-        try {
-            result = exportLeaf(owner, declaringClass, fieldName, descriptor);
-        } finally {
-            endBookkeeping();
-        }
-        return result;
+    /** Closes the frame {@link #pushOutboundMessageFrame} opened. */
+    public static void popOutboundMessageFrame() {
+        WireExport.popOutboundFrame();
     }
 
-    private static HandoffResult exportLeaf(
-            Object owner, String declaringClass, String fieldName,
-            String descriptor) {
-        String missing = missingFieldMetadata(owner, declaringClass,
-                fieldName, descriptor);
-        if (!missing.isEmpty()) {
-            return record(failed("EXPORT",
-                    ConcolicVmBroker.MISSING_METADATA, 0L, missing));
-        }
-        ConcolicVmBroker api = engine();
-        long handle;
-        // README RPC-1: the VM reports the export's own ledger event here,
-        // so the producer's interaction row can name the exact export it
-        // published instead of leaving the Composer to count port
-        // observations for it.
-        long[] exportEvent = new long[1];
-        try {
-            handle = api.exportExpression(owner, declaringClass, fieldName,
-                    descriptor, exportEvent);
-        } catch (Throwable throwable) {
-            return record(failed("EXPORT",
-                    ConcolicVmBroker.INVOCATION_FAILED, 0L,
-                    rootCause(throwable)));
-        }
-        if (handle <= 0L) {
-            int status = exportStatus(handle);
-            HandoffResult result = failed(
-                    "EXPORT", status, 0L,
-                    "exportExpression returned " + handle);
-            if (status == ConcolicVmBroker.NOT_SYMBOLIC) return result;
-            return record(result);
-        }
-        JsonObject exported = new JsonObject();
-        exported.addProperty("exportEventId", exportEvent[0]);
-        HandoffResult result = new HandoffResult(
-                "EXPORT",
-                ConcolicVmBroker.OK, handle, exported);
-        record(result);
-        return result;
+    /** Opens the frame around one message instance being decoded. */
+    public static void pushInboundMessageFrame() {
+        WireExport.pushInboundFrame();
+    }
+
+    /** Closes the frame {@link #pushInboundMessageFrame} opened. */
+    public static void popInboundMessageFrame() {
+        WireExport.popInboundFrame();
+    }
+
+    /** Exports the live expression of one declared communication port. */
+    public static void exportCommunicationLeaf(String portId, Object carrier,
+                                               String field,
+                                               String descriptor) {
+        WireExport.exportLeaf(portId, carrier, field, descriptor);
+    }
+
+    /** Attaches the exported expression of one declared communication port. */
+    public static void attachCommunicationLeaf(String portId, Object carrier,
+                                               String field,
+                                               String descriptor) {
+        WireExport.attachLeaf(portId, carrier, field, descriptor);
     }
 
     /**
-     * Attaches one receive whose destination this occurrence's plan declares
-     * as a communication port.
+     * The one instance field a declared communication port crosses on.
+     *
+     * <p>Stays nested here: {@code CausynthPipeline} allocates it by the
+     * binary name {@code ...ConcolicRegionRuntime$HandoffLeafCarrier}
+     * ({@code CausynthPipeline:1714}), so this class name is woven
+     * bytecode.</p>
      */
-    private static HandoffResult attachDeclaredCommunicationExpression(
-            Object owner, String declaringClass, String fieldName,
-            String descriptor, SymbolicMessageEnvelope.Entry carried,
-            CommunicationHandoffSpec declared) {
-        beginBookkeeping();
-        try {
-            HandoffResult result = record(attach(owner, declaringClass,
-                    fieldName, descriptor, carried.handle()));
-            if (result.ok()) {
-                recordVmHandoffEvent(declared, result, owner, declaringClass,
-                        fieldName, descriptor, carried.producerTaskId(),
-                        carried.producerOccurrenceId());
-            }
-            return result;
-        } finally {
-            endBookkeeping();
-        }
-    }
-
-    /** The one instance field a declared communication port crosses on. */
     public static final class HandoffLeafCarrier {
         public boolean z;
         public byte b;
@@ -1917,535 +1372,18 @@ public final class ConcolicRegionRuntime {
         public Object o;
     }
 
-    private static final String CARRIER_CLASS =
+    static final String CARRIER_CLASS =
             "edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime"
                     + "$HandoffLeafCarrier";
     // ------------------------------------------------------------------
     // Communication message flow
     // ------------------------------------------------------------------
 
-    /** Stages one VM handle and its producer on the next outbound message. */
-    private static boolean stageMessageExpression(String portId,
-                                                  long handle) {
-        ActiveRegion active = activeRegion();
-        // The producer site ran, so the message carries the value.  Which
-        // occurrence produced it and which the plan addressed are what the
-        // entry says about itself, not conditions on saying it.
-        String producerTask = active == null ? UNPLANNED_ENDPOINT
-                : active.activation.taskId;
-        String producerOccurrence = active == null ? UNPLANNED_ENDPOINT
-                : active.occurrenceId();
-        return SymbolicMessageEnvelope.stage(portId, handle, producerTask,
-                producerOccurrence);
-    }
-
-    /**
-     * Stands in for an endpoint no plan named.
-     *
-     * <p>A leaf may be staged or taken under an identity the plan did not
-     * select.  The value is still the value; the entry says plainly that its
-     * endpoint was not planned rather than pretending to an occurrence.</p>
-     */
-    static final String UNPLANNED_ENDPOINT = "UNPLANNED";
-
     // ------------------------------------------------------------------
     // Declared communication ports
     // ------------------------------------------------------------------
 
-    /**
-     * Opens the frame around one message instance being serialized.
-     *
-     * <p>A declared port is one pair of bytecode sites, and a protocol sends
-     * many unrelated values of that shape through it.  The frame is the thing
-     * whose single construction builds one instance of the value the port
-     * belongs to; leaves staged inside it are addressed within it, so two
-     * groups of the same shape in one message stay apart.</p>
-     */
-    public static void pushOutboundMessageFrame() {
-        beginBookkeeping();
-        try {
-            SymbolicMessageEnvelope.pushOutboundFrame();
-        } finally {
-            endBookkeeping();
-        }
-    }
 
-    /** Closes the frame {@link #pushOutboundMessageFrame} opened. */
-    public static void popOutboundMessageFrame() {
-        beginBookkeeping();
-        try {
-            SymbolicMessageEnvelope.popOutboundFrame();
-        } finally {
-            endBookkeeping();
-        }
-    }
-
-    /**
-     * Opens the frame around one message instance being decoded.
-     *
-     * <p>The mirror of {@link #pushOutboundMessageFrame}: the receiver counts
-     * its frames the way the sender counted theirs, so the k-th frame means
-     * the same thing on both sides without either naming the other.</p>
-     */
-    public static void pushInboundMessageFrame() {
-        beginBookkeeping();
-        try {
-            SymbolicMessageEnvelope.pushInboundFrame();
-        } finally {
-            endBookkeeping();
-        }
-    }
-
-    /** Closes the frame {@link #pushInboundMessageFrame} opened. */
-    public static void popInboundMessageFrame() {
-        beginBookkeeping();
-        try {
-            SymbolicMessageEnvelope.popInboundFrame();
-        } finally {
-            endBookkeeping();
-        }
-    }
-
-    /**
-     * Exports the live expression of one declared communication port.
-     *
-     * <p>The value arrives on a {@link HandoffLeafCarrier} the
-     * <em>instrumented frame</em> allocated and stored into, because a broker
-     * leaf is an exact instance field while a cut argument is a local - and
-     * because only the application's own frame propagates a value's expression
-     * into a field.</p>
-     */
-    public static void exportCommunicationLeaf(String portId, Object carrier,
-                                               String field,
-                                               String descriptor) {
-        CommunicationHandoffSpec site;
-        beginBookkeeping();
-        try {
-            site = communicationHandoffSite(portId, true);
-        } finally {
-            endBookkeeping();
-        }
-        if (site == null || carrier == null) return;
-        HandoffResult result = exportSymbolicLeaf(carrier, CARRIER_CLASS,
-                field, descriptor);
-        // A concrete leaf is still a leaf the message carried.
-        if (!result.ok()
-                && result.status != ConcolicVmBroker.NOT_SYMBOLIC) {
-            return;
-        }
-        long handle = result.ok() ? result.handle() : 0L;
-        if (!stageMessageExpression(site.portId(), handle)) {
-            // The value crossed and the message could not carry its
-            // expression: the row still states the endpoint, and the loss
-            // is named rather than left as an export nobody can pair.
-            RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind
-                            .UNSTATED_VALUE,
-                    edu.uva.liftlab.graphchecker.contract.GapClass
-                            .DIAGNOSTIC, site.portId(),
-                    "the communication leaf could not enter the message");
-        }
-        publishExportRow(site, carrier, field, descriptor, handle,
-                result.ok() ? optionalLongInteger(result.record,
-                        "exportEventId", 0L) : 0L);
-    }
-
-    /**
-     * States one export as an endpoint the delivery can be paired to.
-     *
-     * <p>Every export, whether or not a region was live: the producer site
-     * ran and the message carries the value, so the row exists and says
-     * which occurrence produced it -- a degraded one when no live region
-     * did, which is still an endpoint an arm can be keyed by (R-I1) and is
-     * what the OUT side used to spell {@code UNPLANNED}.</p>
-     */
-    private static void publishExportRow(CommunicationHandoffSpec site,
-                                         Object carrier, String field,
-                                         String descriptor, long handle,
-                                         long exportEventId) {
-        beginBookkeeping();
-        try {
-            if (!RowRuntime.open()) return;
-            RuntimeTraceContext.View view = RuntimeTraceContext.current();
-            String nodeKey = view.source == null ? "" : view.source.key();
-            ActiveRegion active = activeRegion();
-            edu.uva.liftlab.graphchecker.contract.OccurrenceAddress
-                    producer = active == null || active.d3Address == null
-                    ? RowRuntime.degraded(nodeKey, site.portId())
-                    : active.d3Address;
-            if (active == null || active.d3Address == null) {
-                RowRuntime.ambientActivation(producer);
-            }
-            JsonObject exported = null;
-            String recordedValue = "";
-            try {
-                Field storage = declaredInstanceField(carrier, CARRIER_CLASS,
-                        field, descriptor);
-                if (storage != null) {
-                    Object value = storage.get(carrier);
-                    recordedValue = recordedScalar(value);
-                    JsonElement expression = engineExpression(
-                            engine().fieldExpression(carrier, CARRIER_CLASS,
-                                    field, descriptor, value));
-                    if (expression != null && expression.isJsonObject()) {
-                        exported = expression.getAsJsonObject();
-                    }
-                }
-            } catch (Throwable unreadable) {
-                // The export happened; what it carried could not be read
-                // back here, and the row says the endpoint without it.
-                RowRuntime.gap(
-                        edu.uva.liftlab.graphchecker.contract.GapKind
-                                .UNSTATED_VALUE,
-                        edu.uva.liftlab.graphchecker.contract.GapClass
-                                .DIAGNOSTIC, site.portId(),
-                        "the exported leaf's expression could not be read: "
-                                + rootCause(unreadable));
-            }
-            RowRuntime.exported(producer, exportEventId, site.portId(),
-                    handle, view.exchangeCorrelationId, attemptOf(view),
-                    exported, descriptor, recordedValue);
-        } catch (Throwable ignored) {
-            // Publishing never ends a workload run.
-        } finally {
-            endBookkeeping();
-        }
-    }
-
-
-
-    /** The transport's retry number for this leg, or 0. */
-    private static int attemptOf(RuntimeTraceContext.View view) {
-        try {
-            return Integer.parseInt(safe(view.exchangeAttemptId));
-        } catch (NumberFormatException none) {
-            return 0;
-        }
-    }
-
-    /**
-     * Attaches the exported expression of one declared communication port.
-     *
-     * <p>After a successful attach the carrier leaf <em>denotes the sender's
-     * expression</em>; the instrumented frame reads it straight back into its
-     * own local, so the receiver's later arithmetic, branches and exports
-     * build on that term directly.</p>
-     */
-    public static void attachCommunicationLeaf(String portId, Object carrier,
-                                               String field,
-                                               String descriptor) {
-        CommunicationHandoffSpec site;
-        SymbolicMessageEnvelope.Entry carried;
-        long handle;
-        boolean leafCarried;
-        beginBookkeeping();
-        try {
-            site = communicationHandoffSite(portId, false);
-            carried = site == null ? null
-                    : SymbolicMessageEnvelope.take(site.portId());
-            leafCarried = carried != null && carried.present();
-            handle = carried == null ? 0L : carried.handle();
-        } finally {
-            endBookkeeping();
-        }
-        if (site == null) {
-            // A capture ran for a port no task of this campaign declares.
-            // Rule 5: the run says so rather than returning in silence --
-            // an attach that files nothing and an attach nobody planned
-            // read identically from the corpus, and only one of them is a
-            // coverage question.
-            return;
-        }
-        if (carrier == null) {
-            return;
-        }
-        Interactions.delivering(handle);
-        try {
-            attachDeliveredLeaf(site, carrier, field, descriptor, carried,
-                    handle, leafCarried);
-        } finally {
-            Interactions.delivered();
-        }
-    }
-
-    /**
-     * Files one delivery on the occurrence it arrived in.
-     *
-     * <p>Split out so the delivery's own pairing evidence -- the VM handle
-     * the producer staged -- is in force for the whole attach, including
-     * the mint, without threading it through four signatures.</p>
-     */
-    private static void attachDeliveredLeaf(
-            CommunicationHandoffSpec site, Object carrier, String field,
-            String descriptor, SymbolicMessageEnvelope.Entry carried,
-            long handle, boolean leafCarried) {
-        if (!leafCarried || handle <= 0L) {
-            // The delivery carried no producer expression, and the mint
-            // happens anyway.  v_H is the consumer's boundary variable,
-            // minted at the consumer's declared capture on the value that
-            // ARRIVED; the envelope element only supplies e_p, which is one
-            // member of H's family and not a condition of H existing.
-            // Absent, the row says so and this delivery contributes no
-            // family arm -- which is exactly right for a flip replay whose
-            // job is the consumer's path under an assigned v_H, with the
-            // producing node running concretely.
-            //
-            // Two ways for it to be absent, one fact for the consumer.  The
-            // message may carry no element for this decode at all; or it may
-            // carry one the producer staged with handle 0, which is what
-            // exportCommunicationLeaf stages for a leaf the VM answered
-            // NOT_SYMBOLIC -- "a concrete leaf is still a leaf the message
-            // carried".  Either way there is no e_p and there is an arrived
-            // value, so both take this path and the row states
-            // elementAbsent.
-            //
-            // Refusing here left the assignment unapplied: on hdfs-17899
-            // bug3 the flip replay of the target published zero handoff
-            // rows, the fatal read still found the recorded key, and the
-            // obligation ended REPLAY_NOT_ADMITTED with no primary case.
-            mintArrivedCommunicationLeaf(site, carrier, field, descriptor);
-            return;
-        }
-        attachDeclaredCommunicationExpression(carrier, CARRIER_CLASS, field,
-                descriptor, carried, site);
-    }
-
-    /**
-     * The value the wave asks of this root at its mint, or {@code ""}.
-     *
-     * <p>One decision for every mint, whatever the mint writes into.  Only
-     * on an occurrence of the FOCUSED SET ({@code FocusedReplay#focused}):
-     * the flipped occurrence, a member of its factor, or the MINT of a root
-     * the obligation assigns, which the focus row names because a value can
-     * only be planted where the run mints it.  Applying it in a region that
-     * merely runs alongside would make the run state something the
-     * obligation never asked.</p>
-     *
-     * <p>A clock is stated as a SKEW rather than a value, because every
-     * execution reads a clock fresh: the focus row says how far off the
-     * reading is to be and this adds it to {@code observed}, the instant
-     * this run actually read.  Pinning a replay to the recording's instant
-     * is what left eleven of bug3's twelve paths unsatisfiable at every
-     * valuation.</p>
-     */
-    private static String focusedRootValue(ActiveRegion active,
-                                           String rootId, Object observed) {
-        if (active == null) return "";
-        // AT THE REGION THAT OWNS THE MINT, not at whichever activation was
-        // innermost when the site ran: the focus row addresses each mint by
-        // the occurrence the RECORDING minted it at (rootMints), so the two
-        // passes can only join if both resolve the mint the same way.
-        ActiveRegion owner = declaringRegion(
-                new Declares.Root(safe(rootId)));
-        if (owner == null) owner = active;
-        if (owner.d3Address == null) return "";
-        if (!edu.uva.liftlab.graphchecker.runtime.FocusedReplay
-                .focused(owner.d3Address)) {
-            return "";
-        }
-        Long skew = edu.uva.liftlab.graphchecker.runtime.FocusedReplay
-                .clockSkew(rootId);
-        if (skew == null) {
-            return edu.uva.liftlab.graphchecker.runtime.FocusedReplay
-                    .rootAssignment(rootId);
-        }
-        Long reading = readingOf(observed);
-        if (reading == null) {
-            RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind
-                            .UNPRODUCIBLE_ANSWER,
-                    edu.uva.liftlab.graphchecker.contract.GapClass
-                            .BLOCKING, rootId,
-                    "the wave states a skew for this clock and the mint read"
-                            + " no instant to add it to");
-            return "";
-        }
-        return Long.toString(reading.longValue() + skew.longValue());
-    }
-
-    /** One integral reading, or null when the value is not one. */
-    private static Long readingOf(Object value) {
-        return value instanceof Number && !(value instanceof Float)
-                && !(value instanceof Double)
-                ? Long.valueOf(((Number) value).longValue()) : null;
-    }
-
-    /**
-     * Writes that value into the declared field the mint stands on.
-     */
-    private static boolean applyFocusedRootAssignment(
-            ActiveRegion active, String sourceId, Object owner,
-            String fieldSignature, String descriptor) {
-        String value = focusedRootValue(active, sourceId,
-                readExactField(owner, fieldSignature));
-        if (value.isEmpty()) return false;
-        if (!active.mintIsPlaceable(owner)) return false;
-        if (writeModeledField(owner, fieldSignature, descriptor, value)) {
-            // Filed where the value was WRITTEN: a mint that asked and could
-            // not place the write kept the recording's value, and the
-            // session says so with ASSIGNMENT_UNPLANTED rather than letting
-            // the composer be the first to notice.
-            edu.uva.liftlab.graphchecker.runtime.FocusedReplay.planted(
-                    sourceId);
-            return true;
-        }
-        RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind
-                        .UNPRODUCIBLE_ANSWER,
-                edu.uva.liftlab.graphchecker.contract.GapClass
-                        .BLOCKING, sourceId,
-                "the wave's assignment for this root could not be"
-                        + " written into " + fieldSignature);
-        return false;
-    }
-
-    /** The declared site of {@code portId} in this occurrence's plan. */
-    /**
-     * The declared site of {@code portId}, whoever is running.
-     *
-     * <p>Propagation is a property of the value, not of the activation that
-     * happens to be on the stack.  The same conversion runs under several
-     * region identities -- the one the plan selected for the port and the
-     * ones that merely call the same helper -- and the leaf crossing the
-     * wire is the same leaf in all of them.  Asking only the active task
-     * meant a value arriving under an unselected identity was dropped, which
-     * is how the four conversions that fill a DataNode's key map received no
-     * producer expression at all.  Occurrences decide what gets published,
-     * never whether a value propagates.</p>
-     */
-    private static CommunicationHandoffSpec communicationHandoffSite(
-            String portId, boolean exporting) {
-        if (safe(portId).isEmpty()) return null;
-        ActiveRegion active = activeRegion();
-        if (active != null) {
-            CommunicationHandoffSpec declared =
-                    active.activation.communicationHandoff(portId, exporting);
-            if (declared != null) return declared;
-        }
-        for (ConcolicTaskPlan.RuntimeTask task : configuration().tasks) {
-            CommunicationHandoffSpec declared =
-                    task.communicationHandoff(portId, exporting);
-            if (declared != null) return declared;
-        }
-        return null;
-    }
-
-    /**
-     * Files one case-local reference into the VM's own handoff ledger and the
-     * exact expression now held by the attached destination.
-     */
-    private static void recordVmHandoffEvent(CommunicationHandoffSpec site,
-                                             HandoffResult result,
-                                             Object owner,
-                                             String declaringClass,
-                                             String fieldName,
-                                             String descriptor,
-                                             String producerTaskId,
-                                             String producerOccurrenceId) {
-        if (site == null) return;
-        ActiveRegion active = attachConsumerRegion(site);
-        if (site == null) return;
-        if (active == null) {
-            // Same rule on the element-present side: the delivery happened.
-            beginBookkeeping();
-            try {
-                mintAmbientHandoffLeaves(site, owner, declaringClass,
-                        fieldName, descriptor);
-            } finally {
-                endBookkeeping();
-            }
-            return;
-        }
-        if (safe(producerTaskId).isEmpty()
-                || safe(producerOccurrenceId).isEmpty()) {
-            return;
-        }
-        long exportEvent = result.ok()
-                ? optionalLongInteger(result.record, "exportEventId", 0L) : 0L;
-        if (exportEvent <= 0L) {
-            return;
-        }
-        // README RPC-1: the reference carries both endpoints of the edge.
-        long attachEvent = result.ok()
-                ? optionalLongInteger(result.record, "attachEventId", 0L) : 0L;
-        if (attachEvent <= 0L) {
-            return;
-        }
-        JsonElement expression;
-        try {
-            Field storage = declaredInstanceField(owner, declaringClass,
-                    fieldName, descriptor);
-            if (storage == null) {
-                return;
-            }
-            Object value = storage.get(owner);
-            ConcolicVmBroker api = engine();
-            expression = containerValue(value)
-                    ? engineExpression(api.expression(value))
-                    : engineExpression(api.fieldExpression(owner,
-                    declaringClass, fieldName, descriptor, value));
-        } catch (Throwable failure) {
-            return;
-        }
-        if (expression == null || expression.isJsonNull()) {
-            return;
-        }
-        Interactions.deliveringAt(attachEvent);
-        mintHandoffVariable(active, site, exportEvent, attachEvent,
-                expression, producerTaskId, producerOccurrenceId, owner,
-                declaringClass, fieldName, descriptor, false);
-    }
-
-    /**
-     * Mints v_H at a declared capture whose message carried no element.
-     *
-     * <p>The consumer's boundary variable is the consumer's, so it is minted
-     * from what arrived: the row states {@code elementAbsent}, the delivered
-     * value, and no producer -- and an assignment for this H answers the
-     * mint exactly as it does when the element is there, because the answer
-     * is written on the carrier leaf the receiving frame reads back.</p>
-     */
-    private static void mintArrivedCommunicationLeaf(
-            CommunicationHandoffSpec site, Object carrier, String field,
-            String descriptor) {
-        beginBookkeeping();
-        try {
-            ActiveRegion active = attachConsumerRegion(site);
-            if (active == null) {
-                // The entry rule: the port is declared and the value
-                // arrived, so v_H is minted on the ambient activation and
-                // the row states the degraded occurrence it arrived in.
-                mintAmbientHandoffLeaves(site, carrier, CARRIER_CLASS, field,
-                        descriptor);
-                return;
-            }
-                mintHandoffVariable(active, site, 0L, 0L, null, "", "", carrier,
-                    CARRIER_CLASS, field, descriptor, true);
-        } finally {
-            endBookkeeping();
-        }
-    }
-
-    /**
-     * The activation this attach belongs to: the innermost live region whose
-     * own plan declares this port as an IN site.
-     *
-     * <p>An attach happens inside whichever regions are live, and the
-     * innermost of them is not always the one whose slice owns the attach
-     * site: a loop-body region's activation spans one turn, and the same
-     * decode site also runs outside the loop.  Filing on the innermost live
-     * region regardless published the row under a region that never
-     * declared the port -- on hdfs-17899 bug2, REGION.b7266d53, the caller,
-     * carried both rows while REGION.16ba41cf, which declares them IN,
-     * published none, so one attach was reported twice: unplanned there and
-     * unreproduced here.</p>
-     *
-     * <p>When no live region declares it, the innermost live one still
-     * carries the row: the replay is exact about what it did, and R5 then
-     * says truthfully that a region ran a handoff nobody planned there.</p>
-     */
-    private static ActiveRegion attachConsumerRegion(
-            CommunicationHandoffSpec site) {
-        return site == null ? activeRegion()
-                : declaringRegion(new Declares.Port(safe(site.portId())));
-    }
 
     /**
      * THE ONE RULE: the innermost live region whose own plan declares this.
@@ -2463,7 +1401,7 @@ public final class ConcolicRegionRuntime {
      * carries the row: the replay is exact about what it did, and R5 then
      * says truthfully that a region ran something nobody planned there.</p>
      */
-    private static ActiveRegion declaringRegion(Declares what) {
+    static ActiveRegion declaringRegion(Declares what) {
         ActiveRegion innermost = activeRegion();
         if (what == null) return innermost;
         for (Long token : CURRENT_TOKENS.get()) {
@@ -2476,7 +1414,7 @@ public final class ConcolicRegionRuntime {
     }
 
     /** What a region's plan is asked to declare. */
-    private interface Declares {
+    interface Declares {
         boolean declaredBy(ActiveRegion region);
 
         /** A wire port, as an IN site. */
@@ -2528,408 +1466,6 @@ public final class ConcolicRegionRuntime {
     }
 
     /**
-     * Mints the handoff variable v_H on the element this attach landed on.
-     *
-     * <p>The producer's expression {@code e_p} has just been attached and is
-     * in {@code expression}; the element's shadow now becomes a fresh
-     * variable instead, so the consumer's formula has a free variable at the
-     * boundary rather than the producer's whole expression inlined into it.
-     * That is what lets the two sides be explored independently and joined
-     * offline at H: {@code e_p} travels on the row as one member of H's
-     * family, never as a substitution.</p>
-     *
-     * <p>One variable per handoff occurrence per replay. A loop attaching the
-     * same element on each turn gets one per turn, because k is part of H.
-     * The mint is the configured-source mint -- same broker call, same model
-     * answering, same "a mint the VM did not accept publishes no row" rule --
-     * under a label that says handoff so nothing downstream mistakes it for a
-     * configured source.</p>
-     */
-    private static void mintHandoffVariable(
-            ActiveRegion active, CommunicationHandoffSpec site,
-            long exportEvent, long attachEvent, JsonElement producerExpression,
-            String producerTaskId, String producerOccurrenceId,
-            Object owner, String declaringClass, String fieldName,
-            String descriptor, boolean elementAbsent) {
-        String portId = safe(site.portId());
-        Field element = declaredInstanceField(owner, declaringClass,
-                fieldName, descriptor);
-        List<HandoffLeaf> leaves = handoffLeaves(owner, element);
-        if (leaves.isEmpty()) {
-            // Never silence: a port whose delivered value exposes no
-            // primitive leaf the VM can mint on has no v_H, and a row
-            // without one names no occurrence two replays could be joined
-            // at, so the loss is named.
-            return;
-        }
-        for (HandoffLeaf leaf : leaves) {
-            mintHandoffLeaf(active, portId, exportEvent, attachEvent,
-                    producerExpression, producerTaskId, producerOccurrenceId,
-                    leaf, elementAbsent);
-        }
-    }
-
-    /**
-     * Mints v_H at one primitive leaf of one attach.
-     *
-     * <p>A port that crosses on a reference or an array is one attach and
-     * several variables: {@code exportAllKeys} delivers a {@code BlockKey[]}
-     * and what the consumer's formula reads are the leaves --
-     * {@code [i].keyId}, {@code [i].expiryDate}.  One row per leaf, the leaf
-     * in the element path, so each is its own handoff occurrence and R3
-     * joins each to its own family.</p>
-     */
-    private static void mintHandoffLeaf(
-            ActiveRegion active, String portId, long exportEvent,
-            long attachEvent, JsonElement producerExpression,
-            String producerTaskId, String producerOccurrenceId,
-            HandoffLeaf leaf, boolean elementAbsent) {
-        String elementPath = leaf.path;
-        // H belongs to the occurrence the plan declares this IN site on,
-        // not to whichever activation is live when the value arrives.  A
-        // CALL_RETURN attach runs in the CALLER's frame -- the callee has
-        // returned, so its activation has closed and published -- and the
-        // row therefore rides on the caller while the handoff is the
-        // callee's.  On hdfs-17899 bug2 that is REGION.16ba41cf's decode:
-        // its rows landed on REGION.b7266d53, its caller, so one attach was
-        // reported twice, unplanned there and unreproduced here.
-        String consumerOccurrenceId = declaredConsumerOccurrence(portId,
-                active);
-        String phaseId = handoffMintKey(portId,
-                consumerOccurrenceId,
-                active.nextHandoffAttach(portId + "\n" + elementPath),
-                elementPath);
-        if (phaseId.isEmpty()) return;
-        Object owner = leaf.owner;
-        Field element = leaf.field;
-        String declaringClass = element.getDeclaringClass().getName();
-        String fieldName = element.getName();
-        String descriptor = javaTypeDescriptor(
-                element.getType().getTypeName());
-        try {
-            ConcolicVmBroker api = engine();
-            String recordedValue = recordedScalar(element.get(owner));
-            // Answering is the configured source's, by construction: a
-            // handoff assignment IS a configured-source assignment whose
-            // phase id is this one, so the solver emits one row shape and
-            // the runtime runs one mechanism.
-            // The identity is the leaf's indexed path; what the VM
-            // resolves on the owner is the field signature itself.
-            String signature = leaf.signature();
-            // The phase id IS the identity of H -- it hashes the port, the
-            // consumer occurrence, k and the element path -- so the answer
-            // is looked up by it alone.  Naming the port and the element
-            // path again beside it was a second spelling of the same fact,
-            // and the solver emits the phase.
-            // The endpoint first: an obligation answers an attach BY its
-            // endpoint id (INTERACTION-ID), so the consumer endpoint has to
-            // be named before the answer is written into the leaf.
-            edu.uva.liftlab.graphchecker.contract.Endpoint consumer =
-                    RowRuntime.nextEndpoint(active.d3Address, portId,
-                            attemptOf(RuntimeTraceContext.current()));
-            String answer = consumer == null ? ""
-                    : edu.uva.liftlab.graphchecker.runtime.FocusedReplay
-                            .answer(consumer.id());
-            if (!answer.isEmpty() && !writeModeledField(owner, signature,
-                    descriptor, answer)) {
-                throw new IllegalStateException(
-                        "the wave's answer could not be written into "
-                                + signature);
-            }
-            api.symbolizeExactField(owner, signature,
-                    handoffMintLabel(phaseId, portId));
-            ensurePathRecordingStarted(active);
-            JsonObject minted = exactSymbolOf(engineExpression(
-                    api.fieldExpression(owner, declaringClass, fieldName,
-                            descriptor, element.get(owner))));
-            if (minted == null) {
-                return;
-            }
-            publishAttachRow(consumer, portId,
-                    optionalString(minted, "_exp"),
-                    optionalString(minted, "_java_type"), recordedValue,
-                    !answer.isEmpty(), answer);
-        } catch (Throwable failure) {
-        }
-    }
-
-    /**
-     * The identity this attach mints v_H under, and the key an obligation's
-     * answer for it is looked up by.
-     *
-     * <p>{@code (port, consumer occurrence, k-th attach of this element,
-     * element path)} and nothing else, so the same attach in two replays
-     * mints the same variable and an answer written for one is found by the
-     * other.  Empty when any part is missing, which is an attach no replay
-     * could be joined at.</p>
-     *
-     * <p>// D2: keyed by the consumer Endpoint and published as an AttachRow
-     * by SessionPublisher (M2).</p>
-     */
-    private static final String HANDOFF_MINT_PREFIX = "HANDOFF_PHASE.";
-
-    private static String handoffMintKey(String portId,
-                                         String consumerAddress,
-                                         int attachOrdinal,
-                                         String elementPath) {
-        if (safe(portId).isEmpty() || safe(consumerAddress).isEmpty()
-                || safe(elementPath).isEmpty() || attachOrdinal < 1) {
-            return "";
-        }
-        String identity = portId + "\n" + consumerAddress + "\n"
-                + attachOrdinal + "\n" + elementPath;
-        return HANDOFF_MINT_PREFIX + UUID.nameUUIDFromBytes(
-                identity.getBytes(StandardCharsets.UTF_8));
-    }
-
-    /**
-     * The label the VM mints v_H under.
-     *
-     * <p>Deliberately not the configured source's {@code SRC.} label: a
-     * handoff root and a configured-source root are told apart by name
-     * alone, because the importer recognises a configured-source mint by the
-     * {@code _field_SRC.<label>_} marker inside the root it reads back.</p>
-     */
-    static boolean isHandoffMintKey(String value) {
-        return value != null && value.startsWith(HANDOFF_MINT_PREFIX)
-                && value.length() > HANDOFF_MINT_PREFIX.length();
-    }
-
-    /** The mint label of one key and port, for the plan that answers it. */
-    static String handoffMintLabelFor(String mintKey, String portId) {
-        return handoffMintLabel(mintKey, portId);
-    }
-
-    private static String handoffMintLabel(String mintKey, String portId) {
-        return "HOFF." + ArtifactIO.sha256(mintKey + "\n"
-                + safe(portId));
-    }
-
-    /**
-     * The occurrence this port's IN site is declared on.
-     *
-     * <p>The plan names it, so it is the same string on both sides and in
-     * every replay; the live activation is whatever the value happened to
-     * arrive under.  Falls back to the carrying activation when no task
-     * declares the port, which is the case R5 names UNPLANNED_HANDOFF.</p>
-     */
-    private static String declaredConsumerOccurrence(String portId,
-                                                     ActiveRegion carrying) {
-        // The live activation that declares it, innermost first.  Several
-        // occurrences of one region declare the same port -- bug2's
-        // REGION.1f6914ec has five -- so "the first task in the plan that
-        // declares this port" names one of them for every attach: in lane
-        // B2e every handoff row came out with consumerOccurrenceId
-        // REGION.1f6914ec…#5 and ONE handoff phase id, which is one
-        // variable for what are several handoffs, and left the occurrence
-        // that did attach reported as not having reproduced its port.
-        ActiveRegion declaring = declaringRegion(new Declares.Port(portId));
-        // None live declares it: the attach is where it is, and the row
-        // says so rather than borrowing another occurrence's address.  A
-        // CALL_RETURN attach whose callee has already closed and published
-        // lands here, and R5 then reports it against the carrier.
-        return declaring == null ? carrying.activation.occurrenceId
-                : declaring.activation.occurrenceId;
-    }
-
-    /**
-     * States one delivered v_H as the consumer endpoint of an interaction.
-     *
-     * <p>The row carries both endpoints: this consumer, and the producer
-     * the run paired it with -- by the VM handle the producer staged, which
-     * is the pairing evidence the run itself recorded.  A delivery nothing
-     * paired says so rather than naming a producer it guessed.</p>
-     */
-    private static void publishAttachRow(
-            edu.uva.liftlab.graphchecker.contract.Endpoint consumer,
-            String portId, String symbol, String javaType, String arrival,
-            boolean answered, String answeredValue) {
-        if (consumer == null || !RowRuntime.open()) return;
-        try {
-            RuntimeTraceContext.View view = RuntimeTraceContext.current();
-            RowRuntime.attachedAt(consumer, Interactions.deliverySeq(), portId,
-                    Interactions.deliveryHandle(),
-                    view.exchangeCorrelationId, symbol, javaType, arrival,
-                    answered, answeredValue);
-        } catch (Throwable ignored) {
-            // Publishing never ends a workload run.
-        }
-    }
-
-    /**
-     * Mints v_H at a declared port that arrived outside every selected
-     * occurrence -- the entry rule.
-     *
-     * <p>Every declared port mints on arrival, whatever is selected: the
-     * value crossed the boundary and the consumer's formula needs a free
-     * variable there, and which occurrence it happened in is what the row
-     * says about itself rather than a condition on saying it.  Selection
-     * decides only whose paths are explored (REPORT-ENTRY §2).  Path
-     * recording is deliberately NOT started: an unselected activation
-     * records no path, which is precisely what not selecting it means.</p>
-     */
-    private static void mintAmbientHandoffLeaves(
-            CommunicationHandoffSpec site, Object owner,
-            String declaringClass, String fieldName, String descriptor) {
-        String portId = safe(site.portId());
-        if (!RowRuntime.open()) return;
-        RuntimeTraceContext.View view = RuntimeTraceContext.current();
-        String nodeKey = view.source == null ? "" : view.source.key();
-        edu.uva.liftlab.graphchecker.contract.OccurrenceAddress consumer =
-                RowRuntime.degraded(nodeKey, portId);
-        if (consumer == null) {
-            RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind
-                            .LINEAGE_LOST,
-                    edu.uva.liftlab.graphchecker.contract.GapClass
-                            .BLOCKING, portId,
-                    "a declared port arrived on a thread naming no node, so"
-                            + " the delivery has no consumer address");
-            return;
-        }
-        RowRuntime.ambientActivation(consumer);
-        Field element = declaredInstanceField(owner, declaringClass,
-                fieldName, descriptor);
-        List<HandoffLeaf> leaves = handoffLeaves(owner, element);
-        if (leaves.isEmpty()) {
-            RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind
-                            .UNSTATED_VALUE,
-                    edu.uva.liftlab.graphchecker.contract.GapClass
-                            .DIAGNOSTIC, portId,
-                    "the delivered element exposes no primitive leaf to mint"
-                            + " a boundary variable on");
-            return;
-        }
-        for (HandoffLeaf leaf : leaves) {
-            try {
-                ConcolicVmBroker api = engine();
-                Field field = leaf.field;
-                String recordedValue = recordedScalar(field.get(leaf.owner));
-                String mintKey = handoffMintKey(portId, consumer.render(),
-                        1, leaf.path);
-                api.symbolizeExactField(leaf.owner, leaf.signature(),
-                        handoffMintLabelFor(mintKey, portId));
-                JsonObject minted = exactSymbolOf(engineExpression(
-                        api.fieldExpression(leaf.owner,
-                                field.getDeclaringClass().getName(),
-                                field.getName(), javaTypeDescriptor(
-                                        field.getType().getTypeName()),
-                                field.get(leaf.owner))));
-                publishAttachRow(RowRuntime.nextEndpoint(consumer, portId,
-                                attemptOf(view)), portId,
-                        minted == null ? "" : optionalString(minted, "_exp"),
-                        minted == null ? ""
-                                : optionalString(minted, "_java_type"),
-                        recordedValue, false, "");
-            } catch (Throwable failure) {
-                RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind
-                                .UNSTATED_VALUE,
-                        edu.uva.liftlab.graphchecker.contract.GapClass
-                                .DIAGNOSTIC, portId,
-                        "the entry-rule mint failed at " + portId + ": "
-                                + rootCause(failure));
-            }
-        }
-    }
-
-    /** One primitive leaf of one attach, and how the row names it. */
-    private static final class HandoffLeaf {
-        private final Object owner;
-        private final Field field;
-        /** How the row names this leaf: indexed, so two elements differ. */
-        private final String path;
-
-        private HandoffLeaf(Object owner, Field field, String path) {
-            this.owner = owner;
-            this.field = field;
-            this.path = path;
-        }
-
-        /** What the VM resolves on the owner: the bare field signature. */
-        private String signature() {
-            return exactFieldSignature(field);
-        }
-    }
-
-    /** How many leaves of one attach are minted before the rest is named. */
-    private static final int HANDOFF_LEAF_LIMIT = 64;
-
-    /**
-     * The primitive leaves one attach delivered.
-     *
-     * <p>A primitive destination is one leaf, itself.  A reference or array
-     * destination is the leaves reachable through it that the VM can mint
-     * on: each element's declared primitive instance fields, index-qualified
-     * so two elements are two handoff occurrences.  An array of primitives
-     * has no field to address and yields none, which the caller names rather
-     * than passes over.</p>
-     */
-    private static List<HandoffLeaf> handoffLeaves(Object owner,
-                                                   Field element) {
-        List<HandoffLeaf> leaves = new ArrayList<>();
-        if (element == null) return leaves;
-        if (element.getType().isPrimitive()) {
-            leaves.add(new HandoffLeaf(owner, element,
-                    exactFieldSignature(element)));
-            return leaves;
-        }
-        final Object value;
-        try {
-            value = element.get(owner);
-        } catch (Throwable unreadable) {
-            return leaves;
-        }
-        if (value == null) return leaves;
-        if (value.getClass().isArray()) {
-            int length = java.lang.reflect.Array.getLength(value);
-            for (int index = 0; index < length
-                    && leaves.size() < HANDOFF_LEAF_LIMIT; index++) {
-                Object item = java.lang.reflect.Array.get(value, index);
-                if (item == null) continue;
-                addPrimitiveLeaves(item, "[" + index + "]", leaves);
-            }
-            return leaves;
-        }
-        addPrimitiveLeaves(value, "", leaves);
-        return leaves;
-    }
-
-    private static void addPrimitiveLeaves(Object owner, String prefix,
-                                           List<HandoffLeaf> leaves) {
-        // Only the application's own objects.  An array of primitives boxes
-        // each element on the way out of reflection, and java.lang.Integer's
-        // own private "value" is not a leaf the workload addresses -- it is
-        // the box the array element already is, and minting into it would
-        // publish a handoff at a field no decode ever reads.
-        if (owner.getClass().getName().startsWith("java.")) return;
-        for (Field field : owner.getClass().getDeclaredFields()) {
-            if (leaves.size() >= HANDOFF_LEAF_LIMIT) return;
-            if (java.lang.reflect.Modifier.isStatic(field.getModifiers())
-                    || !field.getType().isPrimitive()) {
-                continue;
-            }
-            try {
-                field.setAccessible(true);
-            } catch (Throwable sealed) {
-                continue;
-            }
-            leaves.add(new HandoffLeaf(owner, field,
-                    prefix + exactFieldSignature(field)));
-        }
-    }
-
-    /** The one exact VM root of a read-back, or null when it is not one. */
-    private static JsonObject exactSymbolOf(JsonElement expression) {
-        if (expression == null || !expression.isJsonObject()) return null;
-        JsonObject root = expression.getAsJsonObject();
-        if (!"SymbolExpression".equals(optionalString(root, "_type"))
-                || optionalString(root, "_exp").isEmpty()
-                || optionalString(root, "_java_type").isEmpty()) {
-            return null;
-        }
-        return root;
-    }
-
-    /**
      * Whether this decision is the declared target event of the addressed
      * occurrence.
      *
@@ -2967,87 +1503,6 @@ public final class ConcolicRegionRuntime {
                 || targetBranchOccurrence == occurrence);
     }
 
-    private static HandoffResult attach(
-            Object owner, String declaringClass, String fieldName,
-            String descriptor, long handle) {
-        String missing = missingFieldMetadata(owner, declaringClass,
-                fieldName, descriptor);
-        if (handle <= 0L) {
-            missing = firstNonBlank(missing,
-                    "attach needs a positive handle");
-        }
-        if (!missing.isEmpty()) {
-            return failed("ATTACH",
-                    ConcolicVmBroker.MISSING_METADATA, handle, missing);
-        }
-        ConcolicVmBroker api = engine();
-        long exportEventId;
-        // README RPC-1: both endpoints of the VALUE_HANDOFF edge leave the VM
-        // together.
-        long[] attachEvent = new long[1];
-        try {
-            exportEventId = api.attachExpression(owner, declaringClass,
-                    fieldName, descriptor, handle, attachEvent);
-        } catch (Throwable throwable) {
-            return failed("ATTACH",
-                    ConcolicVmBroker.INVOCATION_FAILED, handle,
-                    rootCause(throwable));
-        }
-        if (exportEventId <= 0L) {
-            int status = exportStatus(exportEventId);
-            return failed("ATTACH", status, handle,
-                    "attachExpression returned " + exportEventId);
-        }
-        if (attachEvent[0] <= 0L) {
-            // A VM that accepted the attach but named no attach event has told
-            // us half an edge.
-            return failed("ATTACH",
-                    ConcolicVmBroker.MALFORMED_RESULT, handle,
-                    "attachExpression named no attach event for export "
-                            + exportEventId);
-        }
-        JsonObject success = new JsonObject();
-        success.addProperty("exportEventId", exportEventId);
-        success.addProperty("attachEventId", attachEvent[0]);
-        return new HandoffResult("ATTACH",
-                ConcolicVmBroker.OK, handle, success);
-    }
-
-    private static String missingFieldMetadata(
-            Object owner, String declaringClass, String fieldName,
-            String descriptor) {
-        if (owner == null) return "handoff leaf has no owner instance";
-        if (firstNonBlank(declaringClass).isEmpty()
-                || firstNonBlank(fieldName).isEmpty()
-                || firstNonBlank(descriptor).isEmpty()) {
-            return "handoff leaf has no exact declaring class, field name "
-                    + "and type descriptor";
-        }
-        return "";
-    }
-
-    /** Maps a non-positive {@code exportExpression} answer onto a status. */
-    private static int exportStatus(long handle) {
-        if (handle == 0L || handle < Integer.MIN_VALUE) {
-            return ConcolicVmBroker.MALFORMED_RESULT;
-        }
-        return (int) handle;
-    }
-
-    private static HandoffResult failed(String stage, int status, long handle,
-                                        String detail) {
-        // D2: the refusal is a GapRow published by
-        // SessionPublisher (M2); here it stays the call's own answer.
-        return new HandoffResult(stage, status, handle, null);
-    }
-
-    /** Reports every refused broker call to the diagnostic trace. */
-    private static HandoffResult record(HandoffResult result) {
-
-        return result;
-    }
-
-
 
     /**
      * Invocation-exact normal cleanup used by injected roots.  This method is
@@ -3064,7 +1519,14 @@ public final class ConcolicRegionRuntime {
                 finish(frame.token, "NORMAL", "", null);
             }
         } catch (Throwable ignored) {
-            // Runtime observation is fail-closed and cannot alter the return.
+            // Runtime observation is fail-closed and cannot alter the
+            // return.  Deliberate, and the loss is bounded: every stage
+            // inside #finish states its own refusal (closeOccurrence files
+            // UNSTATED_VALUE for a read-out it could not invoke, and
+            // judgeFinishedOccurrence calls taskUnanswered), so what is
+            // left here is the unwinding -- and a row published from the
+            // workload's own return path could only be attempted through
+            // the same publisher the terminal has just failed on.
         }
     }
 
@@ -3090,7 +1552,10 @@ public final class ConcolicRegionRuntime {
                 }
             }
         } catch (Throwable ignored) {
-            // Preserve the program's original throwable identity.
+            // Preserve the program's original throwable identity: the
+            // injected bytecode rethrows it, and a refusal raised here
+            // would replace it.  Bounded for the same reason as
+            // #exitRegionFrame's.
         }
     }
 
@@ -3121,7 +1586,7 @@ public final class ConcolicRegionRuntime {
      * The sibling-hook accounting both root stacks share: one physical entry
      * emits one hook per plan row, and only the first is an activation.
      */
-    private static class SiblingHookGroupEntry {
+    static class SiblingHookGroupEntry {
         final String groupKey;
         private int remainingSiblingHooks;
 
@@ -3169,47 +1634,17 @@ public final class ConcolicRegionRuntime {
         }
     }
 
-    /** One real enclosing method invocation for bounded body activations. */
-    static final class LoopRootInvocationContext
-            extends SiblingHookGroupEntry {
-        /** This invocation's entry event: what a loop task is bound to. */
-        final long token;
-        /** The thread that ran it, as the recording names threads. */
-        final String threadName = Thread.currentThread().getName();
-        /** Which k this entry was counted at, per task it was offered to. */
-        private final Map<String, Integer> ordinalByTaskId;
-
-        private LoopRootInvocationContext(
-                long token, String groupKey, int remainingSiblingHooks,
-                Map<String, Integer> ordinalByTaskId) {
-            super(groupKey, remainingSiblingHooks);
-            this.token = token;
-            this.ordinalByTaskId = Collections.unmodifiableMap(
-                    new LinkedHashMap<>(ordinalByTaskId));
-        }
-
-        /** The observed activation ordinal this entry took for a task. */
-        int ordinalOf(String taskId) {
-            Integer ordinal = ordinalByTaskId.get(taskId);
-            return ordinal == null ? 0 : ordinal;
-        }
-    }
-
+    /**
+     * Exact-event overload carrying the id returned by the native marker that
+     * the instrumented class executes immediately before its original if.
+     */
     /**
      * Reserves a VM-attested branch event immediately before the original
      * conditional executes.
      */
     public static long prepareBranch(String method, int unitIndex,
                                      String expression) {
-        ActiveRegion active = activeRegion();
-        if (active == null || !active.pathRecordingStarted) return 0L;
-        try {
-            PreparedBranch prepared = active.prepareBranch(method, unitIndex,
-                    expression);
-            return prepared == null ? 0L : prepared.handle;
-        } catch (Throwable throwable) {
-            return 0L;
-        }
+        return BranchObservation.prepare(method, unitIndex, expression);
     }
 
     /**
@@ -3220,8 +1655,8 @@ public final class ConcolicRegionRuntime {
                                         String method, int unitIndex,
                                         String expression,
                                         boolean observedOutcome) {
-        observeDecision(BranchDecision.binary(observedOutcome), preparedHandle,
-                vmEventId, method, unitIndex, expression);
+        BranchObservation.observe(BranchDecision.binary(observedOutcome),
+                preparedHandle, vmEventId, method, unitIndex, expression);
         return observedOutcome;
     }
 
@@ -3230,576 +1665,9 @@ public final class ConcolicRegionRuntime {
             long preparedHandle, long vmEventId, String method, int unitIndex,
             String expression, String branchKind, String encodedCaseKeys,
             int observedSuccessorIndex) {
-        SwitchExpectation expected;
-        try {
-            expected = SwitchExpectation.parse(branchKind, encodedCaseKeys,
-                    observedSuccessorIndex);
-        } catch (IllegalArgumentException malformed) {
-            ActiveRegion active = activeRegion();
-            if (active != null) {
-            }
-            return observedSuccessorIndex;
-        }
-        observeDecision(BranchDecision.multiway(expected), preparedHandle,
-                vmEventId, method, unitIndex, expression);
-        return observedSuccessorIndex;
-    }
-
-    /**
-     * Observes one decision of either kind at one instrumented site.
-     *
-     * <p>The workload's own value is the hook's to return: nothing observed
-     * here may change it, so this reports nothing back.</p>
-     */
-    private static void observeDecision(
-            BranchDecision decision, long preparedHandle, long vmEventId,
-            String method, int unitIndex, String expression) {
-        ActiveRegion active = activeRegion();
-        if (active == null) return;
-        String branchSite = SiteId.render(method, unitIndex);
-        // A decision at a woven site is recorded, full stop.  The frozen
-        // plan used to have to declare the site as well -- it carried the
-        // branches an offline classification had selected, and every
-        // decision at any other woven site was dropped here, so the
-        // recorded decision set was a function of that classification rather
-        // than of what ran.  With the selection gone, the arm below that
-        // handled "woven but not declared" is unreachable and goes with it.
-        if (!active.pathRecordingStarted) {
-            int decided = active.recordConcreteDecision(method, unitIndex,
-                    decision);
-            if (decided > 0) {
-                active.observeReplayDecision(branchSite, decided, decision);
-                if (active.replayPrefixContradicted()) {
-                    finish(active.token, "REPLAY_PREFIX_CONTRADICTED", "",
-                            null);
-                }
-            }
-            return;
-        }
-        PreparedBranch prepared = active.takePreparedBranch(preparedHandle);
-        if (prepared == null || !prepared.matches(method, unitIndex,
-                expression)) {
-            // No unverified VM event may be rebound heuristically on a JDK
-            // that advertised the exact API.
-            return;
-        }
-        ConcolicVmBroker api = engine();
-        boolean paused = false;
-        boolean replayContradicted = false;
-        try {
-            api.pausePathCondition();
-            paused = true;
-            boolean recorded = decision.recordPaused(active, api,
-                    method, unitIndex, expression, prepared.occurrence,
-                    vmEventId);
-            // Advances the replay contract and records a prefix mismatch;
-            // whether this decision consumed the contract's source event
-            // says nothing about whether the target site ran.
-            active.observeReplayDecision(branchSite, prepared.occurrence,
-                    decision);
-            replayContradicted = active.replayPrefixContradicted();
-            // A bounded loop may have run the planned target occurrence at
-            // another one.  targetReach is the planner's semantic source
-            // address; the branch mapping beside it retains the actual
-            // occurrence and symbolic support which matched that source.
-            boolean permuted = decision.addressesPermutedTargetOccurrence()
-                    && edu.uva.liftlab.graphchecker.runtime.FocusedReplay
-                            .focused(active.d3Address);
-            if (statesTargetReach(recorded, permuted,
-                    active.activation.targetBranchSite,
-                    active.activation.targetBranchOccurrence,
-                    branchSite, prepared.occurrence)) {
-                // Reaching the target is the site having executed, and
-                // nothing else -- including whether the predicate there was
-                // symbolic.  It was gated on a solver witness, so a target
-                // branch that compares two concrete values published no
-                // reach at all: on hdfs-17960 the fatal branch is
-                // "i != sm.getNumSnapshots()" over two concrete ints, which
-                // the root reaches by control dependence (the flip skips a
-                // decrement), and the same activation then recorded the
-                // decision AND was named as never having decided it.  The
-                // anchor evidence is the fatal predicate when there is one
-                // and the concrete outcome when there is not; which of the
-                // two it is belongs in the branch row beside it, where the
-                // composer reads it to decide a propagation cut.
-                //
-                // The replay contract decides whether this
-                // activation followed the prefix it was asked to follow --
-                // a different question, and one whose answer is "no" at the
-                // target on every flip replay whose source branch is
-                // somewhere else, because the contract names no event here
-                // to consume.  Gating on it published the target event only
-                // from the recording, so every flip's disjunct was lost
-                // before composition ever saw it.  The composition wants
-                // them all: a flip that leaves the predicate false is the
-                // disjunct that contributes nothing, and a flip that
-                // diverges is still evidence that the branch was tried.
-                //
-                // Reaching the target is also a fact of this case, never a
-                // reason to stop recording it: the RPC, state and throw
-                // effects the occurrence still owes all happen after this
-                // branch.
-                active.recordTargetReach(
-                        permuted ? active.activation.targetBranchSite
-                                : branchSite,
-                        permuted ? active.activation.targetBranchOccurrence
-                                : prepared.occurrence,
-                        decision.outcome(), vmEventId);
-            }
-        } catch (Throwable throwable) {
-        } finally {
-            if (paused) resumePathCondition(active, api);
-            if (replayContradicted) {
-                // Release the engine here rather than at this activation's own
-                // return: the branch that just executed already decided that
-                // nothing publishable can follow.
-                finish(active.token, "REPLAY_PREFIX_CONTRADICTED", "", null);
-            }
-        }
-    }
-
-    /**
-     * Captures one exact binary decision; false only where the VM emitted no
-     * branch event to capture, so there is no row beside which a target
-     * reach could be stated.  It used to mean "attested well enough to
-     * address a target reach", which read the presence of a path condition as
-     * permission to publish the anchor -- so an activation that decided the
-     * target site concretely published a branch row and no reach.
-     */
-    private static boolean recordBranchPaused(
-            ActiveRegion active, ConcolicVmBroker api, String method, int unitIndex,
-            String expression, int occurrence, boolean observedOutcome,
-            long vmEventId) throws Exception {
-        if (vmEventId <= 0L) {
-            // The VM emitted no symbolic branch event.
-            return false;
-        }
-        String siteId = SiteId.render(method, unitIndex);
-        int baseline = active.lastPathConditionSize;
-        // One read of the event stream, used by both questions asked of it.
-        JsonElement events = parseJson(api.branchEvents());
-        List<Integer> eventConditionIndices =
-                vmEventConditionIndices(events, vmEventId);
-        boolean noVmCondition = eventConditionIndices != null
-                && eventConditionIndices.isEmpty();
-        // An exact conditionless event contributes no branch guard, and a
-        // non-contiguous one names no exact range: both leave the window
-        // empty and the raw size at the baseline.
-        boolean exactRange = !noVmCondition
-                && contiguousConditionIndices(eventConditionIndices);
-        PathConditionWindow.Read read = PathConditionWindow.forEvent(
-                active.expressionStore, api, eventConditionIndices);
-        PathConditionWindow conditions = read.conditions;
-        int rawPathConditionSize = exactRange ? conditions.size() : baseline;
-        int attestationBaseline = noVmCondition ? 0 : baseline;
-        if (exactRange) {
-        }
-        VmBranchEventAttestation vmAttestation = attestVmBranchEvent(api,
-                active, siteId, expression, observedOutcome, vmEventId,
-                occurrence, conditions, attestationBaseline, null, events);
-        int conditionIndex = vmAttestation.valid
-                && vmAttestation.conditionIndices.size() == 1
-                ? vmAttestation.conditionIndices.get(0) : -1;
-        JsonObject mapping = branchMapping(method, unitIndex, occurrence,
-                vmEventId);
-        // A row with no term of its own states the arm the jump took; a row
-        // that publishes a term states whether THAT term held, and the term
-        // is added below (CONTRACT v2.3 sec 1.3).
-        mapping.addProperty("outcome", observedOutcome);
-        // Exact VM ownership is one condition for an IfStmt.
-        int mappingBaseline = conditionIndex >= 0
-                ? conditionIndex : baseline;
-        int mappingLimit = conditionIndex >= 0
-                ? conditionIndex + 1 : rawPathConditionSize;
-        mapping.addProperty("rawPathConditionSize", mappingLimit);
-        mapping.addProperty("rawPathConditionBaseline", mappingBaseline);
-        if (conditionIndex >= 0) {
-            JsonElement condition = conditions.get(conditionIndex);
-            JsonElement semanticCondition = semanticBranchCondition(
-                    expression, observedOutcome, condition);
-            if (vmAttestation.valid) {
-                mapping.add("witness", BranchWitness.immutablePredicate(
-                        semanticCondition).toImmutableJsonView());
-                // The predicate under which the JUMP is taken, which is the
-                // one thing about this site that does not move between
-                // replays or between arms, and the arm beside it
-                // (CONTRACT v2.3 sec 1.3: a consumer forms
-                // `outcome ? term : (not term)`).
-                //
-                // The VM publishes its constraint in the form the run
-                // SATISFIED: `marker != false` where the source reads
-                // `if marker == 0 goto` and the jump fell through, and
-                // `marker == false` in the replay that took it.  Publishing
-                // the satisfied form as the term moves the arm INTO the
-                // term -- the term then differs between the two runs of one
-                // site while `outcome` is true in both, so a flip cannot be
-                // observed by comparing outcomes at all (P2f').  So the
-                // taken arm's constraint is the term as it stands, and the
-                // fallen-through arm's is its negation, which is a spelling
-                // operation on the VM's own constraint and re-evaluates
-                // nothing.
-                JsonElement written = observedOutcome ? condition
-                        : negatedCondition(condition);
-                if (written != null && written.isJsonObject()) {
-                    mapping.add("siteCondition", written);
-                } else if (!observedOutcome) {
-                }
-            }
-        }
-        active.lastPathConditionSize = rawPathConditionSize;
-        active.branchMappings.add(mapping);
-        // A row was published for this decision: the site executed and the
-        // outcome beside it is this execution's own.  Whether it carried a
-        // path condition is whether the row states a site predicate, which
-        // is what the decision row publishes.
-        return true;
-    }
-
-    private static boolean recordSwitchBranchPaused(
-            ActiveRegion active, ConcolicVmBroker api, String method, int unitIndex,
-            String expression, int occurrence, SwitchExpectation expected,
-            long vmEventId) throws Exception {
-        String siteId = SiteId.render(method, unitIndex);
-        int baseline = active.lastPathConditionSize;
-        JsonElement events = parseJson(api.branchEvents());
-        List<Integer> eventConditionIndices =
-                vmEventConditionIndices(events, vmEventId);
-        boolean noVmCondition = eventConditionIndices != null
-                && eventConditionIndices.isEmpty();
-        PathConditionWindow.Read read = PathConditionWindow.forEvent(
-                active.expressionStore, api, eventConditionIndices);
-        PathConditionWindow conditions = read.conditions;
-        VmBranchEventAttestation attestation = attestVmBranchEvent(api,
-                active, siteId, expression, expected.caseArm(), vmEventId,
-                occurrence, conditions, noVmCondition ? 0 : baseline,
-                expected, events);
-        List<Integer> conditionIndices = attestation.valid
-                ? attestation.conditionIndices
-                : Collections.<Integer>emptyList();
-        int mappingBaseline = conditionIndices.isEmpty()
-                ? baseline : conditionIndices.get(0);
-        int mappingLimit = conditionIndices.isEmpty()
-                ? baseline : conditionIndices.get(
-                conditionIndices.size() - 1) + 1;
-        JsonObject mapping = branchMapping(method, unitIndex, occurrence,
-                vmEventId);
-        mapping.addProperty("outcome", expected.caseArm());
-        mapping.addProperty("rawPathConditionSize", mappingLimit);
-        mapping.addProperty("rawPathConditionBaseline", mappingBaseline);
-        if (!attestation.valid) {
-        }
-        active.branchMappings.add(mapping);
-        if (attestation.valid) {
-            for (Integer conditionIndex : conditionIndices) {
-                JsonObject predicate = branchMapping(method, unitIndex,
-                        occurrence, vmEventId);
-                predicate.addProperty("rawPathConditionSize", mappingLimit);
-                predicate.addProperty("rawPathConditionBaseline",
-                        mappingBaseline);
-                predicate.add("witness",
-                        BranchWitness.immutablePredicate(
-                                conditions.get(conditionIndex))
-                                .toImmutableJsonView());
-                active.branchMappings.add(predicate);
-            }
-        }
-        active.lastPathConditionSize = Math.max(
-                active.lastPathConditionSize, mappingLimit);
-        return attestation.valid;
-    }
-
-    /**
-     * One published decision row.
-     *
-     * <p>{@code vmEventId} is the VM's own event sequence number for the
-     * decision -- the id the native marker returned immediately before the
-     * workload's branch.  It is the only monotone per-replay clock the
-     * publication carries: {@code unitIndex} and the path-condition indices
-     * are positions inside a method and inside one condition window, and
-     * {@code startedAtMillis} is telemetry.  A composer needs this to say
-     * which decisions were taken before an anchor and in what order two
-     * activations' decisions interleave.</p>
-     *
-     * <p>Nothing here reads the id's scale.  It was a per-ThreadContext
-     * counter -- 1, 2, 3 per thread, restarting for every context -- and the
-     * VM now draws it from the session-global event counter, the same one
-     * behind {@code fieldVersionId}, {@code readEventId} and
-     * {@code regionEnterEventId}.  The values stop being small and dense and
-     * start interleaving with the write log's, which is the point: "the
-     * latest write whose event precedes this decision" becomes a valid
-     * comparison, within one {@code sessionId}.  This publication is
-     * unchanged either way, and the only other runtime use of the id is the
-     * exact-event lookup in {@code PathConditionWindow}, which matches on
-     * equality and requires the id to be unique among the events read -- true
-     * on both scales.</p>
-     *
-     * <p>It is published only when the VM assigned one.  A decision recorded
-     * with the symbolic gate closed has no VM event, and stating a zero there
-     * would order it ahead of everything the VM did record.</p>
-     */
-    private static JsonObject branchMapping(
-            String method, int unitIndex, int occurrence, long vmEventId) {
-        // The row the DecisionRow is built from states the site, the arm
-        // and the predicate as written; the witness objects beside it are
-        // the old publication's shapes and nothing reads them now.
-        JsonObject mapping = new JsonObject();
-        mapping.addProperty("siteId", SiteId.render(method, unitIndex));
-        mapping.addProperty("method", safe(method));
-        mapping.addProperty("unitIndex", unitIndex);
-        mapping.addProperty("occurrence", occurrence);
-        if (vmEventId > 0L) mapping.addProperty("vmEventId", vmEventId);
-        return mapping;
-    }
-
-    /**
-     * @param readEvents the caller's own read of the exact event stream, or
-     *                   {@code null} to read it here.  A caller that has
-     *                   already asked the stream a question about this event
-     *                   passes what it read: a second read costs a full
-     *                   serialization and decode of every event the thread has
-     *                   recorded, and would let the two answers be taken from
-     *                   two different observations of it.
-     */
-    private static VmBranchEventAttestation attestVmBranchEvent(
-            ConcolicVmBroker api, ActiveRegion active, String siteId,
-            String expression, boolean observedOutcome, long eventId,
-            int occurrence, PathConditionWindow conditions, int baseline,
-            SwitchExpectation switchExpectation, JsonElement readEvents) {
-        if (eventId <= 0L) {
-            return VmBranchEventAttestation.invalid(
-                    "marker returned a non-positive event id");
-        }
-        final JsonElement parsed;
-        if (readEvents != null) {
-            parsed = readEvents;
-        } else {
-            try {
-                parsed = parseJson(api.branchEvents());
-            } catch (Throwable throwable) {
-                return VmBranchEventAttestation.invalid(
-                        "event stream is not readable: "
-                                + rootCause(throwable));
-            }
-        }
-        if (!parsed.isJsonObject()) {
-            return VmBranchEventAttestation.invalid(
-                    "event stream is not a JSON object");
-        }
-        JsonObject envelope = parsed.getAsJsonObject();
-        if (optionalInteger(envelope, "schemaVersion", -1) != 1
-                || !"CONCOLIC_THREAD_BRANCH_EVENTS".equals(
-                optionalString(envelope, "kind"))
-                || !optionalBool(envelope, "active", false)) {
-            return VmBranchEventAttestation.invalid(
-                    "unexpected or inactive event stream");
-        }
-        long envelopeContext = optionalLongInteger(envelope, "contextId", 0L);
-        long envelopeOwner = optionalLongInteger(envelope,
-                "ownerJavaThreadId", 0L);
-        if (envelopeContext <= 0L) {
-            return VmBranchEventAttestation.invalid(
-                    "missing positive VM thread context id");
-        }
-        if (envelopeOwner != active.thread.getId()) {
-            return VmBranchEventAttestation.invalid(
-                    "event stream belongs to Java thread " + envelopeOwner
-                            + " instead of " + active.thread.getId());
-        }
-        if (!safe(active.activation.regionId).equals(
-                optionalString(envelope, "regionId"))
-                || !safe(active.activation.taskId).equals(
-                optionalString(envelope, "taskId"))) {
-            return VmBranchEventAttestation.invalid(
-                    "event stream region/task does not match owner");
-        }
-
-        JsonObject selected = null;
-        int matches = 0;
-        for (JsonElement candidate : array(envelope, "events")) {
-            if (!candidate.isJsonObject()) continue;
-            JsonObject event = candidate.getAsJsonObject();
-            if (optionalLongInteger(event, "eventId", -1L) == eventId) {
-                selected = event;
-                matches++;
-            }
-        }
-        if (matches != 1 || selected == null) {
-            return VmBranchEventAttestation.invalid(
-                    "event id " + eventId + " matched " + matches
-                            + " records");
-        }
-        String authority = optionalString(selected, "authority");
-        if (!"VM_THREAD_CONTEXT_EXACT_BRANCH_EVENT_V1".equals(authority)) {
-            return VmBranchEventAttestation.invalid(
-                    "unsupported event authority " + authority);
-        }
-        if (!safe(siteId).equals(optionalString(selected, "siteId"))
-                || optionalInteger(selected, "occurrence", -1) != occurrence) {
-            return VmBranchEventAttestation.invalid(
-                    "event site/occurrence does not match prepared branch");
-        }
-        if (optionalBool(selected, "outcome", !observedOutcome)
-                != observedOutcome) {
-            return VmBranchEventAttestation.invalid(
-                    "event outcome differs from observed branch");
-        }
-        JsonArray indices = array(selected, "conditionIndices");
-        if (optionalInteger(selected, "conditionCount", -1) != indices.size()) {
-            return VmBranchEventAttestation.invalid(
-                    "event condition count differs from its index vector");
-        }
-        if (switchExpectation != null) {
-            return attestVmSwitchConditions(selected,
-                    switchExpectation, indices, conditions);
-        }
-        if (indices.size() > 1) {
-            return VmBranchEventAttestation.invalid(
-                    "instrumented IfStmt emitted multiple condition indices");
-        }
-        int conditionIndex = -1;
-        if (indices.size() == 1) {
-            try {
-                conditionIndex = indices.get(0).getAsInt();
-            } catch (RuntimeException exception) {
-                return VmBranchEventAttestation.invalid(
-                        "condition index is not an integer");
-            }
-            if (conditionIndex < baseline
-                    || conditionIndex >= conditions.size()) {
-                return VmBranchEventAttestation.invalid(
-                        "condition index " + conditionIndex
-                                + " is outside new path-condition suffix ["
-                                + baseline + "," + conditions.size() + ")");
-            }
-            if (!branchConditionMatches(expression, observedOutcome,
-                    conditions.get(conditionIndex))) {
-                return VmBranchEventAttestation.invalid(
-                        "selected VM condition does not match the original "
-                                + "branch predicate");
-            }
-        }
-        return VmBranchEventAttestation.valid(
-                conditionIndex < 0
-                        ? Collections.<Integer>emptyList()
-                        : Collections.singletonList(conditionIndex));
-    }
-
-    private static VmBranchEventAttestation attestVmSwitchConditions(
-            JsonObject event, SwitchExpectation expected,
-            JsonArray rawIndices, PathConditionWindow conditions) {
-        int expectedOpcode = "TABLE_SWITCH".equals(expected.branchKind)
-                ? 170 : 171;
-        if (optionalInteger(event, "opcode", -1) != expectedOpcode) {
-            return VmBranchEventAttestation.invalid(
-                    "event opcode does not match static "
-                            + expected.branchKind);
-        }
-        if (optionalString(event, "codePosition").isEmpty()) {
-            return VmBranchEventAttestation.invalid(
-                    "switch event has no bytecode position");
-        }
-
-        int completeSymbolicCount = expected.caseArm()
-                ? 1 : expected.caseKeys.size();
-        // The VM still emits an exact event when the selector is concrete.
-        if (rawIndices.size() == 0) {
-            return VmBranchEventAttestation.valid(
-                    Collections.<Integer>emptyList());
-        }
-        if (rawIndices.size() != completeSymbolicCount) {
-            return VmBranchEventAttestation.invalid(
-                    "switch arm owns " + rawIndices.size()
-                            + " conditions; exact arm requires "
-                            + completeSymbolicCount);
-        }
-        List<Integer> indices = new ArrayList<>();
-        String selector = "";
-        String expectedPosition = optionalString(event, "codePosition");
-        int previousIndex = -1;
-        for (int offset = 0; offset < rawIndices.size(); offset++) {
-            final int conditionIndex;
-            try {
-                conditionIndex = rawIndices.get(offset).getAsInt();
-            } catch (RuntimeException malformed) {
-                return VmBranchEventAttestation.invalid(
-                        "switch condition index is not an integer");
-            }
-            if (conditionIndex < 0
-                    || offset > 0 && conditionIndex != previousIndex + 1) {
-                return VmBranchEventAttestation.invalid(
-                        "switch condition indices are not one exact ordered "
-                                + "VM event range");
-            }
-            final JsonElement condition;
-            try {
-                condition = conditions.get(conditionIndex);
-            } catch (IndexOutOfBoundsException unavailable) {
-                return VmBranchEventAttestation.invalid(
-                        "switch condition index " + conditionIndex
-                                + " is outside the exact VM event range");
-            }
-            int key = expected.caseArm()
-                    ? expected.caseKeys.get(
-                    expected.observedSuccessorIndex)
-                    : expected.caseKeys.get(offset);
-            String operator = expected.caseArm() ? "==" : "!=";
-            String matchedSelector = switchSelectorIfMatches(condition,
-                    operator, key);
-            if (matchedSelector.isEmpty()) {
-                return VmBranchEventAttestation.invalid(
-                        "switch condition " + offset
-                                + " is not selector " + operator + " "
-                                + key);
-            }
-            if (selector.isEmpty()) {
-                selector = matchedSelector;
-            } else if (!selector.equals(matchedSelector)) {
-                return VmBranchEventAttestation.invalid(
-                        "switch conditions do not share one selector");
-            }
-            String conditionPosition = condition.isJsonObject()
-                    ? optionalString(condition.getAsJsonObject(), "_code_position")
-                    : "";
-            if (!conditionPosition.isEmpty()
-                    && !expectedPosition.equals(conditionPosition)) {
-                return VmBranchEventAttestation.invalid(
-                        "switch condition bytecode position differs from "
-                                + "its exact event");
-            }
-            indices.add(conditionIndex);
-            previousIndex = conditionIndex;
-        }
-        return VmBranchEventAttestation.valid(indices);
-    }
-
-    private static String switchSelectorIfMatches(
-            JsonElement condition, String expectedOperator, int expectedKey) {
-        if (condition == null || !condition.isJsonObject()) return "";
-        JsonObject object = condition.getAsJsonObject();
-        if (!"BinaryExpression".equals(optionalString(object, "_type"))
-                || !expectedOperator.equals(optionalString(object, "_op"))) {
-            return "";
-        }
-        JsonElement left = object.get("_left");
-        JsonElement right = object.get("_right");
-        if (left == null || !left.isJsonObject()
-                || right == null || !right.isJsonObject()
-                || "ConstExpr".equals(optionalString(left.getAsJsonObject(),
-                "_type"))) {
-            return "";
-        }
-        JsonObject constant = right.getAsJsonObject();
-        if (!"ConstExpr".equals(optionalString(constant, "_type"))) return "";
-        Matcher encoded = Pattern.compile("^Y_I_(-?(?:0|[1-9][0-9]*))$")
-                .matcher(optionalString(constant, "_exp"));
-        if (!encoded.matches()) return "";
-        final int key;
-        try {
-            key = Integer.parseInt(encoded.group(1));
-        } catch (NumberFormatException malformed) {
-            return "";
-        }
-        return key == expectedKey ? left.toString() : "";
+        return BranchObservation.observeSwitch(preparedHandle, vmEventId,
+                method, unitIndex, expression, branchKind, encodedCaseKeys,
+                observedSuccessorIndex);
     }
 
     /** Marks one selected occurrence unusable before its VM close. */
@@ -3812,7 +1680,7 @@ public final class ConcolicRegionRuntime {
     }
 
     /** Ends whichever selected occurrence owns {@code token}. */
-    private static void finish(long token, String exitKind,
+    static void finish(long token, String exitKind,
                                String exceptionType, Throwable throwable) {
         ActiveRegion active = ownerRegion(token);
         if (active == null) return;
@@ -4009,640 +1877,6 @@ public final class ConcolicRegionRuntime {
     }
 
 
-    private static void symbolizeReceiverFields(ActiveRegion active,
-                                               RuntimeTask task,
-                                               ConcolicVmBroker api) {
-        for (SymbolizeAction action : task.symbolize) {
-            // Nested/shared heap fields are materialized on their real owner
-            // at the field-access hook.
-            if (!"RECEIVER_FIELD".equals(action.location)) {
-                continue;
-            }
-            if (!action.fieldPath.isEmpty()) {
-                symbolizeFieldPath(active, action, active.receiver,
-                        action.fieldPath, api);
-                continue;
-            }
-            DeclaredField declared = FieldPathSpec.declaredField(
-                    firstNonBlank(action.accessFieldSignature, action.cell));
-            if (declared == null) {
-                continue;
-            }
-            symbolizeField(active, action, active.receiver,
-                    declared.name(), Collections.singletonList(
-                            declared.name()), api);
-        }
-    }
-
-    private static void symbolizeField(ActiveRegion active,
-                                       SymbolizeAction action,
-                                       Object owner, String symbolicPath,
-                                       List<String> exactFieldPath,
-                                       ConcolicVmBroker api) {
-        String symbol = action.symbol + "." + safe(symbolicPath);
-        try {
-            String leafFieldSignature = action.exactLeafFieldSignature(
-                    exactFieldPath);
-            Object value = readExactField(owner, leafFieldSignature);
-            DeclaredField field = FieldPathSpec.declaredField(
-                    leafFieldSignature);
-            if (field == null) {
-                return;
-            }
-            JsonElement carried = containerValue(value)
-                    ? engineExpression(api.expression(value))
-                    : engineExpression(api.fieldExpression(owner,
-                    field.owner(), field.name(),
-                    javaTypeDescriptor(field.type()), value));
-            if (retainPropagatedInput(active, action, value, carried, symbol,
-                    exactFieldPath, leafFieldSignature)) {
-                return;
-            }
-            if (value != null && value != MissingValue.INSTANCE
-                    && containerValue(value)) {
-                return;
-            }
-            MintedLeaf minted = mintExactFieldLeaf(active, action, api,
-                    owner, leafFieldSignature, symbol, value);
-            if (minted == null) return;
-            active.recordManualSymbolization(action, symbol, exactFieldPath,
-                    leafFieldSignature, minted.expression, true, false,
-                    minted.recordedValue);
-        } catch (Throwable throwable) {
-        }
-    }
-
-    /**
-     * Mints the scalar leaf of one exact field read: the expression the VM
-     * carries afterwards and what the row may state as recorded, or {@code
-     * null} when the leaf has no resolvable declaration (filed as
-     * unresolved).
-     *
-     * <p>One rule, one implementation.  The receiver-field hook
-     * ({@link #symbolizeField}) and the heap-field hook
-     * ({@link #materializeField}) reach the same decision by the same
-     * route -- {@link #retainPropagatedInput} said nothing propagated into
-     * this input and the action is a declaration, so the search starts
-     * here -- and only the first of them used to act on it.  The second refused with "exact input has no
-     * propagated VM expression", which is how hdfs-17960's declared
-     * {@code <AtomicInteger: int value>} region input stayed concrete: the
-     * accessor materialization is a {@code HEAP_OBJECT_FIELD} action, so
-     * it arrived at the hook that refused.</p>
-     *
-     * <p>And the wave's value reaches a field mint HERE, through the same
-     * one decision every other mint asks ({@link #focusedRootValue}).  It
-     * did not: a declared INTEGRAL cell minted through this path published
-     * the value the recording read, whatever the obligation assigned, and
-     * the composer met the contradiction instead of the plant -- on 11741
-     * session {@code 869a1f0e285913ad-6f59cb84} the mint of {@code
-     * HDFS.BLOCK_KEY.SERIAL_NO} states 182907 under an obligation assigning
-     * 182910, which is one BLOCKING refusal per such root.</p>
-     */
-    private static MintedLeaf mintExactFieldLeaf(
-            ActiveRegion active, SymbolizeAction action,
-            ConcolicVmBroker api, Object owner, String leafFieldSignature,
-            String symbol, Object value) throws Exception {
-        DeclaredField field = FieldPathSpec.declaredField(leafFieldSignature);
-        if (field == null) {
-            return null;
-        }
-        String descriptor = javaTypeDescriptor(field.type());
-        String recorded = fieldMintRecordedValue(active, action, owner,
-                leafFieldSignature, descriptor, value);
-        // The plant wrote into the cell this mint stands on, so the leaf the
-        // VM is handed is what the region will now read, not what it held.
-        Object held = recorded.isEmpty()
-                ? readExactField(owner, leafFieldSignature) : value;
-        if (held == MissingValue.INSTANCE) held = value;
-        api.symbolizeExactField(owner, leafFieldSignature,
-                manualMintLabel(symbol, active.activation.occurrenceId,
-                        JavaPrimitiveSmtSemantics.primitive(
-                                field.type())));
-        ensurePathRecordingStarted(active);
-        return new MintedLeaf(engineExpression(api.fieldExpression(owner,
-                field.owner(), field.name(), descriptor, held)), recorded);
-    }
-
-    /** One field leaf's mint: what the VM carries, and what the row may say. */
-    private static final class MintedLeaf {
-        private final JsonElement expression;
-        private final String recordedValue;
-
-        private MintedLeaf(JsonElement expression, String recordedValue) {
-            this.expression = expression;
-            this.recordedValue = recordedValue;
-        }
-    }
-
-    /**
-     * Plants the wave's value at one field mint and states what that mint
-     * may publish as recorded: {@code ""} when it planted.
-     *
-     * <p>ONE PLACE DECIDES A MINT'S VALUE, and every mint path asks it: the
-     * manual primitive ({@link #materializePrimitiveValue}), the configured
-     * source ({@link #symbolizeConfiguredSourceField}), the clock (a skew,
-     * inside {@link #focusedRootValue}) and now the manual field.  A path
-     * that minted a declared root without asking left the replay running the
-     * recording's value under an obligation that asked for another one --
-     * and publishing that value as {@code recordedValue} is how a
-     * counterfactual becomes the recording.</p>
-     */
-    static String fieldMintRecordedValue(
-            ActiveRegion active, SymbolizeAction action, Object owner,
-            String leafFieldSignature, String descriptor, Object value) {
-        return applyFocusedRootAssignment(active, action.symbol, owner,
-                leafFieldSignature, descriptor)
-                ? "" : recordedScalar(value);
-    }
-
-    private static void symbolizeFieldPath(ActiveRegion active,
-                                           SymbolizeAction action,
-                                           Object root,
-                                           List<String> path,
-                                           ConcolicVmBroker api) {
-        String label = FieldPathSpec.join(path);
-        if (path == null || path.isEmpty() || label.isEmpty()) {
-            return;
-        }
-        Object leafOwner = resolveFieldPathLeafOwner(root, path);
-        if (leafOwner == MissingValue.INSTANCE) {
-            return;
-        }
-        if (leafOwner == null) {
-            return;
-        }
-        symbolizeField(active, action, leafOwner, label, path, api);
-    }
-
-    private static Object materializePrimitiveValue(
-            ActiveRegion active, SymbolizeAction action, Object concrete,
-            List<String> path) {
-        ConcolicVmBroker api = engine();
-        List<String> exactPath = path == null
-                ? Collections.<String>emptyList() : path;
-        String fieldSignature = path == null ? ""
-                : action.exactLeafFieldSignature(path);
-        JsonElement carried;
-        try {
-            carried = primitiveBoxExpression(api, concrete);
-        } catch (PropagatedExpressionImportFailure unreadable) {
-            return concrete;
-        } catch (Throwable unsymbolized) {
-            carried = null;
-        }
-        if (retainPropagatedInput(active, action, concrete, carried,
-                action.symbol, exactPath, fieldSignature)) {
-            return concrete;
-        }
-        // The wave's value reaches a manual root here, because the cell a
-        // manual mint stands on IS the box the region reads back -- the
-        // same decision the declared field's writer takes
-        // (#focusedRootValue), so a clock's skew applies wherever the clock
-        // is read and not only where a configured source happens to be.
-        String assigned = focusedRootValue(active, action.symbol, concrete);
-        Object planted = concrete;
-        if (!assigned.isEmpty()) {
-            Object modeled = coerceModelValue("", assigned,
-                    concrete == null ? null : concrete.getClass());
-            if (modeled == null
-                    || modeled == UnsupportedReplayValue.INSTANCE) {
-                RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind
-                                .UNPRODUCIBLE_ANSWER,
-                        edu.uva.liftlab.graphchecker.contract.GapClass
-                                .BLOCKING, action.symbol,
-                        "the wave's value for this root could not be read as"
-                                + " the type the mint reads");
-                assigned = "";
-            } else {
-                planted = modeled;
-            }
-        }
-        Object fresh = freshPrimitiveBox(planted);
-        try {
-            api.symbolizeField(fresh, "value", manualMintLabel(action.symbol,
-                    active.activation.occurrenceId, true));
-            ensurePathRecordingStarted(active);
-            JsonElement expression = primitiveBoxExpression(api, fresh);
-            active.recordManualSymbolization(action, action.symbol,
-                    exactPath, fieldSignature, expression, true, false,
-                    // A replay that planted the wave's value read the wave's
-                    // value back, and publishing that as "recorded" is how a
-                    // counterfactual becomes the recording.
-                    assigned.isEmpty() ? recordedScalar(concrete) : "");
-            if (!assigned.isEmpty()) {
-                edu.uva.liftlab.graphchecker.runtime.FocusedReplay.planted(
-                        action.symbol);
-            }
-            return fresh;
-        } catch (Throwable throwable) {
-            return concrete;
-        }
-    }
-
-    /** Exact expression stored in a Java primitive wrapper's value field. */
-    private static JsonElement primitiveBoxExpression(
-            ConcolicVmBroker api, Object boxed) throws Exception {
-        if (boxed == null) return null;
-        String descriptor = JavaPrimitiveBoxing.primitiveDescriptor(
-                boxed.getClass().getName());
-        if (descriptor.isEmpty()) return null;
-        return engineExpression(api.fieldExpression(boxed,
-                boxed.getClass().getName(), "value", descriptor, boxed));
-    }
-
-    /**
-     * Writes one value the wave stated into one exact field.
-     *
-     * <p>The one place a replay's own value reaches the workload's heap:
-     * the focus row states it (a root assignment, or an answer at an
-     * attach) and this writes it where the declared cell is.</p>
-     */
-    static boolean writeModeledField(Object owner, String fieldSignature,
-                                     String valueType, String value) {
-        Field field = declaredInstanceField(owner, fieldSignature);
-        if (field == null) return false;
-        try {
-            Object modeled = coerceModelValue(valueType, value,
-                    field.getType());
-            if (modeled == UnsupportedReplayValue.INSTANCE) return false;
-            field.set(owner, modeled);
-            return true;
-        } catch (Throwable ignored) {
-            return false;
-        }
-    }
-
-    static Object coerceModelValue(String valueType, String value,
-                                   Class<?> requestedType) {
-        String type = safe(valueType).toUpperCase();
-        String raw = safe(value).trim();
-        try {
-            // Reference null must be decided before type-specific String
-            // decoding.
-            if ((requestedType == null || !requestedType.isPrimitive())
-                    && ("NULL".equals(type)
-                    || "null".equalsIgnoreCase(raw))) {
-                return null;
-            }
-            if (requestedType == boolean.class
-                    || requestedType == Boolean.class
-                    || "BOOL".equals(type)) {
-                return "true".equalsIgnoreCase(raw) || "1".equals(raw);
-            }
-            if (requestedType == byte.class || requestedType == Byte.class) {
-                return Byte.valueOf(raw);
-            }
-            if (requestedType == short.class || requestedType == Short.class) {
-                return Short.valueOf(raw);
-            }
-            if (requestedType == char.class
-                    || requestedType == Character.class) {
-                return raw.length() == 1 ? raw.charAt(0)
-                        : (char) Integer.parseInt(raw);
-            }
-            if (requestedType == int.class || requestedType == Integer.class) {
-                return Integer.valueOf(raw);
-            }
-            if (requestedType == long.class || requestedType == Long.class
-                    || "INT".equals(type) && requestedType == null) {
-                return Long.valueOf(raw);
-            }
-            if (requestedType == float.class || requestedType == Float.class) {
-                String decimal = SmtModelValueCodec.realToJavaLiteral(raw);
-                return decimal == null ? UnsupportedReplayValue.INSTANCE
-                        : Float.valueOf(decimal);
-            }
-            if (requestedType == double.class || requestedType == Double.class
-                    || "REAL".equals(type) && requestedType == null) {
-                String decimal = SmtModelValueCodec.realToJavaLiteral(raw);
-                return decimal == null ? UnsupportedReplayValue.INSTANCE
-                        : Double.valueOf(decimal);
-            }
-            if (requestedType == String.class || "STRING".equals(type)) {
-                return SmtModelValueCodec.decodeString(raw);
-            }
-        } catch (RuntimeException ignored) {
-            return UnsupportedReplayValue.INSTANCE;
-        }
-        return UnsupportedReplayValue.INSTANCE;
-    }
-
-    private static boolean isPrimitiveBox(Object value) {
-        return value instanceof Boolean || value instanceof Byte
-                || value instanceof Short || value instanceof Character
-                || value instanceof Integer || value instanceof Long
-                || value instanceof Float || value instanceof Double;
-    }
-
-    static Object resolveFieldPathLeafOwner(Object root, List<String> path) {
-        if (root == null || path == null || path.isEmpty()) {
-            return MissingValue.INSTANCE;
-        }
-        Object current = root;
-        for (int index = 0; index + 1 < path.size(); index++) {
-            String field = safe(path.get(index)).trim();
-            if (field.isEmpty()) {
-                return MissingValue.INSTANCE;
-            }
-            current = readPathSegment(current, field);
-            if (current == null || current == MissingValue.INSTANCE) {
-                return current;
-            }
-        }
-        String leaf = safe(path.get(path.size() - 1)).trim();
-        return leaf.isEmpty() ? MissingValue.INSTANCE : current;
-    }
-
-    private static Object readPathSegment(Object receiver, String segment) {
-        if (receiver == null || segment == null || segment.isEmpty()) {
-            return MissingValue.INSTANCE;
-        }
-        Integer index = pathIndex(segment);
-        if (index != null && receiver.getClass().isArray()) {
-            return index >= 0 && index < Array.getLength(receiver)
-                    ? Array.get(receiver, index) : MissingValue.INSTANCE;
-        }
-        if (index != null && receiver instanceof List) {
-            List<?> values = (List<?>) receiver;
-            return index >= 0 && index < values.size()
-                    ? values.get(index) : MissingValue.INSTANCE;
-        }
-        return readField(receiver, segment);
-    }
-
-    private static Integer pathIndex(String segment) {
-        String value = safe(segment).trim();
-        if (value.startsWith("[") && value.endsWith("]")) {
-            value = value.substring(1, value.length() - 1).trim();
-        }
-        if (!value.matches("[0-9]+")) return null;
-        try {
-            return Integer.valueOf(value);
-        } catch (NumberFormatException ignored) {
-            return null;
-        }
-    }
-
-    private static void symbolize(ActiveRegion active, SymbolizeAction action,
-                                  Object value, ConcolicVmBroker api) {
-        try {
-            boolean liveArray = value != null && value.getClass().isArray();
-            boolean declaredArray = action.declaresArrayInput(
-                    Collections.<String>emptyList());
-            if (declaredArray && !liveArray) return;
-            JsonElement carried = value == null ? null
-                    : engineExpression(api.expression(value));
-            if (retainPropagatedInput(active, action, value, carried,
-                    action.symbol, Collections.<String>emptyList(), "")) {
-                return;
-            }
-            if (containerValue(value)) {
-                return;
-            }
-            api.symbolize(value, manualMintLabel(action.symbol,
-                    active.activation.occurrenceId,
-                    isPrimitiveBox(value)));
-            ensurePathRecordingStarted(active);
-            JsonElement expression = value == null ? null
-                    : engineExpression(api.expression(value));
-            active.recordManualSymbolization(action, action.symbol,
-                    Collections.<String>emptyList(), "", expression,
-                    true, false);
-        } catch (Throwable throwable) {
-        }
-    }
-
-    /** Keeps a VM-propagated value as this consumer's input authority. */
-    private static boolean retainPropagatedInput(
-            ActiveRegion active, SymbolizeAction action, Object value,
-            JsonElement expression, String requestedSymbol,
-            List<String> fieldPath, String fieldSignature) {
-        if (!carriesInputAuthority(action, expression)) {
-            return observeCutPortWithoutMinting(active, action);
-        }
-        ensurePathRecordingStarted(active);
-        active.recordManualSymbolization(action, requestedSymbol, fieldPath,
-                fieldSignature, expression, false, true,
-                recordedScalar(value));
-        return true;
-    }
-
-    /**
-     * A declared communication cut port when nothing propagated into it yet.
-     *
-     * <p>Every caller of {@link #retainPropagatedInput} treats {@code false}
-     * as permission to mint, and a cut port must not take it.  The value at
-     * such a port is produced on the other side of the wire, and the
-     * instrumented frame installs the producer's expression with
-     * {@link #attachCommunicationLeaf} <em>after</em> this hook runs: the
-     * handoff pass and the materialization pass both insert after the cut
-     * statement, so the later pass lands closer to it and nothing symbolic
-     * has reached the local yet when the hook asks.  Minting there creates a
-     * free variable the attach immediately overwrites -- the program uses
-     * the producer's value while the formula keeps an existential root
-     * nothing constrains, which is how HDFS-17899 bug3 acquired four of them
-     * on {@code PBHelper.convert(BlockKeyProto)} and lost its reach
-     * condition to {@code true}.  A flow whose value never arrives is
-     * already named three times over, by {@link #attachCommunicationLeaf}'s
-     * own handoff gap, by {@code RPC_ATTACH_SENDER_EXPRESSION_MISSING} and
-     * by the composition's {@code WIRE_FLOW_VALUE_UNBOUND}; a mint hid all
-     * three behind a root that
-     * answered to nothing.</p>
-     *
-     * <p>Open path recording so the VM still resolves the writer and creates
-     * the read boundary, and return {@code true} to say the caller has
-     * nothing left to do.  Every other action that reaches this point was
-     * declared by the case, so minting is exactly what it asked for.</p>
-     */
-    private static boolean observeCutPortWithoutMinting(
-            ActiveRegion active, SymbolizeAction action) {
-        if (!declaredCommunicationCutPort(action)) return false;
-        ensurePathRecordingStarted(active);
-        return true;
-    }
-
-    /** Named refusal: a container is not an input this plan can model. */
-    static final String CONTAINER_INPUT_NOT_MODELLED =
-            "CONTAINER_INPUT_NOT_MODELLED";
-
-    private static boolean containerValue(Object value) {
-        return value != null && (value.getClass().isArray()
-                || value instanceof Map<?, ?>
-                || value instanceof Set<?>
-                || value instanceof Collection<?>);
-    }
-
-    /**
-     * Gives each manually minted primitive root the stable address of its
-     * planned occurrence. A propagated expression never reaches a mint call,
-     * and reference/container labels retain their existing wire identity.
-     */
-    static String manualMintLabel(String requestedSymbol,
-                                  String plannedOccurrenceId,
-                                  boolean primitiveRoot) {
-        String requested = safe(requestedSymbol);
-        if (!primitiveRoot) return requested;
-        String occurrence = safe(plannedOccurrenceId);
-        if (requested.isEmpty() || occurrence.isEmpty()) {
-            throw new IllegalArgumentException(
-                    "manual primitive mint requires symbol and occurrence");
-        }
-        return requested + ".occ."
-                + ArtifactIO.sha256(occurrence);
-    }
-
-    /**
-     * Whether the value that arrived is already this input's authority.
-     *
-     * <p>For an automatic input the answer is any propagated expression: a
-     * consumer boundary around a constant still records which producer case
-     * delivered it.  A <em>declared</em> primitive source is the one case
-     * where that is the wrong answer.  The experiment named the field to say
-     * "the search starts here"; by the time the read fires, a shared-state
-     * carrier has wrapped it in a {@code ReadFrom} whose every candidate is a
-     * constant, so the loose rule reports "already propagated" and no root is
-     * ever minted -- the field is declared symbolic and stays concrete.  Ask
-     * the strict question there instead: is anything symbolic actually inside?
-     * Non-primitives keep the loose rule, because a container or reference
-     * has no root to mint in the first place.</p>
-     */
-    /** Package-visible for the declared-mint contract test. */
-    static boolean carriesInputAuthority(
-            SymbolizeAction action, JsonElement expression) {
-        return action != null && action.declaredSymbolicRoot
-                && JavaPrimitiveSmtSemantics.primitive(action.javaType)
-                ? VmExpressionIr.carriesSymbolicValue(expression)
-                : VmExpressionIr.carriesPropagatedValue(expression);
-    }
-
-    /**
-     * The same question for the {@code CausynthSymbolicSource} hook path.
-     *
-     * <p>{@link #symbolizeConfiguredSourceField} accepts only a declared
-     * primitive field, so it is exactly the case
-     * {@link #carriesInputAuthority} narrows: the strict rule, with no
-     * action row to consult.  Keeping it a named seam is what the
-     * declared-mint contract test asserts against, because the hook itself
-     * cannot run without a live VM and an active region.</p>
-     */
-    /** Package-visible for the declared-mint contract test. */
-    static boolean configuredSourceCarriesAuthority(JsonElement carried) {
-        return VmExpressionIr.carriesSymbolicValue(carried);
-    }
-
-    /**
-     * Whether this action names a port {@code communication-mappings.jsonl}
-     * declared, on either side of the wire.
-     *
-     * <p>The finalizer stamps the classification on {@code sourceKind} when
-     * it mints the port, and that is what both stages read:
-     * {@code ConcolicScheduler.SymbolicInputSelection.declaredCutPort} asks
-     * the same question of the same field at plan time.</p>
-     */
-    static boolean declaredCommunicationCutPort(SymbolizeAction action) {
-        return action != null
-                && RuntimeSelectedRegionFinalizer.COMMUNICATION_SITE_PORT
-                .equals(action.sourceKind);
-    }
-
-    /** Diagnostic name of one refused mint at a declared cut port. */
-    static final String DECLARED_CUT_PORT_MINT_REFUSED =
-            "DECLARED_CUT_PORT_MINT_REFUSED";
-
-    private static Object readField(Object receiver, String name) {
-        if (receiver == null || name == null || name.isEmpty()) {
-            return MissingValue.INSTANCE;
-        }
-        Class<?> type = receiver.getClass();
-        while (type != null) {
-            try {
-                Field field = type.getDeclaredField(name);
-                if (Modifier.isStatic(field.getModifiers())) {
-                    return MissingValue.INSTANCE;
-                }
-                if (!field.isAccessible()) {
-                    field.setAccessible(true);
-                }
-                return field.get(receiver);
-            } catch (NoSuchFieldException ignored) {
-                type = type.getSuperclass();
-            } catch (Throwable throwable) {
-                return MissingValue.INSTANCE;
-            }
-        }
-        return MissingValue.INSTANCE;
-    }
-
-    static Object readExactField(
-            Object receiver, String fieldSignature) {
-        Field field = declaredInstanceField(receiver, fieldSignature);
-        if (field == null) return MissingValue.INSTANCE;
-        try {
-            return field.get(receiver);
-        } catch (Throwable ignored) {
-            return MissingValue.INSTANCE;
-        }
-    }
-
-    private static Field declaredInstanceField(
-            Object owner, String fieldSignature) {
-        DeclaredField declared = FieldPathSpec.declaredField(fieldSignature);
-        return declared == null ? null
-                : declaredInstanceField(owner, declared.owner(),
-                declared.name(), javaTypeDescriptor(declared.type()), true);
-    }
-
-    /** Exact live field named by a VM handoff export. */
-    private static Field declaredInstanceField(
-            Object owner, String declaringClass, String fieldName,
-            String descriptor) {
-        return declaredInstanceField(owner, declaringClass, fieldName,
-                descriptor, false);
-    }
-
-    /**
-     * The one non-static {@code declaringClass#fieldName} of {@code owner}
-     * whose type descriptor matches, made accessible.  {@code inherited} also
-     * accepts a field the declaring class inherits - which the field-signature
-     * form resolves and an exact VM export must not.
-     */
-    private static Field declaredInstanceField(
-            Object owner, String declaringClass, String fieldName,
-            String descriptor, boolean inherited) {
-        if (owner == null || safe(declaringClass).isEmpty()
-                || safe(fieldName).isEmpty() || safe(descriptor).isEmpty()) {
-            return null;
-        }
-        Class<?> type = owner.getClass();
-        while (type != null && !declaringClass.equals(type.getName())) {
-            type = type.getSuperclass();
-        }
-        while (type != null) {
-            try {
-                Field field = type.getDeclaredField(fieldName);
-                if (Modifier.isStatic(field.getModifiers())
-                        || !descriptor.equals(javaTypeDescriptor(
-                        field.getType().getTypeName()))) {
-                    return null;
-                }
-                if (!field.isAccessible()) field.setAccessible(true);
-                return field;
-            } catch (NoSuchFieldException absent) {
-                if (!inherited) return null;
-                type = type.getSuperclass();
-            } catch (Throwable inaccessible) {
-                return null;
-            }
-        }
-        return null;
-    }
-
-    private static String exactFieldSignature(Field field) {
-        return "<" + field.getDeclaringClass().getName() + ": "
-                + field.getType().getTypeName() + " " + field.getName()
-                + ">";
-    }
-
     static ActiveRegion activeRegion() {
         Deque<Long> tokens = CURRENT_TOKENS.get();
         Long token = tokens.peek();
@@ -4754,243 +1988,19 @@ public final class ConcolicRegionRuntime {
         return context.occurrence;
     }
 
-    private static ActiveRegion ownerRegion(long token) {
+    static ActiveRegion ownerRegion(long token) {
         ActiveRegion active = ACTIVE.get(token);
         return active != null && active.thread == Thread.currentThread()
                 ? active : null;
     }
 
     @SuppressWarnings("deprecation")
-    private static Object freshPrimitiveBox(Object value) {
-        if (value instanceof Integer) {
-            return new Integer(((Integer) value).intValue());
-        }
-        if (value instanceof Boolean) {
-            return new Boolean(((Boolean) value).booleanValue());
-        }
-        if (value instanceof Long) {
-            return new Long(((Long) value).longValue());
-        }
-        if (value instanceof Byte) {
-            return new Byte(((Byte) value).byteValue());
-        }
-        if (value instanceof Short) {
-            return new Short(((Short) value).shortValue());
-        }
-        if (value instanceof Character) {
-            return new Character(((Character) value).charValue());
-        }
-        if (value instanceof Float) {
-            return new Float(((Float) value).floatValue());
-        }
-        if (value instanceof Double) {
-            return new Double(((Double) value).doubleValue());
-        }
-        if (value instanceof String) {
-            return new String((String) value);
-        }
-        return value;
-    }
-
-    private static boolean instanceOfName(Class<?> type, String expected) {
-        if (type == null || expected == null || expected.isEmpty()) {
-            return expected == null || expected.isEmpty();
-        }
-        if (expected.equals(type.getName())) {
-            return true;
-        }
-        for (Class<?> iface : type.getInterfaces()) {
-            if (instanceOfName(iface, expected)) {
-                return true;
-            }
-        }
-        return instanceOfName(type.getSuperclass(), expected);
-    }
-
-    static boolean branchConditionMatches(String expression, boolean outcome,
-                                          JsonElement condition) {
-        if (condition == null || !condition.isJsonObject()) {
-            return false;
-        }
-        JsonObject object = condition.getAsJsonObject();
-        if (!"BinaryExpression".equals(optionalString(object, "_type"))) {
-            Boolean requiredValue = booleanValueRequiredByZeroBranch(
-                    expression, outcome);
-            Boolean representedValue = representedBooleanValue(object);
-            return requiredValue != null && representedValue != null
-                    && requiredValue.equals(representedValue);
-        }
-        Matcher matcher = BRANCH_OPERATOR.matcher(safe(expression));
-        if (!matcher.find()) {
-            return false;
-        }
-        String declared = matcher.group(1);
-        String expected = outcome ? declared
-                : BranchPredicateAlgebra.complementOperator(declared);
-        String observed = optionalString(object, "_op");
-        if (!observedOperatorImpliesBranch(expected, observed,
-                safe(expression).matches(".*\\bnull\\b.*"))) {
-            return false;
-        }
-        if (safe(expression).matches(".*\\bnull\\b.*")) {
-            return symbolicNull(object.get("_left"))
-                    || symbolicNull(object.get("_right"));
-        }
-        return true;
-    }
-
-    /** Resolves the Java boolean value selected by a Jimple zero test. */
-    private static Boolean booleanValueRequiredByZeroBranch(
-            String expression, boolean outcome) {
-        String rendered = safe(expression).trim();
-        Matcher matcher = BRANCH_OPERATOR.matcher(rendered);
-        if (!matcher.find()) return null;
-        String declared = matcher.group(1);
-        if (!("==".equals(declared) || "!=".equals(declared))) {
-            return null;
-        }
-        String left = rendered.substring(0, matcher.start()).trim();
-        String right = rendered.substring(matcher.end()).trim();
-        boolean leftZero = "0".equals(left);
-        boolean rightZero = "0".equals(right);
-        if (leftZero == rightZero) return null;
-        String effective = outcome ? declared
-                : BranchPredicateAlgebra.complementOperator(declared);
-        return "!=".equals(effective);
-    }
-
-    /**
-     * Returns the underlying Java boolean represented by an asserted engine
-     * condition, or {@code null} when the IR node is value-producing or its
-     * semantics are not part of the exact codec.
-     */
-    private static Boolean representedBooleanValue(JsonObject condition) {
-        if (!"OpStrExpression".equals(optionalString(condition, "_type"))) {
-            return null;
-        }
-        String operation = optionalString(condition, "_name");
-        int expectedArity;
-        if ("isEmpty".equals(operation)) {
-            expectedArity = 1;
-        } else if ("contains".equals(operation)
-                || "equals".equals(operation)
-                || "startsWith".equals(operation)
-                || "endsWith".equals(operation)) {
-            expectedArity = 2;
-        } else {
-            return null;
-        }
-        if (array(condition, "_param_list").size() != expectedArity) {
-            return null;
-        }
-        return !optionalBool(condition, "_is_not", false);
-    }
-
-    /**
-     * Soot may describe one selected Jimple edge as {@code >=}/{@code <=}
-     * while the asserted VM relation for that concrete edge is the stronger
-     * {@code >}, {@code <}, or {@code ==}.  Admit only that forward
-     * implication, then canonicalize the retained condition to the actual
-     * Jimple predicate below.  Numeric {@code *cmp*} bytecodes now propagate
-     * their symbolic trichotomy result to the consuming branch; this is not a
-     * fallback to the removed concrete compare-witness mechanism.
-     */
-    private static boolean observedOperatorImpliesBranch(
-            String expected, String observed, boolean nullComparison) {
-        if (expected.equals(observed)) {
-            return true;
-        }
-        if (nullComparison) {
-            return false;
-        }
-        return ">=".equals(expected)
-                && (">".equals(observed) || "==".equals(observed))
-                || "<=".equals(expected)
-                && ("<".equals(observed) || "==".equals(observed));
-    }
-
-    /** Returns the branch-level predicate while retaining the VM operands. */
-    private static JsonElement semanticBranchCondition(
-            String expression, boolean outcome, JsonElement condition) {
-        if (condition == null || !condition.isJsonObject()) {
-            return condition;
-        }
-        JsonObject original = condition.getAsJsonObject();
-        if (!"BinaryExpression".equals(optionalString(original, "_type"))) {
-            return condition;
-        }
-        Matcher matcher = BRANCH_OPERATOR.matcher(safe(expression));
-        if (!matcher.find()) {
-            return condition;
-        }
-        String expected = outcome ? matcher.group(1)
-                : BranchPredicateAlgebra.complementOperator(
-                matcher.group(1));
-        String observed = optionalString(original, "_op");
-        if (!observedOperatorImpliesBranch(expected, observed,
-                safe(expression).matches(".*\\bnull\\b.*"))
-                || expected.equals(observed)) {
-            return condition;
-        }
-        JsonObject normalized = shallowCopy(original);
-        normalized.addProperty("_op", expected);
-        return normalized;
-    }
-
-    /**
-     * One constraint, negated by spelling, or null.
-     *
-     * <p>The negation of a relational predicate is the same predicate over
-     * the same operands with the complementary operator, so nothing is
-     * re-evaluated and no second expression is built: the operands are the
-     * VM's own nodes.  Null when the constraint carries no relational
-     * operator to complement -- the run then states no term rather than one
-     * it cannot spell.</p>
-     */
-    private static JsonElement negatedCondition(JsonElement condition) {
-        if (condition == null || !condition.isJsonObject()) return null;
-        JsonObject original = condition.getAsJsonObject();
-        String operator = binaryOperator(original);
-        if (operator.isEmpty()) return null;
-        final String complement;
-        try {
-            complement = BranchPredicateAlgebra.complementOperator(operator);
-        } catch (IllegalArgumentException unsupported) {
-            return null;
-        }
-        JsonObject negated = shallowCopy(original);
-        negated.addProperty("_op", complement);
-        return negated;
-    }
-
-    private static String binaryOperator(JsonElement condition) {
-        return condition != null && condition.isJsonObject()
-                ? optionalString(condition.getAsJsonObject(), "_op") : "";
-    }
-
-    private static boolean symbolicNull(JsonElement element) {
-        if (element == null || !element.isJsonObject()) {
-            return false;
-        }
-        JsonObject object = element.getAsJsonObject();
-        return "SymbolExpression".equals(optionalString(object, "_type"))
-                && VmExpressionIr.SYMBOLIC_NULL.equals(
-                optionalString(object, "_exp"));
-    }
-
-    private static void resumePathCondition(ActiveRegion active,
-                                            ConcolicVmBroker api) {
-        try {
-            api.resumePathCondition();
-        } catch (Throwable throwable) {
-        }
-    }
 
     /**
      * Opens the Java-side branch-observation gate when the first selected
      * input becomes symbolic.
      */
-    private static void ensurePathRecordingStarted(ActiveRegion active) {
+    static void ensurePathRecordingStarted(ActiveRegion active) {
         if (active.pathRecordingStarted) return;
         active.pathRecordingStarted = true;
     }
@@ -5042,10 +2052,6 @@ public final class ConcolicRegionRuntime {
         return "";
     }
 
-    enum MissingValue { INSTANCE }
-
-    private enum UnsupportedReplayValue { INSTANCE }
-
     static final class AccessorCallContext {
         private final long contextToken;
         final long regionToken;
@@ -5085,211 +2091,6 @@ public final class ConcolicRegionRuntime {
                     && callSiteId.equals(safe(actualCallSiteId))
                     && declaredCallee.equals(safe(actualDeclaredCallee))
                     && receiver == actualFieldOwner;
-        }
-    }
-
-    private static final class SwitchExpectation {
-        private final String branchKind;
-        private final List<Integer> caseKeys;
-        private final int observedSuccessorIndex;
-
-        private SwitchExpectation(String branchKind, List<Integer> caseKeys,
-                                  int observedSuccessorIndex) {
-            this.branchKind = branchKind;
-            this.caseKeys = Collections.unmodifiableList(
-                    new ArrayList<>(caseKeys));
-            this.observedSuccessorIndex = observedSuccessorIndex;
-        }
-
-        private static SwitchExpectation parse(
-                String branchKind, String encodedCaseKeys,
-                int observedSuccessorIndex) {
-            String kind = safe(branchKind);
-            if (!("TABLE_SWITCH".equals(kind)
-                    || "LOOKUP_SWITCH".equals(kind))) {
-                throw new IllegalArgumentException(
-                        "unsupported branch kind " + kind);
-            }
-            List<Integer> keys = new ArrayList<>();
-            String encoded = safe(encodedCaseKeys);
-            if (!encoded.isEmpty()) {
-                for (String token : encoded.split(",", -1)) {
-                    if (!token.matches("-?(?:0|[1-9][0-9]*)")) {
-                        throw new IllegalArgumentException(
-                                "malformed switch key " + token);
-                    }
-                    try {
-                        keys.add(Integer.parseInt(token));
-                    } catch (NumberFormatException malformed) {
-                        throw new IllegalArgumentException(
-                                "switch key outside int domain " + token,
-                                malformed);
-                    }
-                }
-            }
-            if (keys.isEmpty() || observedSuccessorIndex < 0
-                    || observedSuccessorIndex > keys.size()) {
-                throw new IllegalArgumentException(
-                        "successor " + observedSuccessorIndex
-                                + " outside switch domain [0,"
-                                + keys.size() + "]");
-            }
-            if ("TABLE_SWITCH".equals(kind)) {
-                for (int index = 1; index < keys.size(); index++) {
-                    if ((long) keys.get(index - 1) + 1L
-                            != (long) keys.get(index)) {
-                        throw new IllegalArgumentException(
-                                "tableswitch keys are not dense/ordered");
-                    }
-                }
-            } else {
-                Set<Integer> distinct = new LinkedHashSet<>(keys);
-                if (distinct.size() != keys.size()) {
-                    throw new IllegalArgumentException(
-                            "lookupswitch keys are not unique");
-                }
-            }
-            return new SwitchExpectation(kind, keys,
-                    observedSuccessorIndex);
-        }
-
-        private boolean caseArm() {
-            return observedSuccessorIndex < caseKeys.size();
-        }
-    }
-
-    /**
-     * One decision an instrumented site made: the outcome a binary branch
-     * took, or the successor a multiway switch selected out of its static
-     * case-key domain.
-     *
-     * <p>The stages of one observation -- record the decision behind a closed
-     * symbolic gate, record it at a replay-invocation boundary, capture it
-     * against the open VM path-condition window, observe it against the
-     * recorded replay prefix, and address the target reach it may complete --
-     * ask the same questions of both kinds, and are written once against
-     * this.  A switch carries its {@link SwitchExpectation}; a binary branch
-     * carries none.</p>
-     */
-    private static final class BranchDecision {
-        private final boolean outcome;
-        private final SwitchExpectation expected;
-
-        private BranchDecision(boolean outcome, SwitchExpectation expected) {
-            this.outcome = outcome;
-            this.expected = expected;
-        }
-
-        static BranchDecision binary(boolean outcome) {
-            return new BranchDecision(outcome, null);
-        }
-
-        static BranchDecision multiway(SwitchExpectation expected) {
-            return new BranchDecision(expected.caseArm(), expected);
-        }
-
-        /** The source-level outcome this decision took. */
-        boolean outcome() { return outcome; }
-
-        /**
-         * Tells the replay ledger this decision ran, and whether it is the
-         * decision the recorded prefix was waiting for.  A successor is the
-         * replay authority itself, so there is no second, symbolic reading of
-         * a switch for the prefix to disagree with.
-         */
-        /** How {@code REPLAY_OBSERVE} names the decision it just observed. */
-        String replayTrace(boolean matched) {
-            return expected == null
-                    ? " outcome=" + outcome + " matched=" + matched
-                    : " successor=" + expected.observedSuccessorIndex;
-        }
-
-        /** This decision's exact capture while the VM window is open. */
-        boolean recordPaused(
-                ActiveRegion active, ConcolicVmBroker api, String method,
-                int unitIndex, String expression, int occurrence,
-                long vmEventId) throws Exception {
-            return expected == null
-                    ? recordBranchPaused(active, api, method, unitIndex,
-                    expression, occurrence, outcome, vmEventId)
-                    : recordSwitchBranchPaused(active, api, method, unitIndex,
-                    expression, occurrence, expected, vmEventId);
-        }
-
-        /** What an absent replay-boundary handle is refused as. */
-        String boundaryNoun() {
-            return expected == null ? "replay loop boundary"
-                    : "replay loop switch boundary";
-        }
-
-        /** What an absent prepared event is refused as. */
-        String preparedNoun() {
-            return expected == null ? "prepared branch" : "prepared switch";
-        }
-
-        /** What a failed exact-event observation is reported as. */
-        String observationNoun() {
-            return expected == null ? "branch/PC" : "switch/PC";
-        }
-
-        /**
-         * Whether a bounded-loop permutation may address the planned target
-         * occurrence from a different one.  A binary branch is the decision
-         * the solver flips, so it may; a multiway successor is retained as a
-         * path assumption, so it addresses only the planned occurrence.
-         */
-        boolean addressesPermutedTargetOccurrence() {
-            return expected == null;
-        }
-
-    }
-
-    private static final class VmBranchEventAttestation {
-        private final List<Integer> conditionIndices;
-        private final boolean valid;
-        private final String error;
-
-        private VmBranchEventAttestation(List<Integer> conditionIndices,
-                                         boolean valid,
-                                         String error) {
-            this.conditionIndices = Collections.unmodifiableList(
-                    new ArrayList<>(conditionIndices));
-            this.valid = valid;
-            this.error = safe(error);
-        }
-
-        private static VmBranchEventAttestation valid(
-                List<Integer> conditionIndices) {
-            return new VmBranchEventAttestation(conditionIndices, true, "");
-        }
-
-        private static VmBranchEventAttestation invalid(String error) {
-            return new VmBranchEventAttestation(
-                    Collections.<Integer>emptyList(), false, error);
-        }
-    }
-
-    private static final class PreparedBranch {
-        private final long handle;
-        private final String method;
-        private final int unitIndex;
-        private final String expression;
-        private final int occurrence;
-
-        private PreparedBranch(long handle, String method, int unitIndex,
-                               String expression, int occurrence) {
-            this.handle = handle;
-            this.method = safe(method);
-            this.unitIndex = unitIndex;
-            this.expression = safe(expression);
-            this.occurrence = occurrence;
-        }
-
-        private boolean matches(String actualMethod, int actualUnitIndex,
-                                String actualExpression) {
-            return method.equals(safe(actualMethod))
-                    && unitIndex == actualUnitIndex
-                    && expression.equals(safe(actualExpression));
         }
     }
 
@@ -5358,17 +2159,6 @@ public final class ConcolicRegionRuntime {
     static final class ActiveRegion {
         /** The thread this activation ran on, as the recording names it. */
         final String threadName = Thread.currentThread().getName();
-        /**
-         * The request in force when this activation was entered, or "".
-         *
-         * <p>Never an admission condition -- an occurrence is (node, epoch,
-         * region, k) and the request is a circumstance -- but the circumstance
-         * has to be on the row: a task anchored to one request answered by an
-         * activation that ran under none is a divergence IMPORT must name,
-         * and nothing published it.</p>
-         */
-        final String entryRequestKey =
-                RuntimeTraceContext.current().requestKey;
         final long token;
         /** The one task whose region-local path this activation records. */
         final RuntimeTask activation;
@@ -5385,25 +2175,12 @@ public final class ConcolicRegionRuntime {
         edu.uva.liftlab.graphchecker.contract.OccurrenceAddress d3Address;
         /** Whether this activation counts against its address's set. */
         private boolean activationClaimed;
-        /**
-         * The enclosing invocation these loop bodies were charged to: its
-         * entry event, the thread that ran it, and the k it was counted at.
-         *
-         * <p>Zero and "" on a region that is not a loop body.  An
-         * occurrence is (node, epoch, region, k-th activation), and its loop
-         * bodies are its own; bodies of a different enclosing invocation --
-         * another thread, another entry event -- belong to a different k by
-         * definition, so the row says which one it was.</p>
-         */
-        long enclosingInvocationEvent;
-        String enclosingInvocationThread = "";
-        int enclosingInvocationOrdinal;
         /** VM context whose writes belong to this materialized activation. */
         long vmContextId;
         /** Exact event-ledger entry of this native region frame. */
         long vmRegionEnterEventId;
         final Object receiver;
-        private final Thread thread;
+        final Thread thread;
         /** Entry lacked local producer-source evidence; OUT must confirm it. */
         /** Exact outgoing message leaves this provisional activation reached. */
         final AtomicBoolean finished = new AtomicBoolean();
@@ -5450,17 +2227,6 @@ public final class ConcolicRegionRuntime {
 
         /** Exact configured-source and planned-action observations. */
         final List<JsonObject> symbolizedRows = new ArrayList<>();
-        /**
-         * Mint sites, and the fields they mint, this activation reached.
-         *
-         * <p>A configured source mints one symbol per element of the walk it
-         * runs, and those occurrences are recorded here rather than in
-         * the ordinary input-action ledger: the mint hook is a call-site
-         * phase, not an instrumented field access. A capture anchored on one of those
-         * per-element ports is answered by the site having run.</p>
-         */
-        private final Set<String> reachedConfiguredSourceSites =
-                new LinkedHashSet<>();
         final List<JsonObject> branchMappings = new ArrayList<>();
         /**
          * Case-local references into the VM's own handoff ledger: the
@@ -5478,10 +2244,10 @@ public final class ConcolicRegionRuntime {
         final Map<String, JsonObject> sharedStateRecords =
                 new LinkedHashMap<>();
         /** Read-out batch every record of this activation is stamped with. */
-        private final Set<String> materialized = new LinkedHashSet<>();
+        final Set<String> materialized = new LinkedHashSet<>();
         private final Map<String, Integer> branchOccurrences =
                 new LinkedHashMap<>();
-        private final OccurrenceCounter
+        final OccurrenceCounter
                 materializationOccurrences =
                 new OccurrenceCounter();
         private final Map<String, Integer> accessorCallOccurrences =
@@ -5508,11 +2274,9 @@ public final class ConcolicRegionRuntime {
         /** One shared expression DAG for all read-outs in this VM session. */
         final VmExpressionTable.Store expressionStore;
         private long preparedBranchSequence;
-        private int lastPathConditionSize;
+        int lastPathConditionSize;
         /** Whether this activation's bounded local path has been cut. */
         boolean loopBoundCut;
-        /** Whether this activation has spent its replay loop resource cap. */
-        boolean replayResourceCut;
         boolean pathRecordingStarted;
 
         ActiveRegion(long token, RuntimeTask activation,
@@ -5562,7 +2326,7 @@ public final class ConcolicRegionRuntime {
          * Charges one body of this loop to the replay resource cap, returning
          * the cut that ends the activation once the cap is spent.
          */
-        private synchronized ReplayLoopResourceCut chargeLoopBody(
+        synchronized ReplayLoopResourceCut chargeLoopBody(
                 String loopId) {
             int maxBodies = activation.maxLoopBodies(loopId);
             chargedLoopBodies++;
@@ -5578,7 +2342,6 @@ public final class ConcolicRegionRuntime {
                             invocation.intValue());
             long entered = loopBackedges.recordBody(budgetKey);
             if (entered <= maxBodies) return null;
-            replayResourceCut = true;
             return new ReplayLoopResourceCut(loopId, maxBodies, entered);
         }
 
@@ -5589,7 +2352,7 @@ public final class ConcolicRegionRuntime {
          * budget is scoped by which invocation this is; that an invocation
          * is open at all is the whole of what the hook states now.</p>
          */
-        private synchronized void openLoopInvocation(String loopId) {
+        synchronized void openLoopInvocation(String loopId) {
             if (loopId.isEmpty()
                     || activeLoopInvocations.containsKey(loopId)) {
                 return;
@@ -5598,7 +2361,7 @@ public final class ConcolicRegionRuntime {
                     loopInvocationOrdinals.merge(loopId, 1, Integer::sum));
         }
 
-        private synchronized void closeLoopInvocation(String loopId) {
+        synchronized void closeLoopInvocation(String loopId) {
             if (!loopId.isEmpty()) activeLoopInvocations.remove(loopId);
         }
 
@@ -5610,7 +2373,7 @@ public final class ConcolicRegionRuntime {
         }
 
         /** k for the next attach of one element in this activation. */
-        private int nextHandoffAttach(String elementKey) {
+        int nextHandoffAttach(String elementKey) {
             Integer previous = handoffAttachOrdinals.get(elementKey);
             int ordinal = previous == null ? 1 : previous + 1;
             handoffAttachOrdinals.put(elementKey, ordinal);
@@ -5629,7 +2392,7 @@ public final class ConcolicRegionRuntime {
          * with the occurrence of the site it charged, or {@code 0} where
          * nothing was recorded.
          */
-        private int recordConcreteDecision(
+        int recordConcreteDecision(
                 String method, int unitIndex, BranchDecision decision) {
             try {
                 // observeDecision is the only caller and it has already
@@ -5655,8 +2418,8 @@ public final class ConcolicRegionRuntime {
         private void recordDecisionRow(
                 String method, int unitIndex, int occurrence,
                 boolean outcome) {
-            JsonObject mapping = branchMapping(method, unitIndex, occurrence,
-                    0L);
+            JsonObject mapping = BranchObservation.branchMapping(
+                    method, unitIndex, occurrence, 0L);
             mapping.addProperty("outcome", outcome);
             mapping.addProperty("rawPathConditionSize", 0);
             mapping.addProperty("rawPathConditionBaseline", 0);
@@ -5671,36 +2434,33 @@ public final class ConcolicRegionRuntime {
          * obligation and the published decisions, and a second account of
          * the same decisions is how two answers to one question appear.</p>
          */
-        private boolean observeReplayDecision(
+        boolean observeReplayDecision(
                 String siteId, int occurrence, BranchDecision decision) {
             if (d3Address == null) return true;
             edu.uva.liftlab.graphchecker.runtime.FocusedReplay
                     .observeDecision(d3Address, siteId, occurrence,
                             decision.outcome);
-            boolean contradicted = edu.uva.liftlab.graphchecker.runtime
-                    .FocusedReplay.contradicted(d3Address);
-            if (contradicted) {
-            }
-            return !contradicted;
+            return !edu.uva.liftlab.graphchecker.runtime.FocusedReplay
+                    .contradicted(d3Address);
         }
 
         /**
          * Whether this activation has already walked a branch its
          * obligation forbids.
          */
-        private boolean replayPrefixContradicted() {
+        boolean replayPrefixContradicted() {
             return d3Address != null
                     && edu.uva.liftlab.graphchecker.runtime.FocusedReplay
                             .contradicted(d3Address);
         }
 
-        private int nextLocalMaterializationOccurrence(
+        int nextLocalMaterializationOccurrence(
                 String method, int unitIndex, String local) {
             return materializationOccurrences.local(method, unitIndex,
                     local);
         }
 
-        private PreparedBranch prepareBranch(
+        PreparedBranch prepareBranch(
                 String method, int unitIndex, String expression)
                 throws Exception {
             String site = SiteId.render(method, unitIndex);
@@ -5717,14 +2477,14 @@ public final class ConcolicRegionRuntime {
             return prepared;
         }
 
-        private PreparedBranch takePreparedBranch(long handle) {
+        PreparedBranch takePreparedBranch(long handle) {
             return handle <= 0L ? null : preparedBranches.remove(handle);
         }
 
         /**
          * Records the declared target branch event this occurrence decided.
          */
-        private void recordTargetReach(String siteId, int occurrence,
+        void recordTargetReach(String siteId, int occurrence,
                                        boolean outcome, long vmEventId) {
             if (targetReach != null) return;
             JsonObject reach = new JsonObject();
@@ -5741,32 +2501,47 @@ public final class ConcolicRegionRuntime {
         /**
          * Records one firing of a fault marker this replay could not answer.
          *
-         * <p>{@code controlled} decides whether it blocks: a marker the plan
-         * declares is a question the search asked and the model did not
-         * answer, and the polarity it would otherwise default to is the very
-         * one the search exists to flip.  A marker the plan never declared
-         * put no question to this replay.</p>
-         */
-        /**
-         * Records that one firing was answered from the recording, not from
-         * a model.
+         * <p>{@link #materializeSymbolicBoolean} must hand the workload a
+         * {@code boolean}: the marker stands at a call site the program is
+         * about to branch on, so there is no third value to return and no
+         * point at which the replay can stop.  What it must not do is let
+         * the {@code false} it returns pass for an answer.</p>
          *
-         * <p>It is not a gap -- the question has an answer -- but a witness
-         * that moves nothing has to be distinguishable from one that moved a
-         * marker the solver chose, so which firings the seed answered is
-         * stated rather than left to be inferred from an absent
-         * assignment.</p>
+         * <p>There are two answers, and a firing is unanswered only when it
+         * has neither.  A flip replay answers from its model assignment; a
+         * seed replay has no model by construction and answers from the
+         * recording's own polarity, which the plan states as the action's
+         * {@code primitiveValue} gated on {@code observed}.</p>
+         *
+         * <p>{@code controlled} decides the class, and it decides it the
+         * way the frame does.  A marker the plan declares is a question the
+         * search asked and neither answer came, so the polarity handed back
+         * is the very one the obligation asked to move: the run did not run
+         * what was asked, which is BLOCKING and is exactly what {@code
+         * ASSIGNMENT_UNPLANTED} names.  A marker the plan never declared
+         * put no question to this replay -- the recording ran the same hook
+         * to the same {@code false} -- so it is named on the diagnostic
+         * stream and nothing is refused.</p>
+         *
+         * <p>Both bodies used to be empty, so a fault that fired the plan's
+         * controls and could not answer was silently {@code false}.</p>
          */
-        void noteRecordedFaultAnswer(String name, int occurrence,
-                                     boolean recorded) {
-        }
-
         void noteFaultIdle(String name, int occurrence, boolean controlled,
                            String reason) {
-            String subject = "marker=" + safe(name) + "#" + occurrence
-                    + " reason=" + safe(reason);
+            String subject = "marker=" + safe(name) + "#" + occurrence;
             if (controlled) {
+                RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind.ASSIGNMENT_UNPLANTED,
+                        edu.uva.liftlab.graphchecker.contract.GapClass.BLOCKING, subject,
+                        "this activation's plan controls the marker and had"
+                                + " neither answer for this firing ("
+                                + safe(reason) + "), so it ran the polarity"
+                                + " the obligation asked to move");
+                return;
             }
+            RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind.DECLARATION_MISSING,
+                    edu.uva.liftlab.graphchecker.contract.GapClass.DIAGNOSTIC, subject,
+                    "this fault marker fired where the case declares no"
+                            + " action for it (" + safe(reason) + ")");
         }
 
         /**
@@ -5779,7 +2554,7 @@ public final class ConcolicRegionRuntime {
          * gap - that is a plan/instrumentation disagreement, not a free
          * occurrence.</p>
          */
-        private synchronized SourceSiteEntry observeConfiguredSourceEntry(
+        synchronized RootMint.SourceSiteEntry observeConfiguredSourceEntry(
                 String sourceId, String runtimeFieldSignature) {
             CausynthTraceRecorder.ActiveCallSiteContext context =
                     CausynthTraceRecorder.currentCallSiteContext();
@@ -5829,14 +2604,12 @@ public final class ConcolicRegionRuntime {
                                 + " the catalog site declares");
                 return null;
             }
-            reachedConfiguredSourceSites.add(matched.siteId());
-            if (!site.isEmpty()) reachedConfiguredSourceSites.add(site);
-            return new SourceSiteEntry(matched, site);
+            return new RootMint.SourceSiteEntry(matched, site);
         }
 
         /** Publishes one mint row for one entry of a declared site. */
-        private synchronized void recordConfiguredSourceMint(
-                SourceSiteEntry entry, String sourceId,
+        synchronized void recordConfiguredSourceMint(
+                RootMint.SourceSiteEntry entry, String sourceId,
                 String fieldSignature, String symbol,
                 JsonElement expression, boolean reused,
                 String recordedValue) {
@@ -5891,7 +2664,7 @@ public final class ConcolicRegionRuntime {
          * The requested VM label is descriptive only; downstream authority is
          * derived from the exact expression, never from this label.
          */
-        private synchronized void recordManualSymbolization(
+        synchronized void recordManualSymbolization(
                 SymbolizeAction action, String requestedSymbol,
                 List<String> fieldPath, String fieldSignature,
                 JsonElement expression, boolean minted, boolean reused) {
@@ -5914,7 +2687,7 @@ public final class ConcolicRegionRuntime {
          * that as "recorded" is how a counterfactual becomes the
          * recording.</p>
          */
-        private synchronized void recordManualSymbolization(
+        synchronized void recordManualSymbolization(
                 SymbolizeAction action, String requestedSymbol,
                 List<String> fieldPath, String fieldSignature,
                 JsonElement expression, boolean minted, boolean reused,
@@ -6100,90 +2873,6 @@ public final class ConcolicRegionRuntime {
         }
     }
 
-    /** Per-activation, per-CFG-edge completed traversal accounting. */
-    static final class LoopBackedgeBudget {
-        private static final String SCOPE_SEPARATOR = "\u0000definition:";
-        private final int maxTraversals;
-        private final Map<String, Integer> traversals =
-                new LinkedHashMap<>();
-        private final Map<String, Integer> bodies = new LinkedHashMap<>();
-
-        LoopBackedgeBudget(LoopBoundPolicy policy) {
-            if (policy == null) {
-                throw new IllegalArgumentException(
-                        "loop bound policy is required");
-            }
-            maxTraversals = policy.maxBackedgeTraversals();
-        }
-
-        long recordTraversal(String backedgeId) {
-            Integer previous = traversals.get(backedgeId);
-            int completed = previous == null ? 0 : previous;
-            long attempted = (long) completed + 1L;
-            // Body one executes before this edge. Attempt K would enter body
-            // K+1, so only the first K-1 backedge transfers may complete.
-            if (attempted < maxTraversals) {
-                traversals.put(backedgeId, (int) attempted);
-            }
-            return attempted;
-        }
-
-        static String scoped(String loopId, long invocation) {
-            return safe(loopId) + SCOPE_SEPARATOR + invocation;
-        }
-
-        /**
-         * Counts one body of this loop against the replay resource cap and
-         * returns the body number just entered.
-         */
-        long recordBody(String loopId) {
-            long entered = (long) bodies.getOrDefault(loopId, 0) + 1L;
-            bodies.put(loopId, (int) Math.min(entered, Integer.MAX_VALUE));
-            return entered;
-        }
-
-    }
-
-    /**
-     * Non-workload control signal aborting a replay that has spent its loop
-     * resource cap.
-     */
-    public static final class ReplayLoopResourceCut extends Error {
-        private static final long serialVersionUID = 1L;
-        static final String REASON = "REPLAY_LOOP_RESOURCE_CAP";
-        private final String loopId;
-        private final int maxBodies;
-        private final long attemptedBody;
-
-        ReplayLoopResourceCut(String loopId, int maxBodies,
-                              long attemptedBody) {
-            super(REASON + " at " + safe(loopId) + ": body "
-                    + attemptedBody + " exceeds " + maxBodies);
-            this.loopId = safe(loopId);
-            this.maxBodies = maxBodies;
-            this.attemptedBody = attemptedBody;
-        }
-
-    }
-
-    /** Non-workload control signal used solely to abort a bounded path. */
-    public static final class LoopBoundCut extends Error {
-        private static final long serialVersionUID = 1L;
-        private final String backedgeId;
-        private final int maxTraversals;
-        private final String reason;
-
-        LoopBoundCut(String backedgeId, int maxTraversals, String reason) {
-            super("concolic path cut at " + safe(backedgeId)
-                    + " after " + maxTraversals
-                    + " loop body iterations");
-            this.backedgeId = safe(backedgeId);
-            this.maxTraversals = maxTraversals;
-            this.reason = safe(reason);
-        }
-
-    }
-
     static final class SymbolizeAction {
         final String symbol;
         /** Canonical identity of the exact frozen task action row. */
@@ -6336,11 +3025,6 @@ public final class ConcolicRegionRuntime {
             return javaTypeDescriptor(javaType).startsWith("[");
         }
 
-        boolean declaresReferenceInput() {
-            String descriptor = javaTypeDescriptor(javaType);
-            return descriptor.startsWith("L") || descriptor.startsWith("[");
-        }
-
         boolean matchesLocal(String actualMethod,
                                      int actualUnitIndex,
                                      String actualLocal) {
@@ -6452,8 +3136,7 @@ public final class ConcolicRegionRuntime {
 
         boolean matchesField(String actualMethod,
                                      int actualUnitIndex, Object owner,
-                                     String signature, String actualField,
-                                     Boolean accessorContextOverride) {
+                                     String signature, String actualField) {
             if (!("FIELD_ACCESS".equals(bindingMode)
                     || "HEAP_OBJECT_FIELD".equals(location))) {
                 return false;
@@ -6478,13 +3161,10 @@ public final class ConcolicRegionRuntime {
                     return false;
                 }
             }
-            Boolean lightweightContext = accessorContextOverride != null
-                    ? null : lightweightAccessorContextMatches(
+            Boolean lightweightContext = lightweightAccessorContextMatches(
                     accessorCallerMethod, accessorCallUnitIndex,
                     accessorSiteId, accessorDeclaredCallee, owner);
-            boolean accessorContextMatches = accessorContextOverride != null
-                    ? accessorContextOverride
-                    : lightweightContext != null
+            boolean accessorContextMatches = lightweightContext != null
                     ? lightweightContext
                     : CausynthTraceRecorder.currentCallParentSiteMatches(
                     accessorCallerMethod, accessorCallUnitIndex,
