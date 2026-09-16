@@ -10,6 +10,7 @@ import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.GapRow;
 import edu.uva.liftlab.graphchecker.contract.Obligation;
 import edu.uva.liftlab.graphchecker.contract.ObligationResult;
+import edu.uva.liftlab.graphchecker.contract.ObligationDir;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.RowCodec;
 import edu.uva.liftlab.graphchecker.contract.Task;
@@ -46,9 +47,6 @@ import java.util.Map;
  * outcomes the next wave reads, never a failure of the run.</p>
  */
 public final class ObligationSolverMain {
-    /** The file the focus row lives in, beside the seed's own plan. */
-    public static final String FOCUSED_TASK = "focused_task.jsonl";
-
     private ObligationSolverMain() {
     }
 
@@ -137,9 +135,9 @@ public final class ObligationSolverMain {
         JsonObject row = ExploreCodec.writeResult(result);
         row.addProperty("schemaVersion", 1);
         row.addProperty("kind", "OBLIGATION_RESULT");
-        RowCodec.writeJsonl(out.resolve("obligation_result.jsonl"),
+        RowCodec.writeJsonl(out.resolve(ObligationDir.RESULT),
                 Collections.singletonList(row));
-        RowCodec.writeAll(out.resolve("obligation.jsonl"),
+        RowCodec.writeAll(out.resolve(ObligationDir.OBLIGATION),
                 Collections.singletonList(obligation),
                 ExploreCodec::writeObligation);
         RowCodec.writeAll(out.resolve("gaps.jsonl"),
@@ -158,7 +156,7 @@ public final class ObligationSolverMain {
         if (result.verdict() == Verdict.SAT_MODEL_READY) {
             focus.add(replayTask(task, obligation, clockDeltas));
         }
-        RowCodec.writeJsonl(out.resolve(FOCUSED_TASK), focus);
+        RowCodec.writeJsonl(out.resolve(ObligationDir.FOCUSED_TASK), focus);
         return row;
     }
 

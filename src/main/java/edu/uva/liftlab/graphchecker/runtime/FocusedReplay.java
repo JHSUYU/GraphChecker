@@ -4,6 +4,7 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.contract.Obligation;
 import edu.uva.liftlab.graphchecker.contract.ObligationResult;
+import edu.uva.liftlab.graphchecker.contract.ObligationDir;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.RowCodec;
 import edu.uva.liftlab.graphchecker.contract.Task;
@@ -284,9 +285,6 @@ public final class FocusedReplay {
 
     /** Where the campaign names this replay's execution task plan. */
     public static final String PLAN_PROPERTY = "causynth.concolic.task.plan";
-    /** The file the obligation's solver worker writes the focus row into. */
-    public static final String FOCUS_FILE = "focused_task.jsonl";
-
     /**
      * The focus row this replay was handed: one obligation's flip.
      *
@@ -371,7 +369,7 @@ public final class FocusedReplay {
         String worker = Text.safe(
                 System.getenv("CAUSYNTH_CONCOLIC_WORKER_DIR"));
         if (!worker.isEmpty()) {
-            Path inWorker = readable(Paths.get(worker).resolve(FOCUS_FILE));
+            Path inWorker = readable(Paths.get(worker).resolve(ObligationDir.FOCUSED_TASK));
             if (inWorker != null) return inWorker;
         }
         String plan = Text.safe(System.getProperty(PLAN_PROPERTY));
@@ -380,7 +378,7 @@ public final class FocusedReplay {
         }
         if (plan.isEmpty()) return null;
         Path beside = Paths.get(plan).getParent();
-        return beside == null ? null : readable(beside.resolve(FOCUS_FILE));
+        return beside == null ? null : readable(beside.resolve(ObligationDir.FOCUSED_TASK));
     }
 
     private static Path readable(Path file) {

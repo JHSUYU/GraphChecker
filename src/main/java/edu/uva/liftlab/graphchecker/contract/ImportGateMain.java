@@ -6,7 +6,6 @@ import com.google.gson.JsonObject;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -136,41 +135,19 @@ public final class ImportGateMain {
         for (SessionReader session : sessions) {
             byId.put(session.sessionId(), session);
         }
-        if (!Files.isDirectory(iteration)) return gaps;
-        try (DirectoryStream<Path> waves =
-                     Files.newDirectoryStream(iteration, "obligations-*")) {
-            for (Path wave : waves) {
-                if (!Files.isDirectory(wave)) continue;
-                try (DirectoryStream<Path> workers =
-                             Files.newDirectoryStream(wave)) {
-                    for (Path worker : workers) {
-                        gaps.addAll(flip(worker, byId));
-                    }
-                }
-            }
+        for (ObligationDir worker : ObligationDir.workersIn(iteration)) {
+            gaps.addAll(flip(worker, byId));
         }
         return gaps;
     }
 
-    private static List<GapRow> flip(Path worker,
+    private static List<GapRow> flip(ObligationDir worker,
                                      Map<String, SessionReader> byId)
             throws IOException {
         List<GapRow> gaps = new ArrayList<GapRow>();
-        Path focus = worker.resolve("focused_task.jsonl");
-        Path result = worker.resolve("obligation_result.jsonl");
-        if (!Files.isRegularFile(focus) || !Files.isRegularFile(result)) {
-            return gaps;
-        }
-        List<JsonObject> rows = RowCodec.readJsonl(result);
-        String sessionId = "";
-        for (JsonObject row : rows) {
-            if (row.has("sessionId") && row.get("sessionId").isJsonPrimitive()) {
-                sessionId = row.get("sessionId").getAsString();
-            }
-        }
-        SessionReader replay = byId.get(sessionId);
+        SessionReader replay = byId.get(worker.sessionId());
         if (replay == null) return gaps;
-        for (JsonObject row : RowCodec.readJsonl(focus)) {
+        for (JsonObject row : RowCodec.readJsonl(worker.focusedTask())) {
             gaps.addAll(RowInvariants.flipped(row, replay));
         }
         return gaps;
