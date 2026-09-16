@@ -39,6 +39,19 @@ import java.util.Set;
  *   <li>{@code EXPORT_SITE}: a site that defines the value of a declared
  *       wire port, with that {@code portId} -- the producer half of an
  *       interaction whose consumer attaches the port.</li>
+ *   <li>{@code DECLARED_SITE}: a site where a value enters the program from
+ *       outside the slice's own text and the campaign may therefore have
+ *       DECLARED it symbolic -- a structural field accessor's return
+ *       ({@code declaredKind} {@code ACCESSOR_RETURN}) or an external
+ *       call's return ({@code CALL_RETURN}).  It carries the whole static
+ *       half of the port such a declaration mints: the {@code
+ *       declaredCallee}, the {@code implementationMethod} that answers it,
+ *       the {@code cell} the declaration names, the {@code dependencyCell}
+ *       the value lands in after Soot's exact-copy renaming, the {@code
+ *       javaType} and the candidate {@code edgeId} the row was read from.
+ *       Scope, not admission: {@code ConcolicScheduler
+ *       .SymbolicInputSelection} is the ONE rule that decides which of
+ *       these the case declared, and a row here decides nothing.</li>
  *   <li>{@code TARGET_SITE}: the annotated throw the slice starts at.</li>
  *   <li>{@code ROOT_SITE}: where a root cell is DEFINED -- for a
  *       {@code <callee>.return} cell, every call site of it the slice
@@ -77,6 +90,14 @@ public final class StaticScopeMap {
     public static final String EXPORT_SITE = "EXPORT_SITE";
     public static final String TARGET_SITE = "TARGET_SITE";
     public static final String ROOT_SITE = "ROOT_SITE";
+    public static final String DECLARED_SITE = "DECLARED_SITE";
+
+    /** {@code declaredKind} of a DECLARED_SITE: a structural field accessor's
+     *  return, whose cell is the field it reads. */
+    public static final String ACCESSOR_RETURN = "ACCESSOR_RETURN";
+    /** {@code declaredKind} of a DECLARED_SITE: an external call's return,
+     *  whose cell is the callee's own {@code .return}. */
+    public static final String CALL_RETURN = "CALL_RETURN";
 
     /** A Jimple local cell: {@code <method>::local[#suffix]}. */
     private static final java.util.regex.Pattern LOCAL_CELL =
@@ -147,6 +168,8 @@ public final class StaticScopeMap {
         public final String declaredCallee;
         /** The local the value lands in, for a ROOT_SITE. */
         public final String local;
+        /** The static half of a DECLARED_SITE, or null for every other role. */
+        public final Declared declared;
         public final List<String> guards;
         /**
          * The arm of each {@link #guards} entry that reaches this site, in
@@ -158,6 +181,15 @@ public final class StaticScopeMap {
              String cell, String carrier, String portId,
              String declaredCallee, String local,
              List<String> guards, List<Boolean> guardOutcomes) {
+            this(role, regionId, siteId, vmSite, cell, carrier, portId,
+                    declaredCallee, local, null, guards, guardOutcomes);
+        }
+
+        Site(String role, String regionId, String siteId, String vmSite,
+             String cell, String carrier, String portId,
+             String declaredCallee, String local, Declared declared,
+             List<String> guards, List<Boolean> guardOutcomes) {
+            this.declared = declared;
             this.role = role;
             this.regionId = regionId;
             this.siteId = siteId;
@@ -181,7 +213,8 @@ public final class StaticScopeMap {
                 outcomes.add(guard.outcome());
             }
             return new Site(role, regionId, siteId, vmSite, cell, carrier,
-                    portId, declaredCallee, local, sites, outcomes);
+                    portId, declaredCallee, local, declared, sites,
+                    outcomes);
         }
 
         /** The arm of {@code guardSiteId} that reaches this site, or null. */
@@ -198,6 +231,39 @@ public final class StaticScopeMap {
         @Override
         public String toString() {
             return role + " " + regionId + " " + siteId;
+        }
+    }
+
+    /**
+     * The static half of one DECLARED_SITE.
+     *
+     * <p>Every member is read off the candidate edge the row was published
+     * from, so a port minted at this site carries the same static values
+     * whichever stage assembles it.</p>
+     */
+    public static final class Declared {
+        /** {@link #ACCESSOR_RETURN} or {@link #CALL_RETURN}. */
+        public final String kind;
+        /** The candidate edge this site was read from. */
+        public final String edgeId;
+        /** The cell the value lands in: the edge's {@code toCell}. */
+        public final String dependencyCell;
+        /** The method that answers the call, for an accessor. */
+        public final String implementationMethod;
+        /** The declared type of the value the site produces. */
+        public final String javaType;
+
+        public Declared(String kind, String edgeId, String dependencyCell,
+                        String implementationMethod, String javaType) {
+            this.kind = safe(kind);
+            this.edgeId = safe(edgeId);
+            this.dependencyCell = safe(dependencyCell);
+            this.implementationMethod = safe(implementationMethod);
+            this.javaType = safe(javaType);
+        }
+
+        private static String safe(String value) {
+            return value == null ? "" : value;
         }
     }
 
@@ -218,7 +284,37 @@ public final class StaticScopeMap {
      */
     public static List<Site> sites(List<Map<String, Object>> edges,
                                    List<Map<String, Object>> regions) {
+        return sites(edges, regions,
+                DeclaredSymbolicInputs.configuredCallees().keySet());
+    }
+
+    /**
+     * The same sites, with the declared callees stated rather than read from
+     * the configuration.
+     *
+     * @param declaredCallees the case's {@code symbolic-inputs.jsonl}
+     *                        callees, which is what bounds the
+     *                        {@code CALL_RETURN} half of DECLARED_SITE: a
+     *                        candidate graph has one {@code call_return}
+     *                        edge per call of the slice (692 on hdfs-17960)
+     *                        and only a callee the case names can ever be a
+     *                        root, so publishing the rest would be scope the
+     *                        admission rule has nothing to say about.  The
+     *                        {@code ACCESSOR_RETURN} half is bounded by the
+     *                        edge kind itself -- a structural field accessor
+     *                        of a primitive field, 96 and 39 edges -- and is
+     *                        published whole, because a cell declaration
+     *                        names no callee for this side to filter on.
+     */
+    public static List<Site> sites(List<Map<String, Object>> edges,
+                                   List<Map<String, Object>> regions,
+                                   Collection<String> declaredCallees) {
+        Set<String> callees = new LinkedHashSet<String>(
+                declaredCallees == null
+                        ? Collections.<String>emptySet() : declaredCallees);
         List<Region> retained = regions(regions);
+        Set<String> regionRoots = new LinkedHashSet<String>();
+        for (Region region : retained) regionRoots.addAll(region.methods);
         List<Site> found = new ArrayList<Site>();
         Set<String> seen = new LinkedHashSet<String>();
         for (Map<String, Object> edge : edges == null
@@ -233,6 +329,8 @@ public final class StaticScopeMap {
                 continue;
             }
             addRootSite(found, seen, retained, edge, method, unitIndex);
+            addDeclaredSite(found, seen, retained, edge, kind, method,
+                    unitIndex, callees, regionRoots);
             if (!write(kind)) continue;
             String carrier = signature(text(edge.get("toCell")));
             if (carrier.isEmpty()) continue;
@@ -302,6 +400,16 @@ public final class StaticScopeMap {
         if (!site.local.isEmpty()) {
             row.addProperty("local", site.local);
         }
+        if (site.declared != null) {
+            row.addProperty("declaredKind", site.declared.kind);
+            row.addProperty("edgeId", site.declared.edgeId);
+            row.addProperty("dependencyCell", site.declared.dependencyCell);
+            row.addProperty("javaType", site.declared.javaType);
+            if (!site.declared.implementationMethod.isEmpty()) {
+                row.addProperty("implementationMethod",
+                        site.declared.implementationMethod);
+            }
+        }
         JsonArray guards = new JsonArray();
         for (String guard : site.guards) guards.add(guard);
         row.add("guards", guards);
@@ -360,6 +468,101 @@ public final class StaticScopeMap {
                     Collections.<String>emptyList(),
                     Collections.<Boolean>emptyList()));
         }
+    }
+
+    /**
+     * The DECLARED_SITE row of one candidate edge that produces a value from
+     * outside the slice's own text.
+     *
+     * <p>Two edge kinds, one row family.  An {@code accessor_field_return}
+     * edge is a closed-world structural getter of a declared field, so the
+     * cell a declaration would name is the field and the value lands in the
+     * edge's {@code toCell}.  A {@code call_return} edge of a DECLARED
+     * callee is the callee's own {@code .return} cell, and only when no
+     * retained region holds the callee: a callee that is itself a region
+     * publishes its own rows, and minting a call-result symbol beside them
+     * would give one value two authorities.</p>
+     *
+     * <p>Every value here is the program text's.  Whether the site ran, how
+     * often, and what it returned are the recording's to state, and no row
+     * of this map says any of it.</p>
+     */
+    private static void addDeclaredSite(
+            List<Site> into, Set<String> seen, List<Region> retained,
+            Map<String, Object> edge, String kind, String method,
+            int unitIndex, Set<String> declaredCallees,
+            Set<String> regionMethods) {
+        String callee = text(edge.get("invoke"));
+        if (callee.isEmpty()) return;
+        String cell;
+        String implementation = "";
+        if ("accessor_field_return".equals(kind)) {
+            cell = firstNonEmpty(text(edge.get("declaredFieldSignature")),
+                    text(edge.get("fromCell")));
+            implementation = text(edge.get("accessorImplementationMethod"));
+            if (implementation.isEmpty()) return;
+        } else if ("call_return".equals(kind)
+                && declaredCallees.contains(callee)
+                && !regionMethods.contains(callee)) {
+            cell = text(edge.get("fromCell"));
+        } else {
+            return;
+        }
+        String javaType = declaredType(cell, callee, kind);
+        if (cell.isEmpty() || javaType.isEmpty()) return;
+        String dependencyCell = text(edge.get("toCell"));
+        if (dependencyCell.isEmpty()) return;
+        String declaredKind = "accessor_field_return".equals(kind)
+                ? ACCESSOR_RETURN : CALL_RETURN;
+        String siteId = SiteId.of(method, unitIndex);
+        List<String> owners = new ArrayList<String>(
+                holders(retained, method));
+        if (owners.isEmpty()) owners.add("");
+        for (String regionId : owners) {
+            if (!seen.add(DECLARED_SITE + "|" + regionId + "|" + siteId
+                    + "|" + cell + "|" + callee + "|" + dependencyCell)) {
+                continue;
+            }
+            into.add(new Site(DECLARED_SITE, regionId, siteId,
+                    vmSite(method), cell, "", "", callee, "",
+                    new Declared(declaredKind, text(edge.get("id")),
+                            dependencyCell, implementation, javaType),
+                    Collections.<String>emptyList(),
+                    Collections.<Boolean>emptyList()));
+        }
+    }
+
+    /**
+     * The type of the value a DECLARED_SITE produces: the field's own type
+     * for an accessor, the callee's return type for a call.
+     *
+     * <p>A Soot signature spells both the same way -- {@code <owner: type
+     * rest>} -- so one read answers both, and a site whose type is not a
+     * primitive states none: a non-primitive return is not a leaf the SMT
+     * layer has a term for, and the admission rule refuses it anyway.</p>
+     */
+    private static String declaredType(String cell, String callee,
+                                       String kind) {
+        String signature = "accessor_field_return".equals(kind)
+                ? cell : callee;
+        int colon = signature.indexOf(": ");
+        if (!signature.startsWith("<") || colon < 0) return "";
+        String rest = signature.substring(colon + 2).trim();
+        int space = rest.indexOf(' ');
+        if (space <= 0) return "";
+        String type = rest.substring(0, space);
+        return PRIMITIVE_TYPES.contains(type) ? type : "";
+    }
+
+    /** The value types the SMT layer has a term for at a declared site. */
+    private static final Set<String> PRIMITIVE_TYPES =
+            Collections.unmodifiableSet(new LinkedHashSet<String>(
+                    java.util.Arrays.asList("boolean", "byte", "char",
+                            "short", "int", "long", "float", "double")));
+
+    private static String firstNonEmpty(String first, String second) {
+        return first == null || first.isEmpty()
+                ? (second == null ? "" : second) : first;
     }
 
     private static void add(List<Site> into, Set<String> seen,
@@ -481,11 +684,17 @@ public final class StaticScopeMap {
                             ? null : Boolean.valueOf(outcome.getAsBoolean()));
                 }
             }
+            String declaredKind = string(row, "declaredKind");
+            Declared declared = declaredKind.isEmpty() ? null
+                    : new Declared(declaredKind, string(row, "edgeId"),
+                            string(row, "dependencyCell"),
+                            string(row, "implementationMethod"),
+                            string(row, "javaType"));
             sites.add(new Site(string(row, "role"), string(row, "regionId"),
                     string(row, "siteId"), string(row, "vmSite"),
                     string(row, "cell"), string(row, "carrier"),
                     string(row, "portId"), string(row, "declaredCallee"),
-                    string(row, "local"), guards, outcomes));
+                    string(row, "local"), declared, guards, outcomes));
         }
         return new StaticScopeMap(sites);
     }
