@@ -2,6 +2,7 @@ package edu.uva.liftlab.graphchecker.causynth;
 
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.plan.CommunicationCatalogContract;
+import edu.uva.liftlab.graphchecker.plan.DeclaredSiteCapture;
 import edu.uva.liftlab.graphchecker.plan.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.plan.SiteId;
 import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
@@ -137,110 +138,109 @@ public class RegionGraphOccurrenceKeyTest {
     }
 
     /**
-     * What names a recorded exchange edge across two recordings of one workload.
+     * What names a declared wire attach across two recordings of one
+     * workload.
      *
-     * <p>The wire transaction is minted fresh in every run, so the name is
-     * read off content.  The offline exchange pairing that used to mint an
-     * ordinal over (producer occurrence, consumer occurrence, port,
-     * direction) is gone -- rows are the pairing authority -- so what is
-     * left to state is the request-control edge's own name.</p>
+     * <p>The wire transaction is minted fresh in every run, so nothing in
+     * the plan may be named from it.  The offline exchange pairing that used
+     * to mint an ordinal over (producer occurrence, consumer occurrence,
+     * port, direction), and the request-control edge that used to be named
+     * from a response edge, are both gone -- rows are the pairing authority.
+     * What decides that an activation holds a declared attach is the
+     * DECLARATION (the region's own cut port, with the call site and callee
+     * the case's communication mapping names) joined with the RECORDING (a
+     * capture at that site), and nothing else: a frame that converted
+     * nothing states no capture and is not admitted, whatever the wire
+     * called the transaction.</p>
      */
     @Test
-    public void aRecordedExchangeEdgeIsNamedFromContentNotTheWire()
+    public void aDeclaredAttachIsNamedByTheDeclarationNotTheWire()
             throws Exception {
         assertNotEquals("the wire transactions of two recordings are "
                         + "expected to differ",
                 "hadoop-ipc-f76d5ada8a274fd1ac95a5db23edeaa4-21\n0",
                 "hadoop-ipc-9c8bc11a624f4ee1ad1374fe269fe5ca-21\n0");
 
-        // A request-control edge is named by the response edge, not the wire:
-        // the response edge already names the exchange from content, and it
-        // names it more exactly than the transaction does, because each retry
-        // of one logical request has its own response edge.
-        String first = controlEdgeId(
-                "hadoop-ipc-f76d5ada8a274fd1ac95a5db23edeaa4-21\n0");
-        String second = controlEdgeId(
-                "hadoop-ipc-9c8bc11a624f4ee1ad1374fe269fe5ca-21\n0");
-        assertEquals("two recordings of one request fault must publish one "
-                + "control edge name", first, second);
+        String frame = "<example.Helper: example.Keys convert("
+                + "example.KeysProto)>";
+        String site = "<example.Helper: example.Key convert("
+                + "example.KeyProto)>#u2";
+        String callee = "<example.KeyProto: int getKeyId()>";
+        StaticProgram.RegionRow skeleton = skeleton(frame, site, callee);
+
+        assertTrue("the recording states a capture at the declared site",
+                attached(skeleton, capture(site, callee)));
+        assertFalse("a frame that converted nothing states none",
+                attached(skeleton, capture("", "")));
+        assertFalse("a capture at some other call is not this attach",
+                attached(skeleton, capture(site,
+                        "<example.KeyProto: long getExpiryDate()>")));
     }
 
-    private static final String SITE =
-            "hdfs-17899/nn0#epoch0/region/REGION.a#1\n"
-                    + "hdfs-17899/source-dn#epoch0/region/REGION.b#1\n"
-                    + "REGION.b.in.port\nREQUEST";
+    /** One region skeleton declaring one IN cut port of a wire mapping. */
+    private static StaticProgram.RegionRow skeleton(String frame,
+                                                    String site,
+                                                    String callee) {
+        Map<String, Object> port = row(
+                CommunicationCatalogContract.PORT_ID, "XCH.a.resp.key-id",
+                RuntimeSelectedRegionFinalizer.REGION_PORT_SIDE, "IN",
+                CommunicationCatalogContract.PORT_OUTPUT_CAPTURE_KIND,
+                CommunicationCatalogContract.CAPTURE_CALL_RETURN,
+                CommunicationCatalogContract.CALL_SITE_ID, site,
+                CommunicationCatalogContract.DECLARED_CALLEE, callee);
+        Map<String, Object> region = row(
+                "schemaVersion", 3,
+                "kind", RuntimeSelectedRegionFinalizer.SKELETON_KIND,
+                "regionId", "REGION.frame",
+                "rootMethod", frame,
+                "anchorMethod", frame,
+                "methods", Collections.singletonList(frame),
+                RuntimeSelectedRegionFinalizer.COMMUNICATION_PORTS,
+                Collections.singletonList(port));
+        return StaticProgram.regionRows(Collections.singletonList(region),
+                RuntimeSelectedRegionFinalizer.SKELETON_KIND,
+                "test").get(0);
+    }
 
-    @SuppressWarnings("unchecked")
-    private static String controlEdgeId(String transaction) throws Exception {
-        Method edge = RuntimeSelectedRegionFinalizer.class
-                .getDeclaredMethod("requestFaultControlEdge", Map.class,
-                        Map.class, Map.class, Map.class, Map.class,
-                        String.class, String.class, long.class, long.class,
-                        long.class, long.class, long.class);
-        edge.setAccessible(true);
-        Map<String, Object> result = (Map<String, Object>) edge.invoke(null,
-                row("occurrenceId", "hdfs-17899/nn0#epoch0/region/REGION.f/ctx:Root:KEY_MANAGER_TICK#1/idx:o.a.h.h.s.n.FSNamesystem#saveNamespace#12@0",
-                        "regionId", "REGION.f", "rootCallId", 11L),
-                row("occurrenceId", "hdfs-17899/nn0#epoch0/region/REGION.c/ctx:Root:KEY_MANAGER_TICK#1/idx:o.a.h.h.s.n.FSNamesystem#saveNamespace#12@0",
-                        "regionId", "REGION.c", "rootCallId", 12L),
-                row("portId", "REGION.c.in.port", "symbolicName", "S1"),
-                row("edgeId", "RPC.request", "requestKey", "rk",
-                        "attemptId", "a1"),
-                row("edgeId", "RPC.response"),
-                transaction, "hdfs-17899/nn0#epoch0",
-                1L, 2L, 3L, 4L, 5L);
-        return String.valueOf(result.get("edgeId"));
+    /** One activation stating one recorded declared-site capture. */
+    private static Map<String, Object> capture(String site, String callee) {
+        if (site.isEmpty()) return row("regionId", "REGION.frame");
+        return row("regionId", "REGION.frame",
+                DeclaredSiteCapture.PLAN_FIELD, Collections.singletonList(
+                        row(SiteId.MEMBER, site,
+                                DeclaredSiteCapture.DECLARED_CALLEE, callee,
+                                DeclaredSiteCapture.ORDINAL, 1)));
+    }
+
+    private static boolean attached(StaticProgram.RegionRow skeleton,
+                                    Map<String, Object> activation)
+            throws Exception {
+        Method rule = RuntimeSelectedRegionFinalizer.class
+                .getDeclaredMethod("attachedADeclaredPort",
+                        StaticProgram.RegionRow.class, Map.class);
+        rule.setAccessible(true);
+        return (Boolean) rule.invoke(null, skeleton, activation);
     }
 
     /**
-     * The care set is the intersection of the two conditions: a field must
-     * appear on the backward slice AND be forward-reachable from a symbolic
-     * root.  A field the slice names but no root reaches is a constant for
-     * this failure and stays out.  An explicit fault marker and a wire attach
-     * point are symbolic roots of the same standing.
-     *
-     * <p>Then what the slice PUBLISHES about those cells (CLOSURE-V2 SS4):
-     * every write site of a cell it names, under the innermost region that
-     * would run it, with the guard set post-dominance gives that site -- and
-     * the guard set is where a may-reach guard and a control-dependence guard
+     * What the slice PUBLISHES about the cells it names (CLOSURE-V2 SS4):
+     * every write site of such a cell, under the innermost region that would
+     * run it, with the guard set post-dominance gives that site -- and the
+     * guard set is where a may-reach guard and a control-dependence guard
      * differ, which is the difference between finding 17960's marker flip and
-     * not finding it.</p>
+     * not finding it.
+     *
+     * <p>That is the whole of what the static side contributes to the demand
+     * walk.  {@code writerRegionsByCell} is the join the region finalizer
+     * crosses on: one location, the REGIONS whose text stores into it, under
+     * both names a read can reach it by -- the leaf the VM versions and the
+     * declared field that owns it.  It names no activation and no writer: a
+     * region the recording never entered contributes no occurrence, and WHICH
+     * of the entered ones wrote the value the VM's own expression decides.</p>
      */
     @Test
-    public void careSetKeepsOnlySliceFieldsASymbolicRootReaches()
+    public void theMapScopesTheDemandWalkAndNamesNoWriter()
             throws IOException {
-        List<Map<String, Object>> graph = Arrays.asList(
-                // The fault symbol enters at the wire and flows to a cell
-                // that reads the rolled key.
-                row("kind", "explicit_symbolic_fault",
-                        "explicitSymbolicFault", true,
-                        "fromCell", "cell.fault", "toCell", "cell.request"),
-                row("kind", "field_read", "fromCell", "cell.request",
-                        "toCell", "cell.key",
-                        "declaredFieldSignature",
-                        "<example.Owner: example.Key currentKey>"),
-                // On the slice, but nothing symbolic reaches it: a harness
-                // setter writing its own island.
-                row("kind", "field_write", "fromCell", "cell.harness",
-                        "toCell", "cell.interval",
-                        "declaredFieldSignature",
-                        "<example.Owner: long keyUpdateInterval>"));
-
-        Set<String> cared = RuntimeSelectedRegionFinalizer
-                .caredSharedLocations(graph);
-        assertTrue(cared.contains("example.Owner#currentKey"));
-        assertFalse(cared.contains("example.Owner#keyUpdateInterval"));
-
-        List<Map<String, Object>> handoff = Arrays.asList(
-                row("kind", "wire_handoff", "fromCell", "cell.send",
-                        "toCell", "cell.receive"),
-                row("kind", "field_write", "fromCell", "cell.receive",
-                        "toCell", "cell.keys",
-                        "fieldPathDeclarations", Collections.singletonList(
-                                "<example.Owner: java.util.Map allKeys>")));
-        assertTrue(RuntimeSelectedRegionFinalizer.caredSharedLocations(handoff)
-                .contains("example.Owner#allKeys"));
-
         theSliceNamesEveryWriteSiteOfACellItNames();
         theGuardSetIsPostDominanceAndNotMayReach();
     }
@@ -251,6 +251,7 @@ public class RegionGraphOccurrenceKeyTest {
      */
     private void theSliceNamesEveryWriteSiteOfACellItNames()
             throws IOException {
+        String leaf = "<java.util.concurrent.atomic.AtomicInteger: int value>";
         String increment = "<example.Manager: java.lang.String create()>";
         String decrement = "<example.Manager: void delete(int,long)>";
         String saver = "<example.Saver: void save(java.io.OutputStream)>";
@@ -344,6 +345,28 @@ public class RegionGraphOccurrenceKeyTest {
         assertEquals(saver + "#u64", map.targetSites().get(0).siteId);
         assertEquals("example.Saver#save(Ljava/io/OutputStream;)V",
                 map.targetSites().get(0).vmSite);
+
+        // The join the demand walk crosses on: both names of the location
+        // answer with the same two sites, each naming the region AND the
+        // method an activation has to have entered to have written there.
+        Map<String, List<StaticScopeMap.Site>> writeSites =
+                map.writeSitesByCell();
+        assertEquals("the leaf the VM keeps versions of",
+                Arrays.asList("REGION.create " + increment + "#u27",
+                        "REGION.delete " + decrement + "#u35"),
+                scoped(writeSites.get(leaf)));
+        assertEquals("and the declared field that owns it",
+                scoped(writeSites.get(leaf)),
+                scoped(writeSites.get(carrier)));
+        assertEquals("the storing method is what the recording is joined on",
+                Arrays.asList(increment, decrement),
+                methodsOf(writeSites.get(leaf)));
+        assertFalse("a local-held container mutation names no shared "
+                        + "location, so it scopes no writer",
+                writeSites.containsKey(decrement + "::$r5"));
+        assertFalse("the annotated target is not a write site",
+                writeSites.containsKey(saver
+                        + "#u64#exception:java.lang.IllegalState"));
     }
 
     /**
@@ -413,6 +436,22 @@ public class RegionGraphOccurrenceKeyTest {
                 new ArrayList<Unit>(body.getUnits()).indexOf(write));
         assertEquals(expected, guardSites(SiteControlDependence.over(
                 Collections.singletonList(decrement)).of(decrement)));
+    }
+
+    private static List<String> scoped(List<StaticScopeMap.Site> sites) {
+        List<String> scopes = new ArrayList<>();
+        for (StaticScopeMap.Site site : sites) {
+            scopes.add(site.regionId + " " + site.siteId);
+        }
+        return scopes;
+    }
+
+    private static List<String> methodsOf(List<StaticScopeMap.Site> sites) {
+        List<String> methods = new ArrayList<>();
+        for (StaticScopeMap.Site site : sites) {
+            methods.add(SiteId.methodOf(site.siteId));
+        }
+        return methods;
     }
 
     private static List<String> guardSites(

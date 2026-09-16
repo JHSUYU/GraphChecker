@@ -1,7 +1,6 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
 import edu.uva.liftlab.graphchecker.causynth.MapFields;
-import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 
@@ -60,24 +59,6 @@ public final class OccurrenceBinding {
                         == rootCallId) {
                     access.put("occurrenceId", occurrenceId);
                 }
-            }
-        }
-    }
-
-    /** Stamps the occurrence onto the endpoints of the flows it named. */
-    public static void bindEdges(Collection<Map<String, Object>> regionEdges,
-                                 String regionId, long rootCallId,
-                                 String occurrenceId) {
-        for (Map<String, Object> edge : regionEdges) {
-            if (regionId.equals(MapFields.stringValue(edge.get("fromRegion")))
-                    && MapFields.longNumber(edge.get("fromRootCallId"), -1L)
-                    == rootCallId) {
-                edge.put("fromOccurrenceId", occurrenceId);
-            }
-            if (regionId.equals(MapFields.stringValue(edge.get("toRegion")))
-                    && MapFields.longNumber(edge.get("toRootCallId"), -1L)
-                    == rootCallId) {
-                edge.put("toOccurrenceId", occurrenceId);
             }
         }
     }

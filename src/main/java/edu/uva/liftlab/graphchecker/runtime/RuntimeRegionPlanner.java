@@ -11,15 +11,12 @@ import edu.uva.liftlab.graphchecker.causynth.MapFields;
 import edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts;
 import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
 import edu.uva.liftlab.graphchecker.causynth.StaticProgram;
-import edu.uva.liftlab.graphchecker.plan.AutomaticRegionEdge;
 import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics;
-import edu.uva.liftlab.graphchecker.plan.SharedFieldFlow;
 import edu.uva.liftlab.graphchecker.plan.CommunicationCatalogContract;
 import edu.uva.liftlab.graphchecker.plan.CommunicationHandoffSpec;
 import edu.uva.liftlab.graphchecker.plan.ConfiguredSourcePhaseContract;
 import edu.uva.liftlab.graphchecker.plan.DeclaredSiteCapture;
 import edu.uva.liftlab.graphchecker.plan.DeclaredSymbolicInputs;
-import edu.uva.liftlab.graphchecker.plan.DependencyRole;
 import edu.uva.liftlab.graphchecker.plan.MaterializationSpec;
 import edu.uva.liftlab.graphchecker.plan.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.plan.RuntimePlanArtifact;
@@ -73,7 +70,8 @@ final class RuntimeRegionPlanner {
     static Result planSkeletonGraph(List<StaticProgram.RegionRow> skeletons,
                                     List<MethodEvent> methods,
                                     List<RuntimeEvent> runtimeEvents,
-                                    List<ProtocolEvent> protocolEvents) {
+                                    List<ProtocolEvent> protocolEvents,
+                                    Set<String> declaredSites) {
         // The recorded call sites are part of this index, not an extra: the
         // across-cut attribution below asks which call site opened a frame,
         // and that answer lives in the CALL_SITE_ENTER events.
@@ -119,7 +117,7 @@ final class RuntimeRegionPlanner {
                         continue;
                     }
                     addSkeletonActivation(activationByCall, skeleton,
-                            root, trace);
+                            root, trace, declaredSites);
                 }
             }
         }
@@ -466,7 +464,7 @@ final class RuntimeRegionPlanner {
     private static void addSkeletonActivation(
             Map<Long, Map<String, Object>> activationByCall,
             StaticProgram.RegionRow skeleton, MethodEvent root,
-            TraceIndex trace) {
+            TraceIndex trace, Set<String> declaredSites) {
         Set<Long> calls = trace.subtree(root.callId);
         Set<String> allowed = new LinkedHashSet<>(skeleton.methods);
         calls.removeIf(call -> {
@@ -514,6 +512,16 @@ final class RuntimeRegionPlanner {
                 RuntimeSelectedRegionFinalizer
                         .OBSERVED_COMMUNICATION_CAPTURES,
                 observedCommunicationCaptures(skeleton, calls, trace));
+        // What the recording states at the sites the scope map named
+        // DECLARED_SITE.  Computed once, here, where the activation's call
+        // set is first known: the region finalizer reads it to learn which
+        // activations hold a declared input, and the plan republishes these
+        // same rows.
+        List<Map<String, Object>> declared = declaredSiteCaptures(
+                declaredSites, trace, calls, root);
+        if (!declared.isEmpty()) {
+            activation.put(DeclaredSiteCapture.PLAN_FIELD, declared);
+        }
         activationByCall.put(root.callId, activation);
     }
 
@@ -1025,15 +1033,13 @@ final class RuntimeRegionPlanner {
      * regionEdgeSource} only label diagnostics; rows must already be in the
      * exact JSONL value domain the file readers would produce. */
     static Result plan(List<Map<String, Object>> regions,
-                       List<Map<String, Object>> regionEdges,
-                       String regionSource, String regionEdgeSource,
+                       String regionSource,
                        Collection<Map<String, Object>> runtimeSeeds,
                        List<MethodEvent> methods,
                        List<RuntimeEvent> runtimeEvents,
                        List<FieldAccessEvent> fieldEvents,
                        List<ProtocolEvent> protocolEvents,
-                       Collection<Map<String, Object>> planGaps,
-                       Set<String> declaredSites) {
+                       Collection<Map<String, Object>> planGaps) {
         // One loop has one prefix: region rows that disagree on a loop's K_L
         // are refused here, before anything is planned over them.
         declaredLoopBounds(regions);
@@ -1153,8 +1159,6 @@ final class RuntimeRegionPlanner {
             if (!retainedOccurrences.contains(occurrenceId)) continue;
             OccurrenceBinding.bindOccurrence(region.json, rootCallId,
                     occurrenceId);
-            OccurrenceBinding.bindEdges(regionEdges, regionId, rootCallId,
-                    occurrenceId);
             registerExactPorts(region, occurrenceId, exactPorts);
             List<Map<String, Object>> occurrenceSymbolize = symbolize(
                     region.symbolicInputs, occurrenceId, trace);
@@ -1245,9 +1249,10 @@ final class RuntimeRegionPlanner {
             }
             // What the recording states at the sites the static scope map
             // named DECLARED_SITE: the dynamic half of every port a
-            // declaration could mint in this occurrence.
-            List<Map<String, Object>> captures = declaredSiteCaptures(
-                    declaredSites, trace, calls, root);
+            // declaration could mint in this occurrence.  Stamped on the
+            // activation seed by planSkeletonGraph, republished here.
+            List<Map<String, Object>> captures = rows(
+                    seed.get(DeclaredSiteCapture.PLAN_FIELD));
             if (!captures.isEmpty()) {
                 plan.put(DeclaredSiteCapture.PLAN_FIELD, captures);
             }
@@ -1289,59 +1294,6 @@ final class RuntimeRegionPlanner {
         retainInnermostDeclaredSiteCaptures(result.regionPlans);
         retainInnermostExactGoalEventOwners(result.regionPlans, trace);
         retainInnermostCommunicationConsumers(result.regionPlans);
-        for (Map<String, Object> edge : regionEdges) {
-            String edgeKind = stringValue(edge.get("kind"));
-            if (!"RUNTIME_FIELD_FLOW".equals(edgeKind)
-                    && !AutomaticRegionEdge
-                    .RUNTIME_REQUEST_CONTROL_EDGE_KIND.equals(edgeKind)) {
-                throw new IllegalArgumentException("invalid runtime region "
-                        + "flow row in " + regionEdgeSource);
-            }
-            String fromOccurrence = stringValue(edge.get("fromOccurrenceId"));
-            String toOccurrence = stringValue(edge.get("toOccurrenceId"));
-            if (fromOccurrence.isEmpty() || toOccurrence.isEmpty()) {
-                throw new IllegalArgumentException(
-                        "runtime field flow has no selected activation: "
-                                + stringValue(edge.get("edgeId")));
-            }
-            boolean requestControl = AutomaticRegionEdge
-                    .RUNTIME_REQUEST_CONTROL_EDGE_KIND.equals(edgeKind);
-            if (requestControl) {
-                JsonObject encoded = GSON.toJsonTree(edge).getAsJsonObject();
-                if (!AutomaticRegionEdge.trustedRequestFaultControl(
-                        encoded)) {
-                    throw new IllegalArgumentException(
-                            "runtime request control lacks an exact fault, "
-                                    + "request and ordered response: "
-                                    + stringValue(edge.get("edgeId")));
-                }
-                continue;
-            }
-            String fromPort = exactPort(exactPorts, fromOccurrence,
-                    "OUT", stringValue(edge.get("fromPort")), edge);
-            String toPort = exactPort(exactPorts, toOccurrence,
-                    "IN", stringValue(edge.get("toPort")), edge);
-            Map<String, Object> evidence = new LinkedHashMap<>(edge);
-            evidence.put("schemaVersion", 3);
-            evidence.put("fromOccurrenceId", fromOccurrence);
-            evidence.put("toOccurrenceId", toOccurrence);
-            evidence.remove("fromPort");
-            evidence.remove("toPort");
-            evidence.remove("bindings");
-            evidence.put("fromOutputPort", fromPort);
-            evidence.put("toInputPort", toPort);
-            evidence.put("correlationAuthority",
-                    SharedFieldFlow.LOCATION_MATCH_AUTHORITY);
-            evidence.put("state", "CANDIDATE_SHARED_LOCATION");
-            JsonObject encodedEvidence = GSON.toJsonTree(evidence)
-                    .getAsJsonObject();
-            if (!AutomaticRegionEdge.sharedLocationCandidate(
-                    encodedEvidence)) {
-                throw new IllegalArgumentException(
-                        "runtime field flow lacks a declared shared location: "
-                                + stringValue(edge.get("edgeId")));
-            }
-        }
         // The plan catalog names the planned regions, the static symbolic
         // sources a scheduler admits inside them, and the declared roots
         // this plan honoured.  Ports, methods, branch policies and access
@@ -1486,10 +1438,8 @@ final class RuntimeRegionPlanner {
             String regionSide = inbound ? "IN" : "OUT";
             for (Map<String, Object> port : inbound
                     ? region.symbolicInputs : region.outputs) {
-                if (!declaredCutPort(port)
-                        || !DependencyRole.VALUE_FRONTIER.equals(
-                        effectiveDependencyRole(port,
-                                stringValue(port.get("javaType"))))) {
+                if (!declaredCutPort(port) || !symbolicLeafPort(port,
+                        stringValue(port.get("javaType")))) {
                     continue;
                 }
                 Map<String, Object> site = communicationHandoffSite(
@@ -1602,28 +1552,6 @@ final class RuntimeRegionPlanner {
         if (event.laneId > 0L) target.put("laneId", event.laneId);
     }
 
-    /** The symbolic inputs one activation of a region is planned over.
-     *
-     * <p>A heap port is an observed access and its site comes from what the
-     * run recorded; a declared cut port is a static statement about the cut -
-     * README section 3's {@code Req_in}, {@code Resp_in}, {@code Live_in} -
-     * and its site comes from the capture the declaration carries.</p> */
-    /**
-     * What the recording states at the sites the scope map named
-     * DECLARED_SITE, for ONE occurrence: one row per completed call there,
-     * with the value it returned and the receiver it ran on.
-     *
-     * <p>The ordinal counts every completed call of the occurrence at that
-     * (site, callee), whether or not the site is declared, so a declared
-     * site's ordinal is the same number whichever sites a later declaration
-     * adds or drops.  It is the port's replay address, so it is counted from
-     * the recording's own order and never from a per-run call id.</p>
-     *
-     * <p>No admission is taken here.  A capture is published for every
-     * declared site this occurrence entered; whether any of them mints is
-     * {@code ConcolicScheduler.SymbolicInputSelection}'s decision, and the
-     * value a capture states is evidence either way.</p>
-     */
     /**
      * One recorded call is ONE occurrence's read: the innermost planned
      * activation that ran it.
@@ -1689,6 +1617,22 @@ final class RuntimeRegionPlanner {
         }
     }
 
+    /**
+     * What the recording states at the sites the scope map named
+     * DECLARED_SITE, for ONE occurrence: one row per completed call there,
+     * with the value it returned and the receiver it ran on.
+     *
+     * <p>The ordinal counts every completed call of the occurrence at that
+     * (site, callee), whether or not the site is declared, so a declared
+     * site's ordinal is the same number whichever sites a later declaration
+     * adds or drops.  It is the port's replay address, so it is counted from
+     * the recording's own order and never from a per-run call id.</p>
+     *
+     * <p>No admission is taken here.  A capture is published for every
+     * declared site this occurrence entered; whether any of them mints is
+     * {@code ConcolicScheduler.SymbolicInputSelection}'s decision, and the
+     * value a capture states is evidence either way.</p>
+     */
     private static List<Map<String, Object>> declaredSiteCaptures(
             Set<String> declaredSites, TraceIndex trace, Set<Long> calls,
             MethodEvent root) {
@@ -1733,6 +1677,12 @@ final class RuntimeRegionPlanner {
         return captures;
     }
 
+    /** The symbolic inputs one activation of a region is planned over.
+     *
+     * <p>A heap port is an observed access and its site comes from what the
+     * run recorded; a declared cut port is a static statement about the cut -
+     * README section 3's {@code Req_in}, {@code Resp_in}, {@code Live_in} -
+     * and its site comes from the capture the declaration carries.</p> */
     private static List<Map<String, Object>> symbolize(
             List<Map<String, Object>> ports, String occurrenceId,
             TraceIndex trace) {
@@ -1797,9 +1747,6 @@ final class RuntimeRegionPlanner {
                         Collections.singletonList(path));
             }
             action.putAll(materialization.actionFields());
-            action.put("dependencyRole",
-                    effectiveDependencyRole(action,
-                            stringValue(action.get("javaType"))));
             result.add(action);
         }
         return result;
@@ -1896,37 +1843,31 @@ final class RuntimeRegionPlanner {
             // *writes* a value at its boundary.
             return null;
         }
-        action.put("dependencyRole",
-                effectiveDependencyRole(action, javaType));
         return action;
     }
 
 
-    /** Separates semantic solver leaves from the object graph needed only to
-     * replay a region. */
-    static String effectiveDependencyRole(Map<String, Object> port,
-                                          String javaType) {
-        if (concreteStructureCarrier(port)) {
-            return DependencyRole.CONCRETE_STRUCTURE_CARRIER;
+    /**
+     * Whether the VM can present this port's value as a symbol at all.
+     *
+     * <p>A type question and a statement the port already carries, not a
+     * role: a value whose type the SMT layer has no term for cannot be a
+     * solver leaf however it is declared, and a port the plan has already
+     * marked concrete says so about itself.</p>
+     */
+    static boolean symbolicLeafPort(Map<String, Object> port,
+                                    String javaType) {
+        if (port != null && !port.isEmpty()) {
+            String demand = stringValue(port.get("symbolicDemand"));
+            if (demand.startsWith("CONCRETE_")
+                    || Boolean.TRUE.equals(port.get("captureRootOnly"))
+                    || Boolean.TRUE.equals(port.get("loopControlOnly"))
+                    || Boolean.TRUE.equals(port.get("controlOnly"))
+                    || Boolean.TRUE.equals(port.get("pathAssumptionOnly"))) {
+                return false;
+            }
         }
-        return symbolicLeafType(javaType)
-                ? DependencyRole.VALUE_FRONTIER
-                : DependencyRole.CONCRETE_STRUCTURE_CARRIER;
-    }
-
-    /** Structure retained only to replay control is not shared symbolic
-     * state and therefore has no writer-version carrier. */
-    private static boolean concreteStructureCarrier(
-            Map<String, Object> port) {
-        if (port == null || port.isEmpty()) return false;
-        String demand = stringValue(port.get("symbolicDemand"));
-        return DependencyRole.CONCRETE_STRUCTURE_CARRIER.equals(
-                stringValue(port.get("dependencyRole")))
-                || demand.startsWith("CONCRETE_")
-                || Boolean.TRUE.equals(port.get("captureRootOnly"))
-                || Boolean.TRUE.equals(port.get("loopControlOnly"))
-                || Boolean.TRUE.equals(port.get("controlOnly"))
-                || Boolean.TRUE.equals(port.get("pathAssumptionOnly"));
+        return symbolicLeafType(javaType);
     }
 
     private static boolean symbolicLeafType(String javaType) {
@@ -1991,20 +1932,6 @@ final class RuntimeRegionPlanner {
                         "conflicting exact runtime port binding: " + key);
             }
         }
-    }
-
-    private static String exactPort(
-            Map<String, String> exactPorts, String occurrenceId,
-            String direction, String portId, Map<String, Object> edge) {
-        String selected = exactPorts.get(exactPortKey(occurrenceId,
-                direction, portId));
-        if (selected == null) {
-            throw new IllegalArgumentException("runtime flow "
-                    + stringValue(edge.get("edgeId")) + " has no exact "
-                    + direction.toLowerCase() + " port for "
-                    + occurrenceId + ": " + portId);
-        }
-        return selected;
     }
 
     private static String exactPortKey(String occurrenceId,

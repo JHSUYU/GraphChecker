@@ -308,15 +308,6 @@ public final class CausynthTraceRecorder {
     static final String LINEAGE_GAP_EVENT = "LINEAGE_GAP";
 
     /**
-     * States one lineage gap of the recording, for the plan to publish.
-     *
-     * <p>The recording has no session to hold a gap row, and the aggregation
-     * is the next reader of everything it writes, so the fact travels as a
-     * trace row and {@link #aggregateStateTrace} hands it to the plan's own
-     * gap list.  A gap the recording cannot state is a gap nobody ever
-     * hears about.</p>
-     */
-    /**
      * A gap row names its own subject.
      *
      * <p>Both lineage gaps above are raised exactly where an identity could
@@ -344,6 +335,15 @@ public final class CausynthTraceRecorder {
                 + "#" + current.getId();
     }
 
+    /**
+     * States one lineage gap of the recording, for the plan to publish.
+     *
+     * <p>The recording has no session to hold a gap row, and the aggregation
+     * is the next reader of everything it writes, so the fact travels as a
+     * trace row and {@link #aggregateStateTrace} hands it to the plan's own
+     * gap list.  A gap the recording cannot state is a gap nobody ever
+     * hears about.</p>
+     */
     private static void writeLineageGap(String subject, String detail) {
         if (!recordingEnabled) return;
         synchronized (LOCK) {
@@ -1345,10 +1345,15 @@ public final class CausynthTraceRecorder {
                             MapFields.readRows(selectedSkeletons),
                             RuntimeSelectedRegionFinalizer.SKELETON_KIND,
                             selectedSkeletons);
+            // One parse of the scope map for the whole bridge: the activation
+            // planner joins its DECLARED_SITE rows with the recording, and
+            // the region finalizer walks its WRITE_SITE rows.
+            StaticScopeMap scopeMap = readScopeMap(staticScopeMap);
             RuntimeRegionPlanner.Result activationGraph =
                     RuntimeRegionPlanner.planSkeletonGraph(
                             skeletons, trace.methods,
-                            trace.execution, trace.protocol);
+                            trace.execution, trace.protocol,
+                            declaredSites(scopeMap));
             RuntimeRefinedGraphBuilder.Result refinement =
                     RuntimeRefinedGraphBuilder.refine(candidateGraph,
                             skeletons,
@@ -1366,11 +1371,8 @@ public final class CausynthTraceRecorder {
                     String.valueOf(selectedSkeletons),
                     observedMethods, activationGraph.runtimeInstances,
                     runtimeObservations(trace.execution, trace.methods),
-                    activationGraph.occurrenceLinks);
+                    activationGraph.occurrenceLinks, scopeMap);
             for (Map<String, Object> row : closure.regions) {
-                RuntimeRefinedGraphBuilder.normalizeNumbersInPlace(row);
-            }
-            for (Map<String, Object> row : closure.regionEdges) {
                 RuntimeRefinedGraphBuilder.normalizeNumbersInPlace(row);
             }
             // The plan's gaps are this pass's own plus the ones the
@@ -1383,9 +1385,8 @@ public final class CausynthTraceRecorder {
             // own to carry them: one workload, one gap list.
             planGaps.addAll(earlierPassGaps);
             writeRuntimeRegionPlans(planOutputDirectory,
-                    closure.regions, closure.regionEdges, trace,
-                    activationGraph.runtimeInstances, planGaps,
-                    declaredSites(staticScopeMap));
+                    closure.regions, trace,
+                    activationGraph.runtimeInstances, planGaps);
         }
     }
 
@@ -1474,7 +1475,8 @@ public final class CausynthTraceRecorder {
                                     candidateSkeletons),
                             trace.methods,
                             Collections.emptyList(),
-                            Collections.emptyList());
+                            Collections.emptyList(),
+                            Collections.<String>emptySet());
             if (graph.staticRegionCount == 0) {
                 throw new IOException(
                         "skeleton aggregation selected no static regions");
@@ -2348,18 +2350,15 @@ public final class CausynthTraceRecorder {
     /** Binds frozen static regions to concrete same-thread invocations. */
     private static void writeRuntimeRegionPlans(
             File directory,
-            List<Map<String, Object>> regions,
-            List<Map<String, Object>> regionEdges, TraceData trace,
+            List<Map<String, Object>> regions, TraceData trace,
             Collection<Map<String, Object>> runtimeSeeds,
-            Collection<Map<String, Object>> planGaps,
-            Set<String> declaredSites) throws IOException {
+            Collection<Map<String, Object>> planGaps) throws IOException {
         writeFile(new File(directory, "concolic_region_plan.jsonl"),
-                RuntimeRegionPlanner.plan(regions, regionEdges,
+                RuntimeRegionPlanner.plan(regions,
                         "runtime region closure",
-                        "runtime region edge closure",
                         runtimeSeeds, trace.methods, trace.execution,
                         trace.fields, trace.protocol,
-                        planGaps, declaredSites).runtimePlanJsonl());
+                        planGaps).runtimePlanJsonl());
     }
 
     /**
@@ -2371,13 +2370,18 @@ public final class CausynthTraceRecorder {
      * named -- not at every call the run made, and not at a set this stage
      * re-derives from the graph.  Admission is still the scheduler's.</p>
      */
-    private static Set<String> declaredSites(File staticScopeMap)
+    /** The epoch's scope map, refused when it states no site at all. */
+    private static StaticScopeMap readScopeMap(File staticScopeMap)
             throws IOException {
         StaticScopeMap map = StaticScopeMap.read(staticScopeMap.toPath());
         if (!map.stated()) {
             throw new IOException("static scope map states no site: "
                     + staticScopeMap);
         }
+        return map;
+    }
+
+    private static Set<String> declaredSites(StaticScopeMap map) {
         Set<String> sites = new LinkedHashSet<>();
         for (StaticScopeMap.Site site : map.declaredSites()) {
             sites.add(site.siteId + "\n" + site.declaredCallee);

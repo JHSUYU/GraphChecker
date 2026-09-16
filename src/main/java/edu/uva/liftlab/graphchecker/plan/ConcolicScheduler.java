@@ -626,27 +626,6 @@ public final class ConcolicScheduler {
     }
 
     /**
-     * The binding mode of each proposed input: how the VM would present that
-     * location as a symbol, or the one reason it cannot.
-     *
-     * <p>No admission decision is made here.  {@code
-     * SymbolicInputSelection.decide} is the ONE admission rule -- declared,
-     * workload-owned, hook-minted or a declared cut port, and
-     * UNDECLARED_SYMBOLIC_INPUT otherwise -- and this used to run a
-     * fourteen-name refusal taxonomy in front of it: a cost heuristic
-     * ("symbolic freedom is only worth its cost when some explored decision
-     * can read the value"), a structure-carrier role test, an enum-ordinal
-     * and container-cardinality classifier, a JDK-name test, a regex, and an
-     * unobserved-input rule.  Measured on the 17960 seed, the taxonomy
-     * changed no action's mode -- all 106 rows it labelled were undeclared
-     * anyway -- while it could and did drop a DECLARED cell before the one
-     * rule saw the declaration.</p>
-     *
-     * <p>The two refusals that remain are not policy.  A location the VM has
-     * no presentation for cannot carry a symbol however it is declared, and
-     * neither can a value whose type the SMT layer has no term for.</p>
-     */
-    /**
      * One goal's proposed inputs, with the declared ports the one admission
      * rule minted from the scope map and the recording.
      *
@@ -680,6 +659,27 @@ public final class ConcolicScheduler {
         return result;
     }
 
+    /**
+     * The binding mode of each proposed input: how the VM would present that
+     * location as a symbol, or the one reason it cannot.
+     *
+     * <p>No admission decision is made here.  {@code
+     * SymbolicInputSelection.decide} is the ONE admission rule -- declared,
+     * workload-owned, hook-minted or a declared cut port, and
+     * UNDECLARED_SYMBOLIC_INPUT otherwise -- and this used to run a
+     * fourteen-name refusal taxonomy in front of it: a cost heuristic
+     * ("symbolic freedom is only worth its cost when some explored decision
+     * can read the value"), a structure-carrier role test, an enum-ordinal
+     * and container-cardinality classifier, a JDK-name test, a regex, and an
+     * unobserved-input rule.  Measured on the 17960 seed, the taxonomy
+     * changed no action's mode -- all 106 rows it labelled were undeclared
+     * anyway -- while it could and did drop a DECLARED cell before the one
+     * rule saw the declaration.</p>
+     *
+     * <p>The two refusals that remain are not policy.  A location the VM has
+     * no presentation for cannot carry a symbol however it is declared, and
+     * neither can a value whose type the SMT layer has no term for.</p>
+     */
     static JsonArray materializationPlan(
             Goal goal, JsonArray sourceActions,
             StaticScopeMap scopeMap,

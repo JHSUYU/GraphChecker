@@ -399,8 +399,18 @@ run_java_main() {
     # to this offline aggregation process just as it was to the recorder.
     runtime_classpath="${runtime_classpath}:${project_classpath}"
   fi
+  # The case's declaration, under the same key every other stage reads it by
+  # (DeclaredSymbolicInputs): the region finalizer's demand walk retains the
+  # activation that held a declared input, and a declaration that did not
+  # arrive would silently drop it.  A case that declares none sets nothing.
+  local declaration_property=()
+  if [[ -n "${causynth_symbolic_inputs}" ]]; then
+    declaration_property=(
+      "-Dcausynth.symbolic.inputs=${causynth_symbolic_inputs}")
+  fi
   run_in_directory "${graphchecker_work_dir}" "${java_bin}" \
     "-Dcausynth.loop.default.bound=${causynth_loop_default_bound}" \
+    "${declaration_property[@]+"${declaration_property[@]}"}" \
     -cp "${runtime_classpath}" "${main_class}" "$@"
 }
 
