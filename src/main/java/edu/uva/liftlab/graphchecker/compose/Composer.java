@@ -1993,22 +1993,45 @@ public final class Composer {
         return valuations;
     }
 
-    /** How far one move is from the recording, for the ordering. */
+    /**
+     * How far one move is from the recording, for the ordering.
+     *
+     * <p>A root whose domain is NUMERIC has a distance, and the ordering
+     * asks the nearest counterfactual first.  A root whose domain is not --
+     * 17960's own {@code HDFS.CONFIG.SNAPSHOT_DELETION_ORDERED} is
+     * {@code true}/{@code false} -- has no metric at all: a move either is
+     * the recorded value or is not, so it counts one.  That is stated here
+     * as the rule it is, rather than as a {@code NumberFormatException}
+     * caught around the numeric case, because "this domain is not numeric"
+     * and "this row is malformed" are two different facts and an exception
+     * handler answered both with the same number.</p>
+     */
     private long distance(Map<String, String> move) {
         long total = 0L;
         for (Map.Entry<String, String> entry : move.entrySet()) {
             RootDomain domain = roots.get(entry.getKey());
             if (domain == null) continue;
-            try {
-                total += new BigInteger(entry.getValue().trim())
-                        .subtract(new BigInteger(
-                                domain.recordedValue().trim())).abs()
-                        .longValue();
-            } catch (NumberFormatException notAnInteger) {
+            String moved = entry.getValue().trim();
+            String recorded = domain.recordedValue().trim();
+            if (!integral(moved) || !integral(recorded)) {
                 total += 1L;
+                continue;
             }
+            total += new BigInteger(moved)
+                    .subtract(new BigInteger(recorded)).abs().longValue();
         }
         return total;
+    }
+
+    /** Whether one domain value is an integer this ordering can subtract. */
+    private static boolean integral(String value) {
+        if (value.isEmpty()) return false;
+        int start = value.charAt(0) == '-' || value.charAt(0) == '+' ? 1 : 0;
+        if (start >= value.length()) return false;
+        for (int index = start; index < value.length(); index++) {
+            if (!Character.isDigit(value.charAt(index))) return false;
+        }
+        return true;
     }
 
     private Valuation valuation(int ordinal, Map<String, String> assignment,

@@ -558,12 +558,25 @@ public final class ComposeMain {
                     : Paths.get(value);
         }
 
+        /**
+         * One numeric option, or its absent value -- never the default for
+         * a bound that WAS passed.
+         *
+         * <p>A campaign that passes {@code --max-valuations 12o} means 120
+         * or 12, and either way it does not mean 64.  Reading a mistyped
+         * bound as the default composes a different query than the one the
+         * run asked for and says nothing about it, so a value that is there
+         * and is not a number is refused by name.</p>
+         */
         private static int integer(String value, int absent) {
             if (value == null || value.isEmpty()) return absent;
             try {
                 return Integer.parseInt(value.trim());
             } catch (NumberFormatException notAnInteger) {
-                return absent;
+                throw new IllegalArgumentException("this bound was passed as"
+                        + " \"" + value + "\", which is not a number: a"
+                        + " mistyped bound is refused, never read as the"
+                        + " default " + absent, notAnInteger);
             }
         }
     }

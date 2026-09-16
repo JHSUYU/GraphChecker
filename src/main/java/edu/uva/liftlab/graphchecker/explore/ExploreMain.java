@@ -505,6 +505,16 @@ public final class ExploreMain {
                 ? null : Paths.get(value);
     }
 
+    /**
+     * One numeric option, or its absent value -- never the default for a
+     * bound that WAS passed.
+     *
+     * <p>A wave planned under {@code --max-tasks 12o} is not the wave
+     * {@code --max-tasks 128} plans, and it is not the wave the default
+     * plans either: reading a mistyped bound as the default proposes a
+     * different obligation set and states nothing about the difference.
+     * A value that is there and is not a number is refused by name.</p>
+     */
     static long number(Map<String, String> options, String name,
                        long fallback) {
         String value = options.get(name);
@@ -512,7 +522,10 @@ public final class ExploreMain {
         try {
             return Long.parseLong(value.trim());
         } catch (NumberFormatException notANumber) {
-            return fallback;
+            throw new IllegalArgumentException("--" + name + " was passed as"
+                    + " \"" + value + "\", which is not a number: a"
+                    + " mistyped bound is refused, never read as the default"
+                    + " " + fallback, notANumber);
         }
     }
 }
