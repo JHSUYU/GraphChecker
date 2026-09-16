@@ -594,7 +594,10 @@ public final class Identity {
             // and an index measured from a level that has gone is empty:
             // on hdfs-11741 the four PBHelper.convert activations of one
             // refresh answered one address, which is the collision the
-            // index exists to prevent.
+            // index exists to prevent.  It is also what puts an ANCHOR
+            // hop's base on the handler's own level: the inbound scope is
+            // opened one level down, inside the propagation call, and this
+            // brings it back to the level the served api is entered at.
             if (state.scopeBase > state.depth()) {
                 state.scopeBase = state.depth();
             }
@@ -604,18 +607,87 @@ public final class Identity {
     }
 
     /**
+     * What opened the causal context whose index begins at a scope start.
+     *
+     * <p>THE key of the one scope-base rule ({@link #scopeStart}).  An
+     * occurrence's execution index is relative to its causal context's own
+     * ORIGIN, and which point on the thread that is depends on what opened
+     * the context -- so every door states its kind and there is nothing
+     * left for the rule to infer from the stack.</p>
+     */
+    public enum Hop {
+        /**
+         * An inbound request, paired to its producer endpoint by
+         * {@code RuntimeTraceContext.enterInbound}.
+         *
+         * <p>The origin is the inbound scope itself.  The frames ABOVE it
+         * are the carrier thread's -- the pooled handler's start frame,
+         * {@code Server$Handler.run}, {@code RpcCall.run}, an executor's
+         * frames -- and which pooled handler serves a request is
+         * scheduling, not identity: hdfs-17960 planned every activation
+         * under {@code Anchor:...@HADOOP_IPC/checkpoint-namespace} from
+         * {@code <org.apache.hadoop.ipc.Server: void start()>#u31@3}, ran
+         * it on handler 0 and refused 14 tasks at frame 0.  The anchor
+         * already identifies the request; the carrier does not enter into
+         * it.</p>
+         */
+        ANCHOR,
+        /**
+         * A scope the running thread opens for itself: the workload's own
+         * request ({@code beginRequest}) or the scope carried to the
+         * thread that runs the work ({@code enterCarriedScope}).
+         *
+         * <p>The origin is that scope's start.  A claimed start frame
+         * standing above it is the ROOT's -- the frame that tells two
+         * started siblings apart -- and not the request's, so it stays out
+         * of the request's index exactly as a handler's does.</p>
+         */
+        SCOPE_ROOT,
+        /**
+         * A root that IS the started work: a daemon tick
+         * ({@code beginTick}).
+         *
+         * <p>The origin is the start frame the work claimed, because that
+         * frame is the tick's own beginning rather than some carrier's:
+         * hdfs-11741's {@code KeyManager$BlockKeyUpdater} claims it at its
+         * entry and a base below it drops the start site and its iteration
+         * from every address the tick publishes, so two pooled tasks would
+         * be one occurrence (G10/G11).  A tick on a thread nobody filed a
+         * start for -- the balancer's {@code main}, which drives its own
+         * {@code KEY_MANAGER_TICK} rotations -- has no such frame and
+         * begins where it was opened; two of its turns are told apart by
+         * the window index of the root hop, which is what a {@code Root}
+         * context states.</p>
+         */
+        STARTED_ROOT
+    }
+
+    /**
      * Opens a scope: the execution index of what runs inside starts here.
      *
-     * <p>Never above the start frame this thread's work already claimed: the
-     * start site and its iteration are what tell two siblings apart
-     * (IDENTITY-V3 §1, scope transfer), and a scope base above them drops
-     * them from every address the work publishes.  hdfs-11741's
-     * {@code KeyManager$BlockKeyUpdater} claimed its start frame at its
-     * entry and {@code beginTick} then based the tick's scope above it.</p>
+     * <p>THE scope-base rule, and there is no second one: the execution
+     * index of an occurrence is relative to its causal context's own
+     * origin.  A {@link Hop#STARTED_ROOT}'s origin is the start frame its
+     * work claimed; every other context's origin is the point the scope
+     * was opened at, and the frames above that point belong to the thread
+     * that carried the work there rather than to the work.</p>
+     *
+     * <p>What this replaces: "never above the start frame this thread's
+     * work already claimed", which was written for the tick and applied to
+     * every hop, so the pooled handler that happened to serve a request
+     * became part of the request's address (hdfs-17960 verification #5,
+     * 14 REPLAY refusals at {@code <org.apache.hadoop.ipc.Server: void
+     * start()>#u31}, planned at iteration 3 and run at 0).  One rule keyed
+     * on the hop, called through the same doors by the recording and by
+     * the replay ({@code RuntimeTraceContext}).</p>
      */
-    public static void scopeStart() {
+    public static void scopeStart(Hop hop) {
+        if (hop == null) {
+            throw new IllegalArgumentException(
+                    "a scope start states which hop opens it");
+        }
         State state = state();
-        state.scopeBase = state.startDepth >= 0
+        state.scopeBase = hop == Hop.STARTED_ROOT && state.startDepth >= 0
                 ? Math.min(state.startDepth, state.depth())
                 : state.depth();
     }
