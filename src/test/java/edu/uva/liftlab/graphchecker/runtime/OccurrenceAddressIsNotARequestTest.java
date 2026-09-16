@@ -5,6 +5,7 @@ import edu.uva.liftlab.graphchecker.contract.Frame;
 import edu.uva.liftlab.graphchecker.contract.ExecutionIndex;
 import edu.uva.liftlab.graphchecker.contract.Role;
 import edu.uva.liftlab.graphchecker.contract.CausalContext;
+import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.NodeId;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
@@ -68,6 +69,7 @@ public class OccurrenceAddressIsNotARequestTest {
     public void clearRuntimeState() {
         SymbolicMessageEnvelope.clear();
         RuntimeTraceContext.resetForTests();
+        Interactions.resetForTests();
     }
 
     /**
@@ -92,6 +94,53 @@ public class OccurrenceAddressIsNotARequestTest {
                 task.acceptsRootInvocation(balancerAddress(0)));
         assertFalse("nor does nothing at all",
                 task.acceptsRootInvocation(null));
+
+        // And the refusal names the component that parted BEFORE it prints
+        // the two addresses.  The 13 OCCURRENCE_ANCHOR_UNMATCHED rows of
+        // hdfs-17960 verification #3 differed in one number -- frame 5 of 8,
+        // planned iteration 3, ran 0 -- inside ~2500 otherwise identical
+        // characters, and reading that took a script over the gap file.
+        String oneIteration = task.addressDifference(balancerAddress(2));
+        assertTrue(oneIteration, oneIteration.startsWith("differs in frame 0 "
+                + "of 1, o.a.h.h.s.b.Balancer#dispatch#4, at iteration 2 and "
+                + "not the planned 3; planned "));
+        assertTrue("and still carries both addresses whole: " + oneIteration,
+                oneIteration.contains("planned "
+                        + balancerAddress(3).render() + ", ran at "
+                        + balancerAddress(2).render()));
+        assertEquals("nothing to name when there is no observed address",
+                "the activation ran where this run cannot name it",
+                task.addressDifference(null));
+
+        // Two components part, and both are named in address order.
+        String noFrames = task.addressDifference(balancerAddress(0));
+        assertTrue(noFrames, noFrames.startsWith("differs in its causal "
+                + "context (planned " + balancerAddress(3).context().render()
+                + ", ran " + balancerAddress(0).context().render() + ") and "
+                + "its execution index depth (planned 1 frames, ran 0); "
+                + "planned "));
+
+        // An anchor travels as a digest, so the differing INPUT is named,
+        // read back from the producer this run filed.
+        Endpoint sender = producerAt(1);
+        Endpoint resent = producerAt(2);
+        Interactions.sent("IPC", "corr-1", "REQUEST", sender);
+        Interactions.sent("IPC", "corr-2", "REQUEST", resent);
+        String onTheAnchor = anchoredTask(sender)
+                .addressDifference(anchoredAddress(resent));
+        assertTrue(onTheAnchor, onTheAnchor.startsWith("differs in its "
+                + "anchor's producer site index (planned "
+                + sender.siteIndex().render() + ", ran "
+                + resent.siteIndex().render() + "); planned "));
+
+        // An anchor no message of this run minted is stated as that.
+        Interactions.resetForTests();
+        String neverMinted = anchoredTask(sender)
+                .addressDifference(anchoredAddress(resent));
+        assertTrue(neverMinted, neverMinted.startsWith("differs in its "
+                + "causal anchor (planned " + sender.id()
+                + ", which no message of this run minted; ran " + resent.id()
+                + ", which no message of this run minted); planned "));
 
         // An envelope naming another producer changes nothing either way: it
         // decides which v_H the attach mints, never which activation this is.
@@ -315,6 +364,31 @@ public class OccurrenceAddressIsNotARequestTest {
                 ExecutionIndex.of(Collections.singletonList(
                         Frame.of("o.a.h.h.s.b.Balancer#dispatch#4",
                                 ordinal))));
+    }
+
+    /** One producer endpoint of the balancer, at its {@code k}-th send. */
+    private static Endpoint producerAt(int iteration) {
+        return Endpoint.of(balancerAddress(3), PORT,
+                ExecutionIndex.of(singletonList(
+                        Frame.of("a.P#send#2", iteration))), 0);
+    }
+
+    /** The occurrence a message from {@code producer} anchors. */
+    private static OccurrenceAddress anchoredAddress(Endpoint producer) {
+        return OccurrenceAddress.of(NodeId.parse(BALANCER), BALANCER_REGION,
+                CausalContext.of(producer.id(), "a.B#run#9"),
+                ExecutionIndex.of(singletonList(
+                        Frame.of("o.a.h.h.s.b.Balancer#dispatch#4", 1))));
+    }
+
+    /** One task planned at that anchored occurrence. */
+    private static ConcolicTaskPlan.RuntimeTask anchoredTask(
+            Endpoint producer) {
+        return new ConcolicTaskPlan.RuntimeTask(ExecutionTask.decode(
+                encoded("TASK.anchor", BALANCER, BALANCER_REGION,
+                        "<a.B: void run()>",
+                        anchoredAddress(producer).render(), 1,
+                        "REGISTERED_SOURCE")));
     }
 
     private static ConcolicTaskPlan plan(ConcolicTaskPlan.RuntimeTask task) {
